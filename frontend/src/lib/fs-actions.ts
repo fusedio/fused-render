@@ -83,7 +83,7 @@ async function firstFreeProbed(
   name: string,
   isDir: boolean,
   i: number,
-  candidate: string
+  candidate: string,
 ): Promise<string> {
   for (let tries = 0; tries < 100 && (await pathExists(join(dir, candidate))); tries++) {
     candidate = duplicateName(name, ++i, isDir);
@@ -99,7 +99,7 @@ async function firstFreeProbed(
 export async function freeDuplicatePath(
   parentDir: string,
   name: string,
-  isDir: boolean
+  isDir: boolean,
 ): Promise<string> {
   const dir = normDir(parentDir); // "" (root) would be rejected by listDir
   const { entries, truncated } = await listDir(dir);
@@ -115,7 +115,11 @@ export async function freeDuplicatePath(
 // name when free, otherwise falls back to the first free "… copy[/ n]" name
 // (same dedupe as Duplicate) so a paste never 409s on an existing entry. As
 // with Duplicate, a truncated listing verifies the choice with a stat probe.
-export async function freePastePath(parentDir: string, name: string, isDir: boolean): Promise<string> {
+export async function freePastePath(
+  parentDir: string,
+  name: string,
+  isDir: boolean,
+): Promise<string> {
   const dir = normDir(parentDir);
   const { entries, truncated } = await listDir(dir);
   const taken = new Set(entries.map((e) => e.name));
@@ -217,9 +221,7 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
 // where the caller should fall back to a hard-delete confirm; "error" is any
 // other failure (surface it as a toast).
 export type TrashOutcome =
-  | { status: "trashed" }
-  | { status: "unsupported" }
-  | { status: "error"; message: string };
+  { status: "trashed" } | { status: "unsupported" } | { status: "error"; message: string };
 
 // Move to Bin: a recoverable delete (macOS Trash). Where the server can't trash
 // (non-macOS → 501 "trash unsupported") this reports "unsupported" so the
@@ -259,7 +261,7 @@ export async function resolveOpenWithModes(path: string): Promise<TemplateEntry[
 // template-mode glyph fills the reserved icon column, matching the pane menu.
 export function buildOpenWithItems(
   modes: TemplateEntry[],
-  onSelect: (mode: string, isDefault: boolean) => void
+  onSelect: (mode: string, isDefault: boolean) => void,
 ): MenuItem[] {
   if (modes.length === 0) return [{ label: "No views available", disabled: true }];
   const def = modes.find((t) => !t.conditional) || modes[0];

@@ -16,6 +16,7 @@ row group so the serve's VFS cache can't cross-warm them):
                  concurrent range GETs
   verify       - re-fetch variant C's rows over HTTP and compare
 """
+
 import os
 import sys
 import time
@@ -24,12 +25,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import duckdb
 
-URL = ("http://127.0.0.1:53529/year=2024/quarter=3/"
-       "2024-07-01_performance_fixed_tiles.parquet")
+URL = "http://127.0.0.1:53529/year=2024/quarter=3/2024-07-01_performance_fixed_tiles.parquet"
 BIG_COL = "tile"
-RG_A = 2          # row group for the HTTP baseline
-RG_B = 5          # row group for single-stream coalesced
-RG_C = 8          # row group for 8-stream coalesced
+RG_A = 2  # row group for the HTTP baseline
+RG_B = 5  # row group for single-stream coalesced
+RG_C = 8  # row group for 8-stream coalesced
 N_STREAMS = 8
 N_ROWS = 100
 SPARSE = "/tmp/coalesced_proto_sparse.parquet"
@@ -60,9 +60,11 @@ def head_size(url):
 
 def parallel_get(url, start, length, streams):
     part = (length + streams - 1) // streams
+
     def piece(i):
         off = start + i * part
         return range_get(url, off, min(part, start + length - off))
+
     with ThreadPoolExecutor(streams) as ex:
         return b"".join(ex.map(piece, range(streams)))
 
@@ -84,15 +86,17 @@ def main():
             "SELECT row_group_id, row_group_num_rows, path_in_schema,"
             "       data_page_offset, dictionary_page_offset,"
             "       total_compressed_size "
-            "FROM parquet_metadata(?)", [URL]).fetchall()
+            "FROM parquet_metadata(?)",
+            [URL],
+        ).fetchall()
         con.close()
         return rows
 
     meta, t_meta = timed("metadata (HTTP footer)", read_meta)
 
     # row-group start positions (file_row_number space) and chunk ranges
-    rg_rows = {}          # rg_id -> num_rows
-    chunks = {}           # (rg_id, col) -> (start_byte, length)
+    rg_rows = {}  # rg_id -> num_rows
+    chunks = {}  # (rg_id, col) -> (start_byte, length)
     for rg, nrows, col, dpo, dico, size in meta:
         rg_rows[rg] = nrows
         start = min(x for x in (dpo, dico) if x is not None and x > 0)
@@ -106,8 +110,7 @@ def main():
 
     for rg in (RG_A, RG_B, RG_C):
         s, ln = chunks[(rg, BIG_COL)]
-        print(f"  rg{rg} '{BIG_COL}' chunk: offset={s} size={ln/1e6:.1f}MB "
-              f"rows={rg_rows[rg]}")
+        print(f"  rg{rg} '{BIG_COL}' chunk: offset={s} size={ln / 1e6:.1f}MB rows={rg_rows[rg]}")
 
     def in_list(rg):
         base = rg_start[rg]
@@ -115,9 +118,11 @@ def main():
 
     def http_query(rg):
         con = http_con()
-        q = (f"SELECT file_row_number, {BIG_COL} "
-             f"FROM read_parquet('{URL}', file_row_number=true) "
-             f"WHERE file_row_number IN ({in_list(rg)})")
+        q = (
+            f"SELECT file_row_number, {BIG_COL} "
+            f"FROM read_parquet('{URL}', file_row_number=true) "
+            f"WHERE file_row_number IN ({in_list(rg)})"
+        )
         out = con.execute(q).fetchall()
         con.close()
         return out
@@ -143,31 +148,31 @@ def main():
             f.write(footer)
 
         con = duckdb.connect(":memory:")
-        q = (f"SELECT file_row_number, {BIG_COL} "
-             f"FROM read_parquet('{SPARSE}', file_row_number=true) "
-             f"WHERE file_row_number IN ({in_list(rg)})")
+        q = (
+            f"SELECT file_row_number, {BIG_COL} "
+            f"FROM read_parquet('{SPARSE}', file_row_number=true) "
+            f"WHERE file_row_number IN ({in_list(rg)})"
+        )
         out = con.execute(q).fetchall()
         con.close()
         return out
 
     csize = lambda rg: chunks[(rg, BIG_COL)][1]
 
-    base_rows, t_base = timed(f"A: duckdb HTTP (rg{RG_A})",
-                              lambda: http_query(RG_A), csize(RG_A))
-    coal1_rows, t_coal1 = timed(f"B: coalesced x1 (rg{RG_B})",
-                                lambda: coalesced(RG_B, 1), csize(RG_B))
-    coal8_rows, t_coal8 = timed(f"C: coalesced x{N_STREAMS} (rg{RG_C})",
-                                lambda: coalesced(RG_C, N_STREAMS),
-                                csize(RG_C))
+    base_rows, t_base = timed(f"A: duckdb HTTP (rg{RG_A})", lambda: http_query(RG_A), csize(RG_A))
+    coal1_rows, t_coal1 = timed(
+        f"B: coalesced x1 (rg{RG_B})", lambda: coalesced(RG_B, 1), csize(RG_B)
+    )
+    coal8_rows, t_coal8 = timed(
+        f"C: coalesced x{N_STREAMS} (rg{RG_C})", lambda: coalesced(RG_C, N_STREAMS), csize(RG_C)
+    )
     for r in (base_rows, coal1_rows, coal8_rows):
         assert len(r) == N_ROWS
 
-    ref_rows, _ = timed("verify HTTP (rg{}, warm)".format(RG_C),
-                        lambda: http_query(RG_C))
+    ref_rows, _ = timed(f"verify HTTP (rg{RG_C}, warm)", lambda: http_query(RG_C))
     match = sorted(coal8_rows) == sorted(ref_rows)
     print(f"\ncorrectness: {'MATCH' if match else 'MISMATCH'}")
-    print(f"A -> B speedup: {t_base / t_coal1:.1f}x | "
-          f"A -> C speedup: {t_base / t_coal8:.1f}x")
+    print(f"A -> B speedup: {t_base / t_coal1:.1f}x | A -> C speedup: {t_base / t_coal8:.1f}x")
     if not match:
         sys.exit(1)
 

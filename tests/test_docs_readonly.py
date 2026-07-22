@@ -11,6 +11,7 @@ exercises only code paths that raise or return BEFORE any pandoc call:
   "import" action — folds fs writability into editable/readonly_message/
   readonly_tooltip.
 """
+
 import importlib.util
 import os
 
@@ -19,7 +20,8 @@ import pytest
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load_docs():

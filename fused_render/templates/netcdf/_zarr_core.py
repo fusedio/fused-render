@@ -16,19 +16,36 @@ Emits the same JSON schema as the NetCDF reader, so its viewer mirrors that one.
 # ///
 
 import json
-import sys
 import math
 import os
 import struct
+import sys
 
 import _grid_common as G
 
 SPATIAL_Y = {"lat", "latitude", "y", "yc", "rlat", "nav_lat"}
 SPATIAL_X = {"lon", "longitude", "x", "xc", "rlon", "nav_lon"}
-COORD_NAMES = SPATIAL_Y | SPATIAL_X | {
-    "time", "year", "valid_time", "step", "number", "depth", "level", "lev",
-    "plev", "height", "band", "c", "z", "t", "channel",
-}
+COORD_NAMES = (
+    SPATIAL_Y
+    | SPATIAL_X
+    | {
+        "time",
+        "year",
+        "valid_time",
+        "step",
+        "number",
+        "depth",
+        "level",
+        "lev",
+        "plev",
+        "height",
+        "band",
+        "c",
+        "z",
+        "t",
+        "channel",
+    }
+)
 
 
 class Unsupported(Exception):
@@ -60,16 +77,15 @@ def _server_url(src, endpoint, path):
     expansion — judging remote-ness on one path string and range-reading another
     would 404. So we quote OUR path onto the endpoint, ignoring src's path."""
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):
     """Ask /api/fs/stat about `path`. Returns:
-      ("ok", payload)      — payload has bool `remote` and int `size`
-      ("missing", None)    — server says the path does not exist (404)
-      ("unreachable", None)— server could not be reached / errored; the caller
-                             falls back to a local kernel probe (presumed local).
+    ("ok", payload)      — payload has bool `remote` and int `size`
+    ("missing", None)    — server says the path does not exist (404)
+    ("unreachable", None)— server could not be reached / errored; the caller
+                           falls back to a local kernel probe (presumed local).
     """
     url = _server_url(src, "/api/fs/stat", path)
     try:
@@ -97,26 +113,38 @@ def _is_remote(src, path):
 
 # ------------------------------------------------------------ blosc + lz4 (pure)
 def _lz4_block(src, dest_size):
-    out = bytearray(); i = 0; n = len(src)
+    out = bytearray()
+    i = 0
+    n = len(src)
     while i < n:
-        token = src[i]; i += 1
+        token = src[i]
+        i += 1
         lit = token >> 4
         if lit == 15:
             while True:
-                b = src[i]; i += 1; lit += b
-                if b != 255: break
-        out += src[i:i+lit]; i += lit
-        if len(out) >= dest_size: break
-        offset = src[i] | (src[i+1] << 8); i += 2
+                b = src[i]
+                i += 1
+                lit += b
+                if b != 255:
+                    break
+        out += src[i : i + lit]
+        i += lit
+        if len(out) >= dest_size:
+            break
+        offset = src[i] | (src[i + 1] << 8)
+        i += 2
         mlen = token & 15
         if mlen == 15:
             while True:
-                b = src[i]; i += 1; mlen += b
-                if b != 255: break
+                b = src[i]
+                i += 1
+                mlen += b
+                if b != 255:
+                    break
         mlen += 4
         start = len(out) - offset
         if offset >= mlen:
-            out += out[start:start + mlen]
+            out += out[start : start + mlen]
         else:
             # overlapping match repeats the trailing `offset` bytes as a pattern
             out += (bytes(out[start:]) * (mlen // offset + 1))[:mlen]
@@ -125,6 +153,7 @@ def _lz4_block(src, dest_size):
 
 def _unshuffle(buf, typesize):
     import numpy as np
+
     if typesize <= 1:
         return buf
     a = np.frombuffer(buf, dtype=np.uint8)
@@ -136,13 +165,15 @@ def _blosc(d, want=None):
     """Decompress a blosc frame. `want=(start, stop)` is a byte range of the
     decompressed buffer: blocks fully outside it are skipped (left zeroed),
     so slicing one plane out of a huge chunk only decodes ~1 block."""
-    flags = d[2]; typesize = d[3]
+    flags = d[2]
+    typesize = d[3]
     nbytes, blocksize, cbytes = struct.unpack_from("<III", d, 4)
-    codec = flags >> 5            # 0 blosclz, 1 lz4, 3 zlib(via blosc), 4 zstd
-    shuffle = flags & 1; memcpy = flags & 2
+    codec = flags >> 5  # 0 blosclz, 1 lz4, 3 zlib(via blosc), 4 zstd
+    shuffle = flags & 1
+    memcpy = flags & 2
     if memcpy:
-        return d[16:16 + nbytes]
-    if codec not in (1,):         # only lz4 (covers xarray/zarr default)
+        return d[16 : 16 + nbytes]
+    if codec not in (1,):  # only lz4 (covers xarray/zarr default)
         raise Unsupported(f"blosc codec id {codec} (only lz4 in pure engine)")
     nblocks = (nbytes + blocksize - 1) // blocksize
     offs = struct.unpack_from("<%di" % nblocks, d, 16)
@@ -156,24 +187,34 @@ def _blosc(d, want=None):
         cands = [typesize, 1] if (typesize > 1 and not leftover and bsize % typesize == 0) else [1]
         block = None
         for nstreams in cands:
-            neblock = bsize // nstreams; c = offs[bi]; acc = bytearray(); ok = True
+            neblock = bsize // nstreams
+            c = offs[bi]
+            acc = bytearray()
+            ok = True
             try:
                 for _ in range(nstreams):
-                    csize = struct.unpack_from("<i", d, c)[0]; c += 4
-                    if csize < 0 or c + csize > len(d): ok = False; break
-                    piece = d[c:c + csize]; c += csize
+                    csize = struct.unpack_from("<i", d, c)[0]
+                    c += 4
+                    if csize < 0 or c + csize > len(d):
+                        ok = False
+                        break
+                    piece = d[c : c + csize]
+                    c += csize
                     dec = bytes(piece) if csize == neblock else _lz4_block(piece, neblock)
-                    if len(dec) != neblock: ok = False; break
+                    if len(dec) != neblock:
+                        ok = False
+                        break
                     acc += dec
             except (IndexError, struct.error):
                 ok = False
             if ok and len(acc) == bsize:
-                block = acc; break
+                block = acc
+                break
         if block is None:
             raise Unsupported("blosc block decode failed")
         if shuffle:
             block = _unshuffle(block, typesize)
-        out[b0:b0 + bsize] = block
+        out[b0 : b0 + bsize] = block
     return bytes(out)
 
 
@@ -185,6 +226,7 @@ def _decompress(raw, compressor, want=None):
         return _blosc(raw, want)
     if cid in ("zlib", "gzip"):
         import zlib
+
         return zlib.decompress(raw)
     raise Unsupported(f"zarr compressor '{cid}' (use system engine)")
 
@@ -223,13 +265,13 @@ def _load_meta(store):
     ra = os.path.join(store, ".zattrs")
     if os.path.isfile(ra):
         root_attrs = json.load(open(ra))
-    MAX_GROUP_DIRS = 10000          # belt-and-suspenders cap on group listings
+    MAX_GROUP_DIRS = 10000  # belt-and-suspenders cap on group listings
     stack = [store]
     listed = 0
     while stack:
         d = stack.pop()
         zarray = os.path.join(d, ".zarray")
-        if os.path.isfile(zarray):          # ARRAY dir: read meta, do NOT list
+        if os.path.isfile(zarray):  # ARRAY dir: read meta, do NOT list
             name = os.path.relpath(d, store).replace(os.sep, "/")
             za = json.load(open(zarray))
             at = {}
@@ -241,7 +283,7 @@ def _load_meta(store):
         listed += 1
         if listed > MAX_GROUP_DIRS:
             break
-        try:                                # GROUP dir: safe to list (small)
+        try:  # GROUP dir: safe to list (small)
             with os.scandir(d) as it:
                 for e in it:
                     if not e.name.startswith(".") and e.is_dir():
@@ -270,7 +312,7 @@ def _chunk_stats(store, name, za, remote=False):
     re-expose the scandir on a mount."""
     total = 1
     for s, c in zip(za["shape"], za["chunks"]):
-        total *= max(1, -(-int(s) // max(1, int(c))))   # ceil div
+        total *= max(1, -(-int(s) // max(1, int(c))))  # ceil div
     if remote:
         return None, total
     present = 0
@@ -299,6 +341,7 @@ def _store_summary(store, remote=False):
     if remote:
         return {"size": None, "files": None, "approx": True, "remote": True}
     import time
+
     size = files = 0
     deadline = time.time() + 2.0
     for dirpath, _, names in os.walk(store):
@@ -316,27 +359,38 @@ def _store_summary(store, remote=False):
 # ------------------------------------------------------------ chunk reading
 def _read_full_1d(store, name, za):
     import numpy as np
-    shape = za["shape"]; chunks = za["chunks"]; dt = np.dtype(za["dtype"])
+
+    shape = za["shape"]
+    chunks = za["chunks"]
+    dt = np.dtype(za["dtype"])
     sep = za.get("dimension_separator", ".")
     comp = za.get("compressor")
-    n = shape[0]; cn = chunks[0]
+    n = shape[0]
+    cn = chunks[0]
     out = np.zeros(n, dtype=dt)
     for ci in range((n + cn - 1) // cn):
-        path = os.path.join(store, name, str(ci)) if sep == "." else os.path.join(store, name, str(ci))
+        path = (
+            os.path.join(store, name, str(ci)) if sep == "." else os.path.join(store, name, str(ci))
+        )
         if not os.path.exists(path):
             continue
         raw = _decompress(open(path, "rb").read(), comp)
         arr = np.frombuffer(raw, dtype=dt)[:cn]
         s = ci * cn
-        out[s:s + len(arr)] = arr[: n - s]
+        out[s : s + len(arr)] = arr[: n - s]
     return out
 
 
 def _read_2d_slice(store, name, za, ypos, xpos, fixed):
     import numpy as np
-    shape = za["shape"]; chunks = za["chunks"]; dt = np.dtype(za["dtype"])
-    order = za.get("order", "C"); sep = za.get("dimension_separator", ".")
-    comp = za.get("compressor"); fill = za.get("fill_value")
+
+    shape = za["shape"]
+    chunks = za["chunks"]
+    dt = np.dtype(za["dtype"])
+    order = za.get("order", "C")
+    sep = za.get("dimension_separator", ".")
+    comp = za.get("compressor")
+    fill = za.get("fill_value")
     ndim = len(shape)
     ny, nx = shape[ypos], shape[xpos]
     cy, cx = chunks[ypos], chunks[xpos]
@@ -351,8 +405,9 @@ def _read_2d_slice(store, name, za, ypos, xpos, fixed):
     # byte range of the selected plane within a chunk — lets blosc skip blocks
     strides = [0] * ndim
     acc = 1
-    for d in (range(ndim - 1, -1, -1) if order == "C" else range(ndim)):
-        strides[d] = acc; acc *= chunks[d]
+    for d in range(ndim - 1, -1, -1) if order == "C" else range(ndim):
+        strides[d] = acc
+        acc *= chunks[d]
     lo = sum(strides[d] * eloc[d] for d in eloc)
     hi = lo + strides[ypos] * (chunks[ypos] - 1) + strides[xpos] * (chunks[xpos] - 1)
     want = (lo * dt.itemsize, (hi + 1) * dt.itemsize)
@@ -372,7 +427,7 @@ def _read_2d_slice(store, name, za, ypos, xpos, fixed):
                 tile = tile.T
             y0, x0 = iy * cy, ix * cx
             vy, vx = min(cy, ny - y0), min(cx, nx - x0)
-            out[y0:y0 + vy, x0:x0 + vx] = tile[:vy, :vx].astype("float64")
+            out[y0 : y0 + vy, x0 : x0 + vx] = tile[:vy, :vx].astype("float64")
     # NB: zarr fill_value marks *uninitialised* regions, not nodata — so we do
     # NOT mask data==fill. Absent chunk files stay NaN (shown transparent).
     return out
@@ -381,6 +436,7 @@ def _read_2d_slice(store, name, za, ypos, xpos, fixed):
 # ------------------------------------------------------------ pure engine
 def _read_pure(store, var, index, bins, max_cells, remote=False):
     import numpy as np
+
     arrays, root_attrs = _load_meta(store)
     if not arrays:
         return {"error": "no zarr arrays found in store"}
@@ -397,10 +453,12 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
     for name, info in arrays.items():
         nd = len(info["zarray"]["shape"])
         base = name.split("/")[-1]
-        is_coord = (name in dim_names or base in dim_names) or (nd <= 1 and base.lower() in COORD_NAMES)
+        is_coord = (name in dim_names or base in dim_names) or (
+            nd <= 1 and base.lower() in COORD_NAMES
+        )
         (coord_names if is_coord else band_names).append(name)
     if not band_names:
-        band_names = list(arrays)   # fall back: everything is data
+        band_names = list(arrays)  # fall back: everything is data
 
     def kind(n):
         return np.dtype(arrays[n]["zarray"]["dtype"]).kind
@@ -408,16 +466,28 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
     def slice_cells(n):
         shp = arrays[n]["zarray"]["shape"]
         return int(np.prod(shp[-2:] if len(shp) >= 2 else shp))
+
     if var in band_names:
         chosen = var
     else:
         fit = [n for n in band_names if slice_cells(n) <= 32_000_000]
-        chosen = max(fit, key=lambda n: (kind(n) == "f", len(arrays[n]["zarray"]["shape"]),
-                                         int(np.prod(arrays[n]["zarray"]["shape"])))) \
-            if fit else min(band_names, key=slice_cells)
+        chosen = (
+            max(
+                fit,
+                key=lambda n: (
+                    kind(n) == "f",
+                    len(arrays[n]["zarray"]["shape"]),
+                    int(np.prod(arrays[n]["zarray"]["shape"])),
+                ),
+            )
+            if fit
+            else min(band_names, key=slice_cells)
+        )
     if slice_cells(chosen) > 256_000_000:
-        return {"error": f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
-                         "cells - too large to load; pick a smaller variable"}
+        return {
+            "error": f"slice of '{chosen}' is {slice_cells(chosen) // 1000000}M "
+            "cells - too large to load; pick a smaller variable"
+        }
 
     info = arrays[chosen]
     za = info["zarray"]
@@ -431,6 +501,7 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
     ypos, xpos = dims.index(ydim), dims.index(xdim)
 
     extra = [d for d in dims if d not in (ydim, xdim)]
+
     # coordinate arrays (by matching dim name)
     def _coord_array(dim):
         for n in coord_names:
@@ -449,8 +520,9 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
         vals = None
         if ca and int(np.prod(arrays[ca]["zarray"]["shape"])) <= 200:
             vals = [G.clean(x) for x in _read_full_1d(store, ca, arrays[ca]["zarray"])]
-        extra_dims.append({"name": d, "size": int(size), "values": vals,
-                           "index": idx if d == extra[0] else 0})
+        extra_dims.append(
+            {"name": d, "size": int(size), "values": vals, "index": idx if d == extra[0] else 0}
+        )
 
     arr = _read_2d_slice(store, chosen, za, ypos, xpos, fixed)
 
@@ -460,6 +532,7 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
         if ca:
             return [G.clean(x) for x in _read_full_1d(store, ca, arrays[ca]["zarray"])]
         return None
+
     lats = _axis_vals(ydim)
     lons = _axis_vals(xdim)
 
@@ -471,40 +544,64 @@ def _read_pure(store, var, index, bins, max_cells, remote=False):
         zc = arrays[n]["zarray"]
         vals = _read_full_1d(store, n, zc) if int(np.prod(zc["shape"])) <= 5000 else None
         arrv = np.asarray(vals) if vals is not None else None
-        coords_meta.append({
-            "name": n, "dims": _dims_of(n, arrays[n]), "size": int(np.prod(zc["shape"])),
-            "dtype": str(np.dtype(zc["dtype"])),
-            "min": G.clean(np.nanmin(arrv)) if arrv is not None and arrv.size else None,
-            "max": G.clean(np.nanmax(arrv)) if arrv is not None and arrv.size else None,
-            "values": [G.clean(x) for x in arrv] if (arrv is not None and arrv.size <= 200) else None,
-            "attrs": {k: G.clean(v) for k, v in arrays[n].get("zattrs", {}).items() if k != "_ARRAY_DIMENSIONS"},
-        })
+        coords_meta.append(
+            {
+                "name": n,
+                "dims": _dims_of(n, arrays[n]),
+                "size": int(np.prod(zc["shape"])),
+                "dtype": str(np.dtype(zc["dtype"])),
+                "min": G.clean(np.nanmin(arrv)) if arrv is not None and arrv.size else None,
+                "max": G.clean(np.nanmax(arrv)) if arrv is not None and arrv.size else None,
+                "values": [G.clean(x) for x in arrv]
+                if (arrv is not None and arrv.size <= 200)
+                else None,
+                "attrs": {
+                    k: G.clean(v)
+                    for k, v in arrays[n].get("zattrs", {}).items()
+                    if k != "_ARRAY_DIMENSIONS"
+                },
+            }
+        )
     vars_meta = []
     for n in band_names:
         zan = arrays[n]["zarray"]
         present, total = _chunk_stats(store, n, zan, remote)
         filters = zan.get("filters") or []
-        vars_meta.append({
-            "name": n, "dims": _dims_of(n, arrays[n]),
-            "shape": [int(s) for s in zan["shape"]],
-            "dtype": str(np.dtype(zan["dtype"])),
-            "attrs": {k: G.clean(v) for k, v in arrays[n].get("zattrs", {}).items() if k != "_ARRAY_DIMENSIONS"},
-            "compressor": (zan.get("compressor") or {}).get("id") or "none",
-            "chunks": [int(c) for c in zan["chunks"]],
-            "chunks_stored": present, "chunks_total": total,
-            "fill_value": G.clean(zan.get("fill_value")),
-            "order": zan.get("order", "C"),
-            "filters": [f.get("id", "?") for f in filters],
-        })
+        vars_meta.append(
+            {
+                "name": n,
+                "dims": _dims_of(n, arrays[n]),
+                "shape": [int(s) for s in zan["shape"]],
+                "dtype": str(np.dtype(zan["dtype"])),
+                "attrs": {
+                    k: G.clean(v)
+                    for k, v in arrays[n].get("zattrs", {}).items()
+                    if k != "_ARRAY_DIMENSIONS"
+                },
+                "compressor": (zan.get("compressor") or {}).get("id") or "none",
+                "chunks": [int(c) for c in zan["chunks"]],
+                "chunks_stored": present,
+                "chunks_total": total,
+                "fill_value": G.clean(zan.get("fill_value")),
+                "order": zan.get("order", "C"),
+                "filters": [f.get("id", "?") for f in filters],
+            }
+        )
 
     ll = _lonlat_extent(lats, lons)
     out = {
-        "engine": "pure", "dims": dim_sizes, "coords": coords_meta,
-        "variables": vars_meta, "bands": band_names,
+        "engine": "pure",
+        "dims": dim_sizes,
+        "coords": coords_meta,
+        "variables": vars_meta,
+        "bands": band_names,
         "global_attrs": {k: G.clean(v) for k, v in root_attrs.items()},
         "selected": {
-            "var": chosen, "index": fixed.get(dims.index(extra[0]), 0) if extra else 0,
-            "ydim": ydim, "xdim": xdim, "extra_dims": extra_dims,
+            "var": chosen,
+            "index": fixed.get(dims.index(extra[0]), 0) if extra else 0,
+            "ydim": ydim,
+            "xdim": xdim,
+            "extra_dims": extra_dims,
             "units": info.get("zattrs", {}).get("units", ""),
             "long_name": info.get("zattrs", {}).get("long_name", chosen),
         },
@@ -520,7 +617,9 @@ def _lonlat_extent(lats, lons):
             return (None, None)
         vv = [x for x in v if x is not None]
         return (min(vv), max(vv)) if vv else (None, None)
-    ymin, ymax = mm(lats); xmin, xmax = mm(lons)
+
+    ymin, ymax = mm(lats)
+    xmin, xmax = mm(lons)
     return {"ymin": ymin, "ymax": ymax, "xmin": xmin, "xmax": xmax}
 
 
@@ -528,6 +627,7 @@ def _lonlat_extent(lats, lons):
 def _system_python():
     import shutil
     import subprocess
+
     cands = []
     if os.environ.get("GEO_PYTHON"):
         cands.append(os.environ["GEO_PYTHON"])
@@ -535,8 +635,10 @@ def _system_python():
     # so the current interpreter is normally the one found here
     cands.append(sys.executable)
     home = os.path.expanduser("~")
-    cands += [os.path.join(home, p) for p in
-              ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")]
+    cands += [
+        os.path.join(home, p)
+        for p in ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")
+    ]
     for nm in ("python3", "python"):
         w = shutil.which(nm)
         if w:
@@ -560,7 +662,7 @@ def _system_python():
     return None
 
 
-_WORKER = r'''
+_WORKER = r"""
 import sys, os, json
 sys.path.insert(0, sys.argv[1])
 import numpy as np, zarr
@@ -708,30 +810,48 @@ out={"engine":"system (zarr)","dims":dim_sizes,"coords":coords_meta,"variables":
 out.update(payload)
 out["grid"]["extent"]={"ymin":ymin,"ymax":ymax,"xmin":xmin,"xmax":xmax}
 print(json.dumps(out))
-'''
+"""
 
 
 def _read_system(store, var, index, bins, max_cells):
     import subprocess
+
     py = _system_python()
     if not py:
-        return {"error": "system engine requested but no Python with zarr was found. "
-                         "Set GEO_PYTHON or install zarr."}
+        return {
+            "error": "system engine requested but no Python with zarr was found. "
+            "Set GEO_PYTHON or install zarr."
+        }
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-    here = (os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals()
-            else os.path.abspath(sys.path[0]))  # runner exec()s without __file__
+    here = (
+        os.path.dirname(os.path.abspath(__file__))
+        if "__file__" in globals()
+        else os.path.abspath(sys.path[0])
+    )  # runner exec()s without __file__
     params = {"store": store, "var": var, "index": index, "bins": bins, "max_cells": max_cells}
-    r = subprocess.run([py, "-c", _WORKER, here], input=json.dumps(params),
-                       capture_output=True, text=True, timeout=120, env=env)
+    r = subprocess.run(
+        [py, "-c", _WORKER, here],
+        input=json.dumps(params),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
     if r.returncode != 0:
         return {"error": f"system engine failed: {r.stderr[-500:]}"}
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
 # ------------------------------------------------------------ entry point
-def main(file: str = "", var: str = "", index: int = 0,
-         bins: int = 40, max_cells: int = 160000, engine: str = "auto",
-         src: str = ""):
+def main(
+    file: str = "",
+    var: str = "",
+    index: int = 0,
+    bins: int = 40,
+    max_cells: int = 160000,
+    engine: str = "auto",
+    src: str = "",
+):
     # New runner passes params untyped (HTML sends them as strings); coerce the
     # numeric ones the old runner used to convert via the annotations.
     index, bins, max_cells = int(index), int(bins), int(max_cells)
@@ -777,6 +897,7 @@ def _finish(out, store, remote=False):
 # entrypoints; a bare main() silently returns null. Register main via the shim.
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

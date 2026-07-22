@@ -9,7 +9,9 @@ they emit an identical schema. numpy only.
 
 def clean(x):
     import math
+
     import numpy as np
+
     if x is None:
         return None
     if isinstance(x, (np.floating, float)):
@@ -25,12 +27,14 @@ def clean(x):
 def present(arr, lats, lons, bins, max_cells):
     """arr: 2D float array. lats/lons: full coord lists (len == rows/cols) or None."""
     import numpy as np
+
     arr = np.where(np.isfinite(arr), arr, np.nan)
     rows, cols = arr.shape
     valid = arr[np.isfinite(arr)]
     nv = int(valid.size)
     stats = {
-        "count": nv, "nan": int(arr.size - nv),
+        "count": nv,
+        "nan": int(arr.size - nv),
         "min": clean(valid.min()) if nv else None,
         "max": clean(valid.max()) if nv else None,
         "mean": clean(valid.mean()) if nv else None,
@@ -59,10 +63,15 @@ def present(arr, lats, lons, bins, max_cells):
         return [clean(x) for x in v[::step][: len(grid) if n == rows else len(grid[0])]]
 
     return {
-        "stats": stats, "histogram": hist,
+        "stats": stats,
+        "histogram": hist,
         "grid": {
-            "rows": len(grid), "cols": len(grid[0]) if grid else 0,
-            "step": step, "orig_shape": [rows, cols], "values": grid,
-            "lats": _sample(lats, rows), "lons": _sample(lons, cols),
+            "rows": len(grid),
+            "cols": len(grid[0]) if grid else 0,
+            "step": step,
+            "orig_shape": [rows, cols],
+            "values": grid,
+            "lats": _sample(lats, rows),
+            "lons": _sample(lons, cols),
         },
     }

@@ -3,6 +3,7 @@
 main(dir="") -> {dir, parent, entries:[{name, path, kind, ext}]}
 Default dir is the user's home. Pass any absolute directory to browse.
 """
+
 import os
 
 _DEFAULT_DIR = os.path.expanduser("~")
@@ -45,8 +46,7 @@ import urllib.request as _urlreq
 
 def _server_url(src, endpoint, path):
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):

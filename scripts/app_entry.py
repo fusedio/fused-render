@@ -2,6 +2,7 @@
 launcher (Contents/MacOS/FusedRender) on the bundled interpreter — trivial by
 design, all real logic stays in fused_render/app.py.
 """
+
 from fused_render.app import main
 
 main()

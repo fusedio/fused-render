@@ -549,6 +549,7 @@ def _venv_python():
     import os
     import shutil
     import subprocess
+
     cache = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}")
     vpy = os.path.join(cache, "venv", "bin", "python")
     marker = os.path.join(cache, "deps_ok_pyramid")
@@ -558,14 +559,20 @@ def _venv_python():
     if not os.path.exists(uv) and not shutil.which("uv"):
         raise RuntimeError(
             "The overview pyramid needs the 'uv' tool to set up rasterio. "
-            "Install it with: brew install uv — or: curl -LsSf https://astral.sh/uv/install.sh | sh")
+            "Install it with: brew install uv — or: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        )
     os.makedirs(cache, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
     if not os.path.exists(vpy):
-        subprocess.run([uv, "venv", "--python", "3.12", os.path.join(cache, "venv")],
-                       check=True, capture_output=True, env=env)
-    subprocess.run([uv, "pip", "install", "-p", vpy] + VENV_DEPS,
-                   check=True, capture_output=True, env=env)
+        subprocess.run(
+            [uv, "venv", "--python", "3.12", os.path.join(cache, "venv")],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+    subprocess.run(
+        [uv, "pip", "install", "-p", vpy] + VENV_DEPS, check=True, capture_output=True, env=env
+    )
     # Marker written only AFTER a successful install (both subprocess.run calls
     # use check=True and raise on failure, so we never reach here on a partial
     # install). An existing venv + marker short-circuits at the top of the fn.
@@ -580,8 +587,15 @@ def _worker_source():
     return _SHARED + "\n" + WORKER
 
 
-def main(file: str = "", action: str = "analyze", resampling: str = "",
-         profile: str = "", out: str = "", overwrite: str = "", src: str = ""):
+def main(
+    file: str = "",
+    action: str = "analyze",
+    resampling: str = "",
+    profile: str = "",
+    out: str = "",
+    overwrite: str = "",
+    src: str = "",
+):
     import json
     import os
     import subprocess
@@ -622,11 +636,20 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
     if remote and action in ("build", "cogify"):
-        return {"error": "this file is on a read-only remote mount — "
-                         "copy it locally to build overviews"}
+        return {
+            "error": "this file is on a read-only remote mount — copy it locally to build overviews"
+        }
 
-    opts = {k: v for k, v in [("resampling", resampling), ("profile", profile),
-                              ("out", out), ("overwrite", overwrite)] if v}
+    opts = {
+        k: v
+        for k, v in [
+            ("resampling", resampling),
+            ("profile", profile),
+            ("out", out),
+            ("overwrite", overwrite),
+        ]
+        if v
+    }
     if remote:
         # Hand the worker the raw-bytes URL (origin from src, path normalized
         # here) + size, so every rasterio/tifffile open goes over HTTP range
@@ -651,6 +674,7 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
 
     jobs = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}/jobs")
     import hashlib
+
     key = hashlib.md5(f"{file}|{action}|{opts.get('out', '')}".encode()).hexdigest()[:16]
 
     if action == "status":
@@ -680,20 +704,33 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
     if action in ("build", "cogify"):
         # too slow for the app's 30s runPython budget → detach and poll
         import time
+
         os.makedirs(jobs, exist_ok=True)
         sf = os.path.join(jobs, key + ".json")
         wfile = os.path.join(jobs, key + ".py")
-        watch = opts.get("out") or (os.path.splitext(file)[0] + "_cog.tif"
-                                    if action == "cogify" else file)
+        watch = opts.get("out") or (
+            os.path.splitext(file)[0] + "_cog.tif" if action == "cogify" else file
+        )
         if os.path.exists(sf):
             st = json.load(open(sf))
             if st.get("state") == "running" and st.get("pid") and alive(st["pid"]):
-                return {"ok": True, "started": True, "already_running": True,
-                        "status_key": key, "watch": watch}
+                return {
+                    "ok": True,
+                    "started": True,
+                    "already_running": True,
+                    "status_key": key,
+                    "watch": watch,
+                }
         opts["status_file"] = sf
         open(wfile, "w").write(_worker_source())
-        st = {"state": "running", "pid": None, "action": action, "watch": watch,
-              "before": os.path.getsize(file), "started": time.time()}
+        st = {
+            "state": "running",
+            "pid": None,
+            "action": action,
+            "watch": watch,
+            "before": os.path.getsize(file),
+            "started": time.time(),
+        }
         json.dump(st, open(sf, "w"))
         # posix_spawn, NOT Popen's fork()+exec, for the same reason as the
         # analyze branch below: this process has libproj resident with a live
@@ -705,16 +742,23 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         _null = os.open(os.devnull, os.O_WRONLY)
         try:
             pid = os.posix_spawn(
-                vpy, [vpy, wfile, file, action, json.dumps(opts)], env,
-                file_actions=[(os.POSIX_SPAWN_DUP2, _null, 1),
-                              (os.POSIX_SPAWN_DUP2, _null, 2)],
-                setsid=True)
+                vpy,
+                [vpy, wfile, file, action, json.dumps(opts)],
+                env,
+                file_actions=[(os.POSIX_SPAWN_DUP2, _null, 1), (os.POSIX_SPAWN_DUP2, _null, 2)],
+                setsid=True,
+            )
         finally:
             os.close(_null)
         st["pid"] = pid
         json.dump(st, open(sf, "w"))
-        return {"ok": True, "started": True, "status_key": key, "watch": watch,
-                "before": st["before"]}
+        return {
+            "ok": True,
+            "started": True,
+            "status_key": key,
+            "watch": watch,
+            "before": st["before"],
+        }
 
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(_worker_source())
@@ -729,9 +773,14 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
         # now-invalid handle and segfaults (SIGSEGV, code -11) before it can
         # exec the worker. posix_spawn runs no atfork handlers, so the crash
         # path is gone. The worker is short-lived and needs no inherited fds.
-        proc = subprocess.run([vpy, wpath, file, action, json.dumps(opts)],
-                              capture_output=True, text=True, timeout=900,
-                              env=env, close_fds=False)
+        proc = subprocess.run(
+            [vpy, wpath, file, action, json.dumps(opts)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+            env=env,
+            close_fds=False,
+        )
         if proc.returncode != 0:
             tail = (proc.stderr or "").strip().splitlines()
             return {"error": "worker failed: " + (tail[-1] if tail else "unknown error")}
@@ -744,6 +793,7 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

@@ -66,7 +66,7 @@ function nodeKey(node: LayoutNode): string {
 function findParent(
   node: LayoutNode,
   target: LayoutNode,
-  parent?: LayoutSplit
+  parent?: LayoutSplit,
 ): LayoutSplit | null | false {
   if (node === target) return parent === undefined ? null : parent;
   if (node.type === "split") {
@@ -192,7 +192,7 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
         }}
       >
         {label}
-      </span>
+      </span>,
     );
   };
   addCrumb(underHome ? "~" : "/", underHome ? ctx.home : "/", parts.length === 0, "root");
@@ -200,7 +200,12 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
   parts.forEach((p, i) => {
     acc += "/" + p;
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
+    if (i > 0 || underHome)
+      crumbs.push(
+        <span key={"sep" + i} className="panel-crumb-sep">
+          /
+        </span>,
+      );
     addCrumb(p, acc, i === parts.length - 1, acc);
   });
 
@@ -229,10 +234,18 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
             if (iframeRef.current) iframeRef.current.src = embedSrc(loc.path, q);
           }}
         />
-        <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>
+        <button
+          className="panel-btn split-right"
+          title="Split right"
+          onClick={() => ctx.split(node.id, "row")}
+        >
           {ICONS.splitRight}
         </button>
-        <button className="panel-btn split-down" title="Split down" onClick={() => ctx.split(node.id, "col")}>
+        <button
+          className="panel-btn split-down"
+          title="Split down"
+          onClick={() => ctx.split(node.id, "col")}
+        >
           {ICONS.splitDown}
         </button>
         <button
@@ -275,7 +288,7 @@ export default function Panel({ config }: { config: Config }) {
     () => () => {
       delete window._fusedParamBoundary;
     },
-    []
+    [],
   );
 
   // Build the pane tree from `_layout` on the shell URL once per mount (App
@@ -379,7 +392,6 @@ export default function Panel({ config }: { config: Config }) {
   // called syncPanelUrl() after rebuilding the DOM).
   useEffect(() => {
     syncUrl();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
   // Windows expanduser returns backslashes; pane paths are always forward-slash.

@@ -11,6 +11,7 @@ whether or not the `fused` package is installed — set `FUSED_RENDER_ENGINE=aut
 (use fused if importable, else fall back) or `=fused` (require it — fail loudly
 at startup if missing) to opt in to the local compute backend (`engine.py`).
 """
+
 import asyncio
 import codecs
 import email.utils
@@ -18,7 +19,6 @@ import hashlib
 import itertools
 import json
 import logging
-from collections import deque
 import mimetypes
 import os
 import shutil
@@ -26,16 +26,16 @@ import stat as stat_mod
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 import time
 import traceback
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlsplit
 
 import httpx
-
 from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
@@ -85,9 +85,7 @@ def _forced_engine() -> str | None:
         return None
     requested = raw.strip().lower()
     if requested not in ("auto", "fused", "builtin"):
-        raise RuntimeError(
-            f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
-        )
+        raise RuntimeError(f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin")
     if requested == "builtin":
         logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
         return "builtin"
@@ -107,6 +105,7 @@ def _forced_engine() -> str | None:
         )
     logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=auto, `fused` not installed)")
     return "builtin"
+
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
@@ -303,7 +302,7 @@ class _IgnoreOracle:
             cut = self._buf.find(b"\0")
             if cut != -1:
                 field = self._buf[:cut]
-                self._buf = self._buf[cut + 1:]
+                self._buf = self._buf[cut + 1 :]
                 return field
             chunk = self.proc.stdout.read1(65536)
             if not chunk:
@@ -423,12 +422,10 @@ def _sort_entries(entries):
 
 def _list_response(path, entries, truncated, cursor):
     """The single /api/fs/list response shape, shared by all three routes."""
-    return {"path": path, "entries": entries,
-            "truncated": truncated, "cursor": cursor}
+    return {"path": path, "entries": entries, "truncated": truncated, "cursor": cursor}
 
 
-def _accumulate_direct_pages(path, cursor, max_entries, *,
-                             page_timeout=None, overall_timeout=None):
+def _accumulate_direct_pages(path, cursor, max_entries, *, page_timeout=None, overall_timeout=None):
     """Accumulate raw direct-listing entries (Name/Size/IsDir/ModTime dicts, the
     shared rc/direct shape) for a mount-backed dir on an anonymous S3 or GCS
     remote, up to `max_entries`. The one page-accumulation loop shared by
@@ -474,13 +471,17 @@ def _accumulate_direct_pages(path, cursor, max_entries, *,
             t = left if t is None else min(t, left)
         try:
             page, next_token = shell_mounts.direct_list_page(
-                path, max_keys=min(1000, remaining), continuation=token, timeout=t)
+                path, max_keys=min(1000, remaining), continuation=token, timeout=t
+            )
         except shell_mounts.DirectListError:
             if not entries:
                 raise
-            logger.warning("direct-listing page for %r failed mid-listing; "
-                           "returning %d accumulated entries as partial",
-                           path, len(entries))
+            logger.warning(
+                "direct-listing page for %r failed mid-listing; "
+                "returning %d accumulated entries as partial",
+                path,
+                len(entries),
+            )
             return entries, token
         token = next_token
         entries.extend(page)
@@ -502,8 +503,8 @@ def _list_direct(path, cursor):
     listing is partial and resumable. Raises shell_mounts.DirectListError on any
     page failure so the caller can fall back to the rc route."""
     raw, token = _accumulate_direct_pages(
-        path, cursor, S3_LIST_MAX_ENTRIES,
-        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
+        path, cursor, S3_LIST_MAX_ENTRIES, overall_timeout=S3_LIST_OVERALL_TIMEOUT_S
+    )
     # Sorted over what was fetched, not the whole directory — a truncated
     # listing is honestly partial (see the endpoint's sort caveat). Skip any
     # entry missing a Name (a malformed page must not 500 the request).
@@ -592,17 +593,19 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
                 if shell_mounts.direct_list_capable(current):
                     try:
                         listed, direct_token = _accumulate_direct_pages(
-                            current, None, WALK_MAX_ENTRIES_REMOTE,
+                            current,
+                            None,
+                            WALK_MAX_ENTRIES_REMOTE,
                             page_timeout=WALK_RC_LIST_TIMEOUT_S,
-                            overall_timeout=WALK_RC_LIST_TIMEOUT_S)
+                            overall_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        )
                         if direct_token is not None:
                             dir_cut = True  # more keys remained unlisted
                     except shell_mounts.DirectListError:
                         listed = None  # fall back to the rc path for this dir
                 if listed is None:
                     try:
-                        listed = shell_mounts.rc_list_dir(
-                            current, timeout=WALK_RC_LIST_TIMEOUT_S)
+                        listed = shell_mounts.rc_list_dir(current, timeout=WALK_RC_LIST_TIMEOUT_S)
                     except shell_mounts.RcListError:
                         # The ROOT listing failing is fatal — surface it with the
                         # same status codes fs/list uses (see api_fs_walk, which
@@ -622,7 +625,8 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
                     yield _WALK_TRUNCATED
                 children = [
                     _RcDirEntry(e, shell_mounts.rc_modtime_epoch(e.get("ModTime")))
-                    for e in listed if e.get("Name")
+                    for e in listed
+                    if e.get("Name")
                 ]
             else:
                 try:
@@ -662,9 +666,7 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
                     files.append(child)
             if repo is not None and not mount_backed and (dirs or files):
                 prefix = repo_rel_base + "/" if repo_rel_base else ""
-                ignored = oracle_for(repo).ignored(
-                    [prefix + c.name for c in dirs + files]
-                )
+                ignored = oracle_for(repo).ignored([prefix + c.name for c in dirs + files])
                 if ignored:
                     dirs = [c for c in dirs if prefix + c.name not in ignored]
                     files = [c for c in files if prefix + c.name not in ignored]
@@ -785,8 +787,8 @@ def _mount_list_error_response(path, exc):
 
     if isinstance(exc, shell_mounts.RcListTimeout):
         return _error(
-            f"directory listing timed out — too many entries to list ({path})",
-            status=503)
+            f"directory listing timed out — too many entries to list ({path})", status=503
+        )
     if isinstance(exc, shell_mounts.RcListUnavailable):
         broken = shell_mounts.broken_mount_error(path)
         return _error(broken or f"cannot list directory {path}", status=503)
@@ -882,6 +884,7 @@ def _is_file_mount_safe(path: str) -> bool:
     fails OPEN so a transient rcd hiccup never 404s a file the user just
     opened."""
     from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+
     if is_mount_backed(path):
         return rc_kind_for(path) in ("file", "indeterminate")
     return os.path.isfile(path)
@@ -913,6 +916,7 @@ def _session_put(body: dict, x_fused: str | None):
     # the file just restores the default view. Same "skipped" shape as the
     # LSN-3 gate below.
     from fused_render.shell.mounts import mount_read_only
+
     if mount_read_only(path):
         return {"ok": True, "skipped": True}
     # Read-merge-write the whole dict so claudeSessions / bookmarkHistory
@@ -957,13 +961,7 @@ def _resolve_name(name):
     # guard, not auth (D3 stands). `.` is banned outright (SPEC CT-6): it
     # keeps names unambiguous against the "..." splice sigil and dotted
     # registry keys.
-    if (
-        not isinstance(name, str)
-        or not name
-        or "/" in name
-        or "\\" in name
-        or "." in name
-    ):
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name or "." in name:
         return None, f"invalid template name: {name!r}"
     if name.startswith("_"):
         return None, (
@@ -977,7 +975,10 @@ def _resolve_name(name):
     builtin = os.path.join(TEMPLATES_DIR, name, "template.html")
     if os.path.isfile(builtin):
         return builtin, None
-    return None, f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)"
+    return (
+        None,
+        f"no template.html for {name!r} (looked in ~/.fused-render/templates/{name}/ and core {TEMPLATES_DIR}/{name}/)",
+    )
 
 
 def _icon_for(template_path: str):
@@ -1028,8 +1029,7 @@ class _GateSeed:
       absent marker is provably absent (a truncated listing can't prove that).
     """
 
-    def __init__(self, kinds=None, dir_path=None, file_children=None,
-                 listing_complete=False):
+    def __init__(self, kinds=None, dir_path=None, file_children=None, listing_complete=False):
         self.kinds = kinds or {}
         self.dir_path = dir_path
         self.file_children = file_children
@@ -1092,8 +1092,11 @@ def _mount_gate_builtins(target_path: str, seed=None):
         # the marker still short-circuits True, and only a truncated-and-absent
         # marker falls through to the rc probe below. real_os.path is the real
         # (captured) os.path.
-        if (seed is not None and seed.file_children is not None
-                and real_os.path.dirname(p) == seed.dir_path):
+        if (
+            seed is not None
+            and seed.file_children is not None
+            and real_os.path.dirname(p) == seed.dir_path
+        ):
             if real_os.path.basename(p) in seed.file_children:
                 return True
             if seed.listing_complete:
@@ -1229,13 +1232,12 @@ def _run_condition(condition_file: str, target_path: str, seed=None):
     import importlib.util
 
     try:
-        spec = importlib.util.spec_from_file_location(
-            "__fused_condition__", condition_file
-        )
+        spec = importlib.util.spec_from_file_location("__fused_condition__", condition_file)
         mod = importlib.util.module_from_spec(spec)
         # Local import keeps shell ↛ server acyclic; resolves the attr at call
         # time so the mount routing is monkeypatchable in tests.
         from fused_render.shell.mounts import is_mount_backed
+
         if is_mount_backed(target_path):
             mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path, seed)
         spec.loader.exec_module(mod)
@@ -1371,13 +1373,16 @@ def _conditions_payload(path: str):
     if gated and seed is not None and is_dir and direct_list_capable(path):
         try:
             listing, next_token = direct_list_page(
-                path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S)
-            seed.file_children = {
-                e["Name"] for e in listing if not e.get("IsDir")}
+                path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S
+            )
+            seed.file_children = {e["Name"] for e in listing if not e.get("IsDir")}
             seed.listing_complete = next_token is None
         except Exception:
-            logger.debug("gate seed listing failed for %s; falling back to "
-                         "per-marker probes", path, exc_info=True)
+            logger.debug(
+                "gate seed listing failed for %s; falling back to per-marker probes",
+                path,
+                exc_info=True,
+            )
         seed.dir_path = path.rstrip("/")
 
     results = _evaluate_conditions(gated, path, seed)
@@ -1430,7 +1435,7 @@ def _load_registry(path: str, label: str):
     the two files in errors (both basenames are registry.json).
     """
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             registry = json.load(f)
     except FileNotFoundError:
         return None, None
@@ -1729,9 +1734,13 @@ def _mount_probe(path: str) -> _MountProbe:
         return _MountProbe(False, False)
     for ent in entries:
         if ent.get("Name") == name:
-            return _MountProbe(True, True, is_dir=bool(ent.get("IsDir")),
-                               size=ent.get("Size"),
-                               mtime=m.rc_modtime_epoch(ent.get("ModTime")))
+            return _MountProbe(
+                True,
+                True,
+                is_dir=bool(ent.get("IsDir")),
+                size=ent.get("Size"),
+                mtime=m.rc_modtime_epoch(ent.get("ModTime")),
+            )
     return _MountProbe(True, False)  # parent listable, child absent
 
 
@@ -1792,8 +1801,14 @@ def _mutation_result_payload(path: str, is_dir: bool) -> dict:
 # Response headers forwarded from the rclone serve on a proxied /api/fs/raw.
 # Content-Length/-Range/Accept-Ranges make ranged readers (duckdb httpfs)
 # work; Last-Modified/ETag let their caches revalidate.
-_PROXY_HEADERS = ("content-length", "content-range", "content-type",
-                  "accept-ranges", "last-modified", "etag")
+_PROXY_HEADERS = (
+    "content-length",
+    "content-range",
+    "content-type",
+    "accept-ranges",
+    "last-modified",
+    "etag",
+)
 
 
 def _proxy_raw(upstream: str, request: Request):
@@ -1836,8 +1851,7 @@ def _proxy_raw(upstream: str, request: Request):
     return StreamingResponse(body(), status_code=r.status, headers=out)
 
 
-async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
-                            request: Request):
+async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str, request: Request):
     """Opt-in pooled proxy of a store's *signed* URL (TASK F). Same forwarded
     header set (_PROXY_HEADERS) and status pass-through (206/416/404) as
     _proxy_raw, but streams through a shared keep-alive httpx pool so a burst of
@@ -1918,8 +1932,7 @@ def _mount_safe_stat(path: str) -> os.stat_result:
     FileNotFoundError exactly like the kernel os.stat it replaces, so callers'
     existing OSError->404 handling holds — and it NEVER falls back to that kernel
     GETATTR, which is the call that killed the mount."""
-    from fused_render.shell.mounts import (
-        is_mount_backed, is_mounts_root, rc_stat_result)
+    from fused_render.shell.mounts import is_mount_backed, is_mounts_root, rc_stat_result
 
     # The mounts CONTAINER itself is a LOCAL directory the shell created to host
     # each mountpoint as a subdir; it is is_mount_backed (kept off the kernel
@@ -1954,9 +1967,7 @@ def _fs_stat(path: str):
         return _error(f"no such file or directory: {path}", status=404)
     except OSError:
         if is_mount_backed(path):
-            return _error(
-                f"mount is slow or unresponsive, could not stat {path}",
-                status=503)
+            return _error(f"mount is slow or unresponsive, could not stat {path}", status=503)
         return _error(f"no such file or directory: {path}", status=404)
     return _stat_payload(path, stat_mod.S_ISDIR(st.st_mode), st)
 
@@ -1984,6 +1995,7 @@ def _fs_write(body: dict, x_fused: str | None):
     # the rclone rcd BEFORE any kernel probe — a cold negative os.stat here is
     # the exact enumerate-the-whole-prefix call that wedges the mount.
     from fused_render.shell import mounts as shell_mounts
+
     if shell_mounts.is_mount_backed(path):
         # Read-only mount: refuse first, before touching anything (the same
         # "readonly" wire contract as the local guard below).
@@ -2001,16 +2013,14 @@ def _fs_write(body: dict, x_fused: str | None):
             return JSONResponse({"error": "conflict"}, status_code=409)
         if expected_mtime is not None:
             if not pr.exists:
-                return JSONResponse({"error": "conflict", "mtime": None},
-                                    status_code=409)
+                return JSONResponse({"error": "conflict", "mtime": None}, status_code=409)
             # Cross-source compare: expected_mtime is a KERNEL /api/fs/stat
             # st_mtime, but pr.mtime is the rclone rcd ModTime — the two round
             # a mount's timestamp differently and disagree sub-second, so the
             # 1e-6 tolerance the local branch uses would 409 every save on a
             # writable mount. Tolerate < 1s here; a larger gap is a real change.
             if pr.mtime is None or abs(pr.mtime - expected_mtime) >= 1.0:
-                return JSONResponse({"error": "conflict", "mtime": pr.mtime},
-                                    status_code=409)
+                return JSONResponse({"error": "conflict", "mtime": pr.mtime}, status_code=409)
         # The write itself goes through the rclone VFS (acceptable — it is the
         # negative/list probes, not the mutation, that wedge the mount): atomic
         # temp-write + os.replace in the parent, same as the local path. No mode
@@ -2126,8 +2136,8 @@ def _fs_write(body: dict, x_fused: str | None):
 #     entirely. Local paths keep the cheap 200ms os.stat behavior.
 # ---------------------------------------------------------------------------
 
-_LOCAL_POLL_S = 0.2   # local files: cheap os.stat, snappy reload
-_MOUNT_POLL_S = 5.0   # mount-backed files: rc stat, far less remote pressure
+_LOCAL_POLL_S = 0.2  # local files: cheap os.stat, snappy reload
+_MOUNT_POLL_S = 5.0  # mount-backed files: rc stat, far less remote pressure
 # Mount-backed paths on a remote that is NOT direct_list_capable (e.g.
 # source.coop's custom S3 endpoint, not recognized as plain AWS S3): change
 # detection there costs a full rc_list_dir of the prefix, not a bounded unsigned
@@ -2185,16 +2195,15 @@ class _WatchEntry:
             # A mount ROOT lists the remote's top prefix (or the whole bucket):
             # never poll-list it on a non-direct remote.
             self._is_mount_root = shell_mounts.is_mount_root(path)
-            self.interval = (_MOUNT_POLL_S if self._direct_capable
-                             else _MOUNT_SLOW_POLL_S)
+            self.interval = _MOUNT_POLL_S if self._direct_capable else _MOUNT_SLOW_POLL_S
         else:
             self._direct_capable = False
             self._is_mount_root = False
             self.interval = _LOCAL_POLL_S
         self.subscribers: set = set()  # asyncio.Queue per socket
         self.last = _UNCHANGED  # primed by the first successful read
-        self._inflight = None   # in-progress stat task; guards against pile-up
-        self.task = None        # the ticker task
+        self._inflight = None  # in-progress stat task; guards against pile-up
+        self.task = None  # the ticker task
 
     async def _stat_signal(self):
         """The change signal for this path, off the event loop. Never raises:
@@ -2250,8 +2259,7 @@ class _WatchEntry:
 
         try:
             if shell_mounts.direct_list_capable(self.path):
-                page, _ = shell_mounts.direct_list_page(
-                    self.path, max_keys=1000, timeout=4)
+                page, _ = shell_mounts.direct_list_page(self.path, max_keys=1000, timeout=4)
                 if not page:
                     # Empty: a file (its key isn't under the "<key>/" prefix) or
                     # an empty dir. Use the rc ModTime — moves for a file's
@@ -2290,8 +2298,7 @@ class _WatchEntry:
             return sig
         self._inflight = asyncio.ensure_future(self._stat_signal())
         try:
-            sig = await asyncio.wait_for(
-                asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
+            sig = await asyncio.wait_for(asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
         except asyncio.TimeoutError:
             return _UNCHANGED  # leave _inflight running; consumed on a later tick
         self._inflight = None
@@ -2361,6 +2368,7 @@ def _fs_mkdir(body: dict, x_fused: str | None):
     # Mount-backed target: read-only refusal first, then existence/shape via the
     # rclone rcd — never a kernel probe (see _fs_write's mount branch).
     from fused_render.shell import mounts as shell_mounts
+
     if shell_mounts.is_mount_backed(path):
         if shell_mounts.mount_read_only(path):
             return JSONResponse({"error": "readonly"}, status_code=403)
@@ -2436,7 +2444,7 @@ def _move_to_trash(path: str) -> None:
             [
                 "osascript",
                 "-e",
-                f"tell application \"Finder\" to delete POSIX file {json.dumps(path)}",
+                f'tell application "Finder" to delete POSIX file {json.dumps(path)}',
             ],
             check=True,
             capture_output=True,
@@ -2465,6 +2473,7 @@ def _fs_delete(body: dict, x_fused: str | None):
     # check or a recursive shutil.rmtree) would kernel-enumerate/walk the remote
     # tree — refused, out of scope. A single-file delete goes through the VFS.
     from fused_render.shell import mounts as shell_mounts
+
     if shell_mounts.is_mount_backed(path):
         if shell_mounts.mount_read_only(path):
             return JSONResponse({"error": "readonly"}, status_code=403)
@@ -2477,7 +2486,9 @@ def _fs_delete(body: dict, x_fused: str | None):
         if pr.is_dir:
             return _error(
                 "cannot delete a directory on a remote mount: directory-tree "
-                "operations are not supported over mounts", status=400)
+                "operations are not supported over mounts",
+                status=400,
+            )
         if trash:
             # Move-to-Trash lifts the file OFF the mount, which reads the whole
             # file through the kernel; report it unsupported so the client
@@ -2557,6 +2568,7 @@ def _fs_rename(body: dict, x_fused: str | None):
     # answered through the rclone rcd; a DIRECTORY on a mount side is refused
     # (a rmtree/copytree-style walk of a remote tree is out of scope).
     from fused_render.shell import mounts as shell_mounts
+
     if shell_mounts.is_mount_backed(src) or shell_mounts.is_mount_backed(dst):
         if shell_mounts.mount_read_only(src) or shell_mounts.mount_read_only(dst):
             return JSONResponse({"error": "readonly"}, status_code=403)
@@ -2565,15 +2577,16 @@ def _fs_rename(body: dict, x_fused: str | None):
             dst_pr = _probe_path(dst)
         except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
             return _mount_list_error_response(
-                os.path.dirname(src) if shell_mounts.is_mount_backed(src)
-                else dst_parent, e)
+                os.path.dirname(src) if shell_mounts.is_mount_backed(src) else dst_parent, e
+            )
         if not src_pr.exists:
             return _error(f"no such file or directory: {src}", status=404)
         if src_pr.is_dir or (dst_pr.exists and dst_pr.is_dir):
             return _error(
                 "cannot move a directory to or from a remote mount: "
                 "directory-tree operations are not supported over mounts",
-                status=400)
+                status=400,
+            )
         if not dst_pr.parent_is_dir:
             return _error(f"parent directory does not exist: {dst_parent}")
         if dst_pr.exists and not overwrite:
@@ -2657,6 +2670,7 @@ def _fs_copy(body: dict, x_fused: str | None):
     # mount side is refused (a copytree walk of a remote tree is out of scope);
     # a single-file copy proceeds (its sequential read/write is slow, not fatal).
     from fused_render.shell import mounts as shell_mounts
+
     if shell_mounts.is_mount_backed(src) or shell_mounts.is_mount_backed(dst):
         if shell_mounts.mount_read_only(dst):
             return JSONResponse({"error": "readonly"}, status_code=403)
@@ -2665,15 +2679,16 @@ def _fs_copy(body: dict, x_fused: str | None):
             dst_pr = _probe_path(dst)
         except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
             return _mount_list_error_response(
-                os.path.dirname(src) if shell_mounts.is_mount_backed(src)
-                else dst_parent, e)
+                os.path.dirname(src) if shell_mounts.is_mount_backed(src) else dst_parent, e
+            )
         if not src_pr.exists:
             return _error(f"no such file or directory: {src}", status=404)
         if src_pr.is_dir or (dst_pr.exists and dst_pr.is_dir):
             return _error(
                 "cannot copy a directory to or from a remote mount: "
                 "directory-tree operations are not supported over mounts",
-                status=400)
+                status=400,
+            )
         if not dst_pr.parent_is_dir:
             return _error(f"parent directory does not exist: {dst_parent}")
         if dst_pr.exists and not overwrite:
@@ -2761,8 +2776,7 @@ def create_app(start_dir: str) -> FastAPI:
     async def _open_pooled_client():
         app.state.pooled_client = httpx.AsyncClient(
             timeout=httpx.Timeout(120.0),
-            limits=httpx.Limits(max_keepalive_connections=32,
-                                max_connections=64),
+            limits=httpx.Limits(max_keepalive_connections=32, max_connections=64),
         )
 
     @app.on_event("shutdown")
@@ -2782,12 +2796,9 @@ def create_app(start_dir: str) -> FastAPI:
         # `Open logs` gives the full story. Log with the request line so a
         # noisy log still pins the failure to a URL.
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        logger.error(
-            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
-        )
+        logger.error("unhandled error on %s %s\n%s", request.method, request.url.path, tb)
         return _error(
-            f"fused-render internal error on {request.method} "
-            f"{request.url.path}:\n\n{tb}",
+            f"fused-render internal error on {request.method} {request.url.path}:\n\n{tb}",
             status=500,
         )
 
@@ -2843,9 +2854,7 @@ def create_app(start_dir: str) -> FastAPI:
             raise
         if logged:
             dur = (time.monotonic() - start) * 1000
-            logger.info(
-                "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
-            )
+            logger.info("%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur)
         response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -2915,9 +2924,7 @@ def create_app(start_dir: str) -> FastAPI:
         return _session_get(path)
 
     @app.put("/api/session")
-    def api_session_put(
-        body: dict = Body(...), x_fused: str | None = Header(default=None)
-    ):
+    def api_session_put(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         return _session_put(body, x_fused)
 
     @app.get("/api/config")
@@ -3037,11 +3044,19 @@ def create_app(start_dir: str) -> FastAPI:
             # directory"). Enumerate the mount records directly instead — the
             # authoritative mount list, with zero kernel or remote I/O and no
             # sidecar files (mounts.json, per-mount *.json) leaking in.
-            entries = _sort_entries([
-                {"name": m["name"], "is_dir": True, "size": None,
-                 "mtime": None, "ignored": False}
-                for m in shell_mounts.list_mounts() if m.get("name")
-            ])
+            entries = _sort_entries(
+                [
+                    {
+                        "name": m["name"],
+                        "is_dir": True,
+                        "size": None,
+                        "mtime": None,
+                        "ignored": False,
+                    }
+                    for m in shell_mounts.list_mounts()
+                    if m.get("name")
+                ]
+            )
             return _list_response(path, entries, False, None)
         if shell_mounts.is_mount_backed(path):
             # Direct fast path: for anonymous plain AWS S3 / anonymous GCS — the
@@ -3058,26 +3073,24 @@ def create_app(start_dir: str) -> FastAPI:
                     # rows and pagination dies) or 503s on a huge dir. Return a
                     # retryable error so the client resumes the SAME cursor.
                     if cursor is not None:
-                        return _error(
-                            "listing continuation failed — retry", status=503)
-                    logger.warning("direct listing of %s failed; falling "
-                                   "back to rc", path, exc_info=True)
+                        return _error("listing continuation failed — retry", status=503)
+                    logger.warning(
+                        "direct listing of %s failed; falling back to rc", path, exc_info=True
+                    )
                 else:
-                    return _list_response(path, entries,
-                                          next_token is not None, next_token)
+                    return _list_response(path, entries, next_token is not None, next_token)
             try:
                 listed = shell_mounts.rc_list_dir(path)
             except shell_mounts.RcListTimeout:
                 return _error(
-                    f"directory listing timed out — too many entries to list "
-                    f"({path})", status=503)
+                    f"directory listing timed out — too many entries to list ({path})", status=503
+                )
             except shell_mounts.RcListUnavailable:
                 # rcd down or path under no known mount: the mount can't be
                 # trusted. Prefer the specific broken-mount wording when we have
                 # it (it tells the user to reconnect from the Mounts page).
                 broken = shell_mounts.broken_mount_error(path)
-                return _error(broken or f"cannot list directory {path}",
-                              status=503)
+                return _error(broken or f"cannot list directory {path}", status=503)
             except shell_mounts.RcListError:
                 # rcd answered but rejected the listing. Two causes look alike
                 # here: a genuinely broken mount (dead/stale/disconnected — the
@@ -3105,8 +3118,7 @@ def create_app(start_dir: str) -> FastAPI:
             # Sort the WHOLE listing THEN cap, so the capped page is the true
             # sorted-first N rather than rclone's arbitrary order sliced. Skip
             # any entry missing a Name (a malformed rc entry must not 500).
-            entries = _sort_entries(
-                [_mount_list_item(de) for de in listed if de.get("Name")])
+            entries = _sort_entries([_mount_list_item(de) for de in listed if de.get("Name")])
             truncated = len(entries) > LIST_MAX_ENTRIES
             return _list_response(path, entries[:LIST_MAX_ENTRIES], truncated, None)
         if not os.path.isdir(path):
@@ -3286,8 +3298,9 @@ def create_app(start_dir: str) -> FastAPI:
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
-    async def api_fs_raw(path: str, request: Request, base: str | None = None,
-                         pooled: str | None = None):
+    async def api_fs_raw(
+        path: str, request: Request, base: str | None = None, pooled: str | None = None
+    ):
         # Page-relative resolution (SPEC RH-1): a *relative* `path` is resolved against
         # the directory of `base` — the page's own absolute path, sent by the runtime's
         # fused.rawUrl(), the same contract /api/run uses via `html` (see the resolve at
@@ -3334,8 +3347,7 @@ def create_app(start_dir: str) -> FastAPI:
                     # 503, never "missing".
                     try:
                         pr = await asyncio.to_thread(_mount_probe, path)
-                    except (shell_mounts.RcListUnavailable,
-                            shell_mounts.RcListTimeout) as e:
+                    except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
                         return _mount_list_error_response(os.path.dirname(path), e)
                     if not pr.exists or pr.is_dir:
                         return _error(f"no such file: {path}", status=404)
@@ -3350,12 +3362,15 @@ def create_app(start_dir: str) -> FastAPI:
                         return _error(f"no such file: {path}", status=404)
                     size, mtime = st.st_size, st.st_mtime
                 media_type, _ = mimetypes.guess_type(path)
-                return Response(status_code=200, headers={
-                    "content-length": str(size),
-                    "content-type": media_type or "application/octet-stream",
-                    "accept-ranges": "bytes",
-                    "last-modified": email.utils.formatdate(mtime, usegmt=True),
-                })
+                return Response(
+                    status_code=200,
+                    headers={
+                        "content-length": str(size),
+                        "content-type": media_type or "application/octet-stream",
+                        "accept-ranges": "bytes",
+                        "last-modified": email.utils.formatdate(mtime, usegmt=True),
+                    },
+                )
             # Cold reads go straight to the store: the serve's VFS layer
             # serializes concurrent uncached range reads of one file (an
             # analytical scan pays ~0.25s per seek) and its per-file open
@@ -3375,10 +3390,8 @@ def create_app(start_dir: str) -> FastAPI:
             # fetch would follow the redirect cross-origin and die on CORS
             # — browsers always send Sec-Fetch-Mode, duckdb's httpfs never
             # does, so its absence is the gate.
-            if ("sec-fetch-mode" not in request.headers
-                    and not shell_prefetch.is_done(path)):
-                direct = await asyncio.to_thread(
-                    shell_mounts.upstream_url_for, path)
+            if "sec-fetch-mode" not in request.headers and not shell_prefetch.is_done(path):
+                direct = await asyncio.to_thread(shell_mounts.upstream_url_for, path)
                 if direct:
                     # OPT-IN pooled proxy (TASK F): the pyramid/geotiff workers
                     # read this file with a plain per-block urllib GET and would
@@ -3393,7 +3406,8 @@ def create_app(start_dir: str) -> FastAPI:
                     # returns None and falls through to the 307.
                     if pooled:
                         resp = await _proxy_raw_pooled(
-                            request.app.state.pooled_client, direct, request)
+                            request.app.state.pooled_client, direct, request
+                        )
                         if resp is not None:
                             return resp
                     return RedirectResponse(direct, status_code=307)
@@ -3410,8 +3424,7 @@ def create_app(start_dir: str) -> FastAPI:
             if shell_mounts.is_mount_backed(path):
                 try:
                     pr = await asyncio.to_thread(_mount_probe, path)
-                except (shell_mounts.RcListUnavailable,
-                        shell_mounts.RcListTimeout) as e:
+                except (shell_mounts.RcListUnavailable, shell_mounts.RcListTimeout) as e:
                     return _mount_list_error_response(os.path.dirname(path), e)
                 if not pr.exists or pr.is_dir:
                     return _error(f"no such file: {path}", status=404)
@@ -3564,7 +3577,7 @@ def create_app(start_dir: str) -> FastAPI:
         if not os.path.isfile(path):
             return _error(f"no such file: {path}", status=404)
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 html = f.read()
         except OSError as e:
             return _error(f"cannot read {path}: {e}", status=400)
@@ -3612,8 +3625,7 @@ def create_app(start_dir: str) -> FastAPI:
                 upstream = shell_mounts.serve_url_for(fpath)
                 if upstream is not None and not shell_prefetch.is_done(fpath):
                     shell_prefetch.schedule(fpath, upstream)
-                    direct = await asyncio.to_thread(
-                        shell_mounts.upstream_url_for, fpath)
+                    direct = await asyncio.to_thread(shell_mounts.upstream_url_for, fpath)
                     if direct:
                         params = dict(params, source_url=direct)
 

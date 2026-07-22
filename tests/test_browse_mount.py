@@ -15,6 +15,7 @@ is monkeypatched to explode, so any silent kernel fallback fails LOUDLY instead
 of quietly returning an empty/wrong listing. A threaded localhost HTTP server
 stands in for the /api/fs/stat + /api/fs/list endpoints.
 """
+
 import json
 import os
 import threading
@@ -25,10 +26,10 @@ import pytest
 from fused_render.templates.geotiff import browse as br
 from fused_render.templates.zarr_aoi import browse as zbr
 
-
 # --------------------------------------------------------------------------
 # a stand-in for /api/fs/stat + /api/fs/list
 # --------------------------------------------------------------------------
+
 
 class _FakeFS:
     """Serves /api/fs/stat (json) and /api/fs/list (json) for one directory.
@@ -36,8 +37,9 @@ class _FakeFS:
     `remote` toggles the stat `remote` flag; `exists` False -> stat 404;
     `list_status` lets a test force /api/fs/list to fail (503)."""
 
-    def __init__(self, entries=None, remote=True, exists=True, is_dir=True,
-                 list_status=200, truncated=False):
+    def __init__(
+        self, entries=None, remote=True, exists=True, is_dir=True, list_status=200, truncated=False
+    ):
         self.entries = entries or []
         self.remote = remote
         self.exists = exists
@@ -57,12 +59,15 @@ class _FakeFS:
                         self.end_headers()
                         self.wfile.write(b'{"error":"no such file"}')
                         return
-                    self._json(200, {
-                        "remote": fs.remote,
-                        "is_dir": fs.is_dir,
-                        "size": None if fs.is_dir else 123,
-                        "name": "x",
-                    })
+                    self._json(
+                        200,
+                        {
+                            "remote": fs.remote,
+                            "is_dir": fs.is_dir,
+                            "size": None if fs.is_dir else 123,
+                            "name": "x",
+                        },
+                    )
                     return
                 if self.path.startswith("/api/fs/list"):
                     if fs.list_status != 200:
@@ -70,12 +75,15 @@ class _FakeFS:
                         self.end_headers()
                         self.wfile.write(b'{"error":"broken"}')
                         return
-                    self._json(200, {
-                        "path": "/mnt/d",
-                        "entries": fs.entries,
-                        "truncated": fs.truncated,
-                        "cursor": None,
-                    })
+                    self._json(
+                        200,
+                        {
+                            "path": "/mnt/d",
+                            "entries": fs.entries,
+                            "truncated": fs.truncated,
+                            "cursor": None,
+                        },
+                    )
                     return
                 self.send_response(404)
                 self.end_headers()
@@ -117,8 +125,7 @@ def fs():
 
 
 def _entry(name, is_dir=False, size=None):
-    return {"name": name, "is_dir": is_dir, "size": size, "mtime": 0,
-            "ignored": False}
+    return {"name": name, "is_dir": is_dir, "size": size, "mtime": 0, "ignored": False}
 
 
 @pytest.fixture
@@ -126,6 +133,7 @@ def no_kernel_list(monkeypatch):
     """Make ANY kernel directory listing / probe explode, so a silent fallback
     to os.listdir on a remote path fails loudly instead of returning wrong data.
     """
+
     def boom(*a, **k):
         raise AssertionError("kernel filesystem access on a remote path")
 
@@ -139,13 +147,18 @@ def no_kernel_list(monkeypatch):
 # (a) remote dir -> lists via /api/fs/list, NEVER kernel-lists
 # --------------------------------------------------------------------------
 
+
 def test_remote_dir_lists_via_http_no_kernel(fs, no_kernel_list):
-    s = fs(remote=True, is_dir=True, entries=[
-        _entry("sub", is_dir=True),
-        _entry("a.tif", size=10),
-        _entry("b.txt", size=20),   # not a .tif -> filtered out (show_all False)
-        _entry(".hidden", size=5),  # dotfile -> hidden
-    ])
+    s = fs(
+        remote=True,
+        is_dir=True,
+        entries=[
+            _entry("sub", is_dir=True),
+            _entry("a.tif", size=10),
+            _entry("b.txt", size=20),  # not a .tif -> filtered out (show_all False)
+            _entry(".hidden", size=5),  # dotfile -> hidden
+        ],
+    )
     # /mnt/gone/d does not exist on disk; if browse kernel-listed it we'd either
     # AssertionError (patched) or get an error shape. Neither may happen.
     res = br.main(dir="/mnt/gone/d", exts=".tif,.tiff", src=s.src)
@@ -196,12 +209,14 @@ def test_remote_file_path_descends_to_parent(fs, no_kernel_list):
 
 def test_remote_zarr_store_classified_as_loadable(fs, no_kernel_list):
     # zarr_aoi: a directory named *.zarr is a loadable store, not a folder.
-    s = fs(remote=True, entries=[
-        _entry("data.zarr", is_dir=True),
-        _entry("plain", is_dir=True),
-    ])
-    res = zbr.main(dir="/mnt/gone/d", exts=".zarr", store_exts=".zarr",
-                   src=s.src)
+    s = fs(
+        remote=True,
+        entries=[
+            _entry("data.zarr", is_dir=True),
+            _entry("plain", is_dir=True),
+        ],
+    )
+    res = zbr.main(dir="/mnt/gone/d", exts=".zarr", store_exts=".zarr", src=s.src)
     assert [d["name"] for d in res["dirs"]] == ["plain"]
     store = [f for f in res["files"] if f["name"] == "data.zarr"][0]
     assert store["is_dir"] is True and store["loadable"] is True
@@ -210,6 +225,7 @@ def test_remote_zarr_store_classified_as_loadable(fs, no_kernel_list):
 # --------------------------------------------------------------------------
 # (b) local dir (no src) -> kernel path still works
 # --------------------------------------------------------------------------
+
 
 def test_local_no_src_uses_kernel(tmp_path):
     (tmp_path / "sub").mkdir()
@@ -226,6 +242,7 @@ def test_local_no_src_uses_kernel(tmp_path):
 # --------------------------------------------------------------------------
 # (c) server unreachable -> presume local, fall back to kernel
 # --------------------------------------------------------------------------
+
 
 def test_unreachable_falls_back_to_kernel(tmp_path):
     (tmp_path / "a.tif").write_bytes(b"x" * 4)

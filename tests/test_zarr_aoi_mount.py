@@ -12,6 +12,7 @@ mount routing exists to avoid.
 These tests pin ``_home_dir()`` against the real resolution in
 fused_render.shell.storage so the two can't silently drift.
 """
+
 import importlib.util
 import os
 
@@ -19,7 +20,10 @@ import pytest
 
 TS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
-    "fused_render", "templates", "zarr_aoi", "tile_server.py",
+    "fused_render",
+    "templates",
+    "zarr_aoi",
+    "tile_server.py",
 )
 
 
@@ -71,6 +75,7 @@ def test_matches_shell_storage_home_dir(ts, monkeypatch):
         # storage.home_dir caches branch ref per process via _branch._CACHED_REF;
         # reset it so each iteration re-resolves from the env.
         import fused_render._branch as _b
+
         _b._CACHED_REF = None
         assert ts._home_dir() == storage.home_dir(), branch
 
@@ -80,6 +85,5 @@ def test_branch_mount_path_is_under_mounts_root(ts, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", os.path.expanduser("~/.fused-render"))
     monkeypatch.setenv("FUSED_RENDER_BRANCH", "fix/template-kernel-listing")
     mroot = os.path.join(ts._home_dir(), "mounts") + os.sep
-    wsf = os.path.expanduser(
-        "~/.fused-render/branches/fix-template/mounts/source.coop/x.zarr")
+    wsf = os.path.expanduser("~/.fused-render/branches/fix-template/mounts/source.coop/x.zarr")
     assert wsf.startswith(mroot)

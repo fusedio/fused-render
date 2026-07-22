@@ -24,13 +24,13 @@ honest:
 Anything we cannot faithfully rebuild (charts, groups, smartart) is captured as
 a text box labelled with its kind, so nothing silently vanishes from the canvas.
 """
+
 from __future__ import annotations
 
-import io
 import os
 import uuid
 
-EMU_PER_PX = 9525          # 914400 EMU/inch / 96 px/inch
+EMU_PER_PX = 9525  # 914400 EMU/inch / 96 px/inch
 DEFAULT_W_PX = 1280
 DEFAULT_H_PX = 720
 # Bump when parse output changes so cached decks auto-reparse (folded into the
@@ -63,6 +63,7 @@ def _rgb_hex(color) -> str | None:
     """
     try:
         from pptx.enum.dml import MSO_COLOR_TYPE
+
         if color is None:
             return None
         if getattr(color, "type", None) == MSO_COLOR_TYPE.RGB:
@@ -76,6 +77,7 @@ def _fill_hex(shape) -> str | None:
     try:
         fill = shape.fill
         from pptx.enum.dml import MSO_FILL_TYPE
+
         if fill.type == MSO_FILL_TYPE.SOLID:
             return _rgb_hex(fill.fore_color)
     except Exception:
@@ -99,10 +101,11 @@ def _rpr_props(el) -> dict:
         if v is not None:
             out[key] = v in ("1", "true")
     from pptx.oxml.ns import qn
+
     latin = el.find(qn("a:latin"))
     if latin is not None:
         tf = latin.get("typeface")
-        if tf and not tf.startswith("+"):   # skip theme refs (+mn-lt/+mj-lt)
+        if tf and not tf.startswith("+"):  # skip theme refs (+mn-lt/+mj-lt)
             out["font"] = tf
     sf = el.find(qn("a:solidFill"))
     if sf is not None:
@@ -115,6 +118,7 @@ def _rpr_props(el) -> dict:
 def _ph_props(ph, level) -> dict:
     """Inherited run props from a placeholder's txBody (lstStyle lvlN, then pPr)."""
     from pptx.oxml.ns import qn
+
     props = {}
     try:
         tb = ph.text_frame._txBody
@@ -136,6 +140,7 @@ def _ph_props(ph, level) -> dict:
 
 def _txstyle_props(master, cat, level) -> dict:
     from pptx.oxml.ns import qn
+
     tx = master._element.find(qn("p:txStyles"))
     if tx is None:
         return {}
@@ -156,6 +161,7 @@ def _placeholder_defaults(shape, level, layout, master) -> dict:
     def merge(src):
         for k, v in src.items():
             props.setdefault(k, v)
+
     try:
         idx = shape.placeholder_format.idx
         pt = str(shape.placeholder_format.type or "")
@@ -208,10 +214,13 @@ _STR_TO_ALIGN = {}
 
 def _init_align_maps():
     from pptx.enum.text import PP_ALIGN
+
     global _ALIGN_TO_STR, _STR_TO_ALIGN
     _ALIGN_TO_STR = {
-        PP_ALIGN.LEFT: "left", PP_ALIGN.CENTER: "center",
-        PP_ALIGN.RIGHT: "right", PP_ALIGN.JUSTIFY: "justify",
+        PP_ALIGN.LEFT: "left",
+        PP_ALIGN.CENTER: "center",
+        PP_ALIGN.RIGHT: "right",
+        PP_ALIGN.JUSTIFY: "justify",
     }
     _STR_TO_ALIGN = {v: k for k, v in _ALIGN_TO_STR.items()}
 
@@ -241,8 +250,17 @@ def _para_to_dict(para) -> dict:
     runs = [_run_to_dict(r) for r in para.runs]
     if not runs:
         # empty paragraph still needs to occupy a line
-        runs = [{"text": "", "bold": False, "italic": False, "underline": False,
-                 "size": None, "color": None, "font": None}]
+        runs = [
+            {
+                "text": "",
+                "bold": False,
+                "italic": False,
+                "underline": False,
+                "size": None,
+                "color": None,
+                "font": None,
+            }
+        ]
     align = _ALIGN_TO_STR.get(para.alignment)
     return {"align": align, "level": para.level or 0, "runs": runs}
 
@@ -264,6 +282,7 @@ def _geom_box(shape, idx) -> dict:
 
 def _shape_to_element(shape, idx, media_dir, media_rel, slide=None) -> dict | None:
     from pptx.enum.shapes import MSO_SHAPE_TYPE
+
     st = shape.shape_type
     base = {"id": _nid("e"), "name": shape.name or ""}
     base.update(_geom_box(shape, idx))
@@ -279,11 +298,28 @@ def _shape_to_element(shape, idx, media_dir, media_rel, slide=None) -> dict | No
             base.update({"type": "image", "src": f"{media_rel}/{fname}"})
             return base
         except Exception:
-            base.update({"type": "text", "paragraphs": [
-                {"align": "center", "level": 0,
-                 "runs": [{"text": "[image]", "bold": False, "italic": False,
-                           "underline": False, "size": 12, "color": "#888888",
-                           "font": None}]}]})
+            base.update(
+                {
+                    "type": "text",
+                    "paragraphs": [
+                        {
+                            "align": "center",
+                            "level": 0,
+                            "runs": [
+                                {
+                                    "text": "[image]",
+                                    "bold": False,
+                                    "italic": False,
+                                    "underline": False,
+                                    "size": 12,
+                                    "color": "#888888",
+                                    "font": None,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
             return base
 
     # ---- table ---------------------------------------------------------- #
@@ -307,7 +343,11 @@ def _shape_to_element(shape, idx, media_dir, media_rel, slide=None) -> dict | No
         el["line"] = _line_dict(shape)
         # remember an autoshape geometry name for light fidelity
         try:
-            el["geom"] = str(shape.adjustments and shape.auto_shape_type) if hasattr(shape, "auto_shape_type") else None
+            el["geom"] = (
+                str(shape.adjustments and shape.auto_shape_type)
+                if hasattr(shape, "auto_shape_type")
+                else None
+            )
         except Exception:
             el["geom"] = None
         # resolve INHERITED run props for placeholders (size/bold/italic/font/color)
@@ -326,12 +366,14 @@ def _shape_to_element(shape, idx, media_dir, media_rel, slide=None) -> dict | No
             master = getattr(layout, "slide_master", None) if layout is not None else None
             for para in el["paragraphs"]:
                 lvl = para.get("level", 0)
-                defs = _placeholder_defaults(shape, lvl, layout, master) if master is not None else {}
+                defs = (
+                    _placeholder_defaults(shape, lvl, layout, master) if master is not None else {}
+                )
                 for r in para.get("runs", []):
                     for k in ("size", "bold", "italic", "font", "color"):
                         if r.get(k) is None and defs.get(k) is not None:
                             r[k] = defs[k]
-                    if r.get("size") is None:   # guarantee a size so text is never tiny
+                    if r.get("size") is None:  # guarantee a size so text is never tiny
                         r["size"] = 40.0 if cat == "title" else 18.0
         # normalize any remaining None bold/italic to False (no inheritance found)
         for para in el["paragraphs"]:
@@ -347,9 +389,23 @@ def _shape_to_element(shape, idx, media_dir, media_rel, slide=None) -> dict | No
     el = dict(base)
     el["type"] = "text"
     el["fill"] = _fill_hex(shape)
-    el["paragraphs"] = [{"align": "center", "level": 0, "runs": [
-        {"text": f"[{label}]", "bold": False, "italic": False, "underline": False,
-         "size": 12, "color": "#9aa0a6", "font": None}]}]
+    el["paragraphs"] = [
+        {
+            "align": "center",
+            "level": 0,
+            "runs": [
+                {
+                    "text": f"[{label}]",
+                    "bold": False,
+                    "italic": False,
+                    "underline": False,
+                    "size": 12,
+                    "color": "#9aa0a6",
+                    "font": None,
+                }
+            ],
+        }
+    ]
     return el
 
 
@@ -359,7 +415,9 @@ def parse_pptx(path: str, media_dir: str, media_rel: str = "media") -> dict:
     try:
         from pptx import Presentation
     except ImportError:
-        raise ImportError("the slides template needs python-pptx: pip install python-pptx") from None
+        raise ImportError(
+            "the slides template needs python-pptx: pip install python-pptx"
+        ) from None
     _init_align_maps()
     os.makedirs(media_dir, exist_ok=True)
     prs = Presentation(path)
@@ -376,33 +434,54 @@ def parse_pptx(path: str, media_dir: str, media_rel: str = "media") -> dict:
                 if el is not None:
                     elements.append(el)
             except Exception as exc:  # never let one bad shape kill the deck
-                elements.append({
-                    "id": _nid("e"), "type": "text", "name": "error",
-                    "x": 40, "y": 40, "w": 300, "h": 40, "rot": 0, "z": i,
-                    "paragraphs": [{"align": "left", "level": 0, "runs": [
-                        {"text": f"[unreadable shape: {exc}]", "bold": False,
-                         "italic": False, "underline": False, "size": 10,
-                         "color": "#c0392b", "font": None}]}],
-                })
+                elements.append(
+                    {
+                        "id": _nid("e"),
+                        "type": "text",
+                        "name": "error",
+                        "x": 40,
+                        "y": 40,
+                        "w": 300,
+                        "h": 40,
+                        "rot": 0,
+                        "z": i,
+                        "paragraphs": [
+                            {
+                                "align": "left",
+                                "level": 0,
+                                "runs": [
+                                    {
+                                        "text": f"[unreadable shape: {exc}]",
+                                        "bold": False,
+                                        "italic": False,
+                                        "underline": False,
+                                        "size": 10,
+                                        "color": "#c0392b",
+                                        "font": None,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                )
         bg = None
         try:
             bg = _fill_hex(s.background) if hasattr(s, "background") else None
         except Exception:
             bg = None
-        slides.append({"id": _nid("s"), "background": bg or "#ffffff",
-                       "elements": elements})
+        slides.append({"id": _nid("s"), "background": bg or "#ffffff", "elements": elements})
 
     name = os.path.splitext(os.path.basename(path))[0]
-    return {"schema": 1, "name": name, "width": w_px, "height": h_px,
-            "slides": slides}
+    return {"schema": 1, "name": name, "width": w_px, "height": h_px, "slides": slides}
 
 
 # --------------------------------------------------------------------------- #
 #  BUILD  model -> pptx                                                        #
 # --------------------------------------------------------------------------- #
 def _apply_run_font(run, rd):
-    from pptx.util import Pt
     from pptx.dml.color import RGBColor
+    from pptx.util import Pt
+
     f = run.font
     if rd.get("bold") is not None:
         f.bold = bool(rd["bold"])
@@ -429,7 +508,7 @@ def _write_paragraphs(tf, paragraphs):
     _init_align_maps()
     tf.word_wrap = True
     first = True
-    for pd in (paragraphs or []):
+    for pd in paragraphs or []:
         p = tf.paragraphs[0] if first else tf.add_paragraph()
         first = False
         al = _STR_TO_ALIGN.get(pd.get("align"))
@@ -451,10 +530,12 @@ def build_pptx(model: dict, out_path: str, media_root: str) -> str:
     try:
         from pptx import Presentation
     except ImportError:
-        raise ImportError("the slides template needs python-pptx: pip install python-pptx") from None
-    from pptx.util import Emu
+        raise ImportError(
+            "the slides template needs python-pptx: pip install python-pptx"
+        ) from None
     from pptx.dml.color import RGBColor
     from pptx.enum.text import MSO_ANCHOR
+    from pptx.util import Emu
 
     prs = Presentation()
     prs.slide_width = Emu(px_to_emu(model.get("width", DEFAULT_W_PX)))
@@ -508,14 +589,18 @@ def build_pptx(model: dict, out_path: str, media_root: str) -> str:
                 if line and line.get("color", "").startswith("#"):
                     try:
                         from pptx.util import Pt as _Pt
+
                         tb.line.color.rgb = RGBColor.from_string(line["color"][1:].upper())
                         tb.line.width = _Pt(float(line.get("width") or 1))
                     except Exception:
                         pass
                 tf = tb.text_frame
                 va = el.get("valign")
-                tf.vertical_anchor = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE,
-                                      "bottom": MSO_ANCHOR.BOTTOM}.get(va, MSO_ANCHOR.TOP)
+                tf.vertical_anchor = {
+                    "top": MSO_ANCHOR.TOP,
+                    "middle": MSO_ANCHOR.MIDDLE,
+                    "bottom": MSO_ANCHOR.BOTTOM,
+                }.get(va, MSO_ANCHOR.TOP)
                 _write_paragraphs(tf, el.get("paragraphs"))
                 try:
                     if el.get("rot"):
@@ -530,13 +615,13 @@ def build_pptx(model: dict, out_path: str, media_root: str) -> str:
 #  BUILD  model -> self-contained HTML  (no dependency; mirrors the viewer)    #
 # --------------------------------------------------------------------------- #
 def _esc(s):
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _run_css(r):
     p = []
     if r.get("size"):
-        p.append(f"font-size:{r['size']*96/72:.1f}px")
+        p.append(f"font-size:{r['size'] * 96 / 72:.1f}px")
     if r.get("bold"):
         p.append("font-weight:700")
     if r.get("italic"):
@@ -555,14 +640,23 @@ def build_html(model: dict, media_root: str) -> str:
     data URIs). No external dependency; slides stack vertically."""
     import base64
     import mimetypes
+
     W, H = model.get("width", DEFAULT_W_PX), model.get("height", DEFAULT_H_PX)
-    fonts = sorted({r.get("font") for s in model.get("slides", [])
-                    for e in s.get("elements", []) for p in e.get("paragraphs", [])
-                    for r in p.get("runs", []) if r.get("font")})
+    fonts = sorted(
+        {
+            r.get("font")
+            for s in model.get("slides", [])
+            for e in s.get("elements", [])
+            for p in e.get("paragraphs", [])
+            for r in p.get("runs", [])
+            if r.get("font")
+        }
+    )
     gf = ""
     if fonts:
-        fam = "&".join("family=" + f.replace(" ", "+") + ":ital,wght@0,400;0,700;1,400;1,700"
-                       for f in fonts)
+        fam = "&".join(
+            "family=" + f.replace(" ", "+") + ":ital,wght@0,400;0,700;1,400;1,700" for f in fonts
+        )
         gf = f'<link rel="stylesheet" href="https://fonts.googleapis.com/css2?{fam}&display=swap">'
 
     def img_data(src):
@@ -579,35 +673,50 @@ def build_html(model: dict, media_root: str) -> str:
     for s in model.get("slides", []):
         els = []
         for el in sorted(s.get("elements", []), key=lambda e: e.get("z", 0)):
-            box = (f"position:absolute;left:{el.get('x',0)}px;top:{el.get('y',0)}px;"
-                   f"width:{el.get('w',0)}px;height:{el.get('h',0)}px;overflow:hidden")
+            box = (
+                f"position:absolute;left:{el.get('x', 0)}px;top:{el.get('y', 0)}px;"
+                f"width:{el.get('w', 0)}px;height:{el.get('h', 0)}px;overflow:hidden"
+            )
             if el.get("rot"):
                 box += f";transform:rotate({el['rot']}deg)"
             if el["type"] == "image":
-                els.append(f'<div style="{box}"><img src="{img_data(el.get("src",""))}" '
-                           f'style="width:100%;height:100%;object-fit:contain"></div>')
+                els.append(
+                    f'<div style="{box}"><img src="{img_data(el.get("src", ""))}" '
+                    f'style="width:100%;height:100%;object-fit:contain"></div>'
+                )
             elif el["type"] == "table":
-                rows = "".join("<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>"
-                               for row in el.get("rows", []))
+                rows = "".join(
+                    "<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>"
+                    for row in el.get("rows", [])
+                )
                 els.append(f'<div style="{box}"><table class="t">{rows}</table></div>')
             else:
                 va = {"middle": "center", "bottom": "flex-end"}.get(el.get("valign"), "flex-start")
                 fill = f";background:{el['fill']}" if el.get("fill") else ""
-                line = (f";border:{el['line'].get('width',1)}px solid {el['line']['color']}"
-                        if el.get("line") and el["line"].get("color") else "")
+                line = (
+                    f";border:{el['line'].get('width', 1)}px solid {el['line']['color']}"
+                    if el.get("line") and el["line"].get("color")
+                    else ""
+                )
                 paras = ""
                 for pa in el.get("paragraphs", []):
-                    runs = "".join(f'<span style="{_run_css(r)}">{_esc(r.get("text","")) or "&#8203;"}</span>'
-                                   for r in pa.get("runs", []))
+                    runs = "".join(
+                        f'<span style="{_run_css(r)}">{_esc(r.get("text", "")) or "&#8203;"}</span>'
+                        for r in pa.get("runs", [])
+                    )
                     paras += f'<div style="text-align:{pa.get("align") or "left"}">{runs}</div>'
-                els.append(f'<div style="{box};display:flex;flex-direction:column;'
-                           f'justify-content:{va};padding:2px 4px{fill}{line}">{paras}</div>')
+                els.append(
+                    f'<div style="{box};display:flex;flex-direction:column;'
+                    f'justify-content:{va};padding:2px 4px{fill}{line}">{paras}</div>'
+                )
         bg = s.get("background") or "#ffffff"
-        slides_html.append(f'<div class="page"><section class="slide" style="width:{W}px;'
-                           f'height:{H}px;background:{bg}">{"".join(els)}</section></div>')
+        slides_html.append(
+            f'<div class="page"><section class="slide" style="width:{W}px;'
+            f'height:{H}px;background:{bg}">{"".join(els)}</section></div>'
+        )
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{_esc(model.get('name','Deck'))}</title>{gf}
+<title>{_esc(model.get("name", "Deck"))}</title>{gf}
 <style>
   :root{{--W:{W}px;--H:{H}px}}
   body{{margin:0;background:#f4f4f2;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
@@ -651,9 +760,25 @@ def build_html(model: dict, media_root: str) -> str:
 #  BUILD  model -> PDF  (fpdf2; draws the canonical model, sibling of build_*) #
 # --------------------------------------------------------------------------- #
 _PX2PT = 72 / 96
-_SERIF_HINTS = ("times", "georgia", "serif", "garamond", "playfair", "merriweather",
-                "lora", "noto serif", "roboto slab", "source serif", "spectral",
-                "cormorant", "baskerville", "bodoni", "domine", "bitter", "alegreya")
+_SERIF_HINTS = (
+    "times",
+    "georgia",
+    "serif",
+    "garamond",
+    "playfair",
+    "merriweather",
+    "lora",
+    "noto serif",
+    "roboto slab",
+    "source serif",
+    "spectral",
+    "cormorant",
+    "baskerville",
+    "bodoni",
+    "domine",
+    "bitter",
+    "alegreya",
+)
 _MONO_HINTS = ("mono", "courier", "code", "consol")
 
 
@@ -679,10 +804,12 @@ def _run_core_font(r):
 
 def _emit_line(pdf, line, left, maxw, align, cy):
     """Draw one wrapped line of (word, fam, style, size, rgb); return the new y."""
+
     def wd(w):
         pw, fam, st, sz, col = w
         pdf.set_font(fam, st, sz)
         return pdf.get_string_width(pw)
+
     space = 0
     pdf.set_font("helvetica", "", max(w[3] for w in line))
     sp = pdf.get_string_width(" ")
@@ -776,8 +903,18 @@ def build_pdf(model: dict, out_path: str, media_root: str) -> str:
                     for ci, cell in enumerate(row):
                         pdf.set_draw_color(200, 205, 210)
                         pdf.rect(x + ci * cw, y + ri * rh, cw, rh)
-                        _draw_text_box(pdf, {"paragraphs": [{"align": "left", "runs": [
-                            {"text": cell, "size": 11}]}]}, x + ci * cw, y + ri * rh, cw, rh)
+                        _draw_text_box(
+                            pdf,
+                            {
+                                "paragraphs": [
+                                    {"align": "left", "runs": [{"text": cell, "size": 11}]}
+                                ]
+                            },
+                            x + ci * cw,
+                            y + ri * rh,
+                            cw,
+                            rh,
+                        )
             else:
                 if el.get("fill"):
                     pdf.set_fill_color(*_hex_rgb(el["fill"], (255, 255, 255)))
@@ -794,11 +931,16 @@ def build_md(model: dict) -> str:
     out = [f"# {model.get('name', 'Deck')}", ""]
     for i, s in enumerate(model.get("slides", [])):
         out.append(f"## Slide {i + 1}")
-        texts = [e for e in sorted(s.get("elements", []), key=lambda e: e.get("y", 0))
-                 if e.get("type") == "text"]
+        texts = [
+            e
+            for e in sorted(s.get("elements", []), key=lambda e: e.get("y", 0))
+            if e.get("type") == "text"
+        ]
         for j, el in enumerate(texts):
-            lines = ["".join(r.get("text", "") for r in p.get("runs", []))
-                     for p in el.get("paragraphs", [])]
+            lines = [
+                "".join(r.get("text", "") for r in p.get("runs", []))
+                for p in el.get("paragraphs", [])
+            ]
             lines = [ln for ln in lines if ln.strip()]
             if not lines:
                 continue
@@ -838,19 +980,54 @@ def _next_z(slide):
     return (max([e.get("z", 0) for e in slide.get("elements", [])], default=-1)) + 1
 
 
-def new_text_element(x=100, y=100, w=400, h=80, text="Text", size=18,
-                     align="left", color="#202124", bold=False):
-    return {"id": _nid("e"), "type": "text", "name": "TextBox",
-            "x": x, "y": y, "w": w, "h": h, "rot": 0, "z": 0, "fill": None,
-            "valign": "top",
-            "paragraphs": [{"align": align, "level": 0, "runs": [
-                {"text": text, "bold": bold, "italic": False, "underline": False,
-                 "size": size, "color": color, "font": None}]}]}
+def new_text_element(
+    x=100, y=100, w=400, h=80, text="Text", size=18, align="left", color="#202124", bold=False
+):
+    return {
+        "id": _nid("e"),
+        "type": "text",
+        "name": "TextBox",
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "rot": 0,
+        "z": 0,
+        "fill": None,
+        "valign": "top",
+        "paragraphs": [
+            {
+                "align": align,
+                "level": 0,
+                "runs": [
+                    {
+                        "text": text,
+                        "bold": bold,
+                        "italic": False,
+                        "underline": False,
+                        "size": size,
+                        "color": color,
+                        "font": None,
+                    }
+                ],
+            }
+        ],
+    }
 
 
 def new_image_element(src, x=100, y=100, w=400, h=300):
-    return {"id": _nid("e"), "type": "image", "name": "Picture",
-            "x": x, "y": y, "w": w, "h": h, "rot": 0, "z": 0, "src": src}
+    return {
+        "id": _nid("e"),
+        "type": "image",
+        "name": "Picture",
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "rot": 0,
+        "z": 0,
+        "src": src,
+    }
 
 
 def new_slide(background="#ffffff"):
@@ -858,8 +1035,7 @@ def new_slide(background="#ffffff"):
 
 
 def blank_model(name="Untitled", w=DEFAULT_W_PX, h=DEFAULT_H_PX):
-    return {"schema": 1, "name": name, "width": w, "height": h,
-            "slides": [new_slide()]}
+    return {"schema": 1, "name": name, "width": w, "height": h, "slides": [new_slide()]}
 
 
 # --------------------------------------------------------------------------- #
@@ -868,15 +1044,23 @@ def blank_model(name="Untitled", w=DEFAULT_W_PX, h=DEFAULT_H_PX):
 if __name__ == "__main__":
     import json
     import sys
+
     if len(sys.argv) < 2:
         print("usage: engine.py <file.pptx> [out.pptx]")
         raise SystemExit(1)
     tmp = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "_engine_media")
     m = parse_pptx(sys.argv[1], tmp)
-    print(json.dumps({"name": m["name"], "size": [m["width"], m["height"]],
-                      "n_slides": len(m["slides"]),
-                      "el_types": [ [e["type"] for e in s["elements"]] for s in m["slides"] ]},
-                     indent=2))
+    print(
+        json.dumps(
+            {
+                "name": m["name"],
+                "size": [m["width"], m["height"]],
+                "n_slides": len(m["slides"]),
+                "el_types": [[e["type"] for e in s["elements"]] for s in m["slides"]],
+            },
+            indent=2,
+        )
+    )
     if len(sys.argv) > 2:
         build_pptx(m, sys.argv[2], tmp)
         print("rebuilt ->", sys.argv[2])

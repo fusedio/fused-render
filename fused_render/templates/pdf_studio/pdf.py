@@ -43,6 +43,7 @@ Actions
   page_text(doc,page)                      -> {width, height, rotation, spans:[...]}
   undo(doc) / redo(doc)                    -> mutation contract shape
 """
+
 import hashlib
 import json
 import os
@@ -60,11 +61,11 @@ import shutil
 # working copies and undo snapshots are transient and belong under `cache/`.
 DATA_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "data", "pdf_studio"))
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pdf_studio"))
-LIBRARY = os.path.join(DATA_ROOT, "library.json")   # flat list of PDF paths the user added
-DOWNLOADS = os.path.join(DATA_ROOT, "downloads")    # PDFs fetched via import_url
+LIBRARY = os.path.join(DATA_ROOT, "library.json")  # flat list of PDF paths the user added
+DOWNLOADS = os.path.join(DATA_ROOT, "downloads")  # PDFs fetched via import_url
 EXPORTS = os.path.join(CACHE_ROOT, "exports")
-SNAPSHOTS = os.path.join(CACHE_ROOT, "snapshots")   # undo stacks, keyed by doc path
-WORKDIR = os.path.join(CACHE_ROOT, "work")          # per-doc working copies (unsaved edits)
+SNAPSHOTS = os.path.join(CACHE_ROOT, "snapshots")  # undo stacks, keyed by doc path
+WORKDIR = os.path.join(CACHE_ROOT, "work")  # per-doc working copies (unsaved edits)
 
 UNDO_CAP = 10
 
@@ -126,15 +127,33 @@ def _docinfo(path):
     doc = fitz.open(path)
     if doc.needs_pass:
         doc.close()
-        return {"path": _fwd(path), "name": os.path.basename(path),
-                "size": os.path.getsize(path), "mtime": os.path.getmtime(path),
-                "encrypted": True, "page_count": 0, "pages": []}
-    pages = [{"n": i + 1, "width": round(p.rect.width, 2),
-              "height": round(p.rect.height, 2), "rotation": p.rotation}
-             for i, p in enumerate(doc)]
-    out = {"path": _fwd(path), "name": os.path.basename(path),
-           "size": os.path.getsize(path), "mtime": os.path.getmtime(path),
-           "encrypted": False, "page_count": doc.page_count, "pages": pages}
+        return {
+            "path": _fwd(path),
+            "name": os.path.basename(path),
+            "size": os.path.getsize(path),
+            "mtime": os.path.getmtime(path),
+            "encrypted": True,
+            "page_count": 0,
+            "pages": [],
+        }
+    pages = [
+        {
+            "n": i + 1,
+            "width": round(p.rect.width, 2),
+            "height": round(p.rect.height, 2),
+            "rotation": p.rotation,
+        }
+        for i, p in enumerate(doc)
+    ]
+    out = {
+        "path": _fwd(path),
+        "name": os.path.basename(path),
+        "size": os.path.getsize(path),
+        "mtime": os.path.getmtime(path),
+        "encrypted": False,
+        "page_count": doc.page_count,
+        "pages": pages,
+    }
     doc.close()
     return out
 
@@ -175,8 +194,9 @@ def _open_work(doc):
     wpath, _ = _work_paths(src)
     meta = _work_state(src)
     smt = os.path.getmtime(src)
-    if not (meta and os.path.exists(wpath)
-            and (meta.get("dirty") or meta.get("base_mtime") == smt)):
+    if not (
+        meta and os.path.exists(wpath) and (meta.get("dirty") or meta.get("base_mtime") == smt)
+    ):
         shutil.copyfile(src, wpath)
         meta = {"src": _fwd(src), "base_mtime": smt, "dirty": False}
         _work_save_state(src, meta)
@@ -250,8 +270,7 @@ def _revert(doc):
     os.makedirs(WORKDIR, exist_ok=True)
     wpath, _ = _work_paths(src)
     shutil.copyfile(src, wpath)
-    _work_save_state(src, {"src": _fwd(src), "base_mtime": os.path.getmtime(src),
-                           "dirty": False})
+    _work_save_state(src, {"src": _fwd(src), "base_mtime": os.path.getmtime(src), "dirty": False})
     return _mut_result(src)
 
 
@@ -360,8 +379,12 @@ def _mut_result(doc, extra=None):
     info["path"] = _fwd(doc)
     info["name"] = os.path.basename(doc)
     info["work"] = _fwd(wpath)
-    out = {"ok": True, "mtime": os.path.getmtime(wpath), "doc": info,
-           "dirty": bool(meta.get("dirty"))}
+    out = {
+        "ok": True,
+        "mtime": os.path.getmtime(wpath),
+        "doc": info,
+        "dirty": bool(meta.get("dirty")),
+    }
     out["undo_depth"], out["redo_depth"] = _stack_depths(doc)
     out.update(extra or {})
     return out
@@ -399,6 +422,7 @@ def _rotate_pages(doc, pages, degrees):
             for i in _parse_pages(pages, len(pdf.pages)):
                 pdf.pages[i].rotate(degrees, relative=True)
             pdf.save(path)
+
     return fn(doc)
 
 
@@ -413,6 +437,7 @@ def _delete_pages(doc, pages):
             for i in reversed(idxs):
                 del pdf.pages[i]
             pdf.save(path)
+
     return fn(doc)
 
 
@@ -429,6 +454,7 @@ def _reorder_pages(doc, order):
                 pdf.pages.append(pdf.pages[i])
             del pdf.pages[0:n]
             pdf.save(path)
+
     return fn(doc)
 
 
@@ -445,6 +471,7 @@ def _insert_blank(doc, at, width, height):
         d.save(tmp, deflate=True, encryption=fitz.PDF_ENCRYPT_KEEP)
         d.close()
         os.replace(tmp, path)
+
     return fn(doc)
 
 
@@ -463,8 +490,12 @@ def _extract_pages(doc, pages, name):
             name += ".pdf"
         dest = _unique_path(os.path.dirname(doc), name)
         dst.save(dest)
-    return {"name": os.path.basename(dest), "path": _fwd(dest),
-            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+    return {
+        "name": os.path.basename(dest),
+        "path": _fwd(dest),
+        "size": os.path.getsize(dest),
+        "dir": _fwd(os.path.dirname(dest)),
+    }
 
 
 def _merge(sources, name, directory=""):
@@ -511,8 +542,9 @@ def _split(doc, mode, ranges, prefix, directory=""):
             label = f"p{g[0] + 1}" if len(g) == 1 else f"p{g[0] + 1}-{g[-1] + 1}"
             dest = _unique_path(out_dir, f"{prefix}-{label}.pdf")
             dst.save(dest)
-            files.append({"name": os.path.basename(dest), "path": _fwd(dest),
-                          "size": os.path.getsize(dest)})
+            files.append(
+                {"name": os.path.basename(dest), "path": _fwd(dest), "size": os.path.getsize(dest)}
+            )
     return {"files": files, "dir": _fwd(out_dir)}
 
 
@@ -531,21 +563,24 @@ def _compress(doc, level):
             d.rewrite_images(dpi_threshold=200, dpi_target=150, quality=75)
             d.subset_fonts()
             tmp = path + ".tmp"
-            d.save(tmp, garbage=4, deflate=True, clean=True,
-                   encryption=fitz.PDF_ENCRYPT_KEEP)
+            d.save(tmp, garbage=4, deflate=True, clean=True, encryption=fitz.PDF_ENCRYPT_KEEP)
             d.close()
             os.replace(tmp, path)
         else:
             with pikepdf.open(path, allow_overwriting_input=True) as pdf:
-                pdf.save(path, compress_streams=True, recompress_flate=True,
-                         object_stream_mode=pikepdf.ObjectStreamMode.generate)
+                pdf.save(
+                    path,
+                    compress_streams=True,
+                    recompress_flate=True,
+                    object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                )
         return {"before": before, "after": os.path.getsize(path)}
+
     return fn(doc)
 
 
 # ------------------------------------------------------------------ text edit
-_CJK_FONTS = ((0x4E00, 0x9FFF, "china-s"), (0x3040, 0x30FF, "japan"),
-              (0xAC00, 0xD7AF, "korea"))
+_CJK_FONTS = ((0x4E00, 0x9FFF, "china-s"), (0x3040, 0x30FF, "japan"), (0xAC00, 0xD7AF, "korea"))
 
 
 def _pick_font(fontname, flags, text):
@@ -583,17 +618,25 @@ def _page_text(doc, page):
                 if not txt.strip():
                     continue
                 c = s["color"]
-                spans.append({
-                    "text": txt,
-                    "bbox": [round(v, 2) for v in s["bbox"]],
-                    "origin": [round(v, 2) for v in s["origin"]],
-                    "font": s["font"], "size": round(s["size"], 2),
-                    "flags": s["flags"],
-                    "color": [(c >> 16) & 255, (c >> 8) & 255, c & 255],
-                })
-    out = {"page": page, "width": round(p.rect.width, 2),
-           "height": round(p.rect.height, 2), "rotation": p.rotation,
-           "spans": spans, "mtime": os.path.getmtime(doc)}
+                spans.append(
+                    {
+                        "text": txt,
+                        "bbox": [round(v, 2) for v in s["bbox"]],
+                        "origin": [round(v, 2) for v in s["origin"]],
+                        "font": s["font"],
+                        "size": round(s["size"], 2),
+                        "flags": s["flags"],
+                        "color": [(c >> 16) & 255, (c >> 8) & 255, c & 255],
+                    }
+                )
+    out = {
+        "page": page,
+        "width": round(p.rect.width, 2),
+        "height": round(p.rect.height, 2),
+        "rotation": p.rotation,
+        "spans": spans,
+        "mtime": os.path.getmtime(doc),
+    }
     d.close()
     return out
 
@@ -605,8 +648,9 @@ def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags, c
         d = fitz.open(path)
         p = d[page - 1]
         if p.rotation != 0:
-            raise ValueError("text editing on rotated pages isn't supported — "
-                             "rotate the page to 0° first")
+            raise ValueError(
+                "text editing on rotated pages isn't supported — rotate the page to 0° first"
+            )
         rect = fitz.Rect(*json.loads(bbox))
         got = _norm_ws(p.get_text("text", clip=rect + (-1, -1, 1, 1)))
         if _norm_ws(old_text) not in got:
@@ -614,29 +658,37 @@ def _edit_text(doc, page, bbox, origin, old_text, new_text, font, size, flags, c
         fname = _pick_font(font, int(flags or 0), new_text)
         fsize = float(size or 11)
         if new_text:
-            while fsize > 6 and fitz.get_text_length(
-                    new_text, fontname=fname, fontsize=fsize) > rect.width + 2:
+            while (
+                fsize > 6
+                and fitz.get_text_length(new_text, fontname=fname, fontsize=fsize) > rect.width + 2
+            ):
                 fsize -= 0.25
         p.add_redact_annot(rect)
-        p.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE,
-                           graphics=fitz.PDF_REDACT_LINE_ART_NONE)
+        p.apply_redactions(
+            images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE
+        )
         if new_text:
             ox, oy = json.loads(origin)
             col = [c / 255 for c in json.loads(color or "[0,0,0]")]
-            p.insert_text((ox, oy), new_text, fontname=fname, fontsize=fsize,
-                          color=col)
+            p.insert_text((ox, oy), new_text, fontname=fname, fontsize=fsize, color=col)
         d.save(path, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
         d.close()
         return {"used_font": fname, "used_size": round(fsize, 2)}
+
     return fn(doc)
 
 
 # -------------------------------------------------------------------- library
 def _doc_entry(path):
-    entry = {"name": os.path.basename(path), "path": _fwd(path),
-             "size": os.path.getsize(path), "mtime": os.path.getmtime(path)}
+    entry = {
+        "name": os.path.basename(path),
+        "path": _fwd(path),
+        "size": os.path.getsize(path),
+        "mtime": os.path.getmtime(path),
+    }
     try:
         import pikepdf
+
         with pikepdf.open(_cur_path(path)) as pdf:
             entry["page_count"] = len(pdf.pages)
     except Exception as e:
@@ -669,8 +721,16 @@ def _list_library():
     for path in _lib_load():
         full = os.path.abspath(path)
         if not os.path.isfile(full):
-            docs.append({"name": os.path.basename(full), "path": _fwd(full),
-                         "size": 0, "mtime": 0, "page_count": None, "missing": True})
+            docs.append(
+                {
+                    "name": os.path.basename(full),
+                    "path": _fwd(full),
+                    "size": 0,
+                    "mtime": 0,
+                    "page_count": None,
+                    "missing": True,
+                }
+            )
             continue
         docs.append(_doc_entry(full))
     docs.sort(key=lambda e: e["name"].lower())
@@ -734,8 +794,7 @@ import urllib.request as _urlreq
 
 def _server_url(origin, endpoint, path):
     u = _urlparse.urlsplit(origin)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(origin, path):
@@ -795,8 +854,7 @@ def _listdir(path, origin=""):
         try:
             ents, _ = _list_remote(origin, path)
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc), "path": fpath, "parent": parent,
-                    "dirs": [], "files": []}
+            return {"error": str(exc), "path": fpath, "parent": parent, "dirs": [], "files": []}
         for ent in ents:
             name = ent["name"]
             if name.startswith("."):
@@ -844,6 +902,7 @@ def _export(doc, kind, pages, name, directory=""):
     files = []
     if kind == "pdf":
         import pikepdf
+
         with pikepdf.open(cur) as src:
             idxs = _parse_pages(pages, len(src.pages))
             dst = pikepdf.Pdf.new()
@@ -854,6 +913,7 @@ def _export(doc, kind, pages, name, directory=""):
         files.append(dest)
     elif kind in ("png", "jpg"):
         import fitz
+
         d = fitz.open(cur)
         idxs = _parse_pages(pages, d.page_count)
         if len(idxs) > 50:
@@ -866,6 +926,7 @@ def _export(doc, kind, pages, name, directory=""):
         d.close()
     elif kind == "txt":
         import fitz
+
         d = fitz.open(cur)
         idxs = _parse_pages(pages, d.page_count)
         text = "\n\n".join(d[i].get_text() for i in idxs)
@@ -876,20 +937,26 @@ def _export(doc, kind, pages, name, directory=""):
         files.append(dest)
     else:
         raise ValueError(f"unsupported export kind: {kind}")
-    return {"files": [{"path": _fwd(p), "name": os.path.basename(p),
-                       "size": os.path.getsize(p)} for p in files],
-            "dir": _fwd(out)}
+    return {
+        "files": [
+            {"path": _fwd(p), "name": os.path.basename(p), "size": os.path.getsize(p)}
+            for p in files
+        ],
+        "dir": _fwd(out),
+    }
 
 
 def _health():
     out = {"ok": True, "pymupdf": "", "pikepdf": ""}
     try:
         import fitz
+
         out["pymupdf"] = fitz.version[0]
     except Exception as e:
         out["ok"], out["pymupdf_error"] = False, str(e)
     try:
         import pikepdf
+
         out["pikepdf"] = pikepdf.__version__
     except Exception as e:
         out["ok"], out["pikepdf_error"] = False, str(e)
@@ -947,9 +1014,9 @@ def main(
         info["dirty"] = bool(wmeta.get("dirty"))
         if not info["encrypted"]:
             import fitz
+
             d = fitz.open(wpath)
-            info["has_text"] = any(d[i].get_text().strip()
-                                   for i in range(min(5, d.page_count)))
+            info["has_text"] = any(d[i].get_text().strip() for i in range(min(5, d.page_count)))
             d.close()
         else:
             info["has_text"] = False
@@ -959,9 +1026,11 @@ def main(
         # the original are gated, so the tooltip points at Save a copy.
         info["writable"] = os.access(p, os.W_OK)
         info["readonly_message"] = "" if info["writable"] else "Read-only"
-        info["readonly_tooltip"] = "" if info["writable"] else (
-            "The file is read-only — edits can't be saved back to it. "
-            "Use Save a copy.")
+        info["readonly_tooltip"] = (
+            ""
+            if info["writable"]
+            else ("The file is read-only — edits can't be saved back to it. Use Save a copy.")
+        )
         return info
     if action == "listdir":
         # `src` on the listdir action carries the server ORIGIN (mount-safe
@@ -1002,24 +1071,26 @@ def main(
     if action == "export":
         return _export(doc, kind, pages, name, directory)
     if action == "rotate_pages":
-        return _mutate(doc, expected_mtime, "rotate",
-                       lambda p: _rotate_pages(p, pages, degrees))
+        return _mutate(doc, expected_mtime, "rotate", lambda p: _rotate_pages(p, pages, degrees))
     if action == "delete_pages":
-        return _mutate(doc, expected_mtime, "delete-pages",
-                       lambda p: _delete_pages(p, pages))
+        return _mutate(doc, expected_mtime, "delete-pages", lambda p: _delete_pages(p, pages))
     if action == "reorder_pages":
-        return _mutate(doc, expected_mtime, "reorder",
-                       lambda p: _reorder_pages(p, order))
+        return _mutate(doc, expected_mtime, "reorder", lambda p: _reorder_pages(p, order))
     if action == "insert_blank":
-        return _mutate(doc, expected_mtime, "insert-blank",
-                       lambda p: _insert_blank(p, at, width, height))
+        return _mutate(
+            doc, expected_mtime, "insert-blank", lambda p: _insert_blank(p, at, width, height)
+        )
     if action == "compress":
-        return _mutate(doc, expected_mtime, f"compress-{level}",
-                       lambda p: _compress(p, level))
+        return _mutate(doc, expected_mtime, f"compress-{level}", lambda p: _compress(p, level))
     if action == "edit_text":
-        return _mutate(doc, expected_mtime, "edit-text",
-                       lambda p: _edit_text(p, page, bbox, origin, old_text,
-                                            new_text, font, size, flags, color))
+        return _mutate(
+            doc,
+            expected_mtime,
+            "edit-text",
+            lambda p: _edit_text(
+                p, page, bbox, origin, old_text, new_text, font, size, flags, color
+            ),
+        )
     if action == "extract_pages":
         return _extract_pages(doc, pages, name)
     if action == "merge":
@@ -1037,6 +1108,7 @@ def main(
         else:
             import subprocess
             import sys
+
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
         return {"ok": True}
     if action == "page_text":

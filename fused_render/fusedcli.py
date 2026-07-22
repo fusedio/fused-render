@@ -11,6 +11,7 @@ Split out of deploy.py when the account surface landed (SPEC §27, DECISIONS
 D112): the two routers must stay mutually acyclic, and neither may import
 server.py (server includes both routers).
 """
+
 from __future__ import annotations
 
 import dataclasses

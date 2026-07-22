@@ -21,6 +21,7 @@ third (org/project) can be appended later with zero UI rework — TODAY exactly
 two, core (read-only) + user (editable). Effective binding for a key = the
 value from the highest-precedence source that defines it (user beats core).
 """
+
 from __future__ import annotations
 
 import io
@@ -314,7 +315,9 @@ def _effective_bindings() -> dict:
 
     def add(display_key):
         entry = _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by_lower)
-        bindings[entry["key"]] = [] if entry["disabled"] else [t["name"] for t in entry["templates"]]
+        bindings[entry["key"]] = (
+            [] if entry["disabled"] else [t["name"] for t in entry["templates"]]
+        )
 
     for key in builtin_reg:
         if str(key).lower() in user_by_lower:
@@ -535,7 +538,9 @@ def api_export_templates(names: list[str] = Query(default=[])):
         # bindings, so an import elsewhere can OFFER them (never auto-apply).
         zf.writestr(
             _REC_FILENAME,
-            json.dumps({"version": 1, "recommendations": _recommendations_for(requested)}, indent=2),
+            json.dumps(
+                {"version": 1, "recommendations": _recommendations_for(requested)}, indent=2
+            ),
         )
     buf.seek(0)
     return StreamingResponse(
@@ -678,7 +683,7 @@ def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
     if not os.path.isfile(path):
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         warnings.append(f"{_REC_FILENAME} is not valid JSON; ignoring recommendations")
@@ -690,17 +695,23 @@ def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
         return {}
     recs = data.get("recommendations")
     if not isinstance(recs, dict):
-        warnings.append(f"{_REC_FILENAME} has no 'recommendations' object; ignoring recommendations")
+        warnings.append(
+            f"{_REC_FILENAME} has no 'recommendations' object; ignoring recommendations"
+        )
         return {}
     out = {}
     for name, keys in recs.items():
         if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
-            warnings.append(f"{_REC_FILENAME}: recommendations for {name!r} must be an array of registry keys; ignored")
+            warnings.append(
+                f"{_REC_FILENAME}: recommendations for {name!r} must be an array of registry keys; ignored"
+            )
             continue
         kept = []
         for key in keys:
             if server._key_segments(key, key.endswith("/")) is None:
-                warnings.append(f"{_REC_FILENAME}: ignored invalid registry key {key!r} for {name!r}")
+                warnings.append(
+                    f"{_REC_FILENAME}: ignored invalid registry key {key!r} for {name!r}"
+                )
                 continue
             kept.append(key)
         if kept:
@@ -708,7 +719,9 @@ def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
     return out
 
 
-def _recommended_key_status(key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower) -> str:
+def _recommended_key_status(
+    key, name, builtin_reg, user_reg, builtin_by_lower, user_by_lower
+) -> str:
     """How a recommended key -> name binding relates to the CURRENT merged
     registry: "already-bound" (name already in the key's effective list — a
     no-op if applied), "disabled" (the user explicitly disabled the key with
@@ -786,8 +799,7 @@ async def api_import_templates(
                         )
                     if total_written > MAX_TOTAL_UNCOMPRESSED:
                         raise _ImportTooLarge(
-                            f"zip uncompressed size too large "
-                            f"(> {MAX_TOTAL_UNCOMPRESSED} bytes)"
+                            f"zip uncompressed size too large (> {MAX_TOTAL_UNCOMPRESSED} bytes)"
                         )
                     dst.write(chunk)
     except _ImportTooLarge as e:

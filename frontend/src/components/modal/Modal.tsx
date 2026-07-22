@@ -76,9 +76,7 @@ export function Modal({
     if (initialFocus?.current) {
       initialFocus.current.focus();
     } else if (!(dialog && dialog.contains(document.activeElement))) {
-      const focusables = Array.from(
-        dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [],
-      );
+      const focusables = Array.from(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
       const target =
         dialog?.querySelector<HTMLElement>("[autofocus]") ??
         focusables.find((el) => !el.closest(".modal-head")) ??

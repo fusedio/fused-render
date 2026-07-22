@@ -48,6 +48,8 @@ getConfig().then(
   },
   (err: Error) =>
     root.render(
-      <div className="status-message error">Failed to load config: {String(err.message || err)}</div>
-    )
+      <div className="status-message error">
+        Failed to load config: {String(err.message || err)}
+      </div>,
+    ),
 );

@@ -6,7 +6,7 @@
   --bg: #131417;
   --bg-alt: #1b1d21;
   --sel: #2b3a52;
-  --accent: #E5FF44;
+  --accent: #e5ff44;
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
@@ -16,7 +16,8 @@
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   margin: 0;
 }
@@ -885,18 +886,42 @@ table.listing-table .icon {
   width: 16px;
   height: 16px;
 }
-.file-icon--folder  { color: #9fb1d2; }
-.file-icon--code    { color: #7fb2a6; }
-.file-icon--data    { color: #a898cb; }
-.file-icon--json    { color: #c3a96b; }
-.file-icon--html    { color: #c9d95e; } /* launchable app — leans toward --accent */
-.file-icon--image   { color: #cd93b6; }
-.file-icon--doc     { color: #9aa0a6; }
-.file-icon--media   { color: #d0939b; }
-.file-icon--geo     { color: #88bf95; }
-.file-icon--archive { color: #baa386; }
-.file-icon--db      { color: #82abbf; }
-.file-icon--file    { color: #868c93; }
+.file-icon--folder {
+  color: #9fb1d2;
+}
+.file-icon--code {
+  color: #7fb2a6;
+}
+.file-icon--data {
+  color: #a898cb;
+}
+.file-icon--json {
+  color: #c3a96b;
+}
+.file-icon--html {
+  color: #c9d95e;
+} /* launchable app — leans toward --accent */
+.file-icon--image {
+  color: #cd93b6;
+}
+.file-icon--doc {
+  color: #9aa0a6;
+}
+.file-icon--media {
+  color: #d0939b;
+}
+.file-icon--geo {
+  color: #88bf95;
+}
+.file-icon--archive {
+  color: #baa386;
+}
+.file-icon--db {
+  color: #82abbf;
+}
+.file-icon--file {
+  color: #868c93;
+}
 
 /* "App" chip on html rows (Listing + search results) — a small muted-accent
    pill after the filename. Sized well under the 16px icon height so it never
@@ -1073,7 +1098,6 @@ table.listing-table td.mtime {
   color: var(--fg-muted);
   font-size: 13px;
 }
-
 
 .preview-body {
   flex: 1 1 auto;
@@ -1820,7 +1844,8 @@ body.embed .preview-browse-chip:hover {
   padding: 7px 10px;
 }
 
-.modal-body :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
+.modal-body
+  :where(input:not([type="checkbox"], [type="radio"], [type="file"]), select, textarea):focus,
 .mount-form-row :where(input, select):focus {
   outline: none;
   border-color: var(--fg-muted);
@@ -3137,12 +3162,7 @@ select.field-control:has(option[value=""]:checked) {
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.04),
-    transparent
-  );
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
   animation: mount-shimmer 1.2s ease-in-out infinite;
 }
 
@@ -3527,7 +3547,6 @@ select.field-control:has(option[value=""]:checked) {
 .templates-seg-btn.danger.active {
   color: var(--error);
 }
-
 
 /* Delete-confirm modal options (D109): the two default-checked checkboxes. */
 .templates-delete-opts {

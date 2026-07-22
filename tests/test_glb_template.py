@@ -5,6 +5,7 @@ backend, so the only server-side behavior to assert is that .glb/.gltf route to
 it. (The editor tier — glbmodel + .glbproj/ — was removed; this also guards that
 .glbproj no longer resolves to an editor.)
 """
+
 from fused_render import server
 
 

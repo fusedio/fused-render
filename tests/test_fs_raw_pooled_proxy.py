@@ -22,20 +22,20 @@ background reader touches the file.
 Shared fixtures/helpers (home, _mount, _no_kernel_on_mount) live in
 _mount_safe_helpers, mirroring test_server_fs_raw_mount_safe.
 """
-import json
+
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from fastapi.testclient import TestClient
-
-import fused_render.shell.mounts as mounts_mod
-from fused_render.server import create_app
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _mount,
     home,
 )
+from fastapi.testclient import TestClient
+
+import fused_render.shell.mounts as mounts_mod
+from fused_render.server import create_app
 
 
 class _FakeStore:
@@ -59,10 +59,9 @@ class _FakeStore:
                     s, _, e = rng[6:].partition("-")
                     s = int(s)
                     e = int(e) if e else len(store.blob) - 1
-                    chunk = store.blob[s:e + 1]
+                    chunk = store.blob[s : e + 1]
                     self.send_response(206)
-                    self.send_header("Content-Range",
-                                     f"bytes {s}-{e}/{len(store.blob)}")
+                    self.send_header("Content-Range", f"bytes {s}-{e}/{len(store.blob)}")
                     self.send_header("Content-Length", str(len(chunk)))
                     self.send_header("Accept-Ranges", "bytes")
                     self.end_headers()
@@ -94,6 +93,7 @@ def cold_raw(home, monkeypatch):
     (redirect-eligible) and touches nothing, and a _FakeStore stands in for the
     signed URL. Yields (client, mountpoint, file_path, store)."""
     import fused_render.shell.prefetch as prefetch
+
     monkeypatch.setattr(prefetch, "schedule", lambda *a, **k: None)
     # Cold: not yet prefetched -> the handler is in its redirect-to-store phase.
     monkeypatch.setattr(prefetch, "is_done", lambda *a, **k: False)
@@ -105,6 +105,7 @@ def cold_raw(home, monkeypatch):
     # base need not be reachable: the pooled/redirect branch fires before any
     # proxy to the serve).
     from fused_render.shell import storage
+
     storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
     # The store's signed URL for any path under the mount.
     monkeypatch.setattr(mounts_mod, "upstream_url_for", lambda p: store.url)
@@ -124,9 +125,7 @@ def test_pooled_flag_proxies_bytes_no_redirect(cold_raw):
     client, mp, file_path, store = cold_raw
     # Full-body GET with the opt-in flag: the proxy streams the store's bytes
     # back (200), never a 307. follow_redirects=False so a stray 307 would show.
-    r = client.get("/api/fs/raw",
-                   params={"path": file_path, "pooled": "1"},
-                   follow_redirects=False)
+    r = client.get("/api/fs/raw", params={"path": file_path, "pooled": "1"}, follow_redirects=False)
     assert r.status_code == 200
     assert r.content == store.blob
     assert store.gets == 1  # the proxy fetched from the store itself
@@ -136,10 +135,12 @@ def test_pooled_flag_forwards_range_206(cold_raw):
     client, mp, file_path, store = cold_raw
     # A ranged read (what _HttpRangeFile issues per block) comes back as a 206
     # window through the pool, not a redirect.
-    r = client.get("/api/fs/raw",
-                   params={"path": file_path, "pooled": "1"},
-                   headers={"Range": "bytes=4-11"},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw",
+        params={"path": file_path, "pooled": "1"},
+        headers={"Range": "bytes=4-11"},
+        follow_redirects=False,
+    )
     assert r.status_code == 206
     assert r.content == store.blob[4:12]
     assert r.headers["content-range"] == f"bytes 4-11/{len(store.blob)}"
@@ -149,9 +150,7 @@ def test_no_flag_still_redirects_to_store(cold_raw):
     client, mp, file_path, store = cold_raw
     # WITHOUT the flag the cold read still 307s to the signed store URL — the
     # untouched duckdb/parquet path. The proxy never runs (store sees no GET).
-    r = client.get("/api/fs/raw",
-                   params={"path": file_path},
-                   follow_redirects=False)
+    r = client.get("/api/fs/raw", params={"path": file_path}, follow_redirects=False)
     assert r.status_code == 307
     assert r.headers["location"] == store.url
     assert store.gets == 0

@@ -9,6 +9,7 @@ cleared only by bouncing the process. A live daemon is itself proof rclone
 works, so the state now falls back to asking the daemon (core/version +
 config/listremotes) rather than reporting unavailable.
 """
+
 import fused_render.shell.mounts as mounts_mod
 
 
@@ -34,6 +35,7 @@ def test_daemon_vouches_when_direct_probe_fails(monkeypatch):
         if method == "config/listremotes":
             return {"remotes": ["aws-open", "aws"]}
         raise AssertionError(f"unexpected rc method {method}")
+
     monkeypatch.setattr(mounts_mod, "_rc", fake_rc)
 
     state = mounts_mod._rclone_state()
@@ -48,8 +50,7 @@ def test_unavailable_when_no_binary_and_no_daemon(monkeypatch):
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: None)
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
     state = mounts_mod._rclone_state()
-    assert state == {"available": False, "version": None,
-                     "remotes": [], "suggested": []}
+    assert state == {"available": False, "version": None, "remotes": [], "suggested": []}
 
 
 def test_daemon_alive_but_rc_errors_still_available(monkeypatch):
@@ -59,6 +60,7 @@ def test_daemon_alive_but_rc_errors_still_available(monkeypatch):
 
     def boom(port, method, *a, **k):
         raise RuntimeError("rc down mid-answer")
+
     monkeypatch.setattr(mounts_mod, "_rc", boom)
     state = mounts_mod._rclone_state()
     # A live daemon proves rclone works even if BOTH follow-up rc calls fail.
@@ -76,6 +78,7 @@ def test_partial_rc_success_keeps_version_when_listremotes_fails(monkeypatch):
         if method == "core/version":
             return {"version": "v1.74.4"}
         raise RuntimeError("listremotes down")
+
     monkeypatch.setattr(mounts_mod, "_rc", half)
     state = mounts_mod._rclone_state()
     # version succeeded, listremotes failed — the good version must survive.
@@ -93,6 +96,7 @@ def test_partial_rc_success_keeps_remotes_when_version_fails(monkeypatch):
         if method == "config/listremotes":
             return {"remotes": ["aws-open"]}
         raise RuntimeError("core/version down")
+
     monkeypatch.setattr(mounts_mod, "_rc", half)
     state = mounts_mod._rclone_state()
     # version failed, listremotes succeeded — the remotes must survive.
@@ -115,10 +119,12 @@ def test_direct_probe_success_skips_daemon(monkeypatch):
         if cmd[1] == "listremotes":
             return _Run("aws-open:\nmyminio:\n")
         raise AssertionError(cmd)
+
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
 
     def no_daemon(*a, **k):
         raise AssertionError("_live_rcd_port must not be consulted on probe success")
+
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", no_daemon)
 
     state = mounts_mod._rclone_state()

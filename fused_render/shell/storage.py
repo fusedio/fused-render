@@ -9,6 +9,7 @@ subdir (server.py's USER_TEMPLATES_DIR = home_dir()/templates, D76): the home
 holds bookmarks.json + templates/. server imports home_dir from here, never
 the reverse (no server <-> shell import cycle).
 """
+
 import json
 import os
 import tempfile
@@ -33,7 +34,7 @@ def read_json(path: str):
     None-vs-value distinction lets a caller tell 'never written' from an empty
     resource (e.g. the bookmarks `exists` flag / one-time import gate)."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, ValueError):
         return None

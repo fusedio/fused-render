@@ -8,6 +8,7 @@ Types plistlib emits that JSON can't represent natively are made lossless-ish:
   - datetime (<date>) -> ISO-8601 string
   - plistlib.UID      -> {"__uid__": <int>}   (keyed-archive references)
 """
+
 import base64
 import datetime
 import hashlib

@@ -6,6 +6,7 @@ blob:none partial clone works over the file transport) with `_remote_url`
 monkeypatched — the parse layer still sees github.com URLs, only the git
 remote is redirected.
 """
+
 import os
 import subprocess
 
@@ -148,8 +149,11 @@ def test_openurls_target_path_routes_plain_file_to_view():
 
 def _git(*args, cwd=None):
     subprocess.run(
-        ["git", *args], cwd=cwd, check=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -225,8 +229,11 @@ def test_view_url_path_normalizes_windows_drive_paths():
 
 def _rev(source_repo, ref="HEAD"):
     out = subprocess.run(
-        ["git", "rev-parse", ref], cwd=source_repo, check=True,
-        stdout=subprocess.PIPE, text=True,
+        ["git", "rev-parse", ref],
+        cwd=source_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     return out.stdout.strip()
 
@@ -318,8 +325,11 @@ def test_failed_update_leaves_existing_clone_untouched(env, source_repo):
     assert _rev(dest) == head_before
     assert (dest / "Max" / "how_it_works" / "index.html").is_file()
     sparse = subprocess.run(
-        ["git", "sparse-checkout", "list"], cwd=dest, check=True,
-        stdout=subprocess.PIPE, text=True,
+        ["git", "sparse-checkout", "list"],
+        cwd=dest,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
     ).stdout
     assert "Nope" not in sparse
 
@@ -348,7 +358,9 @@ def test_repo_slug_matches_https_and_ssh_forms():
 
 def test_https_auth_failure_falls_back_to_ssh(env, monkeypatch):
     spec = parse_github_url(TREE_URL)
-    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+    monkeypatch.setattr(
+        deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git"
+    )
     attempts = []
 
     def fake_clone(spec_, remote, dest):
@@ -372,7 +384,9 @@ def test_https_auth_failure_falls_back_to_ssh(env, monkeypatch):
 
 def test_https_and_ssh_both_failing_reports_both(env, monkeypatch):
     spec = parse_github_url(TREE_URL)
-    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+    monkeypatch.setattr(
+        deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git"
+    )
 
     def fake_clone(spec_, remote, dest):
         if remote.startswith("https://"):

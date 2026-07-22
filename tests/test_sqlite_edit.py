@@ -1,5 +1,6 @@
 """Tests for the sqlite template's rowid-based editing: reader.py returns
 rowids + an `editable` flag, writer.py applies a batch transactionally."""
+
 import importlib.util
 import os
 import sqlite3
@@ -9,12 +10,14 @@ import pytest
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load(name):
-    path = os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                        "templates", "sqlite", name)
+    path = os.path.join(
+        os.path.dirname(__file__), "..", "fused_render", "templates", "sqlite", name
+    )
     spec = importlib.util.spec_from_file_location(f"sqlite_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -46,11 +49,12 @@ def _all(db):
 
 # ------------------------------------------------------------------ reader
 
+
 def test_reader_returns_rowids_and_editable(db):
     out = reader.main(db, table="people")
     assert out["editable"] is True
     assert out["columns"] == ["name", "age"]
-    assert out["ids"] == [1, 2, 3, 4, 5]           # sqlite rowids are 1-based
+    assert out["ids"] == [1, 2, 3, 4, 5]  # sqlite rowids are 1-based
     assert out["rows"][0] == {"name": "p0", "age": 0}
     # the rowid alias must not leak into the visible columns
     assert reader._RID not in out["columns"]
@@ -60,9 +64,9 @@ def test_view_is_not_editable(db):
     out = reader.main(db, table="adults")
     assert out["editable"] is False
     assert out["ids"] == []
-    assert out["total_rows"] == 3                   # still viewable
+    assert out["total_rows"] == 3  # still viewable
     assert "view" in out["readonly_message"].lower()
-    assert out["readonly_tooltip"]                  # non-empty explanation
+    assert out["readonly_tooltip"]  # non-empty explanation
 
 
 def test_reader_returns_declared_types(db):
@@ -76,6 +80,7 @@ def test_editable_table_has_no_readonly_message(db):
 
 
 # ------------------------------------------------------------- sort / filter
+
 
 def test_sort_desc_keeps_rowids(db):
     # Sorting by age desc puts p4 (age 4) first; its rowid is still 5, so edits
@@ -92,7 +97,9 @@ def test_filter_gte_narrows_count(db):
 
 
 def test_filter_contains_matches_substring(db):
-    out = reader.main(db, table="people", filters=[{"column": "name", "op": "contains", "value": "3"}])
+    out = reader.main(
+        db, table="people", filters=[{"column": "name", "op": "contains", "value": "3"}]
+    )
     assert out["ids"] == [4]
     assert out["rows"][0]["name"] == "p3"
 
@@ -105,24 +112,32 @@ def test_unknown_filter_column_is_ignored(db):
 def test_multiple_filters_are_anded(db):
     # Two conditions on the same column form a range — the multi-filter builder
     # relies on the reader ANDing every condition together.
-    out = reader.main(db, table="people", filters=[
-        {"column": "age", "op": ">=", "value": "1"},
-        {"column": "age", "op": "<=", "value": "3"},
-    ])
+    out = reader.main(
+        db,
+        table="people",
+        filters=[
+            {"column": "age", "op": ">=", "value": "1"},
+            {"column": "age", "op": "<=", "value": "3"},
+        ],
+    )
     assert out["total_rows"] == 3
-    assert out["ids"] == [2, 3, 4]           # rowids of age 1,2,3
+    assert out["ids"] == [2, 3, 4]  # rowids of age 1,2,3
 
 
 # ------------------------------------------------------------------ writer
 
+
 def test_edit_delete_insert(db):
-    writer.main(db, table="people",
-                edits=[{"row": 1, "column": "name", "value": "EDITED"}],
-                deletes=[2, 3],
-                inserts=[{"name": "new", "age": 99}])
+    writer.main(
+        db,
+        table="people",
+        edits=[{"row": 1, "column": "name", "value": "EDITED"}],
+        deletes=[2, 3],
+        inserts=[{"name": "new", "age": 99}],
+    )
     rows = [(r[1], r[2]) for r in _all(db)]
     assert ("EDITED", 0) in rows
-    assert ("p1", 1) not in rows and ("p2", 2) not in rows   # deleted rowids 2,3
+    assert ("p1", 1) not in rows and ("p2", 2) not in rows  # deleted rowids 2,3
     assert ("new", 99) in rows
     assert len(rows) == 5 - 2 + 1
 
@@ -132,16 +147,21 @@ def test_string_value_gets_integer_affinity(db):
     sc = sqlite3.connect(db)
     val = sc.execute("SELECT age FROM people WHERE rowid = 1").fetchone()[0]
     sc.close()
-    assert val == 42 and isinstance(val, int)       # affinity coerced "42" -> 42
+    assert val == 42 and isinstance(val, int)  # affinity coerced "42" -> 42
 
 
 def test_unknown_column_rejected_and_rolls_back(db):
     before = _all(db)
     with pytest.raises(ValueError):
-        writer.main(db, table="people",
-                    edits=[{"row": 1, "column": "name", "value": "ok"},
-                           {"row": 2, "column": "nope", "value": "x"}])
-    assert _all(db) == before                        # whole batch rolled back
+        writer.main(
+            db,
+            table="people",
+            edits=[
+                {"row": 1, "column": "name", "value": "ok"},
+                {"row": 2, "column": "nope", "value": "x"},
+            ],
+        )
+    assert _all(db) == before  # whole batch rolled back
 
 
 def test_writing_a_without_rowid_table_is_rejected(db):
@@ -184,6 +204,7 @@ def test_empty_string_is_distinct_from_null(db):
 
 # ---------------------------------------------------- fs-level read-only file
 
+
 @pytest.fixture
 def readonly_db(db):
     os.chmod(db, 0o444)
@@ -195,8 +216,8 @@ def readonly_db(db):
 def test_reader_readonly_file_not_editable(readonly_db):
     out = reader.main(readonly_db, table="people")
     assert out["editable"] is False
-    assert out["ids"] == []                          # no rowids: nothing to key edits by
-    assert out["total_rows"] == 5                    # still viewable
+    assert out["ids"] == []  # no rowids: nothing to key edits by
+    assert out["total_rows"] == 5  # still viewable
     assert "read-only" in out["readonly_message"].lower()
     assert out["readonly_tooltip"]
 
@@ -204,6 +225,5 @@ def test_reader_readonly_file_not_editable(readonly_db):
 @skip_root
 def test_writer_refuses_readonly_file(readonly_db):
     with pytest.raises(PermissionError):
-        writer.main(readonly_db, table="people",
-                    edits=[{"row": 1, "column": "name", "value": "x"}])
-    assert _all(readonly_db)[0][1] == "p0"           # bytes untouched
+        writer.main(readonly_db, table="people", edits=[{"row": 1, "column": "name", "value": "x"}])
+    assert _all(readonly_db)[0][1] == "p0"  # bytes untouched

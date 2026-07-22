@@ -7,6 +7,7 @@ target. Calling the handlers as plain functions (rather than via TestClient)
 keeps the module importable in venvs where starlette's TestClient is missing
 its httpx dependency.
 """
+
 import json
 import os
 
@@ -28,8 +29,14 @@ def _url_for(path) -> str:
 def test_create_writes_sidecar(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
-    resp = _post({"id": "bk-1", "name": "sample.html",
-                  "url": _url_for(f) + "?a=1", "created_at": 1720000000000})
+    resp = _post(
+        {
+            "id": "bk-1",
+            "name": "sample.html",
+            "url": _url_for(f) + "?a=1",
+            "created_at": 1720000000000,
+        }
+    )
     assert resp == {"recorded": True}
 
     data = json.loads((tmp_path / "sample.html.json").read_text())
@@ -155,8 +162,8 @@ def test_missing_fused_header_forbidden(tmp_path):
 
 
 def test_bad_payload_rejected(tmp_path):
-    assert _post({"url": "/view/x"}).status_code == 400        # no id
-    assert _post({"id": "bk-1"}).status_code == 400            # no url
+    assert _post({"url": "/view/x"}).status_code == 400  # no id
+    assert _post({"id": "bk-1"}).status_code == 400  # no url
 
 
 def test_embed_prefix_handled(tmp_path):
@@ -173,6 +180,7 @@ def test_embed_prefix_handled(tmp_path):
 # mirror must be skipped: the mount can't take the write (CacheMode=full loops
 # the doomed PutObject — the sidecar-write incident).
 
+
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
@@ -188,7 +196,6 @@ def ro_mount(tmp_path, monkeypatch):
 
 
 def test_history_skipped_under_read_only_mount(ro_mount):
-    resp = _post({"id": "bk-1", "name": "cog.tif",
-                  "url": "/view" + ro_mount + "?stretch=2,1471"})
+    resp = _post({"id": "bk-1", "name": "cog.tif", "url": "/view" + ro_mount + "?stretch=2,1471"})
     assert resp == {"recorded": False}
     assert not os.path.exists(ro_mount + ".json")

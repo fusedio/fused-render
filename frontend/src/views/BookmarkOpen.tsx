@@ -13,7 +13,7 @@ import { bookmarkOpenUrl } from "../lib/bookmark-file";
 export default function BookmarkOpen({ file }: { file?: string }) {
   const target = file ?? new URLSearchParams(location.search).get("file");
   const [error, setError] = useState<string | null>(
-    target ? null : "missing `file` query parameter"
+    target ? null : "missing `file` query parameter",
   );
 
   useEffect(() => {
@@ -28,7 +28,7 @@ export default function BookmarkOpen({ file }: { file?: string }) {
           setError((e as Error).message);
         }
       },
-      (e: Error) => alive && setError(e.message)
+      (e: Error) => alive && setError(e.message),
     );
     return () => {
       alive = false;

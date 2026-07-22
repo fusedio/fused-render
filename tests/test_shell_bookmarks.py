@@ -3,12 +3,12 @@ server-side bookmark store at ~/.fused-render/bookmarks.json.
 
 FUSED_RENDER_HOME is redirected to a tmp dir so no test touches the real home.
 """
+
 import json
 
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -69,15 +69,25 @@ def test_corrupt_file_reports_not_exists(tmp_path, monkeypatch):
 def test_put_without_fused_header_is_rejected(tmp_path, monkeypatch):
     # D3 guard: a blind cross-origin PUT (no X-Fused) must not write.
     client, home = _client(tmp_path, monkeypatch)
-    resp = client.put("/api/bookmarks", json=[{"id": "1", "name": "a", "url": "/x", "created_at": 1}])
+    resp = client.put(
+        "/api/bookmarks", json=[{"id": "1", "name": "a", "url": "/x", "created_at": 1}]
+    )
     assert resp.status_code == 403
     assert not (home / "bookmarks.json").exists()
 
 
 def test_put_overwrites_last_write_wins(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
-    client.put("/api/bookmarks", json=[{"id": "1", "name": "a", "url": "/view/x", "created_at": 1}], headers=FUSED)
-    client.put("/api/bookmarks", json=[{"id": "2", "name": "b", "url": "/view/y", "created_at": 2}], headers=FUSED)
+    client.put(
+        "/api/bookmarks",
+        json=[{"id": "1", "name": "a", "url": "/view/x", "created_at": 1}],
+        headers=FUSED,
+    )
+    client.put(
+        "/api/bookmarks",
+        json=[{"id": "2", "name": "b", "url": "/view/y", "created_at": 2}],
+        headers=FUSED,
+    )
     got = client.get("/api/bookmarks").json()
     assert [b["id"] for b in got["bookmarks"]] == ["2"]
 
@@ -107,8 +117,13 @@ def test_migration_suffixes_duplicates_oldest_keeps_name(tmp_path, monkeypatch):
 
 def test_migration_is_case_insensitive_and_global_across_folders(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    folder = {"id": "f", "type": "folder", "name": "a", "collapsed": False,
-              "children": [_bm("2", "A", 20)]}
+    folder = {
+        "id": "f",
+        "type": "folder",
+        "name": "a",
+        "collapsed": False,
+        "children": [_bm("2", "A", 20)],
+    }
     _write_tree(home, [_bm("1", "a", 10), folder])
     got = client.get("/api/bookmarks").json()["bookmarks"]
     assert got[0]["name"] == "a"
@@ -247,8 +262,13 @@ def test_export_rejects_garbage_content(tmp_path, monkeypatch):
 
 def _write_bookmark(tmp_path, name="sales-dash.bookmark", doc=None):
     if doc is None:
-        doc = {"version": 1, "name": "sales-dash", "kind": "single",
-               "path": "a.parquet", "search": "sort=name"}
+        doc = {
+            "version": 1,
+            "name": "sales-dash",
+            "kind": "single",
+            "path": "a.parquet",
+            "search": "sort=name",
+        }
     path = tmp_path / name
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path, doc
@@ -299,8 +319,9 @@ def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
     # Forward-compat: a v2 file from a newer build must fail with a clear
     # message, not redirect somewhere wrong.
     client, _ = _client(tmp_path, monkeypatch)
-    path, _ = _write_bookmark(tmp_path, doc={"version": 2, "name": "x", "kind": "single",
-                                             "path": "a", "search": ""})
+    path, _ = _write_bookmark(
+        tmp_path, doc={"version": 2, "name": "x", "kind": "single", "path": "a", "search": ""}
+    )
     resp = client.get("/api/bookmark-file", params={"path": str(path)})
     assert resp.status_code == 400
     assert "version" in resp.json()["error"]
@@ -310,8 +331,7 @@ def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
 
 
 def _folder(id, name, children):
-    return {"id": id, "type": "folder", "name": name, "collapsed": False,
-            "children": children}
+    return {"id": id, "type": "folder", "name": name, "collapsed": False, "children": children}
 
 
 def test_get_keeps_nested_folder_in_children(tmp_path, monkeypatch):
@@ -356,8 +376,7 @@ def test_get_strips_garbage_inside_nested_folder(tmp_path, monkeypatch):
 
 def test_get_leaves_valid_nested_tree_unwritten(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    outer = _folder("f", "F", [_folder("sub", "sub", [_bm("x", "x", 0)]),
-                               _bm("1", "a", 10)])
+    outer = _folder("f", "F", [_folder("sub", "sub", [_bm("x", "x", 0)]), _bm("1", "a", 10)])
     _write_tree(home, [outer])
     raw = (home / "bookmarks.json").read_text(encoding="utf-8")
     client.get("/api/bookmarks")
@@ -368,8 +387,7 @@ def test_get_leaves_valid_nested_tree_unwritten(tmp_path, monkeypatch):
 
 def test_nested_folder_roundtrips_put_then_get(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
-    tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]),
-                               _bm("1", "top", 2)])]
+    tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]), _bm("1", "top", 2)])]
     assert client.put("/api/bookmarks", json=tree, headers=FUSED).status_code == 200
     assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": tree}
 

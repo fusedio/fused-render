@@ -10,6 +10,7 @@ with which flags) and the parsed results — without any real fused install or
 network. FUSED_RENDER_HOME / OPENFUSED_ENVS_FILE are redirected to tmp dirs so
 nothing touches the real stores.
 """
+
 import json
 import sys
 
@@ -19,7 +20,6 @@ from fastapi.testclient import TestClient
 import fused_render.deploy as deploy_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -61,9 +61,7 @@ print(json.dumps(scenario[verb]))
 # whose `_cli.main()` the real fused_render/_fused_cli.py shim invokes — the
 # in-interpreter autodetection path (the packaged .app's shape: importable
 # package, no console script).
-FAKE_FUSED_CLI = "def main():\n" + "".join(
-    "    " + line + "\n" for line in STUB.splitlines()
-)
+FAKE_FUSED_CLI = "def main():\n" + "".join("    " + line + "\n" for line in STUB.splitlines())
 
 ENVS = {
     "default": "prod",
@@ -574,7 +572,11 @@ def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, m
 
     h.set_scenario(
         {
-            "create": {"token": "new789", "url": "https://serve.example/new789", "status": "active"},
+            "create": {
+                "token": "new789",
+                "url": "https://serve.example/new789",
+                "status": "active",
+            },
             "revoke": {"token": "abc123", "status": "revoked"},
         }
     )
@@ -762,7 +764,11 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     h.set_scenario(
         {
             "list": [],
-            "create": {"token": "new456", "url": "https://serve.example/new456", "status": "active"},
+            "create": {
+                "token": "new456",
+                "url": "https://serve.example/new456",
+                "status": "active",
+            },
         }
     )
     resp = h.client.post(
@@ -869,7 +875,9 @@ def test_deploy_refuses_to_overwrite_a_corrupt_store(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.home.mkdir(parents=True, exist_ok=True)
     store = h.home / "deployments.json"
-    store.write_text('{"other.html": {"env": "cloud", "token": "keep-me"', encoding="utf-8")  # truncated
+    store.write_text(
+        '{"other.html": {"env": "cloud", "token": "keep-me"', encoding="utf-8"
+    )  # truncated
     h.set_scenario({"create": {"token": "abc123", "url": "https://x/abc123", "status": "active"}})
 
     resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
@@ -1287,9 +1295,7 @@ def test_errors_old_cli_gives_upgrade_hint(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
 
     def _boom(env_name, args, timeout=60.0):
-        raise deploy_mod.DeployError(
-            "fused share errors failed: Error: No such command 'errors'."
-        )
+        raise deploy_mod.DeployError("fused share errors failed: Error: No such command 'errors'.")
 
     monkeypatch.setattr(deploy_mod, "_run_share", _boom)
     with pytest.raises(deploy_mod.DeployError) as ei:

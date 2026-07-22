@@ -5,6 +5,7 @@ path, sent by the runtime's fused.rawUrl); an absolute `path` is served verbatim
 what lets one `fused.rawUrl("data/x.json")` call resolve both locally and, when hosted,
 against the bundle's _asset route by the same key.
 """
+
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app

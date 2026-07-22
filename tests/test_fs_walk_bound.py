@@ -2,6 +2,7 @@
 entry-count cap enforced inside the generator, and abort on client disconnect —
 so a search-as-you-type over a big (esp. mount) root can't kick off an
 unbounded, uncancelled walk. Companion to test_server_walk.py (behaviour)."""
+
 import asyncio
 
 from fastapi.testclient import TestClient

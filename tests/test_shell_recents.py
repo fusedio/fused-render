@@ -3,6 +3,7 @@ recently-opened-files store at ~/.fused-render/recents.json.
 
 FUSED_RENDER_HOME is redirected to a tmp dir so no test touches the real home.
 """
+
 import json
 import time
 from urllib.parse import quote
@@ -12,7 +13,6 @@ from fastapi.testclient import TestClient
 from fused_render.server import create_app
 from fused_render.shell import mounts as mounts_mod
 from fused_render.shell import recents as recents_mod
-
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -79,9 +79,9 @@ def test_open_rejects_non_file_urls(tmp_path, monkeypatch):
     d = tmp_path / "sub"
     d.mkdir()
     for url in (
-        _view_url(d),               # directory
+        _view_url(d),  # directory
         "/view/_panel?_layout=(x)",  # sentinel route
-        "/view/_prefs",              # sentinel route
+        "/view/_prefs",  # sentinel route
         _view_url(tmp_path / "gone.txt"),  # missing file
         "/embed/" + str(_make_file(tmp_path)).lstrip("/"),  # embed prefix
     ):
@@ -100,9 +100,7 @@ def test_open_stores_title_when_given(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     f = _make_file(tmp_path)
     url = _view_url(f)
-    resp = client.post(
-        "/api/recents/open", json={"url": url, "title": "My DB app"}, headers=FUSED
-    )
+    resp = client.post("/api/recents/open", json={"url": url, "title": "My DB app"}, headers=FUSED)
     assert resp.status_code == 200
     saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
     assert saved["entries"][0]["title"] == "My DB app"
@@ -120,12 +118,8 @@ def test_open_without_title_omits_the_field(tmp_path, monkeypatch):
 def test_open_ignores_blank_or_non_string_title(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     f = _make_file(tmp_path)
-    client.post(
-        "/api/recents/open", json={"url": _view_url(f), "title": "   "}, headers=FUSED
-    )
-    client.post(
-        "/api/recents/open", json={"url": _view_url(f), "title": 42}, headers=FUSED
-    )
+    client.post("/api/recents/open", json={"url": _view_url(f), "title": "   "}, headers=FUSED)
+    client.post("/api/recents/open", json={"url": _view_url(f), "title": 42}, headers=FUSED)
     saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
     assert "title" not in saved["entries"][0]
 

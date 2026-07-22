@@ -16,6 +16,7 @@ Every extraction is guarded against path traversal (a member whose path escapes
 the destination via .. or an absolute path is rejected), and non-regular members
 (symlinks, hardlinks, devices, fifos) are refused — never materialized on disk.
 """
+
 import bz2
 import gzip
 import hashlib
@@ -86,6 +87,7 @@ def _single_opener(file):
 
 # --- listing ---------------------------------------------------------------
 
+
 def _list_tar(tf):
     entries = []
     for m in tf.getmembers():
@@ -106,11 +108,21 @@ def _list_tar(tf):
 def _list_single(file):
     name = _single_name(file)
     # Decompressed size is unknown without reading the whole stream; leave blank.
-    return {"entries": [{"path": name, "size": None, "compressed": os.path.getsize(file),
-                         "modified": "", "is_dir": False}]}
+    return {
+        "entries": [
+            {
+                "path": name,
+                "size": None,
+                "compressed": os.path.getsize(file),
+                "modified": "",
+                "is_dir": False,
+            }
+        ]
+    }
 
 
 # --- extraction helpers ----------------------------------------------------
+
 
 def _write_target(src, target, dest_root, readonly):
     """Stream `src` to `target` and return the real path.
@@ -171,8 +183,7 @@ def _extract_single(file, dest_root, readonly=False):
     if not _within(dest_root, target):
         raise ValueError(f"unsafe path in archive (path traversal): {name!r}")
     os.makedirs(os.path.dirname(target) or dest_root, exist_ok=True)
-    return _write_target(_single_opener(file)(file, "rb"), target, dest_root,
-                         readonly)
+    return _write_target(_single_opener(file)(file, "rb"), target, dest_root, readonly)
 
 
 def _preview_root(file):
@@ -190,8 +201,19 @@ def _dest_root(file):
     real = os.path.realpath(file)
     base = os.path.basename(real)
     low = base.lower()
-    for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz",
-                   ".tar", ".gz", ".bz2", ".xz", ".lzma"):
+    for suffix in (
+        ".tar.gz",
+        ".tar.bz2",
+        ".tar.xz",
+        ".tgz",
+        ".tbz2",
+        ".txz",
+        ".tar",
+        ".gz",
+        ".bz2",
+        ".xz",
+        ".lzma",
+    ):
         if low.endswith(suffix):
             base = base[: -len(suffix)]
             break
@@ -200,6 +222,7 @@ def _dest_root(file):
 
 
 # --- actions ---------------------------------------------------------------
+
 
 def _member(tf, entry):
     try:

@@ -16,6 +16,7 @@ Under test:
 Test-env note: no openpyxl/fpdf2 here, so everything runs through .csv
 (stdlib csv for small saves; duckdb — which IS installed — for _load's cache).
 """
+
 import importlib.util
 import os
 import stat
@@ -25,7 +26,8 @@ import pytest
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load_reader():

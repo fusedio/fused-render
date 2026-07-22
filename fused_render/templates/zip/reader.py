@@ -13,6 +13,7 @@ Actions (``action`` param):
 Every extraction is guarded against zip-slip (a member whose path escapes the
 destination via .. or an absolute path is rejected).
 """
+
 import hashlib
 import os
 import shutil

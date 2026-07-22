@@ -26,8 +26,7 @@ function TourSection() {
     <section className="prefs-section">
       <h2>Tour</h2>
       <p className="deploy-muted">
-        A short guided walkthrough of the interface. It also runs automatically on your first
-        visit.
+        A short guided walkthrough of the interface. It also runs automatically on your first visit.
       </p>
       <button type="button" onClick={() => startTour()}>
         Start tour
@@ -85,10 +84,10 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
     <section className="prefs-section">
       <h2>Execution engine</h2>
       <p className="deploy-muted">
-        How <code>fused.runPython</code> runs a page's Python. <b>Both engines run on this
-        machine</b> — neither uses your configured Fused environments (those are only deploy
-        targets, chosen in a page's Deploy dialog). Changes apply to the next run — no restart
-        needed.
+        How <code>fused.runPython</code> runs a page's Python.{" "}
+        <b>Both engines run on this machine</b> — neither uses your configured Fused environments
+        (those are only deploy targets, chosen in a page's Deploy dialog). Changes apply to the next
+        run — no restart needed.
       </p>
       <label className={"prefs-radio" + (locked ? " locked" : "")}>
         <input
@@ -99,8 +98,8 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
           onChange={() => select("builtin")}
         />
         <span>
-          <b>Local (built-in)</b> — a fresh subprocess per call, in the environment that
-          launched this server.
+          <b>Local (built-in)</b> — a fresh subprocess per call, in the environment that launched
+          this server.
         </span>
       </label>
       <label
@@ -120,15 +119,16 @@ function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs)
         />
         <span>
           <b>Fused engine</b> — the fused package's local runner: PEP 723 inline requirements
-          resolved into cached venvs (<code>~/.openfused/venvs</code>), plus{" "}
-          <code>@fused.udf</code> / <code>result</code> entrypoints.
+          resolved into cached venvs (<code>~/.openfused/venvs</code>), plus <code>@fused.udf</code>{" "}
+          / <code>result</code> entrypoints.
           {!engine.fused_available && (
             <span className="deploy-muted"> (unavailable — the fused package isn't installed)</span>
           )}
         </span>
       </label>
       <div className="deploy-muted">
-        Currently running: <b>{engine.effective === "fused" ? "Fused engine" : "Local (built-in)"}</b>
+        Currently running:{" "}
+        <b>{engine.effective === "fused" ? "Fused engine" : "Local (built-in)"}</b>
         {locked && (
           <>
             {" "}
@@ -172,8 +172,8 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
-          <b>Show the Deploy button</b> on renderable pages. Deploy publishes a page to a
-          public hosted URL through the <code>fused</code> CLI.
+          <b>Show the Deploy button</b> on renderable pages. Deploy publishes a page to a public
+          hosted URL through the <code>fused</code> CLI.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}

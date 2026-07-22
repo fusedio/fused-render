@@ -12,6 +12,7 @@ with whatever your template needs — parse the format, page a table, pull out
 metadata. Stdlib only here so the starter has no third-party dependency; import
 pandas/pyarrow/etc. freely once your template needs them.
 """
+
 import os
 
 

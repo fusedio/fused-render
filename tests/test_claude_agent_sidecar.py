@@ -2,6 +2,7 @@
 "claudeSessions" (fused_render/templates/claude/agent.py). Old sidecars
 written under the pre-rename key are silently ignored (no migration).
 """
+
 import importlib.util
 import json
 import os
@@ -29,8 +30,7 @@ def test_old_sessions_key_ignored(tmp_path):
     agent = _load_agent()
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
-    (tmp_path / "sample.html.json").write_text(
-        json.dumps({"sessions": [{"id": "old"}]}))
+    (tmp_path / "sample.html.json").write_text(json.dumps({"sessions": [{"id": "old"}]}))
     # old key not recognised -> reads as empty
     assert agent._sessions(str(f))["sessions"] == []
 
@@ -43,8 +43,7 @@ def test_bookmark_history_survives_load_save_roundtrip(tmp_path):
     f = tmp_path / "sample.html"
     f.write_text("<html></html>")
     history = [{"id": "bk-1", "url": "/view/x", "recorded_at": 1.0}]
-    (tmp_path / "sample.html.json").write_text(
-        json.dumps({"bookmarkHistory": history}))
+    (tmp_path / "sample.html.json").write_text(json.dumps({"bookmarkHistory": history}))
 
     loaded = agent._load_sidecar(str(f))
     assert loaded["bookmarkHistory"] == history

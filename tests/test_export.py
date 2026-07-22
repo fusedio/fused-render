@@ -1,4 +1,5 @@
 """Tests for the export logic (fused_render/export.py), served via POST /api/export."""
+
 import json
 import os
 import shutil
@@ -214,9 +215,7 @@ def test_exclude_drops_entrypoint_and_warns(tmp_path):
 
 def test_exclude_drops_manual_include_silently(tmp_path):
     _write(tmp_path, "data.csv", "a,b\n1,2\n")
-    plan = plan_export(
-        "<html></html>", str(tmp_path), include=["data.csv"], exclude=["data.csv"]
-    )
+    plan = plan_export("<html></html>", str(tmp_path), include=["data.csv"], exclude=["data.csv"])
     assert not plan.errors
     assert plan.assets == []
     assert plan.warnings == []  # dropping an unreferenced include is not warned
@@ -231,7 +230,7 @@ def test_unsupported_api_is_an_error(tmp_path):
 def test_space_before_call_parens_is_still_scanned(tmp_path):
     # `fused.runPython (...)` is valid JS a page author could write — it must
     # not silently vanish from the export (no bundle entry, no error either).
-    html = "<script>fused.runPython (\"./sine.py\", {});</script>"
+    html = '<script>fused.runPython ("./sine.py", {});</script>'
     _write(tmp_path, "sine.py", "def main():\n    return 1\n")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
@@ -594,7 +593,7 @@ def test_computed_prefix_runpython_with_trailing_literal_is_error(tmp_path):
 def test_literal_path_may_contain_opposite_quote(tmp_path):
     # A double-quoted literal may contain an apostrophe (and vice-versa) — the body only
     # excludes its own delimiter, so this stays a real literal, not a computed path.
-    html = "<script>fused.rawUrl(\"it's.png\");</script>"
+    html = '<script>fused.rawUrl("it\'s.png");</script>'
     _write(tmp_path, "it's.png", "PNG")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
@@ -611,7 +610,10 @@ def _manifest_block(obj_json):
 def test_manifest_glob_bundles_matching_files(tmp_path):
     # A glob in the embedded manifest bundles every match as a read-only asset, even
     # though no literal rawUrl names them — this is what lets a computed rawUrl resolve.
-    html = _manifest_block('{"include": ["data/*.json"]}') + "<script>const u = fused.rawUrl('data/' + name);</script>"
+    html = (
+        _manifest_block('{"include": ["data/*.json"]}')
+        + "<script>const u = fused.rawUrl('data/' + name);</script>"
+    )
     _write(tmp_path, "data/a.json", "1")
     _write(tmp_path, "data/b.json", "2")
     _write(tmp_path, "data/notes.txt", "skip")
@@ -690,7 +692,9 @@ def test_manifest_glob_does_not_follow_directory_symlinks(tmp_path):
 def test_manifest_block_stripped_before_scan(tmp_path):
     # A value inside the manifest that LOOKS like an unsupported call must not trip the
     # dependency scan — the block is removed before scanning.
-    html = _manifest_block('{"include": ["writeFile-samples/*.json"], "note": "fused.writeFile( decoy"}')
+    html = _manifest_block(
+        '{"include": ["writeFile-samples/*.json"], "note": "fused.writeFile( decoy"}'
+    )
     _write(tmp_path, "writeFile-samples/x.json", "1")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors  # the decoy text inside the manifest did not become an error
@@ -766,7 +770,10 @@ def test_manifest_glob_symlink_escape_rejected(tmp_path):
 
 def test_manifest_include_deduped_with_literal_asset(tmp_path):
     # A file the manifest globs AND the page references literally is bundled once.
-    html = _manifest_block('{"include": ["data/a.json"]}') + "<script>fused.rawUrl('data/a.json');</script>"
+    html = (
+        _manifest_block('{"include": ["data/a.json"]}')
+        + "<script>fused.rawUrl('data/a.json');</script>"
+    )
     _write(tmp_path, "data/a.json", "1")
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
@@ -774,7 +781,10 @@ def test_manifest_include_deduped_with_literal_asset(tmp_path):
 
 
 def test_manifest_include_bundled_through_export_page(tmp_path):
-    html = _manifest_block('{"include": ["data/*.json"]}') + "<script>const u = fused.rawUrl('data/' + n);</script>"
+    html = (
+        _manifest_block('{"include": ["data/*.json"]}')
+        + "<script>const u = fused.rawUrl('data/' + n);</script>"
+    )
     _write(tmp_path, "src/page.html", html)
     _write(tmp_path, "src/data/a.json", "1")
     _write(tmp_path, "src/data/b.json", "2")

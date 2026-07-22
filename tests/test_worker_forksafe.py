@@ -22,10 +22,10 @@ The fix makes every worker spawn use `posix_spawn` instead of `fork()+exec`
 job). posix_spawn runs NO atfork handlers, so the crash path is gone. These
 tests lock that in: the spawns must not take the fork path.
 """
+
 import json
 import os
 import subprocess
-import sys
 
 import pytest
 
@@ -38,6 +38,7 @@ _POSIX = os.name == "posix"
 # --------------------------------------------------------------------------
 # executor._child.py spawn — the site in the crash report (server thread)
 # --------------------------------------------------------------------------
+
 
 def test_executor_child_spawn_disables_fork(tmp_path, monkeypatch):
     """run_python must spawn _child.py with close_fds=False, which is what
@@ -119,6 +120,7 @@ def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 # pyramid template worker spawns (_child.py running main() forks the worker)
 # --------------------------------------------------------------------------
+
 
 def test_pyramid_analyze_worker_spawn_disables_fork(monkeypatch):
     """The analyze/predict worker spawn (subprocess.run) must pass

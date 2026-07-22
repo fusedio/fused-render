@@ -196,7 +196,12 @@ function rankCompare(a: SearchHit, b: SearchHit): number {
 // "DownloadStage", whose extra camel-hump bonus otherwise wins), and a name
 // starting with the query beats an interior hit. Char-level heuristics can't
 // express "this IS the thing you typed", so it's layered here, not in fuzzy.ts.
-function scoreEntries(query: string, entries: WalkEntry[], from: number, showHidden: boolean): SearchHit[] {
+function scoreEntries(
+  query: string,
+  entries: WalkEntry[],
+  from: number,
+  showHidden: boolean,
+): SearchHit[] {
   const q = query.toLowerCase();
   const hits: SearchHit[] = [];
   for (let i = from; i < entries.length; i++) {
@@ -221,7 +226,7 @@ function renderHighlight(text: string, positions: number[]) {
       </mark>
     ) : (
       <span key={i}>{seg.text}</span>
-    )
+    ),
   );
 }
 
@@ -261,12 +266,18 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // resolving and will drive the correct final view (a file <Preview>) a beat
 // later, so we show the neutral loading body and let stat commit the real view.
 // Absent/false (the committed post-stat render), errors show normally.
-export default function Listing({ fsPath, provisional = false }: { fsPath: string; provisional?: boolean }) {
+export default function Listing({
+  fsPath,
+  provisional = false,
+}: {
+  fsPath: string;
+  provisional?: boolean;
+}) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
   const [{ sort, order }, setSortState] = useState<{ sort: SortKey; order: SortOrder }>(() =>
-    resolveSort(fsPath)
+    resolveSort(fsPath),
   );
   // When the sort was restored from saved state (URL carried none), reflect it
   // in the URL so the address bar, bookmarks, and Back-button history match
@@ -300,7 +311,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
   // happens only while search is active (auto-request effect) or on the next
   // gesture — an idle listing must not re-walk the tree on every watch event.
   const [walkReq, setWalkReq] = useState<number | null>(() =>
-    currentQuery().trim() !== "" ? 0 : null
+    currentQuery().trim() !== "" ? 0 : null,
   );
   // Bumped to re-run the stream effect after an error, from a real user
   // gesture only (focus / typing) — an effect-driven retry would loop forever.
@@ -396,8 +407,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       // is focused (body). If focus is on a chrome control — a breadcrumb link,
       // the bookmark/mode-switch buttons, another input — leave its keys alone
       // (otherwise Enter would open a file instead of activating that control).
-      const navActive =
-        inSearch || !el || el === document.body || el === document.documentElement;
+      const navActive = inSearch || !el || el === document.body || el === document.documentElement;
 
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (!navActive) return;
@@ -408,8 +418,12 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         // Nothing selected yet: Down starts at the top, Up at the bottom.
         let next =
           idx === -1
-            ? e.key === "ArrowDown" ? 0 : rows.length - 1
-            : e.key === "ArrowDown" ? idx + 1 : idx - 1;
+            ? e.key === "ArrowDown"
+              ? 0
+              : rows.length - 1
+            : e.key === "ArrowDown"
+              ? idx + 1
+              : idx - 1;
         next = Math.max(0, Math.min(rows.length - 1, next));
         setSelectedPath(rows[next]);
         return;
@@ -428,10 +442,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       // when nothing else is focused (not the search box already, not a chrome
       // control) and only plain printable keys (no modifiers), so Space on a
       // focused button and app shortcuts keep working.
-      if (
-        navActive && !inSearch &&
-        e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
-      ) {
+      if (navActive && !inSearch && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
         searchInputRef.current?.focus(); // keystroke falls through into the input
       }
     }
@@ -467,7 +478,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
           truncated: !!data.truncated,
           cursor: data.cursor ?? null,
         }),
-      (err: Error) => alive && setState({ status: "error", message: err.message })
+      (err: Error) => alive && setState({ status: "error", message: err.message }),
     );
     return () => {
       alive = false;
@@ -490,9 +501,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         setState((prev) => {
           if (prev.status !== "ok") return prev;
           const seen = new Set(prev.entries.map((e) => e.name));
-          const merged = prev.entries.concat(
-            data.entries.filter((e) => !seen.has(e.name))
-          );
+          const merged = prev.entries.concat(data.entries.filter((e) => !seen.has(e.name)));
           return {
             status: "ok",
             entries: merged,
@@ -505,7 +514,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         if (refreshRef.current !== gen) return; // stale: the fetch effect reset state
         setLoadingMore(false);
         setToast({ msg: err.message, tone: "error" });
-      }
+      },
     );
   };
 
@@ -522,7 +531,9 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
     let closed = false;
     const connect = () => {
       const proto = location.protocol === "https:" ? "wss://" : "ws://";
-      sock = new WebSocket(proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath));
+      sock = new WebSocket(
+        proto + location.host + "/api/fs/events?path=" + encodeURIComponent(fsPath),
+      );
       sock.onmessage = (ev) => {
         let data;
         try {
@@ -619,7 +630,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         if (!alive || err.name === "AbortError") return;
         if (flushTimer !== null) clearTimeout(flushTimer);
         setWalk({ status: "error", message: err.message, forRefresh });
-      }
+      },
     );
     return () => {
       alive = false;
@@ -645,7 +656,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
     () => () => {
       if (urlTimer.current !== null) clearTimeout(urlTimer.current);
     },
-    []
+    [],
   );
 
   const setQuery = (value: string) => {
@@ -689,7 +700,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
     setSearchSort((prev) =>
       prev && prev.sort === key
         ? { sort: key, order: prev.order === "asc" ? "desc" : "asc" }
-        : { sort: key, order: "asc" }
+        : { sort: key, order: "asc" },
     );
   };
 
@@ -726,7 +737,13 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
     } else {
       ranked = scoreEntries(q, validWalk.entries, 0, showHidden).sort(rankCompare);
     }
-    scoreCache.current = { q, showHidden, entries: validWalk.entries, scored: validWalk.entries.length, ranked };
+    scoreCache.current = {
+      q,
+      showHidden,
+      entries: validWalk.entries,
+      scored: validWalk.entries.length,
+      ranked,
+    };
     if (!searchSort) return ranked; // relevance order
     const { sort, order } = searchSort;
     const flip = order === "desc" ? -1 : 1;
@@ -756,7 +773,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       (obsEntries) => {
         if (obsEntries.some((e) => e.isIntersecting)) setVisibleCount((c) => c + PAGE_SIZE);
       },
-      { root: el.closest(".listing-scroll"), rootMargin: "200px" }
+      { root: el.closest(".listing-scroll"), rootMargin: "200px" },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -767,7 +784,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
   // displays) was pure waste when `state`/sort/order hadn't changed.
   const sortedEntries = useMemo(
     () => (state.status === "ok" ? sortEntries(state.entries, sort, order) : []),
-    [state, sort, order]
+    [state, sort, order],
   );
 
   const base = fsPath.replace(/\/$/, "");
@@ -780,7 +797,7 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       searching
         ? visibleHits.map(({ entry }) => base + "/" + entry.rel)
         : sortedEntries.map((entry) => base + "/" + entry.name),
-    [searching, visibleHits, sortedEntries, base]
+    [searching, visibleHits, sortedEntries, base],
   );
   navRowsRef.current = navRows;
 
@@ -936,37 +953,43 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         return;
       }
       pasteInFlight.current = true;
-      run(async () => {
-        const { is_dir } = await statPath(src);
-        const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
-        await copyEntry(src, copyDst);
-        pendingSelectRef.current = copyDst; // move selection onto the new copy
-      }, { verb: "paste", name: basename(src) }).finally(() => {
+      run(
+        async () => {
+          const { is_dir } = await statPath(src);
+          const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
+          await copyEntry(src, copyDst);
+          pendingSelectRef.current = copyDst; // move selection onto the new copy
+        },
+        { verb: "paste", name: basename(src) },
+      ).finally(() => {
         pasteInFlight.current = false;
       });
       return;
     }
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
-    run(async () => {
-      try {
-        // Both ops keep the name when free and dedupe to "… copy" when taken
-        // (Finder keep-both), instead of surfacing a 409.
-        const { is_dir } = await statPath(src);
-        const pasteDst = await freePastePath(target, basename(src), is_dir);
-        if (op === "cut") await renameEntry(src, pasteDst);
-        else await copyEntry(src, pasteDst);
-        pendingSelectRef.current = pasteDst; // re-anchor if dst lands in this view
-      } catch (e) {
-        // The paste failed (e.g. a 403, or the source vanished); for a cut the
-        // pre-clear above dropped the clipboard, so re-set the same cut and
-        // let run() toast the error — without this the user would have to
-        // re-cut before retrying. Skip the restore if the user cut/copied
-        // something newer mid-flight.
-        if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
-        throw e;
-      }
-    }, { verb: "paste", name: basename(src) }).finally(() => {
+    run(
+      async () => {
+        try {
+          // Both ops keep the name when free and dedupe to "… copy" when taken
+          // (Finder keep-both), instead of surfacing a 409.
+          const { is_dir } = await statPath(src);
+          const pasteDst = await freePastePath(target, basename(src), is_dir);
+          if (op === "cut") await renameEntry(src, pasteDst);
+          else await copyEntry(src, pasteDst);
+          pendingSelectRef.current = pasteDst; // re-anchor if dst lands in this view
+        } catch (e) {
+          // The paste failed (e.g. a 403, or the source vanished); for a cut the
+          // pre-clear above dropped the clipboard, so re-set the same cut and
+          // let run() toast the error — without this the user would have to
+          // re-cut before retrying. Skip the restore if the user cut/copied
+          // something newer mid-flight.
+          if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
+          throw e;
+        }
+      },
+      { verb: "paste", name: basename(src) },
+    ).finally(() => {
       pasteInFlight.current = false;
     });
   };
@@ -980,18 +1003,24 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
   const doDuplicate = (row: RowCtx) => {
     if (duplicateInFlight.current) return;
     duplicateInFlight.current = true;
-    run(async () => {
-      const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
-      await copyEntry(row.path, dst);
-      pendingSelectRef.current = dst; // move selection onto the new copy
-    }, { verb: "duplicate", name: row.name }).finally(() => {
+    run(
+      async () => {
+        const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
+        await copyEntry(row.path, dst);
+        pendingSelectRef.current = dst; // move selection onto the new copy
+      },
+      { verb: "duplicate", name: row.name },
+    ).finally(() => {
       duplicateInFlight.current = false;
     });
   };
 
   const doReveal = (path: string) => {
     revealPath(path).catch((e) =>
-      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
+      setToast({
+        msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }),
+        tone: "error",
+      }),
     );
   };
 
@@ -1041,16 +1070,19 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
         if (name === row.name) return;
         if (rejectName(name)) return;
         const dst = join(normDir(row.parentDir), name);
-        run(async () => {
-          await renameEntry(row.path, dst);
-          // Re-anchor onto the new name so the reloaded listing keeps this row
-          // selected (and Enter opens the renamed file, not the dead old path).
-          pendingSelectRef.current = dst;
-          // The clipboard may still be pointing at the old path (or inside it,
-          // if a renamed folder held the cut/copied entry) — repoint it so a
-          // later Paste doesn't target a source that's now gone.
-          remapClipboardPath(row.path, dst);
-        }, { verb: "rename", name: row.name });
+        run(
+          async () => {
+            await renameEntry(row.path, dst);
+            // Re-anchor onto the new name so the reloaded listing keeps this row
+            // selected (and Enter opens the renamed file, not the dead old path).
+            pendingSelectRef.current = dst;
+            // The clipboard may still be pointing at the old path (or inside it,
+            // if a renamed folder held the cut/copied entry) — repoint it so a
+            // later Paste doesn't target a source that's now gone.
+            remapClipboardPath(row.path, dst);
+          },
+          { verb: "rename", name: row.name },
+        );
       },
     });
 
@@ -1065,10 +1097,13 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       danger: true,
       // recursive=true for a directory (its contents were named in the message).
       onConfirm: () =>
-        run(async () => {
-          await deleteEntry(row.path, row.isDir);
-          clearClipboardIfDeleted(row.path);
-        }, { verb: "delete", name: row.name }),
+        run(
+          async () => {
+            await deleteEntry(row.path, row.isDir);
+            clearClipboardIfDeleted(row.path);
+          },
+          { verb: "delete", name: row.name },
+        ),
     });
 
   // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
@@ -1084,7 +1119,10 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       } else if (r.status === "unsupported") {
         startDelete(row);
       } else {
-        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: row.name }), tone: "error" });
+        setToast({
+          msg: friendlyFsError(r.message, { verb: "move to Bin", name: row.name }),
+          tone: "error",
+        });
       }
     });
   };
@@ -1107,7 +1145,11 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
   const rowMenu = (row: RowCtx): MenuEntry[] => {
     const dir = targetDirOf(row);
     return [
-      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
+      {
+        label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open",
+        icon: MenuIcons.open,
+        onClick: () => navigate(row.path, { isDir: row.isDir }),
+      },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
@@ -1115,8 +1157,16 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
       { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate(row) },
       "separator",
-      { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: row.path, op: "cut" }) },
-      { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: row.path, op: "copy" }) },
+      {
+        label: "Cut",
+        icon: MenuIcons.cut,
+        onClick: () => setClipboard({ path: row.path, op: "cut" }),
+      },
+      {
+        label: "Copy",
+        icon: MenuIcons.copy,
+        onClick: () => setClipboard({ path: row.path, op: "copy" }),
+      },
       { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(dir) },
       "separator",
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
@@ -1242,7 +1292,9 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
                   }
                 >
                   <td className="name">
-                    <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
+                    <span className="icon">
+                      {iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}
+                    </span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
                     {isAppEntry(entry.rel, entry.is_dir) && <span className="app-chip">App</span>}
                   </td>
@@ -1269,8 +1321,8 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
           validWalk.status === "streaming"
             ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
             : validWalk.truncated
-            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
-            : "No matches";
+              ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+              : "No matches";
         body = (
           <tr>
             <td colSpan={3} className="status-message">
@@ -1455,9 +1507,11 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
                     onClick={() => setSort(key)}
                   >
                     {label}
-                    {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
+                    {key === sort && (
+                      <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>
+                    )}
                   </th>
-                )
+                ),
               )}
             </tr>
           </thead>

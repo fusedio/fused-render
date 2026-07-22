@@ -42,7 +42,8 @@ interface AbsPath {
 }
 
 function splitAbs(p: string): AbsPath | null {
-  if (/^[A-Za-z]:\//.test(p)) return { root: p.slice(0, 2), segs: p.slice(3).split("/").filter(Boolean) };
+  if (/^[A-Za-z]:\//.test(p))
+    return { root: p.slice(0, 2), segs: p.slice(3).split("/").filter(Boolean) };
   if (p.startsWith("/")) return { root: "", segs: p.split("/").filter(Boolean) };
   return null;
 }

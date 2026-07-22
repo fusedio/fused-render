@@ -11,6 +11,7 @@ directory is writable — silently bypassing the read-only bit. The guard makes
 the write endpoint refuse instead, and `writable` on the stat payload lets
 templates render read-only mode up front.
 """
+
 import json
 import os
 import stat
@@ -24,7 +25,8 @@ from fused_render.server import _fs_write as WRITE
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _status(resp) -> int:
@@ -58,6 +60,7 @@ def readonly(target):
 
 # ------------------------------------------------------------- stat.writable
 
+
 def test_stat_writable_true_for_writable_file(target):
     out = _data(STAT(str(target)))
     assert out["writable"] is True
@@ -80,6 +83,7 @@ def test_stat_writable_on_directory(tmp_path):
 
 
 # --------------------------------------------------------- write guard (403)
+
 
 @skip_root
 def test_write_refuses_readonly_target(readonly):
@@ -104,6 +108,7 @@ def test_write_creates_new_file_in_writable_dir(tmp_path):
 
 # ----------------------------------------------------- create guard (New File)
 
+
 def test_write_create_conflicts_on_existing_file(target):
     resp = _write(target, "clobbered", create=True)
     assert _status(resp) == 409
@@ -125,6 +130,7 @@ def test_write_create_ok_for_new_file(tmp_path):
 # test_shell_mounts), and _writable must consult it so stat.writable and the
 # write guard stay in agreement (RO-1) for remote paths too.
 
+
 @pytest.fixture
 def mounted(tmp_path, monkeypatch):
     """A real file sitting under a fake mountpoint inside a redirected
@@ -134,8 +140,9 @@ def mounted(tmp_path, monkeypatch):
     kernel (a kernel GETATTR over a mount can wedge it), so a live stub rcd must
     answer operations/stat for the mounted file."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    import fused_render.shell.mounts as mounts
     from test_shell_mounts import StubRcd
+
+    import fused_render.shell.mounts as mounts
 
     stub = StubRcd()
     stub.responses["operations/stat"] = {"item": {"Size": len(b"original")}}

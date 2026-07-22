@@ -182,7 +182,7 @@ export async function walkDirStream(
     hidden?: boolean;
     signal?: AbortSignal;
     onBatch: (entries: WalkEntry[], total: number) => void;
-  }
+  },
 ): Promise<WalkStreamEnd> {
   let url = "/api/fs/walk?stream=1&path=" + encodeURIComponent(fsPath);
   if (opts.hidden) url += "&hidden=1";
@@ -248,9 +248,9 @@ const inflightConditions = new Map<string, Promise<ConditionsResult>>();
 export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
   let p = inflightConditions.get(fsPath);
   if (!p) {
-    p = getJson<ConditionsResult>(
-      "/api/fs/conditions?path=" + encodeURIComponent(fsPath)
-    ).finally(() => inflightConditions.delete(fsPath));
+    p = getJson<ConditionsResult>("/api/fs/conditions?path=" + encodeURIComponent(fsPath)).finally(
+      () => inflightConditions.delete(fsPath),
+    );
     inflightConditions.set(fsPath, p);
   }
   return p;
@@ -354,10 +354,7 @@ export function getRecents(): Promise<RecentsResult> {
 // Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
 // so callers need not pre-classify the target.
 export function postRecentOpen(url: string, title?: string | null): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>(
-    "/api/recents/open",
-    title ? { url, title } : { url }
-  );
+  return postJson<{ recorded: boolean }>("/api/recents/open", title ? { url, title } : { url });
 }
 
 export function putRecentsCollapsed(collapsed: boolean): Promise<void> {
@@ -812,7 +809,7 @@ export function mkdir(path: string): Promise<StatResult> {
 export function deleteEntry(
   path: string,
   recursive = false,
-  trash = false
+  trash = false,
 ): Promise<{ deleted: string; trashed?: boolean }> {
   return postJson<{ deleted: string; trashed?: boolean }>("/api/fs/delete", {
     path,
@@ -945,7 +942,7 @@ export function deleteMount(id: string): Promise<void> {
 // terminal instead — the Mounts page explains that.
 export function createRemote(
   name: string,
-  params: Record<string, string>
+  params: Record<string, string>,
 ): Promise<{ ok: boolean; name: string }> {
   return postJson<{ ok: boolean; name: string }>("/api/mounts/remotes", {
     name,

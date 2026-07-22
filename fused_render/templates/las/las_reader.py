@@ -13,21 +13,33 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 
 CACHE = os.path.expanduser("~/.cache/fused-render-las")
 VENV_DEPS = ["laspy", "lazrs", "numpy", "pyproj"]
 
 CLASS_NAMES = {
-    0: "never classified", 1: "unassigned", 2: "ground", 3: "low vegetation",
-    4: "medium vegetation", 5: "high vegetation", 6: "building",
-    7: "low point (noise)", 8: "reserved", 9: "water", 10: "rail",
-    11: "road surface", 12: "reserved", 13: "wire guard", 14: "wire conductor",
-    15: "transmission tower", 16: "wire connector", 17: "bridge deck",
+    0: "never classified",
+    1: "unassigned",
+    2: "ground",
+    3: "low vegetation",
+    4: "medium vegetation",
+    5: "high vegetation",
+    6: "building",
+    7: "low point (noise)",
+    8: "reserved",
+    9: "water",
+    10: "rail",
+    11: "road surface",
+    12: "reserved",
+    13: "wire guard",
+    14: "wire conductor",
+    15: "transmission tower",
+    16: "wire connector",
+    17: "bridge deck",
     18: "high noise",
 }
 
-WORKER = r'''
+WORKER = r"""
 import json, os, sys
 import numpy as np
 import laspy
@@ -92,7 +104,7 @@ meta = {
 np.savez_compressed(dst, meta=json.dumps(meta),
                     x=pts["x"], y=pts["y"], z=pts["z"],
                     **{k: v for k, v in extra.items()})
-'''
+"""
 
 
 def _venv_python():
@@ -105,16 +117,20 @@ def _venv_python():
             if f.read() == want:
                 return py
     import shutil
+
     uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
     if not os.path.exists(uv):
         raise RuntimeError(
             "reading .las/.laz needs the 'uv' tool to set up a one-time "
             "Python environment (laspy). Install it with: "
-            "brew install uv  —  or:  curl -LsSf https://astral.sh/uv/install.sh | sh")
-    subprocess.run([uv, "venv", "--python", "3.12", os.path.join(CACHE, "venv")],
-                   check=True, capture_output=True)
-    subprocess.run([uv, "pip", "install", "-p", py, *VENV_DEPS],
-                   check=True, capture_output=True)
+            "brew install uv  —  or:  curl -LsSf https://astral.sh/uv/install.sh | sh"
+        )
+    subprocess.run(
+        [uv, "venv", "--python", "3.12", os.path.join(CACHE, "venv")],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run([uv, "pip", "install", "-p", py, *VENV_DEPS], check=True, capture_output=True)
     with open(stamp, "w") as f:
         f.write(want)
     return py
@@ -136,12 +152,18 @@ def main(file: str = "", max_points: int = 400000):
         except Exception as e:  # noqa: BLE001
             return {"error": f"venv setup failed: {e}"}
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
-        r = subprocess.run([py, "-c", WORKER, file, npz, str(max_points)],
-                           capture_output=True, text=True, env=env, timeout=600)
+        r = subprocess.run(
+            [py, "-c", WORKER, file, npz, str(max_points)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=600,
+        )
         if r.returncode != 0:
             return {"error": f"could not read point cloud: {r.stderr.strip()[-800:]}"}
 
     import numpy as np
+
     d = np.load(npz, allow_pickle=False)
     meta = json.loads(str(d["meta"]))
     x, y, z = d["x"], d["y"], d["z"]
@@ -157,8 +179,9 @@ def main(file: str = "", max_points: int = 400000):
         "center": [cx, cy, cz],
         "z_range": [float(z.min()), float(z.max())] if len(z) else [0, 0],
         "pos": b64(pos),
-        "class_names": {str(k): CLASS_NAMES.get(int(k), f"class {k}")
-                        for k in meta.get("class_hist", {})},
+        "class_names": {
+            str(k): CLASS_NAMES.get(int(k), f"class {k}") for k in meta.get("class_hist", {})
+        },
     }
     for k in ("intensity", "classification", "rgb"):
         if k in d.files:
@@ -171,6 +194,7 @@ def main(file: str = "", max_points: int = 400000):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

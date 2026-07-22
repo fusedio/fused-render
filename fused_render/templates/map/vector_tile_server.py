@@ -22,6 +22,7 @@ The overview pyramid lives only in DuckDB memory — never written as a tile
 file. Idle shutdown after 30 min. The state file embeds this module's mtime, so
 editing it auto-respawns a fresh daemon on the next ensure().
 """
+
 import hashlib
 import json
 import math
@@ -34,10 +35,10 @@ STATE = os.path.expanduser("~/.cache/fused-render-map-v1/daemon.json")
 IDLE_EXIT_S = 30 * 60
 MERC_R = 6378137.0
 MERC_MAX = math.pi * MERC_R
-CAP_AREA = 4000        # per tile-cell feature cap (polygons / lines)
-CAP_POINT = 12000      # generous cap for points
-OVERVIEW_ZOOM_STRIDE = 3   # build an overview every N zooms below detail_zoom
-SIMPLIFY_PX = 2            # geometry simplify tolerance, in tile pixels
+CAP_AREA = 4000  # per tile-cell feature cap (polygons / lines)
+CAP_POINT = 12000  # generous cap for points
+OVERVIEW_ZOOM_STRIDE = 3  # build an overview every N zooms below detail_zoom
+SIMPLIFY_PX = 2  # geometry simplify tolerance, in tile pixels
 # ST_AsMVT only accepts these property types; everything else (timestamps,
 # dates, decimals from e.g. KML/GPKG) is cast to VARCHAR before tiling.
 _MVT_OK = {"BOOLEAN", "INTEGER", "BIGINT", "FLOAT", "DOUBLE", "VARCHAR"}
@@ -59,6 +60,7 @@ def _version():
 # ================================================================ ensure()
 def _alive(port, version):
     import urllib.request
+
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=2) as r:
             d = json.load(r)
@@ -70,18 +72,24 @@ def _alive(port, version):
 def main(action: str = "ensure"):
     """runPython entrypoint: make sure the daemon is running, return {port}."""
     import subprocess
+
     version = _version()
     try:
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "token": st.get("token"),
-                    "reused": True, "version": version}
+            return {
+                "port": st["port"],
+                "token": st.get("token"),
+                "reused": True,
+                "version": version,
+            }
         try:
             import urllib.request
+
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
-                timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}", timeout=1
+            ).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -90,17 +98,25 @@ def main(action: str = "ensure"):
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
     with open(log, "ab") as lf:
-        subprocess.Popen([sys.executable, _me(), "--serve"],
-                         stdout=lf, stderr=lf,
-                         start_new_session=True, cwd=os.path.dirname(_me()))
+        subprocess.Popen(
+            [sys.executable, _me(), "--serve"],
+            stdout=lf,
+            stderr=lf,
+            start_new_session=True,
+            cwd=os.path.dirname(_me()),
+        )
     for _ in range(200):
         time.sleep(0.05)
         try:
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "token": st.get("token"),
-                        "reused": False, "version": version}
+                return {
+                    "port": st["port"],
+                    "token": st.get("token"),
+                    "reused": False,
+                    "version": version,
+                }
         except (OSError, ValueError):
             continue
     return {"error": f"daemon did not start — see {log}"}
@@ -108,6 +124,7 @@ def main(action: str = "ensure"):
 
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass
@@ -115,10 +132,11 @@ except ImportError:
 
 # ================================================================ daemon
 def _serve():
-    import duckdb
     import secrets
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
+    import duckdb
 
     # Per-daemon secret required on every endpoint except /ping; map_render.py
     # threads it into the tile/status/meta URLs it hands the client as ?t=.
@@ -133,18 +151,18 @@ def _serve():
     con.execute("PRAGMA threads=8")
     con.execute("LOAD spatial")
 
-    files = {}                       # (path, layer) -> file-state dict
+    files = {}  # (path, layer) -> file-state dict
     files_lock = threading.Lock()
-    warm_lock = threading.Lock()     # serialize warm-up DDL (one DuckDB con)
+    warm_lock = threading.Lock()  # serialize warm-up DDL (one DuckDB con)
 
-    tile_cache = {}                  # (path,z,x,y) -> bytes
+    tile_cache = {}  # (path,z,x,y) -> bytes
     tile_order = []
     tile_lock = threading.Lock()
     MAX_TILES = 500
 
-    rfiles = {}                      # raster path -> dataset/vrt/stretch state
+    rfiles = {}  # raster path -> dataset/vrt/stretch state
     rfiles_lock = threading.Lock()
-    rtile_cache = {}                 # (path,z,x,y,cmap,rescale) -> png bytes
+    rtile_cache = {}  # (path,z,x,y,cmap,rescale) -> png bytes
     rtile_order = []
     rtile_lock = threading.Lock()
 
@@ -158,8 +176,12 @@ def _serve():
 
     def _tile_bbox_3857(z, x, y):
         span = 2 * MERC_MAX / (1 << z)
-        return (-MERC_MAX + x * span, MERC_MAX - (y + 1) * span,
-                -MERC_MAX + (x + 1) * span, MERC_MAX - y * span)
+        return (
+            -MERC_MAX + x * span,
+            MERC_MAX - (y + 1) * span,
+            -MERC_MAX + (x + 1) * span,
+            MERC_MAX - y * span,
+        )
 
     # ---------------- load an arbitrary vector file -> registered relation ----
     GDAL_EXT = (".gpkg", ".shp", ".geojson", ".json", ".fgb", ".kml", ".gml")
@@ -172,6 +194,7 @@ def _serve():
         if low.endswith(GDAL_EXT):
             import pyogrio
             from pyogrio.raw import read_arrow
+
             if layer is None:
                 try:
                     layers = pyogrio.list_layers(path)
@@ -194,13 +217,14 @@ def _serve():
             cur.register(rel, tbl)
             gtype = cur.execute(f'SELECT typeof("{gname}") FROM {rel} LIMIT 1').fetchone()
             gtype = gtype[0] if gtype else ""
-            geom_sql = (f'"{gname}"::GEOMETRY' if "GEOMETRY" in gtype
-                        else f'ST_GeomFromWKB("{gname}")')
-            return (rel, geom_sql, attrs, meta.get("crs"),
-                    meta.get("geometry_type"), tbl.num_rows)
+            geom_sql = (
+                f'"{gname}"::GEOMETRY' if "GEOMETRY" in gtype else f'ST_GeomFromWKB("{gname}")'
+            )
+            return (rel, geom_sql, attrs, meta.get("crs"), meta.get("geometry_type"), tbl.num_rows)
 
         if low.endswith((".parquet", ".geoparquet")):
             import geopandas as gpd
+
             gdf = gpd.read_parquet(path)
             gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
             gname = gdf.geometry.name
@@ -209,6 +233,7 @@ def _serve():
             gtype = gtype[0] if gtype else "Unknown"
             attrs = [c for c in gdf.columns if c != gname][:5]
             import pandas as pd
+
             df = pd.DataFrame(gdf.drop(columns=[gname]))
             df["__wkb__"] = gdf.geometry.to_wkb()
             cur.register(rel, df)
@@ -217,18 +242,21 @@ def _serve():
         if low.endswith(".csv"):
             import geo_classify as gc
             import pandas as pd
+
             df = pd.read_csv(path)
             lat = gc._find_col(df.columns, gc.LAT_NAMES)
             lon = gc._find_col(df.columns, gc.LON_NAMES)
             if not (lat and lon and lat != lon):
                 raise ValueError("CSV has no lat/lon columns")
-            df = df[pd.to_numeric(df[lat], errors="coerce").notna()
-                    & pd.to_numeric(df[lon], errors="coerce").notna()].copy()
-            df[lat] = pd.to_numeric(df[lat]); df[lon] = pd.to_numeric(df[lon])
+            df = df[
+                pd.to_numeric(df[lat], errors="coerce").notna()
+                & pd.to_numeric(df[lon], errors="coerce").notna()
+            ].copy()
+            df[lat] = pd.to_numeric(df[lat])
+            df[lon] = pd.to_numeric(df[lon])
             attrs = [c for c in df.columns if c not in (lat, lon)][:5]
             cur.register(rel, df)
-            return (rel, f'ST_Point("{lon}", "{lat}")', attrs, "EPSG:4326",
-                    "Point", len(df))
+            return (rel, f'ST_Point("{lon}", "{lat}")', attrs, "EPSG:4326", "Point", len(df))
 
         raise ValueError(f"unsupported vector file: {path}")
 
@@ -267,14 +295,19 @@ def _serve():
             fam = _fam(gtype)
             f["fam"] = fam
             qa = _qattrs(attrs)
-            coltypes = {r[0]: (r[1] or "").upper() for r in cur.execute(f"DESCRIBE {rel}").fetchall()}
+            coltypes = {
+                r[0]: (r[1] or "").upper() for r in cur.execute(f"DESCRIBE {rel}").fetchall()
+            }
             sel_a = "".join(
-                f', "{a}" AS "{a}"' if coltypes.get(a, "VARCHAR").split("(")[0] in _MVT_OK
+                f', "{a}" AS "{a}"'
+                if coltypes.get(a, "VARCHAR").split("(")[0] in _MVT_OK
                 else f', "{a}"::VARCHAR AS "{a}"'
-                for a in attrs)
+                for a in attrs
+            )
             base = tid + "_base"
 
-            f["phase"] = "materializing"; f["pct"] = 5
+            f["phase"] = "materializing"
+            f["pct"] = 5
             srs = _src_srs(crs)
             if str(srs).replace(":", "").upper().endswith("3857"):
                 gt = geom_sql
@@ -291,8 +324,10 @@ def _serve():
                 row = cur.execute(f"""SELECT ST_GeometryType(geom) AS g, count(*) AS c
                                       FROM {base} GROUP BY g ORDER BY c DESC LIMIT 1""").fetchone()
                 if row and row[0]:
-                    gtype = row[0]; f["geometry_type"] = gtype
-                    fam = _fam(gtype); f["fam"] = fam
+                    gtype = row[0]
+                    f["geometry_type"] = gtype
+                    fam = _fam(gtype)
+                    f["fam"] = fam
             cur.execute(f"ALTER TABLE {base} ADD COLUMN imp DOUBLE")
             if fam == "polygon":
                 cur.execute(f"UPDATE {base} SET imp = ST_Area(geom)")
@@ -301,7 +336,8 @@ def _serve():
             else:
                 cur.execute(f"UPDATE {base} SET imp = random()")
 
-            f["phase"] = "indexing"; f["pct"] = 15
+            f["phase"] = "indexing"
+            f["pct"] = 15
             cur.execute(f"CREATE INDEX {base}_rtree ON {base} USING RTREE (geom)")
             row = cur.execute(f"""SELECT count(*), min(ST_XMin(geom)), min(ST_YMin(geom)),
                                   max(ST_XMax(geom)), max(ST_YMax(geom)) FROM {base}""").fetchone()
@@ -324,9 +360,10 @@ def _serve():
             f["ready"] = True
             f["phase"] = "overviews"
 
-            levels = sorted({z for z in range(zd - OVERVIEW_ZOOM_STRIDE, -1,
-                                              -OVERVIEW_ZOOM_STRIDE)})
-            for i, z in enumerate(levels):                 # coarsest first
+            levels = sorted(
+                {z for z in range(zd - OVERVIEW_ZOOM_STRIDE, -1, -OVERVIEW_ZOOM_STRIDE)}
+            )
+            for i, z in enumerate(levels):  # coarsest first
                 _build_overview(cur, f, z, fam, cap, qa)
                 f["ov_built"].append(z)
                 _drop_file_tiles(path, layer)
@@ -335,6 +372,7 @@ def _serve():
             f["phase"] = "ready"
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             f["error"] = f"{type(e).__name__}: {e}"
             f["phase"] = "error"
@@ -349,8 +387,10 @@ def _serve():
 
         def tiles(z):
             span = 2 * MERC_MAX / (1 << z)
-            tx0 = int((w + MERC_MAX) // span); tx1 = int((e + MERC_MAX) // span)
-            ty0 = int((MERC_MAX - nn) // span); ty1 = int((MERC_MAX - s) // span)
+            tx0 = int((w + MERC_MAX) // span)
+            tx1 = int((e + MERC_MAX) // span)
+            ty0 = int((MERC_MAX - nn) // span)
+            ty1 = int((MERC_MAX - s) // span)
             return (tx1 - tx0 + 1) * (ty1 - ty0 + 1)
 
         z = 0
@@ -403,8 +443,10 @@ def _serve():
         geom_in = "geom"
         if table == f["base"] and f.get("fam") in ("polygon", "line"):
             geom_in = f"ST_SimplifyPreserveTopology(geom, {SIMPLIFY_PX * span / 4096.0})"
-        struct = [f"geom: ST_AsMVTGeom({geom_in}, "
-                  f"ST_Extent(ST_TileEnvelope({z},{x},{y}))::BOX_2D, 4096, 256, true)"]
+        struct = [
+            f"geom: ST_AsMVTGeom({geom_in}, "
+            f"ST_Extent(ST_TileEnvelope({z},{x},{y}))::BOX_2D, 4096, 256, true)"
+        ]
         for a, qn in zip(f["columns"], qa):
             struct.append(f'"{a}": {qn}')
         sel = (", " + ", ".join(qa)) if qa else ""
@@ -412,7 +454,7 @@ def _serve():
         row = cur.execute(f"""
             WITH src AS (SELECT geom{sel} FROM {table}
                          WHERE ST_Intersects(geom, ST_TileEnvelope({z},{x},{y})))
-            SELECT ST_AsMVT({{{', '.join(struct)}}}, 'layer', 4096, 'geom') FROM src
+            SELECT ST_AsMVT({{{", ".join(struct)}}}, 'layer', 4096, 'geom') FROM src
         """).fetchone()
         return row[0] if row else None
 
@@ -433,6 +475,7 @@ def _serve():
         from rasterio.enums import Resampling
         from rasterio.vrt import WarpedVRT
         from rasterio.warp import transform_bounds
+
         try:
             src = rasterio.open(path)
         except Exception as e:  # noqa: BLE001
@@ -448,10 +491,20 @@ def _serve():
             return r
         vrt = WarpedVRT(src, crs="EPSG:3857", resampling=Resampling.bilinear)
         w, s, e, n = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
-        r = {"supported": True, "src": src, "vrt": vrt, "lock": threading.Lock(),
-             "count": src.count, "dtype": str(src.dtypes[0]), "nodata": src.nodata,
-             "width": src.width, "height": src.height, "crs": src.crs.to_string(),
-             "bounds_4326": [w, s, e, n], "stretch": None}
+        r = {
+            "supported": True,
+            "src": src,
+            "vrt": vrt,
+            "lock": threading.Lock(),
+            "count": src.count,
+            "dtype": str(src.dtypes[0]),
+            "nodata": src.nodata,
+            "width": src.width,
+            "height": src.height,
+            "crs": src.crs.to_string(),
+            "bounds_4326": [w, s, e, n],
+            "stretch": None,
+        }
         with rfiles_lock:
             rfiles[path] = r
         return r
@@ -460,6 +513,7 @@ def _serve():
         if r.get("stretch") is not None:
             return r["stretch"]
         import numpy as np
+
         src = r["src"]
         idx = [1, 2, 3] if r["count"] >= 3 else [1]
         factor = max(1, int(max(src.width, src.height) / 512))
@@ -480,11 +534,12 @@ def _serve():
 
     def _render_rtile(r, z, x, y, cmap, rescale):
         import io
+
+        import geo_classify as gc
         import numpy as np
         from PIL import Image
         from rasterio.enums import Resampling
         from rasterio.windows import Window, from_bounds
-        import geo_classify as gc
 
         minx, miny, maxx, maxy = _tile_bbox_3857(z, x, y)
         vrt = r["vrt"]
@@ -506,12 +561,20 @@ def _serve():
                 orow = max(0, int(round((inter.row_off - win.row_off) * sy)))
                 ow = max(1, min(256 - oc, int(round(inter.width * sx))))
                 oh = max(1, min(256 - orow, int(round(inter.height * sy))))
-                sub = vrt.read(idx, window=inter, out_shape=(n, oh, ow),
-                               resampling=Resampling.bilinear, masked=True).astype("float64")
-                m = (np.ma.getmaskarray(sub) if np.ma.isMaskedArray(sub)
-                     else np.zeros(sub.shape, bool))
-                arr[:, orow:orow + oh, oc:oc + ow] = np.ma.filled(sub, np.nan)
-                valid[orow:orow + oh, oc:oc + ow] = ~m.any(axis=0)
+                sub = vrt.read(
+                    idx,
+                    window=inter,
+                    out_shape=(n, oh, ow),
+                    resampling=Resampling.bilinear,
+                    masked=True,
+                ).astype("float64")
+                m = (
+                    np.ma.getmaskarray(sub)
+                    if np.ma.isMaskedArray(sub)
+                    else np.zeros(sub.shape, bool)
+                )
+                arr[:, orow : orow + oh, oc : oc + ow] = np.ma.filled(sub, np.nan)
+                valid[orow : orow + oh, oc : oc + ow] = ~m.any(axis=0)
         st = _rstretch(r)
         lohi = None
         if rescale:
@@ -542,13 +605,26 @@ def _serve():
             return 400, b'{"error":"missing file"}', "application/json"
         r = _ropen(path)
         if not r.get("supported"):
-            return 200, json.dumps({"supported": False, "error": r.get("error")}).encode(), "application/json"
+            return (
+                200,
+                json.dumps({"supported": False, "error": r.get("error")}).encode(),
+                "application/json",
+            )
         st = _rstretch(r)
-        m = {"supported": True, "bounds_4326": r["bounds_4326"], "bands": r["count"],
-             "dtype": r["dtype"], "nodata": r["nodata"], "width": r["width"],
-             "height": r["height"], "crs": r["crs"], "stretch": st,
-             "render_mode": "rgb" if r["count"] >= 3 else "single",
-             "minzoom": 0, "maxzoom": 22}
+        m = {
+            "supported": True,
+            "bounds_4326": r["bounds_4326"],
+            "bands": r["count"],
+            "dtype": r["dtype"],
+            "nodata": r["nodata"],
+            "width": r["width"],
+            "height": r["height"],
+            "crs": r["crs"],
+            "stretch": st,
+            "render_mode": "rgb" if r["count"] >= 3 else "single",
+            "minzoom": 0,
+            "maxzoom": 22,
+        }
         return 200, json.dumps(m).encode(), "application/json"
 
     PNG_CT = "image/png"
@@ -585,10 +661,20 @@ def _serve():
             f = files.get(key)
             if f is not None:
                 return f
-            f = {"tid": _tid(path, layer), "phase": "queued", "pct": 0, "ready": False,
-                 "error": None, "detail_zoom": None, "bounds_4326": None,
-                 "count": None, "geometry_type": None, "columns": [],
-                 "base": None, "ov_built": []}
+            f = {
+                "tid": _tid(path, layer),
+                "phase": "queued",
+                "pct": 0,
+                "ready": False,
+                "error": None,
+                "detail_zoom": None,
+                "bounds_4326": None,
+                "count": None,
+                "geometry_type": None,
+                "columns": [],
+                "base": None,
+                "ov_built": [],
+            }
             files[key] = f
         threading.Thread(target=_warm, args=(path, layer), daemon=True).start()
         return f
@@ -598,27 +684,61 @@ def _serve():
         if not path:
             return 400, b'{"error":"missing file"}', "application/json"
         f = _ensure_open(path, layer)
-        return 200, json.dumps({"opening": not f["ready"], "ready": f["ready"]}).encode(), "application/json"
+        return (
+            200,
+            json.dumps({"opening": not f["ready"], "ready": f["ready"]}).encode(),
+            "application/json",
+        )
 
     def do_status(q):
         path, layer = _fkey(q)
         f = files.get((path, layer)) if path else None
         if f is None:
-            return 200, json.dumps({"phase": "unopened", "pct": 0, "ready": False,
-                                    "detail_zoom": None, "error": None}).encode(), "application/json"
-        return 200, json.dumps({"phase": f["phase"], "pct": f["pct"], "ready": f["ready"],
-                                "detail_zoom": f["detail_zoom"], "error": f["error"]}).encode(), "application/json"
+            return (
+                200,
+                json.dumps(
+                    {
+                        "phase": "unopened",
+                        "pct": 0,
+                        "ready": False,
+                        "detail_zoom": None,
+                        "error": None,
+                    }
+                ).encode(),
+                "application/json",
+            )
+        return (
+            200,
+            json.dumps(
+                {
+                    "phase": f["phase"],
+                    "pct": f["pct"],
+                    "ready": f["ready"],
+                    "detail_zoom": f["detail_zoom"],
+                    "error": f["error"],
+                }
+            ).encode(),
+            "application/json",
+        )
 
     def do_meta(q):
         path, layer = _fkey(q)
         f = _ensure_open(path, layer) if path else None
         if f is None:
             return 400, b'{"error":"missing file"}', "application/json"
-        m = {"bounds_4326": f["bounds_4326"], "count": f["count"],
-             "geometry_type": f["geometry_type"], "columns": f["columns"],
-             "minzoom": 0, "maxzoom": 18, "detail_zoom": f["detail_zoom"],
-             "overview_levels": list(f["ov_built"]),
-             "ready": f["ready"], "phase": f["phase"], "error": f["error"]}
+        m = {
+            "bounds_4326": f["bounds_4326"],
+            "count": f["count"],
+            "geometry_type": f["geometry_type"],
+            "columns": f["columns"],
+            "minzoom": 0,
+            "maxzoom": 18,
+            "detail_zoom": f["detail_zoom"],
+            "overview_levels": list(f["ov_built"]),
+            "ready": f["ready"],
+            "phase": f["phase"],
+            "error": f["error"],
+        }
         return 200, json.dumps(m).encode(), "application/json"
 
     MVT_CT = "application/vnd.mapbox-vector-tile"
@@ -655,7 +775,11 @@ def _serve():
         def _handle(self, q):
             u = urlparse(self.path)
             if u.path == "/ping":
-                return 200, json.dumps({"ok": True, "version": VERSION}).encode(), "application/json"
+                return (
+                    200,
+                    json.dumps({"ok": True, "version": VERSION}).encode(),
+                    "application/json",
+                )
             if q.get("t", [""])[0] != TOKEN:
                 return 403, b"forbidden", "text/plain"
             if u.path == "/quit":
@@ -688,6 +812,7 @@ def _serve():
                 code, body, ct = self._handle(parse_qs(u.query))
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
                 code, body, ct = 500, str(e).encode(), "text/plain"
             self._send(code, body, ct)
@@ -721,8 +846,7 @@ def _serve():
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "token": TOKEN,
-                   "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN, "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:
@@ -730,6 +854,7 @@ def _serve():
             if time.time() - last_hit[0] > IDLE_EXIT_S:
                 srv.shutdown()
                 return
+
     threading.Thread(target=reaper, daemon=True).start()
     print(f"vector tile daemon on 127.0.0.1:{port} (v{VERSION})", flush=True)
     srv.serve_forever()
@@ -737,4 +862,5 @@ def _serve():
 
 if __name__ == "__main__" and "--serve" in sys.argv:
     import duckdb  # noqa: F401  (fail fast if interpreter lacks duckdb)
+
     _serve()

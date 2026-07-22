@@ -6,6 +6,7 @@ case-insensitive comparison (case- or accent-only differences) still get a
 stable, deterministic order instead of falling back to arbitrary os.listdir()
 arrival order — otherwise the displayed order could change between refreshes.
 """
+
 import pytest
 from fastapi.testclient import TestClient
 

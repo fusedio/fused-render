@@ -61,15 +61,15 @@ export function TemplatePicker({
   const sentinels = ["_render", "_listing"].filter((n) => !excludeSet.has(n));
   const empty = groups.length === 0 && sentinels.length === 0;
   return (
-    <div
-      className="templates-picker"
-      ref={rootRef}
-      role="dialog"
-      aria-label="Add template"
-    >
+    <div className="templates-picker" ref={rootRef} role="dialog" aria-label="Add template">
       <div className="templates-picker-head">
         <span className="deploy-muted">Add template</span>
-        <button type="button" className="modal-close deploy-close" onClick={onClose} aria-label="Close">
+        <button
+          type="button"
+          className="modal-close deploy-close"
+          onClick={onClose}
+          aria-label="Close"
+        >
           ✕
         </button>
       </div>

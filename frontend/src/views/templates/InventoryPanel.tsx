@@ -81,7 +81,10 @@ export function InventoryPanel({
     .slice()
     // User (higher precedence) group first, core after.
     .sort((a, b) => b.precedence - a.precedence)
-    .map((s) => ({ source: s, items: inventory.templates.filter((t) => t.source === s.id && matches(t)) }))
+    .map((s) => ({
+      source: s,
+      items: inventory.templates.filter((t) => t.source === s.id && matches(t)),
+    }))
     .filter((g) => g.items.length > 0);
 
   return (
@@ -156,7 +159,11 @@ export function InventoryPanel({
             <div className="templates-inv-grouphead">
               {g.source.label}
               <span className="templates-inv-count">{g.items.length}</span>
-              {!g.source.editable && <span className="templates-lock" title="Read-only source">🔒</span>}
+              {!g.source.editable && (
+                <span className="templates-lock" title="Read-only source">
+                  🔒
+                </span>
+              )}
             </div>
             <table className="templates-table templates-inv-table">
               <tbody>
@@ -293,9 +300,8 @@ function DeleteConfirm({
       }
     >
       <p className="deploy-muted">
-        This removes the user template folder for <code>{t.name}</code>. Without a bindings
-        cleanup, bindings that use it keep the name and show as broken until you rebind or remove
-        them.
+        This removes the user template folder for <code>{t.name}</code>. Without a bindings cleanup,
+        bindings that use it keep the name and show as broken until you rebind or remove them.
       </p>
       <div className="templates-delete-opts">
         <label className="templates-delete-opt">
@@ -318,7 +324,11 @@ function DeleteConfirm({
 // icon get the first-letter placeholder box.
 function TemplateIcon({ t }: { t: InventoryTemplate }) {
   if (!t.hasIcon) {
-    return <span className="templates-inv-icon mode-icon-placeholder">{t.name.charAt(0).toUpperCase()}</span>;
+    return (
+      <span className="templates-inv-icon mode-icon-placeholder">
+        {t.name.charAt(0).toUpperCase()}
+      </span>
+    );
   }
   const mask = `url("${rawUrl(t.path + "/icon.svg")}")`;
   return (
@@ -349,13 +359,21 @@ function InventoryRow({
   return (
     <tr className="templates-row">
       <td className="templates-inv-check">
-        <input type="checkbox" checked={checked} onChange={onToggle} aria-label={"Select " + t.name} />
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          aria-label={"Select " + t.name}
+        />
       </td>
       <td className="templates-inv-name">
         <TemplateIcon t={t} />
         <span>{t.name}</span>
         {t.shadowsCore && (
-          <span className="templates-pill" title="A user folder shadows a core folder of the same name">
+          <span
+            className="templates-pill"
+            title="A user folder shadows a core folder of the same name"
+          >
             shadows core
           </span>
         )}
@@ -380,10 +398,20 @@ function InventoryRow({
         )}
       </td>
       <td className="templates-inv-actions">
-        <button type="button" className="templates-ghost-btn" onClick={onExport} title="Export this template as a zip">
+        <button
+          type="button"
+          className="templates-ghost-btn"
+          onClick={onExport}
+          title="Export this template as a zip"
+        >
           Export
         </button>
-        <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
+        <button
+          type="button"
+          className="templates-ghost-btn"
+          onClick={onOpen}
+          title="Open the folder in the file explorer"
+        >
           Open
         </button>
         {onOpenInClaude && (

@@ -8,6 +8,7 @@ fixture is imported into each suite's namespace and used like a local fixture.
 Real rclone is never invoked: rc_list_dir is monkeypatched directly and
 FUSED_RENDER_HOME is redirected per test.
 """
+
 import os
 
 import pytest
@@ -37,8 +38,7 @@ def _mount(name, read_only=False, on_disk=False):
 
 
 def _entry(name, is_dir=False, size=0, mtime="2024-01-02T03:04:05Z"):
-    return {"Name": name, "IsDir": is_dir,
-            "Size": -1 if is_dir else size, "ModTime": mtime}
+    return {"Name": name, "IsDir": is_dir, "Size": -1 if is_dir else size, "ModTime": mtime}
 
 
 def _no_kernel_on_mount(monkeypatch, mp):
@@ -60,10 +60,14 @@ def _no_kernel_on_mount(monkeypatch, mp):
                 p = os.fspath(path)
             except TypeError:
                 p = path
-            if (isinstance(p, str) and (p == mp or p.startswith(mp + os.sep))
-                    and not threading.current_thread().name.startswith("mount-probe")):
+            if (
+                isinstance(p, str)
+                and (p == mp or p.startswith(mp + os.sep))
+                and not threading.current_thread().name.startswith("mount-probe")
+            ):
                 raise AssertionError(f"kernel {name}({p}) touched the mount")
             return fn(path, *a, **k)
+
         return guarded
 
     for n, fn in real_os.items():
@@ -73,11 +77,11 @@ def _no_kernel_on_mount(monkeypatch, mp):
 
 
 def _list_returns(monkeypatch, entries):
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda p, timeout=None: list(entries))
+    monkeypatch.setattr(mounts_mod, "rc_list_dir", lambda p, timeout=None: list(entries))
 
 
 def _list_raises(monkeypatch, exc):
     def boom(p, timeout=None):
         raise exc
+
     monkeypatch.setattr(mounts_mod, "rc_list_dir", boom)

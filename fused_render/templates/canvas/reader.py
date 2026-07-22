@@ -29,6 +29,7 @@ Called by `fused.runPython("./reader.py", {file})`.
 # is referenced at module level except the entrypoint and its registration shim.
 def main(file: str = "", src: str = "") -> dict:
     import os
+
     import tomllib
 
     SIBLING_EXTS = (".py", ".json", ".md", ".html")
@@ -53,15 +54,14 @@ def main(file: str = "", src: str = "") -> dict:
         src is trusted only for scheme+netloc; we quote OUR path onto the
         endpoint, ignoring src's ?path."""
         u = _urlparse.urlsplit(src)
-        return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-                + _urlparse.quote(path))
+        return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
     def _stat(src, path):
         """Ask /api/fs/stat about `path`. Returns:
-          ("ok", payload)      — payload has bool `remote`
-          ("missing", None)    — server says the path does not exist (404)
-          ("unreachable", None)— server unreachable/errored; caller falls back
-                                 to a local kernel probe (presumed local)."""
+        ("ok", payload)      — payload has bool `remote`
+        ("missing", None)    — server says the path does not exist (404)
+        ("unreachable", None)— server unreachable/errored; caller falls back
+                               to a local kernel probe (presumed local)."""
         url = _server_url(src, "/api/fs/stat", path)
         try:
             with _urlreq.urlopen(url, timeout=10) as r:
@@ -86,8 +86,7 @@ def main(file: str = "", src: str = "") -> dict:
         except Exception:  # noqa: BLE001 — treat any error as an empty listing
             return set()
         entries = payload.get("entries") if isinstance(payload, dict) else None
-        return {e.get("name") for e in (entries or [])
-                if isinstance(e, dict) and e.get("name")}
+        return {e.get("name") for e in (entries or []) if isinstance(e, dict) and e.get("name")}
 
     def is_num(v):
         # bool is an int subclass in Python — reject it as a coordinate.
@@ -145,24 +144,27 @@ def main(file: str = "", src: str = "") -> dict:
                 continue
             if entry.get("type") == "udf-folder":
                 child_order = entry.get("childUdfOrder")
-                base.update({
-                    "folderName": text(entry.get("folderName"),
-                                       base["udfName"] or "folder"),
-                    "folderColor": text(entry.get("folderColor")),
-                    "childUdfOrder": [text(c) for c in child_order
-                                      if isinstance(c, str)]
-                    if isinstance(child_order, list) else [],
-                    "isLocked": flag(entry.get("isLocked"), False),
-                })
+                base.update(
+                    {
+                        "folderName": text(entry.get("folderName"), base["udfName"] or "folder"),
+                        "folderColor": text(entry.get("folderColor")),
+                        "childUdfOrder": [text(c) for c in child_order if isinstance(c, str)]
+                        if isinstance(child_order, list)
+                        else [],
+                        "isLocked": flag(entry.get("isLocked"), False),
+                    }
+                )
                 folders.append(base)
             else:
-                base.update({
-                    "title": text(entry.get("title"), base["udfName"]),
-                    "description": text(entry.get("description")),
-                    "visible": flag(entry.get("visible"), True),
-                    "type": text(entry.get("type")),
-                    "textBoxColor": text(entry.get("textBoxColor")),
-                })
+                base.update(
+                    {
+                        "title": text(entry.get("title"), base["udfName"]),
+                        "description": text(entry.get("description")),
+                        "visible": flag(entry.get("visible"), True),
+                        "type": text(entry.get("type")),
+                        "textBoxColor": text(entry.get("textBoxColor")),
+                    }
+                )
                 nodes.append(base)
 
     # ---- edges ------------------------------------------------------------
@@ -170,8 +172,12 @@ def main(file: str = "", src: str = "") -> dict:
     raw_edges = canvas.get("edges")
     if isinstance(raw_edges, list):
         for pair in raw_edges:
-            if (isinstance(pair, list) and len(pair) == 2
-                    and isinstance(pair[0], str) and isinstance(pair[1], str)):
+            if (
+                isinstance(pair, list)
+                and len(pair) == 2
+                and isinstance(pair[0], str)
+                and isinstance(pair[1], str)
+            ):
                 edges.append([pair[0], pair[1]])
 
     # ---- viewport ---------------------------------------------------------
@@ -180,9 +186,7 @@ def main(file: str = "", src: str = "") -> dict:
     # camera at a fabricated origin.
     viewport = None
     raw_vp = canvas.get("viewport")
-    if (isinstance(raw_vp, dict)
-            and is_num(raw_vp.get("x"))
-            and is_num(raw_vp.get("y"))):
+    if isinstance(raw_vp, dict) and is_num(raw_vp.get("x")) and is_num(raw_vp.get("y")):
         viewport = {
             "x": num(raw_vp.get("x")),
             "y": num(raw_vp.get("y")),
@@ -248,4 +252,3 @@ try:
     _udf_main = _fused.udf(main)
 except ImportError:
     pass
-

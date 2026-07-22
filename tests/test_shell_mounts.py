@@ -5,6 +5,7 @@ rclone is never invoked), and the /api/mounts endpoints.
 FUSED_RENDER_HOME is redirected per test so no test touches the real
 ~/.fused-render or a real mount.
 """
+
 import json
 import stat
 import threading
@@ -31,7 +32,7 @@ class StubRcd:
     def __init__(self):
         self.calls = []
         self.delay = {}  # method -> seconds to sleep before responding (timeouts)
-        self.jobs = {}   # jobid -> job dict (for the _async / job/* path)
+        self.jobs = {}  # jobid -> job dict (for the _async / job/* path)
         self._next_jobid = 1
         self.responses = {
             "core/pid": {"pid": 4242},
@@ -79,11 +80,13 @@ class StubRcd:
                     job = stub.jobs.get(body.get("jobid"))
                     if job is None:
                         return self._reply(500, {"error": "job not found"})
-                    finished = (job["ready_at"] is not None
-                                and time.monotonic() >= job["ready_at"])
-                    out = {"id": body["jobid"], "finished": finished,
-                           "success": finished and not job["error"],
-                           "error": job["error"] if finished else ""}
+                    finished = job["ready_at"] is not None and time.monotonic() >= job["ready_at"]
+                    out = {
+                        "id": body["jobid"],
+                        "finished": finished,
+                        "success": finished and not job["error"],
+                        "error": job["error"] if finished else "",
+                    }
                     if finished and not job["error"]:
                         out["output"] = job["output"]
                     return self._reply(200, out)
@@ -106,8 +109,7 @@ class StubRcd:
                     # A never-ending job: delay is None => ready_at never arrives.
                     d = stub.delay.get(method)
                     stub.jobs[jobid] = {
-                        "ready_at": (None if d == float("inf")
-                                     else time.monotonic() + (d or 0)),
+                        "ready_at": (None if d == float("inf") else time.monotonic() + (d or 0)),
                         "output": payload if code == 200 else {},
                         "error": "" if code == 200 else str(payload.get("error", "err")),
                         "stopped": False,
@@ -204,7 +206,6 @@ def test_mountpoint_derives_from_branch_aware_home(home):
     assert mp.endswith("/mounts/data")
 
 
-
 # -- rcd client ----------------------------------------------------------------
 
 
@@ -251,8 +252,9 @@ def test_serve_vfs_opt_derived_from_mount_vfs_opt():
     assert mounts_mod._serve_vfs_opt_for({})["read_only"] == "false"
 
 
-@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
-                    reason="nfsmount timeo override is macOS-only")
+@pytest.mark.skipif(
+    mounts_mod.sys.platform != "darwin", reason="nfsmount timeo override is macOS-only"
+)
 def test_mount_raises_nfs_timeout_on_macos(home, rcd):
     # The loopback NFS client's low default timeout drops the whole mount on a
     # slow chunk fetch; attach must pass a raised timeo so local-path reads are
@@ -290,10 +292,12 @@ def test_rc_mtime_for_answers_from_rc_api_not_kernel(home, rcd, monkeypatch):
     rcd.responses["operations/stat"] = {"item": {"ModTime": "2024-01-02T03:04:05Z"}}
 
     import os as _os
+
     calls = []
     real = _os.stat
-    monkeypatch.setattr(mounts_mod.os, "stat",
-                        lambda p, *a, **k: (calls.append(_os.fspath(p)), real(p, *a, **k))[1])
+    monkeypatch.setattr(
+        mounts_mod.os, "stat", lambda p, *a, **k: (calls.append(_os.fspath(p)), real(p, *a, **k))[1]
+    )
 
     path = _os.path.join(mp, "sub", "world.zarr")
     assert mounts_mod.rc_mtime_for(path) == "2024-01-02T03:04:05Z"
@@ -425,14 +429,14 @@ def test_rc_stat_result_synthesizes_from_operations_stat(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     path = mounts_mod.mountpoint(c) + "/store"
 
-    rcd.responses["operations/stat"] = {
-        "item": {"IsDir": True, "ModTime": "2024-01-02T03:04:05Z"}}
+    rcd.responses["operations/stat"] = {"item": {"IsDir": True, "ModTime": "2024-01-02T03:04:05Z"}}
     st = mounts_mod.rc_stat_result(path)
     assert _stat.S_ISDIR(st.st_mode)
     assert st.st_mtime == mounts_mod.rc_modtime_epoch("2024-01-02T03:04:05Z")
 
     rcd.responses["operations/stat"] = {
-        "item": {"IsDir": False, "Size": 99, "ModTime": "2024-01-02T03:04:05Z"}}
+        "item": {"IsDir": False, "Size": 99, "ModTime": "2024-01-02T03:04:05Z"}
+    }
     st = mounts_mod.rc_stat_result(path)
     assert _stat.S_ISREG(st.st_mode)
     assert st.st_size == 99
@@ -499,6 +503,7 @@ def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
     # storm). A pure abspath string check misses it; realpath resolution catches
     # it. Direct mount paths and genuine local paths keep classifying by string.
     import os as _os
+
     mounts_root = mounts_mod.mounts_dir()
     _os.makedirs(_os.path.join(mounts_root, "s3demo"), exist_ok=True)
     real_target = _os.path.join(mounts_root, "s3demo", "world.zarr")
@@ -509,9 +514,9 @@ def test_is_mount_backed_follows_symlink_into_mounts(home, tmp_path):
     link = local_dir / "shortcut"
     _os.symlink(real_target, link)
 
-    assert mounts_mod.is_mount_backed(str(link)) is True          # symlink -> mount
-    assert mounts_mod.is_mount_backed(real_target) is True        # direct mount path
-    assert mounts_mod.is_mount_backed(str(local_dir)) is False    # genuine local dir
+    assert mounts_mod.is_mount_backed(str(link)) is True  # symlink -> mount
+    assert mounts_mod.is_mount_backed(real_target) is True  # direct mount path
+    assert mounts_mod.is_mount_backed(str(local_dir)) is False  # genuine local dir
 
 
 def test_broken_mount_error_normalizes_non_abspath_input(home, rcd, monkeypatch):
@@ -540,19 +545,21 @@ def test_rc_list_dir_calls_operations_list_with_fs_and_remote(home, rcd, monkeyp
 
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["operations/list"] = {"list": [
-        {"Name": "a", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"},
-        {"Name": "b.txt", "IsDir": False, "Size": 7, "ModTime": "2024-01-02T03:04:05Z"},
-    ]}
+    rcd.responses["operations/list"] = {
+        "list": [
+            {"Name": "a", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"},
+            {"Name": "b.txt", "IsDir": False, "Size": 7, "ModTime": "2024-01-02T03:04:05Z"},
+        ]
+    }
     # Never touch the mount path through the kernel.
-    monkeypatch.setattr(mounts_mod.os, "scandir",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!")))
+    monkeypatch.setattr(
+        mounts_mod.os, "scandir", lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!"))
+    )
 
     entries = mounts_mod.rc_list_dir(_os.path.join(mp, "sub"))
     assert [e["Name"] for e in entries] == ["a", "b.txt"]
     [(_, body)] = [x for x in rcd.calls if x[0] == "operations/list"]
-    assert body == {"fs": "remote:bucket/prefix", "remote": "sub",
-                    "opt": {"noMimeType": True}}
+    assert body == {"fs": "remote:bucket/prefix", "remote": "sub", "opt": {"noMimeType": True}}
 
 
 def test_rc_list_dir_normalizes_mountpoint_root_to_empty_remote(home, rcd):
@@ -583,8 +590,7 @@ def test_rc_list_dir_error_when_rcd_rejects_listing(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     with pytest.raises(mounts_mod.RcListError) as exc:
         mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/file.parquet")
-    assert not isinstance(exc.value, (mounts_mod.RcListTimeout,
-                                      mounts_mod.RcListUnavailable))
+    assert not isinstance(exc.value, (mounts_mod.RcListTimeout, mounts_mod.RcListUnavailable))
 
 
 def test_rc_list_dir_timeout_raises_rc_list_timeout(home, rcd):
@@ -602,8 +608,9 @@ def test_rc_modtime_epoch_parses_rfc3339_and_passes_sentinel():
 
     # 'Z', fractional seconds, and sub-microsecond precision all parse.
     assert mounts_mod.rc_modtime_epoch("1970-01-01T00:00:01Z") == 1.0
-    assert mounts_mod.rc_modtime_epoch(
-        "1970-01-01T00:00:01.123456789Z") == pytest.approx(1.123456, abs=1e-6)
+    assert mounts_mod.rc_modtime_epoch("1970-01-01T00:00:01.123456789Z") == pytest.approx(
+        1.123456, abs=1e-6
+    )
     # The synthetic-dir sentinel (2000-01-01) is passed through like any stamp.
     sentinel = _dt.datetime(2000, 1, 1, tzinfo=_dt.timezone.utc).timestamp()
     assert mounts_mod.rc_modtime_epoch("2000-01-01T00:00:00Z") == sentinel
@@ -617,6 +624,7 @@ def test_rc_modtime_epoch_normalizes_any_fractional_digit_count():
     # the mtime. Every digit count must now parse, on 'Z' and on a numeric
     # offset alike. Base instant is 2024-01-02T03:04:05 UTC.
     import datetime as _dt
+
     base = _dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=_dt.timezone.utc).timestamp()
     for n in range(1, 10):
         digits = "123456789"[:n]
@@ -647,8 +655,7 @@ def test_mount_rejects_mountpoint_serving_other_remote(home, rcd, monkeypatch):
     # new remote: rcd lists the old fs at the mountpoint -> mount errors.
     c = mounts_mod.add_mount("data", "remote:new")
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:old", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:old", "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     err = mounts_mod.attach_mount(c)
     assert err is not None and "remote:old" in err
@@ -658,8 +665,7 @@ def test_mount_rejects_mountpoint_serving_other_remote(home, rcd, monkeypatch):
 def test_mount_adopts_matching_existing_mount(home, rcd, monkeypatch):
     c = mounts_mod.add_mount("data", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     assert mounts_mod.attach_mount(c) is None
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
@@ -679,6 +685,7 @@ FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 @pytest.fixture()
 def client(home):
     from fastapi.testclient import TestClient
+
     from fused_render.server import create_app
 
     return TestClient(create_app(start_dir=str(home)))
@@ -702,8 +709,7 @@ def test_create_validates_before_mounting(client, rcd):
 
 
 def test_create_mounts_and_persists(client, rcd):
-    r = client.post(
-        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED)
+    r = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "data"
     assert any(m == "mount/mount" for m, _ in rcd.calls)
@@ -712,8 +718,7 @@ def test_create_mounts_and_persists(client, rcd):
 
 def test_create_rolls_back_store_on_mount_failure(client, rcd):
     rcd.responses["mount/mount"] = (500, {"error": "boom"})
-    r = client.post(
-        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED)
+    r = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED)
     assert r.status_code == 502
     assert client.get("/api/mounts").json()["mounts"] == []
 
@@ -726,18 +731,27 @@ def test_mount_unmount_delete_unknown_id(client, rcd):
 
 def test_mount_view_has_no_automount_field(client, rcd):
     m = client.post(
-        "/api/mounts", json={"name": "data", "remote": "r:bucket"},
-        headers=FUSED).json()
+        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED
+    ).json()
     # automount is implicit for every mount now — the field is gone.
     assert "automount" not in m
-    assert set(m) == {"id", "name", "remote", "mountpoint", "mounted", "state",
-                      "read_only", "builtin", "restart_reason"}
+    assert set(m) == {
+        "id",
+        "name",
+        "remote",
+        "mountpoint",
+        "mounted",
+        "state",
+        "read_only",
+        "builtin",
+        "restart_reason",
+    }
 
 
 def test_delete_unmounts_and_removes(client, rcd):
     cid = client.post(
-        "/api/mounts", json={"name": "data", "remote": "r:bucket"},
-        headers=FUSED).json()["id"]
+        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED
+    ).json()["id"]
     assert client.delete(f"/api/mounts/{cid}", headers=FUSED).status_code == 200
     assert client.get("/api/mounts").json()["mounts"] == []
     assert any(m == "mount/unmount" for m, _ in rcd.calls)
@@ -776,11 +790,19 @@ def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
-    r = client.post("/api/mounts/remotes", json={
-        "name": "mys3",
-        "params": {"access_key_id": "AK", "secret_access_key": "SK",
-                   "endpoint": "https://e.example", "region": "us-east-1"},
-    }, headers=FUSED)
+    r = client.post(
+        "/api/mounts/remotes",
+        json={
+            "name": "mys3",
+            "params": {
+                "access_key_id": "AK",
+                "secret_access_key": "SK",
+                "endpoint": "https://e.example",
+                "region": "us-east-1",
+            },
+        },
+        headers=FUSED,
+    )
     assert r.status_code == 200
     cmd = seen["cmd"]
     assert cmd[:4] == ["/usr/bin/rclone", "config", "create", "mys3"]
@@ -797,9 +819,11 @@ def test_create_remote_rejects_bad_name(client):
 
 def test_aws_profiles_and_suggestions_from_dotfiles(tmp_path, monkeypatch):
     (tmp_path / "credentials").write_text(
-        "[default]\naws_access_key_id = AK\n\n[work]\naws_access_key_id = WK\n")
+        "[default]\naws_access_key_id = AK\n\n[work]\naws_access_key_id = WK\n"
+    )
     (tmp_path / "config").write_text(
-        "[default]\nregion = us-east-1\n\n[profile prod]\nregion = eu-west-1\n")
+        "[default]\nregion = us-east-1\n\n[profile prod]\nregion = eu-west-1\n"
+    )
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "credentials"))
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
@@ -810,18 +834,30 @@ def test_aws_profiles_and_suggestions_from_dotfiles(tmp_path, monkeypatch):
     assert by_id["aws-profile:default"]["remote_name"] == "aws"
     assert by_id["aws-profile:work"]["remote_name"] == "aws-work"
     assert by_id["aws-profile:prod"]["params"] == {
-        "provider": "AWS", "env_auth": "true", "profile": "prod"}
+        "provider": "AWS",
+        "env_auth": "true",
+        "profile": "prod",
+    }
 
 
 def test_suggestions_view_hides_already_materialized(monkeypatch):
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
-        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
-    ])
+    monkeypatch.setattr(
+        mounts_mod,
+        "_credential_suggestions",
+        lambda: [
+            {
+                "id": "aws-env",
+                "label": "L",
+                "remote_name": "aws-env",
+                "backend": "s3",
+                "params": {"provider": "AWS", "env_auth": "true"},
+            },
+        ],
+    )
     # kind defaults to "detected" for entries that don't set it.
     assert mounts_mod._suggestions_view([]) == [
-        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "kind": "detected"}]
+        {"id": "aws-env", "label": "L", "remote_name": "aws-env", "kind": "detected"}
+    ]
     assert mounts_mod._suggestions_view(["aws-env:"]) == []
 
 
@@ -846,17 +882,22 @@ def test_public_suggestion_hidden_once_materialized(monkeypatch):
     monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
     monkeypatch.setattr(mounts_mod.os.path, "exists", lambda p: False)
     # not yet created → shown under kind="public"
-    assert any(s["id"] == "aws-open-public" and s["kind"] == "public"
-               for s in mounts_mod._suggestions_view([]))
+    assert any(
+        s["id"] == "aws-open-public" and s["kind"] == "public"
+        for s in mounts_mod._suggestions_view([])
+    )
     # once aws-open: exists it drops out (shows under Remotes instead)
-    assert not any(s["id"] == "aws-open-public"
-                   for s in mounts_mod._suggestions_view(["aws-open:"]))
+    assert not any(
+        s["id"] == "aws-open-public" for s in mounts_mod._suggestions_view(["aws-open:"])
+    )
 
 
 _AWS_OPEN_SUGG = {
     "id": "aws-open-public",
     "label": "AWS S3 — public buckets (no credentials)",
-    "remote_name": "aws-open", "backend": "s3", "kind": "public",
+    "remote_name": "aws-open",
+    "backend": "s3",
+    "kind": "public",
     "params": {"provider": "AWS", "env_auth": "false"},
 }
 
@@ -865,8 +906,10 @@ def test_remote_label_matches_suggestion():
     """A remote whose stored config matches a suggestion's backend+params reuses
     that suggestion's friendly label — one stable human name across its lifecycle."""
     configs = {"aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"}}
-    assert (mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
-            == "AWS S3 — public buckets (no credentials)")
+    assert (
+        mounts_mod._remote_label("aws-open:", [_AWS_OPEN_SUGG], configs)
+        == "AWS S3 — public buckets (no credentials)"
+    )
 
 
 def test_remote_label_falls_back_to_bare_name():
@@ -879,12 +922,15 @@ def test_remote_label_ignores_name_collision():
     """Provenance, not name: a user's own remote merely named `aws` whose config
     differs from the default-profile suggestion must NOT inherit that label —
     the dropdown would otherwise claim the wrong credential source for the mount."""
-    sugg = {"id": "aws-profile:default", "label": "AWS S3 — default profile",
-            "remote_name": "aws", "backend": "s3",
-            "params": {"provider": "AWS", "env_auth": "true", "profile": "default"}}
+    sugg = {
+        "id": "aws-profile:default",
+        "label": "AWS S3 — default profile",
+        "remote_name": "aws",
+        "backend": "s3",
+        "params": {"provider": "AWS", "env_auth": "true", "profile": "default"},
+    }
     # a custom MinIO remote that just happens to be named "aws"
-    configs = {"aws": {"type": "s3", "provider": "Minio",
-                       "endpoint": "http://localhost:9000"}}
+    configs = {"aws": {"type": "s3", "provider": "Minio", "endpoint": "http://localhost:9000"}}
     assert mounts_mod._remote_label("aws:", [sugg], configs) == "aws:"
 
 
@@ -892,12 +938,15 @@ def test_rclone_state_labels_materialized_remote(monkeypatch):
     """_rclone_state exposes remotes as {name,label}: a materialized suggestion
     (aws-open:, config matches) carries its friendly label, a custom remote
     (myminio:) its bare name. The name stays the verbatim rclone mount base."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_AWS_OPEN_SUGG])
-    _fake_rclone(monkeypatch, existing_remotes=("aws-open:", "myminio:"),
-                 configs={"aws-open": {"type": "s3", "provider": "AWS",
-                                       "env_auth": "false"},
-                          "myminio": {"type": "s3", "provider": "Minio"}})
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_AWS_OPEN_SUGG])
+    _fake_rclone(
+        monkeypatch,
+        existing_remotes=("aws-open:", "myminio:"),
+        configs={
+            "aws-open": {"type": "s3", "provider": "AWS", "env_auth": "false"},
+            "myminio": {"type": "s3", "provider": "Minio"},
+        },
+    )
 
     state = mounts_mod._rclone_state()
     assert state["remotes"] == [
@@ -914,8 +963,7 @@ def test_detect_materializes_public_anonymous_remote(client, monkeypatch):
     created = []
     _fake_rclone(monkeypatch, existing_remotes=(), record=created)
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-open-public"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-open-public"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "aws-open:"
     [cmd] = created
@@ -966,13 +1014,11 @@ def test_detect_materializes_gcs_public_anonymous_remote(client, monkeypatch):
     created = []
     _fake_rclone(monkeypatch, existing_remotes=(), record=created)
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "gcs-open-public"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "gcs-open-public"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "gcs-open:"
     [cmd] = created
-    assert cmd[:5] == ["/usr/bin/rclone", "config", "create", "gcs-open",
-                       "google cloud storage"]
+    assert cmd[:5] == ["/usr/bin/rclone", "config", "create", "gcs-open", "google cloud storage"]
     assert "anonymous" in cmd and "true" in cmd
     assert not any("secret" in str(x).lower() for x in cmd)
 
@@ -980,39 +1026,46 @@ def test_detect_materializes_gcs_public_anonymous_remote(client, monkeypatch):
 def test_gcs_anonymous_detected_read_only():
     """anonymous=true GCS is the gcs-open shape — unauthenticated requests can
     never take a write, so it must read-only detect like anonymous S3 does."""
-    assert mounts_mod._gcs_anonymous(
-        {"type": "google cloud storage", "anonymous": "true"})
+    assert mounts_mod._gcs_anonymous({"type": "google cloud storage", "anonymous": "true"})
     assert not mounts_mod._gcs_anonymous({"type": "google cloud storage"})
-    assert not mounts_mod._gcs_anonymous(
-        {"type": "s3", "anonymous": "true"})
+    assert not mounts_mod._gcs_anonymous({"type": "s3", "anonymous": "true"})
 
 
 _DETECTED_SUGG = {
-    "id": "aws-env", "label": "AWS S3 — environment credentials",
-    "remote_name": "aws-env", "backend": "s3",
+    "id": "aws-env",
+    "label": "AWS S3 — environment credentials",
+    "remote_name": "aws-env",
+    "backend": "s3",
     "params": {"provider": "AWS", "env_auth": "true"},
 }
 
 
-def _fake_rclone_probe(monkeypatch, lsd_rc=0, lsd_stderr="", record=None,
-                       existing_remotes=(), delete_rc=0):
+def _fake_rclone_probe(
+    monkeypatch, lsd_rc=0, lsd_stderr="", record=None, existing_remotes=(), delete_rc=0
+):
     """Like _fake_rclone but the `lsd` credential probe can be made to fail
     with a given stderr; records EVERY argv (create, lsd, delete). Pass
     `existing_remotes` to make `listremotes` report already-created remotes
     (exercises the idempotent re-entry path) and `delete_rc` to make the
     rollback `config delete` exit non-zero."""
+
     def fake_run(cmd, **kw):
         if record is not None:
             record.append(cmd)
 
         class R:
-            returncode = (lsd_rc if "lsd" in cmd
-                          else delete_rc if "delete" in cmd else 0)
+            returncode = lsd_rc if "lsd" in cmd else delete_rc if "delete" in cmd else 0
             stderr = lsd_stderr if "lsd" in cmd else ""
-            stdout = ("rclone v1.2\n" if "version" in cmd
-                      else "{}" if "dump" in cmd
-                      else "".join(f"{r}\n" for r in existing_remotes)
-                      if "listremotes" in cmd else "")
+            stdout = (
+                "rclone v1.2\n"
+                if "version" in cmd
+                else "{}"
+                if "dump" in cmd
+                else "".join(f"{r}\n" for r in existing_remotes)
+                if "listremotes" in cmd
+                else ""
+            )
+
         return R()
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
@@ -1023,15 +1076,16 @@ def test_detect_rejects_expired_credentials(client, monkeypatch):
     """Materializing a detected credential source whose keys are stale (expired
     STS/SSO token) fails with an actionable message and rolls the half-created
     remote back — a broken remote must not linger inviting doomed mounts."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
     calls = []
     _fake_rclone_probe(
-        monkeypatch, lsd_rc=1, record=calls,
-        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+        monkeypatch,
+        lsd_rc=1,
+        record=calls,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.",
+    )
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 502
     assert "expired" in r.json()["error"].lower()
     assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
@@ -1042,15 +1096,13 @@ def test_detect_rejects_google_expired_or_revoked_token(client, monkeypatch):
     revoked." — no invalid_grant, and it matches neither "has expired" nor "is
     expired". _BAD_CRED_MARKERS must still classify it as expired creds, or
     stale GCS creds slip through to the opaque reconnect path this replaces."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
     calls = []
     _fake_rclone_probe(
-        monkeypatch, lsd_rc=1, record=calls,
-        lsd_stderr="Token has been expired or revoked.")
+        monkeypatch, lsd_rc=1, record=calls, lsd_stderr="Token has been expired or revoked."
+    )
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 502
     assert "expired" in r.json()["error"].lower()
     assert any(c[:3] == ["/usr/bin/rclone", "config", "delete"] for c in calls)
@@ -1059,13 +1111,10 @@ def test_detect_rejects_google_expired_or_revoked_token(client, monkeypatch):
 def test_detect_accepts_access_denied_probe(client, monkeypatch):
     """AccessDenied means valid keys without ListBuckets permission — the probe
     must not reject those; only credential-shaped failures do."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
-    _fake_rclone_probe(monkeypatch, lsd_rc=1,
-                       lsd_stderr="ERROR: AccessDenied: Access Denied")
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
+    _fake_rclone_probe(monkeypatch, lsd_rc=1, lsd_stderr="ERROR: AccessDenied: Access Denied")
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "aws-env:"
 
@@ -1076,8 +1125,7 @@ def test_detect_skips_probe_for_public_remotes(client, monkeypatch):
     calls = []
     _fake_rclone_probe(monkeypatch, record=calls)
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-open-public"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-open-public"}, headers=FUSED)
     assert r.status_code == 200
     assert not any("lsd" in c for c in calls)
 
@@ -1087,15 +1135,17 @@ def test_detect_reports_failed_rollback(client, monkeypatch):
     the `config delete` itself fails (non-zero), the remote may still exist, so
     the 502 must say so rather than returning the bare cred error as if cleanup
     succeeded (a lingering remote would be reported ok on the next detect)."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
     calls = []
     _fake_rclone_probe(
-        monkeypatch, lsd_rc=1, record=calls, delete_rc=1,
-        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+        monkeypatch,
+        lsd_rc=1,
+        record=calls,
+        delete_rc=1,
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.",
+    )
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 502
     err = r.json()["error"].lower()
     assert "expired" in err  # keep the cred-error wording
@@ -1108,15 +1158,17 @@ def test_detect_reprobes_existing_detected_remote_now_expired(client, monkeypatc
     healthy on faith: if its creds have since expired, re-detect returns the
     502 cred error, NOT {"ok": True} — otherwise the stale remote invites a
     doomed mount just like a freshly created one would."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
     calls = []
     _fake_rclone_probe(
-        monkeypatch, lsd_rc=1, record=calls, existing_remotes=("aws-env:",),
-        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+        monkeypatch,
+        lsd_rc=1,
+        record=calls,
+        existing_remotes=("aws-env:",),
+        lsd_stderr="ERROR: ExpiredToken: The provided token has expired.",
+    )
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 502
     assert "expired" in r.json()["error"].lower()
     # re-entry re-probed (lsd) but did NOT re-create or delete the remote
@@ -1129,14 +1181,11 @@ def test_detect_existing_detected_remote_still_valid_returns_ok(client, monkeypa
     """Regression: an already-existing detected remote whose creds are still
     valid re-probes cleanly and returns {"ok": True} — the re-probe closes the
     stale-cred hole without breaking the healthy idempotent path."""
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions",
-                        lambda: [_DETECTED_SUGG])
+    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [_DETECTED_SUGG])
     calls = []
-    _fake_rclone_probe(monkeypatch, lsd_rc=0, record=calls,
-                       existing_remotes=("aws-env:",))
+    _fake_rclone_probe(monkeypatch, lsd_rc=0, record=calls, existing_remotes=("aws-env:",))
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 200 and r.json()["name"] == "aws-env:"
     assert not any("create" in c for c in calls)  # not re-created
 
@@ -1145,6 +1194,7 @@ def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
     """Stub rclone_bin + subprocess.run: version/listremotes/config-dump canned,
     every other argv appended to `record` and reported as success. `configs` is
     the {bare_name: cfg} map `rclone config dump` returns (JSON-encoded)."""
+
     def fake_run(cmd, **kw):
         if record is not None and "create" in cmd:
             record.append(cmd)
@@ -1152,10 +1202,16 @@ def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
         class R:
             returncode = 0
             stderr = ""
-            stdout = ("rclone v1.2\n" if "version" in cmd
-                      else json.dumps(configs or {}) if "dump" in cmd
-                      else "".join(f"{r}\n" for r in existing_remotes)
-                      if "listremotes" in cmd else "")
+            stdout = (
+                "rclone v1.2\n"
+                if "version" in cmd
+                else json.dumps(configs or {})
+                if "dump" in cmd
+                else "".join(f"{r}\n" for r in existing_remotes)
+                if "listremotes" in cmd
+                else ""
+            )
+
         return R()
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
@@ -1163,16 +1219,23 @@ def _fake_rclone(monkeypatch, existing_remotes=(), record=None, configs=None):
 
 
 def test_detect_materializes_keyless_remote(client, monkeypatch):
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
-        {"id": "aws-profile:work", "label": "AWS S3 — work profile",
-         "remote_name": "aws-work", "backend": "s3",
-         "params": {"provider": "AWS", "env_auth": "true", "profile": "work"}},
-    ])
+    monkeypatch.setattr(
+        mounts_mod,
+        "_credential_suggestions",
+        lambda: [
+            {
+                "id": "aws-profile:work",
+                "label": "AWS S3 — work profile",
+                "remote_name": "aws-work",
+                "backend": "s3",
+                "params": {"provider": "AWS", "env_auth": "true", "profile": "work"},
+            },
+        ],
+    )
     created = []
     _fake_rclone(monkeypatch, existing_remotes=(), record=created)
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-profile:work"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-profile:work"}, headers=FUSED)
     assert r.status_code == 200
     assert r.json()["name"] == "aws-work:"
     [cmd] = created
@@ -1183,15 +1246,23 @@ def test_detect_materializes_keyless_remote(client, monkeypatch):
 
 
 def test_detect_is_idempotent_when_remote_exists(client, monkeypatch):
-    monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [
-        {"id": "aws-env", "label": "L", "remote_name": "aws-env",
-         "backend": "s3", "params": {"provider": "AWS", "env_auth": "true"}},
-    ])
+    monkeypatch.setattr(
+        mounts_mod,
+        "_credential_suggestions",
+        lambda: [
+            {
+                "id": "aws-env",
+                "label": "L",
+                "remote_name": "aws-env",
+                "backend": "s3",
+                "params": {"provider": "AWS", "env_auth": "true"},
+            },
+        ],
+    )
     created = []
     _fake_rclone(monkeypatch, existing_remotes=("aws-env:",), record=created)
 
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "aws-env"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "aws-env"}, headers=FUSED)
     assert r.status_code == 200 and r.json()["name"] == "aws-env:"
     assert created == []  # already present → no create attempted
 
@@ -1199,14 +1270,12 @@ def test_detect_is_idempotent_when_remote_exists(client, monkeypatch):
 def test_detect_unknown_source_is_404(client, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_credential_suggestions", lambda: [])
     _fake_rclone(monkeypatch)
-    r = client.post("/api/mounts/remotes/detect",
-                    json={"id": "nope"}, headers=FUSED)
+    r = client.post("/api/mounts/remotes/detect", json={"id": "nope"}, headers=FUSED)
     assert r.status_code == 404
 
 
 def test_detect_requires_fused_header(client):
-    assert client.post("/api/mounts/remotes/detect",
-                       json={"id": "x"}).status_code == 403
+    assert client.post("/api/mounts/remotes/detect", json={"id": "x"}).status_code == 403
 
 
 # -- unmount-busy: release tile daemons, retry once -------------------------------
@@ -1232,8 +1301,7 @@ def tile_daemon(tmp_path, monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), H)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     state = tmp_path / "daemon.json"
-    state.write_text(json.dumps(
-        {"port": server.server_address[1], "pid": 1, "token": "tok-test"}))
+    state.write_text(json.dumps({"port": server.server_address[1], "pid": 1, "token": "tok-test"}))
     missing = tmp_path / "absent" / "daemon.json"  # the parallel file, absent
     monkeypatch.setattr(mounts_mod, "DAEMON_STATE_FILES", (str(state), str(missing)))
     yield quits
@@ -1245,7 +1313,7 @@ def test_unmount_busy_quits_daemons_and_retries(home, rcd, tile_daemon, monkeypa
     c = mounts_mod.add_mount("data", "remote:bucket")
     rcd.responses["mount/unmount"] = [(500, {"error": "device busy"}), {}]
     assert mounts_mod.detach_mount(c) is None
-    assert tile_daemon == ["/quit?t=tok-test"]   # token forwarded (D122 gate)
+    assert tile_daemon == ["/quit?t=tok-test"]  # token forwarded (D122 gate)
     assert sum(1 for m, _ in rcd.calls if m == "mount/unmount") == 2
 
 
@@ -1278,8 +1346,8 @@ def test_unmount_still_busy_after_release_reports_error(home, rcd, tile_daemon, 
 def test_delete_blocked_while_still_mounted(client, rcd, tile_daemon, monkeypatch):
     monkeypatch.setattr(mounts_mod.time, "sleep", lambda s: None)
     cid = client.post(
-        "/api/mounts", json={"name": "data", "remote": "r:bucket"},
-        headers=FUSED).json()["id"]
+        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED
+    ).json()["id"]
     mp = mounts_mod.mountpoint(mounts_mod.get_mount(cid))
     rcd.responses["mount/unmount"] = (500, {"error": "device busy"})
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
@@ -1304,8 +1372,7 @@ def _make_mount(home, rcd, name="data", remote="remote:bucket", served=True):
     mp = mounts_mod.mountpoint(c)
     _os.makedirs(mp, exist_ok=True)
     if served:
-        rcd.responses["mount/listmounts"] = {
-            "mountPoints": [{"Fs": remote, "MountPoint": mp}]}
+        rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": remote, "MountPoint": mp}]}
     return c, mp
 
 
@@ -1367,6 +1434,7 @@ def test_state_unmounted_when_nothing_there(home, rcd):
 def _stub_lsd(monkeypatch, rc=0, lsd_stderr="", record=None):
     """Stub rclone_bin + subprocess.run so the credential probe's `lsd` returns
     a chosen returncode/stderr; config/get still routes to the stub rcd."""
+
     def fake_run(cmd, **kw):
         if record is not None:
             record.append(cmd)
@@ -1375,6 +1443,7 @@ def _stub_lsd(monkeypatch, rc=0, lsd_stderr="", record=None):
             returncode = rc
             stderr = lsd_stderr
             stdout = ""
+
         return R()
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
@@ -1388,12 +1457,10 @@ def _disconnected_mount(home, rcd, monkeypatch, remote="corp:bucket"):
     return c, mp
 
 
-def test_broken_mount_error_reports_expired_credentials(
-        home, rcd, monkeypatch, fresh_upstream):
+def test_broken_mount_error_reports_expired_credentials(home, rcd, monkeypatch, fresh_upstream):
     c, mp = _disconnected_mount(home, rcd, monkeypatch)
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
-    _stub_lsd(monkeypatch, rc=1,
-              lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
+    _stub_lsd(monkeypatch, rc=1, lsd_stderr="ERROR: ExpiredToken: The provided token has expired.")
 
     err = mounts_mod.broken_mount_error(_os.path.join(mp, "data"))
     assert err is not None
@@ -1403,7 +1470,8 @@ def test_broken_mount_error_reports_expired_credentials(
 
 
 def test_broken_mount_error_routes_reauthed_creds_to_restart(
-        home, rcd, monkeypatch, fresh_upstream):
+    home, rcd, monkeypatch, fresh_upstream
+):
     # env_auth remote, disconnected, but the creds probe SUCCEEDS: the user
     # re-authed and the long-lived daemon is still holding the stale keys.
     # Reconnect can't fix that — only a restart re-reads the refreshed creds.
@@ -1420,13 +1488,13 @@ def test_broken_mount_error_routes_reauthed_creds_to_restart(
 
 
 def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
-        home, rcd, monkeypatch, fresh_upstream):
+    home, rcd, monkeypatch, fresh_upstream
+):
     # A remote that isn't env_auth-backed can't have detected creds expire —
     # no lsd probe runs (it would only add latency), and the generic message
     # stands.
     c, mp = _disconnected_mount(home, rcd, monkeypatch)
-    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
-                                   "access_key_id": "AKIA"}
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false", "access_key_id": "AKIA"}
     calls = []
     _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken", record=calls)
 
@@ -1436,7 +1504,8 @@ def test_broken_mount_error_skips_cred_probe_for_non_env_auth(
 
 
 def test_broken_mount_error_no_cred_probe_when_never_mounted(
-        home, rcd, monkeypatch, fresh_upstream):
+    home, rcd, monkeypatch, fresh_upstream
+):
     # "unmounted" (never mounted / cleanly disconnected) is a user action, not
     # a credential failure — the probe must not run for it.
     c, mp = _make_mount(home, rcd, remote="corp:bucket", served=False)
@@ -1454,8 +1523,7 @@ def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatc
     c, mp = _make_mount(home, rcd, served=False)
     rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
     still_mounted = {"v": True}
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: p == mp and still_mounted["v"])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp and still_mounted["v"])
     forced = []
 
     def fake_run(cmd, **kw):
@@ -1482,10 +1550,15 @@ def test_reconnect_stops_serve_so_it_rebinds_to_fresh_vfs(home, rcd):
     # starts a fresh one bound to the remounted VFS. The serve's options match
     # SERVE_VFS_OPT, so the ONLY serve/stop here is reconnect's, not a drift.
     c, mp = _make_mount(home, rcd, served=False)
-    rcd.responses["serve/list"] = {"list": [{
-        "id": "http-live", "addr": "127.0.0.1:41000",
-        "params": {"type": "http", "fs": "remote:bucket",
-                   **mounts_mod.SERVE_VFS_OPT}}]}
+    rcd.responses["serve/list"] = {
+        "list": [
+            {
+                "id": "http-live",
+                "addr": "127.0.0.1:41000",
+                "params": {"type": "http", "fs": "remote:bucket", **mounts_mod.SERVE_VFS_OPT},
+            }
+        ]
+    }
     assert mounts_mod.reconnect_mount(c) is None
     assert ("serve/stop", {"id": "http-live"}) in rcd.calls
     assert any(m == "mount/mount" for m, _ in rcd.calls)
@@ -1513,8 +1586,7 @@ def test_forced_detach_escalates_on_rc_failure(home, rcd, monkeypatch):
     c, mp = _make_mount(home, rcd, served=False)
     rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
     still_mounted = {"v": True}
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: p == mp and still_mounted["v"])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp and still_mounted["v"])
 
     def fake_run(cmd, **kw):
         still_mounted["v"] = False
@@ -1535,8 +1607,9 @@ def test_forced_detach_escalates_on_rc_failure(home, rcd, monkeypatch):
 
 
 def test_reconnect_endpoint(client, rcd, monkeypatch):
-    m = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"},
-                    headers=FUSED).json()
+    m = client.post(
+        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED
+    ).json()
     assert client.post(f"/api/mounts/{m['id']}/reconnect").status_code == 403
     r = client.post(f"/api/mounts/{m['id']}/reconnect", headers=FUSED)
     assert r.status_code == 200
@@ -1547,14 +1620,14 @@ def test_fs_list_errors_for_dead_mount_instead_of_empty(client, rcd, home):
     # The user-visible bug: a dead mount leaves a plain empty dir at the
     # mountpoint, and the folder view rendered it as an ordinary empty
     # folder. It must 503 with a pointer to the Mounts page instead.
-    m = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"},
-                    headers=FUSED).json()
+    m = client.post(
+        "/api/mounts", json={"name": "data", "remote": "r:bucket"}, headers=FUSED
+    ).json()
     mp = m["mountpoint"]
     _os.makedirs(mp, exist_ok=True)
     # rcd tracks the mount (create succeeded) but nothing is kernel-mounted:
     # state != "mounted" -> the empty listing is not trustworthy.
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "r:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "r:bucket", "MountPoint": mp}]}
     r = client.get("/api/fs/list", params={"path": mp})
     assert r.status_code == 503
     assert "Mounts page" in r.json()["error"]
@@ -1582,7 +1655,8 @@ def test_run_automount_mounts_every_mount(home, rcd):
 def test_run_automount_skips_already_mounted(home, rcd):
     c = mounts_mod.add_mount("auto", "r:one")
     rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]}
+        "mountPoints": [{"Fs": "r:one", "MountPoint": mounts_mod.mountpoint(c)}]
+    }
     mounts_mod.run_automount()
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
 
@@ -1662,8 +1736,10 @@ def test_read_write_mount_has_readonly_false_and_no_serve_flag(home, rcd):
     assert serve["read_only"] == "false"
 
 
-@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
-                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+@pytest.mark.skipif(
+    mounts_mod.sys.platform != "darwin",
+    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs",
+)
 def test_read_only_mount_adds_rdonly_extraoption_on_macos(home, rcd):
     c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
     assert mounts_mod.attach_mount(c) is None
@@ -1673,8 +1749,10 @@ def test_read_only_mount_adds_rdonly_extraoption_on_macos(home, rcd):
     assert "timeo=600" in body["mountOpt"]["ExtraOptions"]
 
 
-@pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
-                    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs")
+@pytest.mark.skipif(
+    mounts_mod.sys.platform != "darwin",
+    reason="rdonly rides macOS nfsmount ExtraOptions; Linux FUSE differs",
+)
 def test_read_write_mount_has_no_rdonly_on_macos(home, rcd):
     c = mounts_mod.add_mount("rw", "remote:bucket", read_only=False)
     assert mounts_mod.attach_mount(c) is None
@@ -1699,12 +1777,10 @@ def test_adopted_mount_remounts_when_vfs_predates_read_only(home, rcd, monkeypat
     # Live rcd mount, but the record has no mounted_read_only: it was created
     # before the flag reached the rclone layer, so its VFS is writable.
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     # Kernel mount is up for the adopt check, gone once reconnect unmounts.
     seq = iter([True])
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: next(seq, False))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: next(seq, False))
     assert mounts_mod.attach_mount(c) is None
     methods = [m for m, _ in rcd.calls]
     assert methods.index("mount/unmount") < methods.index("mount/mount")
@@ -1718,8 +1794,7 @@ def test_adopted_mount_left_alone_when_vfs_matches_flag(home, rcd, monkeypatch):
     c["mounted_read_only"] = True
     mounts_mod._update_mount(c)
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     assert mounts_mod.attach_mount(c) is None
     assert not any(m in ("mount/mount", "mount/unmount") for m, _ in rcd.calls)
@@ -1731,11 +1806,9 @@ def test_run_automount_reapplies_read_only_to_adopted_mounts(home, rcd, monkeypa
     # writable VFS forever (the incident's doomed-upload loop, reborn).
     c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
     mp = mounts_mod.mountpoint(c)
-    rcd.responses["mount/listmounts"] = {
-        "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
+    rcd.responses["mount/listmounts"] = {"mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
     seq = iter([True, True])  # live for automount + adopt checks, then unmounted
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: next(seq, False))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: next(seq, False))
     mounts_mod.run_automount()
     [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
     assert body["vfsOpt"]["ReadOnly"] is True
@@ -1790,7 +1863,7 @@ def test_rcd_log_rotates_past_cap(home):
         f.write(b"x" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
     assert mounts_mod._rotate_rcd_log() == log
     assert _os.path.exists(log + ".1")  # rolled aside
-    assert not _os.path.exists(log)     # rclone will recreate it fresh
+    assert not _os.path.exists(log)  # rclone will recreate it fresh
 
 
 def test_rcd_log_not_rotated_below_cap(home):
@@ -1812,9 +1885,9 @@ def test_copytruncate_rcd_log_caps_a_live_daemons_log(home):
         f.write(b"y" * (mounts_mod.RCD_LOG_MAX_BYTES + 1))
     ino_before = _os.stat(log).st_ino
     mounts_mod._copytruncate_rcd_log()
-    assert _os.path.exists(log)                       # live file kept in place
-    assert _os.stat(log).st_ino == ino_before         # SAME inode (truncated, not replaced)
-    assert _os.path.getsize(log) == 0                 # emptied
+    assert _os.path.exists(log)  # live file kept in place
+    assert _os.stat(log).st_ino == ino_before  # SAME inode (truncated, not replaced)
+    assert _os.path.getsize(log) == 0  # emptied
     assert _os.path.getsize(log + ".1") == mounts_mod.RCD_LOG_MAX_BYTES + 1  # contents saved
 
 
@@ -1837,8 +1910,7 @@ def test_attach_syncs_serves_when_already_mounted(home, rcd, monkeypatch):
     # The already-a-kernel-mount early return must still reconcile serves:
     # without one, /api/fs/raw falls back to reads through the kernel mount.
     c = mounts_mod.add_mount("data", "remote:bucket")
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: p == mounts_mod.mountpoint(c))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mounts_mod.mountpoint(c))
     assert mounts_mod.attach_mount(c) is None
     assert not any(m == "mount/mount" for m, _ in rcd.calls)
     [(_, body)] = [x for x in rcd.calls if x[0] == "serve/start"]
@@ -1853,10 +1925,19 @@ def test_sync_serves_reuses_existing_serve(home, rcd):
     # option set — SERVE_VFS_OPT plus read_only=false — is reused, not
     # restarted. (An adopted serve missing read_only reads as drift and is
     # restarted; that rollout is covered by the stale-opts test below.)
-    rcd.responses["serve/list"] = {"list": [{
-        "id": "http-live", "addr": "127.0.0.1:41000",
-        "params": {"type": "http", "fs": "remote:bucket",
-                   **mounts_mod._serve_vfs_opt_for(c)}}]}
+    rcd.responses["serve/list"] = {
+        "list": [
+            {
+                "id": "http-live",
+                "addr": "127.0.0.1:41000",
+                "params": {
+                    "type": "http",
+                    "fs": "remote:bucket",
+                    **mounts_mod._serve_vfs_opt_for(c),
+                },
+            }
+        ]
+    }
     mounts_mod.sync_serves()
     assert not any(m == "serve/start" for m, _ in rcd.calls)
     serves = json.load(open(mounts_mod.serves_path()))
@@ -1869,10 +1950,19 @@ def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
     # A serve started by the old vfsOpt-object code has NO flat vfs_* params
     # (rcd ignored the object) — exactly this drift, so the fix self-deploys.
     c = mounts_mod.add_mount("data", "remote:bucket")
-    rcd.responses["serve/list"] = {"list": [{
-        "id": "http-stale", "addr": "127.0.0.1:41000",
-        "params": {"type": "http", "fs": "remote:bucket",
-                   "vfsOpt": {"CacheMode": "full", "CacheMaxSize": "5Gi"}}}]}
+    rcd.responses["serve/list"] = {
+        "list": [
+            {
+                "id": "http-stale",
+                "addr": "127.0.0.1:41000",
+                "params": {
+                    "type": "http",
+                    "fs": "remote:bucket",
+                    "vfsOpt": {"CacheMode": "full", "CacheMaxSize": "5Gi"},
+                },
+            }
+        ]
+    }
     mounts_mod.sync_serves()
     [(_, stop)] = [x for x in rcd.calls if x[0] == "serve/stop"]
     assert stop == {"id": "http-stale"}
@@ -1885,9 +1975,15 @@ def test_sync_serves_restarts_serve_with_stale_vfs_opts(home, rcd):
 
 def test_sync_serves_stops_orphaned_serve(home, rcd):
     # A serve whose mount record is gone (deleted mount) gets stopped.
-    rcd.responses["serve/list"] = {"list": [{
-        "id": "http-orphan", "addr": "127.0.0.1:41001",
-        "params": {"type": "http", "fs": "remote:deleted"}}]}
+    rcd.responses["serve/list"] = {
+        "list": [
+            {
+                "id": "http-orphan",
+                "addr": "127.0.0.1:41001",
+                "params": {"type": "http", "fs": "remote:deleted"},
+            }
+        ]
+    }
     mounts_mod.sync_serves()
     [(_, body)] = [x for x in rcd.calls if x[0] == "serve/stop"]
     assert body == {"id": "http-orphan"}
@@ -1960,9 +2056,9 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home, rcd):
     os.makedirs(mp)
     f = os.path.join(mp, "x.bin")
     open(f, "wb").write(b"LOCAL-BYTES")  # what a (dead-mount) local read would see
-    rcd.responses["operations/list"] = {"list": [
-        {"Name": "x.bin", "IsDir": False, "Size": 77,
-         "ModTime": "2024-01-02T03:04:05Z"}]}
+    rcd.responses["operations/list"] = {
+        "list": [{"Name": "x.bin", "IsDir": False, "Size": 77, "ModTime": "2024-01-02T03:04:05Z"}]
+    }
 
     served = home / "served"
     served.mkdir()
@@ -1973,14 +2069,17 @@ def test_fs_raw_proxies_range_from_mount_serve(client, home, rcd):
             pass
 
     srv = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(H, directory=str(served)))
+        ("127.0.0.1", 0), functools.partial(H, directory=str(served))
+    )
     import threading
 
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         import fused_render.shell.storage as storage
-        storage.write_json(mounts_mod.serves_path(),
-                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+
+        storage.write_json(
+            mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{srv.server_address[1]}"}
+        )
         r = client.get("/api/fs/raw", params={"path": f})
         assert r.status_code == 200 and r.content == b"REMOTE-BYTES"
         r = client.head("/api/fs/raw", params={"path": f})
@@ -2013,21 +2112,22 @@ def test_fs_raw_directory_404s_not_listing(client, home, rcd):
     open(os.path.join(d, "x.bin"), "wb").write(b"CHUNK")
     # rcd reports `subdir` as a directory, so the HEAD probe 404s without a
     # kernel stat.
-    rcd.responses["operations/list"] = {"list": [
-        {"Name": "subdir", "IsDir": True, "Size": -1,
-         "ModTime": "2024-01-02T03:04:05Z"}]}
+    rcd.responses["operations/list"] = {
+        "list": [{"Name": "subdir", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"}]
+    }
 
     class H(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
-    srv = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(H, directory=str(mp)))
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(H, directory=str(mp)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         import fused_render.shell.storage as storage
-        storage.write_json(mounts_mod.serves_path(),
-                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
+
+        storage.write_json(
+            mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{srv.server_address[1]}"}
+        )
         # Browser-style request (Sec-Fetch-Mode present) skips the redirect
         # branch and reaches the proxy path, which is where a directory would
         # otherwise leak a 200 listing.
@@ -2057,6 +2157,7 @@ def test_fs_raw_serve_dead_returns_503_never_kernel_reads_mount(client, home):
         s.bind(("127.0.0.1", 0))
         dead = s.getsockname()[1]
     import fused_render.shell.storage as storage
+
     storage.write_json(mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{dead}"})
     r = client.get("/api/fs/raw", params={"path": f})
     assert r.status_code == 503
@@ -2078,10 +2179,13 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
     # The warm-read fallthrough resolves a mount-backed path's shape through the
     # rcd (_mount_probe), never a kernel stat — stub the parent listing so the
     # file reads as a present regular object and the proxy is reached.
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda p, timeout=None: [{"Name": "x.bin", "IsDir": False,
-                                                  "Size": 11,
-                                                  "ModTime": "2024-01-02T03:04:05Z"}])
+    monkeypatch.setattr(
+        mounts_mod,
+        "rc_list_dir",
+        lambda p, timeout=None: [
+            {"Name": "x.bin", "IsDir": False, "Size": 11, "ModTime": "2024-01-02T03:04:05Z"}
+        ],
+    )
 
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -2097,10 +2201,11 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         import fused_render.shell.storage as storage
-        storage.write_json(mounts_mod.serves_path(),
-                           {mp: f"http://127.0.0.1:{srv.server_address[1]}"})
-        r = client.get("/api/fs/raw", params={"path": f},
-                       headers={"Range": "bytes=99999999-"})
+
+        storage.write_json(
+            mounts_mod.serves_path(), {mp: f"http://127.0.0.1:{srv.server_address[1]}"}
+        )
+        r = client.get("/api/fs/raw", params={"path": f}, headers={"Range": "bytes=99999999-"})
         assert r.status_code == 416
         assert r.headers["content-range"] == "bytes */12345"
     finally:
@@ -2146,17 +2251,24 @@ def test_upstream_url_public_s3_when_link_unsupported(home, rcd, fresh_upstream)
     # config is memoized: minting URLs for later objects on the same remote
     # (a zarr store touches thousands) is pure string building, no rc call.
     rcd.responses["operations/publiclink"] = (
-        500, {"error": 'unsupported signer type "smithy.api#noAuth"'})
+        500,
+        {"error": 'unsupported signer type "smithy.api#noAuth"'},
+    )
     rcd.responses["config/get"] = {
-        "type": "s3", "provider": "AWS", "env_auth": "false",
-        "region": "us-west-2"}
+        "type": "s3",
+        "provider": "AWS",
+        "env_auth": "false",
+        "region": "us-west-2",
+    }
     c = mounts_mod.add_mount("data", "aws-open:bucket/pre fix")
     f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
-        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet")
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/k%20ey.parquet"
+    )
     f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
     assert mounts_mod.upstream_url_for(f2) == (
-        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/other.parquet")
+        "https://bucket.s3.us-west-2.amazonaws.com/pre%20fix/other.parquet"
+    )
     assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
     assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
@@ -2165,11 +2277,10 @@ def test_gcs_public_object_url_builds_unsigned_url(home, rcd, fresh_upstream):
     # Anonymous GCS objects are reachable by a plain path-style storage URL —
     # no region, no dotted-bucket rule. The key is percent-encoded exactly as
     # the S3 builder encodes it.
-    mounts_mod._upstream_cfg["gcs-open"] = {
-        "type": "google cloud storage", "anonymous": "true"}
-    assert mounts_mod._gcs_public_object_url(
-        "gcs-open:bucket/pre fix", "k ey.parquet") == (
-        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+    mounts_mod._upstream_cfg["gcs-open"] = {"type": "google cloud storage", "anonymous": "true"}
+    assert mounts_mod._gcs_public_object_url("gcs-open:bucket/pre fix", "k ey.parquet") == (
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet"
+    )
     # A non-anonymous GCS remote has no reachable unsigned URL.
     mounts_mod._upstream_cfg["gcp"] = {"type": "google cloud storage"}
     assert mounts_mod._gcs_public_object_url("gcp:bucket", "x.parquet") is None
@@ -2181,15 +2292,16 @@ def test_upstream_url_public_gcs_when_anonymous(home, rcd, fresh_upstream):
     # Anonymous GCS remotes can never presign either — the config makes that
     # knowable up front, so publiclink is never attempted and the plain public
     # object URL is minted directly, config memoized for later objects.
-    rcd.responses["config/get"] = {
-        "type": "google cloud storage", "anonymous": "true"}
+    rcd.responses["config/get"] = {"type": "google cloud storage", "anonymous": "true"}
     c = mounts_mod.add_mount("open", "gcs-open:bucket/pre fix")
     f = os.path.join(mounts_mod.mountpoint(c), "k ey.parquet")
     assert mounts_mod.upstream_url_for(f) == (
-        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet")
+        "https://storage.googleapis.com/bucket/pre%20fix/k%20ey.parquet"
+    )
     f2 = os.path.join(mounts_mod.mountpoint(c), "other.parquet")
     assert mounts_mod.upstream_url_for(f2) == (
-        "https://storage.googleapis.com/bucket/pre%20fix/other.parquet")
+        "https://storage.googleapis.com/bucket/pre%20fix/other.parquet"
+    )
     assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
     assert len([x for x in rcd.calls if x[0] == "config/get"]) == 1
 
@@ -2248,8 +2360,9 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     # redirect path, and browser/HEAD fall back to the file when it's dead.
     storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
 
-    r = client.get("/api/fs/raw", params={"path": f},
-                   headers={"Range": "bytes=0-3"}, follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw", params={"path": f}, headers={"Range": "bytes=0-3"}, follow_redirects=False
+    )
     assert r.status_code == 307
     assert r.headers["location"] == "https://signed.example/x"
 
@@ -2259,24 +2372,24 @@ def test_fs_raw_redirects_cold_native_range_reads(client, home, rcd, fresh_upstr
     r = client.get("/api/fs/raw", params={"path": f}, follow_redirects=False)
     assert r.status_code == 307
     ghost = os.path.join(mp, "not-listed-yet.bin")
-    r = client.get("/api/fs/raw", params={"path": ghost},
-                   follow_redirects=False)
+    r = client.get("/api/fs/raw", params={"path": ghost}, follow_redirects=False)
     assert r.status_code == 307
 
-    r = client.get("/api/fs/raw", params={"path": f},
-                   headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw",
+        params={"path": f},
+        headers={"Range": "bytes=0-3", "Sec-Fetch-Mode": "cors"},
+        follow_redirects=False,
+    )
     assert r.status_code != 307
     r = client.head("/api/fs/raw", params={"path": f}, follow_redirects=False)
     assert r.status_code != 307
     # HEAD still answers from the stat: missing files 404 locally.
-    r = client.head("/api/fs/raw", params={"path": ghost},
-                    follow_redirects=False)
+    r = client.head("/api/fs/raw", params={"path": ghost}, follow_redirects=False)
     assert r.status_code == 404
 
 
-def test_api_run_rewrites_raw_source_url_to_direct(
-        client, home, rcd, fresh_upstream, tmp_path):
+def test_api_run_rewrites_raw_source_url_to_direct(client, home, rcd, fresh_upstream, tmp_path):
     """/api/run swaps a raw-proxy source_url for the store's direct URL on a
     cold mount-backed file (redirects defeat httpfs connection pooling — the
     reader must get the direct URL up front), and leaves everything else
@@ -2296,14 +2409,16 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
 
     echo = tmp_path / "echo.py"
-    echo.write_text("def main(source_url=None):\n"
-                    "    return {'source_url': source_url}\n",
-                    encoding="utf-8")
+    echo.write_text(
+        "def main(source_url=None):\n    return {'source_url': source_url}\n", encoding="utf-8"
+    )
 
     def run(src):
-        r = client.post("/api/run", json={
-            "py": str(echo), "params": {"source_url": src}},
-            headers={"X-Fused": "1"})
+        r = client.post(
+            "/api/run",
+            json={"py": str(echo), "params": {"source_url": src}},
+            headers={"X-Fused": "1"},
+        )
         return r.json()["result"]["source_url"]
 
     raw = f"http://testserver/api/fs/raw?path={quote(f)}"
@@ -2312,8 +2427,7 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     # Warm file (prefetch landed): the raw proxy stays, so reads replay from
     # the serve's local cache.
     with prefetch_mod._lock:
-        prefetch_mod._jobs[f] = {"status": "done", "size": 4, "done": 4,
-                                 "at": 0.0}
+        prefetch_mod._jobs[f] = {"status": "done", "size": 4, "done": 4, "at": 0.0}
     try:
         assert run(raw) == raw
     finally:
@@ -2324,8 +2438,7 @@ def test_api_run_rewrites_raw_source_url_to_direct(
     plain.write_bytes(b"x")
     unmounted = f"http://testserver/api/fs/raw?path={quote(str(plain))}"
     assert run(unmounted) == unmounted
-    assert run("https://elsewhere.example/data.parquet") == \
-        "https://elsewhere.example/data.parquet"
+    assert run("https://elsewhere.example/data.parquet") == "https://elsewhere.example/data.parquet"
 
 
 # -- read-only remotes -----------------------------------------------------
@@ -2350,15 +2463,18 @@ def _attached(name, remote):
 
 def test_attach_marks_anonymous_s3_read_only(home, rcd):
     rcd.responses["operations/fsinfo"] = FSINFO_RW
-    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
-                                   "env_auth": "false"}
+    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS", "env_auth": "false"}
     assert _attached("pub", "aws-open:bucket")["read_only"] is True
 
 
 def test_attach_marks_credentialed_s3_writable(home, rcd):
     rcd.responses["operations/fsinfo"] = FSINFO_RW
-    rcd.responses["config/get"] = {"type": "s3", "provider": "AWS",
-                                   "env_auth": "true", "profile": "default"}
+    rcd.responses["config/get"] = {
+        "type": "s3",
+        "provider": "AWS",
+        "env_auth": "true",
+        "profile": "default",
+    }
     assert _attached("data", "aws:bucket")["read_only"] is False
 
 
@@ -2422,12 +2538,14 @@ def test_mount_read_only_path_lookup(home):
     ro = mounts_mod.add_mount("pub", "aws-open:bucket", read_only=True)
     rw = mounts_mod.add_mount("data", "aws:bucket", read_only=False)
     legacy = mounts_mod.add_mount("old", "old:bucket")  # pre-flag record
-    assert mounts_mod.mount_read_only(
-        _os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
-    assert mounts_mod.mount_read_only(
-        _os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
-    assert mounts_mod.mount_read_only(
-        _os.path.join(mounts_mod.mountpoint(legacy), "f.parquet")) is False
+    assert mounts_mod.mount_read_only(_os.path.join(mounts_mod.mountpoint(ro), "f.parquet")) is True
+    assert (
+        mounts_mod.mount_read_only(_os.path.join(mounts_mod.mountpoint(rw), "f.parquet")) is False
+    )
+    assert (
+        mounts_mod.mount_read_only(_os.path.join(mounts_mod.mountpoint(legacy), "f.parquet"))
+        is False
+    )
     assert mounts_mod.mount_read_only("/somewhere/else.parquet") is False
 
 
@@ -2442,18 +2560,22 @@ def test_fix_dotted_bucket_url():
     fix = mounts_mod._fix_dotted_bucket_url
     # dotted bucket in the TLS hostname can never pass the wildcard cert:
     # unsigned URLs are rewritten to path-style
-    assert fix("https://us-west-2.opendata.source.coop.s3.us-west-2"
-               ".amazonaws.com/mindearth/a%20b/zarr.json") == \
-        ("https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop"
-         "/mindearth/a%20b/zarr.json")
+    assert fix(
+        "https://us-west-2.opendata.source.coop.s3.us-west-2"
+        ".amazonaws.com/mindearth/a%20b/zarr.json"
+    ) == (
+        "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop"
+        "/mindearth/a%20b/zarr.json"
+    )
     # a signed one can't be (SigV4 covers Host) — dropped, caller stays on
     # the serve proxy
-    assert fix("https://buck.et.s3.us-east-1.amazonaws.com/k"
-               "?X-Amz-Signature=abc") is None
+    assert fix("https://buck.et.s3.us-east-1.amazonaws.com/k?X-Amz-Signature=abc") is None
     # dot-free buckets and non-AWS hosts pass through untouched
-    for u in ("https://plain.s3.us-west-2.amazonaws.com/key",
-              "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
-              "https://minio.example.com/bucket/key"):
+    for u in (
+        "https://plain.s3.us-west-2.amazonaws.com/key",
+        "https://plain.s3.us-west-2.amazonaws.com/key?X-Amz-Sig=x",
+        "https://minio.example.com/bucket/key",
+    ):
         assert fix(u) == u
 
 
@@ -2471,17 +2593,21 @@ _ANON_S3_CFG = {"type": "s3", "provider": "AWS", "env_auth": "false"}
 def _s3_list_xml(*, prefixes=(), contents=(), truncated=False, next_token=None):
     """A ListObjectsV2 response body. `contents` are (key, size, lastmod)."""
     ns = "http://s3.amazonaws.com/doc/2006-03-01/"
-    parts = [f'<?xml version="1.0" encoding="UTF-8"?>',
-             f'<ListBucketResult xmlns="{ns}">',
-             f'<IsTruncated>{"true" if truncated else "false"}</IsTruncated>']
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<ListBucketResult xmlns="{ns}">',
+        f"<IsTruncated>{'true' if truncated else 'false'}</IsTruncated>",
+    ]
     if next_token:
-        parts.append(f'<NextContinuationToken>{next_token}</NextContinuationToken>')
+        parts.append(f"<NextContinuationToken>{next_token}</NextContinuationToken>")
     for key, size, lastmod in contents:
-        parts.append(f'<Contents><Key>{key}</Key><Size>{size}</Size>'
-                     f'<LastModified>{lastmod}</LastModified></Contents>')
+        parts.append(
+            f"<Contents><Key>{key}</Key><Size>{size}</Size>"
+            f"<LastModified>{lastmod}</LastModified></Contents>"
+        )
     for p in prefixes:
-        parts.append(f'<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>')
-    parts.append('</ListBucketResult>')
+        parts.append(f"<CommonPrefixes><Prefix>{p}</Prefix></CommonPrefixes>")
+    parts.append("</ListBucketResult>")
     return "".join(parts).encode()
 
 
@@ -2535,8 +2661,11 @@ def test_s3_direct_capable_false_for_credentialed(home, rcd, fresh_upstream):
 
 
 def test_s3_direct_capable_false_for_custom_endpoint(home, rcd, fresh_upstream):
-    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
-                                   "endpoint": "https://r2.example.com"}
+    rcd.responses["config/get"] = {
+        "type": "s3",
+        "env_auth": "false",
+        "endpoint": "https://r2.example.com",
+    }
     c = mounts_mod.add_mount("r2", "r2:bucket")
     assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
 
@@ -2551,8 +2680,7 @@ def test_s3_list_page_url_and_query_nested_dir(home, rcd, fresh_upstream, s3_url
     calls, _box = s3_urlopen
     rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    mounts_mod.s3_list_page(
-        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
     [(url, timeout)] = calls
     assert url.startswith("https://mur-sst.s3.us-west-2.amazonaws.com/?")
     q = up.parse_qs(up.urlsplit(url).query)
@@ -2592,8 +2720,7 @@ def test_s3_list_page_continuation_token_urlencoded(home, rcd, fresh_upstream, s
     calls, _box = s3_urlopen
     rcd.responses["config/get"] = _ANON_S3_CFG
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000,
-                            continuation="a b/c+d=")
+    mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000, continuation="a b/c+d=")
     q = up.parse_qs(up.urlsplit(calls[0][0]).query)
     assert q["continuation-token"] == ["a b/c+d="]
 
@@ -2604,7 +2731,8 @@ def test_s3_list_page_dotted_bucket_path_style(home, rcd, fresh_upstream, s3_url
     c = mounts_mod.add_mount("open", "aws-open:us-west-2.opendata.source.coop/foo")
     mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
     assert calls[0][0].startswith(
-        "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop?")
+        "https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop?"
+    )
 
 
 def test_s3_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream, s3_urlopen):
@@ -2618,9 +2746,12 @@ def test_s3_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream,
             ("zarr-v1/analysed_sst/", 0, "2000-01-01T00:00:00.000Z"),
             ("zarr-v1/analysed_sst/.zattrs", 42, "2024-01-02T03:04:05.000Z"),
         ],
-        truncated=True, next_token="TOKEN123")
+        truncated=True,
+        next_token="TOKEN123",
+    )
     entries, token = mounts_mod.s3_list_page(
-        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000
+    )
     by = {e["Name"]: e for e in entries}
     assert set(by) == {"2020", "2021", ".zattrs"}
     assert by["2020"]["IsDir"] is True and by["2020"]["Size"] is None
@@ -2643,8 +2774,7 @@ def test_s3_list_page_http_403_raises_s3listerror(home, rcd, fresh_upstream, s3_
     calls, box = s3_urlopen
     rcd.responses["config/get"] = _ANON_S3_CFG
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    box["raise"] = mounts_mod.urllib.error.HTTPError(
-        "https://x", 403, "Forbidden", {}, None)
+    box["raise"] = mounts_mod.urllib.error.HTTPError("https://x", 403, "Forbidden", {}, None)
     with pytest.raises(mounts_mod.S3ListError):
         mounts_mod.s3_list_page(mounts_mod.mountpoint(c), max_keys=1000)
 
@@ -2675,8 +2805,7 @@ def _gcs_list_json(*, prefixes=(), items=(), next_token=None):
     if prefixes:
         body["prefixes"] = list(prefixes)
     if items:
-        body["items"] = [{"name": n, "size": str(sz), "updated": upd}
-                         for n, sz, upd in items]
+        body["items"] = [{"name": n, "size": str(sz), "updated": upd} for n, sz, upd in items]
     if next_token:
         body["nextPageToken"] = next_token
     return json.dumps(body).encode()
@@ -2727,11 +2856,9 @@ def test_gcs_list_page_url_and_query_nested_dir(home, rcd, fresh_upstream, gcs_u
     calls, _box = gcs_urlopen
     rcd.responses["config/get"] = _ANON_GCS_CFG
     c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
-    mounts_mod.gcs_list_page(
-        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
     [(url, timeout)] = calls
-    assert url.startswith(
-        "https://storage.googleapis.com/storage/v1/b/mur-sst/o?")
+    assert url.startswith("https://storage.googleapis.com/storage/v1/b/mur-sst/o?")
     q = up.parse_qs(up.urlsplit(url).query)
     assert q["delimiter"] == ["/"]
     assert q["prefix"] == ["zarr-v1/analysed_sst/"]
@@ -2768,8 +2895,7 @@ def test_gcs_list_page_continuation_token_urlencoded(home, rcd, fresh_upstream, 
     calls, _box = gcs_urlopen
     rcd.responses["config/get"] = _ANON_GCS_CFG
     c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
-    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000,
-                             continuation="a b/c+d=")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000, continuation="a b/c+d=")
     q = up.parse_qs(up.urlsplit(calls[0][0]).query)
     assert q["pageToken"] == ["a b/c+d="]
 
@@ -2785,9 +2911,11 @@ def test_gcs_list_page_parses_prefixes_files_and_token(home, rcd, fresh_upstream
             ("zarr-v1/analysed_sst/", 0, "2000-01-01T00:00:00.000Z"),
             ("zarr-v1/analysed_sst/.zattrs", 42, "2024-01-02T03:04:05.000Z"),
         ],
-        next_token="TOKEN123")
+        next_token="TOKEN123",
+    )
     entries, token = mounts_mod.gcs_list_page(
-        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000)
+        mounts_mod.mountpoint(c) + "/analysed_sst", max_keys=1000
+    )
     by = {e["Name"]: e for e in entries}
     assert set(by) == {"2020", "2021", ".zattrs"}
     assert by["2020"]["IsDir"] is True and by["2020"]["Size"] is None
@@ -2810,8 +2938,7 @@ def test_gcs_list_page_http_403_raises_directlisterror(home, rcd, fresh_upstream
     calls, box = gcs_urlopen
     rcd.responses["config/get"] = _ANON_GCS_CFG
     c = mounts_mod.add_mount("open", "gcs-open:mur-sst/zarr-v1")
-    box["raise"] = mounts_mod.urllib.error.HTTPError(
-        "https://x", 403, "Forbidden", {}, None)
+    box["raise"] = mounts_mod.urllib.error.HTTPError("https://x", 403, "Forbidden", {}, None)
     with pytest.raises(mounts_mod.DirectListError):
         mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
 
@@ -2867,8 +2994,10 @@ class DirectObjStub:
         self.calls = []  # (method, path, query)
         self.delay = {}  # method -> seconds to sleep before responding (timeouts)
         # (status, headers-or-body). 200 head -> send those headers, no body.
-        self.head = (200, {"Content-Length": "123",
-                           "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"})
+        self.head = (
+            200,
+            {"Content-Length": "123", "Last-Modified": "Wed, 21 Oct 2015 07:28:00 GMT"},
+        )
         self.head_body = b'{"size": "123", "updated": "2015-10-21T07:28:00Z"}'
         self.listing = (200, b"")  # GET list/objects.get body
         stub = self
@@ -2935,14 +3064,13 @@ def direct_stub(monkeypatch):
     def fake(req, timeout=None):
         url = req if isinstance(req, str) else req.get_full_url()
         parts = _up.urlsplit(url)
-        if ("amazonaws.com" not in (parts.hostname or "")
-                and "googleapis.com" not in (parts.hostname or "")):
+        if "amazonaws.com" not in (parts.hostname or "") and "googleapis.com" not in (
+            parts.hostname or ""
+        ):
             return real(req, timeout=timeout)
-        local = _up.urlunsplit(("http", f"127.0.0.1:{stub.port}",
-                               parts.path, parts.query, ""))
+        local = _up.urlunsplit(("http", f"127.0.0.1:{stub.port}", parts.path, parts.query, ""))
         method = "GET" if isinstance(req, str) else req.get_method()
-        return real(mounts_mod.urllib.request.Request(local, method=method),
-                    timeout=timeout)
+        return real(mounts_mod.urllib.request.Request(local, method=method), timeout=timeout)
 
     monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
     yield stub
@@ -2984,7 +3112,10 @@ def test_direct_head_not_capable_raises(home, rcd, fresh_upstream, direct_stub):
 
 def test_direct_is_dir_s3_true_when_children(home, rcd, fresh_upstream, direct_stub):
     rcd.responses["config/get"] = _ANON_S3_CFG
-    direct_stub.listing = (200, _s3_list_xml(contents=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    direct_stub.listing = (
+        200,
+        _s3_list_xml(contents=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]),
+    )
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
     assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
     # max-keys=1 list against the prefix, off the kernel.
@@ -3012,7 +3143,10 @@ def test_direct_head_gcs_exists_and_dir(home, rcd, fresh_upstream, direct_stub):
     got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/analysed_sst/zarr.json")
     assert got.exists is True and got.size == 123
     assert got.mtime == "2015-10-21T07:28:00Z"
-    direct_stub.listing = (200, _gcs_list_json(items=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]))
+    direct_stub.listing = (
+        200,
+        _gcs_list_json(items=[("zarr-v1/analysed_sst/x", 1, "2024-01-01T00:00:00Z")]),
+    )
     assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/analysed_sst") is True
 
 
@@ -3053,7 +3187,7 @@ def test_direct_stat_pair_shares_one_timeout_budget(home, rcd, fresh_upstream, d
     # remaining budget — a single stat never exceeds ~timeout.
     rcd.responses["config/get"] = _ANON_S3_CFG
     # Both point probes are slow (0.8s); together they'd be ~1.6s if unbounded.
-    direct_stub.head = (404, {})                 # HEAD -> not a file (proceeds to dir probe)
+    direct_stub.head = (404, {})  # HEAD -> not a file (proceeds to dir probe)
     direct_stub.listing = (200, _s3_list_xml())  # empty prefix
     direct_stub.delay = {"HEAD": 0.8, "GET": 0.8}
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
@@ -3070,10 +3204,11 @@ def test_rc_stat_result_falls_back_to_rc_when_direct_errors(home, rcd, fresh_ups
     # Direct probe indeterminate (403) -> fall back to operations/stat, which
     # here reports a healthy directory item. Proves the ladder direct -> rc.
     rcd.responses["config/get"] = _ANON_S3_CFG
-    direct_stub.head = (403, {})       # HEAD indeterminate
-    direct_stub.listing = (403, b"")   # is_dir indeterminate too
-    rcd.responses["operations/stat"] = {"item": {"IsDir": True, "Size": -1,
-                                                 "ModTime": "2024-01-02T03:04:05Z"}}
+    direct_stub.head = (403, {})  # HEAD indeterminate
+    direct_stub.listing = (403, b"")  # is_dir indeterminate too
+    rcd.responses["operations/stat"] = {
+        "item": {"IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"}
+    }
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
     st = mounts_mod.rc_stat_result(mounts_mod.mountpoint(c) + "/d")
     assert stat.S_ISDIR(st.st_mode)
@@ -3097,7 +3232,8 @@ def test_probe_floor_never_exceeds_caller_timeout(home, rcd, fresh_upstream, dir
     elapsed = time.monotonic() - t0
     assert kind == "indeterminate"
     assert elapsed < 0.19, (
-        f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)")
+        f"sub-floor budget still ran probes for {elapsed:.2f}s (floor granted, not bailed)"
+    )
 
 
 # -- restart_rcd / _kill_current_rcd: clean daemon restart -----------------
@@ -3113,14 +3249,14 @@ def test_restart_rcd_teardown_then_respawn_then_automount(home, rcd, monkeypatch
     mounts_mod.add_mount("a", "r:one")
     mounts_mod.add_mount("b", "r:two")
     events = []
-    monkeypatch.setattr(mounts_mod, "detach_mount",
-                        lambda m, force=False: events.append(("detach", m["name"], force)))
-    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
-                        lambda: events.append(("kill",)))
-    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
-                        lambda: events.append(("spawn",)))
-    monkeypatch.setattr(mounts_mod, "run_automount",
-                        lambda: events.append(("automount",)))
+    monkeypatch.setattr(
+        mounts_mod,
+        "detach_mount",
+        lambda m, force=False: events.append(("detach", m["name"], force)),
+    )
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd", lambda: events.append(("kill",)))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked", lambda: events.append(("spawn",)))
+    monkeypatch.setattr(mounts_mod, "run_automount", lambda: events.append(("automount",)))
 
     mounts_mod.restart_rcd()
 
@@ -3137,18 +3273,15 @@ def test_restart_rcd_teardown_then_respawn_then_automount(home, rcd, monkeypatch
 def test_restart_rcd_propagates_spawn_failure_after_teardown(home, rcd, monkeypatch):
     mounts_mod.add_mount("a", "r:one")
     events = []
-    monkeypatch.setattr(mounts_mod, "detach_mount",
-                        lambda m, force=False: events.append("detach"))
-    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
-                        lambda: events.append("kill"))
+    monkeypatch.setattr(mounts_mod, "detach_mount", lambda m, force=False: events.append("detach"))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd", lambda: events.append("kill"))
 
     def boom():
         events.append("spawn")
         raise RuntimeError("rclone rcd did not come up within 10s")
 
     monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked", boom)
-    monkeypatch.setattr(mounts_mod, "run_automount",
-                        lambda: events.append("automount"))
+    monkeypatch.setattr(mounts_mod, "run_automount", lambda: events.append("automount"))
 
     with pytest.raises(RuntimeError, match="did not come up"):
         mounts_mod.restart_rcd()
@@ -3166,12 +3299,9 @@ def test_restart_rcd_detach_failure_is_best_effort(home, rcd, monkeypatch):
         raise OSError("wedged")
 
     monkeypatch.setattr(mounts_mod, "detach_mount", bad_detach)
-    monkeypatch.setattr(mounts_mod, "_kill_current_rcd",
-                        lambda: events.append("kill"))
-    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked",
-                        lambda: events.append("spawn"))
-    monkeypatch.setattr(mounts_mod, "run_automount",
-                        lambda: events.append("automount"))
+    monkeypatch.setattr(mounts_mod, "_kill_current_rcd", lambda: events.append("kill"))
+    monkeypatch.setattr(mounts_mod, "_ensure_rcd_locked", lambda: events.append("spawn"))
+    monkeypatch.setattr(mounts_mod, "run_automount", lambda: events.append("automount"))
 
     mounts_mod.restart_rcd()
     assert events == ["kill", "spawn", "automount"]
@@ -3184,8 +3314,7 @@ def test_kill_current_rcd_refuses_unconfirmed_pid(home, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: False)
     killed = []
-    monkeypatch.setattr(mounts_mod.os, "kill",
-                        lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(mounts_mod.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
     with pytest.raises(RuntimeError):
         mounts_mod._kill_current_rcd()
@@ -3195,8 +3324,7 @@ def test_kill_current_rcd_refuses_unconfirmed_pid(home, monkeypatch):
 def test_kill_current_rcd_noops_without_state(home, monkeypatch):
     # No rcd.json at all -> nothing to kill (the fresh spawn will just start one).
     killed = []
-    monkeypatch.setattr(mounts_mod.os, "kill",
-                        lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(mounts_mod.os, "kill", lambda pid, sig: killed.append(pid))
     mounts_mod._kill_current_rcd()
     assert killed == []
 
@@ -3206,11 +3334,9 @@ def test_kill_current_rcd_noops_when_pid_already_dead(home, monkeypatch):
     mounts_mod.write_rcd_state(12345, 999)
     monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: False)
     confirmed = []
-    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd",
-                        lambda e: confirmed.append(e) or True)
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda e: confirmed.append(e) or True)
     killed = []
-    monkeypatch.setattr(mounts_mod.os, "kill",
-                        lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(mounts_mod.os, "kill", lambda pid, sig: killed.append(pid))
     mounts_mod._kill_current_rcd()
     assert killed == []
     assert confirmed == []
@@ -3273,53 +3399,49 @@ def test_restart_endpoint_500_on_failure(client, rcd, monkeypatch):
 
 
 def test_mount_restart_reason_params_on_read_only_drift(home, rcd):
-    m = {"id": "x", "name": "data", "remote": "r:bucket",
-         "read_only": True, "mounted_read_only": False}
+    m = {
+        "id": "x",
+        "name": "data",
+        "remote": "r:bucket",
+        "read_only": True,
+        "mounted_read_only": False,
+    }
     # mounted + the live VFS was baked read_write but the record now wants
     # read_only -> a restart is needed to apply it.
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="mounted") == "params"
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="mounted") == "params"
     # in agreement -> no drift
     m["mounted_read_only"] = True
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="mounted") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="mounted") is None
     # params drift is only meaningful for a live mount
     m["mounted_read_only"] = False
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") is None
 
 
-def test_mount_restart_reason_credentials_when_reauthed(
-        home, rcd, monkeypatch, fresh_upstream):
+def test_mount_restart_reason_credentials_when_reauthed(home, rcd, monkeypatch, fresh_upstream):
     m = mounts_mod.add_mount("data", "corp:bucket")
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     _stub_lsd(monkeypatch, rc=0)  # creds probe VALID again (user re-authed)
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") == "credentials"
+    assert (
+        mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") == "credentials"
+    )
     # stale is healed the same way
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="stale") == "credentials"
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="stale") == "credentials"
 
 
-def test_mount_restart_reason_none_when_creds_still_expired(
-        home, rcd, monkeypatch, fresh_upstream):
+def test_mount_restart_reason_none_when_creds_still_expired(home, rcd, monkeypatch, fresh_upstream):
     m = mounts_mod.add_mount("data", "corp:bucket")
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     _stub_lsd(monkeypatch, rc=1, lsd_stderr="ExpiredToken")  # genuinely expired
     # Genuinely-expired creds: a restart won't help, so no prompt.
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") is None
 
 
-def test_mount_restart_reason_none_for_non_env_auth(
-        home, rcd, monkeypatch, fresh_upstream):
+def test_mount_restart_reason_none_for_non_env_auth(home, rcd, monkeypatch, fresh_upstream):
     m = mounts_mod.add_mount("data", "corp:bucket")
-    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false",
-                                   "access_key_id": "AKIA"}
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "false", "access_key_id": "AKIA"}
     calls = []
     _stub_lsd(monkeypatch, rc=0, record=calls)
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") is None
     # A non-env_auth remote never gets the (latency-costing) lsd probe.
     assert not any("lsd" in cmd for cmd in calls)
 
@@ -3335,26 +3457,26 @@ def test_mount_view_includes_restart_reason(home, rcd):
 
 
 def test_mount_restart_reason_inconclusive_probe_is_not_credentials(
-        home, rcd, monkeypatch, fresh_upstream):
+    home, rcd, monkeypatch, fresh_upstream
+):
     # A non-credential failure (AccessDenied = valid keys, no list perm) is
     # INCONCLUSIVE, not proof the creds work — no false "credentials" prompt.
     m = mounts_mod.add_mount("data", "corp:bucket")
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     _stub_lsd(monkeypatch, rc=1, lsd_stderr="AccessDenied: not authorized")
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") is None
 
     # A timeout is likewise inconclusive (config/get is already memoized).
     def timeout_run(cmd, **kw):
         raise mounts_mod.subprocess.TimeoutExpired(cmd, 30)
 
     monkeypatch.setattr(mounts_mod.subprocess, "run", timeout_run)
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="disconnected") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="disconnected") is None
 
 
 def test_broken_mount_error_inconclusive_creds_falls_through_to_reconnect(
-        home, rcd, monkeypatch, fresh_upstream):
+    home, rcd, monkeypatch, fresh_upstream
+):
     # env_auth + a transient/non-credential failure: neither "refresh" nor
     # "restart" — fall through to the plain reconnect guidance.
     c, mp = _disconnected_mount(home, rcd, monkeypatch)
@@ -3372,32 +3494,33 @@ def test_mount_restart_reason_no_params_for_adopted_legacy_read_only(home, rcd):
     # can't know what the live VFS was baked with) must NOT show a false
     # "params changed" prompt.
     m = {"id": "x", "name": "data", "remote": "r:bucket", "read_only": True}
-    assert mounts_mod.mount_restart_reason(
-        m, rcd_mounts=set(), state="mounted") is None
+    assert mounts_mod.mount_restart_reason(m, rcd_mounts=set(), state="mounted") is None
 
 
-def test_mount_restart_reason_skips_mounted_paths_when_state_supplied(
-        home, monkeypatch):
+def test_mount_restart_reason_skips_mounted_paths_when_state_supplied(home, monkeypatch):
     # The error path passes state, so the rc round-trip mounted_paths() must be
     # skipped entirely.
     def boom():
         raise AssertionError("mounted_paths() called on the state-supplied path")
 
     monkeypatch.setattr(mounts_mod, "mounted_paths", boom)
-    m = {"id": "x", "name": "data", "remote": "r:bucket",
-         "read_only": False, "mounted_read_only": False}
+    m = {
+        "id": "x",
+        "name": "data",
+        "remote": "r:bucket",
+        "read_only": False,
+        "mounted_read_only": False,
+    }
     assert mounts_mod.mount_restart_reason(m, state="mounted") is None
 
 
-def test_get_mounts_probes_credentials_off_serial_path(
-        client, rcd, home, monkeypatch):
+def test_get_mounts_probes_credentials_off_serial_path(client, rcd, home, monkeypatch):
     # Several broken env_auth mounts must NOT stall the polled Mounts page: the
     # credential probe runs once per mount, in PARALLEL with the state probes,
     # off the serial view-building path.
     mps = []
     for i in range(4):
-        _c, mp = _make_mount(home, rcd, name=f"m{i}",
-                             remote=f"corp{i}:bucket", served=False)
+        _c, mp = _make_mount(home, rcd, name=f"m{i}", remote=f"corp{i}:bucket", served=False)
         mps.append(mp)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in mps)
     calls = []

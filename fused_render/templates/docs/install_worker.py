@@ -6,6 +6,7 @@ has a 30s budget; a cold download can run longer).
 
 Run detached:  python install_worker.py <version> <bin_dir> <progress_dir>
 """
+
 import json
 import os
 import platform
@@ -27,9 +28,18 @@ class Progress:
     def update(self, stage, pct, detail="", done=False, error=None):
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"stage": stage, "pct": round(float(pct), 1), "detail": detail,
-                       "done": done, "error": error, "pid": os.getpid(),
-                       "ts": time.time()}, f)
+            json.dump(
+                {
+                    "stage": stage,
+                    "pct": round(float(pct), 1),
+                    "detail": detail,
+                    "done": done,
+                    "error": error,
+                    "pid": os.getpid(),
+                    "ts": time.time(),
+                },
+                f,
+            )
         os.replace(tmp, self.path)
 
     def fail(self, message):
@@ -54,16 +64,16 @@ def _extract_binary(archive_path, kind, dest_bin):
     member_name = os.path.basename(dest_bin)
     if kind == "tar.xz":
         with tarfile.open(archive_path, "r:xz") as tf:
-            member = next((m for m in tf.getmembers()
-                          if os.path.basename(m.name) == member_name), None)
+            member = next(
+                (m for m in tf.getmembers() if os.path.basename(m.name) == member_name), None
+            )
             if not member:
                 raise RuntimeError("typst binary not found in archive")
             with tf.extractfile(member) as src, open(dest_bin, "wb") as dst:
                 shutil.copyfileobj(src, dst)
     else:
         with zipfile.ZipFile(archive_path) as zf:
-            member = next((n for n in zf.namelist()
-                          if os.path.basename(n) == member_name), None)
+            member = next((n for n in zf.namelist() if os.path.basename(n) == member_name), None)
             if not member:
                 raise RuntimeError("typst.exe not found in archive")
             with zf.open(member) as src, open(dest_bin, "wb") as dst:

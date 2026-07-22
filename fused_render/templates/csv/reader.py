@@ -5,6 +5,7 @@ delimited text via pandas. The full file is read once to get an honest
 total_rows and to slice the requested page; only the page is returned, so the
 payload stays small even for large files (per ARCHITECTURE.md §7).
 """
+
 import datetime
 import decimal
 import os

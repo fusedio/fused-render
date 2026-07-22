@@ -21,6 +21,7 @@ Two execution paths (D72):
   deliberately NOT allowlisted — they can be slow or long-running, so they take
   the subprocess path and keep its timeout + isolation.
 """
+
 import importlib.util
 import json
 import logging

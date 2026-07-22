@@ -6,12 +6,10 @@ a short TTL. These tests monkeypatch server._conditions_payload with a
 call-counting stub so cache hits vs recomputes can be asserted directly.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import server
-
-
-import pytest
 
 
 @pytest.fixture(autouse=True)

@@ -11,6 +11,7 @@ need around that:
   - _stretch()/_apply_colormap(): raster tile colouring, reused by the daemon.
   - _find_col()/LAT_NAMES/LON_NAMES: CSV lat/lon detection, reused by the daemon.
 """
+
 from __future__ import annotations
 
 import os
@@ -57,6 +58,7 @@ def list_layers(target):
     if not low.endswith(VECTOR_EXT):
         return []
     import pyogrio
+
     try:
         rows = pyogrio.list_layers(target)
     except Exception:
@@ -73,15 +75,21 @@ def vector_meta(target, layer=None):
     low = target.lower().split("?")[0]
     if low.endswith((".parquet", ".geoparquet")):
         import geopandas as gpd
+
         gdf = gpd.read_parquet(target)
         gname = gdf.geometry.name
         w, s, e, n = (float(v) for v in gdf.to_crs(4326).total_bounds)
         gtypes = sorted(gdf.geom_type.dropna().unique().tolist())
         cols = [str(c) for c in gdf.columns if c != gname][:5]
-        return {"bounds": [w, s, e, n], "geometry_type": gtypes[0] if gtypes else "Unknown",
-                "columns": cols, "crs_original": _crs_short(gdf.crs) if gdf.crs else None}
+        return {
+            "bounds": [w, s, e, n],
+            "geometry_type": gtypes[0] if gtypes else "Unknown",
+            "columns": cols,
+            "crs_original": _crs_short(gdf.crs) if gdf.crs else None,
+        }
     if low.endswith(".csv"):
         import pandas as pd
+
         df = pd.read_csv(target)
         lat = _find_col(df.columns, LAT_NAMES)
         lon = _find_col(df.columns, LON_NAMES)
@@ -90,10 +98,15 @@ def vector_meta(target, layer=None):
         la = pd.to_numeric(df[lat], errors="coerce")
         lo = pd.to_numeric(df[lon], errors="coerce")
         cols = [str(c) for c in df.columns if c not in (lat, lon)][:5]
-        return {"bounds": [float(lo.min()), float(la.min()), float(lo.max()), float(la.max())],
-                "geometry_type": "Point", "columns": cols, "crs_original": "EPSG:4326"}
+        return {
+            "bounds": [float(lo.min()), float(la.min()), float(lo.max()), float(la.max())],
+            "geometry_type": "Point",
+            "columns": cols,
+            "crs_original": "EPSG:4326",
+        }
 
     import pyogrio
+
     if layer is None:
         layers = pyogrio.list_layers(target)
         if layers is not None and len(layers) > 1:
@@ -108,30 +121,45 @@ def vector_meta(target, layer=None):
     w, s, e, n = (float(v) for v in info["total_bounds"])
     if crs and str(crs).upper() != "EPSG:4326":
         from pyproj import Transformer
+
         tr = Transformer.from_crs(crs, 4326, always_xy=True)
         xs, ys = tr.transform([w, e, w, e], [s, s, n, n])
-        w, e = min(xs), max(xs); s, n = min(ys), max(ys)
+        w, e = min(xs), max(xs)
+        s, n = min(ys), max(ys)
     gname = info.get("geometry_name") or "geometry"
     cols = [str(f) for f in list(info.get("fields", [])) if str(f) != gname][:5]
-    return {"bounds": [w, s, e, n], "geometry_type": info.get("geometry_type") or "Unknown",
-            "columns": cols, "crs_original": str(crs) if crs else None}
+    return {
+        "bounds": [w, s, e, n],
+        "geometry_type": info.get("geometry_type") or "Unknown",
+        "columns": cols,
+        "crs_original": str(crs) if crs else None,
+    }
 
 
 def classify(target, artifact_dir, artifact_id, opts=None):
     """PMTiles descriptor — the only route that isn't served by the daemon."""
     return {
-        "id": artifact_id, "status": "ok", "kind": "vector_tiles_pmtiles",
-        "crs_original": None, "bounds": None,
+        "id": artifact_id,
+        "status": "ok",
+        "kind": "vector_tiles_pmtiles",
+        "crs_original": None,
+        "bounds": None,
         "data": {"pmtiles_path": os.path.abspath(os.path.expanduser(target))},
         "stats": {},
-        "style": {"line_color": [0, 200, 255, 200],
-                  "fill_color": [0, 150, 255, 60], "opacity": 1.0},
-        "warnings": [], "message": None, "detected_type": "PMTiles",
+        "style": {
+            "line_color": [0, 200, 255, 200],
+            "fill_color": [0, 150, 255, 60],
+            "opacity": 1.0,
+        },
+        "warnings": [],
+        "message": None,
+        "detected_type": "PMTiles",
     }
 
 
 def _stretch(band, lo, hi):
     import numpy as np
+
     if hi <= lo:
         hi = lo + 1.0
     return np.clip((band - lo) / (hi - lo), 0.0, 1.0)
@@ -140,9 +168,15 @@ def _stretch(band, lo, hi):
 def _apply_colormap(norm, name, mask):
     """norm: 2D float in [0,1]; mask: True where valid. Returns HxWx4 uint8."""
     import numpy as np
+
     try:
         import matplotlib
-        cmap = matplotlib.colormaps[name] if name in matplotlib.colormaps else matplotlib.colormaps["viridis"]
+
+        cmap = (
+            matplotlib.colormaps[name]
+            if name in matplotlib.colormaps
+            else matplotlib.colormaps["viridis"]
+        )
         rgba = (cmap(np.nan_to_num(norm, nan=0.0)) * 255).astype("uint8")
     except Exception:
         g = (np.nan_to_num(norm, nan=0.0) * 255).astype("uint8")

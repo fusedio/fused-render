@@ -21,13 +21,15 @@ import time
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op.
 if "__file__" not in globals():
-    import os, sys
+    import os
+    import sys
+
     __file__ = os.path.join(sys.path[0], "pano.py")
 
 CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pano"))
 
-DISPLAY_MAX_W = 8192   # keep under common WebGL texture limits
-CONVERT_MAX_W = 4096   # resample source cap so conversions stay interactive
+DISPLAY_MAX_W = 8192  # keep under common WebGL texture limits
+CONVERT_MAX_W = 4096  # resample source cap so conversions stay interactive
 
 
 def _pil():
@@ -42,12 +44,12 @@ def _py360():
     try:
         import py360convert
     except ImportError:
-        raise RuntimeError(
-            "projection conversion needs py360convert — pip install py360convert")
+        raise RuntimeError("projection conversion needs py360convert — pip install py360convert")
     return py360convert
 
 
 # ---------------------------------------------------------------- validation
+
 
 def _dice_corners_blank(img):
     """A cube-cross layout has uniform (blank) corner blocks; a regular 4:3
@@ -60,8 +62,8 @@ def _dice_corners_blank(img):
     cells = []
     for row in (0, 2):
         for col in (0, 2, 3):
-            cell = g[row * ch:(row + 1) * ch, col * cw:(col + 1) * cw]
-            cells.append(cell[qh:-qh or None, qw:-qw or None])
+            cell = g[row * ch : (row + 1) * ch, col * cw : (col + 1) * cw]
+            cells.append(cell[qh : -qh or None, qw : -qw or None])
     return all(float(c.std()) < 6.0 for c in cells)
 
 
@@ -90,7 +92,9 @@ def _classify(w, h, raw_head, img):
         if _dice_corners_blank(img):
             reasons.append("aspect ratio 4:3 with blank corners (cube cross / dice layout)")
             return "cube_dice", True, reasons
-        reasons.append("aspect ratio 4:3 but corners contain image data — regular photo, not a cube cross")
+        reasons.append(
+            "aspect ratio 4:3 but corners contain image data — regular photo, not a cube cross"
+        )
         return "flat", False, reasons
     if close(ratio, 1.0):
         if has_gpano:
@@ -106,6 +110,7 @@ def _classify(w, h, raw_head, img):
 
 
 # ---------------------------------------------------------------- prepare
+
 
 def _content_hash(path):
     h = hashlib.sha1()
@@ -141,9 +146,7 @@ def _prepare(file):
     kind, valid, reasons = _classify(w, h, head, img)
 
     os.makedirs(cdir, exist_ok=True)
-    has_alpha = img.mode in ("RGBA", "LA", "PA") or (
-        img.mode == "P" and "transparency" in img.info
-    )
+    has_alpha = img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
     disp = img.convert("RGBA" if has_alpha else "RGB")
     if disp.width > DISPLAY_MAX_W:
         disp = disp.resize(
@@ -157,10 +160,19 @@ def _prepare(file):
         display = "display.jpg"
         disp.save(os.path.join(cdir, display), quality=92)
 
-    meta = {"name": os.path.basename(file), "format": fmt,
-            "bytes": os.path.getsize(file), "width": w, "height": h,
-            "kind": kind, "valid": valid, "reasons": reasons,
-            "display": display, "display_w": disp.width, "display_h": disp.height}
+    meta = {
+        "name": os.path.basename(file),
+        "format": fmt,
+        "bytes": os.path.getsize(file),
+        "width": w,
+        "height": h,
+        "kind": kind,
+        "valid": valid,
+        "reasons": reasons,
+        "display": display,
+        "display_w": disp.width,
+        "display_h": disp.height,
+    }
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f)
     meta["dir"] = cdir
@@ -174,6 +186,7 @@ def op_open(file):
 
 
 # ---------------------------------------------------------------- conversion
+
 
 def _load_equirect(meta):
     """Load the display copy as an equirectangular numpy array (converting
@@ -236,7 +249,7 @@ def _fisheye180(equi, size, yaw, pitch):
     s = np.linspace(-1, 1, size)
     x, y = np.meshgrid(s, -s)
     r = np.sqrt(x * x + y * y)
-    theta = r * (math.pi / 2)          # angle from view axis, max 90 deg
+    theta = r * (math.pi / 2)  # angle from view axis, max 90 deg
     phi = np.arctan2(y, x)
     # direction in camera space (z forward)
     dx = np.sin(theta) * np.cos(phi)
@@ -251,7 +264,7 @@ def _fisheye180(equi, size, yaw, pitch):
     lon = np.arctan2(dx2, dz3)
     lat = np.arcsin(np.clip(dy2, -1, 1))
     out = _sample_equirect(equi, lon, lat)
-    out[r > 1] = 16                    # outside the image circle
+    out[r > 1] = 16  # outside the image circle
     return out
 
 
@@ -268,8 +281,7 @@ def op_convert(file, mode, fov, yaw, pitch, roll, zoom, out_w, out_h, face_w):
     os.makedirs(ddir, exist_ok=True)
 
     def finish(path_or_faces, w, h, cached):
-        res = {"w": w, "h": h, "cached": cached,
-               "ms": round((time.time() - t0) * 1000)}
+        res = {"w": w, "h": h, "cached": cached, "ms": round((time.time() - t0) * 1000)}
         if isinstance(path_or_faces, list):
             res["faces"] = path_or_faces
         else:
@@ -281,15 +293,13 @@ def op_convert(file, mode, fov, yaw, pitch, roll, zoom, out_w, out_h, face_w):
         paths = [os.path.join(ddir, f"{hid}_{n}.jpg") for n in names]
         if all(os.path.isfile(p) for p in paths):
             fw = face_w or 1024
-            return finish([{"face": n, "path": p} for n, p in zip(names, paths)],
-                          fw, fw, True)
+            return finish([{"face": n, "path": p} for n, p in zip(names, paths)], fw, fw, True)
         equi = _load_equirect(meta)
         fw = face_w or min(1024, equi.shape[1] // 4)
         faces = py360convert.e2c(equi, face_w=fw, cube_format="dict")
         for n, p in zip(names, paths):
             Image.fromarray(faces[n]).save(p, quality=90)
-        return finish([{"face": n, "path": p} for n, p in zip(names, paths)],
-                      fw, fw, False)
+        return finish([{"face": n, "path": p} for n, p in zip(names, paths)], fw, fw, False)
 
     full = os.path.join(ddir, f"{hid}.jpg")
     if os.path.isfile(full):
@@ -303,10 +313,8 @@ def op_convert(file, mode, fov, yaw, pitch, roll, zoom, out_w, out_h, face_w):
     elif mode == "perspective":
         ow, oh = out_w or 1280, out_h or 720
         h_fov = max(1.0, min(fov or 90.0, 175.0))
-        v_fov = math.degrees(
-            2 * math.atan(math.tan(math.radians(h_fov) / 2) * oh / ow))
-        out = py360convert.e2p(equi, (h_fov, v_fov), yaw, pitch, (oh, ow),
-                               in_rot_deg=roll)
+        v_fov = math.degrees(2 * math.atan(math.tan(math.radians(h_fov) / 2) * oh / ow))
+        out = py360convert.e2p(equi, (h_fov, v_fov), yaw, pitch, (oh, ow), in_rot_deg=roll)
     elif mode == "little_planet":
         out = _little_planet(equi, out_w or 1024, zoom or 1.0, roll)
     elif mode == "fisheye180":
@@ -322,6 +330,7 @@ def op_convert(file, mode, fov, yaw, pitch, roll, zoom, out_w, out_h, face_w):
 
 
 # ---------------------------------------------------------------- dispatcher
+
 
 def main(
     action: str = "open",
@@ -341,6 +350,5 @@ def main(
     if action == "open":
         return op_open(file)
     if action == "convert":
-        return op_convert(file, mode, fov, yaw, pitch, roll, zoom,
-                          out_w, out_h, face_w)
+        return op_convert(file, mode, fov, yaw, pitch, roll, zoom, out_w, out_h, face_w)
     raise ValueError(f"unknown action {action!r}")

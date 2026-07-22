@@ -12,6 +12,7 @@ Two surfaces:
     (nodes / folders / edges / viewport / siblings shape). Guarded on `fused`
     since the reader is a `@fused.udf` (engine contract, §28).
 """
+
 import importlib.util
 import os
 import sys
@@ -19,7 +20,6 @@ import sys
 import pytest
 
 from fused_render import server
-
 
 TEMPLATES_DIR = server.TEMPLATES_DIR
 
@@ -104,6 +104,7 @@ def _write_canvas(dir_path, name="canvas.toml", body=CANVAS_TOML):
 
 # ------------------------------------------------------- condition gate (CT-12)
 
+
 @requires_tomllib
 def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     p = _write_canvas(tmp_path / "cv")
@@ -182,6 +183,7 @@ def test_condition_module_main_directly(tmp_path):
 
 # --------------------------------------------------------------- template files
 
+
 def test_template_ships_expected_files():
     d = os.path.join(TEMPLATES_DIR, "canvas")
     files = sorted(f for f in os.listdir(d) if f != "__pycache__")
@@ -196,6 +198,7 @@ def test_template_html_has_no_runtime_script_tag():
 
 
 # ------------------------------------------------------------------- reader.py
+
 
 def _load_module(name):
     path = os.path.join(TEMPLATES_DIR, "canvas", name)
@@ -265,7 +268,7 @@ def test_reader_empty_viewport_is_none(reader, tmp_path):
     (d / "canvas.toml").write_text(
         'type = "canvas"\nversion = 2\n[canvas]\nedges = []\n'
         '[[canvas.nodes]]\nudfName = "a"\nx = 500.0\ny = 500.0\n'
-        'zIndex = 1\nwidth = 100\nheight = 100\n'
+        "zIndex = 1\nwidth = 100\nheight = 100\n"
         "[canvas.viewport]\n"
     )
     out = reader.main(file=str(d / "canvas.toml"))
@@ -281,7 +284,7 @@ def test_reader_boolean_viewport_coords_are_absent(reader, tmp_path):
     (d / "canvas.toml").write_text(
         'type = "canvas"\nversion = 2\n[canvas]\nedges = []\n'
         '[[canvas.nodes]]\nudfName = "a"\nx = 500.0\ny = 500.0\n'
-        'zIndex = 1\nwidth = 100\nheight = 100\n'
+        "zIndex = 1\nwidth = 100\nheight = 100\n"
         "[canvas.viewport]\nx = true\ny = true\nzoom = 0.5\n"
     )
     out = reader.main(file=str(d / "canvas.toml"))
@@ -310,7 +313,7 @@ def test_reader_skips_broken_nodes(reader, tmp_path):
         'type = "canvas"\nversion = 2\n[canvas]\n'
         'edges = ["not-a-pair", ["a", "b"]]\n'
         '[[canvas.nodes]]\nudfName = "a"\nx = 0\ny = 0\n'
-        '[[canvas.nodes]]\nx = 10\ny = 10\n'  # no udfName -> skipped
+        "[[canvas.nodes]]\nx = 10\ny = 10\n"  # no udfName -> skipped
     )
     out = reader.main(file=str(d / "canvas.toml"))
     assert [n["udfName"] for n in out["nodes"]] == ["a"]
@@ -319,6 +322,7 @@ def test_reader_skips_broken_nodes(reader, tmp_path):
 
 def test_reader_output_is_json_serializable(reader, canvas_folder):
     import json
+
     json.dumps(reader.main(file=str(canvas_folder / "canvas.toml")))
 
 

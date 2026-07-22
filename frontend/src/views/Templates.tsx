@@ -26,9 +26,10 @@ export default function Templates() {
   const [inventory, setInventory] = useState<TemplateInventory | null>(null);
   const [registry, setRegistry] = useState<RegistryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [editor, setEditor] = useState<{ mode: "create" | "edit"; entry: RegistryEntry | null } | null>(
-    null,
-  );
+  const [editor, setEditor] = useState<{
+    mode: "create" | "edit";
+    entry: RegistryEntry | null;
+  } | null>(null);
   const [importing, setImporting] = useState(false);
   const [creatingNew, setCreatingNew] = useState(false);
   const loadSeq = useRef(0);
@@ -37,7 +38,8 @@ export default function Templates() {
   // moves between tabs. The page is keyed by the nav epoch in App.tsx, so a
   // pushState here remounts this view and it re-derives the tab from the URL —
   // no local tab state to keep in sync. Bindings is the default (clean URL).
-  const tab: PageTab = new URLSearchParams(location.search).get("tab") === "library" ? "library" : "bindings";
+  const tab: PageTab =
+    new URLSearchParams(location.search).get("tab") === "library" ? "library" : "bindings";
   const setTab = (next: PageTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "bindings") params.delete("tab");
@@ -69,7 +71,6 @@ export default function Templates() {
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -125,9 +126,7 @@ export default function Templates() {
           onSaved={load}
         />
       )}
-      {importing && (
-        <ImportWizard onClose={() => setImporting(false)} onImported={load} />
-      )}
+      {importing && <ImportWizard onClose={() => setImporting(false)} onImported={load} />}
       {creatingNew && (
         <NewTemplateModal
           // Literal-extension keys already in the registry (simple + compound;

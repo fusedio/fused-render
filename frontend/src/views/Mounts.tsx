@@ -21,13 +21,7 @@ import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { Field, Select, TextInput } from "../components/field/fields";
 
-function MountRow({
-  conn,
-  onChanged,
-}: {
-  conn: Mount;
-  onChanged: () => void;
-}) {
+function MountRow({ conn, onChanged }: { conn: Mount; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,12 +57,20 @@ function MountRow({
   return (
     <div className="mount-card">
       <div className="mount-card-main">
-        <span className={`mount-dot ${conn.state}`} role="img" aria-label={dotLabel} title={dotLabel} />
+        <span
+          className={`mount-dot ${conn.state}`}
+          role="img"
+          aria-label={dotLabel}
+          title={dotLabel}
+        />
         <div className="mount-card-info">
           <div style={{ fontWeight: 600 }}>
             {conn.name}
             {conn.read_only && (
-              <span className="mount-hint" title="This remote rejects writes — files open read-only">
+              <span
+                className="mount-hint"
+                title="This remote rejects writes — files open read-only"
+              >
                 {" "}
                 — read-only
               </span>
@@ -89,7 +91,11 @@ function MountRow({
         </div>
         <div className="mount-card-actions">
           {conn.state === "mounted" ? (
-            <button type="button" disabled={busy} onClick={() => navigate(conn.mountpoint, { isDir: true })}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => navigate(conn.mountpoint, { isDir: true })}
+            >
               Open
             </button>
           ) : (
@@ -157,13 +163,16 @@ export function parseStorageUrl(raw: string): ParsedLink | null {
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   const host = u.hostname.toLowerCase();
-  const segs = u.pathname.split("/").filter(Boolean).map((x) => {
-    try {
-      return decodeURIComponent(x);
-    } catch {
-      return x;
-    }
-  });
+  const segs = u.pathname
+    .split("/")
+    .filter(Boolean)
+    .map((x) => {
+      try {
+        return decodeURIComponent(x);
+      } catch {
+        return x;
+      }
+    });
   const qsPrefix = u.searchParams.get("prefix") ?? "";
 
   // AWS S3 console link shapes: the bucket view …/s3/buckets/<bucket>?prefix=a/b/
@@ -262,14 +271,23 @@ function AddMount({
   // add_mount() strips the name and rejects it empty or containing / \ : or a
   // leading dot; mirror that when deriving so the auto-filled value always
   // passes server validation (or is empty, which disables the button below).
-  const folderSafe = (s: string) => s.trim().replace(/[/\\:]/g, "").replace(/^\.+/, "");
+  const folderSafe = (s: string) =>
+    s
+      .trim()
+      .replace(/[/\\:]/g, "")
+      .replace(/^\.+/, "");
 
   const onPathChange = (v: string) => {
     setSubpath(v);
     if (!nameTouched) {
       // Last non-blank segment: trim first so a trailing "/" or a whitespace
       // tail ("bucket/  ") derives the real segment, never a spaces-only name.
-      const seg = v.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+      const seg =
+        v
+          .split("/")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .pop() ?? "";
       setName(folderSafe(seg));
     }
   };
@@ -329,7 +347,12 @@ function AddMount({
     // Name from the MOUNTED root's last segment (the dataset/collection), not a
     // deep scene or file name — and keep it tracking Path edits (no hand-typed
     // name yet).
-    const seg = rooted.split("/").map((s) => s.trim()).filter(Boolean).pop() ?? "";
+    const seg =
+      rooted
+        .split("/")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .pop() ?? "";
     setName(folderSafe(seg));
     setNameTouched(false);
   };
@@ -347,7 +370,8 @@ function AddMount({
   // on this keeps the preview from ever describing a folder the server rejects
   // (auto-derived names are already folderSafe; this catches manual edits).
   const trimmedName = name.trim();
-  const nameValid = trimmedName !== "" && !/[/\\:]/.test(trimmedName) && !trimmedName.startsWith(".");
+  const nameValid =
+    trimmedName !== "" && !/[/\\:]/.test(trimmedName) && !trimmedName.startsWith(".");
 
   const add = async () => {
     setBusy(true);
@@ -471,7 +495,11 @@ function AddMount({
         {/* Blank caption reserves the label row's height so the button
             aligns with the input boxes, not the labels above them. */}
         <Field label={" "}>
-          <button type="submit" className="btn btn-primary" disabled={busy || !nameValid || !remote}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || !nameValid || !remote}
+          >
             {busy ? "Mounting…" : "Add & mount"}
           </button>
         </Field>
@@ -485,10 +513,7 @@ function AddMount({
               as folder <code>{trimmedName}</code>
             </>
           ) : trimmedName ? (
-            <span className="warn">
-              {" "}
-              — name can’t contain / \ : or start with “.”
-            </span>
+            <span className="warn"> — name can’t contain / \ : or start with “.”</span>
           ) : (
             <>
               {" "}
@@ -665,8 +690,8 @@ export default function Mounts() {
         <div>
           <h1 className="mounts-title">Mounts</h1>
           <p className="mounts-subtitle">
-            Browse remote storage as local folders. Large files are cached locally after the
-            first open.
+            Browse remote storage as local folders. Large files are cached locally after the first
+            open.
           </p>
         </div>
         {state?.rclone.available && (

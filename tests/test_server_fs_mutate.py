@@ -7,6 +7,7 @@ path on disk and the wire error contract shared with _fs_write:
   400 relative/invalid path, 403 readonly ("readonly"), 404 missing source,
   409 conflict ("conflict"). All four also carry the X-Fused guard.
 """
+
 import json
 import os
 import stat
@@ -24,7 +25,8 @@ from fused_render.server import _fs_rename as RENAME
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _status(resp) -> int:
@@ -39,12 +41,16 @@ def _data(resp) -> dict:
 
 # ---------------------------------------------------------------- X-Fused guard
 
-@pytest.mark.parametrize("fn,body", [
-    (MKDIR, {"path": "/x"}),
-    (DELETE, {"path": "/x"}),
-    (RENAME, {"src": "/x", "dst": "/y"}),
-    (COPY, {"src": "/x", "dst": "/y"}),
-])
+
+@pytest.mark.parametrize(
+    "fn,body",
+    [
+        (MKDIR, {"path": "/x"}),
+        (DELETE, {"path": "/x"}),
+        (RENAME, {"src": "/x", "dst": "/y"}),
+        (COPY, {"src": "/x", "dst": "/y"}),
+    ],
+)
 def test_guard_rejects_missing_header(fn, body):
     resp = fn(body, x_fused=None)
     assert _status(resp) == 403
@@ -52,6 +58,7 @@ def test_guard_rejects_missing_header(fn, body):
 
 
 # --------------------------------------------------------------------- mkdir
+
 
 def test_mkdir_creates_and_returns_stat(tmp_path):
     d = tmp_path / "newdir"
@@ -93,6 +100,7 @@ def test_mkdir_readonly_parent_403(tmp_path):
 
 
 # -------------------------------------------------------------------- delete
+
 
 def test_delete_file(tmp_path):
     f = tmp_path / "f.txt"
@@ -229,6 +237,7 @@ def test_delete_trash_failure_is_500_not_501(tmp_path, monkeypatch):
 
 # -------------------------------------------------------------------- rename
 
+
 def test_rename_file(tmp_path):
     src = tmp_path / "a.txt"
     src.write_text("hi")
@@ -322,6 +331,7 @@ def test_rename_missing_dst_parent_400(tmp_path):
 
 
 # ---------------------------------------------------------------------- copy
+
 
 def test_copy_file(tmp_path):
     src = tmp_path / "a.txt"

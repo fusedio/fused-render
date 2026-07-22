@@ -32,13 +32,14 @@ Actions:
        # works read-only (the URL is the live store); the template just warns
        # that history won't be recorded.
 """
+
 import json
 import os
 import tempfile
 import time
 
-
 # ------------------------------------------------------------- sidecar store
+
 
 def _sidecar_path(file: str) -> str:
     return file + ".json"
@@ -78,6 +79,7 @@ def _save_sidecar(file: str, data: dict) -> None:
 
 # ------------------------------------------------------------- comments log
 
+
 def _record(file: str, comments: list, deleted_ids: list) -> dict:
     """Upsert each incoming comment (keyed by its `id`) into the sidecar's
     top-level "comments" log, preserving claudeSessions/bookmarkHistory/
@@ -104,8 +106,7 @@ def _record(file: str, comments: list, deleted_ids: list) -> dict:
     log = data.get("comments")
     if not isinstance(log, list):
         log = []
-    by_id = {c["id"]: c for c in log
-             if isinstance(c, dict) and isinstance(c.get("id"), str)}
+    by_id = {c["id"]: c for c in log if isinstance(c, dict) and isinstance(c.get("id"), str)}
 
     now = time.time()
     count = 0
@@ -173,6 +174,7 @@ def _sidecar_writable(file: str) -> bool:
     file = os.path.abspath(file)
     try:
         from fused_render.shell.mounts import mount_read_only
+
         if mount_read_only(file):
             return False
     except Exception:

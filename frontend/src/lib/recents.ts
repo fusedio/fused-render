@@ -29,7 +29,7 @@ export function recentFsPath(url: string): string {
   const pathname = qIdx !== -1 ? url.slice(0, qIdx) : url;
   if (!pathname.startsWith(VIEW_PREFIX)) return pathname;
   return rootedFsPath(
-    pathname.slice(VIEW_PREFIX.length).split("/").filter(Boolean).map(decodeURIComponent).join("/")
+    pathname.slice(VIEW_PREFIX.length).split("/").filter(Boolean).map(decodeURIComponent).join("/"),
   );
 }
 
@@ -120,9 +120,7 @@ async function refresh(): Promise<void> {
 
 // Load the cache once at boot (main.tsx, beside hydrateBookmarks).
 export function hydrateRecents(): Promise<void> {
-  return enqueue(() =>
-    refresh().catch((e) => console.error("[fused] failed to load recents:", e))
-  );
+  return enqueue(() => refresh().catch((e) => console.error("[fused] failed to load recents:", e)));
 }
 
 // Record an open (or a live param update) of the current file view. The
@@ -166,7 +164,11 @@ export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
 // (after the iframe loads), so it is also a dependency: once it resolves, the
 // effect re-runs and re-records the current url with the now-known title,
 // same as a live param update would.
-export function useRecentsTracking(fsPath: string, isDir: boolean | null, title: string | null): void {
+export function useRecentsTracking(
+  fsPath: string,
+  isDir: boolean | null,
+  title: string | null,
+): void {
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (IS_EMBED || isDir !== false) return;
@@ -202,6 +204,5 @@ export function useRecentsTracking(fsPath: string, isDir: boolean | null, title:
     };
     // fsPath + isDir identify the open, like useSessionTracking; title is
     // included so its late arrival triggers a re-record.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fsPath, isDir, title]);
 }

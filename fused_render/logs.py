@@ -10,6 +10,7 @@ is a complete bug report.
 Not structured logging (still future work, see DECISIONS.md backlog) — just
 tracebacks and boot context for remote debugging of DMG installs.
 """
+
 import logging
 import logging.handlers
 import os
@@ -73,18 +74,15 @@ def setup_logging() -> str:
 
     root = logging.getLogger()
     for h in root.handlers:
-        if (
-            isinstance(h, logging.handlers.RotatingFileHandler)
-            and getattr(h, "baseFilename", None) == os.path.abspath(path)
-        ):
+        if isinstance(h, logging.handlers.RotatingFileHandler) and getattr(
+            h, "baseFilename", None
+        ) == os.path.abspath(path):
             return path
 
     handler = logging.handlers.RotatingFileHandler(
         path, maxBytes=2_000_000, backupCount=1, encoding="utf-8"
     )
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root.addHandler(handler)
     if root.level > logging.INFO or root.level == logging.NOTSET:
         root.setLevel(logging.INFO)

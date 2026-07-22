@@ -17,6 +17,7 @@ to describe, but it's still a runnable, parameterless entrypoint — flagged
 via ``static_result`` so the template can offer Execute instead of reporting
 "no main()".
 """
+
 import ast
 import re
 

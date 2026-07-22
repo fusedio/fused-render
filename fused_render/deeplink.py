@@ -22,6 +22,7 @@ the subpath begins (`/tree/feature/x/docs` is ambiguous). The first segment
 after `/tree/` is taken as the ref — single-segment refs only, same assumption
 most tooling makes.
 """
+
 import logging
 import os
 import posixpath
@@ -84,7 +85,7 @@ def github_url_from(src: str) -> str:
     low = src.lower()
     for prefix in _OPEN_PREFIXES:
         if low.startswith(prefix):
-            src = src[len(prefix):]
+            src = src[len(prefix) :]
             break
     else:
         if low.startswith("fused-render:"):
@@ -305,8 +306,13 @@ def _clone_into(spec: dict, remote: str, dest: str) -> None:
     """One clone attempt against one remote; removes the half-clone on any
     failure so a retry (other remote, next click) never hits an 'exists and
     is not a git clone' dead end."""
-    logger.info("deeplink: cloning %s (ref=%s, subpath=%r) -> %s",
-                remote, spec["ref"], spec["subpath"], dest)
+    logger.info(
+        "deeplink: cloning %s (ref=%s, subpath=%r) -> %s",
+        remote,
+        spec["ref"],
+        spec["subpath"],
+        dest,
+    )
     args = ["clone", "--filter=blob:none"]
     if spec["subpath"]:
         args.append("--sparse")

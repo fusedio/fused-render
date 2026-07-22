@@ -6,6 +6,7 @@ exec()'d directly, standing in for the backend's runner. The real-backend
 integration tests run only when the `fused` package is importable (CI without
 it skips them; the engine itself falls back the same way).
 """
+
 import asyncio
 import json
 import os
@@ -15,7 +16,6 @@ import types
 import pytest
 
 from fused_render import engine
-
 
 # --- script_requirements (PEP 723) ------------------------------------------
 
@@ -35,10 +35,7 @@ def test_requirements_absent_is_empty():
 @requires_tomllib
 def test_requirements_parsed():
     src = (
-        "# /// script\n"
-        '# dependencies = ["pyarrow", "requests"]\n'
-        "# ///\n"
-        "def main():\n    return 1\n"
+        '# /// script\n# dependencies = ["pyarrow", "requests"]\n# ///\ndef main():\n    return 1\n'
     )
     assert engine.script_requirements(src) == ["pyarrow", "requests"]
 
@@ -96,11 +93,7 @@ def test_bare_main_bridge_coerces_and_chdirs(tmp_path):
 
 
 def test_bare_main_bridge_handles_future_annotations(tmp_path):
-    src = (
-        "from __future__ import annotations\n"
-        "def main(n: int = 1):\n"
-        "    return type(n).__name__\n"
-    )
+    src = "from __future__ import annotations\ndef main(n: int = 1):\n    return type(n).__name__\n"
     g = _run_wrapped(tmp_path, src, {"n": "7"})
     assert g["result"] == "int"
 

@@ -74,9 +74,7 @@ function encQuery(s: string): string {
 // scanning continues past it, so a literal `%2C` (escaped to `%252C`) survives
 // while a structural `%2C` (an escaped comma) becomes `,`.
 function decSeg(s: string): string {
-  return s.replace(/%(25|2C|3B|28|29|3F)/g, (_, hex) =>
-    String.fromCharCode(parseInt(hex, 16))
-  );
+  return s.replace(/%(25|2C|3B|28|29|3F)/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
 // Encode one segment (fs path + optional query, query includes its `?`).
@@ -172,7 +170,7 @@ function urlSafeLayout(s: string): string {
 export function buildSentinelUrl(
   sentinelPath: string,
   codecStr: string,
-  merged?: Iterable<[string, string]> | null
+  merged?: Iterable<[string, string]> | null,
 ): string {
   const parts: string[] = [];
   if (merged) {
@@ -256,7 +254,7 @@ export interface UrlChangeHook {
 // window — each hooks only its direct child iframes.
 export function attachEmbedUrlChange(
   iframe: HTMLIFrameElement,
-  handler: () => void
+  handler: () => void,
 ): UrlChangeHook | null {
   let win: Window;
   try {
@@ -304,7 +302,7 @@ export function readEmbedLoc(iframe: HTMLIFrameElement): EmbedLoc | null {
           .split("/")
           .filter((s) => s.length > 0)
           .map(decodeURIComponent)
-          .join("/")
+          .join("/"),
       );
       return { path, query: loc.search || "" };
     }

@@ -15,7 +15,6 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 
-
 _LEVELS = ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OTHER")
 _LEVEL_MAP = {
     "TRACE": "TRACE",
@@ -40,12 +39,8 @@ _ISO_RE = re.compile(
     r"(?<!\d)(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
     r"(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
-_APACHE_RE = re.compile(
-    r"\[(\d{1,2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\]"
-)
-_SYSLOG_RE = re.compile(
-    r"^(?:<\d+>)?\s*([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\b"
-)
+_APACHE_RE = re.compile(r"\[(\d{1,2}/[A-Za-z]{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\]")
+_SYSLOG_RE = re.compile(r"^(?:<\d+>)?\s*([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\b")
 _YMD_RE = re.compile(
     r"(?<!\d)(\d{4}[/-]\d{1,2}[/-]\d{1,2}[ T]\d{1,2}:\d{2}:\d{2}"
     r"(?:[.,]\d{1,6})?)(?!\d)"
@@ -135,18 +130,35 @@ _PARSERS = (
     ("iso", _ISO_RE, _from_iso),
     ("apache", _APACHE_RE, _from_apache),
     ("syslog", _SYSLOG_RE, _from_syslog),
-    ("datetime", _YMD_RE, _strptime(
-        "%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S")),
-    ("datetime", _MDY_RE, _strptime(
-        "%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S",
-        "%m/%d/%y %H:%M:%S.%f", "%m/%d/%y %H:%M:%S",
-        "%d/%m/%Y %H:%M:%S.%f", "%d/%m/%Y %H:%M:%S",
-        "%d/%m/%y %H:%M:%S.%f", "%d/%m/%y %H:%M:%S",
-        "%m-%d-%Y %H:%M:%S.%f", "%m-%d-%Y %H:%M:%S",
-        "%m-%d-%y %H:%M:%S.%f", "%m-%d-%y %H:%M:%S",
-        "%d-%m-%Y %H:%M:%S.%f", "%d-%m-%Y %H:%M:%S",
-        "%d-%m-%y %H:%M:%S.%f", "%d-%m-%y %H:%M:%S")),
+    (
+        "datetime",
+        _YMD_RE,
+        _strptime(
+            "%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"
+        ),
+    ),
+    (
+        "datetime",
+        _MDY_RE,
+        _strptime(
+            "%m/%d/%Y %H:%M:%S.%f",
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%y %H:%M:%S.%f",
+            "%m/%d/%y %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S.%f",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%y %H:%M:%S.%f",
+            "%d/%m/%y %H:%M:%S",
+            "%m-%d-%Y %H:%M:%S.%f",
+            "%m-%d-%Y %H:%M:%S",
+            "%m-%d-%y %H:%M:%S.%f",
+            "%m-%d-%y %H:%M:%S",
+            "%d-%m-%Y %H:%M:%S.%f",
+            "%d-%m-%Y %H:%M:%S",
+            "%d-%m-%y %H:%M:%S.%f",
+            "%d-%m-%y %H:%M:%S",
+        ),
+    ),
     ("datetime", _TEXT_DATE_RE, _strptime("%d-%b-%Y %H:%M:%S", "%d %b %Y %H:%M:%S")),
 )
 
@@ -329,8 +341,7 @@ import urllib.request as _urlreq
 
 def _server_url(src, endpoint, path):
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):
@@ -393,12 +404,14 @@ def _listdir(file, path, src=""):
             if ent["name"].startswith("."):
                 continue
             is_dir = bool(ent.get("is_dir"))
-            entries.append({
-                "name": ent["name"],
-                "path": os.path.join(directory, ent["name"]).replace(os.sep, "/"),
-                "is_dir": is_dir,
-                "size": None if is_dir else (ent.get("size") or 0),
-            })
+            entries.append(
+                {
+                    "name": ent["name"],
+                    "path": os.path.join(directory, ent["name"]).replace(os.sep, "/"),
+                    "is_dir": is_dir,
+                    "size": None if is_dir else (ent.get("size") or 0),
+                }
+            )
             if len(entries) >= 1000:
                 break
         entries.sort(key=lambda item: (not item["is_dir"], item["name"].casefold()))
@@ -479,7 +492,12 @@ def _tail_page(file, limit, q, levels, from_epoch, to_epoch):
             # Forward pass (file order) over the chunk so a continuation line can
             # inherit the timestamp and level of the record above it; the collection
             # sweep below runs backward, which can't see a line's parent on its own.
-            texts, stamps, line_levels, effs = [None] * len(parts), [None] * len(parts), [None] * len(parts), [None] * len(parts)
+            texts, stamps, line_levels, effs = (
+                [None] * len(parts),
+                [None] * len(parts),
+                [None] * len(parts),
+                [None] * len(parts),
+            )
             chunk_last = (None, None)
             for i in range(first, len(parts)):
                 t = _text(parts[i][:_MAX_LINE_BYTES])
@@ -772,7 +790,9 @@ def _context(file, page, context):
                 if after >= count:
                     break
                 after += 1
-            lines.append({"offset": offset, "text": _text(raw), "target": is_target, "truncated": clipped})
+            lines.append(
+                {"offset": offset, "text": _text(raw), "target": is_target, "truncated": clipped}
+            )
             if is_target:
                 found_target = True
         if not found_target:
@@ -814,4 +834,7 @@ def main(
         return _patterns(file, limit, q, level, from_epoch, to_epoch)
     if op == "context":
         return _context(file, page, context)
-    return {"error": f"Unknown operation: {op}", "operations": ["overview", "list", "resolve", "page", "histogram", "patterns", "context"]}
+    return {
+        "error": f"Unknown operation: {op}",
+        "operations": ["overview", "list", "resolve", "page", "histogram", "patterns", "context"],
+    }

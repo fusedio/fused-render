@@ -14,19 +14,20 @@ Tests use a `.splat` target: inspect's direct branch needs only os.path, no
 cache dir and no heavy deps. CACHE_ROOT is repointed at tmp_path anyway so
 nothing can touch the real home.
 """
+
 import importlib.util
 import os
 
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-READER_PY = os.path.join(HERE, os.pardir, "fused_render", "templates",
-                         "usd", "reader.py")
+READER_PY = os.path.join(HERE, os.pardir, "fused_render", "templates", "usd", "reader.py")
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load_reader(tmp_path, monkeypatch):
@@ -44,6 +45,7 @@ def _asset(tmp_path):
 
 
 # ---------------------------------------------------------- _sidecar_writable
+
 
 def test_sidecar_writable_no_sidecar_writable_dir(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)
@@ -79,6 +81,7 @@ def test_sidecar_writable_readonly_parent_no_sidecar(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------ inspect action
+
 
 def test_inspect_reports_sidecar_writable_true(tmp_path, monkeypatch):
     mod = _load_reader(tmp_path, monkeypatch)

@@ -17,6 +17,7 @@ These tests pin the invariants added on branch fix/template-kernel-listing:
 Pure-python only (os/json + a threaded localhost stat server); no numpy/zarr
 needed, so they run in any repo venv.
 """
+
 import importlib.util
 import json
 import os
@@ -28,7 +29,10 @@ import pytest
 
 NETCDF_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "fused_render", "templates", "netcdf")
+    "fused_render",
+    "templates",
+    "netcdf",
+)
 
 
 def _load_module():
@@ -38,7 +42,8 @@ def _load_module():
     if NETCDF_DIR not in sys.path:
         sys.path.insert(0, NETCDF_DIR)
     spec = importlib.util.spec_from_file_location(
-        "_zarr_core_under_test", os.path.join(NETCDF_DIR, "_zarr_core.py"))
+        "_zarr_core_under_test", os.path.join(NETCDF_DIR, "_zarr_core.py")
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -70,8 +75,7 @@ class _FakeStat:
                     self.end_headers()
                     self.wfile.write(b'{"error":"nope"}')
                     return
-                body = json.dumps(
-                    {"remote": fs.remote, "size": 0, "is_dir": True}).encode()
+                body = json.dumps({"remote": fs.remote, "size": 0, "is_dir": True}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -121,20 +125,31 @@ def _flat_store(tmp_path, consolidated=False, n_chunks=2000):
     arr.mkdir(parents=True)
     _write(str(store / ".zattrs"), {"title": "fake"})
     _write(str(store / ".zgroup"), {"zarr_format": 2})
-    zarray = {"shape": [100, 100], "chunks": [10, 10], "dtype": "<f4",
-              "compressor": None, "fill_value": None, "order": "C",
-              "zarr_format": 2}
+    zarray = {
+        "shape": [100, 100],
+        "chunks": [10, 10],
+        "dtype": "<f4",
+        "compressor": None,
+        "fill_value": None,
+        "order": "C",
+        "zarr_format": 2,
+    }
     _write(str(arr / ".zarray"), zarray)
     _write(str(arr / ".zattrs"), {"_ARRAY_DIMENSIONS": ["lat", "lon"]})
     # a pile of chunk files — a walk/scandir here is what drops the mount
     for i in range(n_chunks):
         (arr / f"{i}.0").write_bytes(b"\x00")
     if consolidated:
-        _write(str(store / ".zmetadata"), {"metadata": {
-            ".zattrs": {"title": "fake"},
-            "temperature/.zarray": zarray,
-            "temperature/.zattrs": {"_ARRAY_DIMENSIONS": ["lat", "lon"]},
-        }})
+        _write(
+            str(store / ".zmetadata"),
+            {
+                "metadata": {
+                    ".zattrs": {"title": "fake"},
+                    "temperature/.zarray": zarray,
+                    "temperature/.zattrs": {"_ARRAY_DIMENSIONS": ["lat", "lon"]},
+                }
+            },
+        )
     return str(store), str(arr)
 
 
@@ -152,8 +167,7 @@ class _ScandirTrap:
             ap = os.path.abspath(path)
             self.scanned.append(ap)
             if ap in self.forbidden:
-                raise AssertionError(
-                    f"scandir on chunk dir {ap} — would drop the mount")
+                raise AssertionError(f"scandir on chunk dir {ap} — would drop the mount")
             return self._real(path)
 
         monkeypatch.setattr(Z.os, "scandir", fake)
@@ -225,7 +239,7 @@ def test_chunk_stats_remote_skips_scandir(tmp_path, monkeypatch):
     za = {"shape": [100, 100], "chunks": [10, 10]}
     present, total = Z._chunk_stats(store, "temperature", za, remote=True)
     assert present is None
-    assert total == 100          # ceil(100/10) * ceil(100/10)
+    assert total == 100  # ceil(100/10) * ceil(100/10)
 
 
 def test_chunk_stats_local_still_counts(tmp_path):
@@ -264,4 +278,4 @@ def test_grid_daemon_source_has_no_directory_walk():
     with open(os.path.join(NETCDF_DIR, "grid_tile_server.py")) as f:
         src = f.read()
     assert "for dp, _, fs in os.walk(path)" not in src
-    assert "dir_sizes" not in src        # cache for the removed walk is gone
+    assert "dir_sizes" not in src  # cache for the removed walk is gone

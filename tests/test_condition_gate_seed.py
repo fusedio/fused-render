@@ -15,6 +15,7 @@ These mirror tests/test_condition_mount_shim.py: the guard_kernel fixture
 proves no kernel os.* ever touches a mount path, and the rc helpers are
 monkeypatched (they are tested against a real stub rcd elsewhere).
 """
+
 import os
 
 import pytest
@@ -56,6 +57,7 @@ def guard_kernel(monkeypatch):
             if isinstance(p, str) and p.startswith(MOUNT_PREFIX):
                 raise AssertionError(f"kernel os.{name} on mount path {p!r}")
             return fn(p, *a, **k)
+
         return wrapped
 
     for name in ("isfile", "isdir", "exists"):
@@ -69,8 +71,9 @@ def _mount(monkeypatch, kind_map, read_bytes=None):
     """Route the mount prefix through fake rc helpers. `kind_map` maps an exact
     path (or "*") to a rc_kind_for verdict; `read_bytes` is what rc_read_bounded
     returns for the zarr.json probe."""
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         return kind_map.get(p, kind_map.get("*", "missing"))
@@ -109,8 +112,9 @@ def test_seed_skips_target_reprobe(monkeypatch, guard_kernel):
     # A seed carrying {STORE: "dir"} lets the gate answer its own isdir(STORE)
     # with no rc call. rc_kind_for raising for STORE proves it was never
     # reprobed; markers return "missing" so the plain dir is False.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -118,11 +122,13 @@ def test_seed_skips_target_reprobe(monkeypatch, guard_kernel):
         return "missing"
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
 
     allowed, err = server._run_condition(
-        ZARR_CONDITION, STORE, seed=server._GateSeed(kinds={STORE: "dir"}))
+        ZARR_CONDITION, STORE, seed=server._GateSeed(kinds={STORE: "dir"})
+    )
     assert allowed is False and err is None
 
 
@@ -133,8 +139,9 @@ def test_complete_listing_no_markers_false(monkeypatch, guard_kernel):
     # A complete listing (next_token None) with no marker among the children
     # answers all three isfile probes locally -> False, and rc_kind_for RAISES
     # for any marker path, proving not one marker was probed.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -142,10 +149,10 @@ def test_complete_listing_no_markers_false(monkeypatch, guard_kernel):
         raise AssertionError(f"marker probed despite complete listing: {p}")
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
-    _direct_list(monkeypatch,
-                 result=([{"Name": "part-0.parquet", "IsDir": False}], None))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
+    _direct_list(monkeypatch, result=([{"Name": "part-0.parquet", "IsDir": False}], None))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
     assert r.status_code == 200
@@ -154,8 +161,9 @@ def test_complete_listing_no_markers_false(monkeypatch, guard_kernel):
 
 def test_complete_listing_with_zgroup_true(monkeypatch, guard_kernel):
     # A complete listing containing .zgroup -> True with NO marker probe.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -163,8 +171,9 @@ def test_complete_listing_with_zgroup_true(monkeypatch, guard_kernel):
         raise AssertionError(f"marker probed despite complete listing: {p}")
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
     _direct_list(monkeypatch, result=([{"Name": ".zgroup", "IsDir": False}], None))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
@@ -177,8 +186,9 @@ def test_truncated_listing_falls_back_to_probes(monkeypatch, guard_kernel):
     # the gate must fall back to per-marker rc probes. .zmetadata -> "file"
     # decides True, and we assert a marker WAS probed.
     probed = []
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p != STORE:
@@ -190,10 +200,10 @@ def test_truncated_listing_falls_back_to_probes(monkeypatch, guard_kernel):
         return "missing"
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
-    _direct_list(monkeypatch,
-                 result=([{"Name": "a", "IsDir": False}], "next-tok"))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
+    _direct_list(monkeypatch, result=([{"Name": "a", "IsDir": False}], "next-tok"))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
     assert r.status_code == 200
@@ -205,8 +215,9 @@ def test_listing_failure_falls_back_to_probes(monkeypatch, guard_kernel):
     # The pager raising (DirectListError) must fail-open to the per-marker rc
     # probe path; provide marker kinds so the verdict is still correct.
     probed = []
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p != STORE:
@@ -218,8 +229,9 @@ def test_listing_failure_falls_back_to_probes(monkeypatch, guard_kernel):
         return "missing"
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
     _direct_list(monkeypatch, raises=mounts_mod.DirectListError("boom"))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
@@ -232,8 +244,9 @@ def test_v3_group_via_listing(monkeypatch, guard_kernel):
     # A complete listing containing zarr.json answers isfile locally; the
     # node_type read still runs via rc_read_bounded and node_type=="group"
     # -> True. rc_kind_for RAISES for any marker, proving no marker probe.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -241,8 +254,7 @@ def test_v3_group_via_listing(monkeypatch, guard_kernel):
         raise AssertionError(f"marker probed despite complete listing: {p}")
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: b'{"node_type": "group"}')
+    monkeypatch.setattr(mounts_mod, "rc_read_bounded", lambda *a, **k: b'{"node_type": "group"}')
     _direct_list(monkeypatch, result=([{"Name": "zarr.json", "IsDir": False}], None))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
@@ -260,8 +272,9 @@ def test_indeterminate_kind_not_seeded_gate_reprobes(monkeypatch, guard_kernel):
     # all-False verdict (worse: cached 60s). Instead the gate must do its OWN
     # probe, which here recovers to "dir" and, with .zmetadata present, -> True.
     calls = {"n": 0}
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -274,8 +287,9 @@ def test_indeterminate_kind_not_seeded_gate_reprobes(monkeypatch, guard_kernel):
         return "missing"
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
     # No direct listing: force the pure rc probe path so the gate reprobe shows.
     _direct_list(monkeypatch, capable=False)
 
@@ -295,8 +309,9 @@ def test_truncated_listing_with_present_marker_true(monkeypatch, guard_kernel):
     # probed (proven by _kind raising on it) — even though rc probing it would
     # "miss" (returns missing). Earlier markers (.zmetadata, zarr.json), absent
     # from the partial page, DO fall through to rc probes and come back missing.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):
         if p == STORE:
@@ -306,10 +321,10 @@ def test_truncated_listing_with_present_marker_true(monkeypatch, guard_kernel):
         return "missing"  # .zmetadata / zarr.json legitimately probe -> missing
 
     monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
-    monkeypatch.setattr(mounts_mod, "rc_read_bounded",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
-    _direct_list(monkeypatch,
-                 result=([{"Name": ".zgroup", "IsDir": False}], "next-tok"))
+    monkeypatch.setattr(
+        mounts_mod, "rc_read_bounded", lambda *a, **k: (_ for _ in ()).throw(OSError("no serve"))
+    )
+    _direct_list(monkeypatch, result=([{"Name": ".zgroup", "IsDir": False}], "next-tok"))
 
     r = _client().get("/api/fs/conditions", params={"path": STORE})
     assert r.status_code == 200
@@ -323,8 +338,9 @@ def test_no_gated_templates_skips_listing(monkeypatch, guard_kernel):
     # The bounded listing is only worth its network cost if a gate will consume
     # it. When the dir has no conditional template, direct_list_page must never
     # be called.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
     monkeypatch.setattr(mounts_mod, "rc_kind_for", lambda p, **k: "dir")
     monkeypatch.setattr(server, "_templates_for", lambda path, is_dir: ([], None))
 

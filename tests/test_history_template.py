@@ -5,6 +5,7 @@ so what the server can guarantee is covered here: the registry bindings and
 their resolution through `_templates_for`, plus the shipped files' presence.
 Behavioral checks (per-key validation, navigation) are exercised in the app.
 """
+
 import os
 
 from fused_render import server

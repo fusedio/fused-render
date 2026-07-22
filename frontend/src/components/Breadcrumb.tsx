@@ -232,12 +232,17 @@ export function Breadcrumb({
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
+    if (i > 0 || underHome)
+      pieces.push(
+        <span key={"sep" + i} className="path-crumb-sep">
+          /
+        </span>,
+      );
     if (isLast) {
       pieces.push(
         <span key={target} className="path-crumb last">
           {part}
-        </span>
+        </span>,
       );
     } else {
       pieces.push(
@@ -251,7 +256,7 @@ export function Breadcrumb({
           }}
         >
           {part}
-        </a>
+        </a>,
       );
     }
   });
@@ -262,7 +267,10 @@ export function Breadcrumb({
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>
-      <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      <CrumbActions
+        name={renderedTitle || basename(fsPath)}
+        onSplit={(dir) => enterPanel(fsPath, dir)}
+      />
     </>
   );
 }

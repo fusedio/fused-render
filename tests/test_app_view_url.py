@@ -2,6 +2,7 @@
 (SB-9, D99). Module-level and AppKit-free by design (rumps is imported lazily
 inside main()), so it is testable anywhere.
 """
+
 from fused_render.app import view_url_path
 
 
@@ -15,10 +16,7 @@ def test_path_segments_are_url_encoded():
 
 def test_bookmark_file_routes_to_bookmark_sentinel():
     # The abs path travels as one query value: slashes encoded too.
-    assert (
-        view_url_path("/data/sales.bookmark")
-        == "/view/_bookmark?file=%2Fdata%2Fsales.bookmark"
-    )
+    assert view_url_path("/data/sales.bookmark") == "/view/_bookmark?file=%2Fdata%2Fsales.bookmark"
 
 
 def test_bookmark_extension_is_case_insensitive():

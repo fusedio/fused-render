@@ -8,6 +8,7 @@ The GET `exists` flag distinguishes an absent/corrupt file from a valid
 (possibly empty) one — a user who deletes every bookmark leaves an existing
 `[]` file, which still reports `exists=true`. See frontend lib/bookmarks.ts.
 """
+
 import json
 import os
 import re
@@ -150,9 +151,7 @@ def get_bookmarks():
 
 
 @router.put("/api/bookmarks")
-def put_bookmarks(
-    bookmarks: list = Body(...), x_fused: str | None = Header(default=None)
-):
+def put_bookmarks(bookmarks: list = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -172,9 +171,7 @@ def put_bookmarks(
 
 
 @router.post("/api/bookmarks/export")
-def export_bookmark(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def export_bookmark(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -184,7 +181,9 @@ def export_bookmark(
     if not (isinstance(dir_, str) and isinstance(filename, str) and isinstance(content, str)):
         return JSONResponse({"error": "dir, filename and content required"}, status_code=400)
     if not os.path.isabs(dir_) or not os.path.isdir(dir_):
-        return JSONResponse({"error": "dir must be an existing absolute directory"}, status_code=400)
+        return JSONResponse(
+            {"error": "dir must be an existing absolute directory"}, status_code=400
+        )
     # Bare `<stem>.bookmark` only — no separators, no traversal, non-empty stem.
     stem = filename[: -len(".bookmark")]
     if (
@@ -204,7 +203,9 @@ def export_bookmark(
         doc = None
     version = doc.get("version") if isinstance(doc, dict) else None
     if not isinstance(version, int) or isinstance(version, bool):
-        return JSONResponse({"error": "content must be .bookmark JSON with an int version"}, status_code=400)
+        return JSONResponse(
+            {"error": "content must be .bookmark JSON with an int version"}, status_code=400
+        )
     path = os.path.join(dir_, filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
@@ -268,7 +269,7 @@ def _fs_path_from_url(url: str) -> str | None:
     path = parts.path
     for prefix in _VIEW_PREFIXES:
         if path.startswith(prefix):
-            rest = path[len(prefix):]
+            rest = path[len(prefix) :]
             break
     else:
         return None
@@ -326,19 +327,19 @@ def _record_history(fs_path: str, entry: dict) -> None:
             existing["updated_at"] = now
             break
     else:
-        history.append({
-            **{k: v for k, v in entry.items() if v is not None},
-            "recorded_at": now,
-            "updated_at": now,
-        })
+        history.append(
+            {
+                **{k: v for k, v in entry.items() if v is not None},
+                "recorded_at": now,
+                "updated_at": now,
+            }
+        )
     data["bookmarkHistory"] = history
     storage.write_json(sidecar, data)
 
 
 @router.post("/api/bookmarks/history")
-def post_bookmark_history(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def post_bookmark_history(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard

@@ -183,11 +183,11 @@ export default function Tabs({ config }: { config: Config }) {
     () => () => {
       delete window._fusedParamBoundary;
     },
-    []
+    [],
   );
 
   const [tabs, setTabs] = useState<LayoutLeaf[]>(() =>
-    parseTabs(splitShellSearch(location.search).layout, config.start_dir)
+    parseTabs(splitShellSearch(location.search).layout, config.start_dir),
   );
   // `_layout` never encodes activation (TM-2 — URL shape untouched), so the
   // active tab rides on the history entry's state object instead: pushHistory
@@ -248,7 +248,6 @@ export default function Tabs({ config }: { config: Config }) {
   // Initial `_layout` normalization on mount (vanilla render() synced once).
   useEffect(() => {
     syncUrl();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activate = (id: number) => {

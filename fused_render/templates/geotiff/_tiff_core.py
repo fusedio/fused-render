@@ -17,9 +17,9 @@ engines return an identical JSON schema.
 # dependencies = ["numpy", "pyproj", "imagecodecs"]
 # ///
 
+import os
 import struct
 import sys
-import os
 
 import _raster_common as C
 
@@ -65,13 +65,13 @@ def _overview_levels(buf, en, first_next):
 
 def _read_values(buf, en, typ, count, off):
     if typ == 2:  # ASCII
-        return buf[off:off + count].split(b"\x00")[0].decode("latin-1", "replace")
+        return buf[off : off + count].split(b"\x00")[0].decode("latin-1", "replace")
     fmt = {1: "B", 3: "H", 4: "I", 6: "b", 8: "h", 9: "i", 11: "f", 12: "d"}.get(typ)
     if typ == 5:  # RATIONAL
         vals = struct.unpack_from(en + "%dI" % (count * 2), buf, off)
         return [vals[i] / vals[i + 1] if vals[i + 1] else 0.0 for i in range(0, len(vals), 2)]
     if not fmt:
-        return list(buf[off:off + count])
+        return list(buf[off : off + count])
     return list(struct.unpack_from(en + fmt * count, buf, off))
 
 
@@ -87,11 +87,13 @@ def _v1(tags, tag, default=None):
 def _decompress(raw, comp):
     if comp == 1:
         return raw
-    if comp in (8, 32946):        # Deflate / zlib
+    if comp in (8, 32946):  # Deflate / zlib
         import zlib
+
         return zlib.decompress(raw)
-    try:                          # LZW / packbits / zstd via imagecodecs
+    try:  # LZW / packbits / zstd via imagecodecs
         import imagecodecs as IC
+
         if comp == 5:
             return IC.lzw_decode(bytes(raw))
         if comp == 32773:
@@ -105,6 +107,7 @@ def _decompress(raw, comp):
 
 def _numpy_dtype(sample_format, bits, en):
     import numpy as np
+
     kind = {1: "u", 2: "i", 3: "f"}.get(sample_format, "u")
     nb = bits // 8
     return np.dtype(("<" if en == "<" else ">") + kind + str(nb))
@@ -113,22 +116,42 @@ def _numpy_dtype(sample_format, bits, en):
 def _unpredict(a, predictor):
     """Horizontal differencing predictor (2) -> cumulative sum along columns."""
     import numpy as np
+
     if predictor == 2:
         return np.cumsum(a, axis=1, dtype=a.dtype)
     return a
 
 
-_COMPRESSION = {1: "none", 2: "CCITT RLE", 5: "LZW", 6: "JPEG (old)", 7: "JPEG",
-                8: "deflate", 32946: "deflate", 32773: "packbits", 34712: "JPEG2000",
-                34887: "LERC", 50000: "zstd", 50001: "webp"}
-_PHOTOMETRIC = {0: "min-is-white", 1: "min-is-black", 2: "RGB", 3: "palette",
-                4: "mask", 5: "CMYK", 6: "YCbCr"}
+_COMPRESSION = {
+    1: "none",
+    2: "CCITT RLE",
+    5: "LZW",
+    6: "JPEG (old)",
+    7: "JPEG",
+    8: "deflate",
+    32946: "deflate",
+    32773: "packbits",
+    34712: "JPEG2000",
+    34887: "LERC",
+    50000: "zstd",
+    50001: "webp",
+}
+_PHOTOMETRIC = {
+    0: "min-is-white",
+    1: "min-is-black",
+    2: "RGB",
+    3: "palette",
+    4: "mask",
+    5: "CMYK",
+    6: "YCbCr",
+}
 
 
 def parse_header(path):
     """Read the file + parse the first IFD. Works for ANY compression —
     header metadata is available even when pixels can't be decoded purely."""
     import mmap
+
     with open(path, "rb") as f:
         # mmap, not read(): header + tile decode only touch the pages they
         # use, so a 300MB COG opens as fast as a 3MB one
@@ -149,27 +172,30 @@ def _gdal_metadata(t):
     """Parse the GDAL_METADATA XML tag (42112) -> {name: value} (band-scoped
     names get a 'band N: ' prefix; sample index is 0-based in the XML)."""
     import re
+
     raw = _v(t, 42112)
     if not isinstance(raw, str) or "<" not in raw:
         return {}
     items = {}
-    for m in re.finditer(r'<Item\s+([^>]*)>(.*?)</Item>', raw, re.S):
+    for m in re.finditer(r"<Item\s+([^>]*)>(.*?)</Item>", raw, re.S):
         attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
         name = attrs.get("name", "?")
         if "sample" in attrs:
-            name = f'band {int(attrs["sample"]) + 1}: {name}'
+            name = f"band {int(attrs['sample']) + 1}: {name}"
         items[name] = m.group(2).strip()
     return items
 
 
 def header_meta(path, buf, en, t, next_off):
     """gdalinfo-style header metadata from parsed tags (no pixel decode)."""
-    import os
-    W = _v1(t, 256); H = _v1(t, 257)
+    W = _v1(t, 256)
+    H = _v1(t, 257)
     spp = _v1(t, 277, 1)
-    bits = _v(t, 258, [8]); bits = bits[0] if isinstance(bits, list) else bits
+    bits = _v(t, 258, [8])
+    bits = bits[0] if isinstance(bits, list) else bits
     comp = _v1(t, 259, 1)
-    sf = _v(t, 339, [1]); sf = sf[0] if isinstance(sf, list) else sf
+    sf = _v(t, 339, [1])
+    sf = sf[0] if isinstance(sf, list) else sf
     kind = {1: "uint", 2: "int", 3: "float"}.get(sf, "uint")
 
     if 322 in t:
@@ -179,30 +205,41 @@ def header_meta(path, buf, en, t, next_off):
         layout = f"stripped ({rps} rows/strip)"
 
     meta = _geo_meta(t)
-    meta.update({
-        "width": int(W) if W else None, "height": int(H) if H else None,
-        "count": int(spp), "dtype": f"{kind}{bits}",
-        "nodata": _nodata(t),
-        "file_size": os.path.getsize(path),
-        "tiff": {
-            "compression": _COMPRESSION.get(comp, f"code {comp}"),
-            "layout": layout,
-            "photometric": _PHOTOMETRIC.get(_v1(t, 262), None),
-            "predictor": {2: "horizontal", 3: "float"}.get(_v1(t, 317, 1)),
-            "byte_order": "little-endian" if en == "<" else "big-endian",
-            "overviews": _overview_levels(buf, en, next_off),
-        },
-        "tags": {k: v for k, v in {
-            "description": _v(t, 270), "software": _v(t, 305),
-            "datetime": _v(t, 306), "artist": _v(t, 315),
-            "copyright": _v(t, 33432),
-        }.items() if v},
-        "gdal_metadata": _gdal_metadata(t),
-    })
+    meta.update(
+        {
+            "width": int(W) if W else None,
+            "height": int(H) if H else None,
+            "count": int(spp),
+            "dtype": f"{kind}{bits}",
+            "nodata": _nodata(t),
+            "file_size": os.path.getsize(path),
+            "tiff": {
+                "compression": _COMPRESSION.get(comp, f"code {comp}"),
+                "layout": layout,
+                "photometric": _PHOTOMETRIC.get(_v1(t, 262), None),
+                "predictor": {2: "horizontal", 3: "float"}.get(_v1(t, 317, 1)),
+                "byte_order": "little-endian" if en == "<" else "big-endian",
+                "overviews": _overview_levels(buf, en, next_off),
+            },
+            "tags": {
+                k: v
+                for k, v in {
+                    "description": _v(t, 270),
+                    "software": _v(t, 305),
+                    "datetime": _v(t, 306),
+                    "artist": _v(t, 315),
+                    "copyright": _v(t, 33432),
+                }.items()
+                if v
+            },
+            "gdal_metadata": _gdal_metadata(t),
+        }
+    )
     # band descriptions live in GDAL_METADATA <Item name="DESCRIPTION" sample=N>
     gm = meta["gdal_metadata"]
-    meta["descriptions"] = [gm.get(f"band {i + 1}: DESCRIPTION", f"band {i + 1}")
-                            for i in range(int(spp))]
+    meta["descriptions"] = [
+        gm.get(f"band {i + 1}: DESCRIPTION", f"band {i + 1}") for i in range(int(spp))
+    ]
     return meta
 
 
@@ -237,18 +274,23 @@ def read_tiff(path, win="", max_cells=0):
     pixels outside the window stay zero and are sliced away by the caller.
     When max_cells > 0, decodes from the smallest sufficient overview IFD."""
     import numpy as np
+
     buf, en, t0, next_off = parse_header(path)
-    full_w = _v1(t0, 256); full_h = _v1(t0, 257)
+    full_w = _v1(t0, 256)
+    full_h = _v1(t0, 257)
     t = t0
     if max_cells:
         t, _, _ = _pick_ifd(buf, en, t0, next_off, full_w, full_h, win, max_cells)
-    W = _v1(t, 256); H = _v1(t, 257)
+    W = _v1(t, 256)
+    H = _v1(t, 257)
     spp = _v1(t, 277, 1)
-    bits = _v(t, 258, [8]); bits = bits[0] if isinstance(bits, list) else bits
+    bits = _v(t, 258, [8])
+    bits = bits[0] if isinstance(bits, list) else bits
     comp = _v1(t, 259, 1)
     predictor = _v1(t, 317, 1)
     planar = _v1(t, 284, 1)
-    sf = _v(t, 339, [1]); sf = sf[0] if isinstance(sf, list) else sf
+    sf = _v(t, 339, [1])
+    sf = sf[0] if isinstance(sf, list) else sf
     dt = _numpy_dtype(sf, bits, en)
 
     wsel = C.parse_win(win, W, H)
@@ -268,7 +310,7 @@ def read_tiff(path, win="", max_cells=0):
             for ty in range(wy0 // th, (wy1 - 1) // th + 1):
                 for tx in range(wx0 // tw, (wx1 - 1) // tw + 1):
                     ti = p * per_plane + ty * across + tx
-                    data = _decompress(buf[offs[ti]:offs[ti] + counts[ti]], comp)
+                    data = _decompress(buf[offs[ti] : offs[ti] + counts[ti]], comp)
                     samp = 1 if planar == 2 else spp
                     tile = np.frombuffer(data, dtype=dt)[: th * tw * samp].reshape(th, tw, samp)
                     tile = _unpredict(tile, predictor)
@@ -287,17 +329,17 @@ def read_tiff(path, win="", max_cells=0):
         for p in range(planes):
             for si in range(wy0 // rps, (wy1 - 1) // rps + 1):
                 gi = p * nstrips_plane + si
-                data = _decompress(buf[offs[gi]:offs[gi] + counts[gi]], comp)
+                data = _decompress(buf[offs[gi] : offs[gi] + counts[gi]], comp)
                 y0 = si * rps
                 rows = min(rps, H - y0)
                 samp = 1 if planar == 2 else spp
                 strip = np.frombuffer(data, dtype=dt)[: rows * W * samp].reshape(rows, W, samp)
                 strip = _unpredict(strip, predictor)
                 if planar == 2:
-                    out[p, y0:y0 + rows, :] = strip[:, :, 0]
+                    out[p, y0 : y0 + rows, :] = strip[:, :, 0]
                 else:
                     for s in range(spp):
-                        out[s, y0:y0 + rows, :] = strip[:, :, s]
+                        out[s, y0 : y0 + rows, :] = strip[:, :, s]
 
     meta = header_meta(path, buf, en, t0, next_off)
     meta["dtype"] = str(dt).lstrip("<>|")
@@ -314,7 +356,7 @@ def read_tiff(path, win="", max_cells=0):
 
 
 def _nodata(t):
-    raw = _v(t, 42113)   # GDAL_NODATA (ASCII)
+    raw = _v(t, 42113)  # GDAL_NODATA (ASCII)
     if raw is None:
         return None
     try:
@@ -327,7 +369,7 @@ def _geo_meta(t):
     """EPSG + affine transform + native bounds from GeoTIFF tags."""
     epsg = None
     area_or_point = citation = None
-    gk = _v(t, 34735)    # GeoKeyDirectory
+    gk = _v(t, 34735)  # GeoKeyDirectory
     if gk and len(gk) >= 4:
         nkeys = gk[3]
         ascii_params = _v(t, 34737) or ""
@@ -336,23 +378,25 @@ def _geo_meta(t):
             b = 4 + i * 4
             if b + 3 < len(gk):
                 kid, loc, cnt, val = gk[b], gk[b + 1], gk[b + 2], gk[b + 3]
-                if loc == 0:                      # value stored inline
+                if loc == 0:  # value stored inline
                     keys[kid] = val
-                elif loc == 34737:                # substring of GeoAsciiParams
-                    keys[kid] = ascii_params[val:val + cnt].rstrip("|").strip()
-        epsg = keys.get(3072) or keys.get(2048)      # projected, else geographic
+                elif loc == 34737:  # substring of GeoAsciiParams
+                    keys[kid] = ascii_params[val : val + cnt].rstrip("|").strip()
+        epsg = keys.get(3072) or keys.get(2048)  # projected, else geographic
         area_or_point = {1: "Area", 2: "Point"}.get(keys.get(1025))
         citation = keys.get(1026) or keys.get(2049)  # GT, else geographic
 
-    scale = _v(t, 33550)     # ModelPixelScale (sx, sy, sz)
-    tie = _v(t, 33922)       # ModelTiepoint (i, j, k, x, y, z)
-    mt = _v(t, 34264)        # ModelTransformation (4x4)
-    W = _v1(t, 256); H = _v1(t, 257)
+    scale = _v(t, 33550)  # ModelPixelScale (sx, sy, sz)
+    tie = _v(t, 33922)  # ModelTiepoint (i, j, k, x, y, z)
+    mt = _v(t, 34264)  # ModelTransformation (4x4)
+    W = _v1(t, 256)
+    H = _v1(t, 257)
     transform = bounds = None
     if scale and tie and len(scale) >= 2 and len(tie) >= 6:
         sx, sy = scale[0], scale[1]
         i, j, x0, y0 = tie[0], tie[1], tie[3], tie[4]
-        c = x0 - i * sx; f = y0 + j * sy
+        c = x0 - i * sx
+        f = y0 + j * sy
         transform = [sx, 0.0, c, 0.0, -sy, f]
     elif mt and len(mt) >= 16:
         transform = [mt[0], mt[1], mt[3], mt[4], mt[5], mt[7]]
@@ -361,22 +405,28 @@ def _geo_meta(t):
         xs = [c, c + a * W, c + a * W + b_ * H, c + b_ * H]
         ys = [f, f + d * W, f + d * W + e * H, f + e * H]
         bounds = {"left": min(xs), "right": max(xs), "top": max(ys), "bottom": min(ys)}
-    return {"crs": ({"epsg": int(epsg)} if isinstance(epsg, int) and epsg else None),
-            "transform": transform, "bounds": bounds,
-            "area_or_point": area_or_point, "citation": citation}
+    return {
+        "crs": ({"epsg": int(epsg)} if isinstance(epsg, int) and epsg else None),
+        "transform": transform,
+        "bounds": bounds,
+        "area_or_point": area_or_point,
+        "citation": citation,
+    }
 
 
 # ---------------------------------------------------------------- system engine
 def _system_python():
-    import os
     import shutil
     import subprocess
+
     cands = []
     if os.environ.get("GEO_PYTHON"):
         cands.append(os.environ["GEO_PYTHON"])
     home = os.path.expanduser("~")
-    cands += [os.path.join(home, p) for p in
-              ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")]
+    cands += [
+        os.path.join(home, p)
+        for p in ("miniforge3/bin/python", "miniconda3/bin/python", "anaconda3/bin/python")
+    ]
     for name in ("python3", "python"):
         w = shutil.which(name)
         if w:
@@ -389,7 +439,9 @@ def _system_python():
             continue
         seen.add(rc)
         try:
-            r = subprocess.run([rc, "-c", "import rasterio"], capture_output=True, timeout=15, env=env)
+            r = subprocess.run(
+                [rc, "-c", "import rasterio"], capture_output=True, timeout=15, env=env
+            )
             if r.returncode == 0:
                 return rc
         except Exception:
@@ -397,7 +449,7 @@ def _system_python():
     return None
 
 
-_WORKER = r'''
+_WORKER = r"""
 import sys, os, json
 sys.path.insert(0, sys.argv[1])
 import numpy as np, rasterio
@@ -480,33 +532,51 @@ with rasterio.open(p["file"]) as ds:
         out.update(C.build_single(band, vmeta, p["bins"], p["max_cells"], ds.nodata))
         out["mode"] = "single"
 print(json.dumps(out))
-'''
+"""
 
 
 def _read_system(params):
     import json
-    import os
     import subprocess
+
     py = _system_python()
     if not py:
-        return {"error": "system engine requested but no Python with rasterio was found "
-                         "(tried miniforge/conda/PATH). Set GEO_PYTHON or install rasterio."}
+        return {
+            "error": "system engine requested but no Python with rasterio was found "
+            "(tried miniforge/conda/PATH). Set GEO_PYTHON or install rasterio."
+        }
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
-    here = (os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals()
-            else os.path.abspath(sys.path[0]))  # runner exec()s without __file__
-    r = subprocess.run([py, "-c", _WORKER, here], input=json.dumps(params),
-                       capture_output=True, text=True, timeout=120, env=env)
+    here = (
+        os.path.dirname(os.path.abspath(__file__))
+        if "__file__" in globals()
+        else os.path.abspath(sys.path[0])
+    )  # runner exec()s without __file__
+    r = subprocess.run(
+        [py, "-c", _WORKER, here],
+        input=json.dumps(params),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
     if r.returncode != 0:
         return {"error": f"system engine failed: {r.stderr[-500:]}"}
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
 # ---------------------------------------------------------------- entry point
-def main(file: str = "", band: int = 1, mode: str = "auto",
-         r: int = 1, g: int = 2, b: int = 3,
-         bins: int = 40, max_cells: int = 160000, engine: str = "auto",
-         win: str = ""):
-    import os
+def main(
+    file: str = "",
+    band: int = 1,
+    mode: str = "auto",
+    r: int = 1,
+    g: int = 2,
+    b: int = 3,
+    bins: int = 40,
+    max_cells: int = 160000,
+    engine: str = "auto",
+    win: str = "",
+):
     import numpy as np
 
     # New runner passes params untyped (HTML sends them as strings); coerce the
@@ -521,8 +591,15 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
         return {"error": f"not a file: {file}"}
 
     idx = [r, g, b]
-    params = {"file": file, "band": band, "mode": mode, "idx": idx,
-              "bins": bins, "max_cells": max_cells, "win": win}
+    params = {
+        "file": file,
+        "band": band,
+        "mode": mode,
+        "idx": idx,
+        "bins": bins,
+        "max_cells": max_cells,
+        "win": win,
+    }
 
     # explicit system engine
     if engine == "system":
@@ -541,13 +618,19 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
         try:
             buf, en, t, next_off = parse_header(file)
             out = header_meta(file, buf, en, t, next_off)
-            out.update({"engine": "pure (header only)", "header_only": True,
-                        "mode": "header",
-                        "note": f"pixels not decodable: {e} — enable the system "
-                                f"engine (rasterio) to render them"})
+            out.update(
+                {
+                    "engine": "pure (header only)",
+                    "header_only": True,
+                    "mode": "header",
+                    "note": f"pixels not decodable: {e} — enable the system "
+                    f"engine (rasterio) to render them",
+                }
+            )
             out["crs_name"] = _crs_name(out.get("crs"))
-            out["lonlat_bounds"] = C.lonlat_bounds(out.get("bounds"),
-                                                   (out.get("crs") or {}).get("epsg"))
+            out["lonlat_bounds"] = C.lonlat_bounds(
+                out.get("bounds"), (out.get("crs") or {}).get("epsg")
+            )
             return _finish(out, file, band, idx, mode)
         except Unsupported:
             return {"error": f"{e}", "hint": "enable the system engine (rasterio) for this file"}
@@ -569,9 +652,14 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
             if meta.get("nodata") is not None:
                 a = np.where(a == meta["nodata"], np.nan, a)
             fin = a[np.isfinite(a)]
-            binfo.append({"band": i + 1, "description": meta["descriptions"][i],
-                          "min": C.clean(fin.min()) if fin.size else None,
-                          "max": C.clean(fin.max()) if fin.size else None})
+            binfo.append(
+                {
+                    "band": i + 1,
+                    "description": meta["descriptions"][i],
+                    "min": C.clean(fin.min()) if fin.size else None,
+                    "max": C.clean(fin.max()) if fin.size else None,
+                }
+            )
         out["band_info"] = binfo
 
     # optional zoom window (fractions of the full raster, from the UI)
@@ -585,8 +673,10 @@ def main(file: str = "", band: int = 1, mode: str = "auto",
             vmeta["bounds"] = wb
         # wsel is in decode-IFD coords; report full-res pixel coords to the UI
         s = meta["width"] / float(bands.shape[2])
-        out["window"] = {"px": [int(round(v * s)) for v in (x0, y0, x1, y1)],
-                         "full": [meta["width"], meta["height"]]}
+        out["window"] = {
+            "px": [int(round(v * s)) for v in (x0, y0, x1, y1)],
+            "full": [meta["width"], meta["height"]],
+        }
 
     if want_rgb and count >= 3:
         out["mode"] = "rgb"
@@ -608,6 +698,7 @@ def _crs_name(crs):
         return None
     try:
         from pyproj import CRS
+
         return CRS.from_epsg(crs["epsg"]).name
     except Exception:
         return f"EPSG:{crs['epsg']}"
@@ -625,6 +716,7 @@ def _finish(out, file, band, idx, mode):
 # entrypoints; a bare main() silently returns null. Register main via the shim.
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

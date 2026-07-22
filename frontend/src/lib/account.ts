@@ -32,15 +32,18 @@ export function notifyAccountChanged() {
 export function useAccountLoggedIn(): boolean {
   const [loggedIn, setLoggedIn] = useState(false);
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const refresh = () => {
     getAccountStatus().then(
       (s) => {
         if (alive.current) setLoggedIn(s.logged_in);
       },
-      () => {}
+      () => {},
     );
   };
   useRefreshOnReturn(refresh);
@@ -49,7 +52,6 @@ export function useAccountLoggedIn(): boolean {
     const onChange = () => refresh();
     window.addEventListener(ACCOUNT_EVENT, onChange);
     return () => window.removeEventListener(ACCOUNT_EVENT, onChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return loggedIn;
 }
@@ -106,7 +108,9 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
         notifyAccountChanged(); // e.g. the sidebar's signed-in dot
         onLoggedInRef.current(status);
       } else if (!status.login_in_flight) {
-        finish("Sign-in was not completed — the browser sign-in was closed or timed out. Try again.");
+        finish(
+          "Sign-in was not completed — the browser sign-in was closed or timed out. Try again.",
+        );
       }
     }, POLL_MS);
   };

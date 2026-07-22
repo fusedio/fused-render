@@ -12,15 +12,16 @@ These are string-contract checks over the shipped `static/runtime.js`; the end-t
 behaviour is exercised separately, but this guards the surface from silently regressing
 (and keeps the seeded sine example on the zero-config default).
 """
+
 from pathlib import Path
 
 import fused_render
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
-SINE = (
-    Path(fused_render.__file__).parent / "examples_seed" / "sine" / "sine.html"
-).read_text(encoding="utf-8")
+SINE = (Path(fused_render.__file__).parent / "examples_seed" / "sine" / "sine.html").read_text(
+    encoding="utf-8"
+)
 
 
 def test_runtime_exposes_local_env_identity():

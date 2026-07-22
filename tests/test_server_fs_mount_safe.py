@@ -25,10 +25,19 @@ Real rclone is never invoked: the StubRcd from test_shell_mounts answers the rc
 calls (or rc_list_dir is monkeypatched directly), and FUSED_RENDER_HOME is
 redirected per test.
 """
+
 import json
 import os
 
 import pytest
+from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
+    _entry,
+    _list_raises,
+    _list_returns,
+    _mount,
+    _no_kernel_on_mount,
+    home,
+)
 from fastapi.responses import JSONResponse
 
 import fused_render.shell.mounts as mounts_mod
@@ -38,22 +47,16 @@ from fused_render.server import _fs_mkdir as MKDIR
 from fused_render.server import _fs_rename as RENAME
 from fused_render.server import _fs_stat as STAT
 from fused_render.server import _fs_write as WRITE
-from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
-    _entry,
-    _list_raises,
-    _list_returns,
-    _mount,
-    _no_kernel_on_mount,
-    home,
-)
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 # --------------------------------------------------------------------------- helpers
+
 
 def _status(resp) -> int:
     return resp.status_code if isinstance(resp, JSONResponse) else 200
@@ -71,6 +74,7 @@ def _data(resp) -> dict:
 
 # -- _fs_write --------------------------------------------------------------
 
+
 def test_write_read_only_mount_refused_before_any_kernel_probe(home, monkeypatch):
     mp = _mount("ro", read_only=True)
     _no_kernel_on_mount(monkeypatch, mp)
@@ -86,8 +90,7 @@ def test_write_writable_mount_missing_parent_404_via_rc(home, monkeypatch):
     _no_kernel_on_mount(monkeypatch, mp)
     # Parent is not a listable directory (rc rejects the listing).
     _list_raises(monkeypatch, mounts_mod.RcListError("not a directory"))
-    resp = WRITE({"path": os.path.join(mp, "sub", "notes.txt"), "content": "x"},
-                 x_fused="1")
+    resp = WRITE({"path": os.path.join(mp, "sub", "notes.txt"), "content": "x"}, x_fused="1")
     assert _status(resp) == 404
 
 
@@ -112,8 +115,9 @@ def test_write_writable_mount_create_conflict_409_via_rc(home, monkeypatch):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_returns(monkeypatch, [_entry("notes.txt", size=3)])
-    resp = WRITE({"path": os.path.join(mp, "notes.txt"), "content": "x", "create": True},
-                 x_fused="1")
+    resp = WRITE(
+        {"path": os.path.join(mp, "notes.txt"), "content": "x", "create": True}, x_fused="1"
+    )
     assert _status(resp) == 409
     assert _data(resp)["error"] == "conflict"
 
@@ -127,8 +131,10 @@ def test_write_mount_subsecond_mtime_gap_does_not_conflict(home, monkeypatch):
     modtime = "2024-01-02T03:04:05Z"
     _list_returns(monkeypatch, [_entry("notes.txt", size=3, mtime=modtime)])
     epoch = mounts_mod.rc_modtime_epoch(modtime)
-    resp = WRITE({"path": os.path.join(mp, "notes.txt"), "content": "x",
-                  "expected_mtime": epoch + 0.4}, x_fused="1")
+    resp = WRITE(
+        {"path": os.path.join(mp, "notes.txt"), "content": "x", "expected_mtime": epoch + 0.4},
+        x_fused="1",
+    )
     assert _status(resp) == 200
 
 
@@ -140,8 +146,10 @@ def test_write_mount_large_mtime_gap_still_conflicts(home, monkeypatch):
     modtime = "2024-01-02T03:04:05Z"
     _list_returns(monkeypatch, [_entry("notes.txt", size=3, mtime=modtime)])
     epoch = mounts_mod.rc_modtime_epoch(modtime)
-    resp = WRITE({"path": os.path.join(mp, "notes.txt"), "content": "x",
-                  "expected_mtime": epoch + 5.0}, x_fused="1")
+    resp = WRITE(
+        {"path": os.path.join(mp, "notes.txt"), "content": "x", "expected_mtime": epoch + 5.0},
+        x_fused="1",
+    )
     assert _status(resp) == 409
     assert _data(resp)["error"] == "conflict"
 
@@ -161,6 +169,7 @@ def test_write_writable_mount_new_file_succeeds_via_vfs(home, monkeypatch):
 
 
 # -- _fs_mkdir --------------------------------------------------------------
+
 
 def test_mkdir_read_only_mount_refused_before_probe(home, monkeypatch):
     mp = _mount("ro", read_only=True)
@@ -203,6 +212,7 @@ def test_mkdir_writable_mount_success_via_vfs(home, monkeypatch):
 
 
 # -- _fs_delete -------------------------------------------------------------
+
 
 def test_delete_read_only_mount_refused_before_probe(home, monkeypatch):
     mp = _mount("ro", read_only=True)
@@ -264,12 +274,12 @@ def test_delete_mount_single_file_succeeds_via_vfs(home, monkeypatch):
 
 # -- _fs_rename -------------------------------------------------------------
 
+
 def test_rename_read_only_mount_src_refused(home, monkeypatch):
     mp = _mount("ro", read_only=True)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_raises(monkeypatch, AssertionError("probed before readonly gate"))
-    resp = RENAME({"src": os.path.join(mp, "a.txt"),
-                   "dst": os.path.join(mp, "b.txt")}, x_fused="1")
+    resp = RENAME({"src": os.path.join(mp, "a.txt"), "dst": os.path.join(mp, "b.txt")}, x_fused="1")
     assert _status(resp) == 403
     assert _data(resp)["error"] == "readonly"
 
@@ -278,8 +288,9 @@ def test_rename_mount_directory_src_refused(home, monkeypatch):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_returns(monkeypatch, [_entry("adir", is_dir=True), _entry("b", is_dir=True)])
-    resp = RENAME({"src": os.path.join(mp, "adir"),
-                   "dst": os.path.join(mp, "b", "adir")}, x_fused="1")
+    resp = RENAME(
+        {"src": os.path.join(mp, "adir"), "dst": os.path.join(mp, "b", "adir")}, x_fused="1"
+    )
     assert _status(resp) == 400
     assert "director" in _data(resp)["error"].lower()
 
@@ -288,8 +299,9 @@ def test_rename_mount_missing_src_404_via_rc(home, monkeypatch):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_returns(monkeypatch, [_entry("other.txt")])  # src absent
-    resp = RENAME({"src": os.path.join(mp, "gone.txt"),
-                   "dst": os.path.join(mp, "b.txt")}, x_fused="1")
+    resp = RENAME(
+        {"src": os.path.join(mp, "gone.txt"), "dst": os.path.join(mp, "b.txt")}, x_fused="1"
+    )
     assert _status(resp) == 404
 
 
@@ -309,14 +321,14 @@ def test_rename_mount_single_file_succeeds(home, monkeypatch):
 
 # -- _fs_copy ---------------------------------------------------------------
 
+
 def test_copy_read_only_mount_dst_refused(home, monkeypatch, tmp_path):
     mp = _mount("ro", read_only=True)
     local_src = tmp_path / "src.txt"
     local_src.write_text("x")
     _no_kernel_on_mount(monkeypatch, mp)
     _list_raises(monkeypatch, AssertionError("probed before readonly gate"))
-    resp = COPY({"src": str(local_src), "dst": os.path.join(mp, "dst.txt")},
-                x_fused="1")
+    resp = COPY({"src": str(local_src), "dst": os.path.join(mp, "dst.txt")}, x_fused="1")
     assert _status(resp) == 403
     assert _data(resp)["error"] == "readonly"
 
@@ -325,8 +337,7 @@ def test_copy_mount_directory_src_refused(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_returns(monkeypatch, [_entry("adir", is_dir=True)])
-    resp = COPY({"src": os.path.join(mp, "adir"), "dst": str(tmp_path / "out")},
-                x_fused="1")
+    resp = COPY({"src": os.path.join(mp, "adir"), "dst": str(tmp_path / "out")}, x_fused="1")
     assert _status(resp) == 400
     assert "director" in _data(resp)["error"].lower()
 
@@ -335,8 +346,9 @@ def test_copy_mount_missing_src_404_via_rc(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_returns(monkeypatch, [_entry("other.txt")])
-    resp = COPY({"src": os.path.join(mp, "gone.txt"), "dst": str(tmp_path / "out.txt")},
-                x_fused="1")
+    resp = COPY(
+        {"src": os.path.join(mp, "gone.txt"), "dst": str(tmp_path / "out.txt")}, x_fused="1"
+    )
     assert _status(resp) == 404
 
 
@@ -344,8 +356,7 @@ def test_copy_mount_indeterminate_503(home, monkeypatch, tmp_path):
     mp = _mount("rw", read_only=False)
     _no_kernel_on_mount(monkeypatch, mp)
     _list_raises(monkeypatch, mounts_mod.RcListTimeout("too big"))
-    resp = COPY({"src": os.path.join(mp, "a.txt"), "dst": str(tmp_path / "out.txt")},
-                x_fused="1")
+    resp = COPY({"src": os.path.join(mp, "a.txt"), "dst": str(tmp_path / "out.txt")}, x_fused="1")
     assert _status(resp) == 503
 
 
@@ -356,6 +367,7 @@ def test_copy_mount_indeterminate_503(home, monkeypatch, tmp_path):
 # removed name is a phantom that must read as ABSENT, settled from mounts.json
 # with no rc_list_dir / no I/O on any mount.
 # ===========================================================================
+
 
 def test_mounts_root_unknown_child_reads_as_absent_delete_404(home, monkeypatch):
     # An unknown name directly under the mounts container has no mount record:
@@ -383,6 +395,7 @@ def test_stat_mounts_root_is_local_dir_not_indeterminate_503(home, monkeypatch):
     # stat path must never be consulted for the root.
     def _boom(*a, **k):
         raise AssertionError("rc_stat_result consulted for the mounts root")
+
     monkeypatch.setattr(mounts_mod, "rc_stat_result", _boom)
     resp = STAT(mounts_mod.mounts_dir())
     assert _status(resp) == 200
@@ -404,6 +417,7 @@ def test_stat_symlink_to_mounts_root_treated_as_root_not_503(home, monkeypatch, 
 
     def _boom(*a, **k):
         raise AssertionError("rc_stat_result consulted for a symlink to the mounts root")
+
     monkeypatch.setattr(mounts_mod, "rc_stat_result", _boom)
     resp = STAT(str(link))
     assert _status(resp) == 200
@@ -428,6 +442,7 @@ def test_mounts_root_known_mount_name_still_exists_mkdir_409(home, monkeypatch):
 # non-writable LOCAL dst must still 403 "readonly", same as the all-local branch.
 # The mount side is NEVER _writable-probed (that kernel-stats a writable mount).
 # ===========================================================================
+
 
 @skip_root
 def test_rename_local_readonly_src_refused_with_mount_dst(home, monkeypatch, tmp_path):
@@ -454,10 +469,8 @@ def test_copy_local_readonly_dst_refused_with_mount_src(home, monkeypatch, tmp_p
     os.chmod(ro_dir, 0o500)  # non-writable local dst parent -> new file refused
     _list_returns(monkeypatch, [_entry("a.txt", size=4)])  # mount src is a file
     try:
-        resp = COPY({"src": os.path.join(mp, "a.txt"), "dst": str(ro_dir / "b.txt")},
-                    x_fused="1")
+        resp = COPY({"src": os.path.join(mp, "a.txt"), "dst": str(ro_dir / "b.txt")}, x_fused="1")
         assert _status(resp) == 403
         assert _data(resp)["error"] == "readonly"
     finally:
         os.chmod(ro_dir, 0o700)
-

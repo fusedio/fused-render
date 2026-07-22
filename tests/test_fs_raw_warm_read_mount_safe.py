@@ -19,16 +19,12 @@ through the rclone rcd (_mount_probe), never the kernel. These tests pin that:
 
 Shared fixtures/helpers live in _mount_safe_helpers.
 """
+
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from fastapi.testclient import TestClient
-
-import fused_render.server as server_mod
-import fused_render.shell.mounts as mounts_mod
-from fused_render.server import create_app
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _entry,
     _list_raises,
@@ -37,6 +33,11 @@ from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _no_kernel_on_mount,
     home,
 )
+from fastapi.testclient import TestClient
+
+import fused_render.server as server_mod
+import fused_render.shell.mounts as mounts_mod
+from fused_render.server import create_app
 
 
 class _FakeServe:
@@ -80,6 +81,7 @@ def warm_raw(home, monkeypatch):
     a spy that makes any _stat_or_none call fail loudly (proves the mount path
     resolved existence via the rc probe, never the kernel)."""
     import fused_render.shell.prefetch as prefetch
+
     monkeypatch.setattr(prefetch, "schedule", lambda *a, **k: None)
     # Warm: prefetch already landed -> the handler is past its redirect phase and
     # falls through to the proxy branch (the one that used to kernel-stat).
@@ -89,6 +91,7 @@ def warm_raw(home, monkeypatch):
 
     def arm_serve(mp):
         from fused_render.shell import storage
+
         storage.write_json(mounts_mod.serves_path(), {mp: serve.base})
 
     client = TestClient(create_app(start_dir=str(home)))
@@ -103,17 +106,19 @@ def test_warm_present_file_proxies_200_without_kernel_stat(warm_raw, monkeypatch
     mp = _mount("rw", read_only=False)
     arm_serve(mp)
     _no_kernel_on_mount(monkeypatch, mp)
+
     # A kernel _stat_or_none of the mount is the wedge — make it fail loudly so a
     # silent regression to the old code path can't pass this test.
     def _boom_stat(path):
         raise AssertionError(f"_stat_or_none({path}) touched the mount")
+
     monkeypatch.setattr(server_mod, "_stat_or_none", _boom_stat)
     # Parent lists the store; the file is present and a regular object.
     _list_returns(monkeypatch, [_entry("cog.tif", size=len(serve.blob))])
 
-    r = client.get("/api/fs/raw",
-                   params={"path": os.path.join(mp, "cog.tif")},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw", params={"path": os.path.join(mp, "cog.tif")}, follow_redirects=False
+    )
     assert r.status_code == 200
     assert r.content == serve.blob
 
@@ -126,9 +131,9 @@ def test_warm_directory_still_404s_via_rc(warm_raw, monkeypatch):
     # A directory proxied through the serve would come back as a 200 HTML
     # listing; the rc probe reports IsDir -> 404, answered without a kernel stat.
     _list_returns(monkeypatch, [_entry("subdir", is_dir=True)])
-    r = client.get("/api/fs/raw",
-                   params={"path": os.path.join(mp, "subdir")},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw", params={"path": os.path.join(mp, "subdir")}, follow_redirects=False
+    )
     assert r.status_code == 404
 
 
@@ -139,9 +144,9 @@ def test_warm_missing_file_404s_via_rc(warm_raw, monkeypatch):
     _no_kernel_on_mount(monkeypatch, mp)
     # Parent listable, child absent -> 404 via the rc probe, no kernel stat.
     _list_returns(monkeypatch, [_entry("other.tif", size=1)])
-    r = client.get("/api/fs/raw",
-                   params={"path": os.path.join(mp, "cog.tif")},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw", params={"path": os.path.join(mp, "cog.tif")}, follow_redirects=False
+    )
     assert r.status_code == 404
 
 
@@ -153,9 +158,9 @@ def test_warm_indeterminate_probe_is_503(warm_raw, monkeypatch):
     # rcd down/timeout -> existence is INDETERMINATE; the handler must 503, never
     # fall back to a kernel read or report "missing".
     _list_raises(monkeypatch, mounts_mod.RcListUnavailable("rcd down"))
-    r = client.get("/api/fs/raw",
-                   params={"path": os.path.join(mp, "cog.tif")},
-                   follow_redirects=False)
+    r = client.get(
+        "/api/fs/raw", params={"path": os.path.join(mp, "cog.tif")}, follow_redirects=False
+    )
     assert r.status_code == 503
 
 
