@@ -19,6 +19,7 @@ never kills the accept loop, and `stop_serving()` unblocks cleanly.
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import queue
@@ -43,6 +44,12 @@ _MAX_FRAME = _HEADER_LEN + _MAX_PATH_UNITS * 2
 _CLIENT_READ_DEADLINE_S = 5.0  # DoS guard: a slow/hung client is dropped, not awaited
 _SELECT_TICK_S = 0.25          # how often the accept loop re-checks the stop flag
 _REQUEST_ANSWER_TIMEOUT_S = 20.0
+
+# bind()/listen() retry (same resilience rule as _win32/_serve_pipe's
+# CreateNamedPipe retry): a transient bind failure must not silently kill IPC.
+_BIND_RETRY_START_S = 0.05
+_BIND_RETRY_CAP_S = 2.0
+_BIND_GIVE_UP_AFTER_ATTEMPTS = 10
 
 
 @dataclass(frozen=True)
@@ -76,10 +83,18 @@ def acquire(names: InstanceNames) -> "PrimaryInstance | SecondaryInstance":
     fd = os.open(names.lock, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        # A primary already holds the lock — become a secondary and forward.
+    except OSError as error:
+        # Only "another holder has the lock" means a primary already exists →
+        # become a secondary and forward. flock(2) reports that under LOCK_NB
+        # as EWOULDBLOCK/EAGAIN (EACCES on some filesystems). Any other errno
+        # (ENOLCK, EIO, ...) is a genuine fault: close the fd and re-raise so
+        # __main__'s fatal path reports it, rather than silently demoting to a
+        # secondary that then just times out forwarding. Mirrors _win32, which
+        # branches only on ERROR_ALREADY_EXISTS.
         os.close(fd)
-        return SecondaryInstance(names)
+        if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES):
+            return SecondaryInstance(names)
+        raise
     return PrimaryInstance(fd, names)
 
 
@@ -97,6 +112,14 @@ class PrimaryInstance:
         )
         thread.start()
         return thread
+
+    @property
+    def stop_event(self) -> threading.Event:
+        """The stop flag the serving thread polls. Exposed so a
+        ShutdownForUpgrade answered by a client worker can self-stop the accept
+        loop (the documented teardown contract core.py relies on), matching
+        _win32/_serve_pipe setting `stop` after a ShutdownForUpgrade."""
+        return self._stop
 
     def stop_serving(self) -> None:
         """Idempotent. Setting the flag is enough: the accept loop is parked in
@@ -189,19 +212,10 @@ def _serve_socket(
     log=None,
 ) -> None:
     _ensure_runtime_dir(names.socket.parent)
+    server = _bind_listen(names, stop, log)
+    if server is None:
+        return  # bind never succeeded; the giving-up reason is already logged.
     try:
-        os.unlink(names.socket)  # clear a stale socket from a crashed primary
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        if log is not None:
-            log(f"could not remove stale socket: {error}")
-
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        server.bind(str(names.socket))
-        os.chmod(names.socket, 0o600)
-        server.listen(16)
         server.setblocking(False)
         while not stop.is_set():
             try:
@@ -223,7 +237,7 @@ def _serve_socket(
             # so unbounded per-connection threads are an acceptable simplicity.
             threading.Thread(
                 target=_client_worker,
-                args=(conn, requests, log),
+                args=(conn, requests, stop, log),
                 daemon=True,
                 name="fused-render-ipc-client",
             ).start()
@@ -235,10 +249,52 @@ def _serve_socket(
             pass
 
 
-def _client_worker(conn: socket.socket, requests: "queue.Queue[Request]", log) -> None:
+def _bind_listen(
+    names: InstanceNames, stop: threading.Event, log
+) -> "socket.socket | None":
+    """Bind + listen on the IPC socket, retrying a transient bind failure with
+    backoff before giving up loudly. Mirrors _win32/_serve_pipe's CreateNamedPipe
+    retry: an unhandled OSError here would kill the IPC daemon thread silently,
+    leaving the primary alive but undiscoverable and unable to answer a
+    forwarded open or ShutdownForUpgrade. Returns a listening socket, or None
+    once it gives up (a stop request during backoff also returns None)."""
+    delay = _BIND_RETRY_START_S
+    failures = 0
+    while not stop.is_set():
+        try:
+            os.unlink(names.socket)  # clear a stale socket from a crashed primary
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            if log is not None:
+                log(f"could not remove stale socket: {error}")
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(str(names.socket))
+            os.chmod(names.socket, 0o600)
+            server.listen(16)
+            return server
+        except OSError as error:
+            server.close()
+            failures += 1
+            if failures >= _BIND_GIVE_UP_AFTER_ATTEMPTS:
+                if log is not None:
+                    log(f"socket server giving up after {failures} bind failures: {error}")
+                return None
+            if log is not None and failures == 1:
+                log(f"socket bind failed, retrying: {error}")
+            if stop.wait(delay):
+                return None
+            delay = min(delay * 2, _BIND_RETRY_CAP_S)
+    return None
+
+
+def _client_worker(
+    conn: socket.socket, requests: "queue.Queue[Request]", stop: threading.Event, log
+) -> None:
     with conn:
         try:
-            _handle_client(conn, requests)
+            _handle_client(conn, requests, stop)
         except Exception as error:  # noqa: BLE001 - one broken client must not kill IPC
             # No caller to re-raise to (daemon thread); swallow so a single
             # malformed client cannot take down single-instance IPC.
@@ -246,7 +302,9 @@ def _client_worker(conn: socket.socket, requests: "queue.Queue[Request]", log) -
                 log(f"socket client handling failed: {error}")
 
 
-def _handle_client(conn: socket.socket, requests: "queue.Queue[Request]") -> None:
+def _handle_client(
+    conn: socket.socket, requests: "queue.Queue[Request]", stop: threading.Event
+) -> None:
     deadline = time.monotonic() + _CLIENT_READ_DEADLINE_S
     status = 1
     command = None
@@ -273,6 +331,12 @@ def _handle_client(conn: socket.socket, requests: "queue.Queue[Request]") -> Non
         conn.sendall(struct.pack("<I", status))
     except OSError:
         pass
+    # Self-stop the accept loop after answering a ShutdownForUpgrade, matching
+    # _win32/_serve_pipe. core._teardown's UPGRADE path skips _stop_pipe on the
+    # contract that the serving thread stops itself once the upgrade is
+    # answered; the select loop notices the flag within one _SELECT_TICK_S.
+    if isinstance(command, protocol.ShutdownForUpgrade):
+        stop.set()
 
 
 def _recv_exact(conn: socket.socket, n: int, deadline: float) -> bytes:

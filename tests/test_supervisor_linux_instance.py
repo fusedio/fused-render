@@ -7,6 +7,7 @@ socket transport: a truncated frame, an oversized declared length, a slow
 client, and a stop-while-parked must each be survivable — one broken client
 must never kill the accept loop, and stop must unblock cleanly.
 """
+import errno
 import queue
 import shutil
 import socket
@@ -21,6 +22,12 @@ import pytest
 pytestmark = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"), reason="Unix domain sockets required"
 )
+
+# instance.py imports fcntl (POSIX-only): importorskip keeps this module from
+# ERRORing at collection on Windows, where fcntl is absent (sibling convention:
+# test_supervisor_linux_tree.py guards the same way). AF_UNIX exists on macOS
+# too, so the tests below still run there — only fcntl gates the import.
+pytest.importorskip("fcntl")
 
 from fused_render.supervisor import protocol
 from fused_render.supervisor._linux import instance
@@ -199,3 +206,63 @@ def test_secondary_wait_for_exit_returns_when_primary_releases(runtime):
 
     threading.Thread(target=release_soon, daemon=True).start()
     secondary.wait_for_exit(timeout=5)  # returns once the flock is released
+
+
+def test_serve_socket_bind_failure_logs_and_exits(runtime, monkeypatch):
+    # A bind that never succeeds must fail loudly (log + return), never kill
+    # the IPC thread silently. Force it by parking a directory where the socket
+    # should bind, and speed up the retry/give-up loop.
+    names = _names(runtime)
+    names.socket.mkdir()
+    monkeypatch.setattr(instance, "_BIND_GIVE_UP_AFTER_ATTEMPTS", 2)
+    monkeypatch.setattr(instance, "_BIND_RETRY_START_S", 0.001)
+    monkeypatch.setattr(instance, "_BIND_RETRY_CAP_S", 0.001)
+    requests: "queue.Queue[instance.Request]" = queue.Queue()
+    stop = threading.Event()
+    logs: list[str] = []
+    thread = threading.Thread(
+        target=instance._serve_socket,
+        args=(names, requests, stop, logs.append),
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()  # gave up, did not hang or crash unobserved
+    assert any("giving up" in message for message in logs)
+
+
+def test_acquire_reraises_unexpected_flock_error(runtime, monkeypatch):
+    # A non-contention errno (ENOLCK) is a real fault: acquire must re-raise so
+    # __main__'s fatal path reports it, not silently demote to a secondary.
+    names = _names(runtime)
+
+    def boom(fd, op):
+        raise OSError(errno.ENOLCK, "no locks available")
+
+    monkeypatch.setattr(instance.fcntl, "flock", boom)
+    with pytest.raises(OSError):
+        instance.acquire(names)
+
+
+def test_acquire_treats_would_block_as_secondary(runtime, monkeypatch):
+    # EWOULDBLOCK means a primary holds the lock → become a secondary.
+    names = _names(runtime)
+
+    def blocked(fd, op):
+        raise BlockingIOError(errno.EWOULDBLOCK, "locked")
+
+    monkeypatch.setattr(instance.fcntl, "flock", blocked)
+    assert isinstance(instance.acquire(names), instance.SecondaryInstance)
+
+
+def test_serve_thread_exits_after_shutdown_for_upgrade(served):
+    # core._teardown's UPGRADE path skips _stop_pipe on the contract that the
+    # serving thread self-stops once a ShutdownForUpgrade is answered. Assert
+    # the backend honors it (mirrors _win32/_serve_pipe's should_stop).
+    names, requests, thread, _logs = served
+    _answer_next(requests, status=0)
+    assert _send(names, protocol.encode(protocol.ShutdownForUpgrade())) == 0
+    deadline = time.monotonic() + 5
+    while thread.is_alive() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not thread.is_alive()
