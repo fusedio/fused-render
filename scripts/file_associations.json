@@ -1,0 +1,460 @@
+{
+  "associations": [
+    {
+      "extension": ".avif",
+      "icon": "image"
+    },
+    {
+      "extension": ".bmp",
+      "icon": "image"
+    },
+    {
+      "extension": ".bz2",
+      "icon": "archive"
+    },
+    {
+      "extension": ".cdf",
+      "icon": "data"
+    },
+    {
+      "extension": ".cfg",
+      "icon": "code"
+    },
+    {
+      "extension": ".cjs",
+      "icon": "code"
+    },
+    {
+      "extension": ".conf",
+      "icon": "code"
+    },
+    {
+      "extension": ".csh",
+      "icon": "code"
+    },
+    {
+      "extension": ".css",
+      "icon": "code"
+    },
+    {
+      "extension": ".csv",
+      "icon": "data"
+    },
+    {
+      "extension": ".cts",
+      "icon": "code"
+    },
+    {
+      "extension": ".db",
+      "icon": "db"
+    },
+    {
+      "extension": ".ddb",
+      "icon": "db"
+    },
+    {
+      "extension": ".dng",
+      "icon": "image"
+    },
+    {
+      "extension": ".docx",
+      "icon": "doc"
+    },
+    {
+      "extension": ".duckdb",
+      "icon": "db"
+    },
+    {
+      "extension": ".egg",
+      "icon": "archive"
+    },
+    {
+      "extension": ".fgb",
+      "icon": "geo"
+    },
+    {
+      "extension": ".fish",
+      "icon": "code"
+    },
+    {
+      "extension": ".flac",
+      "icon": "media"
+    },
+    {
+      "extension": ".geojson",
+      "icon": "geo"
+    },
+    {
+      "extension": ".gif",
+      "icon": "image"
+    },
+    {
+      "extension": ".glb",
+      "icon": "model"
+    },
+    {
+      "extension": ".gltf",
+      "icon": "model"
+    },
+    {
+      "extension": ".gpkg",
+      "icon": "geo"
+    },
+    {
+      "extension": ".gpx",
+      "icon": "geo"
+    },
+    {
+      "extension": ".gz",
+      "icon": "archive"
+    },
+    {
+      "extension": ".hcl",
+      "icon": "code"
+    },
+    {
+      "extension": ".heic",
+      "icon": "image"
+    },
+    {
+      "extension": ".heif",
+      "icon": "image"
+    },
+    {
+      "extension": ".htm",
+      "icon": "html"
+    },
+    {
+      "extension": ".html",
+      "icon": "html"
+    },
+    {
+      "extension": ".hyper",
+      "icon": "data"
+    },
+    {
+      "extension": ".ini",
+      "icon": "code"
+    },
+    {
+      "extension": ".jar",
+      "icon": "archive"
+    },
+    {
+      "extension": ".jpeg",
+      "icon": "image"
+    },
+    {
+      "extension": ".jpg",
+      "icon": "image"
+    },
+    {
+      "extension": ".js",
+      "icon": "code"
+    },
+    {
+      "extension": ".json",
+      "icon": "json"
+    },
+    {
+      "extension": ".jsonl",
+      "icon": "json"
+    },
+    {
+      "extension": ".jsx",
+      "icon": "code"
+    },
+    {
+      "extension": ".kml",
+      "icon": "geo"
+    },
+    {
+      "extension": ".kmz",
+      "icon": "geo"
+    },
+    {
+      "extension": ".ksplat",
+      "icon": "model"
+    },
+    {
+      "extension": ".las",
+      "icon": "geo"
+    },
+    {
+      "extension": ".latex",
+      "icon": "doc"
+    },
+    {
+      "extension": ".laz",
+      "icon": "geo"
+    },
+    {
+      "extension": ".log",
+      "icon": "doc"
+    },
+    {
+      "extension": ".ltx",
+      "icon": "doc"
+    },
+    {
+      "extension": ".m4a",
+      "icon": "media"
+    },
+    {
+      "extension": ".m4v",
+      "icon": "media"
+    },
+    {
+      "extension": ".markdown",
+      "icon": "doc"
+    },
+    {
+      "extension": ".md",
+      "icon": "doc"
+    },
+    {
+      "extension": ".mjs",
+      "icon": "code"
+    },
+    {
+      "extension": ".mov",
+      "icon": "media"
+    },
+    {
+      "extension": ".mp3",
+      "icon": "media"
+    },
+    {
+      "extension": ".mp4",
+      "icon": "media"
+    },
+    {
+      "extension": ".mts",
+      "icon": "code"
+    },
+    {
+      "extension": ".nc",
+      "icon": "data"
+    },
+    {
+      "extension": ".nc4",
+      "icon": "data"
+    },
+    {
+      "extension": ".ndjson",
+      "icon": "json"
+    },
+    {
+      "extension": ".obj",
+      "icon": "model"
+    },
+    {
+      "extension": ".ogg",
+      "icon": "media"
+    },
+    {
+      "extension": ".parquet",
+      "icon": "data"
+    },
+    {
+      "extension": ".pdf",
+      "icon": "doc"
+    },
+    {
+      "extension": ".plist",
+      "icon": "code"
+    },
+    {
+      "extension": ".ply",
+      "icon": "model"
+    },
+    {
+      "extension": ".pmtiles",
+      "icon": "geo"
+    },
+    {
+      "extension": ".png",
+      "icon": "image"
+    },
+    {
+      "extension": ".pptx",
+      "icon": "doc"
+    },
+    {
+      "extension": ".ps1",
+      "icon": "code"
+    },
+    {
+      "extension": ".py",
+      "icon": "code"
+    },
+    {
+      "extension": ".sh",
+      "icon": "code"
+    },
+    {
+      "extension": ".shp",
+      "icon": "geo"
+    },
+    {
+      "extension": ".splat",
+      "icon": "model"
+    },
+    {
+      "extension": ".sqlite",
+      "icon": "db"
+    },
+    {
+      "extension": ".sqlite3",
+      "icon": "db"
+    },
+    {
+      "extension": ".stl",
+      "icon": "model"
+    },
+    {
+      "extension": ".svg",
+      "icon": "image"
+    },
+    {
+      "extension": ".tar",
+      "icon": "archive"
+    },
+    {
+      "extension": ".tbz2",
+      "icon": "archive"
+    },
+    {
+      "extension": ".tds",
+      "icon": "code"
+    },
+    {
+      "extension": ".tdsx",
+      "icon": "archive"
+    },
+    {
+      "extension": ".tex",
+      "icon": "doc"
+    },
+    {
+      "extension": ".tf",
+      "icon": "code"
+    },
+    {
+      "extension": ".tgz",
+      "icon": "archive"
+    },
+    {
+      "extension": ".tif",
+      "icon": "geo"
+    },
+    {
+      "extension": ".tiff",
+      "icon": "geo"
+    },
+    {
+      "extension": ".toml",
+      "icon": "code"
+    },
+    {
+      "extension": ".ts",
+      "icon": "code"
+    },
+    {
+      "extension": ".tsv",
+      "icon": "data"
+    },
+    {
+      "extension": ".tsx",
+      "icon": "code"
+    },
+    {
+      "extension": ".twb",
+      "icon": "code"
+    },
+    {
+      "extension": ".twbx",
+      "icon": "archive"
+    },
+    {
+      "extension": ".txt",
+      "icon": "doc"
+    },
+    {
+      "extension": ".txz",
+      "icon": "archive"
+    },
+    {
+      "extension": ".usd",
+      "icon": "model"
+    },
+    {
+      "extension": ".usda",
+      "icon": "model"
+    },
+    {
+      "extension": ".usdc",
+      "icon": "model"
+    },
+    {
+      "extension": ".usdz",
+      "icon": "model"
+    },
+    {
+      "extension": ".vim",
+      "icon": "code"
+    },
+    {
+      "extension": ".wav",
+      "icon": "media"
+    },
+    {
+      "extension": ".webm",
+      "icon": "media"
+    },
+    {
+      "extension": ".webp",
+      "icon": "image"
+    },
+    {
+      "extension": ".whl",
+      "icon": "archive"
+    },
+    {
+      "extension": ".xlsm",
+      "icon": "data"
+    },
+    {
+      "extension": ".xlsx",
+      "icon": "data"
+    },
+    {
+      "extension": ".xz",
+      "icon": "archive"
+    },
+    {
+      "extension": ".yaml",
+      "icon": "code"
+    },
+    {
+      "extension": ".yml",
+      "icon": "code"
+    },
+    {
+      "extension": ".zip",
+      "icon": "archive"
+    },
+    {
+      "extension": ".zsh",
+      "icon": "code"
+    },
+    {
+      "extension": ".zsh-theme",
+      "icon": "code"
+    },
+    {
+      "extension": ".zst",
+      "icon": "archive"
+    }
+  ]
+}
