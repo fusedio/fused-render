@@ -139,149 +139,23 @@ See `docs/EXPORT.md` for the bundle format and rules.
 
 ## Deploy to a hosted URL
 
-The shell automates the whole export → publish chain: any renderable page's
-preview header has a **Deploy** button (green dot = currently deployed) opening
-a modal that exports the page to a temporary bundle and publishes it through
-the separately-installed `fused` CLI (`fused share create <bundle> --public`) —
-fused-render itself still hosts nothing and mints no URLs.
+A renderable page's preview header has a **Deploy** button: it exports the page
+to a self-contained bundle and publishes it as a public URL through the `fused`
+CLI. fused-render itself hosts nothing and mints no URLs — it runs the CLI on
+your behalf. The link is opaque and unguessable; redeploying the same page keeps
+the **same URL**, and revoking takes it down.
 
-The modal handles the whole flow:
+Signing in and first-time setup happen in the app, no terminal required: sign in
+to Fused once, then set up a **managed hosted environment** in one click — the
+default deploy target. From the same account view you can list the pages you've
+deployed, revoke any of them, and inspect the recent errors behind a hosted
+page's failures — the traceback and output the local error overlay shows you here.
 
-- **The `fused` package.** Deploying needs the `fused` CLI. It is resolved from
-  exactly two places: an explicit `FUSED_RENDER_FUSED_BIN` override, or — the
-  one autodetected source — the `fused` package importable in the server's own
-  Python (run in-interpreter; no PATH scanning). If it's missing, the modal
-  offers a one-click install of the wheel pinned by this package's `[fused]`
-  extra into the server's environment (Python 3.11+ with pip), or names the
-  manual command: `pip install "fused-render[fused]"`. The packaged macOS app
-  ships the CLI built in — no setup. (It also bundles a terminal wrapper at
-  `FusedRender.app/Contents/Resources/bin/fused` for power users and
-  self-hosted AWS provisioning; everyday sign-in and setup no longer need it —
-  see **Fused account** below.)
-- **Signing in & first-time setup.** Both happen in the app (see **Fused
-  account** below): the modal's signed-out warning is a working *Sign in to
-  Fused* button, and its no-environments state routes to the account tab's
-  one-click managed-environment setup. No terminal required for the managed
-  path.
-- **Environment choice.** Deploy targets are the *hosted* environments from the
-  fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
-  default — created in-app from the account tab) or an `aws` env whose
-  serving plane `fused infra serve` provisioned (still a terminal flow).
-  `local` envs have no serving plane and are never offered.
-- **The URL.** Deploys mint a **public share link** — an opaque, unguessable
-  URL shown with copy/open actions. Redeploying the same page republishes to
-  the **same URL**; Revoke takes it down (deploying again restores the link).
-- **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
-  marks deployed files in the preview header, and the Fused account tab's
-  Deployments section (`fused share list`) shows every mount on the chosen
-  environment, joined back to the local pages that deployed them.
-
-Whether a given backend accepts a *page bundle* is the installed `fused` CLI's
-contract (its `spec/serve/fused-render.md`): both the managed backend (inline
-`kind="html"` upload) and AWS serving planes build the hosted-page artifact as
-of the `fused` wheel this package pins (see the `[fused]` extra in
-`pyproject.toml`). A backend running an older `fused` rejects the bundle
-server-side, and its CLI error shows in the modal verbatim.
-
-## Fused account
-
-Once Deploy is enabled (see **Preferences** below), the gear at the sidebar's
-bottom-left opens a **Fused account** tab alongside Render preferences
-(`/view/_prefs?tab=account` — old `/view/_account` links still redirect
-here) — sign-in and environment setup for deploys, without copying CLI
-commands into a terminal (a green dot on the gear icon = signed in):
-
-- **Sign in** opens a one-time browser sign-in to Fused and lands you back in
-  the app when it completes. Credentials are stored by the fused CLI on your
-  machine (`~/.openfused/`) — never by fused-render, which only runs the CLI
-  and reads status.
-- **Set up hosted environment** runs the CLI's one-shot managed-environment
-  setup (`fused cloud setup`) as a background job with live progress: it
-  provisions the managed environment, stores its access key with the CLI, and
-  registers it as a deploy target. Accounts with several workspaces get a
-  picker; accounts with none get a personal workspace created.
-- **Environments** lists the CLI's environment store — make one the default,
-  or *forget* an entry (removes only the local pointer; cloud resources are
-  untouched).
-- **Deployments** lists every mount on a chosen hosted environment
-  (`fused share list`), with per-mount **Revoke** — including mounts not
-  created from this app. Each mount's **Recent errors** panel shows the failures
-  its deployed endpoints hit (via `fused share errors`) — the traceback, output
-  tails, and params behind the opaque 500s a hosted page returns, so you can
-  debug a deployed page the way the local error overlay lets you debug it here.
-  (The same panel appears in the Deploy dialog for the page you have open.)
-- **Sign out** removes the CLI's stored sign-in on this machine.
-
-Self-hosted AWS environments (`fused env create`, `fused infra serve`) remain
-a terminal flow — the packaged app's bundled wrapper covers that.
-
-## Preferences
-
-The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`),
-split into a **Render preferences** tab and — once Deploy is enabled — a
-**Fused account** tab (see above):
-
-- **Execution engine** — switch `fused.runPython` between the built-in
-  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
-  requirements in cached venvs). Persisted to `~/.fused-render/prefs.json`
-  and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
-  pins the engine for the whole process and locks the switch.
-- **Logs** — this run's log file path, with an "Open logs location" action.
-- **Deploy to Fused account** — the opt-in toggle for the preview header's
-  Deploy button (the per-environment share list lives on the **Fused
-  account** tab).
-- **Template registry** — the merged extension → templates bindings (built-in
-  plus your `~/.fused-render/templates/registry.json` overrides), read-only.
-
-## Remote storage (mounts)
-
-The cloud icon at the sidebar's bottom-left opens **Mounts**
-(`/view/_mounts`): remote storage — S3-compatible object stores, Google
-Drive, and anything else [rclone](https://rclone.org) speaks — mounted as
-local folders under `~/.fused-render/mounts/`. Everything downstream
-(previews, readers, tile servers) sees ordinary local paths.
-
-- **No setup on macOS:** the packaged app bundles rclone itself (D103) — no
-  install, nothing on PATH. Running from source, or on Linux, still needs
-  rclone (`brew install rclone` / your distro's package). macOS mounts via
-  the built-in NFS client — no macFUSE; Linux uses FUSE. Windows is not
-  supported yet.
-- **Credentials never touch fused-render** — they live in rclone's own
-  config. S3-compatible remotes can be created from the page; for Google
-  Drive and other sign-in backends, run `rclone config` in a terminal once.
-- **Mount narrow prefixes** (`bucket/prefix`), not whole buckets — every
-  folder listed inside a mount is a remote API call, and search inside a
-  mount is capped for the same reason.
-- **First open is slow, repeats are fast**: the first read of a large remote
-  file downloads what it needs; a local cache (24h retention) makes repeat
-  opens near-instant. How slow the first open is depends on the file's
-  layout — cloud-optimized formats (COGs, small parquet row groups) behave
-  far better than monolithic files.
-- Mounts stay up until you unmount them — including across app restarts, and
-  every mount is automatically remounted when the server starts.
-
-## Logs
-
-The server writes an application log so that when something goes wrong — an
-"Internal Server Error" in the browser, or a right-click "Open with
-FusedRender" that misbehaves — there's a traceback to look at. It records:
-
-- **startup** — a `boot:` line (version, python, platform) every launch, plus
-  the bind address / start dir;
-- **every browser request** — one line per request with status + duration
-  (`GET /view/… -> 200 (3 ms)`), so the log reconstructs the sequence of calls
-  a page made (static-asset fetches are skipped to keep it readable);
-- **every 500** — its full traceback and the request that caused it;
-- **failed Python runs** and the macOS app's file-open / reopen events.
-
-Each run writes its own file, `fused-render-<pid>.log`, in your system temp
-directory (e.g. `/tmp/fused-render-4521.log`; the CLI prints the exact path on
-startup, and in the packaged app **menu bar → Open logs** reveals it). A file
-per process means two instances running at once (say, on different ports) never
-interleave or clobber each other's logs. It's disposable diagnostic output: it
-rotates at 2 MB with one backup, and living in temp means the OS reclaims it —
-and a reboot gives you a fresh slate — rather than logs piling up in a permanent
-directory. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere persistent instead.
+The packaged macOS app ships the `fused` CLI built in, so there's nothing to
+install. On a `pip` install, add it with the extra:
+`pip install "fused-render[fused]"`. Self-hosted AWS environments work as a
+deploy target too, provisioned through the `fused` CLI in a terminal. Deploying
+stays off until you enable it in **Preferences**.
 
 ## Authoring model
 
@@ -326,6 +200,57 @@ themselves just HTML files built on these same two primitives — open
 `fused_render/templates/` to see how.
 
 See `examples_seed/sine/sine.py` + `examples_seed/sine/sine.html` for a complete working example.
+
+## Remote storage (mounts)
+
+The cloud icon at the sidebar's bottom-left opens **Mounts**: remote storage —
+S3-compatible object stores, Google Drive, and anything else
+[rclone](https://rclone.org) speaks — mounted as local folders under
+`~/.fused-render/mounts/`. Everything downstream (previews, readers, tile
+servers) sees ordinary local paths.
+
+- **No setup on macOS:** the packaged app bundles rclone itself — no
+  install, nothing on PATH. Running from source, or on Linux, still needs
+  rclone (`brew install rclone` / your distro's package). macOS mounts via
+  the built-in NFS client — no macFUSE; Linux uses FUSE. Windows is not
+  supported yet.
+- **Credentials never touch fused-render** — they live in rclone's own
+  config. S3-compatible remotes can be created from the page; for Google
+  Drive and other sign-in backends, run `rclone config` in a terminal once.
+- **Mount narrow prefixes** (`bucket/prefix`), not whole buckets — every
+  folder listed inside a mount is a remote API call, and search inside a
+  mount is capped for the same reason.
+- **First open is slow, repeats are fast**: the first read of a large remote
+  file downloads what it needs; a local cache (24h retention) makes repeat
+  opens near-instant. How slow the first open is depends on the file's
+  layout — cloud-optimized formats (COGs, small parquet row groups) behave
+  far better than monolithic files.
+- Mounts stay up until you unmount them — including across app restarts, and
+  every mount is automatically remounted when the server starts.
+
+## Preferences
+
+The gear at the sidebar's bottom-left opens **Preferences**:
+
+- **Execution engine** — switch `fused.runPython` between the built-in
+  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
+  requirements in cached venvs). Applied to the next run, no restart; setting
+  `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
+- **Deploy to Fused account** — the opt-in toggle for the preview header's
+  Deploy button.
+- **Logs** — this run's log file path, with an action to reveal it.
+- **Template registry** — the merged extension → templates bindings (built-in
+  plus your own overrides), read-only.
+
+## Logs
+
+The server writes an application log for debugging — when something goes wrong
+(an "Internal Server Error" in the browser, or a misbehaving file-open) it has
+the traceback. Each run writes its own file in your system temp directory; the
+CLI prints the exact path on startup, and the packaged app reveals it from
+**menu bar → Open logs**. It's disposable — it rotates so it can't grow without
+bound, and living in temp means the OS reclaims it. Set `FUSED_RENDER_LOG_DIR`
+to keep logs somewhere persistent instead.
 
 ## Claude Code plugin
 
