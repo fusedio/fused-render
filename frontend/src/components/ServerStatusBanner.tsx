@@ -65,8 +65,11 @@ function useServerStatus(): { banner: Banner; checkNow: () => void } {
     const onVisible = () => {
       if (document.visibilityState === "visible") probe();
     };
+    // "online" probes even while hidden — a WiFi reconnect shouldn't wait for
+    // the next visibilitychange to clear the banner.
+    const onOnline = () => probe();
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("online", onVisible);
+    window.addEventListener("online", onOnline);
     window.addEventListener("focus", onVisible);
 
     return () => {
@@ -74,7 +77,7 @@ function useServerStatus(): { banner: Banner; checkNow: () => void } {
       window.clearInterval(interval);
       window.clearTimeout(dismissTimer);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("online", onVisible);
+      window.removeEventListener("online", onOnline);
       window.removeEventListener("focus", onVisible);
     };
   }, []);
