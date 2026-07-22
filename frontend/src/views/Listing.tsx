@@ -261,7 +261,19 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // resolving and will drive the correct final view (a file <Preview>) a beat
 // later, so we show the neutral loading body and let stat commit the real view.
 // Absent/false (the committed post-stat render), errors show normally.
-export default function Listing({ fsPath, provisional = false }: { fsPath: string; provisional?: boolean }) {
+export default function Listing({
+  fsPath,
+  provisional = false,
+  onSingleApp,
+}: {
+  fsPath: string;
+  provisional?: boolean;
+  // Reports the path of this directory's lone top-level HTML file (an
+  // "app"), or null when there isn't exactly one — the caller (Preview's
+  // header) uses this to surface an "Open as app" button. Fires whenever the
+  // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
+  onSingleApp?: (path: string | null) => void;
+}) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -772,6 +784,28 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
 
   const base = fsPath.replace(/\/$/, "");
 
+  // Tell the caller whether this folder's top level holds exactly one HTML
+  // ("app") file. Keyed off the plain listing, not the search results — the
+  // button this drives describes the folder's own contents, regardless of
+  // what's currently typed into the in-folder search box.
+  //   • A truncated listing (the server-cap banner) only ever holds a partial
+  //     page, so a lone HTML match there doesn't mean it's the folder's only
+  //     one — withhold the report rather than risk a false "app" button.
+  //   • "loading" reports nothing either way (neither null nor a path) so a
+  //     same-path remount (e.g. switching a mode away from `_listing` and
+  //     back) doesn't flicker an already-known button off for the length of
+  //     the refetch; only "ok"/"error" settle the caller's state.
+  useEffect(() => {
+    if (!onSingleApp) return;
+    if (state.status === "loading") return;
+    if (state.status !== "ok" || state.truncated) {
+      onSingleApp(null);
+      return;
+    }
+    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
+    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
+  }, [state, base, onSingleApp]);
+
   // Flat, ordered list of the paths the arrow keys step through: the rendered
   // search hits while searching, otherwise the sorted listing. Keyed off the
   // same memoized arrays the table renders, so selection never drifts from view.
@@ -1244,7 +1278,6 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
-                    {isAppEntry(entry.rel, entry.is_dir) && <span className="app-chip">App</span>}
                   </td>
                   <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
                   <td className="mtime">{formatMtime(entry.mtime)}</td>
@@ -1339,7 +1372,6 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
           <td className="name">
             <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
             {entry.name}
-            {isAppEntry(entry.name, entry.is_dir) && <span className="app-chip">App</span>}
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
           <td className="mtime">{formatMtime(entry.mtime)}</td>

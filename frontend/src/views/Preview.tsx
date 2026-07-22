@@ -43,16 +43,22 @@ interface HeaderProps {
   fsPath: string;
   stat: StatResult;
   children?: ReactNode;
+  // Rendered right after the name, in the same group (e.g. the directory
+  // listing's "Open as app" button) — nothing renders there by default.
+  afterName?: ReactNode;
   // Right-click on the header chrome opens the file context menu for the open
   // file (views hosting a real preview wire this; transient resolving/loading
   // headers leave it undefined).
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-function Header({ fsPath, stat, children, onContextMenu }: HeaderProps) {
+function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProps) {
   return (
     <div className="preview-header" onContextMenu={onContextMenu}>
-      <h1 title={fsPath}>{stat.name}</h1>
+      <div className="preview-title">
+        <h1 title={fsPath}>{stat.name}</h1>
+        {afterName}
+      </div>
       <div className="preview-actions">{children}</div>
     </div>
   );
@@ -401,6 +407,10 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
+  // Path of the directory's lone top-level HTML file, reported by Listing
+  // (null when there isn't exactly one) — drives the "Open as app" button
+  // between the directory name and the mode switcher.
+  const [singleAppPath, setSingleAppPath] = useState<string | null>(null);
 
   // Tab title (App's StatView owns the actual document.title write, and it
   // also feeds the default bookmark name and the Recents row — see
@@ -546,7 +556,22 @@ function TemplatePreview({
 
   return (
     <>
-      <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu}>
+      <Header
+        fsPath={fsPath}
+        stat={stat}
+        onContextMenu={fileMenu.onContextMenu}
+        afterName={
+          isListing && singleAppPath ? (
+            <button
+              type="button"
+              className="open-as-app-btn"
+              onClick={() => navigate(singleAppPath, { isDir: false })}
+            >
+              Open as app
+            </button>
+          ) : null
+        }
+      >
         {/* Deployable = the mode list carries the "_render" sentinel AND the
             file is .html/.htm — the exporter's actual contract. The extension
             check matters because a registry rebind can put "_render" on any
@@ -576,7 +601,7 @@ function TemplatePreview({
             Checking if this view applies…
           </div>
         ) : isListing ? (
-          <Listing fsPath={fsPath} />
+          <Listing fsPath={fsPath} onSingleApp={setSingleAppPath} />
         ) : (
           /* key: switching mode replaces the iframe (fresh document per switch). */
           <iframe key={mode} src={src as string} onLoad={onRenderFrameLoad} />
@@ -588,6 +613,21 @@ function TemplatePreview({
               : counterpart === defaultEntry.mode
                 ? "Back"
                 : modeTitle(counterpart as string)}
+          </button>
+        )}
+        {/* Embed hides .preview-header (see afterName above), so the "Open as
+            app" affordance also rides as a corner chip pinned over the
+            listing, revealed only in embed — same pattern as
+            preview-browse-chip. Opposite corner so the two can coexist (a
+            directory can have both a browsable counterpart mode AND a lone
+            HTML file). */}
+        {isListing && singleAppPath && (
+          <button
+            type="button"
+            className="open-as-app-chip"
+            onClick={() => navigate(singleAppPath, { isDir: false })}
+          >
+            Open as app
           </button>
         )}
       </div>
