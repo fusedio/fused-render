@@ -78,6 +78,11 @@ export interface StatResult {
   // Bytes come from a remote (path under a mount). Preview forwards this to
   // the template iframe as _remote=1 so pages can prefer ranged HTTP reads.
   remote?: boolean;
+  // False for a file on a read-only mount (or any path the user can't write).
+  // Session restore keys off this: a non-writable file can never have had a
+  // sidecar written, so its restore is skipped rather than blocking on a cold,
+  // guaranteed-null GET /api/session (see useSessionRestore).
+  writable?: boolean;
   templates: TemplateEntry[];
   template_error?: string;
 }

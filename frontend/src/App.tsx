@@ -189,12 +189,16 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
   // is not a confirmed file, so a directory never gets a restore/track before
   // its kind is known.
   const isDir = stat.status === "ok" ? stat.stat.is_dir : null;
+  // null until stat resolves. A non-writable file (read-only mount) can't hold
+  // a session sidecar, so the session hooks skip it — crucially, restore does
+  // NOT block the template on a cold, guaranteed-null /api/session read there.
+  const writable = stat.status === "ok" ? stat.stat.writable ?? null : null;
   // Per-file session restore (LSN-*): replay the file's last URL query on a
   // bare open, and track qualifying param changes back into the sidecar.
   // `ready` gates the preview so the iframe mounts with the restored params
   // already on the shell URL (no param flash from defaults -> restored).
-  const ready = useSessionRestore(fsPath, isDir);
-  useSessionTracking(fsPath, isDir);
+  const ready = useSessionRestore(fsPath, isDir, writable);
+  useSessionTracking(fsPath, isDir, writable);
   // A "_render" preview (the file's own HTML, no template) reports its
   // authored <title> here (Preview -> TemplatePreview); everything else
   // (templates, listings, fallback cards) has no better name than the
@@ -234,8 +238,11 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
     } else if (!ready) {
       // Brief; only for files opened with an empty query while the sidecar
       // read resolves. Directories and param/bookmark opens are ready
-      // synchronously (useSessionRestore), so no flash on those paths.
-      content = <div className="status-message">Loading…</div>;
+      // synchronously (useSessionRestore), so no flash on those paths. Paint
+      // the same file scaffold as the stat-loading branch (header + spinner in
+      // the file's chrome) rather than a bare centered "Loading…" — on a cold
+      // mount this wait is ~2s and must never read as a blank/black screen.
+      content = <LoadingScaffold fsPath={fsPath} isDir={false} />;
     } else {
       content = <Preview fsPath={fsPath} stat={s} onRenderedTitle={setRenderedTitle} />;
     }
