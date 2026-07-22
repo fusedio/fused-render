@@ -2697,6 +2697,26 @@ def _sync_serves_locked() -> None:
     storage.write_json(serves_path(), out)
 
 
+# After mount/mount, the kernel NFS mount is normally live the instant rcd's
+# `mount` command returns — but a flap-prone loopback NFS mount can attach late
+# or not at all. Poll ismount briefly so a mount that genuinely took confirms
+# fast, while one that never attached is caught here instead of reported as
+# success (see attach_mount's verify below).
+_MOUNT_ATTACH_DEADLINE_S = 3.0
+_MOUNT_ATTACH_POLL_S = 0.1
+
+
+def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
+    """True once os.path.ismount(mp) holds within `deadline` seconds, else False."""
+    end = time.monotonic() + deadline
+    while True:
+        if os.path.ismount(mp):
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(_MOUNT_ATTACH_POLL_S)
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
@@ -2769,6 +2789,17 @@ def attach_mount(m: dict) -> str | None:
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
+    # mount/mount returns success once rcd's NFS server is up and it has
+    # invoked the macOS `mount` command — but on a flap-prone loopback NFS
+    # mount the kernel attach can silently fail (or drop within seconds),
+    # leaving rcd's serve alive while os.path.ismount stays False: the exact
+    # "stale" split-brain reconnect_mount exists to heal. Without this check
+    # attach_mount returned None (success) over a mount that never took, so a
+    # /reconnect reported OK while the folder stayed empty. Confirm the kernel
+    # mount actually attached before claiming success.
+    if not _await_ismount(mp):
+        return (f"mount did not attach at {mp} — rcd serves the remote but the "
+                f"kernel NFS mount is absent; retry reconnect")
     # Record what was actually baked into this mount's vfsOpt: rcd never
     # echoes mount options back, so this is the only way the adopt path above
     # can tell a live VFS predates a read_only change and must be remounted.
