@@ -36,6 +36,11 @@ def _no_ambient_aws_creds(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE",
                        str(tmp_path / "no-aws-credentials"))
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    # The optional botocore rung (s3sign) is consulted for an env_auth/profile
+    # remote once the static ladder finds nothing; disable the IMDS probe so it
+    # resolves to None immediately (deterministic, and fast) instead of
+    # resolving an EC2/CI role or stalling ~1s on metadata.
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 
 class StubRcd:
