@@ -265,6 +265,20 @@ def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
     assert not started and not os.path.exists(staged)
 
 
+def test_sweep_skips_while_check_in_progress(monkeypatch, tmp_path):
+    monkeypatch.setattr(update.tempfile, "gettempdir", lambda: str(tmp_path))
+    staged = tmp_path / "FusedRenderPy-x-setup.exe"
+    staged.write_bytes(b"x")
+    update._check_lock.acquire()
+    try:
+        update._sweep_stale_downloads()
+        assert staged.exists()  # a check holds the lock → staged file untouched
+    finally:
+        update._check_lock.release()
+    update._sweep_stale_downloads()
+    assert not staged.exists()  # lock free → swept
+
+
 def test_start_auto_checks_disabled_by_env(monkeypatch, paths):
     monkeypatch.setenv("FUSED_RENDER_NO_AUTO_UPDATE", "1")
 

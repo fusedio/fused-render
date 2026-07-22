@@ -220,10 +220,17 @@ def _download_verified(manifest: dict) -> str:
 
 def _sweep_stale_downloads() -> None:
     """Best-effort cleanup of installers a previous session staged but never
-    installed (declined, or the process died). A file the running installer
-    still holds open won't delete — that's fine, unlink just fails."""
-    for stale in glob.glob(os.path.join(tempfile.gettempdir(), f"{_STAGE_PREFIX}*{_STAGE_SUFFIX}")):
-        _discard(stale)
+    installed (declined, or the process died). Guarded by _check_lock so it
+    can't delete a file a concurrent manual check just staged and is waiting to
+    launch; if a check holds the lock, skip — the stale file waits one more
+    session. A file the running installer holds open won't delete anyway."""
+    if not _check_lock.acquire(blocking=False):
+        return
+    try:
+        for stale in glob.glob(os.path.join(tempfile.gettempdir(), f"{_STAGE_PREFIX}*{_STAGE_SUFFIX}")):
+            _discard(stale)
+    finally:
+        _check_lock.release()
 
 
 def _sha256_file(path: str) -> str:
