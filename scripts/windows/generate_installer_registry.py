@@ -15,10 +15,10 @@ def main() -> None:
     output = Path(sys.argv[1])
     command = f'""{{app}}\\payload\\{_EXE_NAME}"" ""%1""'
     lines = [
-        f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "FusedRender (Python Supervisor)"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "FusedRender"; Flags: uninsdeletekey',
         f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico,0"; Flags: uninsdeletevalue uninsdeletekeyifempty',
         f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
-        f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: ""; ValueData: "Open with FusedRender (Python Supervisor)"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: ""; ValueData: "Open with FusedRender"; Flags: uninsdeletekey',
         f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico"; Flags: uninsdeletevalue uninsdeletekeyifempty',
         f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
     ]

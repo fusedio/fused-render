@@ -27,7 +27,7 @@
 
 [Setup]
 AppId={{9F1D3C2A-6B4E-4A8F-9C3D-2E7B5A1F8D6C}
-AppName=FusedRender (Python Supervisor)
+AppName=FusedRender
 AppVersion={#AppVersion}
 AppPublisher=Fused
 AppPublisherURL=https://fused.io
@@ -64,16 +64,22 @@ Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\cache"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\runtime"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\temp"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\logs"
+; the [Icons] entries below were renamed from "FusedRender (Python Supervisor)"
+; — Inno's uninstall log only tracks additions per run, so upgrading over an
+; older install would otherwise leave these old .lnk files orphaned in the
+; Start Menu.
+Type: files; Name: "{group}\FusedRender (Python Supervisor).lnk"
+Type: files; Name: "{group}\Uninstall FusedRender (Python Supervisor).lnk"
 
 [Icons]
-Name: "{group}\FusedRender (Python Supervisor)"; Filename: "{app}\payload\{#ExeName}"; IconFilename: "{#InstalledIcon}"; AppUserModelID: "{#AppUserModelId}"
-Name: "{group}\Uninstall FusedRender (Python Supervisor)"; Filename: "{uninstallexe}"
+Name: "{group}\FusedRender"; Filename: "{app}\payload\{#ExeName}"; IconFilename: "{#InstalledIcon}"; AppUserModelID: "{#AppUserModelId}"
+Name: "{group}\Uninstall FusedRender"; Filename: "{uninstallexe}"
 
 [Registry]
 #include BundleDir + "\registry.iss"
 
 [Run]
-Filename: "{app}\payload\{#ExeName}"; Description: "Launch FusedRender (Python Supervisor)"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\payload\{#ExeName}"; Description: "Launch FusedRender"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -134,7 +140,7 @@ begin
   if RegQueryStringValue(HKCU, '{#UninstallKey}', 'DisplayVersion', InstalledVersion) and
     (CompareVersions('{#AppVersion}', InstalledVersion) < 0) then
   begin
-    MsgBox('A newer FusedRender (Python Supervisor) version is already installed.', mbError, MB_OK);
+    MsgBox('A newer FusedRender version is already installed.', mbError, MB_OK);
     Result := False;
   end;
 end;
