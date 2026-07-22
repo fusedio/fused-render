@@ -3044,12 +3044,22 @@ select.field-control:has(option[value=""]:checked) {
 
 .prefs-page {
   padding: 18px 22px 32px;
-  max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  /* Full-width scroll container so the scrollbar sits at the window edge, not
+     inset at the 760px content boundary. The content column is capped by the
+     child rule below (previously max-width lived here, which made the narrow
+     760px box itself the scroller — a mid-page scrollbar). */
   overflow-y: auto;
   font-size: 13px;
+}
+
+/* Cap the settings/mounts content column while the scroller stays full-width.
+   Left-aligned (no auto margin), matching the previous look. */
+.prefs-page > * {
+  max-width: 760px;
+  width: 100%;
 }
 
 /* Render preferences / Fused account tabs (D125) — same look as the
