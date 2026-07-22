@@ -50,6 +50,21 @@ export function useBookmarksVersion(): number {
   return useEventCounter([BOOKMARKS_EVENT]);
 }
 
+// Armed-bookmark change signal — same store-owned pattern as recents below:
+// armBookmark()/disarmBookmark() (lib/bookmarks.ts) dispatch it themselves,
+// because not every disarm site coincides with a url or bookmark-store event
+// (the Breadcrumb's pathname-change disarm runs in an effect AFTER the sidebar
+// has already rendered against the stale armed value).
+const ARMED_EVENT = "fused:armchange";
+
+export function notifyArmedChanged(): void {
+  window.dispatchEvent(new Event(ARMED_EVENT));
+}
+
+export function useArmedVersion(): number {
+  return useEventCounter([ARMED_EVENT]);
+}
+
 // Recents store change signal — same pattern as the bookmarks event. The
 // recents store (lib/recents.ts) dispatches it itself after every cache
 // advance (its mutations are triggered by tracking, not by UI clicks alone,

@@ -19,7 +19,10 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  getArmedBookmarkFor,
   setBookmarkIcon,
+  sameSearch,
+  splitBookmarkUrl,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
@@ -33,6 +36,7 @@ import {
   useBookmarksVersion,
   notifyBookmarksChanged,
   useRecentsVersion,
+  useArmedVersion,
 } from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
@@ -163,6 +167,8 @@ interface BookmarkRowProps {
   b: Bookmark;
   child?: boolean;
   parentId?: string;
+  active: boolean;
+  dirty: boolean; // active via armed AND current params differ from saved -> "*" suffix
   isRenaming: boolean;
   justSaved: boolean; // transient ✓ on the save button after a successful export
   namePositions?: number[]; // search-match highlight positions in b.name
@@ -180,7 +186,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -189,7 +195,7 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
     : null;
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
+      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -210,6 +216,7 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
       ) : (
         <a className="bookmark-name" href={b.url} draggable={false} onClick={onNameClick}>
           {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
+          {dirty && "*"}
         </a>
       )}
       <span className="bookmark-actions">
@@ -298,6 +305,10 @@ export default function Sidebar({ config }: SidebarProps) {
   useUrlVersion();
   useBookmarksVersion();
   useRecentsVersion();
+  // Arm/disarm doesn't always coincide with a url or bookmark-store event —
+  // the Breadcrumb's pathname-change disarm fires from an effect after this
+  // component already rendered — so the armed store notifies separately.
+  useArmedVersion();
   // Signed-in dot on the footer's Preferences entry (SPEC AC-1): shown only
   // once Deploy is enabled, since that's the only reason this app cares about
   // a Fused account at all — a dot for a feature the user hasn't turned on
@@ -840,10 +851,29 @@ export default function Sidebar({ config }: SidebarProps) {
     onDragEnd: onRowDragEnd,
   });
 
-  // True when the current view's bookmark lives anywhere in this subtree —
-  // keeps the collapsed-folder active hint visible at any nesting depth.
+  // Active row = the armed bookmark (the one being "followed"/edited — same
+  // tracking the Update-bookmark button uses), regardless of live param
+  // drift. Read through the pathname gate: an armed entry whose page the user
+  // has left counts as not-armed here, so the highlight falls back to the
+  // exact-url match immediately instead of waiting on (or, for routes without
+  // CrumbActions, forever missing) the Breadcrumb's disarm effect. With
+  // nothing armed, exact-url match still highlights a pasted/hand-typed url
+  // (matching never arms).
+  const armed = getArmedBookmarkFor(location.pathname);
+  const rowActive = (b: Bookmark): boolean =>
+    armed ? armed.id === b.id : b.url === currentUrl();
+  // Dirty = the armed row's current params differ from its saved url — the
+  // exact visibility condition of the Update-bookmark button (Breadcrumb).
+  // Pathname already matches (the gate above), so only the search differs.
+  const rowDirty = (b: Bookmark): boolean =>
+    !!armed &&
+    armed.id === b.id &&
+    !sameSearch(location.search, splitBookmarkUrl(armed.url).search);
+
+  // True when the active bookmark lives anywhere in this subtree — keeps the
+  // collapsed-folder active hint visible at any nesting depth.
   const subtreeHoldsActive = (list: BookmarkItem[]): boolean =>
-    list.some((c) => (isFolder(c) ? subtreeHoldsActive(c.children) : c.url === currentUrl()));
+    list.some((c) => (isFolder(c) ? subtreeHoldsActive(c.children) : rowActive(c)));
 
   // Recursive tree render (D121). parentId is the immediate parent's id
   // (null at top level); rows inside any folder carry it via data-parent so
@@ -886,6 +916,8 @@ export default function Sidebar({ config }: SidebarProps) {
           b={it}
           child={child}
           parentId={parentId ?? undefined}
+          active={rowActive(it)}
+          dirty={rowDirty(it)}
           isRenaming={renamingId === it.id}
           justSaved={savedId === it.id}
           registerRef={registerRow(it.id)}
@@ -959,6 +991,8 @@ export default function Sidebar({ config }: SidebarProps) {
                     key={b.id}
                     b={b}
                     namePositions={namePositions}
+                    active={rowActive(b)}
+                    dirty={rowDirty(b)}
                     isRenaming={renamingId === b.id}
                     justSaved={savedId === b.id}
                     registerRef={() => {}}
