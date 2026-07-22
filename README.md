@@ -335,21 +335,17 @@ project (running the explorer, opening views by URL), author fused-render
 views (the `fused.runPython` bridge, URL-synced params, file IO helpers), and
 build custom preview templates.
 
-This is a **private repo**, so add the marketplace by its **SSH git URL**
-(the `owner/repo` shorthand only works for public repos). You need SSH access
-to `fusedio/fused-render` — i.e. an SSH key registered with GitHub.
-
 From inside Claude Code:
 
 ```
-/plugin marketplace add git@github.com:fusedio/fused-render.git
+/plugin marketplace add fusedio/fused-render
 /plugin install fused-render@fused-render
 ```
 
 Or from the command line:
 
 ```
-claude plugin marketplace add git@github.com:fusedio/fused-render.git
+claude plugin marketplace add fusedio/fused-render
 claude plugin install fused-render@fused-render
 ```
 
