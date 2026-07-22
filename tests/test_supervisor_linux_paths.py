@@ -5,11 +5,14 @@ selection) with no Linux kernel dependency, so they run on macOS too. The
 dialogs themselves are gate-tested manually (docs/LINUX_DESKTOP_SPEC.md).
 """
 import os
+from pathlib import Path
 
 import pytest
 
 from fused_render.supervisor import paths as paths_mod
 from fused_render.supervisor._linux import startup, tree, ui
+
+_SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 
 # -- PDEATHSIG orphan-race check (cross-platform pure logic) ----------------
@@ -74,6 +77,31 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
     ):
         assert key in env, key
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
+
+
+def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
+    # The DuckDB extension dir, the rclone binary, and the PATH prefix must all
+    # live under the SAME tools_dir — the build scripts stage them together, so
+    # a split would point the child at a path the payload never populated.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    tools = tmp_path / "tools"
+    env = paths_mod.DesktopPaths.discover_linux().child_environment("i", "t", tools)
+    assert env["FUSED_RENDER_DUCKDB_EXTENSION_DIR"] == str(tools / "duckdb_extensions")
+    assert env["FUSED_RENDER_RCLONE_BIN"] == str(tools / "rclone")
+    assert env["PATH"].split(os.pathsep)[0] == str(tools)
+
+
+def test_linux_build_stages_tools_in_python_bin():
+    # On Linux tools_dir resolves to $PYTHON_ROOT/bin (python-build-standalone
+    # puts python3 there), so the build script MUST stage the DuckDB extensions,
+    # uv, and rclone under that same bin/ — matching child_environment above.
+    # This is the single-source-of-truth guard for the payload layout.
+    script = (_SCRIPTS / "build_linux_appimage.sh").read_text()
+    assert 'DUCKDB_EXTENSIONS="$PYTHON_ROOT/bin/duckdb_extensions"' in script
+    assert '"$PYTHON_ROOT/bin/uv"' in script
+    assert '"$PYTHON_ROOT/bin/rclone"' in script
 
 
 # -- autostart round-trip --------------------------------------------------

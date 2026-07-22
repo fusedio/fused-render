@@ -71,7 +71,13 @@ log "Installing wheel[bundled,fused,linux-desktop]"
 uv pip install --python "$BUNDLE_PYTHON" "${WHEEL}[bundled,fused,linux-desktop]"
 
 log "Pre-installing DuckDB extensions"
-DUCKDB_EXTENSIONS="$PYTHON_ROOT/duckdb_extensions"
+# Under bin/ (next to uv and rclone), because tools_dir — where the supervisor's
+# child_environment points FUSED_RENDER_DUCKDB_EXTENSION_DIR — resolves to the
+# interpreter's directory, which is $PYTHON_ROOT/bin on Linux (python3 lives in
+# bin/), NOT $PYTHON_ROOT. Windows keeps python.exe directly in PythonRoot, so
+# its ps1 stages them at PythonRoot; the destinations differ, the contract
+# (tools_dir/duckdb_extensions) is identical.
+DUCKDB_EXTENSIONS="$PYTHON_ROOT/bin/duckdb_extensions"
 mkdir -p "$DUCKDB_EXTENSIONS"
 "$BUNDLE_PYTHON" -I -c \
     "import duckdb, sys; con = duckdb.connect(config=dict(extension_directory=sys.argv[1])); [con.install_extension(name) for name in sys.argv[2:]]" \
