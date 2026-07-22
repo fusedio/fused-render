@@ -2176,13 +2176,16 @@ class _WatchEntry:
 
         self.path = path
         self.is_mount = shell_mounts.is_mount_backed(path)
-        # Both flags below are pure path/config checks (no remote I/O): they fix
-        # the poll interval and the change-detection strategy once, at creation.
+        # These flags fix the poll interval and change-detection strategy once,
+        # at creation. direct_list_capable can do REMOTE I/O (it consults the
+        # credential resolvers for signable S3 / credentialed GCS), so
+        # _WatchRegistry.subscribe constructs each entry OFF the event loop.
         if self.is_mount:
             # direct_list_capable: the remote can be enumerated by a cheap,
-            # bounded unsigned page (anonymous AWS S3 / GCS). When it CAN'T, a
-            # directory child-change signal would require a full rc_list_dir of
-            # the prefix — the standing enumeration we avoid (see _mount_signal).
+            # bounded page — unsigned (anonymous S3/GCS) or credentialed (signed
+            # S3 / bearer GCS). When it CAN'T, a directory child-change signal
+            # would require a full rc_list_dir of the prefix — the standing
+            # enumeration we avoid (see _mount_signal).
             self._direct_capable = shell_mounts.direct_list_capable(path)
             # A mount ROOT lists the remote's top prefix (or the whole bucket):
             # never poll-list it on a non-direct remote.
@@ -2325,12 +2328,22 @@ class _WatchRegistry:
     def __init__(self):
         self._entries: dict = {}
 
-    def subscribe(self, path: str, queue):
+    async def subscribe(self, path: str, queue):
         entry = self._entries.get(path)
         if entry is None:
-            entry = _WatchEntry(path)
-            self._entries[path] = entry
-            entry.task = asyncio.create_task(entry.run())
+            # _WatchEntry construction does remote I/O (direct_list_capable now
+            # consults the credential resolvers — google-auth refresh / ADC
+            # metadata / botocore chain), so build it OFF the event loop. This
+            # runs on the async /api/fs/events handler's loop; a bare call would
+            # block it. Re-check after the await in case a concurrent subscribe
+            # created the entry while we were building (only ours starts a task).
+            entry = await asyncio.to_thread(_WatchEntry, path)
+            existing = self._entries.get(path)
+            if existing is not None:
+                entry = existing
+            else:
+                self._entries[path] = entry
+                entry.task = asyncio.create_task(entry.run())
         entry.subscribers.add(queue)
         return entry
 
@@ -3472,7 +3485,7 @@ def create_app(start_dir: str) -> FastAPI:
         paths = ws.query_params.getlist("path")
 
         queue: asyncio.Queue = asyncio.Queue()
-        entries = [_WATCH_REGISTRY.subscribe(p, queue) for p in paths]
+        entries = [await _WATCH_REGISTRY.subscribe(p, queue) for p in paths]
 
         async def pump():
             # Forward change messages; a 15s idle gap emits a keepalive (WF-3).
