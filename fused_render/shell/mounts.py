@@ -44,7 +44,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import storage
+from fused_render.shell import s3sign, storage
 
 logger = logging.getLogger(__name__)
 
@@ -1514,10 +1514,42 @@ def serve_url_for(path: str) -> str | None:
 # Presigned links default to a 1h expiry; reuse them for well under that so
 # a link handed to a proxied read is never near expiry.
 _LINK_TTL_S = 30 * 60.0
+# Sign-mode presign lifetime. A signed link is handed to the 307 client and
+# consumed at once, so this only bounds the window a leaked link is replayable;
+# creds are re-resolved every _CRED_TTL_S regardless.
+_SIGN_EXPIRY_S = 15 * 60
+_SIGN_VALIDATE_TIMEOUT_S = 5.0
+_CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
+# When sign-mode validation fails while no fallback can be committed (rcd down,
+# so publiclink can't cache a "link" mode either), negative-cache the failed
+# validation per fs for this window so every raw read doesn't re-run the 1-2
+# blocking 5s validation GETs. Short so a transient failure self-heals.
+_SIGN_NEG_TTL_S = 45.0
+_UPSTREAM_LINKS_CAP = 4096  # bound the publiclink cache (sign mode never inserts)
+# A publiclink URL minted under a dying STS token shouldn't stay replayable for
+# the full half hour, so a session-token remote gets a shorter link TTL.
+_SESSION_TOKEN_LINK_TTL_S = 5 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
-_upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
+_upstream_mode: dict = {}   # fs -> "link" | "public" | "none" | "sign"
 _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+_upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
+_cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
+_sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
+_validation_locks: dict = {}  # fs -> Lock: per-fs single-flight for validation
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that never follows: sign-mode validation must observe
+    a wrong-region 301/307 itself (with its x-amz-bucket-region header) rather
+    than have urllib chase it to a host the signature — which covers Host —
+    doesn't match, turning a correctable region hint into an opaque 403."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _remote_config(name: str) -> dict | None:
@@ -1544,6 +1576,57 @@ def _remote_config(name: str) -> dict | None:
     return cfg
 
 
+def _invalidate_upstream_caches() -> None:
+    """Drop every memoized upstream fact — config, resolved mode/region,
+    credentials, and per-object links. Called on remote create/delete: those
+    change a remote's config or credentials out from under the memoization
+    (config/get is otherwise cached for the process lifetime), and a changed
+    key must be picked up without a restart. Wholesale, not per-name — these
+    are rare, user-initiated events, and for anonymous remotes it only forces a
+    cheap re-derivation of the public mode."""
+    with _upstream_lock:
+        _upstream_cfg.clear()
+        _upstream_mode.clear()
+        _upstream_region.clear()
+        _cred_cache.clear()
+        _upstream_links.clear()
+        _sign_neg_cache.clear()
+        _validation_locks.clear()
+
+
+def _store_upstream_link(key, url: str, expiry: float, now: float) -> None:
+    """Insert into the bounded publiclink cache (caller holds _upstream_lock).
+    At the cap, evict expired entries first, then the oldest by expiry. Sign
+    mode never inserts, so this only guards the publiclink path."""
+    if key not in _upstream_links and len(_upstream_links) >= _UPSTREAM_LINKS_CAP:
+        for k in [k for k, (_u, exp) in _upstream_links.items() if exp <= now]:
+            del _upstream_links[k]
+        while len(_upstream_links) >= _UPSTREAM_LINKS_CAP:
+            del _upstream_links[min(_upstream_links,
+                                    key=lambda k: _upstream_links[k][1])]
+    _upstream_links[key] = (url, expiry)
+
+
+def _link_ttl(fs: str) -> float:
+    """publiclink cache TTL for `fs`: the short session-token clamp when the
+    remote's credentials carry an STS session token, else _LINK_TTL_S. The token
+    can arrive three ways and all three must clamp so a dying token isn't
+    replayable for the full half hour: a config `session_token`, or — via
+    resolve_credentials — `AWS_SESSION_TOKEN` in the env or `aws_session_token`
+    in ~/.aws/credentials on an env_auth/profile remote (e.g. a non-signable
+    custom-endpoint S3). Rides the cached _signable_credentials so this adds no
+    per-call env/file parsing on the link path. Must be called WITHOUT
+    _upstream_lock held (_remote_config / _signable_credentials take it)."""
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    if (cfg or {}).get("session_token"):
+        return _SESSION_TOKEN_LINK_TTL_S
+    creds = _signable_credentials(name, cfg)
+    if creds is not None and creds.session_token:
+        return _SESSION_TOKEN_LINK_TTL_S
+    return _LINK_TTL_S
+
+
 def _anonymous_s3(cfg: dict | None) -> bool:
     """True when the remote is plain AWS S3 with no credentials — the one
     backend class whose objects are reachable by unsigned public URL and
@@ -1559,6 +1642,32 @@ def _cannot_presign(cfg: dict | None) -> bool:
     objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
     wasted publiclink rc call for either backend."""
     return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
+
+
+def _s3_signable_shape(cfg: dict | None) -> bool:
+    """Cheap, UNCACHED config-shape gate for the sign path: plain AWS S3 with no
+    custom endpoint. NOT custom-endpoint S3 (R2/MinIO/source.coop mirrors):
+    endpoint addressing and region conventions vary per provider, so those keep
+    the publiclink path. Says nothing about credentials — that is resolved
+    separately through the CACHED _signable_credentials, so the hot path never
+    re-reads env / ~/.aws per object (anonymous S3 also matches this shape but
+    resolves no creds, and callers check _anonymous_s3 first regardless)."""
+    return cfg is not None and cfg.get("type") == "s3" and not cfg.get("endpoint")
+
+
+def _s3_signable(name: str, cfg: dict | None) -> bool:
+    """True when the remote is plain AWS S3 (no custom endpoint) whose
+    credentials resolve locally — the class we can presign in-process instead
+    of round-tripping publiclink per object. NOT anonymous S3 (that carries no
+    creds and is handled first by _anonymous_s3/_cannot_presign), and NOT
+    custom-endpoint S3. Credential resolution rides the cached
+    _signable_credentials so the predicate itself is hot-path safe and can't
+    disagree with the URL builder within a _CRED_TTL_S window. Callers must
+    check _anonymous_s3 FIRST so an anonymous remote never reaches the
+    resolver (its creds resolve to None, so this would return False anyway)."""
+    if not _s3_signable_shape(cfg):
+        return False
+    return _signable_credentials(name, cfg) is not None
 
 
 def _mount_for(path: str) -> tuple[dict | None, str]:
@@ -1616,6 +1725,26 @@ def _s3_bucket_prefix_region(fs: str, cfg: dict) -> tuple[str, str, str] | None:
     return bucket, prefix.rstrip("/"), cfg.get("region") or "us-east-1"
 
 
+def _s3_object_url(bucket: str, prefix: str, rel: str, region: str) -> str:
+    """One S3 object URL: prefix-join then percent-quote the key, applying the
+    dotted-bucket path-style rule via _s3_base_url. The single builder both the
+    anonymous (unsigned) and signable (presigned-input) branches of
+    _s3_request_url join their key through, so the two can't diverge on the
+    prefix-join or the quoting."""
+    key = (prefix + "/" if prefix else "") + rel
+    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+
+
+def _s3_list_root(bucket: str, region: str) -> str:
+    """The bucket-root URL a ListObjectsV2 query hangs off, applying the
+    dotted-bucket rule once: a dotted bucket is already path-style (root has no
+    trailing slash — "s3.<r>.amazonaws.com/<bucket>?..."), a virtual-hosted one
+    needs the "/" before the "?". Shared by the anonymous (base?query) and
+    signable (presigned) branches so the dotted-bucket handling can't diverge."""
+    base = _s3_base_url(bucket, region)
+    return base if "." in bucket else base + "/"
+
+
 def _public_object_url(fs: str, rel: str) -> str | None:
     """Plain https URL for an object on an ANONYMOUS AWS S3 remote — the one
     backend class that can't presign but doesn't need to. Credentialed or
@@ -1630,9 +1759,7 @@ def _public_object_url(fs: str, rel: str) -> str | None:
     if derived is None:
         return None
     bucket, prefix, region = derived
-    key = (prefix + "/" if prefix else "") + rel
-    # _s3_base_url applies the dotted-bucket path-style rule (see there).
-    return _s3_base_url(bucket, region) + "/" + urllib.parse.quote(key)
+    return _s3_object_url(bucket, prefix, rel, region)
 
 
 def _gcs_public_object_url(fs: str, rel: str) -> str | None:
@@ -1652,6 +1779,155 @@ def _gcs_public_object_url(fs: str, rel: str) -> str | None:
     key = (prefix + "/" if prefix else "") + rel
     # Match _public_object_url's key quoting (same default safe chars).
     return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
+def _signable_credentials(name: str, cfg: dict | None):
+    """resolve_credentials for a remote, cached per name for _CRED_TTL_S so a
+    rotated ~/.aws/credentials or an STS refresh is picked up without a
+    restart, but the env/file reads aren't paid per object on the sign hot
+    path. None (also cached) when nothing resolves."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _cred_cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    creds = s3sign.resolve_credentials(cfg)
+    with _upstream_lock:
+        _cred_cache[name] = (creds, now + _CRED_TTL_S)
+    return creds
+
+
+def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
+                    query: dict | None = None,
+                    region_override: str | None = None) -> str | None:
+    """The direct S3 URL for one request against a mount's remote — the single
+    dispatch the raw-read, listing and probe sites share so they can't diverge
+    on how a URL is built or signed:
+      - anonymous remote  -> the EXISTING unsigned builders, verbatim
+        (_public_object_url for an object; the same base?query build the pager
+        used for a listing) — byte-identical to today, resolver never consulted;
+      - signable remote   -> a locally presigned URL for `method`;
+      - neither           -> None (caller falls back to rc).
+    `query` present means a ListObjectsV2 request against the bucket root (its
+    params are signed through the presigner, canonicalized in one place);
+    absent means an object request keyed by `rel`. `region_override` presigns
+    for a specific region WITHOUT publishing it to _upstream_region — used by
+    validation to try a trial region before it's been confirmed; absent, the
+    adopted (self-corrected) region wins over the config default."""
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    if cfg is None:
+        return None
+    # Anonymous FIRST: an anonymous remote never resolves credentials, never
+    # signs — its URLs are the exact unsigned ones today's code produces.
+    if _anonymous_s3(cfg):
+        if query is None:
+            return _public_object_url(fs, rel)
+        derived = _s3_bucket_prefix_region(fs, cfg)
+        if derived is None:
+            return None
+        bucket, _prefix, region = derived
+        return f"{_s3_list_root(bucket, region)}?{urllib.parse.urlencode(query)}"
+    # Cheap uncached shape gate, then ONE cached credential resolution (the
+    # single source of the sign/no-sign decision on this path — no separate
+    # uncached pre-gate that could disagree with it within the TTL window).
+    if not _s3_signable_shape(cfg):
+        return None
+    creds = _signable_credentials(name, cfg)
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if creds is None or derived is None:
+        return None
+    bucket, prefix, cfg_region = derived
+    if region_override is not None:
+        region = region_override
+    else:
+        with _upstream_lock:
+            region = _upstream_region.get(fs, cfg_region)  # adopted region wins
+    if query is None:
+        url = _s3_object_url(bucket, prefix, rel, region)
+        return s3sign.presign_url(url, method=method, region=region,
+                                  credentials=creds, expires=_SIGN_EXPIRY_S)
+    return s3sign.presign_url(_s3_list_root(bucket, region), method=method,
+                              region=region, credentials=creds,
+                              extra_query=query, expires=_SIGN_EXPIRY_S)
+
+
+def _signing_region(fs: str, cfg: dict | None) -> str | None:
+    """The region _s3_request_url would presign `fs` for right now: the adopted
+    (self-corrected) region if one exists, else the config default. A caller
+    captures this just before it signs so it can tell _adopt_region_on_301 what
+    region THIS request actually used (see that function)."""
+    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    if derived is None:
+        return None
+    with _upstream_lock:
+        return _upstream_region.get(fs, derived[2])
+
+
+def _adopt_region_on_301(fs: str, code: int, headers,
+                         signed_region: str | None) -> bool:
+    """A wrong-region S3 response (301/307/400) carries the bucket's true region
+    in x-amz-bucket-region (307 Temporary Redirect is what S3 returns for a
+    newly created bucket whose region hasn't propagated). When it does, adopt it
+    into the shared map (under _upstream_lock) so later requests sign for the
+    right region, and report whether THIS request should retry — which it must
+    whenever the hint differs from the region it actually signed with
+    (`signed_region`), NOT whether the shared map already holds the correction.
+    Keying the retry off the shared map would let a concurrent request that still
+    signed with the stale region see a sibling's correction already applied and
+    skip its own needed re-sign/retry, failing it into the slow rc path. Mirrors
+    _validate_and_sign's rule so signed listings/probes region-correct exactly
+    as signed raw reads do."""
+    if code not in (301, 307, 400):
+        return False
+    corrected = headers.get("x-amz-bucket-region") if headers else None
+    if not corrected:
+        return False
+    with _upstream_lock:
+        if _upstream_region.get(fs) != corrected:
+            _upstream_region[fs] = corrected
+    return corrected != signed_region
+
+
+def _s3_get_direct(fs: str, rel: str, *, query: dict | None = None,
+                   method: str = "GET", timeout: float) -> bytes:
+    """Body bytes of a direct S3 listing/probe request, shared by s3_list_page
+    and _s3_has_children so they can't diverge on transport.
+
+    ANONYMOUS remote: a plain urlopen on the unsigned URL — byte-identical to
+    the pre-existing code (the resolver is never consulted, redirects are
+    followed exactly as before).
+
+    SIGNABLE remote: the presigned URL fetched through the NON-redirect opener
+    so a wrong/unset-region 301/307/400 is observable (the default opener would
+    chase it to a host the SigV4 signature — which covers Host — doesn't match,
+    turning a correctable region hint into an opaque 403). On such a response
+    carrying x-amz-bucket-region, adopt the region, re-sign and retry ONCE.
+
+    Propagates HTTPError/URLError/OSError to the caller's error mapping; a
+    missing direct URL surfaces as URLError (both callers map it)."""
+    cfg = _remote_config(fs.partition(":")[0])
+    if _anonymous_s3(cfg):
+        url = _s3_request_url(fs, rel, method=method, query=query)
+        if url is None:
+            raise urllib.error.URLError(f"{fs}: no direct S3 URL")
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    for attempt in (1, 2):
+        signed_region = _signing_region(fs, cfg)
+        url = _s3_request_url(fs, rel, method=method, query=query)
+        if url is None:
+            raise urllib.error.URLError(f"{fs}: no direct S3 URL")
+        req = urllib.request.Request(url, method=method)
+        try:
+            with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if attempt == 1 and _adopt_region_on_301(
+                    fs, e.code, e.headers, signed_region):
+                continue
+            raise
+    raise urllib.error.URLError(f"{fs}: no direct S3 URL")  # unreachable
 
 
 # ------------------------------------------------------- direct S3 pagination
@@ -1681,13 +1957,17 @@ S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by an anonymous plain-AWS-S3 remote —
-    the one backend class s3_list_page can enumerate unsigned. Lets the server
-    pick the fast path without re-deriving the _anonymous_s3 test."""
+    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page
+    can enumerate directly — anonymous (unsigned) OR signable (locally
+    presigned). Lets the server pick the fast path without re-deriving the
+    predicates. _anonymous_s3 is tested first, so an anonymous remote never
+    reaches the credential resolver."""
     m, _ = _mount_for(path)
     if m is None:
         return False
-    return _anonymous_s3(_remote_config(m["remote"].partition(":")[0]))
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    return _anonymous_s3(cfg) or _s3_signable(name, cfg)
 
 
 def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
@@ -1708,9 +1988,9 @@ def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
 
 def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
                  timeout: float | None = None) -> tuple[list, str | None]:
-    """One ListObjectsV2 page for a mount-backed directory on an anonymous AWS
-    S3 remote, fetched by a plain unsigned HTTPS GET — no kernel I/O on the
-    mount, no rclone, no boto3.
+    """One ListObjectsV2 page for a mount-backed directory on a direct-listable
+    AWS S3 remote — anonymous (plain unsigned GET) or signable (locally
+    presigned GET) — off the kernel mount, no rclone, no boto3.
 
     Returns (entries, next_token): entries shaped exactly like rc_list_dir
     output (Name/Size/IsDir/ModTime dicts) so downstream mapping is shared, and
@@ -1728,28 +2008,26 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     if m is None:
         raise S3ListError(f"{path} is under no known mount")
     fs = m["remote"]
-    cfg = _remote_config(fs.partition(":")[0])
-    if not _anonymous_s3(cfg):
-        raise S3ListError(f"{path}: remote {fs!r} is not anonymous AWS S3")
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    if not (_anonymous_s3(cfg) or _s3_signable(name, cfg)):
+        raise S3ListError(f"{path}: remote {fs!r} is not direct-listable S3")
     assert cfg is not None
     derived = _s3_bucket_prefix_region(fs, cfg)
     if derived is None:
         raise S3ListError(f"{path}: remote {fs!r} carries no bucket")
-    bucket, store_prefix, region = derived
+    _bucket, store_prefix, _region = derived
     prefix = _s3_listing_prefix(store_prefix, rel)
     params = {"list-type": "2", "delimiter": "/", "prefix": prefix,
               "max-keys": str(max_keys)}
     if continuation:
         params["continuation-token"] = continuation
-    query = urllib.parse.urlencode(params)
-    # _s3_base_url applies the dotted-bucket path-style rule. Path-style
-    # addresses the bucket in the path already; virtual-hosted style needs the
-    # root "/" before the query string.
-    base = _s3_base_url(bucket, region)
-    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    # _s3_get_direct builds the unsigned URL (anonymous — byte-identical to the
+    # old base?query with the dotted-bucket path-style rule) or the presigned
+    # URL (signable — the list params ride through the presigner), and for a
+    # signable remote self-corrects the region on a wrong-region 301/307/400.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _s3_get_direct(fs, rel, query=params, timeout=timeout)
     except urllib.error.HTTPError as e:
         raise S3ListError(f"S3 list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
@@ -2024,23 +2302,39 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
     m, rel = _mount_for(path)
     if rel == ".":
         return DirectHead(False, None, None)  # the mountpoint is not an object
-    url = _public_object_url(m["remote"], rel)
-    if url is None:  # not anonymous S3 after all — let the caller fall back
-        raise DirectProbeError(f"{path}: no unsigned S3 object URL")
-    req = urllib.request.Request(url, method="HEAD")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            size = resp.headers.get("Content-Length")
-            return DirectHead(
-                True,
-                int(size) if size and size.isdigit() else None,
-                _http_date_epoch(resp.headers.get("Last-Modified")))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return DirectHead(False, None, None)  # trustworthy negative
-        raise DirectProbeError(f"S3 head {path}: HTTP {e.code}") from e
-    except (urllib.error.URLError, OSError) as e:
-        raise DirectProbeError(f"S3 head {path}: {e}") from e
+    fs = m["remote"]
+    # Anonymous: plain urlopen on the unsigned URL, byte-identical to before.
+    # Signable: presigned HEAD (signed explicitly — a presigned GET rejects a
+    # HEAD) through the non-redirect opener, self-correcting the region once on
+    # a wrong-region 301/307/400 so a probe doesn't wedge on an unset/wrong region.
+    cfg = _remote_config(fs.partition(":")[0])
+    anonymous = _anonymous_s3(cfg)
+    for attempt in (1, 2):
+        signed_region = None if anonymous else _signing_region(fs, cfg)
+        url = _s3_request_url(fs, rel, method="HEAD")
+        if url is None:  # neither anonymous nor signable — caller falls back
+            raise DirectProbeError(f"{path}: no direct S3 object URL")
+        req = urllib.request.Request(url, method="HEAD")
+        opener = (urllib.request.urlopen if anonymous
+                  else _NO_REDIRECT_OPENER.open)
+        try:
+            with opener(req, timeout=timeout) as resp:
+                size = resp.headers.get("Content-Length")
+                return DirectHead(
+                    True,
+                    int(size) if size and size.isdigit() else None,
+                    _http_date_epoch(resp.headers.get("Last-Modified")))
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return DirectHead(False, None, None)  # trustworthy negative
+            if (not anonymous and attempt == 1
+                    and _adopt_region_on_301(
+                        fs, e.code, e.headers, signed_region)):
+                continue
+            raise DirectProbeError(f"S3 head {path}: HTTP {e.code}") from e
+        except (urllib.error.URLError, OSError) as e:
+            raise DirectProbeError(f"S3 head {path}: {e}") from e
+    raise DirectProbeError(f"S3 head {path}: region-correction retry exhausted")
 
 
 def _gcs_head(path: str, timeout: float) -> DirectHead:
@@ -2078,22 +2372,21 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
 def _s3_has_children(path: str, timeout: float) -> bool:
     m, rel = _mount_for(path)
     fs = m["remote"]
-    cfg = _remote_config(fs.partition(":")[0])
-    derived = _s3_bucket_prefix_region(fs, cfg or {})
+    derived = _s3_bucket_prefix_region(
+        fs, _remote_config(fs.partition(":")[0]) or {})
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
-    bucket, store_prefix, region = derived
+    _bucket, store_prefix, _region = derived
     prefix = _s3_listing_prefix(store_prefix, rel)
     # NO delimiter and max-keys=1: cheapest "does anything live here" — one key
     # (the marker included) proves the directory. delimiter would only add
     # CommonPrefixes work we don't need for a boolean.
     params = {"list-type": "2", "prefix": prefix, "max-keys": "1"}
-    query = urllib.parse.urlencode(params)
-    base = _s3_base_url(bucket, region)
-    url = f"{base}?{query}" if "." in bucket else f"{base}/?{query}"
+    # Unsigned for anonymous (byte-identical to the old base?query), presigned
+    # for signable (with region self-correction) — the same transport the pager
+    # uses via _s3_get_direct.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _s3_get_direct(fs, rel, query=params, timeout=timeout)
     except urllib.error.HTTPError as e:
         raise DirectProbeError(f"S3 list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
@@ -2141,6 +2434,119 @@ def upstream_url_for(path: str) -> str | None:
         return None
 
 
+def _sign_validation_status(url: str) -> tuple[int, str | None]:
+    """Sign mode's one validation probe: a Range: bytes=0-0 GET against a
+    presigned URL, redirects NOT followed (see _NoRedirect). Returns (HTTP
+    status, x-amz-bucket-region header) — (0, None) on a network error. Only
+    the status/region is surfaced; the presigned URL is never logged."""
+    req = urllib.request.Request(url, method="GET",
+                                 headers={"Range": "bytes=0-0"})
+    try:
+        with _NO_REDIRECT_OPENER.open(
+                req, timeout=_SIGN_VALIDATE_TIMEOUT_S) as resp:
+            return resp.status, resp.headers.get("x-amz-bucket-region")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("x-amz-bucket-region")
+    except (urllib.error.URLError, OSError):
+        return 0, None
+
+
+def _validate_and_sign(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
+    """One-time sign-mode validation for a remote: presign a ranged GET for
+    `rel` and issue it once, returning (url, verdict):
+      - (url, "ok")            S3 accepted the signature (200/206/404/416 — a
+                               404 means accepted, object merely absent);
+      - (None, "reject")       S3 definitively rejected it (403, or an
+                               uncorrectable 301/307/400) — sign mode can't
+                               serve this remote; caller settles on publiclink;
+      - (None, "inconclusive") network error / 5xx — transient; the caller must
+                               NOT pin a mode so sign is re-attempted later.
+    The trial region is passed via region_override and NEVER published to
+    _upstream_region until the signature is accepted — so a losing racer can't
+    erase a winner's adopted region. Self-corrects the region ONCE on a
+    301/307/400 carrying x-amz-bucket-region and re-signs (307 is S3's
+    newly-created-bucket redirect); on success writes _upstream_region[fs]
+    exactly once."""
+    derived = _s3_bucket_prefix_region(fs, cfg)
+    if derived is None:
+        return None, "reject"
+    with _upstream_lock:
+        region = _upstream_region.get(fs, derived[2])  # a prior correction wins
+    verdict = "inconclusive"
+    for attempt in (1, 2):
+        url = _s3_request_url(fs, rel, method="GET", region_override=region)
+        if url is None:
+            return None, "reject"
+        status, corrected = _sign_validation_status(url)
+        if status in (200, 206, 404, 416):
+            with _upstream_lock:
+                _upstream_region[fs] = region  # publish once, on success only
+            return url, "ok"
+        if (attempt == 1 and status in (301, 307, 400)
+                and corrected and corrected != region):
+            region = corrected
+            continue
+        # 403 / uncorrectable 301/307/400 (< 500) is a definite reject; a network
+        # error (status 0) or 5xx is inconclusive — don't let a transient blip
+        # permanently pin the remote to the slow link path (finding 7).
+        verdict = "reject" if 0 < status < 500 else "inconclusive"
+        break
+    return None, verdict
+
+
+def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
+    """Resolve/serve sign mode for one request with per-fs single-flight, so N
+    concurrent first reads issue ONE validation GET instead of N. Returns
+    (url, disposition):
+      - (url, "sign")  sign mode active/just-validated -> use this presigned URL
+                       (url may be None if creds rotated away mid-flight — the
+                       caller then demotes and falls through, finding 4);
+      - (None, "link") validated as a definite reject, OR another thread owns
+                       validation -> use the publiclink ladder for this request;
+                       it's safe to cache mode="link";
+      - (None, "retry") validation inconclusive or negative-cached -> use the
+                       publiclink ladder for THIS request but DON'T pin a mode,
+                       so sign is re-attempted once the window lapses (findings
+                       5 and 7)."""
+    now = time.monotonic()
+    with _upstream_lock:
+        if _upstream_mode.get(fs) == "sign":
+            active = True
+        else:
+            active = False
+            if _sign_neg_cache.get(fs, 0.0) > now:
+                return None, "retry"  # recently failed -> skip validation window
+        lock = _validation_locks.setdefault(fs, threading.Lock())
+    if active:
+        return _s3_request_url(fs, rel, method="GET"), "sign"
+    if not lock.acquire(blocking=False):
+        return None, "retry"  # another thread is validating; don't pile on
+    try:
+        with _upstream_lock:
+            if _upstream_mode.get(fs) == "sign":
+                won = False
+            elif _sign_neg_cache.get(fs, 0.0) > time.monotonic():
+                return None, "retry"
+            else:
+                won = True
+        if not won:  # a racer finished validating while we took the lock
+            return _s3_request_url(fs, rel, method="GET"), "sign"
+        url, verdict = _validate_and_sign(fs, rel, cfg)
+        if verdict == "ok":
+            with _upstream_lock:
+                _upstream_mode[fs] = "sign"
+                _sign_neg_cache.pop(fs, None)
+            return url, "sign"
+        # Failed: negative-cache so we don't re-run the blocking validation GETs
+        # on every request while no fallback is committed (rcd down); a definite
+        # reject settles on "link", an inconclusive one leaves the mode open.
+        with _upstream_lock:
+            _sign_neg_cache[fs] = time.monotonic() + _SIGN_NEG_TTL_S
+        return None, ("link" if verdict == "reject" else "retry")
+    finally:
+        lock.release()
+
+
 def _upstream_url_for(path: str) -> str | None:
     m, rel = _mount_for(path)
     if m is None:
@@ -2154,12 +2560,51 @@ def _upstream_url_for(path: str) -> str | None:
         mode = _upstream_mode.get(fs)
     if mode == "none":
         return None
-    if mode is None and _cannot_presign(_remote_config(fs.partition(":")[0])):
-        # Anonymous S3 or GCS can never presign — don't burn an rc call per
-        # remote learning that from publiclink's "unsupported signer type"
-        # error.
-        mode = "public"
+    name = fs.partition(":")[0]
+    # cache_mode stays True unless a sign validation was INCONCLUSIVE (transient)
+    # — then we serve this request via publiclink but don't pin a mode, so sign
+    # is retried after the negative-cache window (findings 5, 7).
+    cache_mode = True
+    if mode == "sign":
+        # In-process signing is microseconds and creds rotate, so sign mode
+        # mints per object and never caches a link.
+        signed = _s3_request_url(fs, rel, method="GET")
+        if signed is not None:
+            return signed
+        # None means creds stopped resolving (a rotated-away key). Demote to the
+        # link ladder for this and future requests rather than returning None
+        # per-request forever (finding 4); a remote change (invalidation) or a
+        # cred refresh re-derives the mode from scratch. (No live 403 detection
+        # of an expired-but-present token — out of scope.)
+        with _upstream_lock:
+            if _upstream_mode.get(fs) == "sign":
+                _upstream_mode[fs] = "link"
+        mode = "link"
     url = None
+    if mode is None:
+        cfg = _remote_config(name)
+        if _cannot_presign(cfg):
+            # Anonymous S3 or GCS can never presign — don't burn an rc call per
+            # remote learning that from publiclink's "unsupported signer type"
+            # error. CHECKED FIRST: an anonymous remote never resolves creds,
+            # never signs, never issues the validation GET; its mode is "public".
+            mode = "public"
+        elif _s3_signable(name, cfg):
+            # Credentialed plain-AWS S3: presign locally instead of a publiclink
+            # rc call per object. Single-flight validation the first time; on a
+            # definite reject fall to publiclink ("link"), on a transient
+            # failure fall to publiclink for this request but keep retrying sign.
+            signed, disp = _sign_mode_url(fs, rel, cfg)
+            if disp == "sign" and signed is not None:
+                return signed
+            if disp == "sign":  # active but creds vanished -> demote (finding 4)
+                with _upstream_lock:
+                    if _upstream_mode.get(fs) == "sign":
+                        _upstream_mode[fs] = "link"
+                mode = "link"
+            elif disp == "retry":
+                cache_mode = False
+            # disp == "link": mode stays None; publiclink below caches "link"
     if mode in (None, "link"):
         port = _live_rcd_port()
         if port is None:
@@ -2181,11 +2626,13 @@ def _upstream_url_for(path: str) -> str | None:
         # builder recognizes the remote returns a non-None URL, the rest None.
         url = _public_object_url(fs, rel) or _gcs_public_object_url(fs, rel)
         mode = "public" if url else "none"
+    # _link_ttl reads config (takes _upstream_lock), so resolve it first.
+    ttl = (_link_ttl(fs) if mode == "link" else 3600.0) if url is not None else 0.0
     with _upstream_lock:
-        _upstream_mode[fs] = mode
+        if cache_mode:
+            _upstream_mode[fs] = mode
         if url is not None:
-            ttl = _LINK_TTL_S if mode == "link" else 3600.0
-            _upstream_links[(fs, rel)] = (url, now + ttl)
+            _store_upstream_link((fs, rel), url, now + ttl, now)
     return url
 
 
@@ -3303,6 +3750,7 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
         os.rmdir(mp)
     remove_mount(cid)
     sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry
+    _invalidate_upstream_caches()  # the gone remote's memoized facts mustn't linger
     return {"ok": True}
 
 
@@ -3339,6 +3787,7 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
         return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+    _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}
 
 
@@ -3495,4 +3944,5 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
                              "automatically — delete it manually before "
                              "retrying)")
             return JSONResponse({"error": cred_err}, status_code=502)
+    _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}
