@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
 
 
@@ -2133,6 +2134,7 @@ def fresh_upstream():
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._gcs_token_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
     yield
@@ -2141,6 +2143,7 @@ def fresh_upstream():
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._gcs_token_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
 
@@ -3351,6 +3354,179 @@ def test_gcs_list_page_non_anonymous_raises_directlisterror(home, rcd, fresh_ups
     c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
     with pytest.raises(mounts_mod.DirectListError):
         mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+
+
+# -- credentialed GCS: bearer-authorized direct listings and probes ---------
+#
+# A non-anonymous GCS remote whose bearer token resolves (gcssign.resolve_token)
+# joins the direct fast path: the same JSON-API pager and HEAD/list probes, now
+# with an `Authorization: Bearer` header. Anonymous GCS stays byte-identical (no
+# header, resolver never consulted). resolve_token is stubbed so the tests need
+# no google-auth and pin the degrade contract.
+
+_CRED_GCS_CFG = {"type": "google cloud storage",
+                 "service_account_file": "/keys/sa.json"}
+
+
+def _stub_gcs_token(monkeypatch, *, token="TOKENVAL", expiry_offset=3600.0,
+                    calls=None):
+    def fake(cfg):
+        if calls is not None:
+            calls.append(cfg)
+        if token is None:
+            return None
+        return gcssign_mod.Token(token, time.time() + expiry_offset)
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token", fake)
+
+
+@pytest.fixture()
+def gcs_bearer_urlopen(monkeypatch):
+    """Capture (url, Authorization-header) for GCS API GETs and hand back canned
+    JSON. box['body'] is the reply; box['raises'] a per-call list of exceptions
+    (None entry = succeed). rc calls (loopback rcd) delegate to real urlopen."""
+    calls = []
+    box = {"body": _gcs_list_json()}
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        target = req if isinstance(req, str) else req.get_full_url()
+        if "storage.googleapis.com" not in target:
+            return real(req, timeout=timeout)
+        auth = None if isinstance(req, str) else req.get_header("Authorization")
+        calls.append((target, auth))
+        seq = box.get("raises")
+        if seq:
+            exc = seq.pop(0)
+            if exc is not None:
+                raise exc
+        return _FakeS3Resp(box["body"])
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    return calls, box
+
+
+def test_gcs_direct_capable_true_for_credentialed(home, rcd, fresh_upstream, monkeypatch):
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOK")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_gcs_direct_capable_false_when_token_absent(home, rcd, fresh_upstream, monkeypatch):
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token=None)
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    assert not mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_gcs_list_page_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, _box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    [(url, auth)] = calls
+    assert url.startswith(
+        "https://storage.googleapis.com/storage/v1/b/bucket/o?")
+    assert auth == "Bearer TOKENVAL"
+
+
+def test_gcs_head_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    box["body"] = b'{"size": "42", "updated": "2024-01-02T03:04:05Z"}'
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+    assert got.exists is True and got.size == 42
+    assert calls[-1][1] == "Bearer TOKENVAL"
+
+
+def test_gcs_has_children_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    box["body"] = _gcs_list_json(items=[("pre/x", 1, "2024-01-01T00:00:00Z")])
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/sub") is True
+    assert calls[-1][1] == "Bearer TOKENVAL"
+
+
+def test_gcs_anonymous_never_carries_bearer_or_consults_resolver(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    # INVARIANT: anonymous GCS is byte-identical — no Authorization header, and
+    # the token resolver is never consulted (mirrors the S3 anonymous guard).
+    calls, _box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    c = mounts_mod.add_mount("open", "gcs-open:bucket/pre")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    [(_url, auth)] = calls
+    assert auth is None
+    assert resolver_calls == []
+
+
+def test_gcs_list_page_401_reresolves_then_retries(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None),
+        None]  # first 401, retry succeeds
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    entries, _tok = mounts_mod.gcs_list_page(
+        mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 2  # one 401 + one retry
+    assert calls[1][1] == "Bearer TOK"
+    # capability probe cached the token; the 401 dropped it and forced one
+    # re-resolve for the retry.
+    assert len(resolver_calls) == 2
+
+
+def test_gcs_list_page_second_401_raises(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOK")
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None),
+        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None)]
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 2  # retried exactly once
+
+
+def test_invalidate_upstream_caches_clears_gcs_token_cache(fresh_upstream):
+    mounts_mod._gcs_token_cache["gcp"] = (
+        gcssign_mod.Token("T", time.time() + 999), time.time() + 999)
+    mounts_mod._invalidate_upstream_caches()
+    assert mounts_mod._gcs_token_cache == {}
+
+
+def test_gcs_bearer_token_ttl_tracks_expiry(fresh_upstream, monkeypatch):
+    # A short-lived token caches for < its expiry (minus slack); a long-lived
+    # one is capped at the _CRED_TTL_S re-read window.
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token",
+                        lambda cfg: gcssign_mod.Token("T", time.time() + 65))
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    _tok, exp = mounts_mod._gcs_token_cache["gcp"]
+    assert 0 < exp - time.monotonic() <= 10  # ~5s (65s - 60s slack)
+
+    mounts_mod._gcs_token_cache.clear()
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token",
+                        lambda cfg: gcssign_mod.Token("T", time.time() + 86400))
+    mounts_mod._gcs_bearer_token("gcp2", _CRED_GCS_CFG)
+    _tok2, exp2 = mounts_mod._gcs_token_cache["gcp2"]
+    assert abs((exp2 - time.monotonic()) - mounts_mod._CRED_TTL_S) < 2
+
+
+def test_gcs_bearer_token_caches_within_ttl(fresh_upstream, monkeypatch):
+    calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=calls)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    assert len(calls) == 1  # second call served from cache
 
 
 # -- unified direct-listing dispatchers (S3 + GCS) --------------------------

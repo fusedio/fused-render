@@ -44,7 +44,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import s3sign, storage
+from fused_render.shell import gcssign, s3sign, storage
 
 logger = logging.getLogger(__name__)
 
@@ -1520,6 +1520,9 @@ _LINK_TTL_S = 30 * 60.0
 _SIGN_EXPIRY_S = 15 * 60
 _SIGN_VALIDATE_TIMEOUT_S = 5.0
 _CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
+# Re-resolve a GCS bearer token this many seconds BEFORE its stated expiry, so a
+# read never hands GCS a token that expires mid-flight.
+_GCS_TOKEN_SLACK_S = 60.0
 # When sign-mode validation fails while no fallback can be committed (rcd down,
 # so publiclink can't cache a "link" mode either), negative-cache the failed
 # validation per fs for this window so every raw read doesn't re-run the 1-2
@@ -1531,10 +1534,11 @@ _UPSTREAM_LINKS_CAP = 4096  # bound the publiclink cache (sign mode never insert
 _SESSION_TOKEN_LINK_TTL_S = 5 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
-_upstream_mode: dict = {}   # fs -> "link" | "public" | "none" | "sign"
+_upstream_mode: dict = {}   # fs -> "link"|"public"|"none"|"sign"|"gsign"|"bearer"
 _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
 _upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
 _cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
+_gcs_token_cache: dict = {}  # remote name -> (gcssign.Token|None, monotonic exp)
 _sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
 _validation_locks: dict = {}  # fs -> Lock: per-fs single-flight for validation
 
@@ -1589,6 +1593,7 @@ def _invalidate_upstream_caches() -> None:
         _upstream_mode.clear()
         _upstream_region.clear()
         _cred_cache.clear()
+        _gcs_token_cache.clear()
         _upstream_links.clear()
         _sign_neg_cache.clear()
         _validation_locks.clear()
@@ -1795,6 +1800,48 @@ def _signable_credentials(name: str, cfg: dict | None):
     with _upstream_lock:
         _cred_cache[name] = (creds, now + _CRED_TTL_S)
     return creds
+
+
+def _gcs_bearer_token(name: str, cfg: dict | None):
+    """gcssign.resolve_token for a GCS remote, cached per name — the GCS analog
+    of _signable_credentials. TTL is the shorter of the _CRED_TTL_S re-read
+    window and the token's own remaining life minus _GCS_TOKEN_SLACK_S, so a
+    dying token is re-resolved before GCS starts rejecting it. A None result
+    (not credentialed / [cloud-auth] absent) is cached for _CRED_TTL_S so the
+    listing/probe hot path doesn't re-resolve per object. Returns a
+    gcssign.Token or None."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _gcs_token_cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    tok = gcssign.resolve_token(cfg)
+    if tok is None:
+        expiry = now + _CRED_TTL_S
+    else:
+        # token.expiry_epoch is wall-clock (time.time); map its remaining life
+        # onto the monotonic clock the cache keys off, clamped to [0, TTL].
+        remaining = tok.expiry_epoch - time.time() - _GCS_TOKEN_SLACK_S
+        expiry = now + max(0.0, min(_CRED_TTL_S, remaining))
+    with _upstream_lock:
+        _gcs_token_cache[name] = (tok, expiry)
+    return tok
+
+
+def _gcs_credentialed(name: str, cfg: dict | None) -> bool:
+    """True when the remote is GCS, NOT anonymous, and a bearer token resolves —
+    the class we can list/probe/read directly with an Authorization header
+    instead of crawling the serialized VFS serve. Anonymous GCS carries no
+    credentials and is handled first by _gcs_anonymous, so callers must check it
+    FIRST (an anonymous remote's token resolves to None, so this returns False
+    anyway); the guard keeps the resolver off the anonymous path. Token
+    resolution rides the cached _gcs_bearer_token so the predicate is hot-path
+    safe and can't disagree with the fetch helper within a _CRED_TTL_S window."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "google cloud storage":
+        return False
+    if _gcs_anonymous(cfg):
+        return False
+    return _gcs_bearer_token(name, cfg) is not None
 
 
 def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
@@ -2080,13 +2127,58 @@ _GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
 
 
 def gcs_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by an anonymous GCS remote — the one
-    GCS backend class gcs_list_page can enumerate unsigned. Mirrors
-    s3_direct_capable for the GCS side."""
+    """True when `path` is mount-backed by a GCS remote gcs_list_page can
+    enumerate directly — anonymous (unsigned) OR credentialed (a bearer token
+    resolves). Mirrors s3_direct_capable, which unions anonymous and signable.
+    _gcs_anonymous is tested first, so an anonymous remote never reaches the
+    token resolver."""
     m, _ = _mount_for(path)
     if m is None:
         return False
-    return _gcs_anonymous(_remote_config(m["remote"].partition(":")[0]) or {})
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    return _gcs_anonymous(cfg or {}) or _gcs_credentialed(name, cfg)
+
+
+def _gcs_get_direct(url: str, name: str, cfg: dict | None,
+                    timeout: float) -> bytes:
+    """Body bytes of a direct GCS listing/probe/metadata GET, shared by
+    gcs_list_page, _gcs_head and _gcs_has_children so they can't diverge on
+    transport (the GCS analog of _s3_get_direct's role).
+
+    ANONYMOUS remote: a plain urlopen on the unsigned URL — byte-identical to
+    the pre-existing code (no Authorization header, resolver never consulted).
+
+    CREDENTIALED remote: the same GET carrying `Authorization: Bearer <token>`.
+    On a 401/403 the cached token is dropped ONCE and re-resolved, then the GET
+    retried — a token that expired early self-heals; a second rejection
+    propagates. The token value is never logged and never placed in the URL.
+
+    Propagates HTTPError/URLError/OSError to the caller's error mapping (each
+    keeps its own DirectListError / DirectProbeError wrapping and 404 handling);
+    a missing token surfaces as URLError, which both callers already map."""
+    if _gcs_anonymous(cfg or {}):
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    for attempt in (1, 2):
+        tok = _gcs_bearer_token(name, cfg)
+        if tok is None:
+            raise urllib.error.URLError(f"{name}: no GCS bearer token")
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {tok.access_token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            # A stale/rotated token reads as 401/403; drop it and re-resolve
+            # once. Any other status (incl. a 404 the caller treats as a
+            # trustworthy negative) propagates unchanged.
+            if attempt == 1 and e.code in (401, 403):
+                with _upstream_lock:
+                    _gcs_token_cache.pop(name, None)
+                continue
+            raise
+    raise urllib.error.URLError(f"{name}: GCS bearer retry exhausted")
 
 
 def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
@@ -2123,9 +2215,14 @@ def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     if m is None:
         raise DirectListError(f"{path} is under no known mount")
     fs = m["remote"]
-    cfg = _remote_config(fs.partition(":")[0])
-    if not _gcs_anonymous(cfg or {}):
-        raise DirectListError(f"{path}: remote {fs!r} is not anonymous GCS")
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    # Anonymous FIRST: an anonymous remote never resolves a token, never sends
+    # an Authorization header — its request is the exact unsigned one today's
+    # code produces.
+    if not (_gcs_anonymous(cfg or {}) or _gcs_credentialed(name, cfg)):
+        raise DirectListError(
+            f"{path}: remote {fs!r} is not direct-listable GCS")
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectListError(f"{path}: remote {fs!r} carries no bucket")
@@ -2137,9 +2234,10 @@ def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
         params["pageToken"] = continuation
     query = urllib.parse.urlencode(params)
     url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    # _gcs_get_direct fetches unsigned (anonymous — byte-identical) or with a
+    # bearer header (credentialed), self-healing one stale-token 401/403.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         raise DirectListError(f"GCS list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
@@ -2342,6 +2440,8 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
     if rel == ".":
         return DirectHead(False, None, None)  # the mountpoint is not an object
     fs = m["remote"]
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
@@ -2349,9 +2449,10 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
     key = (store_prefix + "/" if store_prefix else "") + rel
     url = _GCS_OBJ_URL.format(bucket=bucket,
                               key=urllib.parse.quote(key, safe=""))
+    # Unsigned for anonymous (byte-identical), bearer-authorized for
+    # credentialed — the same transport the pager uses via _gcs_get_direct.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return DirectHead(False, None, None)  # trustworthy negative
@@ -2401,6 +2502,8 @@ def _s3_has_children(path: str, timeout: float) -> bool:
 def _gcs_has_children(path: str, timeout: float) -> bool:
     m, rel = _mount_for(path)
     fs = m["remote"]
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
@@ -2409,9 +2512,10 @@ def _gcs_has_children(path: str, timeout: float) -> bool:
     params = {"prefix": prefix, "maxResults": "1"}
     query = urllib.parse.urlencode(params)
     url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    # Unsigned for anonymous, bearer-authorized for credentialed (via
+    # _gcs_get_direct) — the same transport the pager and head probe use.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         raise DirectProbeError(f"GCS list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
