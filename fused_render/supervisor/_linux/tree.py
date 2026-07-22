@@ -26,9 +26,12 @@ Two mechanisms, both stdlib-only, selected by `FUSED_RENDER_LINUX_TREE_KILL`
       via `unshare --user --map-root-user --pid --fork --kill-child`. The server
       becomes pid 1 of a private pid namespace; the kernel reaps the entire
       namespace when that pid 1 dies, and `--kill-child` propagates a supervisor
-      kill down to it. Airtight (the true kill-on-crash analog), but depends on
-      unprivileged user namespaces being enabled on the host. `unshare` is
-      exec'd, not linked.
+      kill down to it. `--kill-child` is child-side PR_SET_PDEATHSIG (util-linux
+      sys-utils/unshare.c arms it in the forked child right after fork), i.e.
+      kernel-enforced: it fires however `unshare` dies, including SIGKILL — no
+      userspace signal handler is involved. Airtight (the true kill-on-crash
+      analog), but depends on unprivileged user namespaces being enabled on the
+      host. `unshare` is exec'd, not linked.
 
 This module is import-safe on non-Linux (prctl is only referenced inside the
 preexec_fn, which only runs when the backend is actually live on Linux).
