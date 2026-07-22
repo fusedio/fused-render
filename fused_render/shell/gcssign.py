@@ -129,6 +129,19 @@ def _is_gcs_signable_shape(cfg: dict | None) -> bool:
             and str(cfg.get("anonymous", "")).lower() != "true")
 
 
+def _is_sa_configured(cfg: dict | None) -> bool:
+    """Cheap config-SHAPE gate: a non-anonymous GCS remote that carries a
+    service-account key (inline `service_account_credentials` or a
+    `service_account_file` path). Says a remote is SIGNABLE-SHAPED without
+    reading/parsing the key or importing google-auth — so the caller can decide
+    the gsign-vs-bearer tier on shape and treat a momentarily-unresolvable signer
+    as transient (serve bearer now, keep retrying gsign) rather than as a
+    permanent token-only remote (finding 2)."""
+    return (_is_gcs_signable_shape(cfg)
+            and bool(cfg.get("service_account_credentials")
+                     or cfg.get("service_account_file")))
+
+
 def _sa_info(cfg: dict) -> dict | None:
     """The service-account key JSON for a remote, from rclone's inline
     `service_account_credentials` (a JSON string) or a `service_account_file`

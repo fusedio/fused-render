@@ -2233,15 +2233,19 @@ def test_upstream_url_public_gcs_when_anonymous(home, rcd, fresh_upstream):
 def test_upstream_url_non_anonymous_gcs_gets_no_public_url(home, rcd, fresh_upstream):
     import os
 
-    # A non-anonymous GCS remote whose publiclink fails has no reachable
-    # unsigned URL — the verdict is cached like the credentialed-S3 case.
+    # A non-anonymous GCS remote has no reachable unsigned URL. With no SA key
+    # configured it is token-only-SHAPED, so it pins the bearer mode WITHOUT ever
+    # calling publiclink (which always fails for GCS, PublicLink: False); with no
+    # resolvable token (google-auth absent) upstream_url_for stays None and the
+    # read falls through to the serve.
     rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
     rcd.responses["config/get"] = {"type": "google cloud storage"}
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
     f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
     assert mounts_mod.upstream_url_for(f) is None
     assert mounts_mod.upstream_url_for(f) is None
-    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+    assert mounts_mod._upstream_mode["gcp:bucket"] == "bearer"
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
 
 
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
@@ -3712,6 +3716,57 @@ def test_upstream_gsign_inconclusive_not_pinned(home, rcd, fresh_upstream, monke
     assert mounts_mod._sign_neg_cache.get("gcp:bucket", 0.0) > 0.0
 
 
+def test_upstream_gsign_retry_window_serves_bearer_without_pinning(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 1: while gsign validation is inconclusive (its retry window), a raw
+    # read must still be served via the bearer proxy in the SAME request even
+    # though the SA key parses (_gcs_signable True) — not dead-end at the serve —
+    # AND bearer must NOT be permanently pinned, so gsign is retried after the
+    # window.
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)      # SA key parses (signable)
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")   # ...and a token resolves
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (0, None))  # network error -> inconclusive
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None  # no 307 URL this window
+    assert "gcp:bucket/pre" not in mounts_mod._upstream_mode  # NOT pinned bearer
+    # ...but the bearer proxy serves the token in the same window (not a dead-end)
+    # even though the SA key still parses.
+    assert mounts_mod._gcs_signable("gcp", _CRED_GCS_CFG) is True
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_upstream_gsign_transient_signer_none_not_pinned_bearer(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 2: a signable-SHAPED remote (SA key configured) whose signer
+    # momentarily resolves None must NOT be pinned to bearer permanently — once
+    # the signer comes back the remote ends up in gsign mode, not stuck bearer.
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG  # carries service_account_file
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    _stub_gcs_signer(monkeypatch, present=False)  # SA file momentarily unreadable
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None            # served via bearer
+    assert "gcp:bucket/pre" not in mounts_mod._upstream_mode  # NOT pinned bearer
+    # Signer comes back and its cache expires: gsign now validates and pins.
+    _stub_gcs_signer(monkeypatch, present=True)
+    mounts_mod._gcs_signer_cache.clear()
+    url = mounts_mod.upstream_url_for(f)
+    assert url is not None and "X-Goog-Signature=" in url
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "gsign"
+
+
 def test_upstream_gsign_unpins_when_signer_vanishes(home, rcd, fresh_upstream, monkeypatch):
     import os
 
@@ -3736,8 +3791,10 @@ def test_upstream_gsign_unpins_when_signer_vanishes(home, rcd, fresh_upstream, m
 def test_upstream_bearer_token_only_gcs(home, rcd, fresh_upstream, monkeypatch):
     import os
 
-    rcd.responses["config/get"] = _CRED_GCS_CFG
-    _stub_gcs_signer(monkeypatch, present=False)  # no SA key -> not signable
+    # Token-only SHAPE: a non-anonymous GCS remote with no SA key configured
+    # (oauth / ADC). It pins bearer straight away (never signable) and a token
+    # resolves, so the bearer proxy serves.
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
     _stub_gcs_token(monkeypatch, token="TOKENVAL")
     c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
     f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")

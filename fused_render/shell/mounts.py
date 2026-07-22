@@ -2707,14 +2707,17 @@ def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
     non-GCS backend. Anonymous is checked FIRST, so it never consults the token
     resolver.
 
-    Signability is only a TIE-BREAKER: when _upstream_url_for has PINNED
-    mode="bearer" (a gsign validation reject, or a token-only remote), we serve
-    the bearer token regardless of whether an SA key also parses — the signed
-    URL was rejected, so the token is the only working fast path (finding 1).
-    Only when no bearer mode is pinned do we defer to _gcs_signable (that remote
-    307s via _upstream_url_for instead). The token value is never logged and
-    never placed in a URL. Never raises — this sits on the raw-proxy hot path
-    alongside upstream_url_for."""
+    Signability is only a TIE-BREAKER, and only when the remote is NOT already
+    on the bearer path. We serve the bearer token when EITHER (a) _upstream_url_for
+    has PINNED mode="bearer" (a gsign validation reject, or a token-only remote),
+    OR (b) the fs is in a gsign RETRY window (_gcs_bearer_fallback — validation
+    contended / neg-cached / signer momentarily unresolvable): in both cases the
+    signed-URL path can't serve THIS request, so the token is the only working
+    fast path (finding 1). Only when neither holds do we defer to _gcs_signable
+    (that remote 307s via _upstream_url_for instead) — without this the retry
+    window would dead-end at the slow serve despite a resolvable token. The token
+    value is never logged and never placed in a URL. Never raises — this sits on
+    the raw-proxy hot path alongside upstream_url_for."""
     try:
         m, rel = _mount_for(path)
         if m is None:
@@ -2724,14 +2727,14 @@ def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
         cfg = _remote_config(name)
         if _gcs_anonymous(cfg or {}):
             return None
+        now = time.monotonic()
         with _upstream_lock:
-            pinned_bearer = _upstream_mode.get(fs) == "bearer"
-        if not pinned_bearer and _gcs_signable(name, cfg):
-            return None  # 307-signable and not pinned to bearer -> not our path
-        if not _gcs_credentialed(name, cfg):
-            return None
+            on_bearer_path = (_upstream_mode.get(fs) == "bearer"
+                              or _gcs_bearer_fallback.get(fs, 0.0) > now)
+        if not on_bearer_path and _gcs_signable(name, cfg):
+            return None  # 307-signable and not on the bearer path -> not ours
         tok = _gcs_bearer_token(name, cfg)
-        if tok is None:
+        if tok is None:  # not credentialed / no [cloud-auth] -> fall to serve
             return None
         url = _gcs_object_url(fs, rel)
         if url is None:
@@ -2913,15 +2916,18 @@ def _gcs_validate_and_sign(fs: str, rel: str,
 
 def _gcs_sign_mode_url(fs: str, rel: str,
                        cfg: dict) -> tuple[str | None, str]:
-    """GCS gsign mode via the shared single-flight machine. The signer-capability
-    pre-check is hoisted BEFORE the machine — a remote with no SA key can't sign
-    at all, so it goes straight to the bearer path without touching the neg-cache
-    or validation lock. Otherwise mint a V4-signed URL when active/won, validate
-    once, and fall to the bearer proxy ("bearer") on a definite reject (see
-    _sign_single_flight)."""
+    """GCS gsign mode via the shared single-flight machine. Only called for a
+    SIGNABLE-SHAPED remote (an SA key is configured); the signer resolution is
+    hoisted BEFORE the machine. When the signer momentarily fails to resolve (SA
+    file transiently unreadable, [cloud-auth] absent this window) we return
+    "retry", NOT "bearer": a signable-shaped remote must serve bearer for THIS
+    request WITHOUT permanently pinning bearer, so gsign is retried after the
+    cache TTL (finding 2). Only a genuine validation reject pins bearer.
+    Otherwise mint a V4-signed URL when active/won, validate once, and fall to
+    the bearer proxy on a definite reject (see _sign_single_flight)."""
     signer = _gcs_signer(fs.partition(":")[0], cfg)
-    if signer is None:  # not signer-capable -> bearer path
-        return None, "bearer"
+    if signer is None:  # signer momentarily unresolvable -> transient, retry
+        return None, "retry"
     return _sign_single_flight(
         fs, "gsign",
         mint_fn=lambda: _gcs_signed_url(fs, rel),
@@ -3007,11 +3013,13 @@ def _upstream_url_for(path: str) -> str | None:
             elif disp == "retry":
                 cache_mode = False
             # disp == "link": mode stays None; publiclink below caches "link"
-        elif _gcs_signable(name, cfg):
-            # SA-key GCS: V4-sign locally instead of a publiclink rc call (which
-            # ALWAYS fails for GCS — rclone reports PublicLink: False). Single-
-            # flight validation the first time; on a definite reject or a
-            # transient failure fall to the bearer proxy for this request.
+        elif gcssign._is_sa_configured(cfg):
+            # SA-key-SHAPED GCS: V4-sign locally instead of a publiclink rc call
+            # (which ALWAYS fails for GCS — rclone reports PublicLink: False).
+            # The tier is decided on config SHAPE, not a live signer resolution,
+            # so a momentarily-unresolvable signer is treated as transient rather
+            # than pinning bearer permanently (finding 2). Single-flight
+            # validation the first time.
             signed, disp = _gcs_sign_mode_url(fs, rel, cfg)
             if disp == "gsign" and signed is not None:
                 return signed
@@ -3021,13 +3029,22 @@ def _upstream_url_for(path: str) -> str | None:
                         _upstream_mode.pop(fs, None)  # un-pin, re-derive next time
                 return None
             elif disp == "retry":
-                cache_mode = False  # serve via bearer now, keep retrying gsign
+                # Contended / neg-cached / signer momentarily unresolvable: serve
+                # bearer for THIS request but DON'T pin bearer, so gsign is
+                # retried after the window. Mark the fs so bearer_upstream_for
+                # serves the token now even though the SA key still parses —
+                # otherwise its tie-breaker would dead-end at the serve (finding
+                # 1). The mark expires with the neg-cache window.
+                cache_mode = False
                 mode = "bearer"
-            else:  # "bearer": definite reject -> bearer path
+                with _upstream_lock:
+                    _gcs_bearer_fallback[fs] = time.monotonic() + _SIGN_NEG_TTL_S
+            else:  # "bearer": definite validation reject -> pin bearer
                 mode = "bearer"
-        elif _gcs_credentialed(name, cfg):
-            # Token-only GCS (no SA key to sign with): bearer proxy. Skip the
-            # publiclink rc call — it always fails for GCS (PublicLink: False).
+        elif gcssign._is_gcs_signable_shape(cfg):
+            # Token-only-SHAPED GCS (no SA key to sign with): bearer proxy, safe
+            # to pin — no SA key will ever let it sign locally. Skip the
+            # publiclink rc call; it always fails for GCS (PublicLink: False).
             mode = "bearer"
     if mode == "bearer":
         with _upstream_lock:
