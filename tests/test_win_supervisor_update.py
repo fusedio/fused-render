@@ -167,9 +167,9 @@ def test_auto_check_installs_when_accepted(monkeypatch, paths):
 
 
 def test_auto_check_no_install_when_declined(monkeypatch, paths):
-    started, prompts, _ = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)  # IDNO
+    started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)  # IDNO
     update._auto_check(paths)
-    assert prompts == ["0.4.0"] and not started
+    assert prompts == ["0.4.0"] and not started and not alerts  # decline stays silent
 
 
 def test_auto_check_prompts_once_per_version(monkeypatch, paths):
@@ -239,30 +239,35 @@ def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
     with os.fdopen(fd, "wb") as f:
         f.write(b"installer bytes")
     sha256 = hashlib.sha256(b"installer bytes").hexdigest()
+    alerts = []
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
+    monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
 
     def boom(path):
         raise OSError("no shell association")
 
     monkeypatch.setattr(update.os, "startfile", boom)
+    # announce_errors=False (the background path) — a post-accept failure must
+    # still alert, since the user clicked Install.
     update._offer_install(paths, {"version": "0.4.0", "sha256": sha256}, announce_errors=False)
     # An accepted-but-failed launch must NOT be suppressed — it retries later.
-    assert "0.4.0" not in update._prompted_versions and not os.path.exists(staged)
+    assert "0.4.0" not in update._prompted_versions and not os.path.exists(staged) and alerts
 
 
 def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
     fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
     with os.fdopen(fd, "wb") as f:
         f.write(b"swapped after verify")
-    started = []
+    started, alerts = [], []
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
     monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path))
+    monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
     # manifest sha256 is for different bytes → the pre-launch re-verify fails.
     update._offer_install(paths, {"version": "0.4.0", "sha256": hashlib.sha256(b"original").hexdigest()},
                           announce_errors=False)
-    assert not started and not os.path.exists(staged)
+    assert not started and not os.path.exists(staged) and alerts  # refused + user told
 
 
 def test_sweep_skips_while_check_in_progress(monkeypatch, tmp_path):

@@ -142,11 +142,12 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
         if _sha256_file(installer) != manifest["sha256"]:
             raise ValueError("staged installer changed after verification")
         os.startfile(installer)
-    except (OSError, ValueError, http.client.HTTPException) as error:
+    except (OSError, ValueError) as error:
         paths.log(f"update launch failed: {error}")
         _discard(installer)
-        if announce_errors:
-            _alert("The update could not be started.", _MB_ICONERROR)
+        # Always alert (even on the background path): the user clicked Install,
+        # so a failure here must not look like a silent no-op.
+        _alert("The update could not be started.", _MB_ICONERROR)
 
 
 def _fetch_manifest() -> dict:
