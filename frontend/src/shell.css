@@ -1744,12 +1744,12 @@ body.embed .open-as-app-chip:hover {
   color: var(--fg);
 }
 
-/* ---- Server-status banner (bottom-left, backend health) ------------------ */
+/* ---- Server-status banner (bottom-right, backend health) ----------------- */
 /* Shown by ServerStatusBanner after two failed /api/config probes; the green
    -reconnected variant auto-dismisses. Sits above the listing toast (1000). */
 .server-status {
   position: fixed;
-  left: 16px;
+  right: 16px;
   bottom: 16px;
   z-index: 1100;
   max-width: 360px;

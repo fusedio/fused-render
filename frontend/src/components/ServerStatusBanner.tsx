@@ -1,4 +1,4 @@
-// Persistent server-health banner (bottom-left, above the listing toast).
+// Persistent server-health banner (bottom-right, above the listing toast).
 // Polls /api/config every 5s and shows a "server down" card after two
 // consecutive failures — the backend is a native app the user launches, so
 // the fix is always "reopen the app", not a CLI command. On recovery the
