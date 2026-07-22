@@ -3529,6 +3529,139 @@ def test_gcs_bearer_token_caches_within_ttl(fresh_upstream, monkeypatch):
     assert len(calls) == 1  # second call served from cache
 
 
+# -- tiered private-GCS raw reads: gsign 307 / bearer proxy -----------------
+
+
+class _StubGcsSigner:
+    """A signer object (gcssign.Signer.signer) that returns fixed bytes, so a
+    signed URL carries a real X-Goog-Signature without any crypto."""
+
+    def sign(self, data):
+        return b"\xab\xcd\xef"
+
+
+def _stub_gcs_signer(monkeypatch, present=True):
+    signer = (gcssign_mod.Signer(_StubGcsSigner(), "svc@p.iam.gserviceaccount.com")
+              if present else None)
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_signer", lambda cfg: signer)
+
+
+def test_upstream_gsign_signs_sa_key_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert url.startswith(
+        "https://storage.googleapis.com/bucket/pre/a/b.parquet?")
+    assert "X-Goog-Signature=" in url and "X-Goog-Algorithm=GOOG4-RSA-SHA256" in url
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "gsign"
+    assert mounts_mod._upstream_links == {}  # gsign never caches a link
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    # Validation is one-time per fs: a second object does not re-validate.
+    seen = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: seen.append(url) or (206, None))
+    mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "c.parquet"))
+    assert seen == []
+
+
+def test_upstream_gsign_403_falls_to_bearer_mode(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (403, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "bearer"
+    # publiclink is never attempted for a credentialed GCS remote.
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_upstream_gsign_inconclusive_not_pinned(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (0, None))  # network error -> inconclusive
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert "gcp:bucket" not in mounts_mod._upstream_mode  # not pinned -> retried
+    assert mounts_mod._sign_neg_cache.get("gcp:bucket", 0.0) > 0.0
+
+
+def test_upstream_gsign_demotes_when_signer_vanishes(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is not None
+    assert mounts_mod._upstream_mode["gcp:bucket"] == "gsign"
+    # SA key rotated away: gsign mints nothing, so demote to bearer cleanly.
+    _stub_gcs_signer(monkeypatch, present=False)
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod._upstream_mode["gcp:bucket"] == "bearer"
+
+
+def test_upstream_bearer_token_only_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=False)  # no SA key -> not signable
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    # No URL may carry the token -> upstream_url_for returns None, mode bearer.
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "bearer"
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
+    # publiclink (PublicLink: False for GCS) is never called.
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_bearer_upstream_none_for_anonymous_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="X", calls=resolver_calls)
+    c = mounts_mod.add_mount("open", "gcs-open:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.bearer_upstream_for(f) is None
+    assert resolver_calls == []  # anonymous never consults the token resolver
+
+
+def test_bearer_upstream_none_for_sa_key_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)  # signable -> 307 path, not bearer
+    _stub_gcs_token(monkeypatch, token="X")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.bearer_upstream_for(f) is None
+
+
+def test_bearer_upstream_none_outside_mounts(fresh_upstream):
+    assert mounts_mod.bearer_upstream_for("/somewhere/else.parquet") is None
+
+
 # -- unified direct-listing dispatchers (S3 + GCS) --------------------------
 
 

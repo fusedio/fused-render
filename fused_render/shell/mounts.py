@@ -1645,7 +1645,9 @@ def _cannot_presign(cfg: dict | None) -> bool:
     classes that can never presign (S3's "unsupported signer type noAuth", and
     anonymous GCS carrying no signing key at all) but reach their public
     objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
-    wasted publiclink rc call for either backend."""
+    wasted publiclink rc call for either backend. (Credentialed GCS is NOT here:
+    it presigns via gsign or reads via the bearer proxy — handled by the
+    _gcs_signable / _gcs_credentialed branches after this gate.)"""
     return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
 
 
@@ -1842,6 +1844,50 @@ def _gcs_credentialed(name: str, cfg: dict | None) -> bool:
     if _gcs_anonymous(cfg):
         return False
     return _gcs_bearer_token(name, cfg) is not None
+
+
+def _gcs_object_url(fs: str, rel: str) -> str | None:
+    """Plain path-style storage.googleapis.com URL for an object on a GCS remote
+    — the unsigned URL both the V4 signer and the bearer proxy start from. Same
+    key quoting as _gcs_public_object_url (default safe chars, '/' kept). None
+    when the fs carries no bucket. Unlike _gcs_public_object_url this does NOT
+    gate on anonymous — the caller has already decided the remote is signable /
+    credentialed."""
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        return None
+    bucket, prefix = derived
+    key = (prefix + "/" if prefix else "") + rel
+    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
+def _gcs_signable(name: str, cfg: dict | None) -> bool:
+    """True when the remote is a GCS remote whose SERVICE-ACCOUNT KEY resolves —
+    the class we can V4-sign locally (raw reads 307 to a signed URL). NOT
+    anonymous GCS (public URL) and NOT a token-only GCS remote (user oauth / ADC
+    tokens can't sign — those take the bearer proxy). Callers check
+    _gcs_anonymous FIRST."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "google cloud storage":
+        return False
+    if _gcs_anonymous(cfg):
+        return False
+    return gcssign.resolve_signer(cfg) is not None
+
+
+def _gcs_signed_url(fs: str, rel: str) -> str | None:
+    """A locally V4-signed GET URL for one object on an SA-key GCS remote, or
+    None when the remote isn't signer-capable (no SA key / [cloud-auth] absent)
+    or carries no bucket. Mints per object — gsign mode never caches links,
+    same rationale as S3 sign mode."""
+    cfg = _remote_config(fs.partition(":")[0])
+    signer = gcssign.resolve_signer(cfg)
+    if signer is None:
+        return None
+    url = _gcs_object_url(fs, rel)
+    if url is None:
+        return None
+    return gcssign.sign_url(url, method="GET", signer=signer.signer,
+                            sa_email=signer.sa_email, expires=_SIGN_EXPIRY_S)
 
 
 def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
@@ -2538,6 +2584,38 @@ def upstream_url_for(path: str) -> str | None:
         return None
 
 
+def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
+    """(plain object URL, {"Authorization": "Bearer <token>"}) for a mount-backed
+    file on a token-only credentialed GCS remote — the tier the server proxies
+    through the pooled client because no URL may carry the token. None for
+    anonymous GCS (reachable by public URL), SA-key GCS (307-signable via
+    _upstream_url_for), and every non-GCS backend. Anonymous and signable are
+    checked FIRST, so an anonymous remote never consults the token resolver.
+    The token value is never logged and never placed in a URL. Never raises —
+    this sits on the raw-proxy hot path alongside upstream_url_for."""
+    try:
+        m, rel = _mount_for(path)
+        if m is None:
+            return None
+        fs = m["remote"]
+        name = fs.partition(":")[0]
+        cfg = _remote_config(name)
+        if _gcs_anonymous(cfg or {}) or _gcs_signable(name, cfg):
+            return None
+        if not _gcs_credentialed(name, cfg):
+            return None
+        tok = _gcs_bearer_token(name, cfg)
+        if tok is None:
+            return None
+        url = _gcs_object_url(fs, rel)
+        if url is None:
+            return None
+        return url, {"Authorization": f"Bearer {tok.access_token}"}
+    except Exception:
+        logger.warning("bearer upstream for %r failed", path, exc_info=True)
+        return None
+
+
 def _sign_validation_status(url: str) -> tuple[int, str | None]:
     """Sign mode's one validation probe: a Range: bytes=0-0 GET against a
     presigned URL, redirects NOT followed (see _NoRedirect). Returns (HTTP
@@ -2651,6 +2729,84 @@ def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
         lock.release()
 
 
+def _gcs_validate_and_sign(fs: str, rel: str,
+                           signer) -> tuple[str | None, str]:
+    """One-time gsign-mode validation for a GCS remote — the slim, region-less
+    GCS analog of _validate_and_sign (there is no x-amz-bucket-region machinery,
+    so a single attempt suffices). Signs a GET for `rel` and probes it once via
+    _sign_validation_status (a Range: bytes=0-0 GET), returning (url, verdict):
+      - (url, "ok")            GCS accepted the signature (200/206/404/416);
+      - (None, "reject")       definitely rejected (403/401 or other <500) —
+                               gsign can't serve this remote;
+      - (None, "inconclusive") network error / 5xx — transient; caller must NOT
+                               pin a mode so gsign is re-attempted later."""
+    url = _gcs_object_url(fs, rel)
+    if url is None:
+        return None, "reject"
+    signed = gcssign.sign_url(url, method="GET", signer=signer.signer,
+                              sa_email=signer.sa_email, expires=_SIGN_EXPIRY_S)
+    status, _region = _sign_validation_status(signed)
+    if status in (200, 206, 404, 416):
+        return signed, "ok"
+    return None, ("reject" if 0 < status < 500 else "inconclusive")
+
+
+def _gcs_sign_mode_url(fs: str, rel: str,
+                       cfg: dict) -> tuple[str | None, str]:
+    """Resolve/serve gsign mode for one request with per-fs single-flight — the
+    GCS analog of _sign_mode_url. Returns (url, disposition):
+      - (url, "gsign")  gsign active/just-validated -> use this signed URL (url
+                        may be None if the signer rotated away mid-flight — the
+                        caller then demotes and falls through);
+      - (None, "bearer") validated as a definite reject, OR the remote isn't
+                        signer-capable, OR another thread owns validation -> the
+                        caller serves this request via the bearer proxy; safe to
+                        cache mode="bearer";
+      - (None, "retry") validation inconclusive or negative-cached -> bearer for
+                        THIS request but DON'T pin a mode, so gsign is
+                        re-attempted once the window lapses."""
+    now = time.monotonic()
+    with _upstream_lock:
+        if _upstream_mode.get(fs) == "gsign":
+            active = True
+        else:
+            active = False
+            if _sign_neg_cache.get(fs, 0.0) > now:
+                return None, "retry"
+        lock = _validation_locks.setdefault(fs, threading.Lock())
+    if active:
+        return _gcs_signed_url(fs, rel), "gsign"
+    if not lock.acquire(blocking=False):
+        return None, "retry"  # another thread is validating; don't pile on
+    try:
+        with _upstream_lock:
+            if _upstream_mode.get(fs) == "gsign":
+                won = False
+            elif _sign_neg_cache.get(fs, 0.0) > time.monotonic():
+                return None, "retry"
+            else:
+                won = True
+        if not won:  # a racer finished validating while we took the lock
+            return _gcs_signed_url(fs, rel), "gsign"
+        signer = gcssign.resolve_signer(cfg)
+        if signer is None:  # not signer-capable -> bearer path
+            return None, "bearer"
+        signed, verdict = _gcs_validate_and_sign(fs, rel, signer)
+        if verdict == "ok":
+            with _upstream_lock:
+                _upstream_mode[fs] = "gsign"
+                _sign_neg_cache.pop(fs, None)
+            return signed, "gsign"
+        # Failed: negative-cache so we don't re-run the blocking validation GET
+        # on every request; a definite reject settles on bearer, an
+        # inconclusive one leaves the mode open (retry).
+        with _upstream_lock:
+            _sign_neg_cache[fs] = time.monotonic() + _SIGN_NEG_TTL_S
+        return None, ("bearer" if verdict == "reject" else "retry")
+    finally:
+        lock.release()
+
+
 def _upstream_url_for(path: str) -> str | None:
     m, rel = _mount_for(path)
     if m is None:
@@ -2684,6 +2840,24 @@ def _upstream_url_for(path: str) -> str | None:
             if _upstream_mode.get(fs) == "sign":
                 _upstream_mode[fs] = "link"
         mode = "link"
+    if mode == "gsign":
+        # SA-key GCS: mint a V4 signed URL per object (in-process signing is
+        # microseconds and creds rotate), never caching a link — same rationale
+        # as S3 sign mode.
+        signed = _gcs_signed_url(fs, rel)
+        if signed is not None:
+            return signed
+        # Signer rotated away -> demote to the bearer path (the token may still
+        # resolve); the server calls bearer_upstream_for when we return None.
+        with _upstream_lock:
+            if _upstream_mode.get(fs) == "gsign":
+                _upstream_mode[fs] = "bearer"
+        return None
+    if mode == "bearer":
+        # Token-only GCS: no URL may carry the token, so there is nothing to
+        # 307 to — the server proxies via bearer_upstream_for. Returning None
+        # here routes it there.
+        return None
     url = None
     if mode is None:
         cfg = _remote_config(name)
@@ -2709,6 +2883,33 @@ def _upstream_url_for(path: str) -> str | None:
             elif disp == "retry":
                 cache_mode = False
             # disp == "link": mode stays None; publiclink below caches "link"
+        elif _gcs_signable(name, cfg):
+            # SA-key GCS: V4-sign locally instead of a publiclink rc call (which
+            # ALWAYS fails for GCS — rclone reports PublicLink: False). Single-
+            # flight validation the first time; on a definite reject or a
+            # transient failure fall to the bearer proxy for this request.
+            signed, disp = _gcs_sign_mode_url(fs, rel, cfg)
+            if disp == "gsign" and signed is not None:
+                return signed
+            if disp == "gsign":  # active but signer vanished -> demote (find. 4)
+                with _upstream_lock:
+                    if _upstream_mode.get(fs) == "gsign":
+                        _upstream_mode[fs] = "bearer"
+                mode = "bearer"
+            elif disp == "retry":
+                cache_mode = False  # serve via bearer now, keep retrying gsign
+                mode = "bearer"
+            else:  # "bearer": definite reject -> bearer path
+                mode = "bearer"
+        elif _gcs_credentialed(name, cfg):
+            # Token-only GCS (no SA key to sign with): bearer proxy. Skip the
+            # publiclink rc call — it always fails for GCS (PublicLink: False).
+            mode = "bearer"
+    if mode == "bearer":
+        with _upstream_lock:
+            if cache_mode:
+                _upstream_mode[fs] = "bearer"
+        return None  # no URL may carry the token; server uses bearer_upstream_for
     if mode in (None, "link"):
         port = _live_rcd_port()
         if port is None:

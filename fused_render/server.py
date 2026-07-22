@@ -1777,7 +1777,7 @@ def _proxy_raw(upstream: str, request: Request):
 
 
 async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
-                            request: Request):
+                            request: Request, extra_headers: dict | None = None):
     """Opt-in pooled proxy of a store's *signed* URL (TASK F). Same forwarded
     header set (_PROXY_HEADERS) and status pass-through (206/416/404) as
     _proxy_raw, but streams through a shared keep-alive httpx pool so a burst of
@@ -1785,11 +1785,17 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
     TLS handshake + redirect round trip per block. Returns None only when the
     store is unreachable at the connection level — the caller then falls back to
     the 307 so the read still completes. Async (awaited on the event loop): the
-    pool is the point, and to_thread'ing a sync client would defeat it."""
+    pool is the point, and to_thread'ing a sync client would defeat it.
+
+    `extra_headers` (e.g. an Authorization: Bearer for the private-GCS bearer
+    tier) is merged onto the OUTBOUND request after the Range header — it never
+    appears on the response, so a token there is never echoed to the client."""
     headers = {}
     rng = request.headers.get("range")
     if rng:
         headers["Range"] = rng
+    if extra_headers:
+        headers.update(extra_headers)
     req = client.build_request(request.method, upstream, headers=headers)
     try:
         r = await client.send(req, stream=True)
@@ -3337,6 +3343,22 @@ def create_app(start_dir: str) -> FastAPI:
                         if resp is not None:
                             return resp
                     return RedirectResponse(direct, status_code=307)
+                # No 307-able URL: a token-only private GCS remote can't hand
+                # the client a signed link (the bearer token must never appear
+                # in a URL), so proxy the bytes through the pooled client with
+                # the Authorization header attached out-of-band — regardless of
+                # the &pooled flag, there is nothing to redirect to. A proxy
+                # that can't reach the store returns None and falls through to
+                # the serve exactly as the pooled path does.
+                bearer = await asyncio.to_thread(
+                    shell_mounts.bearer_upstream_for, path)
+                if bearer is not None:
+                    url, extra_headers = bearer
+                    resp = await _proxy_raw_pooled(
+                        request.app.state.pooled_client, url, request,
+                        extra_headers=extra_headers)
+                    if resp is not None:
+                        return resp
             # Not redirected (browser, warm read, or no direct URL): proxy the
             # bytes. Guard non-files here — a directory proxied through rclone
             # serve comes back as a 200 HTML listing, so resolve shape before
