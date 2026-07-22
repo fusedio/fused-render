@@ -147,6 +147,12 @@ class DesktopPaths:
             "CLAUDE_CONFIG_DIR": str(self.state / "claude"),
             "FUSED_RENDER_DUCKDB_EXTENSION_DIR": str(tools_dir / "duckdb_extensions"),
             "FUSED_RENDER_DUCKDB_TEMP_DIR": str(self.cache / "duckdb" / "temp"),
+            # rclone is bundled in the payload next to the interpreter (and uv),
+            # so mounts need zero user setup. mounts.rclone_bin() prefers this
+            # over PATH guessing; a dev checkout without the file falls through.
+            "FUSED_RENDER_RCLONE_BIN": str(
+                tools_dir / ("rclone.exe" if sys.platform == "win32" else "rclone")
+            ),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),
         }

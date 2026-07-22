@@ -81,6 +81,26 @@ mkdir -p "$DUCKDB_EXTENSIONS"
 UV_BIN="$(command -v uv)"
 cp "$UV_BIN" "$PYTHON_ROOT/bin/uv"
 
+# --- rclone bundled next to uv (same as the Windows installer / macOS DMG) ---
+# The supervisor's child_environment points FUSED_RENDER_RCLONE_BIN here, so
+# mounts work with zero user setup. Pinned release, published-SHA256 verified.
+# fusermount3 stays HOST-provided: it is a setuid binary and cannot ship in an
+# AppImage — a host without FUSE gets the existing "rclone/mount unavailable"
+# error surface (mounts.py already branches to a plain FUSE mount off-darwin).
+log "Bundling rclone"
+require sha256sum
+RCLONE_VERSION="1.69.1"
+RCLONE_SHA256="231841f8d8029ae6cfca932b601b3b50d0e2c3c2cb9da3166293f1c3eae7d79c"
+RCLONE_ZIP="$BUILD_DIR/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+[ -f "$RCLONE_ZIP" ] || curl -fsSL \
+    "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
+    -o "$RCLONE_ZIP"
+echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
+    || { echo "rclone zip SHA256 mismatch" >&2; exit 1; }
+"$BUNDLE_PYTHON" -I -c \
+    "import zipfile, sys, shutil, os; z = zipfile.ZipFile(sys.argv[1]); member = [n for n in z.namelist() if n.endswith('/rclone')][0]; dst = open(sys.argv[2], 'wb'); shutil.copyfileobj(z.open(member), dst); dst.close(); os.chmod(sys.argv[2], 0o755)" \
+    "$RCLONE_ZIP" "$PYTHON_ROOT/bin/rclone"
+
 # --- prune caches ------------------------------------------------------------
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
@@ -89,6 +109,7 @@ log "Smoke tests"
 "$BUNDLE_PYTHON" -I -c \
     "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, pystray; print('bundle imports ok')"
 "$PYTHON_ROOT/bin/uv" --version
+"$PYTHON_ROOT/bin/rclone" version
 SMOKE_REQUEST="$(mktemp)"
 SMOKE_PROBE="$(mktemp --suffix=.py)"
 trap 'rm -f "$SMOKE_REQUEST" "$SMOKE_PROBE"' EXIT

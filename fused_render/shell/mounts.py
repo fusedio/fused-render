@@ -741,11 +741,20 @@ def _live_rcd_port() -> int | None:
 def rclone_bin() -> str | None:
     """Path to the rclone binary to run.
 
-    Inside the packaged macOS app (py2app sets sys.frozen = "macosx_app",
-    same check as deploy.py's _setup_cli_hint) rclone is bundled at
-    Contents/Resources/bin/rclone (D103, build_dmg.sh) so mounts work with
-    zero user setup — no brew/apt install, no PATH dependency. Outside the
-    bundle (dev checkout, Linux) fall back to the system rclone."""
+    Resolution order:
+    1. An explicit FUSED_RENDER_RCLONE_BIN pointing at a real file. The
+       supervisor's child_environment sets this in packaged builds (Windows
+       installer, Linux AppImage) to the rclone bundled in the payload — env
+       beats path-guessing per platform, so mounts work with zero user setup.
+       A stale/wrong override (not a file) is ignored so it can't shadow a real
+       rclone in a dev checkout.
+    2. The packaged macOS app bundle (py2app sets sys.frozen = "macosx_app",
+       same check as deploy.py's _setup_cli_hint): rclone at
+       Contents/Resources/bin/rclone (D103, build_dmg.sh).
+    3. The system rclone on PATH (dev checkout, or a host that installed it)."""
+    override = os.environ.get("FUSED_RENDER_RCLONE_BIN")
+    if override and os.path.isfile(override):
+        return override
     if getattr(sys, "frozen", None) == "macosx_app":
         contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
         bundled = os.path.join(contents, "Resources", "bin", "rclone")

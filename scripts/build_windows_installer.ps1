@@ -173,6 +173,30 @@ Get-ChildItem -Path (Join-Path $PythonRoot "Scripts") -Filter "*.exe" -ErrorActi
     Remove-Item -Force
 Copy-Item -LiteralPath $Uv -Destination (Join-Path $PythonRoot "uv.exe") -Force
 
+# rclone bundled next to uv.exe (the supervisor's child_environment points
+# FUSED_RENDER_RCLONE_BIN here) so mounts work with zero user setup, matching
+# the macOS DMG and the Linux AppImage. Pinned release, published-SHA256
+# verified (same discipline as the pinned zig download above).
+$RcloneVersion = "1.69.1"
+$RcloneSha256 = "0803f06d721e5399e48794538294099b195d51cc84b27bdb67e131096ad93ee4"
+$rcloneZip = Join-Path $BuildDir "rclone-v$RcloneVersion-windows-amd64.zip"
+if (-not (Test-Path -LiteralPath $rcloneZip)) {
+    Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
+}
+$actualSha = (Get-FileHash -LiteralPath $rcloneZip -Algorithm SHA256).Hash.ToLower()
+if ($actualSha -ne $RcloneSha256) {
+    throw "rclone zip SHA256 mismatch: expected $RcloneSha256, got $actualSha"
+}
+$rcloneExtract = Join-Path $BuildDir "rclone-extract"
+Remove-Item -LiteralPath $rcloneExtract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $rcloneZip -DestinationPath $rcloneExtract -Force
+$rcloneExe = Get-ChildItem -Path $rcloneExtract -Recurse -Filter "rclone.exe" |
+    Select-Object -First 1
+if (-not $rcloneExe) {
+    throw "rclone.exe not found in the downloaded zip"
+}
+Copy-Item -LiteralPath $rcloneExe.FullName -Destination (Join-Path $PythonRoot "rclone.exe") -Force
+
 $icons = Join-Path $StageDir "assets\icons"
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "fused_render\assets\fused-render.ico") -Destination $icons -Force
@@ -188,6 +212,7 @@ Invoke-Native $bundlePython @(
     "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, win32job, win32pipe, win32security, win32event, win32process, pystray; print('bundle imports ok')"
 )
 Invoke-Native (Join-Path $PythonRoot "uv.exe") @("--version")
+Invoke-Native (Join-Path $PythonRoot "rclone.exe") @("version")
 $probe = Join-Path $env:TEMP "fused_render_installer_probe_$PID.py"
 $request = Join-Path $env:TEMP "fused_render_installer_request_$PID.json"
 try {
