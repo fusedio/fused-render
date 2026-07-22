@@ -2715,6 +2715,20 @@ def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
         return None
 
 
+def invalidate_gcs_token(path: str) -> None:
+    """Drop the cached bearer token + credential object for `path`'s remote so
+    the next bearer_upstream_for re-resolves from config. Called by the raw read
+    proxy when a bearer GET comes back 401/403 (the token went stale/rotated),
+    so a single retry can self-heal. Never raises — sits on the raw hot path."""
+    try:
+        m, _ = _mount_for(path)
+        if m is None:
+            return
+        _invalidate_gcs_creds(m["remote"].partition(":")[0])
+    except Exception:
+        logger.warning("invalidate gcs token for %r failed", path, exc_info=True)
+
+
 def _sign_validation_status(url: str) -> tuple[int, str | None]:
     """Sign mode's one validation probe: a Range: bytes=0-0 GET against a
     presigned URL, redirects NOT followed (see _NoRedirect). Returns (HTTP

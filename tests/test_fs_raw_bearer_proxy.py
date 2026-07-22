@@ -46,6 +46,9 @@ class _FakeStore:
     def __init__(self, blob: bytes):
         self.blob = blob
         self.auth_seen = []
+        # When set, any Authorization != accept_auth is answered 401 (models a
+        # stale/rotated token that self-heals only after re-resolution).
+        self.accept_auth = None
         store = self
 
         class H(BaseHTTPRequestHandler):
@@ -53,7 +56,11 @@ class _FakeStore:
                 pass
 
             def do_GET(self):
-                store.auth_seen.append(self.headers.get("Authorization"))
+                auth = self.headers.get("Authorization")
+                store.auth_seen.append(auth)
+                if store.accept_auth is not None and auth != store.accept_auth:
+                    self.send_error(401)
+                    return
                 rng = self.headers.get("Range")
                 if rng and rng.startswith("bytes="):
                     s, _, e = rng[6:].partition("-")
@@ -143,3 +150,63 @@ def test_bearer_token_never_in_response(cold_bearer):
     for name, value in r.headers.items():
         assert _TOKEN not in value
         assert name.lower() != "authorization"
+
+
+# ----------------------------------- fix 4: 401 self-heal + serve fallback
+
+
+@pytest.fixture()
+def cold_bearer_dynamic(home, monkeypatch):
+    """Like cold_bearer, but the bearer token is mutable and
+    invalidate_gcs_token swaps it — so a 401 on the stale token can self-heal
+    after one re-resolve. Yields (client, file_path, store, holder)."""
+    import fused_render.shell.prefetch as prefetch
+    monkeypatch.setattr(prefetch, "schedule", lambda *a, **k: None)
+    monkeypatch.setattr(prefetch, "is_done", lambda *a, **k: False)
+
+    store = _FakeStore(b"GCS-PRIVATE-" + bytes(range(48)) * 4)
+    holder = {"tok": "STALE"}
+
+    mp = _mount("gcp", read_only=False)
+    from fused_render.shell import storage
+    storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
+    monkeypatch.setattr(mounts_mod, "upstream_url_for", lambda p: None)
+    monkeypatch.setattr(
+        mounts_mod, "bearer_upstream_for",
+        lambda p: (store.url, {"Authorization": f"Bearer {holder['tok']}"}))
+    # Re-resolution rotates the token to a fresh value.
+    monkeypatch.setattr(mounts_mod, "invalidate_gcs_token",
+                        lambda p: holder.update(tok="FRESH"))
+
+    file_path = os.path.join(mp, "data.parquet")
+    try:
+        with TestClient(create_app(start_dir=str(home))) as client:
+            yield client, file_path, store, holder
+    finally:
+        store.close()
+
+
+def test_bearer_401_reresolves_and_retries(cold_bearer_dynamic):
+    client, file_path, store, holder = cold_bearer_dynamic
+    store.accept_auth = "Bearer FRESH"  # only the re-resolved token works
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 200
+    assert r.content == store.blob
+    # First attempt used the stale token (401), retry used the fresh one.
+    assert store.auth_seen == ["Bearer STALE", "Bearer FRESH"]
+    for _name, value in r.headers.items():
+        assert "STALE" not in value and "FRESH" not in value
+
+
+def test_bearer_persistent_401_falls_through_to_serve(cold_bearer_dynamic, monkeypatch):
+    client, file_path, store, holder = cold_bearer_dynamic
+    # Re-resolution does NOT fix it (token stays rejected): after one retry the
+    # bearer proxy gives up and the read falls through to the serve. The serve
+    # base is unreachable (127.0.0.1:1), so the handler answers 503 rather than
+    # leaking the 401 to the client.
+    store.accept_auth = "Bearer NEVER"
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 503  # mount serve unavailable, not a 401
+    assert len(store.auth_seen) == 2  # exactly one retry

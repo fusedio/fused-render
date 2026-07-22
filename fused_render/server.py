@@ -1790,6 +1790,19 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
     `extra_headers` (e.g. an Authorization: Bearer for the private-GCS bearer
     tier) is merged onto the OUTBOUND request after the Range header — it never
     appears on the response, so a token there is never echoed to the client."""
+    r = await _pooled_send(client, upstream, request, extra_headers)
+    if r is None:
+        return None
+    return await _pooled_response(r, request)
+
+
+async def _pooled_send(client: httpx.AsyncClient, upstream: str,
+                       request: Request, extra_headers: dict | None = None):
+    """Send one pooled, streamed request to `upstream` (mirroring the request's
+    method + Range, plus `extra_headers`) and return the OPEN httpx response, or
+    None on a connection-level error. The caller must either build a response
+    from it (_pooled_response, which closes it) or aclose it — so a peek-then-
+    retry path (bearer 401/403) can inspect the status and drop the response."""
     headers = {}
     rng = request.headers.get("range")
     if rng:
@@ -1798,9 +1811,15 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
         headers.update(extra_headers)
     req = client.build_request(request.method, upstream, headers=headers)
     try:
-        r = await client.send(req, stream=True)
+        return await client.send(req, stream=True)
     except httpx.HTTPError:
         return None
+
+
+async def _pooled_response(r, request: Request):
+    """Build the client-facing response from an open httpx response `r`,
+    forwarding only _PROXY_HEADERS and passing the status through. Closes `r`
+    (immediately for HEAD, after streaming for GET)."""
     out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
     if request.method == "HEAD":
         await r.aclose()
@@ -1814,6 +1833,43 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
             await r.aclose()
 
     return StreamingResponse(body(), status_code=r.status_code, headers=out)
+
+
+async def _proxy_raw_bearer(request: Request, path: str):
+    """Proxy a cold private-GCS read through the pooled client with the bearer
+    Authorization header attached out-of-band (the token must never reach the
+    client in a URL/redirect). On a 401/403 — a stale/rotated token — invalidate
+    the cached credential, re-resolve, and retry ONCE; a second 401/403 (or a
+    None bearer resolution) returns None so the caller falls through to the
+    serve. Returns None (never an error status) when the fast path can't serve,
+    so the read still completes via the serve. The open upstream response is
+    always closed before a retry."""
+    from fused_render.shell import mounts as shell_mounts
+
+    bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
+    if bearer is None:
+        return None
+    # Only now (a real bearer remote) is the pooled client needed — reaching for
+    # it before the bearer check would break the non-bearer fall-through paths.
+    client = request.app.state.pooled_client
+    url, extra_headers = bearer
+    r = await _pooled_send(client, url, request, extra_headers)
+    if r is None:
+        return None
+    if r.status_code in (401, 403):
+        await r.aclose()
+        await asyncio.to_thread(shell_mounts.invalidate_gcs_token, path)
+        bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
+        if bearer is None:
+            return None
+        url, extra_headers = bearer
+        r = await _pooled_send(client, url, request, extra_headers)
+        if r is None:
+            return None
+        if r.status_code in (401, 403):
+            await r.aclose()
+            return None  # still denied -> fall through to the serve
+    return await _pooled_response(r, request)
 
 
 def _stat_or_none(path: str) -> os.stat_result | None:
@@ -3347,18 +3403,13 @@ def create_app(start_dir: str) -> FastAPI:
                 # the client a signed link (the bearer token must never appear
                 # in a URL), so proxy the bytes through the pooled client with
                 # the Authorization header attached out-of-band — regardless of
-                # the &pooled flag, there is nothing to redirect to. A proxy
-                # that can't reach the store returns None and falls through to
-                # the serve exactly as the pooled path does.
-                bearer = await asyncio.to_thread(
-                    shell_mounts.bearer_upstream_for, path)
-                if bearer is not None:
-                    url, extra_headers = bearer
-                    resp = await _proxy_raw_pooled(
-                        request.app.state.pooled_client, url, request,
-                        extra_headers=extra_headers)
-                    if resp is not None:
-                        return resp
+                # the &pooled flag, there is nothing to redirect to. A stale
+                # token (401/403) self-heals via one re-resolve + retry inside
+                # _proxy_raw_bearer; a still-denied or unreachable read returns
+                # None and falls through to the serve.
+                resp = await _proxy_raw_bearer(request, path)
+                if resp is not None:
+                    return resp
             # Not redirected (browser, warm read, or no direct URL): proxy the
             # bytes. Guard non-files here — a directory proxied through rclone
             # serve comes back as a 200 HTML listing, so resolve shape before
