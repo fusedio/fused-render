@@ -86,3 +86,10 @@ def open_uri(uri: str) -> None:
 
 def open_url(url: str) -> None:
     os.startfile(url)
+
+
+def open_default_apps() -> None:
+    """Open the OS 'default apps' settings — the ms-settings page on Windows.
+    Owned by the backend (not hardcoded in platform-neutral core) so each OS
+    supplies its own honest behavior; Linux has no cross-desktop equivalent."""
+    os.startfile("ms-settings:defaultapps")

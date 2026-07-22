@@ -15,6 +15,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Python interpreter-identity vars stripped from a child's inherited env: a
+# bundled child interpreter must never latch onto its parent's home/path.
+# Single-sourced here (this module owns the child env-block contract) and shared
+# by both backends — the POSIX plain merge below, and _win32/job.py's
+# case-folding variant, which imports this same tuple.
+STRIPPED_ENV_VARS = (
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
+    "PYTHONINSPECT",
+)
+
+
+def environment_block(overrides: dict[str, str] | None) -> dict[str, str]:
+    """Complete child environment: the current process env minus the Python
+    interpreter-identity vars (STRIPPED_ENV_VARS), plus `overrides`. This is the
+    plain, case-sensitive merge the POSIX backends use directly; the Windows
+    backend needs a case-folding variant (env var names are case-insensitive
+    there) and keeps its own in _win32/job.py, built on the same tuple."""
+    env = {name: value for name, value in os.environ.items() if name not in STRIPPED_ENV_VARS}
+    env.update(overrides or {})
+    return env
+
+
 def _xdg_home(env_var: str, default_rel: str) -> Path:
     """An XDG base dir: `$env_var` if it is set to an absolute path, else
     `~/default_rel`. The spec says a relative value must be ignored."""

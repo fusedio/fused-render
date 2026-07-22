@@ -32,6 +32,11 @@ pytest.importorskip("fcntl")
 from fused_render.supervisor import protocol
 from fused_render.supervisor._linux import instance
 
+try:
+    from fused_render.supervisor import core as _core
+except Exception:  # noqa: BLE001 - no supervisor backend on this OS (e.g. darwin)
+    _core = None
+
 _MAGIC = 0x3153_5246
 
 
@@ -253,6 +258,26 @@ def test_acquire_treats_would_block_as_secondary(runtime, monkeypatch):
 
     monkeypatch.setattr(instance.fcntl, "flock", blocked)
     assert isinstance(instance.acquire(names), instance.SecondaryInstance)
+
+
+@pytest.mark.skipif(_core is None, reason="supervisor core backend unavailable")
+def test_run_reports_open_rejected_on_surrogate_path(runtime, monkeypatch):
+    # A non-UTF-8 (surrogateescape) argv path cannot be encoded into the
+    # UTF-16-LE wire frame — protocol.encode raises UnicodeEncodeError, which
+    # escapes SecondaryInstance.send's OSError guard. core.run must treat that
+    # like a CommandRejected for an Open (rejection dialog), not let it become
+    # the generic "could not start" fatal, since a healthy primary IS running.
+    surrogate_path = b"/tmp/\xe9.csv".decode("utf-8", "surrogateescape")
+
+    class _EncodingSecondary(instance.SecondaryInstance):
+        def send(self, command, timeout):
+            protocol.encode(command)  # raises UnicodeEncodeError for this path
+
+    monkeypatch.setattr(instance, "acquire", lambda names: _EncodingSecondary(_names(runtime)))
+    reported: list[str] = []
+    monkeypatch.setattr(_core.ui, "report_open_rejected", reported.append)
+    _core.run(protocol.Open(surrogate_path))
+    assert reported == [surrogate_path]
 
 
 def test_serve_thread_exits_after_shutdown_for_upgrade(served):

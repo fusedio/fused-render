@@ -26,6 +26,29 @@ def test_parent_changed_detects_reparenting_not_only_pid1():
     assert tree._parent_changed(expected_ppid=4321, current_ppid=4321) is False
 
 
+# -- shared child env-block contract ---------------------------------------
+
+def test_stripped_env_vars_are_single_sourced():
+    # The tuple is defined once in paths; the Linux tree keeper imports it (via
+    # environment_block) rather than duplicating it — pin both the contents and
+    # the no-duplication so a drift between backends can't creep back in.
+    assert set(paths_mod.STRIPPED_ENV_VARS) == {
+        "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT",
+    }
+    assert tree.environment_block is paths_mod.environment_block
+
+
+def test_environment_block_strips_identity_vars_and_applies_overrides(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/evil")
+    monkeypatch.setenv("PYTHONHOME", "/evil")
+    monkeypatch.setenv("KEEP_ME", "yes")
+    env = paths_mod.environment_block({"OVERRIDE": "1"})
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert env["KEEP_ME"] == "yes"
+    assert env["OVERRIDE"] == "1"
+
+
 # -- XDG path layout -------------------------------------------------------
 
 def _clear_xdg(monkeypatch):
@@ -200,6 +223,17 @@ def test_xdg_open_treats_timeout_as_success(monkeypatch):
     # succeeding, not failing — a timeout must NOT raise.
     monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: _FakePopen(hang=True))
     ui.open_url("https://example.invalid")  # returns without raising
+
+
+def test_open_default_apps_raises_on_linux(monkeypatch):
+    # No cross-desktop Linux equivalent of ms-settings:defaultapps: the backend
+    # method must raise so core's _safe_call logs an honest no-op, instead of
+    # core hardcoding the Windows-only URI (a silent dead menu item).
+    called = []
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: called.append(a))
+    with pytest.raises(OSError):
+        ui.open_default_apps()
+    assert called == []  # never shelled out to xdg-open with a Windows URI
 
 
 def test_alert_is_a_no_op_when_tk_cannot_start(monkeypatch):

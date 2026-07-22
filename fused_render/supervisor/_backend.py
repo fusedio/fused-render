@@ -17,7 +17,8 @@ Re-exported surface (each backend must provide all of it):
                    PrimaryInstance/SecondaryInstance, Request, CommandRejected
   startup        — autostart toggle: enabled(), set_enabled(bool)
   ui             — native dialogs/shell: alert, confirm_exit,
-                   report_open_rejected, pick_file, open_path, open_uri, open_url
+                   report_open_rejected, pick_file, open_path, open_uri,
+                   open_url, open_default_apps
   SPAWN_ERRORS   — extra exception types `Job.spawn` may raise, beyond the
                    stdlib OSError/RuntimeError/TimeoutError the run loop handles
 """

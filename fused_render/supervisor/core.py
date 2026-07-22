@@ -62,8 +62,13 @@ def run(initial: protocol.Command) -> None:
     if isinstance(inst, instance.SecondaryInstance):
         try:
             inst.send(initial, 75.0)
-        except instance.CommandRejected:
-            # A healthy primary answered and rejected the specific command.
+        except (instance.CommandRejected, UnicodeEncodeError):
+            # CommandRejected: a healthy primary answered and rejected the
+            # specific command. UnicodeEncodeError: a non-UTF-8 (surrogateescape)
+            # argv path cannot be encoded into the UTF-16-LE wire frame at all
+            # (raised inside protocol.encode, past SecondaryInstance.send's
+            # OSError guard) — a healthy primary IS running, only this path is
+            # unusable. Both mean the app is up; only this command failed.
             # Only an Open is safe to swallow this way (e.g. a bad/missing
             # forwarded path — the app did start, just not that file): report
             # it accurately instead of the generic "could not start" dialog.
@@ -165,7 +170,7 @@ def _event_loop(
             elif action is tray.TrayAction.OPEN_LOGS:
                 _safe_call(paths, lambda: ui.open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
-                _safe_call(paths, lambda: ui.open_uri("ms-settings:defaultapps"))
+                _safe_call(paths, ui.open_default_apps)
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
 

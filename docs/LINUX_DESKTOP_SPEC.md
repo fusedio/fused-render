@@ -83,9 +83,11 @@ Decision section below.
 
 - **Tray fragmentation.** Stock GNOME has no StatusNotifier host → no icon.
   Accepted: everything is reachable via the browser and a re-launch. The tray's
-  "Default apps..." item opens `ms-settings:defaultapps`, a Windows-only URI; on
-  Linux `xdg-open` rejects it and the action is a logged no-op (the run loop's
-  `_safe_call` swallows it). Cosmetic, not a launch blocker.
+  "Default apps..." item opens an OS "default apps" settings page on Windows
+  (`ms-settings:defaultapps`); there is no cross-desktop Linux equivalent, so
+  `_linux/ui.open_default_apps` raises `OSError` and the action is a logged
+  no-op (the run loop's `_safe_call` swallows it). Cosmetic, not a launch
+  blocker.
 - **Template daemons that outlive the server on purpose** (rclone rcd serves,
   tile daemons started with `start_new_session`): under either tree-kill they die
   with the app, matching Windows Job semantics but differing from dev/macOS.

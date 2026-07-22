@@ -93,6 +93,14 @@ def open_url(url: str) -> None:
     _xdg_open(url)
 
 
+def open_default_apps() -> None:
+    """No cross-desktop Linux equivalent of the Windows ms-settings:defaultapps
+    page, so raise: core's _safe_call logs an honest no-op
+    (docs/LINUX_DESKTOP_SPEC.md). Kept as a real backend method so core stays
+    platform-neutral and never hardcodes a Windows-only URI."""
+    raise OSError("default-apps settings has no cross-desktop Linux equivalent")
+
+
 def _xdg_open(target: str) -> None:
     # Detached like server.py's reveal handler, but the exit code is checked:
     # a failed open must raise OSError so core's _safe_open answers status 1

@@ -45,6 +45,11 @@ import shutil
 import subprocess
 from pathlib import Path
 
+# The child env-block contract (strip interpreter-identity vars, merge
+# overrides) is platform-neutral and owned by supervisor.paths; import it
+# rather than duplicate the merge and the stripped-var tuple here.
+from fused_render.supervisor.paths import environment_block
+
 # prctl(2) option; PR_SET_PDEATHSIG delivers a signal to the caller when its
 # parent thread dies. 1 is stable ABI (linux/prctl.h), safe to hardcode.
 _PR_SET_PDEATHSIG = 1
@@ -52,30 +57,12 @@ _PR_SET_PDEATHSIG = 1
 _MECHANISM_ENV = "FUSED_RENDER_LINUX_TREE_KILL"
 _DEFAULT_MECHANISM = "pgroup"
 
-_STRIPPED_ENV_VARS = (
-    "PYTHONHOME",
-    "PYTHONPATH",
-    "PYTHONSTARTUP",
-    "PYTHONUSERBASE",
-    "PYTHONINSPECT",
-)
-
 
 def _mechanism() -> str:
     value = (os.environ.get(_MECHANISM_ENV) or _DEFAULT_MECHANISM).strip().lower()
     if value not in ("pgroup", "namespace"):
         return _DEFAULT_MECHANISM
     return value
-
-
-def environment_block(overrides: dict[str, str] | None) -> dict[str, str]:
-    """Complete child environment: the current process env minus the Python
-    interpreter-identity vars (a bundled child interpreter must not inherit its
-    parent's home/path), plus `overrides`. Same contract as the Windows
-    backend's environment_block, minus the case-folding Windows env needs."""
-    env = {name: value for name, value in os.environ.items() if name not in _STRIPPED_ENV_VARS}
-    env.update(overrides or {})
-    return env
 
 
 def _parent_changed(expected_ppid: int, current_ppid: int) -> bool:
