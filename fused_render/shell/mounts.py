@@ -44,7 +44,7 @@ from datetime import datetime
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.shell import s3sign, storage
+from fused_render.shell import gcssign, s3sign, storage
 
 logger = logging.getLogger(__name__)
 
@@ -1520,6 +1520,15 @@ _LINK_TTL_S = 30 * 60.0
 _SIGN_EXPIRY_S = 15 * 60
 _SIGN_VALIDATE_TIMEOUT_S = 5.0
 _CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
+# The botocore provider chain (SSO/IMDS/credential_process) is expensive to walk
+# — a black-holed IMDS probe stalls ~1-2s — so its self-refreshing credentials
+# object is cached far longer than the 60s frozen-credential window; the object
+# refreshes STS itself near expiry, and this bound just lets a fresh `aws sso
+# login` be picked up without a restart.
+_BOTOCORE_CHAIN_TTL_S = 10 * 60.0
+# Re-resolve a GCS bearer token this many seconds BEFORE its stated expiry, so a
+# read never hands GCS a token that expires mid-flight.
+_GCS_TOKEN_SLACK_S = 60.0
 # When sign-mode validation fails while no fallback can be committed (rcd down,
 # so publiclink can't cache a "link" mode either), negative-cache the failed
 # validation per fs for this window so every raw read doesn't re-run the 1-2
@@ -1531,12 +1540,72 @@ _UPSTREAM_LINKS_CAP = 4096  # bound the publiclink cache (sign mode never insert
 _SESSION_TOKEN_LINK_TTL_S = 5 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
-_upstream_mode: dict = {}   # fs -> "link" | "public" | "none" | "sign"
+_upstream_mode: dict = {}   # fs -> "link"|"public"|"none"|"sign"|"gsign"|"bearer"
 _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
 _upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
 _cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
+_botocore_creds_cache: dict = {}  # remote name -> (botocore creds obj|None, exp)
+_gcs_token_cache: dict = {}  # remote name -> (gcssign.Token|None, monotonic exp)
+_gcs_creds_cache: dict = {}  # remote name -> (google-auth creds obj|None, mono exp)
+_gcs_signer_cache: dict = {}  # remote name -> (gcssign.Signer|None, monotonic exp)
 _sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
 _validation_locks: dict = {}  # fs -> Lock: per-fs single-flight for validation
+# fs -> monotonic expiry: a signable-shaped GCS remote whose gsign is in its
+# retry window (contended validation, neg-cached, or a momentarily-unresolvable
+# signer) should serve THIS request via the bearer proxy rather than dead-end at
+# the serve — so bearer_upstream_for treats the remote as bearer-eligible while
+# this is live even though its SA key still parses (finding 1).
+_gcs_bearer_fallback: dict = {}
+# Per-(cache, name) single-flight locks: a cold miss on any upstream resolver
+# runs the (network-blocking) source ONCE across N concurrent readers instead of
+# each thread independently walking it. Keyed by the cache's id() so every
+# per-name cache shares this one registry (the GCS token refresh also serializes
+# through it, giving the shared google-auth credential object a single refresher,
+# finding 7).
+_cache_locks: dict = {}
+
+# Registries so an invalidator can't miss a cache. _NAME_CACHES are the per-
+# remote-name resolver caches; _GCS_NAME_CACHES the subset _invalidate_gcs_creds
+# drops (the GCS token + credential object); _UPSTREAM_MAPS the per-fs / per-
+# remote state that full invalidation also clears.
+_GCS_NAME_CACHES = (_gcs_token_cache, _gcs_creds_cache)
+_NAME_CACHES = (_cred_cache, _botocore_creds_cache, _gcs_signer_cache,
+                *_GCS_NAME_CACHES)
+_UPSTREAM_MAPS = (_upstream_cfg, _upstream_mode, _upstream_region,
+                  _upstream_links, _sign_neg_cache, _validation_locks,
+                  _gcs_bearer_fallback)
+
+
+def _cached_resolve(cache: dict, name: str, ttl, resolve):
+    """Per-name TTL cache with per-name single-flight, shared by every upstream
+    resolver cache. `cache` maps name -> (value, monotonic expiry); on a miss,
+    exactly ONE thread (per name) runs `resolve()` while the rest wait on the
+    per-name lock and then read the value it cached — so N concurrent cold reads
+    don't each walk a black-holed IMDS probe / OAuth+ADC round trip.
+
+    `ttl` is the lifetime in seconds, or a callable value->seconds when the
+    lifetime depends on the resolved value (the GCS bearer token runs to its own
+    expiry). A None result IS cached — the negative caching is load-bearing (it
+    bounds how often an absent [cloud-auth] / black-holed metadata endpoint is
+    re-probed). Double-checked: the cache is re-read after the lock is acquired
+    so a racer that already resolved is reused, not re-resolved. resolve() runs
+    WITHOUT _upstream_lock held, so it may call other _cached_resolve caches."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+        lock = _cache_locks.setdefault((id(cache), name), threading.Lock())
+    with lock:
+        with _upstream_lock:
+            hit = cache.get(name)
+            if hit is not None and hit[1] > time.monotonic():
+                return hit[0]
+        value = resolve()
+        ttl_s = ttl(value) if callable(ttl) else ttl
+        with _upstream_lock:
+            cache[name] = (value, time.monotonic() + ttl_s)
+        return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1585,13 +1654,9 @@ def _invalidate_upstream_caches() -> None:
     are rare, user-initiated events, and for anonymous remotes it only forces a
     cheap re-derivation of the public mode."""
     with _upstream_lock:
-        _upstream_cfg.clear()
-        _upstream_mode.clear()
-        _upstream_region.clear()
-        _cred_cache.clear()
-        _upstream_links.clear()
-        _sign_neg_cache.clear()
-        _validation_locks.clear()
+        for d in (*_UPSTREAM_MAPS, *_NAME_CACHES):
+            d.clear()
+        _cache_locks.clear()
 
 
 def _store_upstream_link(key, url: str, expiry: float, now: float) -> None:
@@ -1640,7 +1705,9 @@ def _cannot_presign(cfg: dict | None) -> bool:
     classes that can never presign (S3's "unsupported signer type noAuth", and
     anonymous GCS carrying no signing key at all) but reach their public
     objects by a plain unsigned URL instead. Lets _upstream_url_for skip the
-    wasted publiclink rc call for either backend."""
+    wasted publiclink rc call for either backend. (Credentialed GCS is NOT here:
+    it presigns via gsign or reads via the bearer proxy — handled by the
+    _gcs_signable / _gcs_credentialed branches after this gate.)"""
     return cfg is not None and (_anonymous_s3(cfg) or _gcs_anonymous(cfg))
 
 
@@ -1768,33 +1835,170 @@ def _gcs_public_object_url(fs: str, rel: str) -> str | None:
     (storage.googleapis.com/<bucket>/<key>), so there is no region and no
     dotted-bucket rule. Credentialed or non-GCS remotes return None (their
     objects aren't reachable unsigned). Pure string building once
-    _remote_config has memoized the config — no rc round trip per object."""
+    _remote_config has memoized the config — no rc round trip per object. Gates
+    on anonymous, then delegates the URL construction to _gcs_object_url so the
+    path-style layout and key quoting live in one place (C2)."""
     cfg = _remote_config(fs.partition(":")[0])
     if not _gcs_anonymous(cfg or {}):
         return None
-    derived = _gcs_bucket_prefix(fs)
-    if derived is None:
-        return None
-    bucket, prefix = derived
-    key = (prefix + "/" if prefix else "") + rel
-    # Match _public_object_url's key quoting (same default safe chars).
-    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+    return _gcs_object_url(fs, rel)
+
+
+def _botocore_chain(name: str, cfg: dict | None):
+    """Cached botocore provider-chain credentials OBJECT per remote. The chain
+    walk (which can stall ~1-2s on a black-holed IMDS probe) runs at most once
+    per _BOTOCORE_CHAIN_TTL_S; the cached object self-refreshes STS near expiry,
+    so frozen_from_botocore on it is cheap between walks. Cleared by
+    _invalidate_upstream_caches. None (also cached) when the chain yields
+    nothing. Single-flight per name via _cached_resolve so a black-holed IMDS
+    probe is walked once, not once per concurrent cold reader (finding 10)."""
+    return _cached_resolve(_botocore_creds_cache, name, _BOTOCORE_CHAIN_TTL_S,
+                           lambda: s3sign.resolve_botocore_chain(cfg))
 
 
 def _signable_credentials(name: str, cfg: dict | None):
     """resolve_credentials for a remote, cached per name for _CRED_TTL_S so a
     rotated ~/.aws/credentials or an STS refresh is picked up without a
     restart, but the env/file reads aren't paid per object on the sign hot
-    path. None (also cached) when nothing resolves."""
-    now = time.monotonic()
+    path. The botocore rung rides the LONGER-lived, self-refreshing chain-object
+    cache (_botocore_chain), so the expensive provider-chain walk isn't repeated
+    every _CRED_TTL_S — only get_frozen_credentials runs per window. None (also
+    cached) when nothing resolves. Single-flight per name via _cached_resolve
+    (finding 10)."""
+    def resolve():
+        creds = s3sign.resolve_static_credentials(cfg)
+        if creds is None and s3sign.needs_botocore(cfg):
+            creds = s3sign.frozen_from_botocore(_botocore_chain(name, cfg))
+        return creds
+    return _cached_resolve(_cred_cache, name, _CRED_TTL_S, resolve)
+
+
+def _gcs_credentials(name: str, cfg: dict | None):
+    """The google-auth credential OBJECT for a GCS remote, cached per name for
+    _CRED_TTL_S so the sources (SA key parse / rclone oauth / ADC + GCE metadata
+    probe) aren't re-walked per object. The cached object is self-refreshing, so
+    token_from_credentials renews it near expiry WITHOUT rebuilding the chain.
+    Re-derived from config only once per window (picks up a rotated key), and
+    dropped by _invalidate_upstream_caches / invalidate_gcs_token. None (also
+    cached) when nothing resolves. Single-flight per name via _cached_resolve so
+    the ADC/GCE-metadata probe is walked once, not per concurrent cold reader,
+    and the shared credential object gets a single refresher (findings 7, 10)."""
+    return _cached_resolve(_gcs_creds_cache, name, _CRED_TTL_S,
+                           lambda: gcssign.resolve_credentials(cfg))
+
+
+def _gcs_bearer_token(name: str, cfg: dict | None):
+    """A bearer access Token for a GCS remote, cached per name — the GCS analog
+    of _signable_credentials. Derives the token from the cached (self-refreshing)
+    credential object, so a live token is reused for its whole life instead of
+    forcing an OAuth round trip per _CRED_TTL_S window. The token cache runs to
+    expiry minus _GCS_TOKEN_SLACK_S (re-resolved before GCS would reject it); a
+    None result (not credentialed / [cloud-auth] absent) is cached for
+    _CRED_TTL_S. Returns a gcssign.Token or None. Single-flight per name via
+    _cached_resolve — the one refresher requirement of finding 7 (the shared
+    google-auth credential's refresh() runs under this per-name lock)."""
+    def resolve():
+        creds = _gcs_credentials(name, cfg)
+        return (gcssign.token_from_credentials(creds)
+                if creds is not None else None)
+
+    def ttl(tok):
+        if tok is None:
+            return _CRED_TTL_S  # None (not credentialed / no [cloud-auth])
+        # token.expiry_epoch is wall-clock (time.time); map its remaining life
+        # onto the monotonic clock _cached_resolve keys off. Runs to expiry-slack
+        # (not clamped to _CRED_TTL_S) — the self-refreshing creds object picks
+        # up rotation on the next _CRED_TTL_S re-derivation.
+        return max(0.0, tok.expiry_epoch - time.time() - _GCS_TOKEN_SLACK_S)
+
+    return _cached_resolve(_gcs_token_cache, name, ttl, resolve)
+
+
+def _invalidate_gcs_creds(name: str) -> None:
+    """Drop a remote's cached bearer token AND credential object so the next
+    resolution re-derives from config (forces a fresh token). Used by the direct
+    fetch helper and the bearer read proxy on a 401 (stale/rotated token). Clears
+    exactly the GCS token + credential-object caches (the registry keeps this in
+    lockstep with what those caches are)."""
     with _upstream_lock:
-        hit = _cred_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    creds = s3sign.resolve_credentials(cfg)
-    with _upstream_lock:
-        _cred_cache[name] = (creds, now + _CRED_TTL_S)
-    return creds
+        for cache in _GCS_NAME_CACHES:
+            cache.pop(name, None)
+
+
+def _gcs_credentialed(name: str, cfg: dict | None) -> bool:
+    """True when the remote is GCS, NOT anonymous, and a bearer token resolves —
+    the class we can list/probe/read directly with an Authorization header
+    instead of crawling the serialized VFS serve. Anonymous GCS carries no
+    credentials and is handled first by _gcs_anonymous, so callers must check it
+    FIRST (an anonymous remote's token resolves to None, so this returns False
+    anyway); the guard keeps the resolver off the anonymous path. Token
+    resolution rides the cached _gcs_bearer_token so the predicate is hot-path
+    safe and can't disagree with the fetch helper within a _CRED_TTL_S window."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "google cloud storage":
+        return False
+    if _gcs_anonymous(cfg):
+        return False
+    return _gcs_bearer_token(name, cfg) is not None
+
+
+def _gcs_object_url(fs: str, rel: str) -> str | None:
+    """Plain path-style storage.googleapis.com URL for an object on a GCS remote
+    — the unsigned URL both the V4 signer and the bearer proxy start from. Same
+    key quoting as _gcs_public_object_url (default safe chars, '/' kept). None
+    when the fs carries no bucket. Unlike _gcs_public_object_url this does NOT
+    gate on anonymous — the caller has already decided the remote is signable /
+    credentialed."""
+    derived = _gcs_bucket_prefix(fs)
+    if derived is None:
+        return None
+    bucket, prefix = derived
+    key = (prefix + "/" if prefix else "") + rel
+    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+
+
+def _gcs_signer(name: str, cfg: dict | None):
+    """gcssign.resolve_signer for a remote, cached per name for _CRED_TTL_S — the
+    signer analog of _signable_credentials / _gcs_bearer_token. Without this the
+    SA key file is re-opened, re-parsed and re-deserialized on EVERY gsign read
+    (once per object) — and a transient open() error would otherwise stick as a
+    permanent demotion; the cache bounds that window to one TTL. None (also
+    cached) when the remote has no signer-capable SA key. Returns a
+    gcssign.Signer or None. Single-flight per name via _cached_resolve
+    (finding 10)."""
+    return _cached_resolve(_gcs_signer_cache, name, _CRED_TTL_S,
+                           lambda: gcssign.resolve_signer(cfg))
+
+
+def _gcs_signable(name: str, cfg: dict | None) -> bool:
+    """True when the remote is a GCS remote whose SERVICE-ACCOUNT KEY resolves —
+    the class we can V4-sign locally (raw reads 307 to a signed URL). NOT
+    anonymous GCS (public URL) and NOT a token-only GCS remote (user oauth / ADC
+    tokens can't sign — those take the bearer proxy). Callers check
+    _gcs_anonymous FIRST. Rides the cached _gcs_signer so the predicate is
+    hot-path safe."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "google cloud storage":
+        return False
+    if _gcs_anonymous(cfg):
+        return False
+    return _gcs_signer(name, cfg) is not None
+
+
+def _gcs_signed_url(fs: str, rel: str) -> str | None:
+    """A locally V4-signed GET URL for one object on an SA-key GCS remote, or
+    None when the remote isn't signer-capable (no SA key / [cloud-auth] absent /
+    a transient key-read error) or carries no bucket. The signer rides the
+    cached _gcs_signer (no per-object key re-parse); mints per object — gsign
+    mode never caches links, same rationale as S3 sign mode."""
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    signer = _gcs_signer(name, cfg)
+    if signer is None:
+        return None
+    url = _gcs_object_url(fs, rel)
+    if url is None:
+        return None
+    return gcssign.sign_url(url, method="GET", signer=signer.signer,
+                            sa_email=signer.sa_email, expires=_SIGN_EXPIRY_S)
 
 
 def _s3_request_url(fs: str, rel: str, *, method: str = "GET",
@@ -1957,17 +2161,29 @@ S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page
-    can enumerate directly — anonymous (unsigned) OR signable (locally
-    presigned). Lets the server pick the fast path without re-deriving the
-    predicates. _anonymous_s3 is tested first, so an anonymous remote never
-    reaches the credential resolver."""
+    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page can
+    enumerate directly — anonymous (unsigned) OR credentialed-SHAPED (static keys
+    present, or ambient auth opted into via env_auth/profile/shared_credentials).
+
+    A PURE config-shape check: it resolves NO credentials (finding 12). The
+    conditions/stat callers gate on this unbudgeted, and a live provider-chain
+    walk here (~1-2s on a black-holed IMDS) stalled fs/stat and fs/conditions.
+    Actual credential resolution happens inside the budgeted fetch paths
+    (s3_list_page / direct_head), which fall back to rc on failure — so a
+    credentialed-shaped remote whose creds don't resolve costs one cheap direct
+    attempt, not a stalled predicate."""
     m, _ = _mount_for(path)
     if m is None:
         return False
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
-    return _anonymous_s3(cfg) or _s3_signable(name, cfg)
+    if _anonymous_s3(cfg):
+        return True
+    if not _s3_signable_shape(cfg):  # plain AWS S3, no custom endpoint
+        return False
+    assert cfg is not None
+    return bool(cfg.get("access_key_id") and cfg.get("secret_access_key")) \
+        or s3sign.needs_botocore(cfg)
 
 
 def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
@@ -2080,13 +2296,64 @@ _GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
 
 
 def gcs_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by an anonymous GCS remote — the one
-    GCS backend class gcs_list_page can enumerate unsigned. Mirrors
-    s3_direct_capable for the GCS side."""
+    """True when `path` is mount-backed by a Google Cloud Storage remote
+    gcs_list_page can enumerate directly — anonymous (unsigned) OR credentialed
+    (bearer). Credentialed covers SA-key, oauth-token and ADC-only remotes alike;
+    an ADC-only remote carries no config marker, so the shape check is permissive
+    — ANY GCS remote qualifies.
+
+    A PURE config-shape check that resolves NO token (finding 12): a live
+    ADC/GCE-metadata probe here stalled the unbudgeted conditions/stat callers.
+    Actual token resolution happens inside the budgeted fetch paths
+    (gcs_list_page / direct_head), which fall back to rc on failure."""
     m, _ = _mount_for(path)
     if m is None:
         return False
-    return _gcs_anonymous(_remote_config(m["remote"].partition(":")[0]) or {})
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    return isinstance(cfg, dict) and cfg.get("type") == "google cloud storage"
+
+
+def _gcs_get_direct(url: str, name: str, cfg: dict | None,
+                    timeout: float) -> bytes:
+    """Body bytes of a direct GCS listing/probe/metadata GET, shared by
+    gcs_list_page, _gcs_head and _gcs_has_children so they can't diverge on
+    transport (the GCS analog of _s3_get_direct's role).
+
+    ANONYMOUS remote: a plain urlopen on the unsigned URL — byte-identical to
+    the pre-existing code (no Authorization header, resolver never consulted).
+
+    CREDENTIALED remote: the same GET carrying `Authorization: Bearer <token>`.
+    On a 401 (stale/rotated token) the cached credential is dropped ONCE and
+    re-resolved, then the GET retried — a token that expired early self-heals; a
+    second 401 propagates. A 403 is a permission denial WITH a valid token (a
+    per-object/prefix IAM policy), so it propagates immediately — re-resolving
+    the token wouldn't help and would churn the credential per denied probe. The
+    token value is never logged and never placed in the URL.
+
+    Propagates HTTPError/URLError/OSError to the caller's error mapping (each
+    keeps its own DirectListError / DirectProbeError wrapping and 404 handling);
+    a missing token surfaces as URLError, which both callers already map."""
+    if _gcs_anonymous(cfg or {}):
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    for attempt in (1, 2):
+        tok = _gcs_bearer_token(name, cfg)
+        if tok is None:
+            raise urllib.error.URLError(f"{name}: no GCS bearer token")
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {tok.access_token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            # 401 (bad/expired token) self-heals once; 403 (permission denial
+            # with a valid token) and every other status propagate unchanged.
+            if attempt == 1 and e.code == 401:
+                _invalidate_gcs_creds(name)  # force a freshly-resolved token
+                continue
+            raise
+    raise urllib.error.URLError(f"{name}: GCS bearer retry exhausted")
 
 
 def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
@@ -2123,9 +2390,14 @@ def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     if m is None:
         raise DirectListError(f"{path} is under no known mount")
     fs = m["remote"]
-    cfg = _remote_config(fs.partition(":")[0])
-    if not _gcs_anonymous(cfg or {}):
-        raise DirectListError(f"{path}: remote {fs!r} is not anonymous GCS")
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
+    # Anonymous FIRST: an anonymous remote never resolves a token, never sends
+    # an Authorization header — its request is the exact unsigned one today's
+    # code produces.
+    if not (_gcs_anonymous(cfg or {}) or _gcs_credentialed(name, cfg)):
+        raise DirectListError(
+            f"{path}: remote {fs!r} is not direct-listable GCS")
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectListError(f"{path}: remote {fs!r} carries no bucket")
@@ -2137,9 +2409,10 @@ def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
         params["pageToken"] = continuation
     query = urllib.parse.urlencode(params)
     url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    # _gcs_get_direct fetches unsigned (anonymous — byte-identical) or with a
+    # bearer header (credentialed), self-healing one stale-token 401/403.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         raise DirectListError(f"GCS list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
@@ -2186,6 +2459,25 @@ def direct_list_capable(path: str) -> bool:
     """True when `path` is mount-backed by ANY backend the direct (unsigned)
     pager can enumerate — anonymous plain AWS S3 or anonymous GCS."""
     return s3_direct_capable(path) or gcs_direct_capable(path)
+
+
+def direct_list_anonymous(path: str) -> bool:
+    """True when `path` is mount-backed by an ANONYMOUS direct-listable remote
+    (anonymous plain AWS S3 or anonymous GCS), as opposed to a credentialed-
+    SHAPED one. A PURE config-shape check that resolves NO credentials/token
+    (finding 12), mirroring direct_list_capable.
+
+    An anonymous remote carries no credentials that can fail to resolve, so its
+    direct pager never raises DirectListError for a missing/expired credential —
+    callers that can't fall back to rc (the mount-root watch) use this to keep
+    anonymous behavior byte-identical while letting a credentialed-shaped remote
+    whose creds don't resolve fall through to rc."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    return _anonymous_s3(cfg) or _gcs_anonymous(cfg or {})
 
 
 def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
@@ -2342,6 +2634,8 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
     if rel == ".":
         return DirectHead(False, None, None)  # the mountpoint is not an object
     fs = m["remote"]
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
@@ -2349,9 +2643,10 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
     key = (store_prefix + "/" if store_prefix else "") + rel
     url = _GCS_OBJ_URL.format(bucket=bucket,
                               key=urllib.parse.quote(key, safe=""))
+    # Unsigned for anonymous (byte-identical), bearer-authorized for
+    # credentialed — the same transport the pager uses via _gcs_get_direct.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return DirectHead(False, None, None)  # trustworthy negative
@@ -2401,6 +2696,8 @@ def _s3_has_children(path: str, timeout: float) -> bool:
 def _gcs_has_children(path: str, timeout: float) -> bool:
     m, rel = _mount_for(path)
     fs = m["remote"]
+    name = fs.partition(":")[0]
+    cfg = _remote_config(name)
     derived = _gcs_bucket_prefix(fs)
     if derived is None:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
@@ -2409,9 +2706,10 @@ def _gcs_has_children(path: str, timeout: float) -> bool:
     params = {"prefix": prefix, "maxResults": "1"}
     query = urllib.parse.urlencode(params)
     url = f"{_GCS_LIST_URL.format(bucket=bucket)}?{query}"
+    # Unsigned for anonymous, bearer-authorized for credentialed (via
+    # _gcs_get_direct) — the same transport the pager and head probe use.
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            body = resp.read()
+        body = _gcs_get_direct(url, name, cfg, timeout)
     except urllib.error.HTTPError as e:
         raise DirectProbeError(f"GCS list {path}: HTTP {e.code}") from e
     except (urllib.error.URLError, OSError) as e:
@@ -2432,6 +2730,65 @@ def upstream_url_for(path: str) -> str | None:
     except Exception:
         logger.warning("upstream url for %r failed", path, exc_info=True)
         return None
+
+
+def bearer_upstream_for(path: str) -> tuple[str, dict] | None:
+    """(plain object URL, {"Authorization": "Bearer <token>"}) for a mount-backed
+    file on a credentialed GCS remote the server should proxy (no URL may carry
+    the token). None for anonymous GCS (reachable by public URL) and every
+    non-GCS backend. Anonymous is checked FIRST, so it never consults the token
+    resolver.
+
+    Signability is only a TIE-BREAKER, and only when the remote is NOT already
+    on the bearer path. We serve the bearer token when EITHER (a) _upstream_url_for
+    has PINNED mode="bearer" (a gsign validation reject, or a token-only remote),
+    OR (b) the fs is in a gsign RETRY window (_gcs_bearer_fallback — validation
+    contended / neg-cached / signer momentarily unresolvable): in both cases the
+    signed-URL path can't serve THIS request, so the token is the only working
+    fast path (finding 1). Only when neither holds do we defer to _gcs_signable
+    (that remote 307s via _upstream_url_for instead) — without this the retry
+    window would dead-end at the slow serve despite a resolvable token. The token
+    value is never logged and never placed in a URL. Never raises — this sits on
+    the raw-proxy hot path alongside upstream_url_for."""
+    try:
+        m, rel = _mount_for(path)
+        if m is None:
+            return None
+        fs = m["remote"]
+        name = fs.partition(":")[0]
+        cfg = _remote_config(name)
+        if _gcs_anonymous(cfg or {}):
+            return None
+        now = time.monotonic()
+        with _upstream_lock:
+            on_bearer_path = (_upstream_mode.get(fs) == "bearer"
+                              or _gcs_bearer_fallback.get(fs, 0.0) > now)
+        if not on_bearer_path and _gcs_signable(name, cfg):
+            return None  # 307-signable and not on the bearer path -> not ours
+        tok = _gcs_bearer_token(name, cfg)
+        if tok is None:  # not credentialed / no [cloud-auth] -> fall to serve
+            return None
+        url = _gcs_object_url(fs, rel)
+        if url is None:
+            return None
+        return url, {"Authorization": f"Bearer {tok.access_token}"}
+    except Exception:
+        logger.warning("bearer upstream for %r failed", path, exc_info=True)
+        return None
+
+
+def invalidate_gcs_token(path: str) -> None:
+    """Drop the cached bearer token + credential object for `path`'s remote so
+    the next bearer_upstream_for re-resolves from config. Called by the raw read
+    proxy when a bearer GET comes back 401/403 (the token went stale/rotated),
+    so a single retry can self-heal. Never raises — sits on the raw hot path."""
+    try:
+        m, _ = _mount_for(path)
+        if m is None:
+            return
+        _invalidate_gcs_creds(m["remote"].partition(":")[0])
+    except Exception:
+        logger.warning("invalidate gcs token for %r failed", path, exc_info=True)
 
 
 def _sign_validation_status(url: str) -> tuple[int, str | None]:
@@ -2494,23 +2851,32 @@ def _validate_and_sign(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
     return None, verdict
 
 
-def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
-    """Resolve/serve sign mode for one request with per-fs single-flight, so N
-    concurrent first reads issue ONE validation GET instead of N. Returns
-    (url, disposition):
-      - (url, "sign")  sign mode active/just-validated -> use this presigned URL
-                       (url may be None if creds rotated away mid-flight — the
-                       caller then demotes and falls through, finding 4);
-      - (None, "link") validated as a definite reject, OR another thread owns
-                       validation -> use the publiclink ladder for this request;
-                       it's safe to cache mode="link";
-      - (None, "retry") validation inconclusive or negative-cached -> use the
-                       publiclink ladder for THIS request but DON'T pin a mode,
-                       so sign is re-attempted once the window lapses (findings
-                       5 and 7)."""
+def _sign_single_flight(fs: str, mode_name: str, mint_fn, validate_fn,
+                        reject_disp: str) -> tuple[str | None, str]:
+    """The per-fs single-flight state machine shared by S3 sign mode and GCS
+    gsign mode, so N concurrent first reads issue ONE validation GET instead of
+    N. Parameterized on:
+      - mode_name    the mode string pinned on success ("sign" / "gsign");
+      - mint_fn()    -> url|None, the per-object URL when the mode is
+                     active/just-validated (a presigned S3 URL / a signed GCS
+                     URL); None means creds/signer rotated away mid-flight;
+      - validate_fn() -> (url, verdict) with verdict "ok"/"reject"/
+                     "inconclusive" — the one-time validation probe;
+      - reject_disp  the disposition returned on a definite reject ("link" for
+                     S3's publiclink ladder, "bearer" for GCS's proxy).
+    Returns (url, disposition):
+      - (url, mode_name)  mode active/just-validated -> use this URL (url may be
+                     None if creds/signer rotated away mid-flight — the caller
+                     demotes and falls through, finding 4);
+      - (None, reject_disp)  validated as a definite reject -> caller settles on
+                     the fallback path; safe to cache that mode;
+      - (None, "retry")  validation inconclusive OR negative-cached OR ANOTHER
+                     THREAD holds the validation lock -> serve THIS request via
+                     the fallback but DON'T pin a mode, so the mode is
+                     re-attempted once the window lapses (findings 5 and 7)."""
     now = time.monotonic()
     with _upstream_lock:
-        if _upstream_mode.get(fs) == "sign":
+        if _upstream_mode.get(fs) == mode_name:
             active = True
         else:
             active = False
@@ -2518,33 +2884,97 @@ def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
                 return None, "retry"  # recently failed -> skip validation window
         lock = _validation_locks.setdefault(fs, threading.Lock())
     if active:
-        return _s3_request_url(fs, rel, method="GET"), "sign"
+        return mint_fn(), mode_name
     if not lock.acquire(blocking=False):
         return None, "retry"  # another thread is validating; don't pile on
     try:
         with _upstream_lock:
-            if _upstream_mode.get(fs) == "sign":
+            if _upstream_mode.get(fs) == mode_name:
                 won = False
             elif _sign_neg_cache.get(fs, 0.0) > time.monotonic():
                 return None, "retry"
             else:
                 won = True
         if not won:  # a racer finished validating while we took the lock
-            return _s3_request_url(fs, rel, method="GET"), "sign"
-        url, verdict = _validate_and_sign(fs, rel, cfg)
+            return mint_fn(), mode_name
+        url, verdict = validate_fn()
         if verdict == "ok":
             with _upstream_lock:
-                _upstream_mode[fs] = "sign"
+                _upstream_mode[fs] = mode_name
                 _sign_neg_cache.pop(fs, None)
-            return url, "sign"
-        # Failed: negative-cache so we don't re-run the blocking validation GETs
-        # on every request while no fallback is committed (rcd down); a definite
-        # reject settles on "link", an inconclusive one leaves the mode open.
+            return url, mode_name
+        # Failed: negative-cache so we don't re-run the blocking validation GET
+        # on every request while no fallback is committed; a definite reject
+        # settles on the fallback mode, an inconclusive one leaves it open.
         with _upstream_lock:
             _sign_neg_cache[fs] = time.monotonic() + _SIGN_NEG_TTL_S
-        return None, ("link" if verdict == "reject" else "retry")
+        return None, (reject_disp if verdict == "reject" else "retry")
     finally:
         lock.release()
+
+
+def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
+    """S3 sign mode via the shared single-flight machine: mint a presigned URL
+    when active/won, validate once otherwise, and fall to the publiclink ladder
+    ("link") on a definite reject (findings 4, 5, 7 — see _sign_single_flight)."""
+    return _sign_single_flight(
+        fs, "sign",
+        mint_fn=lambda: _s3_request_url(fs, rel, method="GET"),
+        validate_fn=lambda: _validate_and_sign(fs, rel, cfg),
+        reject_disp="link")
+
+
+def _gcs_validate_and_sign(fs: str, rel: str,
+                           signer) -> tuple[str | None, str]:
+    """One-time gsign-mode validation for a GCS remote — the slim, region-less
+    GCS analog of _validate_and_sign (there is no x-amz-bucket-region machinery,
+    so a single attempt suffices). Signs a GET for `rel` and probes it once via
+    _sign_validation_status (a Range: bytes=0-0 GET), returning (url, verdict):
+      - (url, "ok")            GCS accepted the signature (200/206/404/416);
+      - (None, "reject")       definitely rejected (403/401 or other <500) —
+                               gsign can't serve this remote;
+      - (None, "inconclusive") network error / 5xx — transient; caller must NOT
+                               pin a mode so gsign is re-attempted later."""
+    url = _gcs_object_url(fs, rel)
+    if url is None:
+        return None, "reject"
+    signed = gcssign.sign_url(url, method="GET", signer=signer.signer,
+                              sa_email=signer.sa_email, expires=_SIGN_EXPIRY_S)
+    status, _region = _sign_validation_status(signed)
+    if status in (200, 206, 404, 416):
+        return signed, "ok"
+    return None, ("reject" if 0 < status < 500 else "inconclusive")
+
+
+def _gcs_sign_mode_url(fs: str, rel: str,
+                       cfg: dict) -> tuple[str | None, str]:
+    """GCS gsign mode via the shared single-flight machine. Only called for a
+    SIGNABLE-SHAPED remote (an SA key is configured); the signer resolution is
+    hoisted BEFORE the machine. When the signer momentarily fails to resolve (SA
+    file transiently unreadable, [cloud-auth] absent this window) we return
+    "retry", NOT "bearer": a signable-shaped remote must serve bearer for THIS
+    request WITHOUT permanently pinning bearer, so gsign is retried after the
+    cache TTL (finding 2). Only a genuine validation reject pins bearer.
+    Otherwise mint a V4-signed URL when active/won, validate once, and fall to
+    the bearer proxy on a definite reject (see _sign_single_flight)."""
+    signer = _gcs_signer(fs.partition(":")[0], cfg)
+    if signer is None:  # signer momentarily unresolvable -> transient, retry
+        return None, "retry"
+    return _sign_single_flight(
+        fs, "gsign",
+        mint_fn=lambda: _gcs_signed_url(fs, rel),
+        validate_fn=lambda: _gcs_validate_and_sign(fs, rel, signer),
+        reject_disp="bearer")
+
+
+def _demote_gsign(fs: str) -> None:
+    """Un-pin gsign mode for `fs` (idempotent), so the next request re-derives
+    the mode from scratch — gsign again once the signer returns, bearer meanwhile
+    if a token resolves. The demotion is NON-permanent (findings 4, 5). Shared by
+    both un-pin sites so they can't drift (C5)."""
+    with _upstream_lock:
+        if _upstream_mode.get(fs) == "gsign":
+            _upstream_mode.pop(fs, None)
 
 
 def _upstream_url_for(path: str) -> str | None:
@@ -2580,6 +3010,24 @@ def _upstream_url_for(path: str) -> str | None:
             if _upstream_mode.get(fs) == "sign":
                 _upstream_mode[fs] = "link"
         mode = "link"
+    if mode == "gsign":
+        # SA-key GCS: mint a V4 signed URL per object (in-process signing is
+        # microseconds and creds rotate), never caching a link — same rationale
+        # as S3 sign mode.
+        signed = _gcs_signed_url(fs, rel)
+        if signed is not None:
+            return signed
+        # Signer unavailable (rotated key, or a transient cached-None window):
+        # UN-PIN the mode rather than pin "bearer" permanently, so the next
+        # request re-derives — bearer for now if a token resolves, gsign again
+        # once the signer comes back (the demotion is non-permanent, finding 5).
+        _demote_gsign(fs)
+        return None
+    if mode == "bearer":
+        # Token-only GCS: no URL may carry the token, so there is nothing to
+        # 307 to — the server proxies via bearer_upstream_for. Returning None
+        # here routes it there.
+        return None
     url = None
     if mode is None:
         cfg = _remote_config(name)
@@ -2605,6 +3053,42 @@ def _upstream_url_for(path: str) -> str | None:
             elif disp == "retry":
                 cache_mode = False
             # disp == "link": mode stays None; publiclink below caches "link"
+        elif gcssign._is_sa_configured(cfg):
+            # SA-key-SHAPED GCS: V4-sign locally instead of a publiclink rc call
+            # (which ALWAYS fails for GCS — rclone reports PublicLink: False).
+            # The tier is decided on config SHAPE, not a live signer resolution,
+            # so a momentarily-unresolvable signer is treated as transient rather
+            # than pinning bearer permanently (finding 2). Single-flight
+            # validation the first time.
+            signed, disp = _gcs_sign_mode_url(fs, rel, cfg)
+            if disp == "gsign" and signed is not None:
+                return signed
+            if disp == "gsign":  # won validation but signer vanished mid-flight
+                _demote_gsign(fs)  # un-pin, re-derive next time
+                return None
+            elif disp == "retry":
+                # Contended / neg-cached / signer momentarily unresolvable: serve
+                # bearer for THIS request but DON'T pin bearer, so gsign is
+                # retried after the window. Mark the fs so bearer_upstream_for
+                # serves the token now even though the SA key still parses —
+                # otherwise its tie-breaker would dead-end at the serve (finding
+                # 1). The mark expires with the neg-cache window.
+                cache_mode = False
+                mode = "bearer"
+                with _upstream_lock:
+                    _gcs_bearer_fallback[fs] = time.monotonic() + _SIGN_NEG_TTL_S
+            else:  # "bearer": definite validation reject -> pin bearer
+                mode = "bearer"
+        elif gcssign._is_gcs_signable_shape(cfg):
+            # Token-only-SHAPED GCS (no SA key to sign with): bearer proxy, safe
+            # to pin — no SA key will ever let it sign locally. Skip the
+            # publiclink rc call; it always fails for GCS (PublicLink: False).
+            mode = "bearer"
+    if mode == "bearer":
+        with _upstream_lock:
+            if cache_mode:
+                _upstream_mode[fs] = "bearer"
+        return None  # no URL may carry the token; server uses bearer_upstream_for
     if mode in (None, "link"):
         port = _live_rcd_port()
         if port is None:

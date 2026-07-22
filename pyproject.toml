@@ -22,14 +22,16 @@ dependencies = [
     # uploads, which requires python-multipart at import time (FastAPI raises
     # at route registration otherwise).
     "python-multipart>=0.0.9",
+    # server.py hard-imports httpx at module top for the pooled raw-proxy client
+    # (TASK F) — and fastapi.testclient needs it too — so a plain
+    # `pip install fused-render` is broken without it. Core, not an extra.
+    "httpx",
 ]
 
 [project.optional-dependencies]
 # Test/dev tooling. `pip install -e ".[dev]"` then `pytest`.
 dev = [
     "pytest",
-    # fastapi.testclient hard-requires httpx at import time.
-    "httpx",
     # Parallel test runs (see [tool.pytest.ini_options] addopts -n auto). The
     # suite is xdist-safe via process isolation: conftest re-points
     # FUSED_RENDER_HOME/DIR per worker, tests use tmp_path + monkeypatch, and
@@ -66,6 +68,26 @@ bundled = [
     "pymupdf>=1.25",
     "pikepdf>=9",
     "drain3>=0.9.11",
+    # Private-cloud credential chains (the [cloud-auth] extra), folded into the
+    # bundled app: DMG users cannot pip install, and the feature's promise —
+    # "an authenticated aws/gcloud CLI ⇒ your private buckets just work" — is
+    # hollow for them otherwise. botocore adds ~80 MB installed; this line is
+    # the size-tradeoff approval point — strip it here if that's unacceptable
+    # (public buckets still work: the signers are pure stdlib). requests is
+    # already above; google-auth's refresh transport reuses it.
+    "botocore",
+    "google-auth",
+]
+# Private-cloud credential chains (optional). botocore buys the AWS provider
+# chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
+# rung; google-auth buys the GCS bearer-token chain (SA key / ADC) for gcssign.
+# requests is google-auth's refresh transport. The signing math stays in-repo
+# (s3sign/gcssign are pure stdlib), so a plain install still serves public
+# buckets with the libs absent — this extra only lights up private ones.
+cloud-auth = [
+    "botocore",
+    "google-auth",
+    "requests",
 ]
 # Menu-bar app shell (SPEC DM-3/DM-7). macOS-only; not a core dependency so
 # `pip install fused-render` stays cross-platform. Only the packaged .app
@@ -84,6 +106,15 @@ app = [
 # one-click install, SPEC DP-4) — a test pins the two together.
 fused = [
     'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl ; python_version >= "3.11"',
+]
+# Windows desktop supervisor shell (experiment/python-supervisor,
+# docs/PYTHON_SUPERVISOR_SPEC.md). Windows-only; not a core dependency so
+# `pip install fused-render` stays cross-platform. Only the packaged desktop
+# build (scripts/build_windows_installer.ps1) installs this extra.
+windows-desktop = [
+    'pywin32>=306 ; sys_platform == "win32"',
+    'pystray>=0.19 ; sys_platform == "win32"',
+    'pillow ; sys_platform == "win32"',
 ]
 
 [project.scripts]

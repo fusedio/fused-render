@@ -10,16 +10,16 @@ fused-render is a **local file explorer** that runs entirely on `127.0.0.1` — 
 ## Running the server
 
 ```
-fused-render                                    # opens a tab at http://127.0.0.1:1777/, starting in $HOME
+fused-render                                    # opens a tab at http://127.0.0.1:1777/, starting in ~/Documents/Fused
 fused-render --start-dir ~/data --port 9000     # different start dir + port
 fused-render --port 1777 --no-browser           # don't steal focus (best when driving it yourself)
 ```
 
-`--start-dir` only sets the initial location; the whole filesystem stays browsable from there. When you launch it to open something for the user or to test a change, prefer `--no-browser` and open the specific URL yourself (see below) rather than landing them on the home directory.
+`--start-dir` only sets the initial location (default `~/Documents/Fused`, override with `$FUSED_RENDER_DIR`); the whole filesystem stays browsable from there. On first run the server seeds that Fused directory with example content and opens a landing/showcase page rather than a bare listing. When you launch it to open something for the user or to test a change, prefer `--no-browser` and open the specific URL yourself (see below) rather than landing them on that page.
 
 ### macOS desktop app
 
-On macOS, fused-render also ships as a standalone **`FusedRender.app`** (packaged as `dist/FusedRender-<version>.dmg` via `bash scripts/build_dmg.sh`). It bundles Python and a prebuilt shell — no `pip install`, no Node — so a non-developer just double-clicks it to launch the same local server and browser tab. The `.app` also ships an offline wheelhouse (numpy, pandas, requests, duckdb, polars, matplotlib, scipy, pillow, openpyxl, shapely, geopandas + pyarrow), so views built on those packages work with no network. Everything below — URLs, modes, params — is identical whether the server was started by the CLI or the app.
+On macOS, fused-render also ships as a standalone **`FusedRender.app`** (packaged as `dist/FusedRender-<version>.dmg` via `bash scripts/build_dmg.sh`). It bundles Python and a prebuilt shell — no `pip install`, no Node — so a non-developer just double-clicks it to launch the same local server and browser tab. The `.app` also ships an offline wheelhouse (numpy, pandas, pyarrow, duckdb, polars, requests, matplotlib, scipy, pillow, openpyxl, shapely, geopandas, rasterio, zarr, pymupdf, and more — see the `[bundled]` extra in `pyproject.toml` for the full set), so views built on those packages work with no network. Everything below — URLs, modes, params — is identical whether the server was started by the CLI or the app.
 
 Source checkout only: the React shell must be built once before the server starts (`cd frontend && bun install && bun run build`, Node 22), or use `scripts/dev.sh` for the watch+server dev loop. Wheels and the `.app` ship the shell prebuilt.
 

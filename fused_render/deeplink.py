@@ -28,10 +28,12 @@ import posixpath
 import re
 import shutil
 import subprocess
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse
+
+from fused_render._view_url_codec import view_url_path as _view_url_path
 
 from fused_render.shell.seed import fused_dir
 
@@ -208,20 +210,6 @@ def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise DeeplinkError(f"git {' '.join(args[:2])} failed:\n{detail[-2000:]}")
     return proc.stdout
-
-
-_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def _view_url_path(fs_path: str) -> str:
-    """/view URL for an absolute fs path, matching the frontend codec
-    (router.ts urlForFsPath) like seed._view_url — but Windows-aware the way
-    winopen._view_url is: a drive-letter path gets its backslashes normalized
-    to '/' before segmenting, so 'C:\\Users\\x' doesn't collapse into one
-    percent-encoded segment."""
-    norm = fs_path.replace("\\", "/") if _DRIVE_PATH.match(fs_path) else fs_path
-    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
-    return "/view/" + "/".join(segments)
 
 
 def _default_branch(dest: str) -> str:

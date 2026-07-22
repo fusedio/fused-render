@@ -9,6 +9,8 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks, recordBookmarkHistory } from "./api";
+import { notifyArmedChanged } from "./hooks";
+import { splitShellSearch } from "./layout-codec";
 
 export interface Bookmark {
   id: string;
@@ -403,6 +405,7 @@ export function armBookmark(id: string, url: string): void {
   } catch (e) {
     console.error("[fused] failed to arm bookmark:", e);
   }
+  notifyArmedChanged();
 }
 
 export function disarmBookmark(): void {
@@ -411,6 +414,41 @@ export function disarmBookmark(): void {
   } catch (e) {
     console.error("[fused] failed to disarm bookmark:", e);
   }
+  notifyArmedChanged();
+}
+
+// True when two query strings carry the same decoded `_layout` and the same
+// key/value multiset of remaining params, ignoring encoding and ordering
+// differences. `_layout` may contain literal `&` (D51), so both sides go
+// through the codec's splitShellSearch, never raw URLSearchParams. Shared by
+// the Update-bookmark button (Breadcrumb) and the sidebar's dirty marker.
+export function sameSearch(a: string, b: string): boolean {
+  const norm = (s: string) => {
+    const { layout, params } = splitShellSearch(s);
+    return JSON.stringify([layout, [...params].sort()]);
+  };
+  return norm(a) === norm(b);
+}
+
+// A bookmark url split at its first `?` — the pathname/search halves both
+// armed-state consumers compare against location.
+export function splitBookmarkUrl(url: string): { pathname: string; search: string } {
+  const qIdx = url.indexOf("?");
+  return qIdx === -1
+    ? { pathname: url, search: "" }
+    : { pathname: url.slice(0, qIdx), search: url.slice(qIdx) };
+}
+
+// The armed bookmark, gated on the current page: null when nothing is armed
+// OR the armed url's pathname differs from `pathname`. Sidebar highlighting
+// reads through this so a stale armed entry (page changed, Breadcrumb's
+// disarm effect not yet run — or never run, on routes without CrumbActions)
+// can't keep the old row lit or block the exact-url fallback. Read-only: the
+// permanent disarm on page change stays Breadcrumb's job.
+export function getArmedBookmarkFor(pathname: string): ArmedBookmark | null {
+  const armed = getArmedBookmark();
+  if (!armed || splitBookmarkUrl(armed.url).pathname !== pathname) return null;
+  return armed;
 }
 
 export function getArmedBookmark(): ArmedBookmark | null {

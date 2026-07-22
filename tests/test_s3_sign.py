@@ -7,10 +7,27 @@ a fixed key pair, region, timestamp and expiry yield one exact signature hex.
 The resolver is checked with monkeypatched env vars and tmp credentials files.
 """
 import datetime
+import sys
+import types
 
 import pytest
 
 import fused_render.shell.s3sign as s3sign
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_ambient_aws(tmp_path, monkeypatch):
+    """Keep every resolver test deterministic and fast even though the dev venv
+    ships botocore: clear AWS_* env, point the shared/config files at absent
+    paths, and disable the IMDS probe so the botocore rung (when reached with no
+    static source) resolves to None immediately instead of stalling on metadata.
+    Tests that exercise a source explicitly re-set what they need afterwards."""
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-creds"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-config"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 # AWS's published example (SigV4 query-string auth, "GET Object"):
 #   key    AKIAIOSFODNN7EXAMPLE / wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
@@ -210,3 +227,109 @@ def test_resolver_expands_tilde_in_shared_credentials_file(tmp_path, monkeypatch
     assert s3sign.resolve_credentials(
         {"type": "s3", "env_auth": "true"}) == \
         s3sign.Credentials("AKIATILDE", "TILDESEC", None)
+
+
+# ------------------------------------------------- botocore chain rung (opt-in)
+#
+# The optional last rung consults botocore's full provider chain (SSO / IMDS /
+# credential_process / assume-role) only when the static ladder found nothing
+# AND the remote opted into ambient auth (env_auth or a profile). botocore is
+# faked via sys.modules so the tests pin the DEGRADE contract regardless of
+# whether the [cloud-auth] extra is installed.
+
+
+def _install_fake_botocore(monkeypatch, *, frozen=None, raises=False):
+    """Replace botocore.session with a stub whose Session records the profile
+    and any set credentials_file and returns `frozen` (access_key, secret_key,
+    token) as frozen credentials — or None. `raises=True` makes get_credentials
+    blow up (expired SSO login / no providers). Returns the record dict so a
+    test can assert what reached the session (empty => never constructed)."""
+    rec: dict = {}
+    bc = types.ModuleType("botocore")
+    session_mod = types.ModuleType("botocore.session")
+
+    class _Frozen:
+        def __init__(self, ak, sk, tok):
+            self.access_key, self.secret_key, self.token = ak, sk, tok
+
+    class _Creds:
+        def __init__(self, f):
+            self._f = f
+
+        def get_frozen_credentials(self):
+            return self._f
+
+    class Session:
+        def __init__(self, profile=None):
+            rec["profile"] = profile
+
+        def set_config_variable(self, name, value):
+            rec[name] = value
+
+        def get_credentials(self):
+            if raises:
+                raise RuntimeError("expired SSO login")
+            return None if frozen is None else _Creds(_Frozen(*frozen))
+
+    session_mod.Session = Session
+    bc.session = session_mod
+    monkeypatch.setitem(sys.modules, "botocore", bc)
+    monkeypatch.setitem(sys.modules, "botocore.session", session_mod)
+    return rec
+
+
+def test_botocore_not_consulted_when_config_keys_present(monkeypatch):
+    rec = _install_fake_botocore(monkeypatch, frozen=("AKIABOTO", "BSEC", "BTOK"))
+    cfg = {"type": "s3", "access_key_id": "AKIACFG",
+           "secret_access_key": "SEC", "env_auth": "true"}
+    assert s3sign.resolve_credentials(cfg) == \
+        s3sign.Credentials("AKIACFG", "SEC", None)
+    assert rec == {}  # static config keys win — botocore session never built
+
+
+def test_botocore_not_consulted_when_env_keys_present(monkeypatch):
+    rec = _install_fake_botocore(monkeypatch, frozen=("AKIABOTO", "BSEC", None))
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAENV")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ENVSEC")
+    assert s3sign.resolve_credentials({"type": "s3", "env_auth": "true"}) == \
+        s3sign.Credentials("AKIAENV", "ENVSEC", None)
+    assert rec == {}
+
+
+def test_botocore_resolves_when_static_sources_empty(monkeypatch):
+    # No static keys, no env, no shared file — env_auth opts in, so the botocore
+    # rung resolves and its STS session token is mapped through.
+    _install_fake_botocore(monkeypatch, frozen=("AKIASSO", "SSOSEC", "SSOTOK"))
+    assert s3sign.resolve_credentials({"type": "s3", "env_auth": "true"}) == \
+        s3sign.Credentials("AKIASSO", "SSOSEC", "SSOTOK")
+
+
+def test_botocore_exception_yields_none(monkeypatch):
+    _install_fake_botocore(monkeypatch, raises=True)
+    assert s3sign.resolve_credentials({"type": "s3", "env_auth": "true"}) is None
+
+
+def test_botocore_absent_yields_none(monkeypatch):
+    # [cloud-auth] not installed: the lazy import raises ImportError -> None,
+    # and the caller keeps today's publiclink path.
+    monkeypatch.setitem(sys.modules, "botocore", None)
+    monkeypatch.setitem(sys.modules, "botocore.session", None)
+    assert s3sign.resolve_credentials({"type": "s3", "env_auth": "true"}) is None
+
+
+def test_botocore_not_consulted_without_ambient_optin(monkeypatch):
+    # A remote that never opted into ambient auth (no env_auth, no profile, no
+    # shared_credentials_file) must NOT trigger an ambient-credential lookup.
+    rec = _install_fake_botocore(monkeypatch, frozen=("AKIASSO", "SSOSEC", None))
+    assert s3sign.resolve_credentials({"type": "s3"}) is None
+    assert rec == {}
+
+
+def test_botocore_receives_profile_and_shared_file(monkeypatch):
+    rec = _install_fake_botocore(monkeypatch, frozen=("AKIAP", "PSEC", None))
+    creds = s3sign.resolve_credentials(
+        {"type": "s3", "profile": "work",
+         "shared_credentials_file": "~/x/creds"})
+    assert creds == s3sign.Credentials("AKIAP", "PSEC", None)
+    assert rec["profile"] == "work"
+    assert rec["credentials_file"].endswith("/x/creds")  # expanded, not verbatim

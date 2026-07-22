@@ -17,6 +17,7 @@ import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
 import Sidebar from "./components/Sidebar";
 import ToastHost from "./components/ToastHost";
+import ServerStatusBanner from "./components/ServerStatusBanner";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -419,6 +420,7 @@ export default function App({ config }: { config: Config }) {
       {!IS_EMBED && <Sidebar config={config} />}
       <div id="main">{main}</div>
       <ToastHost />
+      {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );
 }

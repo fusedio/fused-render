@@ -1784,6 +1784,67 @@ body.embed .open-as-app-chip:hover {
   pointer-events: auto;
 }
 
+/* ---- Server-status banner (bottom-right, backend health) ----------------- */
+/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+   -reconnected variant auto-dismisses. Sits above the listing toast (1000). */
+.server-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1100;
+  max-width: 360px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  animation: server-status-in 0.15s ease-out;
+}
+
+@keyframes server-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.server-status-title {
+  font-weight: 600;
+  color: var(--error);
+  margin-bottom: 4px;
+}
+
+.server-status-body {
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.server-status-retry {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.server-status-retry:hover {
+  border-color: var(--fg-muted);
+}
+
+.server-status-reconnected {
+  border-color: var(--success);
+  color: var(--fg);
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;

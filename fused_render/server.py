@@ -36,7 +36,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
-from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -1777,7 +1777,7 @@ def _proxy_raw(upstream: str, request: Request):
 
 
 async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
-                            request: Request):
+                            request: Request, extra_headers: dict | None = None):
     """Opt-in pooled proxy of a store's *signed* URL (TASK F). Same forwarded
     header set (_PROXY_HEADERS) and status pass-through (206/416/404) as
     _proxy_raw, but streams through a shared keep-alive httpx pool so a burst of
@@ -1785,16 +1785,41 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
     TLS handshake + redirect round trip per block. Returns None only when the
     store is unreachable at the connection level — the caller then falls back to
     the 307 so the read still completes. Async (awaited on the event loop): the
-    pool is the point, and to_thread'ing a sync client would defeat it."""
+    pool is the point, and to_thread'ing a sync client would defeat it.
+
+    `extra_headers` (e.g. an Authorization: Bearer for the private-GCS bearer
+    tier) is merged onto the OUTBOUND request after the Range header — it never
+    appears on the response, so a token there is never echoed to the client."""
+    r = await _pooled_send(client, upstream, request, extra_headers)
+    if r is None:
+        return None
+    return await _pooled_response(r, request)
+
+
+async def _pooled_send(client: httpx.AsyncClient, upstream: str,
+                       request: Request, extra_headers: dict | None = None):
+    """Send one pooled, streamed request to `upstream` (mirroring the request's
+    method + Range, plus `extra_headers`) and return the OPEN httpx response, or
+    None on a connection-level error. The caller must either build a response
+    from it (_pooled_response, which closes it) or aclose it — so a peek-then-
+    retry path (bearer 401/403) can inspect the status and drop the response."""
     headers = {}
     rng = request.headers.get("range")
     if rng:
         headers["Range"] = rng
+    if extra_headers:
+        headers.update(extra_headers)
     req = client.build_request(request.method, upstream, headers=headers)
     try:
-        r = await client.send(req, stream=True)
+        return await client.send(req, stream=True)
     except httpx.HTTPError:
         return None
+
+
+async def _pooled_response(r, request: Request):
+    """Build the client-facing response from an open httpx response `r`,
+    forwarding only _PROXY_HEADERS and passing the status through. Closes `r`
+    (immediately for HEAD, after streaming for GET)."""
     out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
     if request.method == "HEAD":
         await r.aclose()
@@ -1808,6 +1833,57 @@ async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
             await r.aclose()
 
     return StreamingResponse(body(), status_code=r.status_code, headers=out)
+
+
+def _bearer_status_passes(status: int) -> bool:
+    """Whether a bearer-proxy upstream status is a client-facing answer. 2xx/3xx
+    (success/redirect) and the meaningful store answers 404 (absent) and 416
+    (unsatisfiable range) pass through; everything else (401, 403, 429, 5xx) is
+    NOT a client-facing answer in bearer mode — there is no 307 URL for the
+    client to retry against, and on main these reads went via the rclone serve
+    whose pacer retries transient errors — so the caller falls through to the
+    serve instead of leaking the error status (finding 9)."""
+    return 200 <= status < 400 or status in (404, 416)
+
+
+async def _proxy_raw_bearer(request: Request, path: str):
+    """Proxy a cold private-GCS read through the pooled client with the bearer
+    Authorization header attached out-of-band (the token must never reach the
+    client in a URL/redirect).
+
+    On a 401 (stale/rotated token) invalidate the cached credential, re-resolve,
+    and retry ONCE. A 403 is an IAM denial WITH a valid token, so it does NOT
+    invalidate — churning the credential per denied read would evict the live
+    token out from under concurrent legitimate reads (mirrors _gcs_get_direct's
+    401-only policy) — it simply falls through to the serve. Any non-pass-through
+    status (a second 401, 403, 429, 5xx) also falls through by returning None
+    (never an error status to the client), so the read still completes via the
+    serve. The open upstream response is always closed before a retry or a
+    fall-through."""
+    from fused_render.shell import mounts as shell_mounts
+
+    for attempt in (1, 2):
+        bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
+        if bearer is None:
+            return None
+        # Only now (a real bearer remote) is the pooled client needed — reaching
+        # for it before the bearer check would break the non-bearer fall-through.
+        client = request.app.state.pooled_client
+        url, extra_headers = bearer
+        r = await _pooled_send(client, url, request, extra_headers)
+        if r is None:
+            return None
+        if _bearer_status_passes(r.status_code):
+            return await _pooled_response(r, request)
+        await r.aclose()
+        # 401 on the first attempt: token went stale/rotated -> re-resolve and
+        # retry once. 403 (IAM denial), transient 429/5xx, and a second 401 all
+        # fall through to the serve WITHOUT invalidating.
+        if attempt == 1 and r.status_code == 401:
+            await asyncio.to_thread(shell_mounts.invalidate_gcs_token, path)
+            continue
+        return None
+    return None
 
 
 def _stat_or_none(path: str) -> os.stat_result | None:
@@ -2114,13 +2190,18 @@ class _WatchEntry:
 
         self.path = path
         self.is_mount = shell_mounts.is_mount_backed(path)
-        # Both flags below are pure path/config checks (no remote I/O): they fix
-        # the poll interval and the change-detection strategy once, at creation.
+        # These flags fix the poll interval and change-detection strategy once,
+        # at creation. direct_list_capable can do REMOTE I/O (a memoized
+        # config/get rc call the first time a remote is classified), so
+        # _WatchRegistry.subscribe constructs each entry OFF the event loop. It
+        # resolves NO credentials — the classification is a pure config-shape
+        # check (finding 12).
         if self.is_mount:
             # direct_list_capable: the remote can be enumerated by a cheap,
-            # bounded unsigned page (anonymous AWS S3 / GCS). When it CAN'T, a
-            # directory child-change signal would require a full rc_list_dir of
-            # the prefix — the standing enumeration we avoid (see _mount_signal).
+            # bounded page — unsigned (anonymous S3/GCS) or credentialed (signed
+            # S3 / bearer GCS). When it CAN'T, a directory child-change signal
+            # would require a full rc_list_dir of the prefix — the standing
+            # enumeration we avoid (see _mount_signal).
             self._direct_capable = shell_mounts.direct_list_capable(path)
             # A mount ROOT lists the remote's top prefix (or the whole bucket):
             # never poll-list it on a non-direct remote.
@@ -2157,10 +2238,22 @@ class _WatchEntry:
         synthetic S3/GCS dirs, so create/delete/rename of children never moves
         it — the mount-dir auto-refresh (Listing LS-1) was silently dead. So for
         a directory the signal is a hash of a BOUNDED shallow listing instead:
-        one direct_list_page (anonymous S3/GCS) or a short-timeout rc_list_dir.
+        one direct_list_page (direct-listable S3/GCS) or a short-timeout
+        rc_list_dir.
+
+        direct_list_capable is a PURE config-shape check (finding 12): it's true
+        for a credentialed-SHAPED S3/GCS remote whose creds haven't been resolved.
+        When they don't resolve (cloud-auth libs absent, ambient creds expired)
+        direct_list_page raises DirectListError. On a non-root dir we fall back to
+        rc_list_dir — the recovery the fs/list handler and the
+        s3/gcs_direct_capable docstrings promise — flowing into the shared error
+        ladder below. Two carve-outs keep _UNCHANGED with NO rc fallback: a mount
+        ROOT (an rc listing of its whole prefix is the standing background
+        enumeration refused above) and an ANONYMOUS remote (no creds to fail on;
+        byte-identical to pre-finding-12 behavior).
 
         A FILE reaches the ModTime path differently by branch:
-          - direct-listable (anonymous S3/GCS): direct_list_capable is a pure
+          - direct-listable (S3/GCS): direct_list_capable is a pure
             path/config check that can't tell a file from a directory, and
             direct_list_page on a file KEY returns an EMPTY page (the file's own
             key != the "<key>/" listing prefix). An empty page is
@@ -2190,8 +2283,22 @@ class _WatchEntry:
 
         try:
             if shell_mounts.direct_list_capable(self.path):
-                page, _ = shell_mounts.direct_list_page(
-                    self.path, max_keys=1000, timeout=4)
+                try:
+                    page, _ = shell_mounts.direct_list_page(
+                        self.path, max_keys=1000, timeout=4)
+                except shell_mounts.DirectListError:
+                    # A credentialed-SHAPED remote is "capable" by config shape
+                    # alone (finding 12); when its creds don't resolve the direct
+                    # pager fails. Fall back to rc_list_dir (flowing into the
+                    # error ladder below) — EXCEPT a mount ROOT, whose rc listing
+                    # is the standing enumeration refused above, and an ANONYMOUS
+                    # remote, which has no creds to fail on and stays _UNCHANGED
+                    # with no rc fallback (byte-identical to prior behavior).
+                    if (self._is_mount_root
+                            or shell_mounts.direct_list_anonymous(self.path)):
+                        return _UNCHANGED
+                    listed = shell_mounts.rc_list_dir(self.path, timeout=4)
+                    return _hash_listing(listed)
                 if not page:
                     # Empty: a file (its key isn't under the "<key>/" prefix) or
                     # an empty dir. Use the rc ModTime — moves for a file's
@@ -2208,7 +2315,7 @@ class _WatchEntry:
             m = shell_mounts.rc_mtime_for(self.path)
             return _UNCHANGED if m is None else m
         except Exception:
-            return _UNCHANGED  # DirectListError, etc.
+            return _UNCHANGED  # any other backend failure -> unchanged
 
     async def _read(self):
         """One tick's read with a hard timeout and in-flight de-duplication.
@@ -2263,12 +2370,22 @@ class _WatchRegistry:
     def __init__(self):
         self._entries: dict = {}
 
-    def subscribe(self, path: str, queue):
+    async def subscribe(self, path: str, queue):
         entry = self._entries.get(path)
         if entry is None:
-            entry = _WatchEntry(path)
-            self._entries[path] = entry
-            entry.task = asyncio.create_task(entry.run())
+            # _WatchEntry construction does remote I/O (direct_list_capable now
+            # consults the credential resolvers — google-auth refresh / ADC
+            # metadata / botocore chain), so build it OFF the event loop. This
+            # runs on the async /api/fs/events handler's loop; a bare call would
+            # block it. Re-check after the await in case a concurrent subscribe
+            # created the entry while we were building (only ours starts a task).
+            entry = await asyncio.to_thread(_WatchEntry, path)
+            existing = self._entries.get(path)
+            if existing is not None:
+                entry = existing
+            else:
+                self._entries[path] = entry
+                entry.task = asyncio.create_task(entry.run())
         entry.subscribers.add(queue)
         return entry
 
@@ -2873,8 +2990,12 @@ def create_app(start_dir: str) -> FastAPI:
         return _session_put(body, x_fused)
 
     @app.get("/api/config")
-    def api_config():
-        return {
+    def api_config(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        config = {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
             # The Fused workspace dir (~/Documents/Fused, D81) — the sidebar's
@@ -2902,6 +3023,28 @@ def create_app(start_dir: str) -> FastAPI:
             # run, would otherwise show a link to a path that doesn't exist).
             "learn_mount_ready": shell_mounts.learn_mount_ready(),
         }
+        if instance := desktop_instance():
+            config["desktop_instance"] = {"id": instance[0]}
+            if token == instance[1]:
+                config["desktop_instance"]["token"] = instance[1]
+        return config
+
+    @app.post("/api/desktop/shutdown")
+    def api_desktop_shutdown(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        instance = desktop_instance()
+        if instance is None:
+            raise HTTPException(status_code=404, detail="desktop supervisor is not active")
+        if token != instance[1]:
+            raise HTTPException(status_code=403, detail="invalid desktop supervisor token")
+        uvicorn_server = getattr(app.state, "uvicorn_server", None)
+        if uvicorn_server is None:
+            raise HTTPException(status_code=503, detail="server shutdown is not ready")
+        uvicorn_server.should_exit = True
+        return {"ok": True}
 
     # GET /api/templates/registry moved to templates_api.py (extended §2.2
     # shape) and registered via templates_router above.
@@ -3349,6 +3492,17 @@ def create_app(start_dir: str) -> FastAPI:
                         if resp is not None:
                             return resp
                     return RedirectResponse(direct, status_code=307)
+                # No 307-able URL: a token-only private GCS remote can't hand
+                # the client a signed link (the bearer token must never appear
+                # in a URL), so proxy the bytes through the pooled client with
+                # the Authorization header attached out-of-band — regardless of
+                # the &pooled flag, there is nothing to redirect to. A stale
+                # token (401/403) self-heals via one re-resolve + retry inside
+                # _proxy_raw_bearer; a still-denied or unreachable read returns
+                # None and falls through to the serve.
+                resp = await _proxy_raw_bearer(request, path)
+                if resp is not None:
+                    return resp
             # Not redirected (browser, warm read, or no direct URL): proxy the
             # bytes. Guard non-files here — a directory proxied through rclone
             # serve comes back as a 200 HTML listing, so resolve shape before
@@ -3411,7 +3565,7 @@ def create_app(start_dir: str) -> FastAPI:
         paths = ws.query_params.getlist("path")
 
         queue: asyncio.Queue = asyncio.Queue()
-        entries = [_WATCH_REGISTRY.subscribe(p, queue) for p in paths]
+        entries = [await _WATCH_REGISTRY.subscribe(p, queue) for p in paths]
 
         async def pump():
             # Forward change messages; a 15s idle gap emits a keepalive (WF-3).
