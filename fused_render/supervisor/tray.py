@@ -24,8 +24,8 @@ from pathlib import Path
 import pystray
 from PIL import Image
 
-from fused_render.win_supervisor import startup
-from fused_render.win_supervisor.paths import DesktopPaths
+from fused_render.supervisor import _backend
+from fused_render.supervisor.paths import DesktopPaths
 
 _RETRY_START = 0.5
 _RETRY_CAP = 30.0
@@ -127,7 +127,7 @@ def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> N
     def on_toggle_login(icon, item):
         want = not state.login_enabled
         try:
-            startup.set_enabled(want)
+            _backend.startup.set_enabled(want)
             state.login_enabled = want
         except OSError as error:
             paths.log(f"could not update sign-in setting: {error}")

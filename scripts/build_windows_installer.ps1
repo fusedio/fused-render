@@ -185,7 +185,7 @@ Set-Content -Path (Join-Path $StageDir "payload.complete") -Encoding Ascii -Valu
 
 Invoke-Native $bundlePython @(
     "-I", "-c",
-    "import duckdb, fused_render, fused_render.cli, win32job, win32pipe, win32security, win32event, win32process, pystray; print('bundle imports ok')"
+    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, win32job, win32pipe, win32security, win32event, win32process, pystray; print('bundle imports ok')"
 )
 Invoke-Native (Join-Path $PythonRoot "uv.exe") @("--version")
 $probe = Join-Path $env:TEMP "fused_render_installer_probe_$PID.py"

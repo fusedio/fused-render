@@ -1,9 +1,14 @@
-"""Supervisor main run loop — port of windows/supervisor/src/supervisor.rs
-(feat/windows-desktop-foundation, PR #162).
+"""Platform-neutral supervisor run loop.
+
+Owns the lifecycle every desktop backend shares — single-instance election,
+the supervised server process, the tray, forwarded opens, graceful shutdown
+and teardown — and reaches all genuinely OS-specific behavior only through
+`supervisor._backend` (job / instance / startup / ui). The Windows pieces this
+was first ported from live in `supervisor/_win32/`; a new OS is a new backend,
+not a new copy of this loop.
 """
 from __future__ import annotations
 
-import ctypes
 import os
 import queue
 import secrets
@@ -15,17 +20,18 @@ import urllib.request
 from enum import Enum, auto
 from pathlib import Path
 
-import pythoncom
-import pywintypes
-import win32con
-import win32gui
-
 from fused_render import desktop_probe
 from fused_render._view_url_codec import view_url
 from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
-from fused_render.win_supervisor import instance, protocol, startup, tray
-from fused_render.win_supervisor.job import Job
-from fused_render.win_supervisor.paths import DesktopPaths
+from fused_render.supervisor import _backend, protocol, tray
+from fused_render.supervisor.paths import DesktopPaths
+
+# The single live backend (win32 today). Every platform-specific call in this
+# module goes through these names; see supervisor/_backend.py for the contract.
+Job = _backend.Job
+instance = _backend.instance
+startup = _backend.startup
+ui = _backend.ui
 
 _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
@@ -69,7 +75,7 @@ def run(initial: protocol.Command) -> None:
             # occurred and let the installer proceed over a still-running
             # supervisor.
             if isinstance(initial, protocol.Open):
-                _report_open_rejected(initial.path)
+                ui.report_open_rejected(initial.path)
                 return
             raise
         if isinstance(initial, protocol.ShutdownForUpgrade):
@@ -157,9 +163,9 @@ def _event_loop(
             elif action is tray.TrayAction.OPEN_FILE:
                 _spawn_file_dialog(port, paths)
             elif action is tray.TrayAction.OPEN_LOGS:
-                _safe_call(paths, lambda: _open_path(paths.logs))
+                _safe_call(paths, lambda: ui.open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
-                _safe_call(paths, lambda: _open_uri("ms-settings:defaultapps"))
+                _safe_call(paths, lambda: ui.open_uri("ms-settings:defaultapps"))
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
 
@@ -308,28 +314,18 @@ def _spawn_open(
 
 
 def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
-    """Open-file common dialog on a dedicated thread (bugbot #2): the
-    supervisor's main loop has no Win32 message pump, but
-    `GetOpenFileNameW` pumps its own internally — it just must not run on
-    a thread another blocking call owns, and needs an STA COM apartment
-    for shell extensions. The lock drops a second click while one dialog
+    """Open-file dialog on a dedicated thread (bugbot #2): the supervisor's
+    main loop has no message pump, but the backend's file dialog pumps its own
+    internally — it just must not run on a thread another blocking call owns.
+    The thread + lock idiom lives here (platform-neutral); the actual native
+    dialog is `ui.pick_file()`. The lock drops a second click while one dialog
     is already open rather than stacking dialogs."""
     if not _dialog_lock.acquire(blocking=False):
         return
 
     def worker():
-        path = None
         try:
-            pythoncom.CoInitialize()
-            try:
-                path, _filter_index, _flags = win32gui.GetOpenFileNameW(
-                    Filter="All files\0*.*\0\0",
-                    Flags=win32con.OFN_FILEMUSTEXIST | win32con.OFN_PATHMUSTEXIST,
-                )
-            finally:
-                pythoncom.CoUninitialize()
-        except pywintypes.error:
-            path = None
+            path = ui.pick_file()
         finally:
             _dialog_lock.release()
         if path:
@@ -356,43 +352,11 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
     def worker():
         try:
-            results.put(_confirm_exit())
+            results.put(ui.confirm_exit())
         finally:
             _exit_dialog_lock.release()
 
     threading.Thread(target=worker, daemon=True, name="fused-render-exit-confirm").start()
-
-
-def _confirm_exit() -> bool:
-    MB_YESNO = 0x4
-    MB_ICONQUESTION = 0x20
-    IDYES = 6
-    result = ctypes.windll.user32.MessageBoxW(
-        0,
-        "Stop FusedRender and all running render processes?",
-        "Exit FusedRender",
-        MB_YESNO | MB_ICONQUESTION,
-    )
-    return result == IDYES
-
-
-def _report_open_rejected(path: str) -> None:
-    # The primary already logged the underlying reason (paths.log via its
-    # own _safe_open) — this is just accurate user-facing feedback for a
-    # forwarded open that failed, not a launch failure.
-    MB_OK = 0x0
-    MB_ICONWARNING = 0x30
-    ctypes.windll.user32.MessageBoxW(
-        0, f"FusedRender could not open:\n\n{path}", "FusedRender", MB_OK | MB_ICONWARNING
-    )
-
-
-def _open_path(path: Path) -> None:
-    os.startfile(str(path))  # noqa: S606 - local admin-installed path, not user input
-
-
-def _open_uri(uri: str) -> None:
-    os.startfile(uri)
 
 
 def _open_command(port: int, command: protocol.Command) -> None:
@@ -415,7 +379,7 @@ def _view_url(port: int, path: Path) -> str:
 def _open_browser(url: str) -> None:
     if "FUSED_RENDER_SUPERVISOR_NO_BROWSER" in os.environ:
         return
-    os.startfile(url)
+    ui.open_url(url)
 
 
 def _launch_token() -> str:
@@ -478,7 +442,7 @@ def _start_ready_server(paths: DesktopPaths, token: str):
             process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)
             return job, process, port
-        except (OSError, RuntimeError, TimeoutError, pywintypes.error) as error:
+        except (OSError, RuntimeError, TimeoutError, *_backend.SPAWN_ERRORS) as error:
             job.close()
             if process is not None:
                 process.wait(5000)

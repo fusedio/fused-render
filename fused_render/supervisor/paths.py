@@ -25,6 +25,9 @@ class DesktopPaths:
 
     @classmethod
     def discover(cls) -> "DesktopPaths":
+        # LOCALAPPDATA-only for now (Windows). The per-OS root directory
+        # (e.g. XDG base dirs on Linux) lands with each backend as it is
+        # written; no speculative cross-platform layout here until then.
         local_app_data = os.environ.get("LOCALAPPDATA")
         if not local_app_data:
             raise RuntimeError("LOCALAPPDATA is not set")

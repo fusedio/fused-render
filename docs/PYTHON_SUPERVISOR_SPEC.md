@@ -23,9 +23,9 @@ crash), we keep Rust.
 
 - A **thin native launcher** `FusedRender.exe` remains the single Start-Menu /
   Explorer target and AppUserModelID owner. It only execs
-  `pythonw.exe -m fused_render.win_supervisor <args>` — no logic. (A few lines
+  `pythonw.exe -m fused_render.supervisor <args>` — no logic. (A few lines
   of Rust/C, or a generated stub. This is the ONLY native piece left.)
-- `fused_render/win_supervisor.py` (new) is the surviving process. It owns:
+- `fused_render/supervisor/` (new package) is the surviving process. It owns:
   job object, tray, single-instance, IPC, startup toggle, and spawns the server
   as a Job-assigned child (mirroring the Rust child launch: `pythonw -I -m
   fused_render.cli serve --no-browser --port <p>`).

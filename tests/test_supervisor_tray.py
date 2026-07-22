@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("pystray")
 
-from fused_render.win_supervisor import tray
+from fused_render.supervisor import tray
 
 
 def test_tray_retry_loop_honors_stop(monkeypatch):
