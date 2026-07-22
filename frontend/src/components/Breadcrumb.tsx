@@ -11,24 +11,14 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  sameSearch,
+  splitBookmarkUrl,
 } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
 import { SplitRightIcon, SplitDownIcon } from "./SplitIcons";
 import { FinderIcon } from "./FinderIcon";
-
-// True when two query strings carry the same decoded `_layout` and the same
-// key/value multiset of remaining params, ignoring encoding and ordering
-// differences. `_layout` may contain literal `&` (D51), so both sides go
-// through the codec's splitShellSearch, never raw URLSearchParams.
-function sameSearch(a: string, b: string): boolean {
-  const norm = (s: string) => {
-    const { layout, params } = splitShellSearch(s);
-    return JSON.stringify([layout, [...params].sort()]);
-  };
-  return norm(a) === norm(b);
-}
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
 // change or a deleted bookmark disarms permanently), so it runs in an effect,
@@ -54,9 +44,7 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
       return setVisible(false);
     }
 
-    const qIdx = armed.url.indexOf("?");
-    const armedPathname = qIdx === -1 ? armed.url : armed.url.slice(0, qIdx);
-    const armedSearch = qIdx === -1 ? "" : armed.url.slice(qIdx);
+    const { pathname: armedPathname, search: armedSearch } = splitBookmarkUrl(armed.url);
 
     if (location.pathname !== armedPathname) {
       disarmBookmark(); // page change = permanent disarm
