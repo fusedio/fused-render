@@ -154,53 +154,16 @@ def _from_shared_file(cfg: dict) -> Credentials | None:
     return None
 
 
-def _from_botocore(cfg: dict) -> Credentials | None:
-    """The optional last rung: botocore's full provider chain (SSO, IMDS,
-    credential_process, assume-role, container). Lazily imported so a plain
-    `pip install fused-render` — without the [cloud-auth] extra — never needs
-    botocore; ImportError -> None. Honors the remote's profile /
-    shared_credentials_file when set, then freezes the resolved credentials into
-    the local namedtuple (a frozen STS credential carries its session token so
-    the mounts-side link-TTL clamp still fires). ANY failure — library absent,
-    expired SSO login, no providers, an IMDS timeout — returns None so the
-    caller keeps today's publiclink path. Never logs credential values."""
-    try:
-        import botocore.session
-    except ImportError:
-        return None
-    try:
-        session = botocore.session.Session(profile=cfg.get("profile") or None)
-        shared = cfg.get("shared_credentials_file")
-        if shared:
-            session.set_config_variable(
-                "credentials_file", os.path.expanduser(shared))
-        creds = session.get_credentials()
-        if creds is None:
-            return None
-        frozen = creds.get_frozen_credentials()
-        if not frozen.access_key or not frozen.secret_key:
-            return None
-        return Credentials(frozen.access_key, frozen.secret_key,
-                           frozen.token or None)
-    except Exception:
-        return None
-
-
-def resolve_credentials(cfg: dict | None) -> Credentials | None:
-    """Resolve AWS credentials for an S3 remote config, cheapest source first,
-    or None when nothing resolves — then the caller keeps today's publiclink
-    path:
+def resolve_static_credentials(cfg: dict | None) -> Credentials | None:
+    """The three cheap, NO-NETWORK credential rungs, cheapest first, or None:
       1. explicit access_key_id/secret_access_key in the remote config
          (rclone's config/get returns the plaintext secret on the pinned
          version, so no config-dump fallback is needed);
       2. environment (AWS_ACCESS_KEY_ID/SECRET/SESSION_TOKEN) when env_auth;
       3. the shared credentials file when env_auth or a profile /
-         shared_credentials_file is configured;
-      4. botocore's full provider chain (SSO / IMDS / credential_process) via
-         _from_botocore, resolved when installed [cloud-auth], else None — same
-         ambient-auth gate as source 3, so a plain keyed remote never triggers
-         an ambient-credential lookup.
-    Non-S3 or empty configs return None."""
+         shared_credentials_file is configured.
+    None when only the ambient botocore-chain source (rung 4) remains — the
+    caller then consults resolve_botocore_chain. Non-S3 configs return None."""
     if not isinstance(cfg, dict) or cfg.get("type") != "s3":
         return None
     access = cfg.get("access_key_id")
@@ -215,8 +178,74 @@ def resolve_credentials(cfg: dict | None) -> Credentials | None:
             return Credentials(access, secret,
                                os.environ.get("AWS_SESSION_TOKEN") or None)
     if env_auth or cfg.get("profile") or cfg.get("shared_credentials_file"):
-        from_file = _from_shared_file(cfg)
-        if from_file is not None:
-            return from_file
-        return _from_botocore(cfg)
+        return _from_shared_file(cfg)
+    return None
+
+
+def needs_botocore(cfg: dict | None) -> bool:
+    """True when the remote opted into ambient auth (env_auth / profile /
+    shared_credentials_file), so botocore's provider chain should be consulted
+    when the static rungs found nothing — the same gate as rung 3, so a plain
+    keyed remote never triggers an ambient-credential lookup. Cheap; no network,
+    no import."""
+    if not isinstance(cfg, dict) or cfg.get("type") != "s3":
+        return False
+    env_auth = str(cfg.get("env_auth", "")).lower() == "true"
+    return bool(env_auth or cfg.get("profile")
+                or cfg.get("shared_credentials_file"))
+
+
+def resolve_botocore_chain(cfg: dict):
+    """Rung 4: build a botocore session and walk its full provider chain (SSO,
+    IMDS, credential_process, assume-role, container), returning the RAW,
+    self-refreshing credentials OBJECT — NOT frozen — so mounts can cache it and
+    re-freeze near expiry (via frozen_from_botocore) without re-walking the
+    chain. Lazily imported so a plain `pip install fused-render` never needs
+    botocore; ANY failure (library absent, expired SSO login, no providers, an
+    IMDS timeout) -> None. Never logs credential values."""
+    try:
+        import botocore.session
+    except ImportError:
+        return None
+    try:
+        session = botocore.session.Session(profile=cfg.get("profile") or None)
+        shared = cfg.get("shared_credentials_file")
+        if shared:
+            session.set_config_variable(
+                "credentials_file", os.path.expanduser(shared))
+        return session.get_credentials()
+    except Exception:
+        return None
+
+
+def frozen_from_botocore(creds) -> Credentials | None:
+    """Freeze a botocore credentials object into the local namedtuple (a frozen
+    STS credential carries its session token, so the mounts-side link-TTL clamp
+    still fires). None when `creds` is None, refreshes to nothing, or lacks the
+    key pair. Cheap and self-refreshing — get_frozen_credentials refreshes STS
+    only near expiry, so callers can call it per window on a cached object."""
+    if creds is None:
+        return None
+    try:
+        frozen = creds.get_frozen_credentials()
+    except Exception:
+        return None
+    if not frozen.access_key or not frozen.secret_key:
+        return None
+    return Credentials(frozen.access_key, frozen.secret_key,
+                       frozen.token or None)
+
+
+def resolve_credentials(cfg: dict | None) -> Credentials | None:
+    """Resolve AWS credentials for an S3 remote config, or None when nothing
+    resolves — the static rungs (config keys / env / shared file), then
+    botocore's provider chain when the remote opted into ambient auth. A
+    convenience combining resolve_static_credentials + resolve_botocore_chain;
+    mounts calls the pieces separately so it can cache the self-refreshing chain
+    object. Non-S3 or empty configs return None."""
+    creds = resolve_static_credentials(cfg)
+    if creds is not None:
+        return creds
+    if needs_botocore(cfg):
+        return frozen_from_botocore(resolve_botocore_chain(cfg))
     return None

@@ -1520,6 +1520,12 @@ _LINK_TTL_S = 30 * 60.0
 _SIGN_EXPIRY_S = 15 * 60
 _SIGN_VALIDATE_TIMEOUT_S = 5.0
 _CRED_TTL_S = 60.0  # re-read env / ~/.aws so a rotated key / STS refresh lands
+# The botocore provider chain (SSO/IMDS/credential_process) is expensive to walk
+# — a black-holed IMDS probe stalls ~1-2s — so its self-refreshing credentials
+# object is cached far longer than the 60s frozen-credential window; the object
+# refreshes STS itself near expiry, and this bound just lets a fresh `aws sso
+# login` be picked up without a restart.
+_BOTOCORE_CHAIN_TTL_S = 10 * 60.0
 # Re-resolve a GCS bearer token this many seconds BEFORE its stated expiry, so a
 # read never hands GCS a token that expires mid-flight.
 _GCS_TOKEN_SLACK_S = 60.0
@@ -1538,6 +1544,7 @@ _upstream_mode: dict = {}   # fs -> "link"|"public"|"none"|"sign"|"gsign"|"beare
 _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
 _upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
 _cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
+_botocore_creds_cache: dict = {}  # remote name -> (botocore creds obj|None, exp)
 _gcs_token_cache: dict = {}  # remote name -> (gcssign.Token|None, monotonic exp)
 _gcs_creds_cache: dict = {}  # remote name -> (google-auth creds obj|None, mono exp)
 _sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
@@ -1594,6 +1601,7 @@ def _invalidate_upstream_caches() -> None:
         _upstream_mode.clear()
         _upstream_region.clear()
         _cred_cache.clear()
+        _botocore_creds_cache.clear()
         _gcs_token_cache.clear()
         _gcs_creds_cache.clear()
         _upstream_links.clear()
@@ -1790,17 +1798,40 @@ def _gcs_public_object_url(fs: str, rel: str) -> str | None:
     return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
 
 
+def _botocore_chain(name: str, cfg: dict | None):
+    """Cached botocore provider-chain credentials OBJECT per remote. The chain
+    walk (which can stall ~1-2s on a black-holed IMDS probe) runs at most once
+    per _BOTOCORE_CHAIN_TTL_S; the cached object self-refreshes STS near expiry,
+    so frozen_from_botocore on it is cheap between walks. Cleared by
+    _invalidate_upstream_caches. None (also cached) when the chain yields
+    nothing."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _botocore_creds_cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    chain = s3sign.resolve_botocore_chain(cfg)
+    with _upstream_lock:
+        _botocore_creds_cache[name] = (chain, now + _BOTOCORE_CHAIN_TTL_S)
+    return chain
+
+
 def _signable_credentials(name: str, cfg: dict | None):
     """resolve_credentials for a remote, cached per name for _CRED_TTL_S so a
     rotated ~/.aws/credentials or an STS refresh is picked up without a
     restart, but the env/file reads aren't paid per object on the sign hot
-    path. None (also cached) when nothing resolves."""
+    path. The botocore rung rides the LONGER-lived, self-refreshing chain-object
+    cache (_botocore_chain), so the expensive provider-chain walk isn't repeated
+    every _CRED_TTL_S — only get_frozen_credentials runs per window. None (also
+    cached) when nothing resolves."""
     now = time.monotonic()
     with _upstream_lock:
         hit = _cred_cache.get(name)
         if hit is not None and hit[1] > now:
             return hit[0]
-    creds = s3sign.resolve_credentials(cfg)
+    creds = s3sign.resolve_static_credentials(cfg)
+    if creds is None and s3sign.needs_botocore(cfg):
+        creds = s3sign.frozen_from_botocore(_botocore_chain(name, cfg))
     with _upstream_lock:
         _cred_cache[name] = (creds, now + _CRED_TTL_S)
     return creds

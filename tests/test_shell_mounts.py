@@ -2139,6 +2139,7 @@ def fresh_upstream():
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._botocore_creds_cache.clear()
     mounts_mod._gcs_token_cache.clear()
     mounts_mod._gcs_creds_cache.clear()
     mounts_mod._sign_neg_cache.clear()
@@ -2149,6 +2150,7 @@ def fresh_upstream():
     mounts_mod._upstream_cfg.clear()
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
+    mounts_mod._botocore_creds_cache.clear()
     mounts_mod._gcs_token_cache.clear()
     mounts_mod._gcs_creds_cache.clear()
     mounts_mod._sign_neg_cache.clear()
@@ -2464,7 +2466,8 @@ def test_upstream_sign_demotes_to_link_when_creds_vanish(home, rcd, fresh_upstre
     assert first.startswith("https://bucket.s3.")  # presigned
     assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
     # Creds rotate away: the resolver now returns None and the cache expires.
-    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials", lambda cfg: None)
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_static_credentials",
+                        lambda cfg: None)
     mounts_mod._cred_cache.clear()
     got = mounts_mod.upstream_url_for(
         os.path.join(mounts_mod.mountpoint(c), "b.parquet"))
@@ -3559,6 +3562,58 @@ def test_gcs_credentials_object_cached_across_token_reresolves(fresh_upstream, m
     mounts_mod._gcs_token_cache.clear()
     mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
     assert len(calls) == 1  # creds object reused from the 60s creds cache
+
+
+class _FakeBotocoreChain:
+    """A self-refreshing botocore credentials object: get_frozen_credentials
+    always answers, so re-freezing is cheap and needs no re-walk."""
+
+    def __init__(self, token=None):
+        self._token = token
+
+    def get_frozen_credentials(self):
+        class _F:
+            access_key = "AKIACHAIN"
+            secret_key = "CHAINSEC"
+        _F.token = self._token
+        return _F
+
+
+def test_signable_credentials_caches_botocore_chain_object(fresh_upstream, monkeypatch):
+    # The (IMDS-slow) provider-chain walk runs at most once per its own window;
+    # get_frozen_credentials is re-run per _CRED_TTL_S on the cached object.
+    builds = []
+
+    def fake_chain(cfg):
+        builds.append(cfg)
+        return _FakeBotocoreChain(token="STSTOK")
+
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_botocore_chain", fake_chain)
+    cfg = {"type": "s3", "env_auth": "true"}  # opts into ambient auth, no static
+    c1 = mounts_mod._signable_credentials("corp", cfg)
+    assert c1 == mounts_mod.s3sign.Credentials("AKIACHAIN", "CHAINSEC", "STSTOK")
+    # The 60s frozen cache lapses but the chain OBJECT is reused (not re-walked).
+    mounts_mod._cred_cache.clear()
+    c2 = mounts_mod._signable_credentials("corp", cfg)
+    assert c2 == c1
+    assert len(builds) == 1  # chain walked once; frozen re-extracted each window
+
+
+def test_signable_credentials_static_keys_skip_botocore(fresh_upstream, monkeypatch):
+    # A remote with static keys never triggers the chain walk.
+    builds = []
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_botocore_chain",
+                        lambda cfg: builds.append(cfg))
+    cfg = {"type": "s3", "access_key_id": "AKIACFG", "secret_access_key": "SEC"}
+    assert mounts_mod._signable_credentials("corp", cfg) == \
+        mounts_mod.s3sign.Credentials("AKIACFG", "SEC", None)
+    assert builds == []
+
+
+def test_invalidate_upstream_caches_clears_botocore_chain_cache(fresh_upstream):
+    mounts_mod._botocore_creds_cache["corp"] = (object(), time.time() + 999)
+    mounts_mod._invalidate_upstream_caches()
+    assert mounts_mod._botocore_creds_cache == {}
 
 
 # -- tiered private-GCS raw reads: gsign 307 / bearer proxy -----------------
