@@ -2132,31 +2132,13 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
 
 @pytest.fixture()
 def fresh_upstream():
-    """The bypass memoizes per-remote capability, config and per-object
-    links in module globals; clear around each test so results don't leak."""
-    mounts_mod._upstream_links.clear()
-    mounts_mod._upstream_mode.clear()
-    mounts_mod._upstream_cfg.clear()
-    mounts_mod._upstream_region.clear()
-    mounts_mod._cred_cache.clear()
-    mounts_mod._botocore_creds_cache.clear()
-    mounts_mod._gcs_token_cache.clear()
-    mounts_mod._gcs_creds_cache.clear()
-    mounts_mod._gcs_signer_cache.clear()
-    mounts_mod._sign_neg_cache.clear()
-    mounts_mod._validation_locks.clear()
+    """The bypass memoizes per-remote capability, config, credentials and per-
+    object links in module globals; clear around each test so results don't leak.
+    Delegates to the production invalidator so every cache (incl. the gsign
+    bearer-fallback marks and single-flight locks) is dropped via one registry."""
+    mounts_mod._invalidate_upstream_caches()
     yield
-    mounts_mod._upstream_links.clear()
-    mounts_mod._upstream_mode.clear()
-    mounts_mod._upstream_cfg.clear()
-    mounts_mod._upstream_region.clear()
-    mounts_mod._cred_cache.clear()
-    mounts_mod._botocore_creds_cache.clear()
-    mounts_mod._gcs_token_cache.clear()
-    mounts_mod._gcs_creds_cache.clear()
-    mounts_mod._gcs_signer_cache.clear()
-    mounts_mod._sign_neg_cache.clear()
-    mounts_mod._validation_locks.clear()
+    mounts_mod._invalidate_upstream_caches()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
