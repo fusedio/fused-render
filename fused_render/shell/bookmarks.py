@@ -28,7 +28,6 @@ from fused_render.shell import mounts, pathops, storage
 router = APIRouter()
 
 _VIEW_PREFIXES = ("/view/", "/embed/")
-_SENTINELS = ("_panel", "_tab")
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -354,8 +353,8 @@ def _decode_fs_path(url: str) -> str | None:
     above).
 
     Mirrors frontend router.fsPathFromLocation: strip the /view/ or /embed/
-    prefix and query, decode each path segment. Sentinel layout/tab urls
-    (`_panel` / `_tab`) resolve to None (nothing to check)."""
+    prefix and query, decode each path segment. Sentinel urls resolve to None
+    (nothing to check)."""
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -368,10 +367,16 @@ def _decode_fs_path(url: str) -> str | None:
     else:
         return None
     segments = [unquote(s) for s in rest.split("/") if s]
-    # Sentinels are the exact top-level pathnames `/view/_panel` and `/view/_tab`
-    # (App.tsx matches the whole pathname) — a real file/dir named `_panel`/`_tab`
-    # nested deeper is NOT a sentinel and gets checked like any other path.
-    if not segments or (len(segments) == 1 and segments[0] in _SENTINELS):
+    # Any `_`-prefixed top-level pathname is a shell sentinel (`_panel`, `_tab`,
+    # `_prefs`, `_templates`, `_mounts`, `_bookmark`, `_account`, ...) — the whole
+    # namespace is shell-owned, so reject the prefix rather than enumerating
+    # names (mirrors recents._decoded_fs_path). All of these are genuinely
+    # bookmarkable via StaticBreadcrumb (D125: `_account` bookmarks must keep
+    # working), so treating only `_panel`/`_tab` as sentinels would decode the
+    # rest to fake paths like `/_prefs` and falsely flag them missing. A real
+    # file/dir named e.g. `_panel` nested DEEPER is not a sentinel (only an
+    # exact single top-level segment is) and gets checked like any other path.
+    if not segments or (len(segments) == 1 and segments[0].startswith("_")):
         return None
     joined = "/".join(segments)
     # Mirror the frontend's rootedFsPath (lib/router.ts): a Windows drive-letter

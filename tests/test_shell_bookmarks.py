@@ -477,6 +477,25 @@ def test_missing_never_flags_folders_or_sentinel_urls(tmp_path, monkeypatch):
     assert client.get("/api/bookmarks").json()["missing"] == []
 
 
+def test_missing_never_flags_any_underscore_sentinel_route(tmp_path, monkeypatch):
+    # Regression (Bugbot finding on PR #253): every shell sentinel route is
+    # genuinely bookmarkable via StaticBreadcrumb — not just _panel/_tab — and
+    # _account bookmarks must keep working per D125. Narrowly checking against
+    # a `("_panel", "_tab")` allowlist let the rest decode to fake paths like
+    # "/_prefs" and get falsely flagged missing; the fix treats ANY `_`-prefixed
+    # top-level segment as a sentinel (mirrors recents._decoded_fs_path).
+    client, home = _client(tmp_path, monkeypatch)
+    tree = [
+        {**_bm("prefs", "prefs", 1), "url": "/view/_prefs"},
+        {**_bm("templates", "templates", 2), "url": "/view/_templates"},
+        {**_bm("mounts", "mounts", 3), "url": "/view/_mounts"},
+        {**_bm("account", "account", 4), "url": "/view/_prefs?tab=account"},
+        {**_bm("bookmark", "bookmark", 5), "url": "/view/_bookmark?file=%2Ftmp%2Fx.bookmark"},
+    ]
+    _write_tree(home, tree)
+    assert client.get("/api/bookmarks").json()["missing"] == []
+
+
 def test_missing_check_is_bounded_when_hung(tmp_path, monkeypatch):
     # A stale bookmark sitting on a slow/hung mount must never stall the
     # sidebar's poll. Fail open: a check that outlives the budget is NOT
