@@ -2142,6 +2142,7 @@ def fresh_upstream():
     mounts_mod._botocore_creds_cache.clear()
     mounts_mod._gcs_token_cache.clear()
     mounts_mod._gcs_creds_cache.clear()
+    mounts_mod._gcs_signer_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
     yield
@@ -2153,6 +2154,7 @@ def fresh_upstream():
     mounts_mod._botocore_creds_cache.clear()
     mounts_mod._gcs_token_cache.clear()
     mounts_mod._gcs_creds_cache.clear()
+    mounts_mod._gcs_signer_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
 
@@ -3511,12 +3513,29 @@ def test_gcs_list_page_second_401_raises(home, rcd, fresh_upstream, monkeypatch,
     rcd.responses["config/get"] = _CRED_GCS_CFG
     _stub_gcs_token(monkeypatch, token="TOK")
     box["raises"] = [
-        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None),
-        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None)]
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None),
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None)]
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
     with pytest.raises(mounts_mod.DirectListError):
         mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
     assert len(calls) == 2  # retried exactly once
+
+
+def test_gcs_list_page_403_propagates_without_retry(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    # 403 = permission denial with a VALID token (per-object IAM); re-resolving
+    # wouldn't help, so it propagates immediately — no retry, no token churn.
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None),
+        None]  # a retry (if it happened) would succeed — it must NOT happen
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 1  # no retry on 403
+    assert len(resolver_calls) == 1  # token not invalidated / re-resolved
 
 
 def test_invalidate_upstream_caches_clears_gcs_token_and_creds_caches(fresh_upstream):
@@ -3658,17 +3677,23 @@ def test_upstream_gsign_signs_sa_key_gcs(home, rcd, fresh_upstream, monkeypatch)
     assert seen == []
 
 
-def test_upstream_gsign_403_falls_to_bearer_mode(home, rcd, fresh_upstream, monkeypatch):
+def test_upstream_gsign_403_falls_to_bearer_and_bearer_serves(home, rcd, fresh_upstream, monkeypatch):
     import os
 
     rcd.responses["config/get"] = _CRED_GCS_CFG
-    _stub_gcs_signer(monkeypatch)
+    _stub_gcs_signer(monkeypatch, present=True)    # SA key parses...
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")  # ...and a token resolves
     monkeypatch.setattr(mounts_mod, "_sign_validation_status",
                         lambda url: (403, None))
     c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
     f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
-    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod.upstream_url_for(f) is None  # signature rejected, no 307
     assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "bearer"
+    # FINDING 1: a remote pinned to bearer serves the token even though the SA
+    # key still parses (_gcs_signable True) — no dead-end back to the serve.
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
     # publiclink is never attempted for a credentialed GCS remote.
     assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
 
@@ -3687,7 +3712,7 @@ def test_upstream_gsign_inconclusive_not_pinned(home, rcd, fresh_upstream, monke
     assert mounts_mod._sign_neg_cache.get("gcp:bucket", 0.0) > 0.0
 
 
-def test_upstream_gsign_demotes_when_signer_vanishes(home, rcd, fresh_upstream, monkeypatch):
+def test_upstream_gsign_unpins_when_signer_vanishes(home, rcd, fresh_upstream, monkeypatch):
     import os
 
     rcd.responses["config/get"] = _CRED_GCS_CFG
@@ -3698,10 +3723,14 @@ def test_upstream_gsign_demotes_when_signer_vanishes(home, rcd, fresh_upstream, 
     f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
     assert mounts_mod.upstream_url_for(f) is not None
     assert mounts_mod._upstream_mode["gcp:bucket"] == "gsign"
-    # SA key rotated away: gsign mints nothing, so demote to bearer cleanly.
+    # SA key rotated away (and its cached signer expires): gsign mints nothing.
     _stub_gcs_signer(monkeypatch, present=False)
+    mounts_mod._gcs_signer_cache.clear()
     assert mounts_mod.upstream_url_for(f) is None
-    assert mounts_mod._upstream_mode["gcp:bucket"] == "bearer"
+    # FINDING 5: the demotion is NON-permanent — the mode is un-pinned, so the
+    # next request re-derives (gsign again once the signer returns) rather than
+    # being stuck on a wrong mode forever.
+    assert "gcp:bucket" not in mounts_mod._upstream_mode
 
 
 def test_upstream_bearer_token_only_gcs(home, rcd, fresh_upstream, monkeypatch):
