@@ -114,6 +114,12 @@ jobs:
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
       - name: Publish download page + version manifest
+        # The download page is cosmetic; the DMG/wheel (uploaded above) are the
+        # real artifacts. continue-on-error keeps ANY failure in this step —
+        # version derivation, write_manifest.py, or the S3 uploads — from
+        # skipping the CloudFront invalidation and GitHub Release/homebrew steps
+        # that follow.
+        continue-on-error: true
         run: |
           set -euo pipefail
           # Same version derivation as the homebrew step below: from the DMG
@@ -123,8 +129,8 @@ jobs:
           python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
           # These root keys need the IAM grant provisioned in Fused's
           # infrastructure (index.html + latest.json). Until that applies, warn
-          # instead of failing the release — the page is cosmetic, the DMG/wheel
-          # artifacts above are not.
+          # instead of erroring — though continue-on-error above is the real
+          # guarantee the release proceeds regardless.
           if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
                --content-type "application/json" --cache-control "max-age=300" \
              && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
