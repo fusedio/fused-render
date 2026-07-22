@@ -302,6 +302,56 @@
 
   /* ---------- build page: prominent prompt + api table ---------- */
   .promptbox.big pre { font-size:14px; line-height:1.6; padding:18px 74px 18px 18px; }
+
+  /* hero prompt — the "grab this" Claude prompt, made the focal point */
+  .heroprompt { border:1px solid #5c5c2e; background:linear-gradient(180deg,#1c1c10,#181811);
+       border-radius:14px; overflow:hidden; margin:4px 0 14px;
+       box-shadow:0 0 0 1px rgba(229,255,68,.05), 0 12px 34px rgba(0,0,0,.4); }
+  .heroprompt .hp-head { display:flex; align-items:center; gap:8px; padding:11px 18px;
+       border-bottom:1px solid #45451f; background:#21210f;
+       font-size:11px; text-transform:uppercase; letter-spacing:.8px; font-weight:700; color:var(--yellow); }
+  .heroprompt .hp-head .spark { font-size:13px; }
+  .heroprompt .hp-body { padding:17px 20px 4px; }
+  .heroprompt pre { background:transparent; border:0; padding:0; margin:0; font-size:15px; line-height:1.6;
+       color:#f3f3e8; white-space:pre-wrap; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  .heroprompt .hp-copy { position:static; display:flex; align-items:center; justify-content:center; gap:8px;
+       width:100%; margin:15px 0 17px; padding:12px; border-radius:10px; cursor:pointer;
+       border:1px solid var(--yellow); background:var(--yellow); color:#141414;
+       font:700 13.5px/1 inherit; transition:filter .15s; }
+  .heroprompt .hp-copy:hover { filter:brightness(1.06); }
+  .heroprompt .hp-copy.done { background:#141414; color:var(--yellow); border-color:var(--yellow); }
+
+  /* mental-model file tree */
+  .filetree { background:var(--code-bg); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:0 0 14px; }
+  .filetree .ft-dir { font:600 14.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--text); }
+  .filetree .ft-item { display:grid; grid-template-columns:auto auto auto 1fr; align-items:baseline; gap:10px;
+       margin-top:11px; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:13px; }
+  .filetree .ft-branch { color:var(--mut); }
+  .filetree .ft-name { color:var(--text); white-space:nowrap; }
+  .filetree .ft-arrow { color:var(--mut); }
+  .filetree .ft-role { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-role b { color:var(--text); font-weight:600; }
+  .filetree .ft-bridge { margin:17px 0 0; padding:11px 12px; text-align:center; background:var(--panel);
+       border:1px solid var(--border); border-radius:9px; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-bridge b { color:var(--yellow); }
+  .filetree .ft-live { margin-top:14px; padding-top:13px; border-top:1px solid var(--border); font-size:12.5px; color:var(--dim); }
+  .filetree .ft-live code { color:var(--text); font-size:11.5px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+
+  /* URL-state demo: a live browser address bar */
+  .urldemo { margin:0 0 12px; }
+  .urldemo .ub-bar { display:flex; align-items:center; gap:11px; padding:10px 14px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:11px; }
+  .urldemo .dots { display:flex; gap:6px; flex-shrink:0; }
+  .urldemo .dots i { width:11px; height:11px; border-radius:50%; display:block; }
+  .urldemo .ub-url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+       padding:8px 13px; font:12.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace;
+       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .urldemo .ub-dim { color:var(--mut); }
+  .urldemo .ub-q { color:var(--yellow); font-weight:600; }
+  .urldemo .ub-q b { color:#141414; background:var(--yellow); border-radius:4px; padding:1px 6px;
+       font-variant-numeric:tabular-nums; transition:transform .12s ease; display:inline-block; }
+  .urldemo .ub-q.flash b { transform:scale(1.14); }
   .apitable { width:100%; border-collapse:collapse; margin:0 0 10px; font-size:12.5px; }
   .apitable td { border:1px solid var(--border); padding:9px 11px; vertical-align:top; }
   .apitable td:first-child { white-space:nowrap; width:1%; }
@@ -424,9 +474,12 @@
     <h1 class="title">Building with Fused Render</h1>
     <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
 
-    <div class="promptbox big">
-      <button class="copybtn" data-copy="buildPrompt">Copy</button>
-      <pre id="buildPrompt">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
+    <div class="heroprompt">
+      <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
+      <div class="hp-body">
+        <pre id="buildPrompt">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
+        <button class="copybtn hp-copy" data-copy="buildPrompt">📋&nbsp; Copy prompt</button>
+      </div>
     </div>
     <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
 
@@ -441,11 +494,23 @@ claude plugin install fused-render@fused-render</pre>
     </div>
 
     <h2>The mental model</h2>
-    <p class="sub">Two files in a folder. The HTML is what you see; the Python is the work. They talk over the <span class="y mono">fused</span> bridge injected into every page.</p>
-    <div class="steps">
-      <div class="step"><div class="num">1</div><h4>Make a folder</h4><p>Anywhere Fused Render can see — <code>~/Documents/Fused/my_tool/</code> works.</p></div>
-      <div class="step"><div class="num">2</div><h4>Drop in two files</h4><p>An <code>index.html</code> for what you see, a <code>tool.py</code> for the work.</p></div>
-      <div class="step"><div class="num">3</div><h4>Click the HTML file</h4><p>It renders as a live page. Edit either file and the page reloads itself.</p></div>
+    <p class="sub">A project is just a folder with two files. The HTML is what you see; the Python is the work. That's the whole structure:</p>
+    <div class="filetree">
+      <div class="ft-dir">📁 my_tool/</div>
+      <div class="ft-item">
+        <span class="ft-branch">├──</span>
+        <span class="ft-name">📄 index.html</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>what you see</b> — the UI, in HTML &amp; JS</span>
+      </div>
+      <div class="ft-item">
+        <span class="ft-branch">└──</span>
+        <span class="ft-name">🐍 tool.py</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>the work</b> — a <code>main()</code> that returns JSON</span>
+      </div>
+      <div class="ft-bridge">HTML&nbsp; <b>⇄</b> &nbsp;Python — they talk over the <span class="y mono">fused</span> bridge injected into every page</div>
+      <div class="ft-live">▸ Click <code>index.html</code> and it renders as a live page. Edit either file and the page reloads itself.</div>
     </div>
 
     <h3>HTML calls Python</h3>
@@ -468,16 +533,21 @@ claude plugin install fused-render@fused-render</pre>
     </div>
 
     <h3>State lives in the URL</h3>
-    <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Refresh, bookmark, or share the link and the page comes back exactly as you left it.</p>
+    <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Drag the slider and watch the address bar: the <b class="y">?level=</b> value updates live. Refresh, bookmark, or share that link and the page comes back exactly as you left it.</p>
+    <div class="urldemo">
+      <div class="ub-bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="ub-url"><span class="ub-dim">127.0.0.1:1777/view/~/Fused/my_tool/index.html</span><span class="ub-q" id="ubQ">?level=<b id="urlVal">40</b></span></div>
+      </div>
+    </div>
     <div class="grid2">
       <div class="card ctrl">
         <label>Level <b id="vLevel">40</b></label>
         <input type="range" id="level" min="0" max="100" step="1" value="40">
+        <div class="meter" style="margin-bottom:0"><i id="bar"></i></div>
       </div>
       <div class="card">
-        <div class="meter"><i id="bar"></i></div>
-        <div class="urlbox">this page's URL now ends in&nbsp; ?<b>level</b>=<span id="urlVal">40</span></div>
-        <p style="margin:8px 0 0;font-size:12px">Move the slider, then refresh — the level survives, because the URL is the state.</p>
+        <p style="margin:0;font-size:12.5px">The slider writes <code>fused.params.set("level", …)</code>, which appends <code>?level=</code> to the URL. Nothing is stored in hidden JS state — the URL <em>is</em> the state, so it survives a refresh and travels in a shared link.</p>
       </div>
     </div>
 
@@ -506,28 +576,6 @@ claude plugin install fused-render@fused-render</pre>
 
     <h2>Next</h2>
     <p class="sub">Render other file types through <a href="?page=templates">Templates</a>, pull in remote data with <a href="?page=mount">Mount</a>, then <a href="?page=deploy">Deploy</a> so others can open your app in a browser. Or see finished projects in the <a href="?page=showcase">Showcase</a>.</p>
-  </section>
-
-  <!-- ============================ USING FUSED RENDER (the app / UI guide) ============================ -->
-  <section class="page" data-slug="using" data-title="Using Fused Render">
-    <p class="crumb">The app</p>
-    <h1 class="title">Using Fused Render</h1>
-    <p class="lede">The Fused Render window is a file explorer for your project folders — click an HTML file and it renders live. Here's how to get around it.</p>
-
-    <h2>Bookmarks</h2>
-    <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
-    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
-      <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
-
-    <h2>Split view</h2>
-    <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
-    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
-      <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
-
-    <h2>Opening files with templates</h2>
-    <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See <a href="?page=templates">Templates</a> for how templates are chosen and customized.</p>
-    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
-      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
@@ -622,6 +670,28 @@ claude plugin install fused-render@fused-render</pre>
       </div>
       <div class="cond-out" id="condOut"></div>
     </div>
+  </section>
+
+  <!-- ============================ USING FUSED RENDER (the app / UI guide) ============================ -->
+  <section class="page" data-slug="using" data-title="Using Fused Render">
+    <p class="crumb">The app</p>
+    <h1 class="title">Using Fused Render</h1>
+    <p class="lede">The Fused Render window is a file explorer for your project folders — click an HTML file and it renders live. Here's how to get around it.</p>
+
+    <h2>Bookmarks</h2>
+    <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
+    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
+      <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
+
+    <h2>Split view</h2>
+    <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
+    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
+      <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
+
+    <h2>Opening files with templates</h2>
+    <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See <a href="?page=templates">Templates</a> for how templates are chosen and customized.</p>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
   </section>
 
   <!-- ============================ 4 · MOUNT ============================ -->
@@ -1163,6 +1233,8 @@ async function checkClaude(){
 /* URL-state slider */
 function drawLevel(v){
   $("#level").value = v; $("#vLevel").textContent = v; $("#bar").style.width = v+"%"; $("#urlVal").textContent = v;
+  const q = $("#ubQ");
+  if (q) { q.classList.add("flash"); clearTimeout(q._t); q._t = setTimeout(() => q.classList.remove("flash"), 130); }
 }
 if (hasFused && fused.params){
   const P = fused.params;
