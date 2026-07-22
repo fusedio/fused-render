@@ -3986,147 +3986,65 @@ def test_get_mounts_probes_credentials_off_serial_path(
 # --------------------------------------------------- health monitor: episode dedup
 
 
-def test_health_monitor_reconnects_once_per_episode(monkeypatch):
-    """poll_once fires exactly one reconnect per disconnect episode: a
-    healthy->disconnected transition reconnects once, staying disconnected
-    fires none, and a return to "mounted" re-arms so the NEXT drop fires again.
-    Also verifies "unmounted" (user-detached) never triggers a reconnect."""
+def test_health_monitor_notifies_once_per_episode(monkeypatch):
+    """poll_once is DETECTION-ONLY: it emits exactly one "disconnected" event
+    per broken episode and NEVER calls reconnect_mount (auto-reconnect is off —
+    it churned on flap-prone mounts). A healthy->broken transition notifies once,
+    staying broken emits nothing more, a return to "mounted" re-arms, and
+    "unmounted" (user-detached) never notifies. Classification is I/O-free
+    (probe_io=False)."""
     # Isolate module-level monitor state so ids/episodes don't leak across tests.
     monkeypatch.setattr(mounts_mod, "_health_episodes", {})
     monkeypatch.setattr(mounts_mod, "_health_events",
                         __import__("collections").deque(maxlen=100))
     monkeypatch.setattr(mounts_mod, "_health_event_seq", 0)
-    # Make the post-reconnect verification instant so the episode machine is
-    # tested without real sleeps (behavior covered by test_..._verifies_reconnect).
-    monkeypatch.setattr(mounts_mod, "_RECONNECT_VERIFY_DEADLINE_S", 0.0)
-    monkeypatch.setattr(mounts_mod, "_RECONNECT_VERIFY_POLL_S", 0.0)
 
     m = {"id": "m1", "name": "n1", "remote": "r:bucket"}
     monkeypatch.setattr(mounts_mod, "list_mounts", lambda: [m])
     monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
 
     current = {"state": "mounted"}
-    monkeypatch.setattr(mounts_mod, "mount_state",
-                        lambda mm, live, timeout=None: current["state"])
+    # The monitor calls mount_state(..., probe_io=False); accept the kwarg.
+    monkeypatch.setattr(
+        mounts_mod, "mount_state",
+        lambda mm, live, timeout=None, probe_io=True: current["state"])
 
+    # Auto-reconnect is disabled: the monitor must NEVER call reconnect_mount.
     reconnects = []
     monkeypatch.setattr(mounts_mod, "reconnect_mount",
-                        lambda mm: reconnects.append(mm["id"]) or None)
+                        lambda mm: reconnects.append(mm["id"]))
 
     def kinds():
         return [e["kind"] for e in mounts_mod._health_events]
 
-    # 1. Healthy tick: nothing happens.
+    # 1. Healthy tick: nothing.
     mounts_mod.poll_once()
-    assert reconnects == [] and kinds() == []
+    assert kinds() == []
 
-    # 2. healthy -> disconnected: exactly one reconnect attempt. The stub
-    #    "succeeds" (returns None) but does NOT heal the state, so the
-    #    post-reconnect verification still sees it broken -> reconnect_failed.
-    #    (The happy path is asserted in test_health_monitor_verifies_reconnect.)
+    # 2. healthy -> disconnected: exactly one "disconnected" event.
     current["state"] = "disconnected"
     mounts_mod.poll_once()
-    assert reconnects == ["m1"]
-    assert kinds() == ["disconnected", "reconnect_failed"]
+    assert kinds() == ["disconnected"]
 
-    # 3. still disconnected across ticks: no further attempts (episode spent).
+    # 3. still broken across ticks: no repeat (episode already notified).
     mounts_mod.poll_once()
     mounts_mod.poll_once()
-    assert reconnects == ["m1"]
+    assert kinds() == ["disconnected"]
 
-    # 4. observed mounted again -> re-arm; a fresh drop fires a second reconnect.
+    # 4. mounted again -> re-arm; a fresh drop (the other broken state) notifies.
     current["state"] = "mounted"
     mounts_mod.poll_once()
-    current["state"] = "disconnected"
+    current["state"] = "stale"
     mounts_mod.poll_once()
-    assert reconnects == ["m1", "m1"]
+    assert kinds() == ["disconnected", "disconnected"]
 
-    # 5. "unmounted" (user-detached) is never auto-reconnected, even from healthy.
+    # 5. "unmounted" (user-detached) never notifies, even from healthy.
     current["state"] = "mounted"
     mounts_mod.poll_once()
     current["state"] = "unmounted"
     mounts_mod.poll_once()
-    assert reconnects == ["m1", "m1"]
+    assert kinds() == ["disconnected", "disconnected"]
 
-
-def test_health_monitor_records_reconnect_failure(monkeypatch):
-    """A failed reconnect (error string or raised exception) emits
-    reconnect_failed with the reason in detail, and still counts as the
-    episode's one attempt."""
-    monkeypatch.setattr(mounts_mod, "_health_episodes", {})
-    monkeypatch.setattr(mounts_mod, "_health_events",
-                        __import__("collections").deque(maxlen=100))
-    monkeypatch.setattr(mounts_mod, "_health_event_seq", 0)
-
-    m = {"id": "m1", "name": "n1", "remote": "r:bucket"}
-    monkeypatch.setattr(mounts_mod, "list_mounts", lambda: [m])
-    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
-    current = {"state": "mounted"}
-    monkeypatch.setattr(mounts_mod, "mount_state",
-                        lambda mm, live, timeout=None: current["state"])
-
-    calls = []
-
-    def boom(mm):
-        calls.append(mm["id"])
-        raise RuntimeError("force-unmount failed")
-
-    monkeypatch.setattr(mounts_mod, "reconnect_mount", boom)
-
-    mounts_mod.poll_once()  # establish healthy baseline (prev == "mounted")
-    current["state"] = "disconnected"
-    mounts_mod.poll_once()
-    mounts_mod.poll_once()  # episode already spent; no retry
-
-    assert calls == ["m1"]
-    evs = list(mounts_mod._health_events)
-    assert [e["kind"] for e in evs] == ["disconnected", "reconnect_failed"]
-    assert "force-unmount failed" in evs[-1]["detail"]
-    # Monotonic ids, distinct per event.
-    assert [e["id"] for e in evs] == [1, 2]
-
-
-def test_health_monitor_verifies_reconnect(monkeypatch):
-    """A no-error return from reconnect_mount is NOT trusted: the monitor
-    re-probes and emits "reconnected" only if the mount actually attached, else
-    "reconnect_failed". Guards against a green toast over a mount ls still can't
-    read (reconnect_mount returns as soon as mount/mount is accepted, but the NFS
-    attach lands a beat later and a racing serve restart can drop it right back)."""
-    monkeypatch.setattr(mounts_mod, "_health_episodes", {})
-    monkeypatch.setattr(mounts_mod, "_health_events",
-                        __import__("collections").deque(maxlen=100))
-    monkeypatch.setattr(mounts_mod, "_health_event_seq", 0)
-    # Bound the verify loop so a never-attaching mount doesn't sleep the test out.
-    monkeypatch.setattr(mounts_mod, "_RECONNECT_VERIFY_DEADLINE_S", 0.05)
-    monkeypatch.setattr(mounts_mod, "_RECONNECT_VERIFY_POLL_S", 0.01)
-
-    m = {"id": "m1", "name": "n1", "remote": "r:bucket"}
-    monkeypatch.setattr(mounts_mod, "list_mounts", lambda: [m])
-    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
-    current = {"state": "mounted"}
-    monkeypatch.setattr(mounts_mod, "mount_state",
-                        lambda mm, live, timeout=None: current["state"])
-
-    def kinds():
-        return [e["kind"] for e in mounts_mod._health_events]
-
-    # A reconnect that HEALS the mount (verify then observes "mounted").
-    def heal(mm):
-        current["state"] = "mounted"
-        return None
-    monkeypatch.setattr(mounts_mod, "reconnect_mount", heal)
-
-    mounts_mod.poll_once()          # healthy baseline
-    current["state"] = "disconnected"
-    mounts_mod.poll_once()          # drop -> reconnect heals -> verified mounted
-    assert kinds() == ["disconnected", "reconnected"]
-
-    # A reconnect that returns success but leaves the mount broken -> the verify
-    # step catches the lie and reports reconnect_failed with the observed state.
-    monkeypatch.setattr(mounts_mod, "reconnect_mount", lambda mm: None)
-    current["state"] = "mounted"
-    mounts_mod.poll_once()          # re-arm
-    current["state"] = "disconnected"
-    mounts_mod.poll_once()          # drop -> reconnect "succeeds" but stays broken
-    assert kinds()[-1] == "reconnect_failed"
-    assert "did not attach" in list(mounts_mod._health_events)[-1]["detail"]
+    # Monotonic, distinct ids; and NOT ONCE did the monitor auto-reconnect.
+    assert [e["id"] for e in mounts_mod._health_events] == [1, 2]
+    assert reconnects == []

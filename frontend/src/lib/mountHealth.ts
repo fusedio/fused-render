@@ -1,14 +1,14 @@
 // Background mount-health poll → global toasts. Mounted ONCE at the app root
 // (App): every ~15s (and once on mount) it reads /api/mounts/health and turns
-// NEW events into toasts. The backend owns detection and auto-reconnect; the
-// frontend only narrates the append-only `events` log.
+// NEW events into toasts. The backend owns DETECTION only — auto-reconnect is
+// off (it churned on flap-prone mounts), so the user repairs a drop manually.
 //
 // Rules (per event kind):
-//  - reconnected      → info  "<name> reconnected"
-//  - reconnect_failed → error "<name> disconnected — reconnect failed", with a
-//                       manual "Reconnect" action (reconnectMount + re-poll)
-//  - disconnected     → info  "<name> disconnected, reconnecting…" (transient;
-//                       a reconnected/failed event follows). Low-noise.
+//  - disconnected     → error "<name> disconnected", persistent, with a manual
+//                       "Reconnect" action (reconnectMount + re-poll). This is
+//                       the only kind the backend monitor emits today.
+//  - reconnected      → info  "<name> reconnected" (defensive; not emitted by
+//                       the detection-only monitor, kept for forward-compat).
 import { useEffect, useRef } from "react";
 import { getMountsHealth, reconnectMount } from "./api";
 import { IS_EMBED } from "./router";
@@ -48,21 +48,19 @@ export function useMountHealth(): void {
       if (!showToasts) return; // baseline pass — mark seen, stay silent
 
       for (const e of fresh) {
-        if (e.kind === "reconnected") {
+        if (e.kind === "disconnected") {
+          pushMountDisconnected(e.mount_id, e.name);
+        } else if (e.kind === "reconnected") {
           pushToast({ msg: `${e.name} reconnected`, tone: "info" });
-        } else if (e.kind === "disconnected") {
-          pushToast({ msg: `${e.name} disconnected, reconnecting…`, tone: "info" });
-        } else if (e.kind === "reconnect_failed") {
-          pushMountFailed(e.mount_id, e.name);
         }
       }
     };
 
-    // A persistent error toast whose "Reconnect" action retries the mount and
+    // A persistent error toast whose "Reconnect" action repairs the mount and
     // re-polls; success/failure each raise their own follow-up toast.
-    const pushMountFailed = (mountId: string, name: string) => {
+    const pushMountDisconnected = (mountId: string, name: string) => {
       const id = pushToast({
-        msg: `${name} disconnected — reconnect failed`,
+        msg: `${name} disconnected`,
         tone: "error",
         ttlMs: 0, // persist until acted on / dismissed
         action: {

@@ -2927,12 +2927,18 @@ def reconnect_mount(m: dict) -> str | None:
 PROBE_TIMEOUT = 3.0
 
 
-def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str:
+def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
+                *, probe_io: bool = True) -> str:
     """Health of one mount: "mounted" | "stale" | "disconnected" | "unmounted".
 
-    "mounted" requires both that a live rcd serves the mountpoint AND that the
-    filesystem actually answers a listdir. The failures this catches are the
-    two ways the kernel mount table and rcd's mount/listmounts disagree:
+    "mounted" requires both that a live rcd serves the mountpoint AND (when
+    `probe_io`) that the filesystem actually answers a listdir. Pass
+    probe_io=False to SKIP that os.listdir — on an S3-backed mount a kernel
+    READDIR of the root is itself a wedge trigger (a slow syscall the timeout
+    abandons but cannot cancel), so a caller polling on a timer (the health
+    monitor) classifies from os.path.ismount + rcd membership ALONE and never
+    touches the mount. The failures this catches are the two ways the kernel
+    mount table and rcd's mount/listmounts disagree:
 
       - kernel says mounted, rcd does NOT list it: the rclone daemon (or its
         NFS serve) died while the kernel mount entry survives —
@@ -2970,7 +2976,8 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
                 # health-check).
                 out["state"] = "disconnected"
             else:
-                os.listdir(mp)  # the actual I/O health check
+                if probe_io:
+                    os.listdir(mp)  # the actual I/O health check
                 out["state"] = "mounted"
         except OSError:
             out["state"] = "disconnected"
@@ -3345,89 +3352,48 @@ def _health_emit(mount_id: str, name: str, kind: str, detail: str = "") -> None:
         })
 
 
-# A just-reconnected mount is not trusted until it actually answers. attach_mount
-# returns as soon as rclone ACCEPTS mount/mount, but the NFS mount attaches a beat
-# later and a racing serve restart can tear a just-mounted mount straight back
-# down (observed: a "reconnected" event while `ls` on the mount still failed). So
-# re-probe for a few seconds before reporting success — cheap, and only on the
-# reconnect path (once per episode).
-_RECONNECT_VERIFY_DEADLINE_S = 6.0
-_RECONNECT_VERIFY_POLL_S = 1.0
-
-
-def _verify_reconnected(m: dict) -> str:
-    """Re-probe a mount reconnect_mount just claimed to repair until it reports
-    "mounted" or a short deadline passes. Each probe takes a FRESH mounted_paths()
-    snapshot — rcd's served set changes as the mount attaches. Returns the last
-    observed mount_state ("mounted" on success, otherwise why it's still down)."""
-    deadline = time.monotonic() + _RECONNECT_VERIFY_DEADLINE_S
-    while True:
-        state = mount_state(m, mounted_paths())
-        if state == "mounted" or time.monotonic() >= deadline:
-            return state
-        time.sleep(_RECONNECT_VERIFY_POLL_S)
-
-
 def poll_once() -> None:
-    """One health tick: snapshot rcd's served set once, then classify every
-    mount against it and drive the per-mount episode state machine.
+    """One health tick: snapshot rcd's served set once, classify every mount
+    against it, and emit ONE "disconnected" event per episode so the UI can
+    notify the user (who then repairs it via a manual /reconnect).
 
-    Reconnect is serialized against a user-initiated /reconnect by reconnect_mount
-    itself — its attach_mount + rc calls take _rcd_lock — so the loop can never
-    fight an in-flight manual reconnect; whichever grabs the lock second simply
-    runs after the first. We only ACT on a genuine healthy->broken transition
-    (prev == "mounted"): a mount that was already broken at startup is left to
-    the automount thread / the user, which avoids racing automount's initial
-    attach and never resurrects a never-yet-healthy mount."""
-    # One mount/listmounts call per tick, shared across every mount_state (the
-    # /api/mounts view does the same) — avoids N rc round-trips per tick.
+    DETECTION ONLY — auto-reconnect is intentionally OFF (2026-07-22). On these
+    flap-prone S3/NFS mounts an automatic reconnect churned: reconnects raced to
+    "mount_nfs: Resource busy" (remounting before the prior mount finished
+    tearing down), and a failed reconnect left the mount stale, which the next
+    tick re-detected — a loop across several mounts. The underlying drops are
+    pre-existing and real; repair is now the user's explicit action. A redesign
+    (backoff + settle-before-remount, no reconnect while one is in flight) is
+    tracked before re-enabling.
+
+    Detection is I/O-FREE: mount_state(..., probe_io=False) classifies from
+    os.path.ismount + rcd listmounts membership ALONE. It must never os.listdir
+    the mount root here — that kernel READDIR on an S3 mount is itself a wedge
+    trigger, and a 20s timer firing it (via abandoned-but-uncancellable probe
+    threads) across every mount is exactly the load this loop must not add.
+
+    Fire only on a genuine healthy->broken transition (prev == "mounted"), once
+    per episode; a return to "mounted" re-arms for the next drop. A mount broken
+    at startup (prev None) is left alone."""
+    # One mount/listmounts call per tick, shared across every mount_state.
     live = mounted_paths()
     for m in list_mounts():
         mid = m["id"]
-        state = mount_state(m, live)
-        ep = _health_episodes.setdefault(mid, {"state": None, "attempted": False})
+        state = mount_state(m, live, probe_io=False)
+        ep = _health_episodes.setdefault(mid, {"state": None, "notified": False})
         prev = ep["state"]
         ep["state"] = state
         if state == "mounted":
-            # Healthy: close any open episode so the NEXT drop re-arms.
-            ep["attempted"] = False
+            ep["notified"] = False  # healthy: re-arm for the next drop
             continue
         if state not in _NEEDS_RECONNECT:
             # "unmounted" (user-detached) or any unexpected state: hands off.
             continue
-        # A needs-reconnect state. Fire only on the transition INTO the episode
-        # (prev healthy) and only once (attempted guards the rest of the stretch,
-        # even though prev != "mounted" on later ticks would already gate it).
-        if prev != "mounted" or ep["attempted"]:
+        # Notify once, on the transition INTO the broken episode.
+        if prev != "mounted" or ep["notified"]:
             continue
-        # Spend the episode's single attempt UP FRONT, so a raise below can't
-        # turn into a retry every 20s.
-        ep["attempted"] = True
+        ep["notified"] = True
         _health_emit(mid, m["name"], "disconnected", detail=f"state={state}")
-        try:
-            err = reconnect_mount(m)
-        except Exception as e:
-            # reconnect_mount is subprocess + rc heavy; a raise must not kill the
-            # tick (let alone the loop) or stop us classifying the other mounts.
-            _health_emit(mid, m["name"], "reconnect_failed", detail=str(e))
-            continue
-        if err:
-            _health_emit(mid, m["name"], "reconnect_failed", detail=err)
-            continue
-        # reconnect_mount returned no error, but that only means mount/mount was
-        # ACCEPTED — verify the mount actually attached before telling the user
-        # it's back, so a "reconnected" toast never appears over a mount that ls
-        # still can't read.
-        verified = _verify_reconnected(m)
-        if verified == "mounted":
-            _health_emit(mid, m["name"], "reconnected")
-            # Reflect reality at once (not the pre-attempt broken state) and
-            # re-arm: a healthy mount was reached, so a fresh drop is a new episode.
-            ep["state"] = "mounted"
-            ep["attempted"] = False
-        else:
-            _health_emit(mid, m["name"], "reconnect_failed",
-                         detail=f"mount did not attach (state={verified})")
 
 
 def _health_loop() -> None:
