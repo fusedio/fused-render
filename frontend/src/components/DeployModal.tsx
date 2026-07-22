@@ -494,12 +494,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // How the NEXT create's link is named — an explicit either/or, not "blank =
   // random" (which read as an unfinished field). "random" (the default, safe
   // choice) mints the opaque unguessable token; "named" uses `customToken` as
-  // an explicit, deliberately guessable URL segment. Both are only meaningful
-  // before a mount exists on the selected env — once deployed the token is
-  // fixed — so neither is seeded from the stored record; both reset on a fresh
-  // open (see `load`).
+  // an explicit, deliberately guessable URL segment. Reset on a fresh open (see
+  // `load`); re-seeded from the current mount when the user clicks "Change
+  // link" on a live deployment (see `enterChangeLink`).
   const [tokenMode, setTokenMode] = useState<"random" | "named">("random");
   const [customToken, setCustomToken] = useState("");
+  // A live mount's token is fixed (repoint/recreate keep it), so the Link
+  // picker is normally hidden once deployed — replaced by a read-only summary.
+  // "Change link" flips this on to re-reveal the picker; deploying then takes
+  // the force_new path (mint a NEW token, best-effort revoke the old one), the
+  // only way to actually change a mount's URL. Reset on a fresh open and after
+  // a successful deploy.
+  const [changingLink, setChangingLink] = useState(false);
   // The result of the last "Clear cache" click (deleted/scope), shown as a status
   // line until the next load/action clears it.
   const [clearCacheResult, setClearCacheResult] = useState<CacheClearResult | null>(null);
@@ -509,6 +515,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // mounted at all, so it never fetches until opened).
   const [cachingOpen, setCachingOpen] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
+  // The Link section collapses like Caching — a one-line summary of the current
+  // setting is enough until the user wants to change it.
+  const [linkOpen, setLinkOpen] = useState(false);
   // True while a preview fetch is in flight — the shown "Files to publish" list may
   // not yet reflect the latest include/exclude edit, so Deploy is held until it
   // catches up (keeps the click WYSIWYG: never deploy a set the list doesn't show).
@@ -604,6 +613,8 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // that hasn't been asked about yet.
       setCachingOpen(false);
       setErrorsOpen(false);
+      setLinkOpen(false);
+      setChangingLink(false);
       setTokenMode("random");
       setCustomToken("");
     }
@@ -722,7 +733,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // ignored server-side if the click turns out to repoint after all
   // (deploy_page only applies custom_token on its create branches).
   const confirmedRedeployToken = samePointerEnv && (live === "active" || live === "revoked");
-  const namedTokenActive = !confirmedRedeployToken && tokenMode === "named";
+  // The link picker (radios) is shown for a fresh create — no confirmed live
+  // mount whose token a redeploy would reuse — OR when the user has explicitly
+  // asked to Change a live mount's link (which deploys force_new). Otherwise a
+  // confirmed mount shows a read-only summary of its current link instead.
+  const pickingLink = !confirmedRedeployToken || changingLink;
+  const namedTokenActive = pickingLink && tokenMode === "named";
   const trimmedToken = customToken.trim();
   // Two distinct not-ready states for a named link, kept apart so the UI can
   // treat them differently: a malformed name (non-empty but wrong shape) is a
@@ -761,6 +777,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       if (!alive.current) return;
       setReconciled(true);
       setLive("active");
+      // The change-link flow is done once the new mount is live — drop back to
+      // the read-only summary (now reflecting the just-minted token).
+      setChangingLink(false);
       // Re-seed from what was actually persisted, so the list reflects the
       // stored record (e.g. server-side dedup) rather than the raw local lists.
       setInclude(record.include ?? include);
@@ -833,23 +852,63 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     }
   };
 
+  // Enter/leave the change-link flow (see `changingLink`). Entering seeds the
+  // picker from the current mount so the user starts where they are; leaving
+  // restores the default (a fresh create's default is an unguessable link).
+  const enterChangeLink = () => {
+    setChangingLink(true);
+    setLinkOpen(true);
+    if (deployment?.named) {
+      setTokenMode("named");
+      setCustomToken(deployment.token);
+    } else {
+      setTokenMode("random");
+      setCustomToken("");
+    }
+  };
+  const cancelChangeLink = () => {
+    setChangingLink(false);
+    setTokenMode("random");
+    setCustomToken("");
+  };
+
   // Deploy/Redeploy: the button label stays stable ("Deploy" / "Redeploy" /
   // "Deploying…"); the URL nuance (same link, restored link, fresh link,
   // unconfirmed) moves to a single status line below, driven by `live` — the
-  // mount's VERIFIED `share list` classification. (samePointerEnv/mountAbsent/
-  // isRedeploy are computed above, alongside the env memo — onDeploy needs
-  // isRedeploy too.)
-  const deployLabel = busy === "deploy" ? "Deploying…" : isRedeploy ? "Redeploy" : "Deploy";
-  // One status line for the same-env case, spelling out what happens to the URL.
-  const deployStatus = !samePointerEnv
-    ? null
-    : live === "active"
-      ? "Redeploying keeps the same URL."
-      : live === "revoked"
-        ? "Redeploying restores the previous URL."
-        : mountAbsent
-          ? "The recorded deployment no longer exists — deploying mints a new URL."
-          : "Environment unreachable — the current deployment couldn't be confirmed.";
+  // mount's VERIFIED `share list` classification. The change-link flow is the
+  // one case that overrides both — it force_news a new URL and takes the old
+  // one down, so it says so rather than "keeps the same URL".
+  const deployLabel =
+    busy === "deploy"
+      ? "Deploying…"
+      : changingLink
+        ? "Deploy new link"
+        : isRedeploy
+          ? "Redeploy"
+          : "Deploy";
+  const deployStatus = changingLink
+    ? "Deploying mints a new link and takes the current one down."
+    : !samePointerEnv
+      ? null
+      : live === "active"
+        ? "Redeploying keeps the same URL."
+        : live === "revoked"
+          ? "Redeploying restores the previous URL."
+          : mountAbsent
+            ? "The recorded deployment no longer exists — deploying mints a new URL."
+            : "Environment unreachable — the current deployment couldn't be confirmed.";
+
+  // The Link section's collapsed one-liner (like Caching's "off"/"on, 5m"):
+  // the pending choice while picking, else the live mount's current setting.
+  const linkSummary = pickingLink
+    ? tokenMode === "named"
+      ? trimmedToken
+        ? `custom: ${trimmedToken}`
+        : "custom name"
+      : "unguessable"
+    : deployment?.named
+      ? `custom: ${deployment.token}`
+      : "unguessable";
 
   const body = () => {
     if (loadError) {
@@ -993,23 +1052,36 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             failures behind its opaque 500s (fused share errors). Collapsed by
             default — DeploymentErrors is only mounted (and so only fetches)
             once opened, mirroring the account Deployments list's per-row
-            toggle; viewers of the page never see any of this either way. */}
-        {deployment?.env && deployment?.token && (
-          <div className="deploy-files">
-            <button
-              type="button"
-              className="deploy-files-head"
-              aria-expanded={errorsOpen}
-              onClick={() => setErrorsOpen((o) => !o)}
-            >
-              <span className="deploy-files-chevron" aria-hidden="true">
-                {errorsOpen ? "▾" : "▸"}
-              </span>
-              <span className="deploy-files-title">Recent errors</span>
-            </button>
-            {errorsOpen && <DeploymentErrors env={deployment.env} token={deployment.token} />}
-          </div>
-        )}
+            toggle; viewers of the page never see any of this either way. The
+            section always renders — for an as-yet-undeployed ("unshared") page
+            it shows disabled, with a hint, so the modal's chrome is consistent
+            rather than a control that pops into existence on first deploy. */}
+        {(() => {
+          const hasDeployment = !!(deployment?.env && deployment?.token);
+          return (
+            <div className="deploy-files">
+              <button
+                type="button"
+                className="deploy-files-head"
+                aria-expanded={hasDeployment ? errorsOpen : undefined}
+                disabled={!hasDeployment}
+                onClick={() => setErrorsOpen((o) => !o)}
+                title={hasDeployment ? undefined : "Available once this page is deployed"}
+              >
+                <span className="deploy-files-chevron" aria-hidden="true">
+                  {hasDeployment && errorsOpen ? "▾" : "▸"}
+                </span>
+                <span className="deploy-files-title">Recent errors</span>
+                {!hasDeployment && (
+                  <span className="deploy-files-count">available after you deploy</span>
+                )}
+              </button>
+              {hasDeployment && errorsOpen && (
+                <DeploymentErrors env={deployment!.env} token={deployment!.token} />
+              )}
+            </div>
+          );
+        })()}
 
         {preview && (
           <FileSelection
@@ -1088,64 +1160,85 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </div>
           )}
         </div>
-        {/* The link-name picker only applies to a FRESH create (see
-            confirmedRedeployToken above) — hidden only once the existing
-            mount's liveness is CONFIRMED (active/revoked), so an unreachable-
-            env "unconfirmed" state (live === null) leaves it up rather than
-            hide a control that a subsequent fresh create could still use.
-            An explicit random-vs-named choice, not a "blank = random" text
-            field: choosing a name is meant to be a deliberate act, and the
-            radios spell out the security trade-off per option. */}
-        {!confirmedRedeployToken && (
-          <div className="deploy-files">
+        {/* Link section (collapsible, like Caching). Two body modes:
+              - picking (a fresh create, or an explicit "Change link" on a live
+                mount): the random-vs-named radios — an explicit choice, not a
+                "blank = random" field, since naming a public link is a
+                deliberate, security-relevant act;
+              - confirmed live mount: a read-only summary of the current link
+                plus a "Change link" action, because repoint/recreate keep the
+                token — only a force_new deploy (what Change link triggers) can
+                actually change the URL.
+            The public/no-auth note lives BELOW this block (always visible, even
+            when collapsed), since the radios/summary describe guessability but
+            not that the link is unauthenticated. */}
+        <div className="deploy-files">
+          <button
+            type="button"
+            className="deploy-files-head"
+            aria-expanded={linkOpen}
+            onClick={() => setLinkOpen((o) => !o)}
+          >
+            <span className="deploy-files-chevron" aria-hidden="true">
+              {linkOpen ? "▾" : "▸"}
+            </span>
+            <span className="deploy-files-title">Link</span>
+            <span className="deploy-files-count">{linkSummary}</span>
+          </button>
+          {linkOpen && (
             <div className="deploy-files-body">
-              <fieldset className="deploy-token-modes">
-                <legend>Link</legend>
-                <label className="deploy-token-mode">
-                  <input
-                    type="radio"
-                    name="deploy-token-mode"
-                    checked={tokenMode === "random"}
-                    disabled={busy !== null}
-                    onChange={() => setTokenMode("random")}
-                  />
-                  <span>
-                    <b>Unguessable link</b>
-                    <span className="deploy-muted"> — a random URL nobody can guess (default)</span>
-                  </span>
-                </label>
-                <label className="deploy-token-mode">
-                  <input
-                    type="radio"
-                    name="deploy-token-mode"
-                    checked={tokenMode === "named"}
-                    disabled={busy !== null}
-                    onChange={() => setTokenMode("named")}
-                  />
-                  <span>
-                    <b>Custom name</b>
-                    <span className="deploy-muted">
-                      {" "}
-                      — you pick the URL; anyone who knows or guesses it can open it
-                    </span>
-                  </span>
-                </label>
-              </fieldset>
-              {namedTokenActive && (
+              {pickingLink ? (
                 <>
-                  <div className="deploy-form-row">
-                    <label htmlFor="deploy-token-input">Name</label>
-                    <TextInput
-                      id="deploy-token-input"
-                      type="text"
-                      placeholder="my-dashboard"
-                      value={customToken}
-                      disabled={busy !== null}
-                      autoFocus
-                      onChange={(e) => setCustomToken(e.target.value)}
-                    />
-                  </div>
-                  {(tokenFormatError || tokenIncomplete) && (
+                  <fieldset className="deploy-token-modes">
+                    <legend>{changingLink ? "New link" : "Link"}</legend>
+                    <label className="deploy-token-mode">
+                      <input
+                        type="radio"
+                        name="deploy-token-mode"
+                        checked={tokenMode === "random"}
+                        disabled={busy !== null}
+                        onChange={() => setTokenMode("random")}
+                      />
+                      <span>
+                        <b>Unguessable link</b>
+                        <span className="deploy-muted">
+                          {" "}
+                          — a random URL nobody can guess (default)
+                        </span>
+                      </span>
+                    </label>
+                    <label className="deploy-token-mode">
+                      <input
+                        type="radio"
+                        name="deploy-token-mode"
+                        checked={tokenMode === "named"}
+                        disabled={busy !== null}
+                        onChange={() => setTokenMode("named")}
+                      />
+                      <span>
+                        <b>Custom name</b>
+                        <span className="deploy-muted">
+                          {" "}
+                          — you pick the URL; anyone who knows or guesses it can open it
+                        </span>
+                      </span>
+                    </label>
+                  </fieldset>
+                  {namedTokenActive && (
+                    <div className="deploy-form-row">
+                      <label htmlFor="deploy-token-input">Name</label>
+                      <TextInput
+                        id="deploy-token-input"
+                        type="text"
+                        placeholder="my-dashboard"
+                        value={customToken}
+                        disabled={busy !== null}
+                        autoFocus
+                        onChange={(e) => setCustomToken(e.target.value)}
+                      />
+                    </div>
+                  )}
+                  {namedTokenActive && (tokenFormatError || tokenIncomplete) && (
                     <div
                       className={
                         "deploy-token-hint deploy-muted" + (tokenFormatError ? " err" : "")
@@ -1155,11 +1248,47 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                         "Enter a name for the link, or switch to an unguessable link."}
                     </div>
                   )}
+                  {changingLink && (
+                    <div className="deploy-form-row">
+                      <button type="button" onClick={cancelChangeLink} disabled={busy !== null}>
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="deploy-muted">
+                    {deployment?.named ? (
+                      <>
+                        This link uses a <b>custom name</b> you chose.
+                      </>
+                    ) : (
+                      <>
+                        This link is an <b>unguessable</b> random URL.
+                      </>
+                    )}
+                  </div>
+                  <div className="deploy-form-row">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={enterChangeLink}
+                      disabled={busy !== null}
+                      title="Mint a new link (the current one is taken down)"
+                    >
+                      Change link…
+                    </button>
+                  </div>
                 </>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
+        <div className="deploy-muted deploy-about">
+          Deploys are <b>public</b> — no sign-in required, so anyone with the link can open it,
+          whether it's the unguessable default or a name you chose.
+        </div>
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <Select
@@ -1177,7 +1306,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => onDeploy()}
+            // In the change-link flow this is the force_new deploy (mint a new
+            // token, revoke the old); otherwise a normal create/redeploy.
+            onClick={() => onDeploy(changingLink)}
             // Hold Deploy until the shown "Files to publish" list matches the current
             // selection: preview === null (still resolving, or cleared on a page
             // switch) or previewPending (a refresh is in flight after an edit) both
@@ -1268,18 +1399,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             {signin.error && <ErrorBanner>{signin.error}</ErrorBanner>}
           </div>
         )}
-        {/* The guessable-vs-unguessable trade-off now lives in the "Link"
-            radios above, so this disclosure keeps only what they DON'T say:
-            that every deploy is UNAUTHENTICATED (even the unguessable link is
-            open to anyone who has it). It also covers the redeploy case, where
-            the picker is hidden but this note still applies. */}
-        <details className="deploy-disclosure">
-          <summary>About public links</summary>
-          <div className="deploy-muted">
-            Deploys are <b>public</b> — no sign-in required, so anyone with the link can open it,
-            whether it's the unguessable default or a name you chose.
-          </div>
-        </details>
+        {/* The old "About public links" disclosure was removed — its content
+            now lives inline beneath the Link section above (always visible),
+            so the bottom-of-modal toggle is redundant. */}
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
       </>
     );

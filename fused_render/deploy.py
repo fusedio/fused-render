@@ -398,7 +398,7 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 cache_max_age: str, fallback: dict | None) -> dict:
+                 cache_max_age: str, named: bool, fallback: dict | None) -> dict:
     # `cache_max_age` here is simply what the caller requested this deploy — every
     # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
     # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
@@ -435,6 +435,13 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
         # "preserve on omit" for this — every deploy is an explicit, full statement).
         "cache_max_age": cache_max_age,
+        # Whether this mount's token is a user-chosen name (a deliberately
+        # guessable public URL) vs the default crypto-random opaque one. Set at
+        # the fresh-create that minted the token and carried forward unchanged
+        # on every token-reuse redeploy (repoint/recreate keep the token, so
+        # they keep its provenance) — the modal shows "custom name" vs
+        # "unguessable" from this without re-deriving it from the token string.
+        "named": named,
         "updated_at": _now_iso(),
     }
 
@@ -598,7 +605,14 @@ def deploy_page(
             if force_new and pointer and pointer.get("env") == env_name
             else None
         )
+        # Token provenance for the stored record: a fresh create's is set by
+        # whether a name was chosen this call; a token-reuse redeploy inherits
+        # the existing record's (repoint/recreate keep the token, so its
+        # named-ness is unchanged). Old records predating this field read as
+        # False (unguessable) — the token can't be reclassified retroactively.
+        named = bool(same_env.get("named")) if same_env else False
         if not token:
+            named = bool(custom_token)
             create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
             if custom_token:
                 create_args += ["--token", custom_token]
@@ -650,6 +664,7 @@ def deploy_page(
                     )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
+                named = bool(custom_token)  # a fresh create, like the first-deploy path
                 create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
                 if custom_token:
                     create_args += ["--token", custom_token]
@@ -658,7 +673,7 @@ def deploy_page(
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=cache_max_age, fallback=same_env,
+            cache_max_age=cache_max_age, named=named, fallback=same_env,
         )
         set_deployment(page, record)
         # force_new replace: the new mount is live and the pointer now tracks it,

@@ -2251,6 +2251,14 @@ select.field-control:has(option[value=""]:checked) {
   flex: 0 0 auto;
 }
 
+/* The public/no-auth note that sits directly under the Link section — snug it
+   up against that card (overriding the body's 12px gap) so it reads as the
+   section's footnote, not a section of its own. */
+.deploy-about {
+  margin-top: -6px;
+  font-size: 12px;
+}
+
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
    full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
 .deploy-error,

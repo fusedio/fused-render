@@ -412,10 +412,81 @@ def test_deploy_passes_custom_token_to_create(tmp_path, monkeypatch):
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["token"] == "my-name"
+    # A user-chosen name is recorded as `named` so the modal shows "custom name".
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
 
     (call,) = h.calls()
     assert call["argv"][0] == "share" and call["argv"][1] == "create"
     assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_default_token_is_not_named(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    # No name chosen -> the opaque default -> named is False.
+    assert resp.json()["named"] is False
+
+
+def test_named_flag_carried_forward_on_repoint(tmp_path, monkeypatch):
+    # A named mount stays "named" across a token-reuse redeploy: repoint keeps
+    # the token, so its provenance must not silently flip to unguessable.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert h.pointer()["named"] is True
+
+    h.set_scenario(
+        {
+            "list": [{"token": "my-name", "status": "active"}],
+            "repoint": {"token": "my-name", "url": "https://serve.example/my-name"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
+
+
+def test_force_new_to_unguessable_clears_named(tmp_path, monkeypatch):
+    # "Change link" from a custom name back to the unguessable default: force_new
+    # mints a fresh opaque token, and the record's `named` must follow it to
+    # False (not inherit the superseded mount's True).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "create": {"token": "xyz789", "url": "https://serve.example/xyz789", "status": "active"},
+            "revoke": {"token": "my-name", "status": "revoked"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "force_new": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "xyz789"
+    assert resp.json()["named"] is False
+    assert h.pointer()["named"] is False
 
 
 def test_deploy_rejects_blank_token(tmp_path, monkeypatch):

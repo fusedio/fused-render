@@ -425,6 +425,11 @@ export interface Deployment {
   // Reopening the modal reloads it, same as include/exclude. Optional — records
   // written before this feature omit it (read as "0s").
   cache_max_age?: string;
+  // Whether this mount's token is a user-chosen name (a deliberately guessable
+  // public URL) vs the default crypto-random opaque one — so the modal shows
+  // "custom name" vs "unguessable" without re-deriving it from the token string.
+  // Optional — records written before this feature omit it (read as false).
+  named?: boolean;
   updated_at: string;
 }
 
