@@ -39,6 +39,14 @@ AppImage).
 | Paths | XDG: state `$XDG_DATA_HOME/fused-render/desktop`, cache `$XDG_CACHE_HOME/fused-render/desktop`, runtime `$XDG_RUNTIME_DIR/fused-render`, with documented fallbacks (`~/.local/share`, `~/.cache`, and a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
 | Installer / upgrade | Replace the `.AppImage` file; old instance shuts down via the same `--shutdown-for-upgrade` command over the socket. |
 
+The `.desktop` `Exec` uses `%f` (a **single** file field code), not `%F`, to
+match the Windows registry command's `%1` and keep `protocol.parse_args`
+identical across platforms (it accepts exactly one path argument). A multi-file
+"Open with" therefore launches one instance per file; the second and later
+instances forward their open to the primary over the socket and exit, exactly
+as a second manual launch does — the desktop environment coalesces, the
+supervisor never sees more than one path per process.
+
 ## Acceptance gates (go / no-go)
 
 - **(a) No orphans on `SIGKILL` of the supervisor.** Server + template daemons +
