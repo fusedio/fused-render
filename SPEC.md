@@ -884,9 +884,15 @@ the product gains network access.
   bundle classification as a follow-up. fused-render passes the CLI's own
   error through verbatim rather than second-guessing the installed version.
 - **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
-  results") plus a duration select (1m/5m/15m/1h/6h/1d presets, default **1h**,
-  plus the current value verbatim when it isn't one of them — e.g. set by a
-  direct `share create --cache-max-age` outside this dialog), seeded on open
+  results") plus a duration select (1m/5m/15m/1h/6h/1d/7d/14d presets, default
+  **1h**, plus the current value verbatim when it isn't one of them — e.g. set by a
+  direct `share create --cache-max-age` outside this dialog). 30 days is the true
+  ceiling (the `results/` cache-bucket lifecycle GC backstop both backends fix at
+  30 days — `RESULTS_CACHE_LIFECYCLE_DAYS` for a managed environment,
+  `openfused-gc-results` for self-hosted AWS; a managed environment's
+  `_build_cache_settings` rejects anything beyond it), but 30d itself is
+  deliberately not offered as a preset — it would leave no margin against that
+  backstop, whereas 14d keeps a comfortable half-window of slack. Seeded on open
   from the stored deployment record like `include`/`exclude` (DP-2c) and
   re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
   was". It reaches the two backends **differently**, because they model

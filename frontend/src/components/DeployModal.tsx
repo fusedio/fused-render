@@ -47,8 +47,18 @@ import { Select } from "./field/fields";
 const relKey = (p: string) => p.replace(/^\.\//, "");
 
 // Caching duration presets (fused's cache_max_age format — a non-negative integer +
-// s/m/h/d unit; see fused/agent_core/caching.py's parse_cache_max_age). "0s" is off
-// and not itself an option here — the checkbox controls that axis.
+// s/m/h/d unit; see fused/agent_core/caching.py's parse_cache_max_age, which itself
+// has no upper bound). The real ceiling is the env's `results/` cache-bucket
+// lifecycle rule, which hard-expires cached objects and is a GC backstop meant to
+// stay comfortably ABOVE any TTL in use (fused repo's spec/caching/storage.md;
+// application repo's openfused_server/app/serving.py rejects a `cache_max_age`
+// beyond it outright). That rule is fixed at 30 days
+// (RESULTS_CACHE_LIFECYCLE_DAYS, application/openfused_server/app/managed/
+// provisioning.py) for a managed environment, and matches for a self-hosted AWS
+// backend (`openfused-gc-results`, fused/src/fused/agent_core/backends/aws/manage.py).
+// 30d itself is deliberately NOT offered here — it would leave zero margin against
+// that backstop; 14d keeps a comfortable half-window of slack. "0s" is off and not
+// itself an option here — the checkbox controls that axis.
 const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
   { value: "1m", label: "1 minute" },
   { value: "5m", label: "5 minutes" },
@@ -56,6 +66,8 @@ const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
   { value: "1h", label: "1 hour" },
   { value: "6h", label: "6 hours" },
   { value: "1d", label: "1 day" },
+  { value: "7d", label: "7 days" },
+  { value: "14d", label: "14 days" },
 ];
 const DEFAULT_CACHE_DURATION = "1h";
 
