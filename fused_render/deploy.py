@@ -1068,10 +1068,14 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     # "already taken" check are the authority, and DeployError passes that
     # message through verbatim, same as every other CLI-side rejection.
     custom_token = body.get("token")
-    if custom_token is not None and (
-        not isinstance(custom_token, str) or not custom_token.strip()
-    ):
-        return _error("'token' must be a non-empty string")
+    if custom_token is not None:
+        if not isinstance(custom_token, str) or not custom_token.strip():
+            return _error("'token' must be a non-empty string")
+        # Normalize at the boundary: forward the trimmed value, never the raw
+        # one — otherwise "my-link " passes the non-empty check but reaches
+        # `share create --token` with surrounding whitespace, which disagrees
+        # with the client's TOKEN_RE and the CLI's own token rules.
+        custom_token = custom_token.strip()
     try:
         return deploy_page(
             page,

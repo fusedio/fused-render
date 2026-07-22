@@ -750,7 +750,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       ? "Use lowercase letters, numbers, - and _ only, starting with a letter or number."
       : null;
   const tokenIncomplete = namedTokenActive && trimmedToken === "";
-  const tokenBlocksDeploy = tokenFormatError !== null || tokenIncomplete;
+  // Change-link is a force_new: `share create --token <name>` runs BEFORE the
+  // old mount is revoked (create-then-revoke is the safe order — a failed
+  // create must never take the live page down), so reusing the CURRENT name
+  // would collide on create and fail. Block it up front with a clear prompt
+  // rather than let the "Deploy new link" click 400 on a token clash — keeping
+  // the same name isn't a change anyway.
+  const tokenUnchanged =
+    changingLink && namedTokenActive && trimmedToken !== "" && trimmedToken === deployment?.token;
+  const tokenBlocksDeploy = tokenFormatError !== null || tokenIncomplete || tokenUnchanged;
 
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
@@ -1238,14 +1246,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                       />
                     </div>
                   )}
-                  {namedTokenActive && (tokenFormatError || tokenIncomplete) && (
+                  {namedTokenActive && (tokenFormatError || tokenIncomplete || tokenUnchanged) && (
                     <div
                       className={
                         "deploy-token-hint deploy-muted" + (tokenFormatError ? " err" : "")
                       }
                     >
                       {tokenFormatError ??
-                        "Enter a name for the link, or switch to an unguessable link."}
+                        (tokenUnchanged
+                          ? "That's already this link's name — pick a different one to change it, or Cancel."
+                          : "Enter a name for the link, or switch to an unguessable link.")}
                     </div>
                   )}
                   {changingLink && (
@@ -1331,7 +1341,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
                     ? tokenFormatError
                     : tokenIncomplete
                       ? "Enter a name for the link, or switch to an unguessable link"
-                      : undefined
+                      : tokenUnchanged
+                        ? "Pick a different name to change the link, or Cancel"
+                        : undefined
             }
           >
             {busy === "deploy" && <span className="deploy-spinner" />}

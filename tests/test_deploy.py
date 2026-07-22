@@ -489,6 +489,24 @@ def test_force_new_to_unguessable_clears_named(tmp_path, monkeypatch):
     assert h.pointer()["named"] is False
 
 
+def test_deploy_trims_token_before_the_cli(tmp_path, monkeypatch):
+    # Surrounding whitespace must be stripped at the API boundary, not forwarded
+    # to `share create --token` (where it disagrees with the client's TOKEN_RE
+    # and the CLI's own token rules).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "  my-name  "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
 def test_deploy_rejects_blank_token(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     resp = h.client.post(
