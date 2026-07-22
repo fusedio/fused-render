@@ -9,7 +9,18 @@ import os
 import pytest
 
 from fused_render.supervisor import paths as paths_mod
-from fused_render.supervisor._linux import startup, ui
+from fused_render.supervisor._linux import startup, tree, ui
+
+
+# -- PDEATHSIG orphan-race check (cross-platform pure logic) ----------------
+
+def test_parent_changed_detects_reparenting_not_only_pid1():
+    # The race check must fire whenever the parent changed — under systemd an
+    # orphan reparents to a session subreaper, NOT pid 1, so a `== 1` test would
+    # miss the death. Guard against regressing to that.
+    assert tree._parent_changed(expected_ppid=4321, current_ppid=1) is True
+    assert tree._parent_changed(expected_ppid=4321, current_ppid=9999) is True  # subreaper
+    assert tree._parent_changed(expected_ppid=4321, current_ppid=4321) is False
 
 
 # -- XDG path layout -------------------------------------------------------

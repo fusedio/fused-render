@@ -75,14 +75,24 @@ def environment_block(overrides: dict[str, str] | None) -> dict[str, str]:
     return env
 
 
-def _pdeathsig_preexec() -> None:
+def _parent_changed(expected_ppid: int, current_ppid: int) -> bool:
+    """Whether our parent has already changed from the supervisor that forked
+    us. NOT `current_ppid == 1`: on systemd an orphan reparents to a session
+    subreaper (systemd --user, a login session leader), not pid 1, so a `== 1`
+    test would miss the death entirely and leave the child armed against a
+    parent that is already gone."""
+    return current_ppid != expected_ppid
+
+
+def _pdeathsig_preexec(expected_ppid: int) -> None:
     """Runs in the forked child between fork() and exec(). Arm PDEATHSIG so the
     child dies with the supervisor, then close the race where the supervisor
-    already died in the fork/exec window (in which case we were reparented to
-    init and PDEATHSIG will never fire for the *original* parent)."""
+    already died in the fork/exec window — in which case PDEATHSIG (armed
+    against the now-dead original parent) will never fire, so self-kill if our
+    parent has already changed."""
     libc = ctypes.CDLL(None, use_errno=True)
     libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
-    if os.getppid() == 1:
+    if _parent_changed(expected_ppid, os.getppid()):
         os.kill(os.getpid(), signal.SIGKILL)
 
 
@@ -145,6 +155,9 @@ class Job:
         mechanism = _mechanism()
         argv = _launch_argv(mechanism, application, arguments)
         env = environment_block(environment)
+        # Captured BEFORE fork so the child's preexec can tell whether the
+        # supervisor already died in the fork/exec window (see _parent_changed).
+        expected_ppid = os.getpid()
 
         stdout = subprocess.DEVNULL
         log_handle = None
@@ -169,7 +182,7 @@ class Job:
                 # the server before any native libs (PROJ etc.) are loaded, so
                 # the fork-safety concern that pushes the server's own workers
                 # to posix_spawn does not apply here.
-                preexec_fn=_pdeathsig_preexec,
+                preexec_fn=lambda: _pdeathsig_preexec(expected_ppid),
                 close_fds=True,
             )
         finally:
