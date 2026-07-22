@@ -21,6 +21,11 @@ export function useMountHealth(): void {
   // survives re-renders without re-arming the interval, and so overlapping
   // polls can't re-narrate the same event. -1 means "no baseline yet".
   const lastEventId = useRef(-1);
+  // Whether a successful read has established the high-water mark yet. The
+  // FIRST successful poll is the silent baseline — tied to success, not to the
+  // first attempt, so a failed initial read doesn't leave the mark at -1 and
+  // make the next poll replay the whole backlog as toasts.
+  const baselined = useRef(false);
 
   useEffect(() => {
     // Only the top-level shell narrates mount health — every embed iframe would
@@ -28,10 +33,10 @@ export function useMountHealth(): void {
     if (IS_EMBED) return;
     let alive = true;
 
-    // A single poll. `showToasts` is false for the very first read so we
-    // establish the high-water mark against events that predate this session
-    // (a page load must not replay a backlog of old disconnects).
-    const poll = async (showToasts: boolean) => {
+    // A single poll. The first read that SUCCEEDS establishes the high-water
+    // mark silently (a page load must not replay a backlog of old disconnects);
+    // every read after that toasts genuinely new events.
+    const poll = async () => {
       let health;
       try {
         health = await getMountsHealth();
@@ -43,9 +48,11 @@ export function useMountHealth(): void {
       // New events only: id strictly above the mark. The log is append-only
       // and monotonic, so this both dedups and orders naturally.
       const fresh = health.events.filter((e) => e.id > lastEventId.current);
-      if (fresh.length === 0) return;
       lastEventId.current = Math.max(lastEventId.current, ...fresh.map((e) => e.id));
-      if (!showToasts) return; // baseline pass — mark seen, stay silent
+      const isBaseline = !baselined.current;
+      baselined.current = true;
+      if (fresh.length === 0) return;
+      if (isBaseline) return; // baseline pass — mark seen, stay silent
 
       for (const e of fresh) {
         if (e.kind === "disconnected") {
@@ -78,14 +85,14 @@ export function useMountHealth(): void {
             }
             // Re-poll either way so the log's follow-up events (and any other
             // mounts' state) converge without waiting out the interval.
-            void poll(true);
+            void poll();
           },
         },
       });
     };
 
-    void poll(false); // baseline on mount — no toast replay
-    const timer = window.setInterval(() => void poll(true), POLL_MS);
+    void poll(); // first success is the silent baseline (see `baselined`)
+    const timer = window.setInterval(() => void poll(), POLL_MS);
     return () => {
       alive = false;
       window.clearInterval(timer);

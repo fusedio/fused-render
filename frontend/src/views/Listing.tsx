@@ -854,7 +854,10 @@ export default function Listing({
   // provisional one, but its own /api/fs/list is briefly loading. Search keeps
   // its prior behavior (results stream in). Used by the reconcile effect so a
   // real, still-valid selection is never cleared as "vanished" during a reload.
-  const listingLoaded = searching ? true : state.status === "ok";
+  // "Settled" = not mid-fetch: an ok listing OR a terminal error (rows are
+  // then genuinely empty, so the reconcile below should clear/reclamp a stale
+  // selection). Only the transient `loading` status suppresses reconcile.
+  const listingLoaded = searching ? true : state.status !== "loading";
 
   // Keep the keyboard selection scrolled into view as it moves.
   useEffect(() => {

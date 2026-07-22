@@ -3940,12 +3940,18 @@ def health_snapshot() -> dict:
     event log. Per-mount state is served from the loop's last observation (at
     most HEALTH_POLL_INTERVAL stale) so a frequently-polled UI never pays a
     per-mount PROBE_TIMEOUT on the request path; a mount added since the last
-    tick (no cached state yet) gets one fresh probe."""
+    tick (no cached state yet) gets one fresh probe.
+
+    That fresh probe is I/O-FREE (probe_io=False, same as the periodic loop): a
+    kernel os.listdir on an S3-backed mount root is itself a wedge trigger, and
+    this endpoint is polled every ~15s by the UI, so it must never touch the
+    mount contents."""
     live = mounted_paths()
     mounts_out = []
     for m in list_mounts():
         ep = _health_episodes.get(m["id"])
-        state = ep["state"] if ep and ep["state"] is not None else mount_state(m, live)
+        state = (ep["state"] if ep and ep["state"] is not None
+                 else mount_state(m, live, probe_io=False))
         mounts_out.append({
             "id": m["id"],
             "name": m["name"],
