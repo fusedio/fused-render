@@ -9,9 +9,35 @@ server process's environment block.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def _xdg_home(env_var: str, default_rel: str) -> Path:
+    """An XDG base dir: `$env_var` if it is set to an absolute path, else
+    `~/default_rel`. The spec says a relative value must be ignored."""
+    value = os.environ.get(env_var)
+    if value and os.path.isabs(value):
+        return Path(value)
+    return Path.home() / default_rel
+
+
+def linux_runtime_dir() -> Path:
+    """The 0700 runtime dir holding the single-instance lock + IPC socket.
+
+    `$XDG_RUNTIME_DIR/fused-render` when the session sets it (the correct,
+    per-user, tmpfs-backed home for sockets and locks); otherwise a private
+    `runtime/` under the XDG cache dir. Single-sourced here because
+    `_linux/instance.py` needs it during `acquire()` — before `DesktopPaths`
+    exists — and `DesktopPaths.discover()` points its `runtime` field at the
+    same place.
+    """
+    xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg_runtime and os.path.isabs(xdg_runtime):
+        return Path(xdg_runtime) / "fused-render"
+    return _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "desktop" / "runtime"
 
 
 @dataclass(frozen=True)
