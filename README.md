@@ -116,7 +116,7 @@ bundle that a hosting layer (the `fused` wheel) can serve:
 ```
 curl -X POST http://127.0.0.1:1777/api/export \
   -H 'Content-Type: application/json' -H 'X-Fused: 1' \
-  -d '{"page": "/abs/path/to/examples/sine.html", "out": "/abs/path/to/bundle"}'
+  -d '{"page": "/abs/path/to/examples_seed/sine/sine.html", "out": "/abs/path/to/bundle"}'
 ```
 
 Both `page` and `out` must be absolute filesystem paths (same convention as every
@@ -312,7 +312,7 @@ Built-in preview templates (parquet tables, images, text/code files) are
 themselves just HTML files built on these same two primitives — open
 `fused_render/templates/` to see how.
 
-See `examples/sine.py` + `examples/sine.html` for a complete working example.
+See `examples_seed/sine/sine.py` + `examples_seed/sine/sine.html` for a complete working example.
 
 ## Claude Code plugin
 

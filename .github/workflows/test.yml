@@ -31,7 +31,7 @@ jobs:
               - 'fused_render/**'
               - 'tests/**'
               - 'frontend/**'
-              - 'examples/**'
+              - 'examples_seed/**'
               - 'scripts/hatch_build.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'

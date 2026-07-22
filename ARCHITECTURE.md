@@ -58,9 +58,10 @@ fused-render/
 │       ├── text/               # template.html + icon.svg
 │       ├── shared/             # first-party ESM shared by sci templates (/template-shared mount) — no template.html, never a template name
 │       └── vendor/             # vendored JS libs (/template-assets mount) — no template.html, never a template name
-└── examples/
-    ├── sine.py
-    └── sine.html
+└── examples_seed/           # repo-root seed set, force-included into wheel
+    └── sine/
+        ├── sine.py
+        └── sine.html
 ```
 
 Shell = React 18 + Vite + TypeScript (D52/D53; strict tsc gated in the build). Build with `cd frontend && npm run build` — output is NOT committed (D54): dev machines need node, wheels/DMG build it via the hatch hook (scripts/hatch_build.py). Templates, examples and `runtime.js` stay plain ES2020 JS with no build step and no JS dependencies — the rendering primitive is framework-free by design.
@@ -304,8 +305,8 @@ visual language); the section is hidden while empty.
 
 ## 8. Examples
 
-- `examples/sine.py` — `main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only).
-- `examples/sine.html` — range slider bound to `freq` param, SVG polyline chart (hand-rolled, no deps), wiring pattern:
+- `examples_seed/sine/sine.py` — `main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only).
+- `examples_seed/sine/sine.html` — range slider bound to `freq` param, SVG polyline chart (hand-rolled, no deps), wiring pattern:
   slider input → `fused.params.set('freq', value)`; `fused.params.onChange(draw)`; initial `draw()` reads param-or-default. Demonstrates: URL sync, refresh restores state, runPython round-trip, python print → browser console.
 
 ---
@@ -319,8 +320,8 @@ Automatable (curl / CLI):
    - `/api/fs/list?path=/tmp`-equivalent → entries
    - `/api/fs/stat` on a `.parquet` → `templates[0]` is `{"mode": "table", …}` pointing at templates/table/template.html
    - `/api/fs/raw` on a text file → bytes + MIME
-   - `/render?path=<examples/sine.html>` → contains `runtime.js` script tag
-   - `POST /api/run` `{py: <abs examples/sine.py>, params: {freq: "2"}}` → `ok: true`, points array
+   - `/render?path=<examples_seed/sine/sine.html>` → contains `runtime.js` script tag
+   - `POST /api/run` `{py: <abs examples_seed/sine/sine.py>, params: {freq: "2"}}` → `ok: true`, points array
    - `POST /api/run` with missing main / raising main / non-JSON return → `ok: false`, structured error
    - executor timeout: `main` sleeping past a short timeout → TimeoutError dict
 3. Parquet reader: generate small parquet via pyarrow in a temp dir, `POST /api/run` the reader with offset/limit → correct slice + total.
