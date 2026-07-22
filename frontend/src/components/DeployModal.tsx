@@ -1268,15 +1268,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             {signin.error && <ErrorBanner>{signin.error}</ErrorBanner>}
           </div>
         )}
-        {/* The always-on public-link boilerplate lives behind a disclosure so it
-            doesn't compete with the action every time. */}
+        {/* The guessable-vs-unguessable trade-off now lives in the "Link"
+            radios above, so this disclosure keeps only what they DON'T say:
+            that every deploy is UNAUTHENTICATED (even the unguessable link is
+            open to anyone who has it). It also covers the redeploy case, where
+            the picker is hidden but this note still applies. */}
         <details className="deploy-disclosure">
           <summary>About public links</summary>
           <div className="deploy-muted">
-            Deploys publish as a <b>public share link</b> — anyone with the link can open it. The
-            "Link" choice above (fresh deploys only) sets the URL: an <b>unguessable</b> random one
-            (the default), or a <b>custom name</b> you pick — memorable, but guessable by anyone who
-            knows the pattern.
+            Deploys are <b>public</b> — no sign-in required, so anyone with the link can open it,
+            whether it's the unguessable default or a name you chose.
           </div>
         </details>
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
