@@ -28,6 +28,16 @@ jobs:
         id: filter
         with:
           filters: |
+            # Packaging paths shared by both filters. Defined as a YAML anchor
+            # (must precede the aliases that reference it) so the two filters
+            # cannot drift: every linux_desktop path must also be an app path,
+            # because the linux-desktop job (where the gated smoke step lives)
+            # only runs when app fires. dorny/paths-filter flattens the aliased
+            # sequence into each filter's own list.
+            packaging: &packaging
+              - 'scripts/build_linux_appimage.sh'
+              - 'scripts/linux/**'
+              - 'scripts/file_associations.*'
             app:
               - 'fused_render/**'
               - 'tests/**'
@@ -36,13 +46,7 @@ jobs:
               - 'scripts/hatch_build.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
-              # Packaging paths from the linux_desktop filter below: every
-              # linux_desktop path must also be an app path, because the
-              # linux-desktop job (where the gated smoke step lives) only runs
-              # when app fires. Keep the two filters in sync.
-              - 'scripts/build_linux_appimage.sh'
-              - 'scripts/linux/**'
-              - 'scripts/file_associations.*'
+              - *packaging
             # Gates only the expensive AppImage build smoke (several minutes of
             # toolchain downloads); the cheap Linux backend test run stays on
             # the broad `app` filter above. macOS has no per-PR packaging job
@@ -51,11 +55,9 @@ jobs:
             linux_desktop:
               - 'fused_render/supervisor/**'
               - 'fused_render/shell/mounts.py'
-              - 'scripts/build_linux_appimage.sh'
-              - 'scripts/linux/**'
-              - 'scripts/file_associations.*'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
+              - *packaging
 
   # The React shell (frontend/) is built once here and shared with every
   # python-version job below — fused_render/server.py refuses to start
@@ -189,10 +191,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Install rclone
+      # desktop-file-utils provides desktop-file-validate, which appimagetool
+      # runs against the bundled .desktop file during the AppImage build smoke.
+      # (No rclone install here: every test file below monkeypatches or never
+      # execs rclone, and the build script downloads its own pinned binary.)
+      - name: Install desktop-file-utils
         run: |
           sudo apt-get update
-          sudo apt-get install -y rclone
+          sudo apt-get install -y desktop-file-utils
 
       - name: Install fused-render (dev + linux-desktop extras)
         run: pip install -e ".[dev,linux-desktop]"
