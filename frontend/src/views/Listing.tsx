@@ -261,6 +261,23 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // resolving and will drive the correct final view (a file <Preview>) a beat
 // later, so we show the neutral loading body and let stat commit the real view.
 // Absent/false (the committed post-stat render), errors show normally.
+// Keyboard selection (the arrow-key row highlight) survives this component's
+// per-folder remount. Opening a folder first paints App's pre-stat scaffold
+// with a PROVISIONAL Listing, then swaps it for the resolved one when stat
+// lands ~1s later — a remount that would otherwise wipe an in-progress arrow
+// selection mid-keystroke (press Down during the open → the highlight vanishes).
+// Like fs-clipboard, the state lives just outside the remount boundary. A single
+// entry keyed by fsPath is enough (only one Listing is mounted at a time): it
+// bridges the scaffold→resolved swap and restores the highlight if you browse
+// back to the same folder.
+let lastSelection: { fsPath: string; path: string | null } | null = null;
+function recallSelection(fsPath: string): string | null {
+  return lastSelection && lastSelection.fsPath === fsPath ? lastSelection.path : null;
+}
+function rememberSelection(fsPath: string, path: string | null): void {
+  lastSelection = { fsPath, path };
+}
+
 export default function Listing({
   fsPath,
   provisional = false,
@@ -325,7 +342,12 @@ export default function Listing({
   // row scrolls into view, resets on every query change.
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Path of the keyboard-selected row (arrow-key navigation); null = none.
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // Seeded from the cross-remount store so a selection made in the pre-stat
+  // provisional Listing survives the swap to the resolved one (see
+  // recallSelection / lastSelection above).
+  const [selectedPath, setSelectedPath] = useState<string | null>(() =>
+    recallSelection(fsPath)
+  );
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -353,6 +375,13 @@ export default function Listing({
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // Mirror the selection into the cross-remount store so it's already there
+  // when the resolved Listing mounts (the provisional one has no unmount step
+  // that would clear it). Keyed by fsPath, so a real nav to another folder
+  // starts fresh.
+  useEffect(() => {
+    rememberSelection(fsPath, selectedPath);
+  }, [fsPath, selectedPath]);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (see rowCtxByPath
   // below, which assigns this each render).
