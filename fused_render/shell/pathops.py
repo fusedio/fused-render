@@ -135,9 +135,12 @@ def list_mount_dir(path, *, cursor=None, max_entries, page_timeout=None,
 
     Returns a MountListing. Does ZERO kernel I/O on `path`. Raises exactly what
     the underlying primitives raise, for the caller to map:
-      * mounts.DirectListError — only when the direct route fails AND
-        allow_rc_fallback is False (a cursored /api/fs/list request that must not
-        silently re-list page 1 via rc);
+      * mounts.DirectListError — when allow_rc_fallback is False and the direct
+        route is unavailable, i.e. either a direct page failed OR the path is not
+        direct_list_capable (it can flip between the caller's gate and this call).
+        allow_rc_fallback=False means rc is unreachable, period: a cursored
+        /api/fs/list request must never silently re-list page 1 via rc, and an rc
+        error must not escape the caller's `except DirectListError`;
       * mounts.RcListTimeout / RcListUnavailable / RcListError — from the rc
         route (the caller maps these to 503 / 400 as it already did).
 
@@ -157,6 +160,15 @@ def list_mount_dir(path, *, cursor=None, max_entries, page_timeout=None,
             if not allow_rc_fallback:
                 raise
             # fall through to the rc route on the same request
+    elif not allow_rc_fallback:
+        # Not direct-capable and the caller forbade rc: the direct route this
+        # call is meant to drive is simply unavailable (capability can flip
+        # between the caller's direct_list_capable gate and here). Raising
+        # keeps rc unreachable when allow_rc_fallback is False — a silent rc
+        # result would skip the caller's cap / broken-mount handling and an rc
+        # error would escape its `except DirectListError`.
+        raise mounts.DirectListError(
+            f"not direct-list-capable and rc fallback disabled: {path}")
     listed = mounts.rc_list_dir(path, timeout=rc_timeout)
     return MountListing(listed, None, direct=False)
 

@@ -99,6 +99,23 @@ def test_list_no_rc_fallback_reraises_direct_error(as_mount, monkeypatch):
         pathops.list_mount_dir(as_mount, max_entries=10, allow_rc_fallback=False)
 
 
+def test_list_no_rc_fallback_raises_when_not_direct_capable(as_mount, monkeypatch):
+    # direct_list_capable can flip to False between the endpoint's gate and this
+    # call (e.g. upstream cache invalidation). With allow_rc_fallback False the rc
+    # route MUST stay unreachable — otherwise a silent rc result would skip the
+    # endpoint's list capping / broken-mount checks, and an RcListError would
+    # escape its `except DirectListError`. Contract: raise DirectListError so the
+    # endpoint's existing fallback handles it.
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
+    monkeypatch.setattr(mounts_mod, "direct_list_page",
+                        lambda *a, **k: pytest.fail("direct must not run"))
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: pytest.fail("rc must not run"))
+
+    with pytest.raises(mounts_mod.DirectListError):
+        pathops.list_mount_dir(as_mount, max_entries=10, allow_rc_fallback=False)
+
+
 def test_list_non_direct_backend_uses_rc(as_mount, monkeypatch):
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
     monkeypatch.setattr(mounts_mod, "direct_list_page",
