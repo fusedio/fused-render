@@ -2461,6 +2461,25 @@ def direct_list_capable(path: str) -> bool:
     return s3_direct_capable(path) or gcs_direct_capable(path)
 
 
+def direct_list_anonymous(path: str) -> bool:
+    """True when `path` is mount-backed by an ANONYMOUS direct-listable remote
+    (anonymous plain AWS S3 or anonymous GCS), as opposed to a credentialed-
+    SHAPED one. A PURE config-shape check that resolves NO credentials/token
+    (finding 12), mirroring direct_list_capable.
+
+    An anonymous remote carries no credentials that can fail to resolve, so its
+    direct pager never raises DirectListError for a missing/expired credential —
+    callers that can't fall back to rc (the mount-root watch) use this to keep
+    anonymous behavior byte-identical while letting a credentialed-shaped remote
+    whose creds don't resolve fall through to rc."""
+    m, _ = _mount_for(path)
+    if m is None:
+        return False
+    name = m["remote"].partition(":")[0]
+    cfg = _remote_config(name)
+    return _anonymous_s3(cfg) or _gcs_anonymous(cfg or {})
+
+
 def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
                      timeout: float | None = None) -> tuple[list, str | None]:
     """One direct (unsigned) listing page for `path`, routed to the S3 or GCS

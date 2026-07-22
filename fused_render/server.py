@@ -2238,10 +2238,22 @@ class _WatchEntry:
         synthetic S3/GCS dirs, so create/delete/rename of children never moves
         it — the mount-dir auto-refresh (Listing LS-1) was silently dead. So for
         a directory the signal is a hash of a BOUNDED shallow listing instead:
-        one direct_list_page (anonymous S3/GCS) or a short-timeout rc_list_dir.
+        one direct_list_page (direct-listable S3/GCS) or a short-timeout
+        rc_list_dir.
+
+        direct_list_capable is a PURE config-shape check (finding 12): it's true
+        for a credentialed-SHAPED S3/GCS remote whose creds haven't been resolved.
+        When they don't resolve (cloud-auth libs absent, ambient creds expired)
+        direct_list_page raises DirectListError. On a non-root dir we fall back to
+        rc_list_dir — the recovery the fs/list handler and the
+        s3/gcs_direct_capable docstrings promise — flowing into the shared error
+        ladder below. Two carve-outs keep _UNCHANGED with NO rc fallback: a mount
+        ROOT (an rc listing of its whole prefix is the standing background
+        enumeration refused above) and an ANONYMOUS remote (no creds to fail on;
+        byte-identical to pre-finding-12 behavior).
 
         A FILE reaches the ModTime path differently by branch:
-          - direct-listable (anonymous S3/GCS): direct_list_capable is a pure
+          - direct-listable (S3/GCS): direct_list_capable is a pure
             path/config check that can't tell a file from a directory, and
             direct_list_page on a file KEY returns an EMPTY page (the file's own
             key != the "<key>/" listing prefix). An empty page is
@@ -2271,8 +2283,22 @@ class _WatchEntry:
 
         try:
             if shell_mounts.direct_list_capable(self.path):
-                page, _ = shell_mounts.direct_list_page(
-                    self.path, max_keys=1000, timeout=4)
+                try:
+                    page, _ = shell_mounts.direct_list_page(
+                        self.path, max_keys=1000, timeout=4)
+                except shell_mounts.DirectListError:
+                    # A credentialed-SHAPED remote is "capable" by config shape
+                    # alone (finding 12); when its creds don't resolve the direct
+                    # pager fails. Fall back to rc_list_dir (flowing into the
+                    # error ladder below) — EXCEPT a mount ROOT, whose rc listing
+                    # is the standing enumeration refused above, and an ANONYMOUS
+                    # remote, which has no creds to fail on and stays _UNCHANGED
+                    # with no rc fallback (byte-identical to prior behavior).
+                    if (self._is_mount_root
+                            or shell_mounts.direct_list_anonymous(self.path)):
+                        return _UNCHANGED
+                    listed = shell_mounts.rc_list_dir(self.path, timeout=4)
+                    return _hash_listing(listed)
                 if not page:
                     # Empty: a file (its key isn't under the "<key>/" prefix) or
                     # an empty dir. Use the rc ModTime — moves for a file's
@@ -2289,7 +2315,7 @@ class _WatchEntry:
             m = shell_mounts.rc_mtime_for(self.path)
             return _UNCHANGED if m is None else m
         except Exception:
-            return _UNCHANGED  # DirectListError, etc.
+            return _UNCHANGED  # any other backend failure -> unchanged
 
     async def _read(self):
         """One tick's read with a hard timeout and in-flight de-duplication.
