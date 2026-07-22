@@ -137,6 +137,21 @@ def test_autostart_fails_loudly_on_unresolvable_launcher(monkeypatch, tmp_path):
         startup.set_enabled(True)
 
 
+def test_autostart_rejects_python_m_checkout_launch(monkeypatch, tmp_path):
+    # Bugbot: with no $APPIMAGE, a `python -m fused_render.supervisor` launch
+    # has argv[0] = the package's __main__.py — an existing file, but one the
+    # desktop session cannot exec. That must raise, not persist a broken Exec.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    fake_main = tmp_path / "__main__.py"
+    fake_main.write_text("")
+    monkeypatch.setattr(startup.sys, "argv", [str(fake_main)])
+    with pytest.raises(OSError):
+        startup.set_enabled(True)
+    assert not (tmp_path / ".config" / "autostart" / "fused-render.desktop").exists()
+
+
 # -- UI backend resolution (subprocess-stubbed) ----------------------------
 
 def test_ui_prefers_zenity(monkeypatch):

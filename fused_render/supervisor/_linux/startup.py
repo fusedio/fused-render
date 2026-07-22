@@ -50,13 +50,21 @@ def _launcher_path() -> Path:
         if not path.is_file():
             raise FileNotFoundError(f"$APPIMAGE points at a missing file: {path}")
         return path
-    # Dev / unpackaged fallback: whatever launched us.
+    # Dev / unpackaged fallback: whatever launched us — but only if the desktop
+    # session could actually exec it. Under `python -m fused_render.supervisor`
+    # argv[0] is the package's __main__.py (a plain, non-executable script), and
+    # persisting that as Exec= is exactly the broken entry this module promises
+    # never to write.
     argv0 = sys.argv[0] if sys.argv else ""
     if not argv0:
         raise FileNotFoundError("cannot resolve a launcher path (no $APPIMAGE, no argv[0])")
     resolved = Path(argv0).resolve()
     if not resolved.is_file():
         raise FileNotFoundError(f"resolved launcher is not a file: {resolved}")
+    if resolved.suffix == ".py" or not os.access(resolved, os.X_OK):
+        raise FileNotFoundError(
+            f"launcher is not directly executable by the desktop session: {resolved}"
+        )
     return resolved
 
 
