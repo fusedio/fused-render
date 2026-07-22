@@ -328,6 +328,23 @@ body:has(.sidebar-resize-handle.resizing) {
   color: var(--accent);
 }
 
+/* Missing-file flag (target confirmed gone from disk, server GET-time check):
+   the name keeps its normal color; a small warning glyph sits between the
+   name and the (hover-only) action buttons — always visible, unlike the
+   actions, so a broken bookmark reads at a glance without hovering. */
+.bookmark-missing-badge {
+  flex: 0 0 auto;
+  color: var(--error);
+  font-size: 11px;
+  cursor: help;
+  /* a.bookmark-name::after stretches over the whole row (see below); without
+     its own stacking context this badge would sit under that overlay and
+     never receive the hover/title it needs — same reason .bookmark-glyph
+     carries position+z-index. */
+  position: relative;
+  z-index: 1;
+}
+
 .bookmark-row.dragging {
   opacity: 0.4;
 }
@@ -484,6 +501,11 @@ a.bookmark-name::after {
 #bookmark-tooltip .tip-none {
   color: var(--fg-muted);
   font-style: italic;
+  margin-top: 6px;
+}
+
+#bookmark-tooltip .tip-missing {
+  color: var(--error);
   margin-top: 6px;
 }
 
