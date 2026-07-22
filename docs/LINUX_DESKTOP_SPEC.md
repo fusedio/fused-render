@@ -33,7 +33,7 @@ AppImage).
 | Single instance | `flock(LOCK_EX\|LOCK_NB)` on `$XDG_RUNTIME_DIR/fused-render/supervisor.lock`. The kernel releases the lock on **any** death including `SIGKILL` — the same "abandoned mutex" semantics the Windows named mutex has. |
 | IPC (secondary → primary) | Unix stream socket (`supervisor.sock`) in the same `0700` runtime dir, socket mode `0600`; carries the **identical** `protocol.py` frames with a 4-byte status reply. |
 | Process-tree kill | **baseline**: `start_new_session` (setsid) + `PR_SET_PDEATHSIG(SIGKILL)` via `prctl` in a `preexec_fn`, with `killpg` for deliberate teardown. **strong**: wrap the server in an unprivileged user+pid namespace (`unshare --user --map-root-user --pid --fork --kill-child`) so the kernel reaps every descendant when ns-init dies. Selected by `FUSED_RENDER_LINUX_TREE_KILL` (`pgroup` default, `namespace` opt-in); the gate decides which ships by default. |
-| Tray | `pystray` (AppIndicator backend where a StatusNotifier host exists; X11 fallback via python-xlib). Absence on stock GNOME is an accepted degraded mode (gate (c)). |
+| Tray | Native **StatusNotifierItem over D-Bus** (`dbus-fast`); works on any StatusNotifier host — waybar, KDE, AppIndicator-GNOME. No X11/XEmbed, so it renders on Wayland. Absence on a session with no StatusNotifier host (stock GNOME w/o extension) is an accepted degraded mode (gate (c)). |
 | Start at login | `~/.config/autostart/fused-render.desktop` (`$XDG_CONFIG_HOME` honored). |
 | Dialogs / shell-open | `_linux/ui.py`: first available of `zenity` → `kdialog` → bundled tkinter; `xdg-open` for open_path/open_uri/open_url (same pattern as `server.py`'s reveal-in-file-manager). |
 | Paths | XDG: state `$XDG_DATA_HOME/fused-render/desktop`, cache `$XDG_CACHE_HOME/fused-render/desktop`, runtime `$XDG_RUNTIME_DIR/fused-render`, with documented fallbacks (`~/.local/share`, `~/.cache`, and a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
@@ -55,9 +55,10 @@ supervisor never sees more than one path per process.
   just measured once.
 - **(b) Port does not clash** with a running dev server (ephemeral port; the
   run loop already retries 3 ports).
-- **(c) Tray** works on KDE and a GNOME with an AppIndicator extension, and its
-  *absence* on stock GNOME still leaves the app fully usable — browser reachable
-  and a second launch forwards (opens home) instead of double-serving.
+- **(c) Tray** works on any StatusNotifier host — waybar (Hyprland), KDE, and a
+  GNOME with an AppIndicator extension — and its *absence* on a session with no
+  StatusNotifier host (stock GNOME) still leaves the app fully usable — browser
+  reachable and a second launch forwards (opens home) instead of double-serving.
 - **(d) Open-with** association works after user-level AppImage integration.
 - **(e) Upgrade** = replace the file while running; the old instance shuts down
   via `--shutdown-for-upgrade`.
@@ -81,13 +82,15 @@ Decision section below.
 
 ## Non-goals / accepted trade-offs
 
-- **Tray fragmentation.** Stock GNOME has no StatusNotifier host → no icon.
-  Accepted: everything is reachable via the browser and a re-launch. The tray's
-  "Default apps..." item opens an OS "default apps" settings page on Windows
+- **Tray fragmentation.** With a native StatusNotifierItem the icon renders on
+  any StatusNotifier host (waybar, KDE, AppIndicator-GNOME); it is absent only
+  where no such host runs (stock GNOME w/o extension) → no icon. Accepted:
+  everything is reachable via the browser and a re-launch. The Windows tray's
+  "Default apps..." item opens an OS "default apps" settings page
   (`ms-settings:defaultapps`); there is no cross-desktop Linux equivalent, so
-  `_linux/ui.open_default_apps` raises `OSError` and the action is a logged
-  no-op (the run loop's `_safe_call` swallows it). Cosmetic, not a launch
-  blocker.
+  the item is **omitted from the Linux menu** entirely (rather than shown as a
+  dead entry). `_linux/ui.open_default_apps` still exists and raises `OSError`
+  for any other caller, a logged no-op. Cosmetic, not a launch blocker.
 - **Template daemons that outlive the server on purpose** (rclone rcd serves,
   tile daemons started with `start_new_session`): under either tree-kill they die
   with the app, matching Windows Job semantics but differing from dev/macOS.
