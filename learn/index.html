@@ -608,6 +608,46 @@ claude plugin install fused-render@fused-render</pre>
     </div>
   </section>
 
+  <!-- ============================ 2b · CLAUDE CODE SKILLS ============================ -->
+  <section class="page" data-slug="skills" data-title="Claude Code skills" data-ix="2">
+    <p class="crumb">Workflow</p>
+    <h1 class="title">Claude Code skills</h1>
+    <p class="lede">Fused Render ships a set of Claude Code <b>skills</b> — packaged instructions that teach the <code>claude</code> CLI how this project works. Install them once and Claude authors views, drives the explorer, and registers templates fluently, without you spelling out the conventions each time.</p>
+    <div class="callout"><span class="lab">Prerequisite</span>
+      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p></div>
+
+    <h2><span class="n">1</span>What you get</h2>
+    <p class="sub">Three skills cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-usage</code></h4>
+      <p style="margin:0;font-size:12.5px">Running and using a project — start the local server, browse the filesystem, and open views or files by URL (embed vs full-shell modes).</p></div>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-authoring</code></h4>
+      <p style="margin:0;font-size:12.5px">Writing and debugging views — the <code>fused.runPython()</code> bridge to local Python, the <code>main()</code> contract, URL-synced params, and the file-IO helpers (<code>readFile</code>/<code>writeFile</code>/<code>stat</code>/<code>rawUrl</code>).</p></div>
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-custom-templates</code></h4>
+      <p style="margin:0;font-size:12.5px">Registering your own preview template for a file extension under <code>~/.fused-render/templates/</code> — so opening that file type renders <em>your</em> page (or offers it as a switchable mode). Pairs with the <a href="?page=templates">Templates</a> concepts page.</p></div>
+
+    <h2><span class="n">2</span>Install the plugin</h2>
+    <p class="sub">The skills are distributed as a Claude Code <b>plugin</b> from this repo's marketplace. From inside Claude Code, add the marketplace, then install the plugin:</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsMkt">Copy</button>
+      <pre id="skillsMkt">/plugin marketplace add fusedio/fused-render</pre></div>
+    <div class="promptbox" style="margin-top:8px">
+      <button class="copybtn" data-copy="skillsInstall">Copy</button>
+      <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
+    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session — including when Claude Code is driven from inside the app's Claude panel.</p>
+    <div class="callout"><span class="lab">Working inside the repo?</span>
+      <p style="margin:6px 0 0 0">If you're developing fused-render itself, the skills are already present as <code>./skills/</code> in the checkout — no install needed. Maintainer-only skills (dev-env setup, cutting a release) live separately under <code>.claude/skills/</code> and never ship in the plugin.</p></div>
+
+    <h2><span class="n">3</span>Just ask</h2>
+    <p class="sub">With the plugin installed you describe the outcome in plain language; Claude loads the matching skill and follows its conventions. No need to mention HTML, Python, or the <code>fused</code> API.</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsAsk">Copy</button>
+      <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
+    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=using">Using Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
+  </section>
+
   <!-- ============================ 3 · TEMPLATES ============================ -->
   <section class="page" data-slug="templates" data-title="Templates" data-ix="3">
     <p class="crumb">Concepts</p>
