@@ -2,7 +2,7 @@
 
 Date: 2026-07-08. Branch `agent/20260708-search`.
 
-Two independent searches, approved by Akshil:
+Two independent searches:
 
 ## Shared: fuzzy scorer — `frontend/src/lib/fuzzy.ts`
 
