@@ -3737,8 +3737,8 @@ def create_app(start_dir: str) -> FastAPI:
             resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
 
         # Engine dispatch (D69/§20): both paths return the same wire shape
-        # ({ok, result, error:{type,message,traceback}, stdout} — the fused
-        # engine adds stderr/duration_ms), so pages never see which ran.
+        # ({ok, result, error:{type,message,traceback,where}, stdout} — the
+        # fused engine adds stderr/duration_ms), so pages never see which ran.
         # Resolved per request: the Preferences switch applies to the next
         # run, no restart (a set FUSED_RENDER_ENGINE pins it instead).
         if current_engine() == "fused":

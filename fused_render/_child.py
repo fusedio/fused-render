@@ -20,7 +20,15 @@ import traceback
 # own directory is sys.path[0] and `_binding.py` next to it always resolves —
 # even when the package isn't pip-installed (dev-from-source). The import runs
 # before run() mutates sys.path, so a user module dir can't shadow it.
-from _binding import bind_params
+from _binding import bind_params, trim_harness_frames, user_location
+
+# Frames in these files are runner plumbing, trimmed off the front of a user
+# traceback (D128): this worker itself and the shared param binder next to it.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_HARNESS_FILES = {
+    os.path.abspath(__file__),
+    os.path.join(_HERE, "_binding.py"),
+}
 
 
 def run():
@@ -56,12 +64,23 @@ def run():
             ) from None
         out = {"ok": True, "result": result}
     except BaseException as e:  # noqa: BLE001 — includes SystemExit from user code
+        tb = trim_harness_frames(e.__traceback__, _HARNESS_FILES)
+        if tb is None:
+            # Harness-raised (bad params, missing main, unserializable return):
+            # the message is the whole story — no stack, and no chained-cause
+            # frames (those would be runner internals too). format_exception_only
+            # still renders a SyntaxError's file/line/caret block, which points
+            # at the user's own file, so that stays useful.
+            formatted = "".join(traceback.format_exception_only(type(e), e))
+        else:
+            formatted = "".join(traceback.format_exception(type(e), e, tb))
         out = {
             "ok": False,
             "error": {
                 "type": type(e).__name__,
                 "message": str(e),
-                "traceback": traceback.format_exc(),
+                "traceback": formatted,
+                "where": user_location(e, path),
             },
         }
     finally:
