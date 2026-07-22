@@ -101,6 +101,45 @@ def test_export_rejects_bad_include_type(tmp_path):
     assert "include" in resp.json()["error"]
 
 
+def test_export_forwards_cache_max_age_to_manifest(tmp_path):
+    html = "<script>fused.runPython('./sine.py', {});</script>"
+    _write(tmp_path, "page.html", html)
+    _write(tmp_path, "sine.py", "def main():\n    return 1\n")
+    out_dir = tmp_path / "bundle"
+
+    client = _client(tmp_path)
+    resp = client.post(
+        "/api/export",
+        json={
+            "page": str(tmp_path / "page.html"),
+            "out": str(out_dir),
+            "cache_max_age": "15m",
+        },
+        headers={"X-Fused": "1"},
+    )
+    assert resp.status_code == 200, resp.text
+    import json
+
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert manifest["cache_max_age"] == "15m"
+
+
+def test_export_rejects_bad_cache_max_age(tmp_path):
+    _write(tmp_path, "page.html", "<html></html>")
+    client = _client(tmp_path)
+    resp = client.post(
+        "/api/export",
+        json={
+            "page": str(tmp_path / "page.html"),
+            "out": str(tmp_path / "out"),
+            "cache_max_age": "5x",
+        },
+        headers={"X-Fused": "1"},
+    )
+    assert resp.status_code == 400
+    assert "cache_max_age" in resp.json()["error"]
+
+
 def test_export_error_is_400(tmp_path):
     html = "<script>const p = './x.py'; fused.runPython(p, {});</script>"
     _write(tmp_path, "page.html", html)

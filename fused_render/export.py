@@ -141,11 +141,28 @@ class Entrypoint:
 
 @dataclass(frozen=True)
 class Asset:
-    """A ``rawUrl``/``readFile`` target: a read-only file bundled and served by ``_asset``."""
+    """A read-only file bundled and served by the ``_asset`` route — the surface
+    ``fused.rawUrl``/``readFile`` fetch from.
+
+    ``source`` records WHY the file is in the bundle, so the Deploy modal's "Will
+    publish" list can say whether the page is *known* to fetch it via
+    ``rawUrl``/``readFile`` versus bundled to back a computed path or added by hand:
+
+      * ``"reference"`` — a literal ``fused.rawUrl()``/``readFile()`` argument the
+        HTML scan resolved: the page fetches this file via rawUrl/readFile.
+      * ``"manifest"`` — declared in the page's embedded
+        ``<script type="application/fused-bundle">`` include (globs/literals), the
+        reproducible way to back a *computed* rawUrl/readFile path (EX-4a/EX-8).
+      * ``"include"`` — added out-of-band via the caller's / Deploy modal's
+        ``include`` (e.g. "Add all in folder"), not seen in the HTML at all.
+
+    A file reachable more than one way is attributed to the first that claims it,
+    in that order (reference > manifest > include), and bundled once."""
 
     path: str  # the literal string passed to rawUrl/readFile, e.g. "./logo.png"
     name: str  # the asset key the page requests, e.g. "logo.png"
     file: str  # bundle-relative destination, e.g. "files/logo.png"
+    source: str = "reference"  # "reference" | "manifest" | "include" (see above)
 
 
 @dataclass(frozen=True)
@@ -277,9 +294,7 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     return real == root or real.startswith(root + os.sep)
 
 
-def _extract_bundle_manifest(
-    html: str, errors: list[str], warnings: list[str]
-) -> tuple[list[str], str]:
+def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) -> tuple[list[str], str]:
     """Pull the embedded ``<script type="application/fused-bundle">`` manifest out of ``html``.
 
     Returns ``(include_entries, html_without_the_block)``. The block is stripped from the
@@ -307,12 +322,10 @@ def _extract_bundle_manifest(
     try:
         data = json.loads(matches[0].group(2))
     except ValueError as exc:
-        errors.append(
-            f'the <script type="application/fused-bundle"> manifest is not valid JSON: {exc}'
-        )
+        errors.append(f'the <script type="application/fused-bundle"> manifest is not valid JSON: {exc}')
         return [], stripped
     if not isinstance(data, dict):
-        errors.append("the fused-bundle manifest must be a JSON object")
+        errors.append('the fused-bundle manifest must be a JSON object')
         return [], stripped
     include = data.get("include", [])
     if not isinstance(include, list) or not all(isinstance(x, str) for x in include):
@@ -464,7 +477,7 @@ def _discover_modules(
             continue
         scanned.add(real)
         try:
-            with open(src_path, encoding="utf-8", errors="replace") as f:
+            with open(src_path, "r", encoding="utf-8", errors="replace") as f:
                 source = f.read()
         except OSError:
             continue
@@ -536,10 +549,13 @@ def plan_export(
     # The embedded manifest is read first: its block is stripped from `html` (so its JSON
     # body can't false-positive in the scans below) and its expanded `include` globs are
     # prepended to the caller's include list (both are just added assets; exclude runs last).
+    # The prepend order also fixes provenance: a key declared in BOTH the manifest and the
+    # caller's include is deduped to the manifest entry (first wins), so it is attributed to
+    # the page's own reproducible declaration rather than the ad-hoc selection.
     manifest_include, html = _extract_bundle_manifest(html, plan.errors, plan.warnings)
-    include = (
-        _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings) + include
-    )
+    manifest_include = _expand_manifest_include(page_dir, manifest_include, plan.errors, plan.warnings)
+    manifest_keys = {_asset_key(p) for p in manifest_include}
+    include = manifest_include + include
 
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
@@ -555,15 +571,8 @@ def plan_export(
             "hosted entrypoint's route name is derived from its literal path, so a "
             "computed runPython target cannot be bundled or routed"
         )
-    dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
-    if dyn_asset > 0:
-        plan.warnings.append(
-            f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
-            "exporter can't resolve — declare the files those calls fetch in a "
-            '<script type="application/fused-bundle"> manifest ("include" globs), or add '
-            'them under "Include files" ("Add all in folder"), so they are bundled and '
-            "served (the hosted _asset route then resolves the computed path by key)"
-        )
+    # The computed-path advisory is emitted AFTER the asset passes below (it depends on the
+    # FINAL bundle), near the end of this function.
 
     taken_names: set[str] = set()
     for path in _literal_paths(html, "runPython"):
@@ -610,7 +619,9 @@ def plan_export(
             key = _asset_key(path)
             seen_asset_paths.add(path)
             seen_asset_keys.add(key)
-            plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
+            plan.assets.append(
+                Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}", source="reference")
+            )
 
     # Manual includes: extra files bundled as assets, keyed the same way. A file already
     # brought in by the literal scan (same key) is skipped — bundled once. A file already
@@ -638,7 +649,12 @@ def plan_export(
             plan.errors.append(f"included file {path!r} not found next to the page ({src})")
             continue
         seen_asset_keys.add(key)
-        plan.assets.append(Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}"))
+        # A manifest-declared file is the page's own reproducible bundle declaration
+        # (it backs a computed rawUrl/readFile path); a caller/modal include is ad-hoc.
+        source = "manifest" if key in manifest_keys else "include"
+        plan.assets.append(
+            Asset(path=path, name=key, file=f"{_PAYLOAD_DIR}/{key}", source=source)
+        )
 
     # Excludes drop matching entrypoints/assets by their literal path OR bundle key.
     # Dropping something the page literally references is the user's call, but warned —
@@ -674,6 +690,27 @@ def plan_export(
                 kept_assets.append(a)
         plan.assets = kept_assets
 
+    # A computed rawUrl/readFile path can't be resolved from the HTML — advisory, never
+    # blocking. Emitted HERE, after dedup and exclude, so it reflects the FINAL bundle:
+    # suppressed only when a `manifest`-source asset actually SURVIVED — a "bundle" badge in
+    # the Deploy list (§19) that shows the user what backs the call. Keyed on the surviving
+    # assets, NOT the raw manifest globs, because a manifest entry can fail to leave a
+    # `manifest` row: one that is also a literal reference is deduped to a `reference` asset,
+    # and any manifest file can be dropped by `exclude`. In both cases no "bundle" row
+    # remains, so the justification ("the list shows what backs it") does not hold and the
+    # nag must still fire. A per-deployment `include` (source `include`, e.g. "Add all in
+    # folder") never suppresses it either: that ad-hoc selection is not checked in with the
+    # page, so a fresh export without it would still 404 — only the manifest travels along.
+    dyn_asset = sum(_dynamic_call_count(html, method) for method in ("rawUrl", "readFile"))
+    if dyn_asset > 0 and not any(a.source == "manifest" for a in plan.assets):
+        plan.warnings.append(
+            f"{dyn_asset} fused.rawUrl()/readFile() call(s) use a computed path the "
+            "exporter can't resolve — declare the files those calls fetch in a "
+            '<script type="application/fused-bundle"> manifest ("include" globs), or add '
+            'them under "Include files" ("Add all in folder"), so they are bundled and '
+            "served (the hosted _asset route then resolves the computed path by key)"
+        )
+
     # Ship first-party modules the (surviving) entrypoints import, so `import helpers`
     # resolves on the hosted page with no hand-listing. Discovered after excludes so a
     # dropped entrypoint is not scanned, and against the final asset key set so a module
@@ -686,7 +723,7 @@ def plan_export(
     return plan
 
 
-def _manifest(plan: ExportPlan, page_key: str) -> dict:
+def _manifest(plan: ExportPlan, page_key: str, cache_max_age: str) -> dict:
     """The bundle's ``manifest.json`` (v2) — the contract the hosting layer reads.
 
     v2 lays every bundled file under a single ``root`` payload dir at its real page-relative
@@ -702,17 +739,42 @@ def _manifest(plan: ExportPlan, page_key: str) -> dict:
       the payload-relative key (also the ``_asset`` allow-list entry). Two distinct literals
       may share a key — both appear so the runtime's exact-string lookup never misses.
     - ``resources`` — imported modules: ``key`` is the payload-relative path (never web-served).
+    - ``cache_max_age`` — the deploy-time result-caching choice (``"0s"`` off by default),
+      e.g. ``"5m"``/``"1h"``. Applied uniformly to every ``runPython`` route by the hosting
+      layer's ``build_html_artifact`` (never the shell or asset routes); see
+      spec/serve/fused-render.md § Caching in the fused repo.
     """
     return {
         "fused_render_bundle": 2,
         "root": _PAYLOAD_DIR,
         "page": page_key,
         "entrypoints": [
-            {"path": e.path, "name": e.name, "key": _asset_key(e.path)} for e in plan.entrypoints
+            {"path": e.path, "name": e.name, "key": _asset_key(e.path)}
+            for e in plan.entrypoints
         ],
         "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
         "resources": [{"key": r.key} for r in plan.resources],
+        "cache_max_age": cache_max_age,
     }
+
+
+_CACHE_MAX_AGE_RE = re.compile(r"^(\d+)([smhd])$")
+
+
+def _validate_cache_max_age(value: str) -> None:
+    """Reject a malformed ``cache_max_age`` before it lands in a manifest.
+
+    Mirrors the hosting layer's own parser (the ``fused`` wheel's
+    ``openfused.caching.parse_cache_max_age`` — not imported here, since ``fused`` is an
+    optional extra export must work without): a non-negative integer + unit (``s``/``m``/
+    ``h``/``d``), ``"0s"`` the off sentinel. Validating at export time (not deferred to
+    `share create`) means a bad value fails the local, no-network step, not a later publish.
+    """
+    if not isinstance(value, str) or not _CACHE_MAX_AGE_RE.match(value):
+        raise ExportError(
+            f"invalid cache_max_age {value!r}: expected a non-negative integer with a unit "
+            "(s/m/h/d), e.g. '0s', '90s', '15m', '24h', '7d'."
+        )
 
 
 def export_page(
@@ -721,17 +783,23 @@ def export_page(
     *,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    cache_max_age: str = "0s",
 ) -> ExportPlan:
     """Export the page at ``html_path`` into a portable bundle at ``out_dir`` (bundle v2).
 
     Writes ``manifest.json`` and a single ``files/`` payload dir mirroring the page's folder:
     the page, each ``runPython`` target, each ``rawUrl``/``readFile`` target (plus any
     ``include`` files, minus any ``exclude`` — see :func:`plan_export`), and each first-party
-    module a bundled entrypoint imports, all at their real page-relative path. Raises
-    :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported API,
-    unsafe/missing file) with all problems listed at once; advisory ``plan.warnings`` never
-    block. Returns the realized :class:`ExportPlan` on success.
+    module a bundled entrypoint imports, all at their real page-relative path. ``cache_max_age``
+    (``"0s"`` off by default, e.g. ``"5m"``) is the deploy-time result-caching choice, written
+    into the manifest and applied by the hosting layer **page-wide** — to every served route
+    uniformly (the shell, each ``runPython`` route, and the asset route) — see
+    spec/serve/fused-render.md § Caching in the fused repo.
+    Raises :class:`ExportError` on any blocking problem (dynamic runPython path, unsupported
+    API, unsafe/missing file, malformed ``cache_max_age``) with all problems listed at once;
+    advisory ``plan.warnings`` never block. Returns the realized :class:`ExportPlan` on success.
     """
+    _validate_cache_max_age(cache_max_age)
     html_path = os.path.abspath(html_path)
     if not os.path.isfile(html_path):
         raise ExportError(f"no such file: {html_path}")
@@ -739,14 +807,17 @@ def export_page(
     if ext not in (".html", ".htm"):
         raise ExportError(f"{html_path} is not an .html/.htm file")
 
-    with open(html_path, encoding="utf-8", errors="replace") as f:
+    with open(html_path, "r", encoding="utf-8", errors="replace") as f:
         html = f.read()
     page_dir = os.path.dirname(html_path)
 
     plan = plan_export(html, page_dir, include=include, exclude=exclude)
     if plan.errors:
         raise ExportError(
-            "cannot export " + os.path.basename(html_path) + ":\n  - " + "\n  - ".join(plan.errors)
+            "cannot export "
+            + os.path.basename(html_path)
+            + ":\n  - "
+            + "\n  - ".join(plan.errors)
         )
 
     # Export is **non-destructive**: it writes a self-contained bundle and NEVER deletes an
@@ -789,7 +860,7 @@ def export_page(
             _copy_into(stage, os.path.join(page_dir, r.key), r.file)
 
         with open(os.path.join(stage, "manifest.json"), "w", encoding="utf-8") as f:
-            json.dump(_manifest(plan, page_key), f, indent=2, sort_keys=True)
+            json.dump(_manifest(plan, page_key, cache_max_age), f, indent=2, sort_keys=True)
             f.write("\n")
 
         # Atomic handoff: drop the (empty) out_dir if it exists so the rename can take the

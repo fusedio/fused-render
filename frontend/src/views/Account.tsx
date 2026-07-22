@@ -1,9 +1,12 @@
-// Fused account page — the `/view/_account` sentinel route, entered from the
-// sidebar footer (SPEC §27, AC-1). The in-app home of the
-// one-time `fused cloud login` the Deploy surface needs, plus sign-out — no
-// more copying CLI commands into a terminal. Everything real happens
-// server-side (fused_render/account.py drives the fused CLI; credentials
-// live in the CLI's own store, never in this app).
+// Fused account panel — the "Fused account" tab on the `/view/_prefs`
+// Preferences page (SPEC §27, AC-1; folded in by D125), shown only once
+// Deploy is enabled. The in-app home of the one-time `fused cloud login` the
+// Deploy surface needs, plus sign-out — no more copying CLI commands into a
+// terminal. Everything real happens server-side (fused_render/account.py
+// drives the fused CLI; credentials live in the CLI's own store, never in
+// this app). The old standalone `/view/_account` route now just redirects
+// here (App.tsx) so existing bookmarks and the Deploy modal's "Set up hosted
+// environment" link keep working.
 //
 // States, in checking order (mirrors DeployModal's):
 //   1. loading      — status fetch in flight
@@ -83,7 +86,7 @@ function SetupPanel({
           setJob({ job_id: s.job_id, env_name: s.env_name });
         }
       },
-      () => {},
+      () => {}
     );
     return () => {
       alive = false;
@@ -121,7 +124,9 @@ function SetupPanel({
     setStarting(true);
     try {
       const started = await startAccountSetup(
-        chosen ? { org: chosen.org!, env: chosen.env!, env_name: envName } : { env_name: envName },
+        chosen
+          ? { org: chosen.org!, env: chosen.env!, env_name: envName }
+          : { env_name: envName }
       );
       setProgress(null);
       setJob(started);
@@ -135,7 +140,8 @@ function SetupPanel({
   if (probe && probe.ok && probe.admitted === false) {
     return (
       <p className="deploy-muted">
-        Environment setup needs an admitted account — this account isn't admitted to Fused yet.
+        Environment setup needs an admitted account — this account isn't admitted to Fused
+        yet.
       </p>
     );
   }
@@ -146,8 +152,8 @@ function SetupPanel({
         <div className="deploy-form-row">
           <span className="deploy-spinner" />
           <span className="deploy-muted">
-            Setting up <code>{job.env_name}</code>… this provisions the managed environment and can
-            take a few minutes.
+            Setting up <code>{job.env_name}</code>… this provisions the managed environment
+            and can take a few minutes.
           </span>
         </div>
         {progress?.detail && <pre className="account-setup-log">{progress.detail}</pre>}
@@ -246,14 +252,18 @@ function SetupPanel({
         ) : (
           <span className="deploy-muted">
             Saved on this machine as <code>{envName}</code>.{" "}
-            <button type="button" className="link-button" onClick={() => setEditingName(true)}>
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setEditingName(true)}
+            >
               Edit name
             </button>
           </span>
         )}
       </div>
       <div className="deploy-form-row">
-        <button type="button" className="deploy-primary" onClick={begin} disabled={starting}>
+        <button type="button" className="btn btn-primary" onClick={begin} disabled={starting}>
           {starting
             ? "Starting…"
             : hasWorkspace && chosen
@@ -263,8 +273,8 @@ function SetupPanel({
       </div>
       {doneName && (
         <div className="deploy-note">
-          Environment <b>{doneName}</b> is ready — pages can now deploy to it from the preview
-          header's Deploy button.
+          Environment <b>{doneName}</b> is ready — pages can now deploy to it from the
+          preview header's Deploy button.
         </div>
       )}
       {error && (
@@ -275,9 +285,10 @@ function SetupPanel({
               DIFFERENT fused install (or a previous ad-hoc-signed app build). */}
           {/keychain/i.test(error) && (
             <div className="deploy-muted">
-              This usually means the key was first stored by a different fused install. Open
-              Keychain Access, search for “openfused”, and either delete the item (connecting again
-              recreates it) or set its Access Control to allow this app — then retry.
+              This usually means the key was first stored by a different fused install.
+              Open Keychain Access, search for “openfused”, and either delete the item
+              (connecting again recreates it) or set its Access Control to allow this
+              app — then retry.
             </div>
           )}
         </div>
@@ -286,7 +297,7 @@ function SetupPanel({
   );
 }
 
-export default function Account() {
+export function AccountPanel() {
   const [status, setStatus] = useState<AccountStatus | null>(null);
   // The deep check (`fused cloud orgs`) can take seconds — the page renders
   // from the fast presence-only status first, then fills the probe in.
@@ -303,12 +314,9 @@ export default function Account() {
   const [showSetup, setShowSetup] = useState(false);
 
   const alive = useRef(true);
-  useEffect(
-    () => () => {
-      alive.current = false;
-    },
-    [],
-  );
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
 
   // Sequence-guarded like DeployModal's load: a superseded fetch (focus
   // refresh racing a slow probe) must not land its stale response over a
@@ -369,6 +377,7 @@ export default function Account() {
   };
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const signin = useFusedLogin((fresh) => {
@@ -466,7 +475,7 @@ export default function Account() {
     if (
       !window.confirm(
         `Forget environment “${name}”? This only removes the local entry from the fused ` +
-          `CLI's environment store — cloud resources and stored keys are not touched.`,
+          `CLI's environment store — cloud resources and stored keys are not touched.`
       )
     ) {
       return;
@@ -510,13 +519,13 @@ export default function Account() {
         <section className="prefs-section">
           <h2>Fused account</h2>
           <p>
-            Signing in and deploying use the <code>fused</code> CLI, which is not installed in the
-            server's Python environment.
+            Signing in and deploying use the <code>fused</code> CLI, which is not installed
+            in the server's Python environment.
           </p>
           {status.cli.installable ? (
             <button
               type="button"
-              className="deploy-primary"
+              className="btn btn-primary"
               onClick={onInstall}
               disabled={busy !== null}
             >
@@ -524,8 +533,8 @@ export default function Account() {
             </button>
           ) : (
             <p className="deploy-muted">
-              {status.cli.reason ?? "It cannot be installed automatically."} Install it manually:{" "}
-              <code>{status.cli.install_hint}</code>
+              {status.cli.reason ?? "It cannot be installed automatically."} Install it
+              manually: <code>{status.cli.install_hint}</code>
             </p>
           )}
           {actionError && <div className="deploy-error">{actionError}</div>}
@@ -540,77 +549,78 @@ export default function Account() {
     // setup panel) gate on the sign-in.
     const envsSection = (
       <section className="prefs-section">
-        <h2>Environments</h2>
-        {status.store.envs.length === 0 ? (
-          <p className="deploy-muted">
-            The fused CLI's environment store (<code>{status.envs_file}</code>) is empty
-            {status.logged_in
-              ? " — connect or set up the managed environment below."
-              : " — sign in to connect or set up the managed environment."}
-          </p>
-        ) : (
-          <>
+          <h2>Environments</h2>
+          {status.store.envs.length === 0 ? (
             <p className="deploy-muted">
-              From the fused CLI's environment store (<code>{status.envs_file}</code>). Hosted
-              environments are deploy targets; “Forget” removes only the local entry.
+              The fused CLI's environment store (<code>{status.envs_file}</code>) is empty
+              {status.logged_in
+                ? " — connect or set up the managed environment below."
+                : " — sign in to connect or set up the managed environment."}
             </p>
-            <table className="deploy-shares-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Backend</th>
-                  <th></th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {status.store.envs.map((e) => {
-                  // Collapse Make default + Forget into one "⋯" per row —
-                  // fewer buttons on screen, destructive Forget behind an
-                  // intentional click (it still shows its own confirm).
-                  const isDefault = e.name === status.store.default;
-                  const items: MenuEntry[] = [];
-                  if (!isDefault) {
+          ) : (
+            <>
+              <p className="deploy-muted">
+                From the fused CLI's environment store (<code>{status.envs_file}</code>).
+                Hosted environments are deploy targets; “Forget” removes only the local
+                entry.
+              </p>
+              <table className="deploy-shares-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Backend</th>
+                    <th></th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {status.store.envs.map((e) => {
+                    // Collapse Make default + Forget into one "⋯" per row —
+                    // fewer buttons on screen, destructive Forget behind an
+                    // intentional click (it still shows its own confirm).
+                    const isDefault = e.name === status.store.default;
+                    const items: MenuEntry[] = [];
+                    if (!isDefault) {
+                      items.push({
+                        label: "Make default",
+                        onClick: () => void onMakeDefault(e.name),
+                      });
+                    }
                     items.push({
-                      label: "Make default",
-                      onClick: () => void onMakeDefault(e.name),
+                      label: "Forget…",
+                      danger: true,
+                      onClick: () => onDeleteEnv(e.name),
                     });
-                  }
-                  items.push({
-                    label: "Forget…",
-                    danger: true,
-                    onClick: () => onDeleteEnv(e.name),
-                  });
-                  return (
-                    <tr key={e.name}>
-                      <td>{e.name}</td>
-                      <td>
-                        {e.backend === "fused" ? "fused — managed" : e.backend}
-                        {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
-                      </td>
-                      <td className="deploy-muted">{isDefault ? "default" : ""}</td>
-                      <td className="row-actions-cell">
-                        {envBusy === "default:" + e.name ? (
-                          <span className="deploy-muted">Setting…</span>
-                        ) : envBusy === "delete:" + e.name ? (
-                          <span className="deploy-muted">Forgetting…</span>
-                        ) : (
-                          <RowActionsMenu
-                            items={items}
-                            disabled={envBusy !== null}
-                            label={`Actions for ${e.name}`}
-                          />
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </>
-        )}
-        {envError && <div className="deploy-error">{envError}</div>}
-      </section>
+                    return (
+                      <tr key={e.name}>
+                        <td>{e.name}</td>
+                        <td>
+                          {e.backend === "fused" ? "fused — managed" : e.backend}
+                          {!e.hosted && <span className="deploy-muted"> (not a deploy target)</span>}
+                        </td>
+                        <td className="deploy-muted">{isDefault ? "default" : ""}</td>
+                        <td className="row-actions-cell">
+                          {envBusy === "default:" + e.name ? (
+                            <span className="deploy-muted">Setting…</span>
+                          ) : envBusy === "delete:" + e.name ? (
+                            <span className="deploy-muted">Forgetting…</span>
+                          ) : (
+                            <RowActionsMenu
+                              items={items}
+                              disabled={envBusy !== null}
+                              label={`Actions for ${e.name}`}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
+          {envError && <div className="deploy-error">{envError}</div>}
+        </section>
     );
     const deploymentsSection = (
       <section className="prefs-section">
@@ -622,39 +632,40 @@ export default function Account() {
     if (!status.logged_in) {
       return (
         <>
-          <section className="prefs-section">
-            <h2>Fused account</h2>
-            <p className="deploy-muted">
-              Deploying pages to a hosted URL publishes through your Fused account. Signing in is a
-              one-time browser round-trip; credentials are stored by the fused CLI on this machine —
-              never by fused-render.
-            </p>
-            {signin.connecting ? (
-              <div className="deploy-form-row">
-                <span className="deploy-muted">
-                  Waiting for the browser sign-in… finish signing in in the tab that just opened.
-                </span>
-                <button type="button" onClick={() => void signin.cancel()}>
-                  Cancel
-                </button>
-              </div>
-            ) : inFlightElsewhere ? (
-              <div className="deploy-form-row">
-                <span className="deploy-muted">
-                  A browser sign-in is already in progress (started from another page or tab).
-                </span>
-                <button type="button" onClick={() => void onCancelElsewhere()}>
-                  Cancel it
-                </button>
-              </div>
-            ) : (
-              <button type="button" className="deploy-primary" onClick={() => void signin.begin()}>
-                Sign in to Fused
+        <section className="prefs-section">
+          <h2>Fused account</h2>
+          <p className="deploy-muted">
+            Deploying pages to a hosted URL publishes through your Fused account. Signing in
+            is a one-time browser round-trip; credentials are stored by the fused CLI on
+            this machine — never by fused-render.
+          </p>
+          {signin.connecting ? (
+            <div className="deploy-form-row">
+              <span className="deploy-muted">
+                Waiting for the browser sign-in… finish signing in in the tab that just
+                opened.
+              </span>
+              <button type="button" onClick={() => void signin.cancel()}>
+                Cancel
               </button>
-            )}
-            {signin.error && <div className="deploy-error">{signin.error}</div>}
-            {actionError && <div className="deploy-error">{actionError}</div>}
-          </section>
+            </div>
+          ) : inFlightElsewhere ? (
+            <div className="deploy-form-row">
+              <span className="deploy-muted">
+                A browser sign-in is already in progress (started from another page or tab).
+              </span>
+              <button type="button" onClick={() => void onCancelElsewhere()}>
+                Cancel it
+              </button>
+            </div>
+          ) : (
+            <button type="button" className="btn btn-primary" onClick={() => void signin.begin()}>
+              Sign in to Fused
+            </button>
+          )}
+          {signin.error && <div className="deploy-error">{signin.error}</div>}
+          {actionError && <div className="deploy-error">{actionError}</div>}
+        </section>
           {envsSection}
           {deploymentsSection}
         </>
@@ -681,8 +692,8 @@ export default function Account() {
           )}
           {probe && probe.ok && probe.admitted === false && (
             <div className="deploy-note">
-              This account isn't admitted to Fused yet — deploys to a managed environment will fail
-              until it is.
+              This account isn't admitted to Fused yet — deploys to a managed environment
+              will fail until it is.
             </div>
           )}
           {probe && probe.ok && probe.orgs.length > 0 && (
@@ -710,7 +721,7 @@ export default function Account() {
           <div className="deploy-form-row">
             <button
               type="button"
-              className="deploy-danger"
+              className="btn btn-danger"
               onClick={onLogout}
               disabled={busy !== null}
               title="Removes the fused CLI's stored sign-in on this machine"
@@ -754,5 +765,5 @@ export default function Account() {
     );
   };
 
-  return <div className="prefs-page">{body()}</div>;
+  return <>{body()}</>;
 }

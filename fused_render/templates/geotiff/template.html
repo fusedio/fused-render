@@ -128,7 +128,9 @@ const P = {
   b:     () => fused.params.get('b') || '3',
   cmap:  () => fused.params.get('cmap') || 'viridis',
   stretch: () => fused.params.get('stretch') || '',
-  autoStretch: () => (fused.params.get('autostretch') ?? '1') === '1',
+  // off by default: re-stretching to every viewport shifts colors on each
+  // pan/zoom, which reads as flicker; opt in via the checkbox / autostretch=1
+  autoStretch: () => fused.params.get('autostretch') === '1',
   vlo:   () => fused.params.get('vlo') || '',
   vhi:   () => fused.params.get('vhi') || '',
   dir:   () => fused.params.get('dir') || P.file().replace(/\/[^/]*$/, '') || '~',
@@ -168,7 +170,9 @@ async function ensureDaemon(){
   if (r && r.port) daemon = r;
   return daemon;
 }
-const dURL = p => `http://127.0.0.1:${daemon.port}${p}`;
+// every daemon request carries the per-daemon token (from ensure()) so a
+// foreign page that guessed the port can't read tiles cross-origin
+const dURL = p => `http://127.0.0.1:${daemon.port}${p}${p.includes('?') ? '&' : '?'}t=${encodeURIComponent(daemon.token || '')}`;
 
 // Every request hands the daemon a range-capable /api/fs/raw locator; the
 // daemon asks the server (/api/fs/stat) whether the file is mount-backed and
@@ -576,7 +580,7 @@ els.browse.onclick = async () => {
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
 async function refreshExplorer(dir){
   dir = dir || P.dir();
-  const r = await fused.runPython('./browse.py', { dir, exts: '.tif,.tiff', show_all: P.showAll() ? 'true' : 'false' }).catch(() => null);
+  const r = await fused.runPython('./browse.py', { dir, exts: '.tif,.tiff', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
   if (!r || r.error) return;
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');

@@ -65,7 +65,13 @@ def _tar(tmp_path, content="hello"):
 
 ARCHIVES = [(zip_reader, _zip), (tar_reader, _tar)]
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
 
+
+@skip_root
 @pytest.mark.parametrize("reader,make", ARCHIVES, ids=["zip", "tar"])
 def test_preview_copy_is_read_only(tmp_path, reader, make):
     res = reader.main(make(tmp_path), "preview", "notes.txt")
@@ -75,6 +81,7 @@ def test_preview_copy_is_read_only(tmp_path, reader, make):
     assert not os.access(path, os.W_OK)
 
 
+@skip_root
 @pytest.mark.parametrize("reader,make", ARCHIVES, ids=["zip", "tar"])
 def test_preview_overwrites_stale_read_only_copy(tmp_path, reader, make):
     first = reader.main(make(tmp_path), "preview", "notes.txt")["path"]
@@ -93,6 +100,7 @@ def test_extract_output_stays_writable(tmp_path, reader, make):
     assert os.access(res["path"], os.W_OK)
 
 
+@skip_root
 @pytest.mark.parametrize("reader,make", ARCHIVES, ids=["zip", "tar"])
 def test_extract_refuses_write_protected_target(tmp_path, reader, make):
     # The preview chmod must NOT leak into deliberate extraction: a file the
@@ -118,6 +126,7 @@ def test_zip_extract_all_output_stays_writable(tmp_path):
     assert checked == 2
 
 
+@skip_root
 def test_tar_single_compressed_preview_is_read_only(tmp_path):
     p = tmp_path / "notes.json.gz"
     with gzip.open(p, "wt") as f:

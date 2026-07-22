@@ -39,7 +39,11 @@ CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
 # Built-in helpers run from the staged core-templates copy, not the bundle, so
 # the allowlist realpaths must point there too (see core_templates).
 _TEMPLATES_DIR = os.path.realpath(ensure_core_templates())
-DEFAULT_TIMEOUT = 30.0
+# 60s (not 30): a cold overview read of a large remote COG over the mount's HTTP
+# serve legitimately takes ~30-40s on first open (the pyramid analyze; the
+# template's own worker already allows 900s). 30s killed those mid-read. Still
+# well short of a runaway-guard — a genuinely hung script is caught, just later.
+DEFAULT_TIMEOUT = 60.0
 
 # Explicit allowlist of first-party helpers that run IN-PROCESS (D72): each is
 # bounded, self-contained, and never imports or executes user code — the
@@ -179,6 +183,21 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            # close_fds=False forces CPython to spawn via posix_spawn instead of
+            # fork()+exec (verified: the default close_fds=True takes the fork
+            # path on macOS/Linux). This is a native-crash fix, not an fd-policy
+            # choice. The server process has libproj resident with a live SQLite
+            # handle to proj.db in PROJ's SQLiteHandleCache (pyproj is pulled in
+            # transitively — e.g. via `fused`/geopandas). fork() runs every
+            # registered pthread_atfork *child* handler in the forked child
+            # before exec; PROJ's handler calls sqlite3_close/VFSClose on that
+            # inherited-but-now-invalid handle and segfaults (SIGSEGV) — so the
+            # child dies with code -11 before it can exec the worker, and the
+            # run surfaces as "worker exited with code -11 without producing a
+            # result". posix_spawn does NOT run atfork handlers, eliminating the
+            # crash path entirely. The worker is short-lived and inherits only
+            # the pipes it needs, so not closing inherited fds is harmless here.
+            close_fds=False,
             # a windowless server (Explorer-opener spawn) must not flash a
             # console window per run
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

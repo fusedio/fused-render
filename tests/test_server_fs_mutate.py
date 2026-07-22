@@ -22,6 +22,11 @@ from fused_render.server import _fs_delete as DELETE
 from fused_render.server import _fs_mkdir as MKDIR
 from fused_render.server import _fs_rename as RENAME
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _status(resp) -> int:
     return resp.status_code if isinstance(resp, JSONResponse) else 200
@@ -82,6 +87,7 @@ def test_mkdir_existing_path_409(tmp_path):
     assert _data(resp)["error"] == "conflict"
 
 
+@skip_root
 def test_mkdir_readonly_parent_403(tmp_path):
     os.chmod(tmp_path, stat.S_IRUSR | stat.S_IXUSR)
     try:
@@ -149,6 +155,7 @@ def test_delete_symlink_to_dir_removes_link_not_target(tmp_path):
     assert (target / "keep.txt").read_text() == "x"  # contents intact
 
 
+@skip_root
 def test_delete_readonly_file_403(tmp_path):
     f = tmp_path / "ro.txt"
     f.write_text("x")
@@ -294,6 +301,7 @@ def test_rename_dir_into_itself_400(tmp_path):
     assert (d / "sub").is_dir()  # tree untouched
 
 
+@skip_root
 def test_rename_readonly_src_403(tmp_path):
     # A move deletes the source, so a readonly source must refuse the same way
     # delete does — otherwise rename lifts entries off a read-only location.

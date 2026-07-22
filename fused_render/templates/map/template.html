@@ -542,7 +542,10 @@ const dirBase = p => { const parts = String(p).replace(/\/+$/, "").split("/"); r
 async function loadDir(dir) {
   dir = cleanPath(dir);
   try {
-    const res = await fused.runPython("./discover.py", dir ? { dir } : {});
+    // src (origin only) lets discover route a mount-backed dir via /api/fs/list
+    // instead of a kernel scan that could drop the mount. Stays mount-agnostic.
+    const src = `${location.origin}/api/fs/raw?path=${encodeURIComponent(dir || "")}`;
+    const res = await fused.runPython("./discover.py", dir ? { dir, src } : { src });
     if (res.error) { toast("bad", "Can't list folder", res.error); return; }
     state.dir = res.dir; state.parent = res.parent; state.entries = res.entries || [];
     qs("dir").value = res.dir;

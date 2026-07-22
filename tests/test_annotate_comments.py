@@ -19,6 +19,13 @@ import importlib.util
 import json
 import os
 
+import pytest
+
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load_annotate():
     path = os.path.join("fused_render", "templates", "annotate", "annotate.py")
@@ -224,6 +231,7 @@ def test_status_writable_sidecar_dir(tmp_path):
     assert ann.main(action="status", file=str(target)) == {"writable": True}
 
 
+@skip_root
 def test_status_readonly_sidecar_file(tmp_path):
     ann = _load_annotate()
     target = tmp_path / "page.html"
@@ -237,6 +245,7 @@ def test_status_readonly_sidecar_file(tmp_path):
         os.chmod(sidecar, 0o644)
 
 
+@skip_root
 def test_status_readonly_parent_dir(tmp_path):
     ann = _load_annotate()
     target = tmp_path / "page.html"
@@ -246,3 +255,40 @@ def test_status_readonly_parent_dir(tmp_path):
         assert ann.main(action="status", file=str(target)) == {"writable": False}
     finally:
         os.chmod(tmp_path, 0o755)
+
+
+# ------------------------------------------------- read-only remote mounts
+# os.access(W_OK) lies under a read-only S3 mount (CacheMode=full: a write
+# lands in the VFS cache and only 403s at the async upload — the sidecar-write
+# incident). _sidecar_writable must consult the mount's read_only flag so the
+# template shows its "history not saved" badge instead of looping the doomed
+# upload. Commenting itself still works — the URL is the live store.
+
+@pytest.fixture
+def ro_mount(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    import fused_render.shell.mounts as mounts
+
+    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
+    mp = mounts.mountpoint(m)
+    os.makedirs(mp)
+    f = os.path.join(mp, "page.html")
+    with open(f, "w") as fh:
+        fh.write("<html></html>")
+    return f
+
+
+def test_status_not_writable_under_read_only_mount(ro_mount):
+    ann = _load_annotate()
+    assert ann.main(action="status", file=ro_mount) == {"writable": False}
+
+
+def test_record_refuses_under_read_only_mount(ro_mount):
+    ann = _load_annotate()
+    with pytest.raises(PermissionError):
+        ann._record(ro_mount, [
+            {"id": "c1", "content": "hi", "createdAt": 1720000000000,
+             "view": "_render"},
+        ], [])
+    # Nothing written next to the mounted file.
+    assert not os.path.exists(ro_mount + ".json")

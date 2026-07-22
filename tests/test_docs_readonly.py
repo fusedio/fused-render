@@ -17,6 +17,11 @@ import os
 
 import pytest
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load_docs():
     path = os.path.join("fused_render", "templates", "docs", "docs.py")
@@ -40,6 +45,7 @@ def docx(tmp_path):
     os.chmod(str(f), 0o644)
 
 
+@skip_root
 def test_save_readonly_file_raises_permission_error(docs, docx):
     os.chmod(docx, 0o444)
     with pytest.raises(PermissionError):
@@ -56,6 +62,7 @@ def test_editability_writable(docs, docx):
     assert tooltip == ""
 
 
+@skip_root
 def test_editability_readonly(docs, docx):
     os.chmod(docx, 0o444)
     editable, message, tooltip = docs._editability(docx)

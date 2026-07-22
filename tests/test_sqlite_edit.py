@@ -7,6 +7,11 @@ import sqlite3
 
 import pytest
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load(name):
     path = os.path.join(
@@ -206,6 +211,7 @@ def readonly_db(db):
     os.chmod(db, 0o644)  # so tmp_path cleanup works
 
 
+@skip_root
 def test_reader_readonly_file_not_editable(readonly_db):
     out = reader.main(readonly_db, table="people")
     assert out["editable"] is False
@@ -215,6 +221,7 @@ def test_reader_readonly_file_not_editable(readonly_db):
     assert out["readonly_tooltip"]
 
 
+@skip_root
 def test_writer_refuses_readonly_file(readonly_db):
     with pytest.raises(PermissionError):
         writer.main(readonly_db, table="people", edits=[{"row": 1, "column": "name", "value": "x"}])

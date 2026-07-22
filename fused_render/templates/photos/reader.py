@@ -2,6 +2,69 @@ import hashlib
 import json
 import os
 
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.scandir/os.listdir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
+# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
+# paginated /api/fs/list — never through the kernel. _server_url + _stat are
+# copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(src, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No src / unreachable / missing -> False (presume local, kernel listing OK).
+    Never raises: a listing must not fail because the probe failed."""
+    if not src or not path:
+        return False
+    status, meta = _stat(src, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(src, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman. Returns
+    (entries, truncated); each entry is {name, is_dir, size, mtime, ignored}."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(src, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 NATIVE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp"}
 TRANSCODE = {".heic", ".heif"}
 RAW = {".dng"}
@@ -77,6 +140,7 @@ def _open_oriented(path: str):
 
 
 def _encode(img, dst: str, quality: int):
+    from PIL import Image
 
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
@@ -120,13 +184,8 @@ def _transpose_ops():
         from PIL import Image
 
         _TRANSPOSE = {
-            2: Image.FLIP_LEFT_RIGHT,
-            3: Image.ROTATE_180,
-            4: Image.FLIP_TOP_BOTTOM,
-            5: Image.TRANSPOSE,
-            6: Image.ROTATE_270,
-            7: Image.TRANSVERSE,
-            8: Image.ROTATE_90,
+            2: Image.FLIP_LEFT_RIGHT, 3: Image.ROTATE_180, 4: Image.FLIP_TOP_BOTTOM,
+            5: Image.TRANSPOSE, 6: Image.ROTATE_270, 7: Image.TRANSVERSE, 8: Image.ROTATE_90,
         }
     return _TRANSPOSE
 
@@ -214,7 +273,7 @@ def check_setup() -> dict:
     }
 
 
-def folders(path: str) -> dict:
+def folders(path: str, src: str = "") -> dict:
     if not path:
         roots = []
         if os.name == "nt":
@@ -229,6 +288,29 @@ def folders(path: str) -> dict:
         return {"ok": True, "path": "", "home": _fwd(_home()), "dirs": roots}
 
     d = os.path.abspath(os.path.expanduser(path))
+    if _remote_dir(src, d):
+        # Mount-backed dir: never kernel-scan it. List via /api/fs/list. A network
+        # or HTTP hiccup returns a structured error instead of raising out of the
+        # action (matches the other templates' picker error handling).
+        try:
+            ents, _ = _list_remote(src, d)
+        except Exception as exc:  # noqa: BLE001
+            parent = os.path.dirname(d)
+            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
+                    "path": _fwd(d),
+                    "parent": _fwd(parent) if parent and parent != d else "",
+                    "photos": 0, "dirs": []}
+        dirs = [{"name": e["name"], "path": _fwd(os.path.join(d, e["name"]))}
+                for e in ents
+                if e.get("is_dir") and not e["name"].startswith(".")]
+        n_photos = sum(
+            1 for e in ents if not e.get("is_dir")
+            and os.path.splitext(e["name"])[1].lower() in PHOTO_EXT)
+        dirs.sort(key=lambda e: e["name"].lower())
+        parent = os.path.dirname(d)
+        return {"ok": True, "path": _fwd(d),
+                "parent": _fwd(parent) if parent and parent != d else "",
+                "photos": n_photos, "dirs": dirs}
     if not os.path.isdir(d):
         raise NotADirectoryError(f"not a directory: {path}")
     dirs = []
@@ -275,18 +357,56 @@ def _day_epoch(day: str, end: bool) -> float:
     return t.timestamp()
 
 
-def list_dir(
-    path: str, sort: str, offset: int, limit: int, q: str, date_from: str, date_to: str
-) -> dict:
+def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: str, date_to: str, src: str = "") -> dict:
     d = os.path.abspath(os.path.expanduser(path))
-    if not os.path.isdir(d):
-        raise NotADirectoryError(f"not a directory: {path}")
     limit = max(1, min(limit, 1000))
     ql = q.lower().strip()
     lo = _day_epoch(date_from, False) if date_from else None
     hi = _day_epoch(date_to, True) if date_to else None
     items = []
     subdirs = []
+    if _remote_dir(src, d):
+        # Mount-backed dir: list via /api/fs/list; mtime/size come from the
+        # server payload so no per-entry kernel stat touches the mount. A network
+        # or HTTP hiccup returns a structured error instead of raising out of the
+        # action (matches the other templates' picker error handling).
+        try:
+            ents, _ = _list_remote(src, d)
+        except Exception as exc:  # noqa: BLE001
+            # Carry the full success shape (items/total/offset/subdirs) so the
+            # frontend's loadDir/buildTiles never touch undefined fields — it
+            # keys off `ok:false` to surface the error instead of crashing.
+            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
+                    "dir": _fwd(d), "total": 0, "offset": offset,
+                    "items": [], "subdirs": []}
+        for e in ents:
+            name = e["name"]
+            if name.startswith("."):
+                continue
+            if e.get("is_dir"):
+                subdirs.append({"name": name, "path": _fwd(os.path.join(d, name))})
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in PHOTO_EXT:
+                continue
+            if ql and ql not in name.lower():
+                continue
+            mt = e.get("mtime") or 0
+            if lo is not None and mt < lo:
+                continue
+            if hi is not None and mt > hi:
+                continue
+            items.append({
+                "name": name,
+                "path": _fwd(os.path.join(d, name)),
+                "size": e.get("size") or 0,
+                "mtime": mt,
+                "ext": ext,
+                "kind": _kind(ext),
+            })
+        return _list_dir_result(d, items, subdirs, sort, offset, limit)
+    if not os.path.isdir(d):
+        raise NotADirectoryError(f"not a directory: {path}")
     with os.scandir(d) as it:
         for entry in it:
             name = entry.name
@@ -321,6 +441,10 @@ def list_dir(
                     "kind": _kind(ext),
                 }
             )
+    return _list_dir_result(d, items, subdirs, sort, offset, limit)
+
+
+def _list_dir_result(d, items, subdirs, sort, offset, limit):
     key, rev = SORTS.get(sort, SORTS["new"])
     items.sort(key=key, reverse=rev)
     subdirs.sort(key=lambda e: e["name"].lower())
@@ -344,29 +468,16 @@ def thumbs(paths: str) -> dict:
     for p in arr:
         try:
             if not os.path.isfile(p):
-                results.append(
-                    {"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"}
-                )
+                results.append({"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"})
                 continue
             results.append(_make_thumb(p))
         except RuntimeError as e:
             if str(e) == "no-decoder":
-                results.append(
-                    {
-                        "path": _fwd(p),
-                        "ok": False,
-                        "error": "no-decoder",
-                        "detail": "install pillow-heif",
-                    }
-                )
+                results.append({"path": _fwd(p), "ok": False, "error": "no-decoder", "detail": "install pillow-heif"})
             else:
-                results.append(
-                    {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
-                )
+                results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
         except Exception as e:
-            results.append(
-                {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
-            )
+            results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
     return {"ok": True, "results": results}
 
 
@@ -393,7 +504,7 @@ def _gps_to_decimal(coord, ref) -> str:
 
 
 def exif(path: str) -> dict:
-    from PIL import ExifTags, Image
+    from PIL import Image, ExifTags
 
     file = {
         "name": os.path.basename(path),
@@ -417,14 +528,8 @@ def exif(path: str) -> dict:
         w, h = h, w
     image = {"w": w, "h": h, "format": fmt}
     wanted = {
-        "DateTimeOriginal",
-        "Make",
-        "Model",
-        "LensModel",
-        "FNumber",
-        "ExposureTime",
-        "ISOSpeedRatings",
-        "FocalLength",
+        "DateTimeOriginal", "Make", "Model", "LensModel",
+        "FNumber", "ExposureTime", "ISOSpeedRatings", "FocalLength",
     }
     out = {}
     try:
@@ -451,7 +556,7 @@ def exif(path: str) -> dict:
 
 
 def clear_cache() -> dict:
-    d = _cache_dir()
+    d = _cache_dir()  # local thumbnail cache under ~ — never a user mount path
     removed = 0
     freed = 0
     for name in os.listdir(d):
@@ -476,13 +581,14 @@ def main(
     q: str = "",
     date_from: str = "",
     date_to: str = "",
+    src: str = "",
 ) -> dict:
     if action == "check_setup":
         return check_setup()
     if action == "folders":
-        return folders(path)
+        return folders(path, src)
     if action == "list_dir":
-        return list_dir(path, sort, offset, limit, q, date_from, date_to)
+        return list_dir(path, sort, offset, limit, q, date_from, date_to, src)
     if action == "thumbs":
         return thumbs(paths)
     if action == "display":

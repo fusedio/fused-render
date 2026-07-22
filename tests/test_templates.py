@@ -2,15 +2,15 @@
 unified suffix-pattern matcher (multi-dot keys, `*` wildcard segments,
 trailing-"/" directory keys), user-registry precedence, and sentinel rules.
 """
-
 import json
+import os
 
 import pytest
 
 from fused_render import server
 
-# ---------------------------------------------------------------- fixtures
 
+# ---------------------------------------------------------------- fixtures
 
 @pytest.fixture
 def user_dir(tmp_path, monkeypatch):
@@ -46,7 +46,6 @@ def modes(path, is_dir=False):
 
 # ------------------------------------------------- built-in registry sanity
 
-
 def test_builtin_registry_parses_and_all_names_resolve():
     with open(server.BUILTIN_REGISTRY, encoding="utf-8") as f:
         registry = json.load(f)
@@ -76,15 +75,7 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == [
-        "duckdb",
-        "structure",
-        "h3",
-        "claude",
-        "annotate",
-        "history",
-        "geometry_editor",
-    ]
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -109,9 +100,10 @@ def test_duckdb_database_files_route_to_duckdb():
 
 
 def test_builtin_zarr_directory_key():
-    # zarr dir carries the AOI streamer, the map preview, and the raw member
-    # listing as peer modes (D81 — replaces the old `?listing=1` escape hatch)
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "zarr", "_listing"], None)
+    # a `.zarr`-named dir carries the AOI streamer and the raw member listing as
+    # peer modes (the legacy `zarr` template is gone; folder-level detection for
+    # non-`.zarr` dirs is handled by the gate on the "/" key instead).
+    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "_listing"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -121,15 +113,16 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
     # every directory resolves the universal `/` key (D81): the built-in
-    # listing (default) plus the switchable preview (folder browser) view — a
-    # plain folder, a dotted folder, and the filesystem root all list.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "preview"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "preview"], None)
-    assert modes("/", is_dir=True) == (["_listing", "preview"], None)
+    # listing (default), the switchable preview (folder browser) view, and the
+    # offered-but-gated zarr_aoi candidate — a plain folder, a dotted folder,
+    # and the filesystem root all list. zarr_aoi is dropped unless its gate
+    # (condition.py) proves the dir is a Zarr store; see the zarr_aoi tests.
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert modes("/", is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
-
 
 def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
     # Whole-name dotfiles and extensionless files can't match any suffix key,
@@ -167,7 +160,6 @@ def test_mapped_file_never_hits_text_sniff(tmp_path):
 
 
 # ------------------------------------------------------------------ matcher
-
 
 def test_specificity_literal_beats_wildcard_beats_shorter():
     reg = {".json": "a", ".*.json": "b", ".xyz.json": "c"}
@@ -229,7 +221,6 @@ def test_universal_dir_key_lowest_specificity():
 
 
 # ------------------------------------------------------------ user registry
-
 
 def test_user_override_beats_builtin(user_dir):
     user_dir.template("geo")
@@ -325,7 +316,7 @@ def test_unknown_sentinel_dropped_with_error(user_dir):
 def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     user_dir.registry({".csv": "no-such-template"})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
     assert "no-such-template" in error
 
 
@@ -334,21 +325,21 @@ def test_all_dangling_names_fall_back(user_dir):
     # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
     assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):
     user_dir.registry({".csv": 42})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
     assert "must be a list" in error
 
 
 def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     (user_dir.path / "registry.json").write_text("{not json")
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
     assert "cannot read registry.json" in error
 
 
@@ -431,7 +422,9 @@ def test_condition_missing_is_unconditional(user_dir, csv_file):
 
 
 def test_condition_error_disallows_and_reports(user_dir, csv_file):
-    user_dir.template("special", condition="def main(path):\n    raise ValueError('boom')\n")
+    user_dir.template(
+        "special", condition="def main(path):\n    raise ValueError('boom')\n"
+    )
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": False}
@@ -458,7 +451,9 @@ def test_condition_reevaluated_per_call(user_dir, csv_file):
     user_dir.registry({".csv": ["special", "code"]})
     assert conditions(csv_file)[0] == {"special": False}
 
-    (user_dir.path / "special" / "condition.py").write_text("def main(path):\n    return True\n")
+    (user_dir.path / "special" / "condition.py").write_text(
+        "def main(path):\n    return True\n"
+    )
     assert conditions(csv_file)[0] == {"special": True}
 
 
@@ -520,3 +515,178 @@ def test_stat_never_blocks_on_slow_condition(user_dir):
 
     assert m == ["slow", "code"] and error is None
     assert elapsed < 1.0, f"stat blocked on a condition gate ({elapsed:.2f}s)"
+
+
+# ---------------------------------- zarr_aoi gate + registry (real templates)
+#
+# The legacy `zarr` template was deleted; `zarr_aoi` is the `.zarr/` default and
+# an offered-but-gated candidate on the universal "/" key. Its condition.py
+# proves a directory is a Zarr store via a zero-I/O name fast-path plus bounded
+# `isfile` marker probes — never a directory listing (the remote-timeout risk).
+
+
+def _zarr_condition_main():
+    """Load the real zarr_aoi/condition.py standalone and return its `main`."""
+    import importlib.util
+
+    cf = os.path.join(server.TEMPLATES_DIR, "zarr_aoi", "condition.py")
+    spec = importlib.util.spec_from_file_location("__zarr_aoi_cond__", cf)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.main
+
+
+def test_registry_drops_zarr_template_and_sentinel_keys():
+    with open(server.BUILTIN_REGISTRY, encoding="utf-8") as f:
+        registry = json.load(f)
+    # the hidden sentinel-file keys are gone entirely (they only ever pointed at
+    # the deleted template, and zarr_aoi can't open a sentinel-file path)
+    for k in (".zgroup", ".zattrs", ".zmetadata"):
+        assert k not in registry
+    # the legacy `zarr` template name resolves nowhere in the registry...
+    for key, value in registry.items():
+        assert "zarr" not in value, key
+    # ...and its folder is deleted, so the name no longer resolves at all
+    assert server._resolve_name("zarr")[0] is None
+    # zarr_aoi is the .zarr/ default and a gated candidate on every directory
+    assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
+    assert registry["/"] == ["_listing", "preview", "zarr_aoi"]
+
+
+def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
+    # A `.zarr`-named dir matches the `.zarr/` key; the gate's name fast-path
+    # returns True with ZERO marker files present (and zero filesystem calls).
+    store = tmp_path / "store.zarr"
+    store.mkdir()
+    assert modes(str(store), is_dir=True) == (["zarr_aoi", "_listing"], None)
+    assert _zarr_condition_main()(str(store)) is True
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": True} and err is None
+
+
+@pytest.mark.parametrize("marker", [".zmetadata", ".zgroup"])
+def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
+    # A non-`.zarr` directory containing an inherently GROUP-root marker is
+    # detected as a Zarr store by the "/" key gate — consolidated metadata
+    # (.zmetadata, always at the group root) and v2 group (.zgroup). The v3
+    # `zarr.json` marker is group/array-ambiguous and covered separately below.
+    store = tmp_path / "data"
+    store.mkdir()
+    (store / marker).write_text("{}")
+    assert modes(str(store), is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert _zarr_condition_main()(str(store)) is True
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": True} and err is None
+
+
+def test_v3_group_dir_offered(tmp_path):
+    # A non-`.zarr` directory whose `zarr.json` declares a v3 GROUP root is a
+    # loadable store: zarr.open_group() opens it, so the gate offers zarr_aoi.
+    store = tmp_path / "grp"
+    store.mkdir()
+    (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
+    assert modes(str(store), is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert _zarr_condition_main()(str(store)) is True
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": True} and err is None
+
+
+def test_bare_array_dir_not_offered(tmp_path):
+    # A non-`.zarr` directory whose only marker is `.zarray` is a v2 *bare
+    # array*, not a group. zarr_aoi opens stores with zarr.open_group(), which
+    # raises on an array root — so the gate deliberately does NOT offer it
+    # (offering-then-erroring is worse than a clean plain-folder listing).
+    store = tmp_path / "arr"
+    store.mkdir()
+    (store / ".zarray").write_text("{}")
+    assert _zarr_condition_main()(str(store)) is False
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": False} and err is None
+
+
+def test_v3_bare_array_dir_not_offered(tmp_path):
+    # The v3 analogue of the `.zarray` case: a `zarr.json` with
+    # node_type == "array" is a v3 bare array root. zarr.open_group() raises on
+    # it, so the gate must NOT offer zarr_aoi (offered-then-broken > not-offered).
+    store = tmp_path / "v3arr"
+    store.mkdir()
+    (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
+    assert _zarr_condition_main()(str(store)) is False
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": False} and err is None
+
+
+def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
+    # A `zarr.json` that can't be confirmed as a group (missing node_type, or
+    # unparseable) fails closed — the gate never offers a store it can't prove
+    # is group-shaped, so a malformed root stays a plain listing, not an error.
+    store = tmp_path / "ambiguous"
+    store.mkdir()
+    (store / "zarr.json").write_text("{}")
+    assert _zarr_condition_main()(str(store)) is False
+    bad = tmp_path / "unparseable"
+    bad.mkdir()
+    (bad / "zarr.json").write_text("not json{")
+    assert _zarr_condition_main()(str(bad)) is False
+
+
+def test_plain_dir_without_markers_gates_false(tmp_path):
+    # A plain directory with none of the markers: zarr_aoi is offered but the
+    # gate drops it, while _listing / preview stay unconditional and resolve.
+    store = tmp_path / "plain"
+    store.mkdir()
+    (store / "readme.txt").write_text("hi")
+    assert modes(str(store), is_dir=True) == (["_listing", "preview", "zarr_aoi"], None)
+    assert _zarr_condition_main()(str(store)) is False
+    cond, err = conditions(str(store))
+    assert cond == {"zarr_aoi": False} and err is None
+
+    entries, _ = server._templates_for(str(store), True)
+    assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
+    assert entries[1]["mode"] == "preview" and "conditional" not in entries[1]
+    assert entries[2]["mode"] == "zarr_aoi" and entries[2].get("conditional") is True
+
+
+def test_zarr_condition_fail_closed(tmp_path):
+    # Fail closed: any bad input returns False and never raises.
+    main = _zarr_condition_main()
+    assert main("/no/such/directory/anywhere") is False  # nonexistent
+    assert main(__file__) is False                        # a file, not .zarr
+    assert main("") is False                              # empty
+    # a plain existing dir with no markers is False, trailing slash handled
+    plain = tmp_path / "nope"
+    plain.mkdir()
+    assert main(str(plain) + "/") is False
+
+
+def test_zarr_named_dir_fast_path_ignores_trailing_slash(tmp_path):
+    # The name fast-path strips a trailing slash before the `.zarr` check.
+    store = tmp_path / "s.zarr"
+    store.mkdir()
+    assert _zarr_condition_main()(str(store) + "/") is True
+
+
+def test_zarr_condition_never_lists_directory(tmp_path, monkeypatch):
+    # Efficiency lock-in: the gate must use targeted isfile checks only, never a
+    # directory listing (which scales with entry count and times out on big
+    # remote stores). Make any listing explode and confirm verdicts hold.
+    main = _zarr_condition_main()
+
+    def boom(*a, **k):
+        raise AssertionError("zarr_aoi condition must not list the directory")
+
+    monkeypatch.setattr(os, "listdir", boom)
+    monkeypatch.setattr(os, "scandir", boom)
+
+    named = tmp_path / "s.zarr"
+    named.mkdir()
+    assert main(str(named)) is True  # name fast-path, no walk
+
+    marked = tmp_path / "m"
+    marked.mkdir()
+    (marked / ".zgroup").write_text("{}")
+    assert main(str(marked)) is True  # targeted isfile hit, no walk
+
+    plain = tmp_path / "p"
+    plain.mkdir()
+    assert main(str(plain)) is False  # all isfile misses, still no walk

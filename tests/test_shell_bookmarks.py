@@ -327,6 +327,90 @@ def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
     assert "version" in resp.json()["error"]
 
 
+# --- tree sanitization + nested folders (GET-time, D121) ---------------------
+
+
+def _folder(id, name, children):
+    return {"id": id, "type": "folder", "name": name, "collapsed": False,
+            "children": children}
+
+
+def test_get_keeps_nested_folder_in_children(tmp_path, monkeypatch):
+    # D121: folders nest to arbitrary depth — a folder inside another folder's
+    # children is legitimate data and must survive a GET untouched.
+    client, home = _client(tmp_path, monkeypatch)
+    nested = _folder("sub", "sub", [_bm("x", "x", 0)])
+    outer = _folder("f", "F", [_bm("1", "a", 10), nested, _bm("2", "b", 20)])
+    _write_tree(home, [outer])
+    got = client.get("/api/bookmarks").json()
+    assert got["exists"] is True
+    kept_ids = [c["id"] for c in got["bookmarks"][0]["children"]]
+    assert kept_ids == ["1", "sub", "2"]
+    assert got["bookmarks"][0]["children"][1]["children"][0]["id"] == "x"
+
+
+def test_get_strips_urlless_child_without_touching_valid_siblings(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    garbage = {"id": "g", "name": "garbage"}  # no url, not a folder
+    outer = _folder("f", "F", [_bm("1", "a", 10), garbage])
+    _write_tree(home, [outer])
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    assert [c["id"] for c in got[0]["children"]] == ["1"]
+    # Persisted back so the corrupt entry doesn't resurface on the next GET.
+    saved = json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
+    assert [c["id"] for c in saved[0]["children"]] == ["1"]
+
+
+def test_get_strips_garbage_inside_nested_folder(tmp_path, monkeypatch):
+    # Sanitization recurses: a urlless dict two folders deep is dropped while
+    # its valid siblings and both enclosing folders survive.
+    client, home = _client(tmp_path, monkeypatch)
+    garbage = {"id": "g", "name": "garbage"}
+    inner = _folder("inner", "inner", [garbage, _bm("x", "x", 0), "not-a-dict"])
+    outer = _folder("f", "F", [inner, _bm("1", "a", 10)])
+    _write_tree(home, [outer])
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    inner_got = got[0]["children"][0]
+    assert [c["id"] for c in inner_got["children"]] == ["x"]
+    assert [c["id"] for c in got[0]["children"]] == ["inner", "1"]
+
+
+def test_get_leaves_valid_nested_tree_unwritten(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    outer = _folder("f", "F", [_folder("sub", "sub", [_bm("x", "x", 0)]),
+                               _bm("1", "a", 10)])
+    _write_tree(home, [outer])
+    raw = (home / "bookmarks.json").read_text(encoding="utf-8")
+    client.get("/api/bookmarks")
+    # Compact JSON differs from write_json's output; unchanged bytes prove the
+    # no-op GET never wrote.
+    assert (home / "bookmarks.json").read_text(encoding="utf-8") == raw
+
+
+def test_nested_folder_roundtrips_put_then_get(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]),
+                               _bm("1", "top", 2)])]
+    assert client.put("/api/bookmarks", json=tree, headers=FUSED).status_code == 200
+    assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": tree}
+
+
+def test_migration_dedupes_across_nested_depth(tmp_path, monkeypatch):
+    # A bookmark in a grandchild folder shares the global name namespace: it
+    # collides with a top-level "a" and gets the suffix (newer created_at).
+    client, home = _client(tmp_path, monkeypatch)
+    grandchild = _folder("gc", "a", [_bm("2", "a", 20)])
+    _write_tree(home, [_bm("1", "a", 10), _folder("f", "a", [grandchild])])
+    got = client.get("/api/bookmarks").json()["bookmarks"]
+    assert got[0]["name"] == "a"
+    # Folder names ("a" twice) are a separate namespace and stay untouched.
+    assert got[1]["name"] == "a"
+    assert got[1]["children"][0]["name"] == "a"
+    assert got[1]["children"][0]["children"][0]["name"] == "a-1"
+    saved = json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
+    assert saved[1]["children"][0]["children"][0]["name"] == "a-1"
+
+
 def test_migration_leaves_unique_tree_unwritten(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Compact JSON (no indent) differs from write_json's output; surviving a GET

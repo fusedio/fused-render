@@ -90,6 +90,23 @@ def branch_suffix(ref: str | None = None) -> str:
     return f"-{r}" if r else ""
 
 
+# Per-branch data dirs nest under this segment so they don't clutter ``base``'s
+# top level alongside baseline state (``~/.fused-render/branches/foo`` rather
+# than ``~/.fused-render/foo``).
+_BRANCHES_SUBDIR = "branches"
+
+
+def branch_dir(base: str, ref: str | None = None) -> str:
+    """Return the data dir under ``base`` for the active (or given) branch ref.
+
+    Baseline (no ref) is ``base`` itself, unchanged. A ref nests two levels
+    deep under ``base/branches/<ref>`` — the ``branches/`` container keeps
+    per-branch dirs from mixing with baseline files at ``base``'s top level.
+    """
+    r = branch_ref(ref)
+    return os.path.join(base, _BRANCHES_SUBDIR, r) if r else base
+
+
 if __name__ == "__main__":
     field = sys.argv[1]
     if field == "ref":

@@ -57,10 +57,41 @@ export function urlForFsPath(fsPath: string, search?: string): string {
   return PREFIX + encoded + (search || "");
 }
 
-export function navigate(fsPath: string): void {
+export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
   // Navigating between files/dirs drops old view params (fresh query string).
-  history.pushState(null, "", urlForFsPath(fsPath));
+  // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
+  // knows whether the target is a directory): it rides in history.state so the
+  // destination view can paint the right scaffold — a directory's listing plus
+  // a template-strip spinner — BEFORE the ~1.6s stat resolves, instead of a
+  // blank screen. Restored on back/forward (popstate carries the state), and
+  // simply absent (null) for callers that don't know, which falls back to a
+  // plain header scaffold. See navHintIsDir below.
+  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  history.pushState(state, "", urlForFsPath(fsPath));
   notifyNavigate();
+}
+
+// The directory hint carried by the navigation that landed on the current URL
+// (see navigate). null = unknown: a fresh page load, a typed URL, or a caller
+// that didn't pass one. Read once at the destination view's mount (StatView),
+// which is why in-place param syncs must go through replaceSearch below — a
+// raw history.replaceState(null, …) would wipe the hint off the current entry
+// and Back/Forward to it would lose the scaffold.
+export function navHintIsDir(): boolean | null {
+  const s = history.state as { fsDir?: boolean } | null;
+  return s && typeof s.fsDir === "boolean" ? s.fsDir : null;
+}
+
+// In-place view-param sync (sort/search/_mode/session replay) on the CURRENT
+// history entry. Unlike navigate(), this MUST NOT create a history entry and
+// MUST preserve the existing state — nulling it (a plain
+// history.replaceState(null, …)) drops the { fsDir } hint navigate() stashed,
+// so a later Back/Forward to this entry loses its directory scaffold and paints
+// a blank/header-only view. Passing history.state through keeps the hint intact.
+// Still routes through the main.tsx-wrapped replaceState, so fused:urlchange
+// (bookmark buttons, hooks) fires exactly as before.
+export function replaceSearch(url: string): void {
+  history.replaceState(history.state, "", url);
 }
 
 export function navigateUrl(url: string): void {

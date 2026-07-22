@@ -31,7 +31,6 @@ AI-native surface (call these directly to edit a deck without the browser):
   order_element, align_elements, set_slide_bg,
   add_slide, delete_slide, duplicate_slide, move_slide, export.
 """
-
 from __future__ import annotations
 
 import base64
@@ -46,7 +45,6 @@ import time
 # Rebuild __file__ under the openfused exec path (harmless under builtin).
 if "__file__" not in globals():
     import sys
-
     __file__ = os.path.join(sys.path[0], "slides.py")
 
 import engine  # sibling module; cwd is set to the .py's dir
@@ -101,7 +99,7 @@ def _media_dir(doc):
 
 
 def _load_model(doc):
-    with open(_model_path(doc), encoding="utf-8") as f:
+    with open(_model_path(doc), "r", encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -116,7 +114,7 @@ def _save_model(doc, model, expected_mtime=None):
     tmp = mp + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(model, f, ensure_ascii=False)
-    os.replace(tmp, mp)  # atomic
+    os.replace(tmp, mp)   # atomic
     return {"ok": True, "mtime": os.path.getmtime(mp), "model": model}
 
 
@@ -164,9 +162,8 @@ def _sidecar_writable(file):
     return os.access(os.path.dirname(path), os.W_OK)
 
 
-_READONLY_TOOLTIP = (
-    "The file is read-only — its permissions don't allow writing, so it can't be edited here."
-)
+_READONLY_TOOLTIP = ("The file is read-only — its permissions don't allow "
+                     "writing, so it can't be edited here.")
 
 
 def _editability(file):
@@ -199,39 +196,80 @@ def _set_title(file, title):
 # --------------------------------------------------------------------------- #
 #  main dispatcher                                                            #
 # --------------------------------------------------------------------------- #
-def main(
-    action: str = "open",
-    file: str = "",
-    doc: str = "",
-    slide: str = "",
-    el: str = "",
-    text: str = "",
-    patch: str = "",
-    ids: str = "",
-    mode: str = "",
-    src: str = "",
-    name: str = "",
-    index: int = -1,
-    z: str = "",
-    x: float = 0,
-    y: float = 0,
-    w: float = 0,
-    h: float = 0,
-    size: float = 0,
-    align: str = "",
-    color: str = "",
-    background: str = "",
-    model_json: str = "",
-    expected_mtime: str = "",
-    token: str = "",
-    data: str = "",
-    fmt: str = "pptx",
-    row: int = -1,
-    col: int = -1,
-    path: str = "",
-    directory: str = "",
-    title: str = "",
-):
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes a server origin (as the `src` param on the listdir action) and we ask
+# the server whether a path is remote (/api/fs/stat); if so we list it via the
+# mount-routed, paginated /api/fs/list — never through the kernel. _server_url +
+# _stat are copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(origin, endpoint, path):
+    u = _urlparse.urlsplit(origin)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(origin, path):
+    url = _server_url(origin, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(origin, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No origin / unreachable / missing -> False (presume local, kernel OK)."""
+    if not origin or not path:
+        return False
+    status, meta = _stat(origin, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(origin, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(origin, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
+def main(action: str = "open",
+         file: str = "", doc: str = "",
+         slide: str = "", el: str = "",
+         text: str = "", patch: str = "", ids: str = "",
+         mode: str = "", src: str = "", name: str = "",
+         index: int = -1, z: str = "",
+         x: float = 0, y: float = 0, w: float = 0, h: float = 0,
+         size: float = 0, align: str = "", color: str = "",
+         background: str = "",
+         model_json: str = "", expected_mtime: str = "",
+         token: str = "", data: str = "", fmt: str = "pptx",
+         row: int = -1, col: int = -1, path: str = "", directory: str = "",
+         title: str = ""):
 
     os.makedirs(CACHE_ROOT, exist_ok=True)
 
@@ -253,45 +291,60 @@ def main(
             with open(mp, "w", encoding="utf-8") as f:
                 json.dump(model, f, ensure_ascii=False)
         editable, ro_msg, ro_tip = _editability(file)
-        return {
-            "doc": d,
-            "model": model,
-            "mtime": os.path.getmtime(mp),
-            "media_dir": _media_dir(d).replace(os.sep, "/"),
-            "title": _get_title(file),
-            "editable": editable,
-            "readonly_message": ro_msg,
-            "readonly_tooltip": ro_tip,
-            "sidecar_writable": _sidecar_writable(file),
-        }
+        return {"doc": d, "model": model, "mtime": os.path.getmtime(mp),
+                "media_dir": _media_dir(d).replace(os.sep, "/"),
+                "title": _get_title(file),
+                "editable": editable, "readonly_message": ro_msg,
+                "readonly_tooltip": ro_tip,
+                "sidecar_writable": _sidecar_writable(file)}
 
     # ----------------------------------------- directory browser (Save as)
     if action == "listdir":
         path = _to_native_path(path)
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
-        if not os.path.isdir(base):
-            base = os.path.dirname(base) or "/"
         dirs, files = [], []
-        try:
-            for nm in sorted(os.listdir(base), key=str.lower):
+        # `src` on the listdir action carries the server ORIGIN for mount-safe
+        # routing (distinct from its add-image meaning, an image src).
+        # Ask the server once: is `base` a remote (mount-backed) path, and a dir?
+        status, meta = _stat(src, base) if src else ("", None)
+        if status == "ok" and meta.get("remote"):
+            # Mount-backed: list via /api/fs/list, never a kernel scan. If `base`
+            # is a file (not a dir), descend to its parent with pure string ops —
+            # never a kernel os.path call on a remote path (it wedges the NFS mount).
+            if not meta.get("is_dir"):
+                base = os.path.dirname(base) or "/"
+            try:
+                ents, _ = _list_remote(src, base)
+            except Exception:  # noqa: BLE001
+                ents = []
+            for ent in ents:
+                nm = ent["name"]
                 if nm.startswith("."):
                     continue
-                full = os.path.join(base, nm)
-                if os.path.isdir(full):
+                if ent.get("is_dir"):
                     dirs.append(nm)
                 elif nm.lower().endswith(".pptx"):
                     files.append(nm)
-        except PermissionError:
-            pass
-        parent = os.path.dirname(base) or base  # dirname(root) == root, so "up" stops there
+        else:
+            if not os.path.isdir(base):
+                base = os.path.dirname(base) or "/"
+            try:
+                for nm in sorted(os.listdir(base), key=str.lower):
+                    if nm.startswith("."):
+                        continue
+                    full = os.path.join(base, nm)
+                    if os.path.isdir(full):
+                        dirs.append(nm)
+                    elif nm.lower().endswith(".pptx"):
+                        files.append(nm)
+            except PermissionError:
+                pass
+        dirs.sort(key=str.lower)
+        files.sort(key=str.lower)
+        parent = os.path.dirname(base) or base   # dirname(root) == root, so "up" stops there
         # forward slashes on every platform: the browser's crumb/join logic is "/"-based
-        return {
-            "path": base.replace(os.sep, "/"),
-            "parent": parent.replace(os.sep, "/"),
-            "dirs": dirs,
-            "files": files,
-            "home": os.path.expanduser("~").replace(os.sep, "/"),
-        }
+        return {"path": base.replace(os.sep, "/"), "parent": parent.replace(os.sep, "/"),
+                "dirs": dirs, "files": files, "home": os.path.expanduser("~").replace(os.sep, "/")}
 
     # --------------------------------------------------- describe (AI manifest)
     if action == "describe":
@@ -301,37 +354,21 @@ def main(
         if doc and os.path.exists(_model_path(doc)):
             model = _load_model(doc)
             out["size"] = {"width": model["width"], "height": model["height"]}
-            out["slides"] = [
-                {
-                    "id": s["id"],
-                    "index": i,
-                    "background": s.get("background"),
-                    "elements": [
-                        {
-                            "id": e["id"],
-                            "type": e["type"],
-                            "text": _element_text(e)[:60],
-                            "box": {
-                                "x": round(e.get("x", 0)),
-                                "y": round(e.get("y", 0)),
-                                "w": round(e.get("w", 0)),
-                                "h": round(e.get("h", 0)),
-                            },
-                        }
-                        for e in sorted(s.get("elements", []), key=lambda e: e.get("z", 0))
-                    ],
-                }
-                for i, s in enumerate(model.get("slides", []))
-            ]
+            out["slides"] = [{
+                "id": s["id"], "index": i, "background": s.get("background"),
+                "elements": [{
+                    "id": e["id"], "type": e["type"],
+                    "text": _element_text(e)[:60],
+                    "box": {"x": round(e.get("x", 0)), "y": round(e.get("y", 0)),
+                            "w": round(e.get("w", 0)), "h": round(e.get("h", 0))},
+                } for e in sorted(s.get("elements", []), key=lambda e: e.get("z", 0))],
+            } for i, s in enumerate(model.get("slides", []))]
         return out
 
     # ------------------------------------------------------------- get / save
     if action == "get_model":
-        return {
-            "model": _load_model(doc),
-            "mtime": os.path.getmtime(_model_path(doc)),
-            "media_dir": _media_dir(doc).replace(os.sep, "/"),
-        }
+        return {"model": _load_model(doc), "mtime": os.path.getmtime(_model_path(doc)),
+                "media_dir": _media_dir(doc).replace(os.sep, "/")}
 
     if action == "save_model":
         model = json.loads(model_json)
@@ -356,11 +393,9 @@ def main(
         def op(model):
             _, e = engine.find_element(model, el)
             if not e:
-                raise ValueError(
-                    f"no element with id '{el}' (call action=describe to list valid element ids)"
-                )
+                raise ValueError(f"no element with id '{el}' (call action=describe "
+                                 "to list valid element ids)")
             _apply_patch(e, p)
-
         return _mutate(op, ret_el=el)
 
     if action == "patch_element":
@@ -371,21 +406,17 @@ def main(
         def op(model):
             _, e = engine.find_element(model, el)
             if not e:
-                raise ValueError(
-                    f"no element with id '{el}' (call action=describe to list valid element ids)"
-                )
+                raise ValueError(f"no element with id '{el}' (call action=describe "
+                                 "to list valid element ids)")
             _deep_merge(e, p)
-
         return _mutate(op, ret_el=el)
 
     if action == "set_text":
-
         def op(model):
             _, e = engine.find_element(model, el)
             if not e:
                 raise ValueError(f"no element {el}")
             _set_plain_text(e, text)
-
         return _mutate(op, ret_el=el)
 
     if action == "add_text":
@@ -396,18 +427,11 @@ def main(
             if not s:
                 raise ValueError(f"no slide {slide}")
             e = engine.new_text_element(
-                x=x or 120,
-                y=y or 120,
-                w=w or 480,
-                h=h or 90,
-                text=text or "Text",
-                size=size or 24,
-                align=align or "left",
-            )
+                x=x or 120, y=y or 120, w=w or 480, h=h or 90,
+                text=text or "Text", size=size or 24, align=align or "left")
             e["z"] = engine._next_z(s)
             s["elements"].append(e)
             created["id"] = e["id"]
-
         r = _mutate(op)
         r["created"] = created.get("id")
         if r.get("ok"):
@@ -421,11 +445,11 @@ def main(
             s = engine.find_slide(model, slide)
             if not s:
                 raise ValueError(f"no slide {slide}")
-            e = engine.new_image_element(src, x=x or 120, y=y or 120, w=w or 400, h=h or 300)
+            e = engine.new_image_element(src, x=x or 120, y=y or 120,
+                                         w=w or 400, h=h or 300)
             e["z"] = engine._next_z(s)
             s["elements"].append(e)
             created["id"] = e["id"]
-
         r = _mutate(op)
         r["created"] = created.get("id")
         if r.get("ok"):
@@ -433,12 +457,10 @@ def main(
         return r
 
     if action == "delete_element":
-
         def op(model):
             s, e = engine.find_element(model, el)
             if e:
                 s["elements"].remove(e)
-
         return _mutate(op)
 
     if action == "order_element":
@@ -454,7 +476,6 @@ def main(
                 e["z"] = min([x.get("z", 0) for x in zs], default=0) - 1
             for i, x in enumerate(sorted(s["elements"], key=lambda x: x.get("z", 0))):
                 x["z"] = i
-
         return _mutate(op)
 
     if action == "align_elements":
@@ -468,7 +489,6 @@ def main(
             if not targets:
                 return
             _align(targets, mode, model["width"], model["height"], len(id_list) > 1)
-
         return _mutate(op)
 
     if action == "table_op":
@@ -504,16 +524,13 @@ def main(
                 rows[ri][ci] = text
             else:
                 raise ValueError(f"unknown table op '{mode}'")
-
         return _mutate(op, ret_el=el)
 
     if action == "set_slide_bg":
-
         def op(model):
             s = engine.find_slide(model, slide)
             if s:
                 s["background"] = background or "#ffffff"
-
         return _mutate(op)
 
     # ------------------------------------------------------------ slide ops
@@ -525,18 +542,15 @@ def main(
             at = int(index) if index is not None and int(index) >= 0 else len(model["slides"])
             model["slides"].insert(at, s)
             created["id"] = s["id"]
-
         r = _mutate(op)
         r["created"] = created.get("id")
         return r
 
     if action == "delete_slide":
-
         def op(model):
             model["slides"] = [s for s in model["slides"] if s["id"] != slide]
             if not model["slides"]:
                 model["slides"] = [engine.new_slide()]
-
         return _mutate(op)
 
     if action == "duplicate_slide":
@@ -546,7 +560,6 @@ def main(
             for i, s in enumerate(model["slides"]):
                 if s["id"] == slide:
                     import copy
-
                     dup = copy.deepcopy(s)
                     dup["id"] = engine._nid("s")
                     for e in dup["elements"]:
@@ -554,13 +567,11 @@ def main(
                     model["slides"].insert(i + 1, dup)
                     created["id"] = dup["id"]
                     break
-
         r = _mutate(op)
         r["created"] = created.get("id")
         return r
 
     if action == "move_slide":
-
         def op(model):
             arr = model["slides"]
             idx = next((i for i, s in enumerate(arr) if s["id"] == slide), None)
@@ -569,7 +580,6 @@ def main(
             s = arr.pop(idx)
             to = max(0, min(int(index), len(arr)))
             arr.insert(to, s)
-
         return _mutate(op)
 
     # --------------------------------------------------------------- uploads
@@ -599,7 +609,6 @@ def main(
         dims = None
         try:
             from PIL import Image
-
             with Image.open(dst) as im:
                 dims = list(im.size)
         except Exception:
@@ -646,7 +655,7 @@ def main(
         tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(file) or ".", suffix=".pptx.tmp")
         os.close(tmp_fd)
         engine.build_pptx(model, tmp_path, _media_dir(doc))
-        os.replace(tmp_path, file)  # atomic
+        os.replace(tmp_path, file)   # atomic
         new_doc = _content_hash(file)
         new_dir = _cache_dir(new_doc)
         if not os.path.exists(_model_path(new_doc)):
@@ -663,17 +672,12 @@ def main(
     # --------- Save as = write a NEW .pptx elsewhere; the open document is unchanged
     if action == "save_as":
         model = _load_model(doc)
-        default = _get_title(file) or (
-            os.path.splitext(os.path.basename(file))[0] if file else "deck"
-        )
+        default = _get_title(file) or (os.path.splitext(os.path.basename(file))[0] if file else "deck")
         base = re.sub(r"[^a-zA-Z0-9._ -]", "_", (name or f"{default} copy")).strip()
         if not base.lower().endswith(".pptx"):
             base += ".pptx"
-        dstdir = (
-            os.path.abspath(os.path.expanduser(_to_native_path(directory)))
-            if directory
-            else (os.path.dirname(_to_native_path(file)) or os.path.expanduser("~"))
-        )
+        dstdir = (os.path.abspath(os.path.expanduser(_to_native_path(directory))) if directory
+                  else (os.path.dirname(_to_native_path(file)) or os.path.expanduser("~")))
         os.makedirs(dstdir, exist_ok=True)
         dst = os.path.join(dstdir, base)
         engine.build_pptx(model, dst, _media_dir(doc))
@@ -697,66 +701,45 @@ def main(
 # --------------------------------------------------------------------------- #
 SCHEMA_DOC = {
     "coordinates": "slide-pixel space (EMU/9525 == 96dpi); 16:9 deck = 1280x720",
-    "deck": {"schema": 1, "name": "str", "width": "px", "height": "px", "slides": "[slide]"},
+    "deck": {"schema": 1, "name": "str", "width": "px", "height": "px",
+             "slides": "[slide]"},
     "slide": {"id": "s_* (stable)", "background": "#rrggbb", "elements": "[element]"},
     "element": {
-        "id": "e_* (stable across save/reopen)",
-        "type": "text|image|table",
-        "name": "str",
-        "x": "px",
-        "y": "px",
-        "w": "px",
-        "h": "px",
-        "rot": "deg",
-        "z": "int stacking order",
-        "text-only": {
-            "fill": "#rrggbb|null",
-            "valign": "top|middle|bottom",
-            "paragraphs": [
-                {
-                    "align": "left|center|right|justify",
-                    "level": "int",
-                    "runs": [
-                        {
-                            "text": "str",
-                            "bold": "bool",
-                            "italic": "bool",
-                            "underline": "bool",
-                            "size": "pt",
-                            "color": "#rrggbb",
-                            "font": "str",
-                        }
-                    ],
-                }
-            ],
-        },
+        "id": "e_* (stable across save/reopen)", "type": "text|image|table",
+        "name": "str", "x": "px", "y": "px", "w": "px", "h": "px",
+        "rot": "deg", "z": "int stacking order",
+        "text-only": {"fill": "#rrggbb|null", "valign": "top|middle|bottom",
+                      "paragraphs": [{"align": "left|center|right|justify",
+                                      "level": "int", "runs": [{"text": "str",
+                                      "bold": "bool", "italic": "bool",
+                                      "underline": "bool", "size": "pt",
+                                      "color": "#rrggbb", "font": "str"}]}]},
         "image-only": {"src": "media/<file> (relative to the doc's cache dir)"},
         "table-only": {"rows": "[[cell str]]"},
     },
 }
 ACTIONS = {
     "open": "file -> {doc, model, mtime, media_dir, title}: parse (or reuse the "
-    "cached) model for a .pptx",
+           "cached) model for a .pptx",
     "describe": "doc? -> schema + action list + compact per-slide element index",
     "get_model": "doc -> {model, mtime, media_dir}",
     "update_element": "doc, el, patch(json) -> semantic patch: geometry keys, "
-    "run-style keys (bold/italic/underline/size/color/font) "
-    "applied to all runs, align/valign, fill, text. Returns element.",
+                      "run-style keys (bold/italic/underline/size/color/font) "
+                      "applied to all runs, align/valign, fill, text. Returns element.",
     "patch_element": "doc, el, patch(json) -> recursive deep-merge of ANY "
-    "canonical field (incl. nested paragraphs/runs). Returns element.",
+                     "canonical field (incl. nested paragraphs/runs). Returns element.",
     "set_text": "doc, el, text -> replace text (newlines split paragraphs). Returns element.",
     "add_text": "doc, slide, text?, x?,y?,w?,h?,size?,align? -> new text box. Returns created id.",
     "add_image": "doc, slide, src, x?,y?,w?,h? -> place an uploaded image. Returns created id.",
     "delete_element": "doc, el -> remove element",
     "order_element": "doc, el, mode(front|back) -> restack",
     "align_elements": "doc, slide, ids(json list), mode(left|center|right|top|"
-    "middle|bottom|dist-h|dist-v) -> align/distribute",
+                      "middle|bottom|dist-h|dist-v) -> align/distribute",
     "table_op": "doc, el, mode(row_above|row_below|row_del|col_left|col_right|"
-    "col_del|set_cell), row?, col?, text?(set_cell) -> edit a table",
+                "col_del|set_cell), row?, col?, text?(set_cell) -> edit a table",
     "set_slide_bg": "doc, slide, background(#rrggbb)",
     "add_slide": "doc, index? -> new blank slide (returns id)",
-    "delete_slide": "doc, slide",
-    "duplicate_slide": "doc, slide (returns id)",
+    "delete_slide": "doc, slide", "duplicate_slide": "doc, slide (returns id)",
     "move_slide": "doc, slide, index",
     "export": "doc, file, fmt(pptx|pdf|html|md|json) -> writes a temp file, returns {path,name}",
     "save": "doc, file -> materialize model to `file` itself (atomic overwrite). Returns new doc id.",
@@ -768,9 +751,8 @@ ACTIONS = {
 
 def _element_text(e):
     if e.get("type") == "text":
-        return " ".join(
-            r.get("text", "") for p in e.get("paragraphs", []) for r in p.get("runs", [])
-        ).strip()
+        return " ".join(r.get("text", "") for p in e.get("paragraphs", [])
+                        for r in p.get("runs", [])).strip()
     if e.get("type") == "table":
         return " ".join(c for row in e.get("rows", []) for c in row)[:60]
     return e.get("type", "")
@@ -843,25 +825,17 @@ def _set_plain_text(el, text):
     """Replace a text element's content with `text`, keeping the first run's
     formatting as the template and splitting on newlines into paragraphs."""
     paras = el.get("paragraphs") or []
-    template = (
-        dict(paras[0]["runs"][0])
-        if paras and paras[0].get("runs")
-        else {
-            "bold": False,
-            "italic": False,
-            "underline": False,
-            "size": 18,
-            "color": "#202124",
-            "font": None,
-        }
-    )
+    template = dict(paras[0]["runs"][0]) if paras and paras[0].get("runs") else \
+        {"bold": False, "italic": False, "underline": False, "size": 18,
+         "color": "#202124", "font": None}
     align = paras[0].get("align") if paras else "left"
     new = []
     for line in str(text).split("\n"):
         run = dict(template)
         run["text"] = line
         new.append({"align": align, "level": 0, "runs": [run]})
-    el["paragraphs"] = new or [{"align": align, "level": 0, "runs": [dict(template, text="")]}]
+    el["paragraphs"] = new or [{"align": align, "level": 0,
+                                "runs": [dict(template, text="")]}]
 
 
 def _align(targets, mode, W, H, multi):

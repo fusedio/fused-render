@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fused-render"
-version = "0.3.2"
+dynamic = ["version"]
 description = "Local file explorer with Python-powered renderable HTML previews"
 requires-python = ">=3.10"
 dependencies = [
@@ -31,6 +31,15 @@ dev = [
     # fastapi.testclient hard-requires httpx at import time.
     "httpx",
     "ruff==0.15.2", # pinned to match .pre-commit-config.yaml's rev
+    # Parallel test runs (see [tool.pytest.ini_options] addopts -n auto). The
+    # suite is xdist-safe via process isolation: conftest re-points
+    # FUSED_RENDER_HOME/DIR per worker, tests use tmp_path + monkeypatch, and
+    # servers bind 127.0.0.1:0. Process-based only — os.chdir / importlib.reload
+    # would race under a threaded runner.
+    "pytest-xdist",
+    # Coverage reporting (pytest --cov=fused_render). Combines per-worker data
+    # under -n auto (xdist) automatically — no extra config needed there.
+    "pytest-cov",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
@@ -75,7 +84,7 @@ app = [
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
 # one-click install, SPEC DP-4) — a test pins the two together.
 fused = [
-    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post6-py3-none-any.whl ; python_version >= "3.11"',
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl ; python_version >= "3.11"',
 ]
 
 [project.scripts]
@@ -86,6 +95,36 @@ fused-render-app = "fused_render.app:main"
 # exe because the Open With dialog displays a pythonw.exe command as "Python".
 [project.gui-scripts]
 fused-render-open = "fused_render.winopen:main"
+
+# Run the suite in parallel by default (needs pytest-xdist, in the dev extra).
+# -n auto spawns one worker per CPU; the suite is xdist-safe (see the dev-extra
+# comment). To debug a single test serially, override: `pytest -n0 -x path::test`.
+[tool.pytest.ini_options]
+addopts = "-n auto"
+
+[tool.coverage.run]
+source = ["fused_render"]
+# Store paths relative to the repo root rather than absolute, so coverage.xml
+# stays meaningful if it's read from a different checkout path than the one
+# that produced it (e.g. a CI runner vs. a contributor's machine).
+relative_files = true
+
+[tool.coverage.report]
+# Defensive-only lines that a normal test run can't reach (platform guards,
+# "this should never happen" branches) — excluding them keeps the percentage
+# meaningful instead of chasing untestable lines.
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
+
+# Single source of truth for the version: fused_render/__init__.py's
+# __version__. Bump it there only — hatchling reads it at build time for the
+# wheel metadata, and the runtime importers (server.py, core_templates.py,
+# logs.py) all resolve to the same value.
+[tool.hatch.version]
+path = "fused_render/__init__.py"
 
 [tool.hatch.metadata]
 # The `fused` extra pins a direct wheel URL (not a PyPI dependency) — hatchling

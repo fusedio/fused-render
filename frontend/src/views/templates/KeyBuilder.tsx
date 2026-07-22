@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import type { KeyKind } from "../../lib/api";
 import { buildKey, KEY_KINDS } from "./helpers";
 
-export function KeyBuilder({ onChange }: { onChange: (key: string, valid: boolean) => void }) {
+export function KeyBuilder({
+  onChange,
+  inputId,
+}: {
+  onChange: (key: string, valid: boolean) => void;
+  inputId?: string;
+}) {
   const [kind, setKind] = useState<KeyKind>("simple");
   const [raw, setRaw] = useState("");
   const { key, error } = buildKey(kind, raw);
@@ -33,6 +39,7 @@ export function KeyBuilder({ onChange }: { onChange: (key: string, valid: boolea
       <div className="templates-key-input">
         <span className="templates-key-fix">{prefix}</span>
         <input
+          id={inputId}
           type="text"
           value={raw}
           autoFocus

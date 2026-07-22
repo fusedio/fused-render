@@ -11,6 +11,7 @@
   ".csv": [
     "duckdb",
     "csv",
+    "excel",
     "code",
     "annotate"
   ],
@@ -353,10 +354,12 @@
   ],
   ".tif": [
     "geotiff",
+    "pyramid",
     "map"
   ],
   ".tiff": [
     "geotiff",
+    "pyramid",
     "map"
   ],
   ".nc": [
@@ -370,21 +373,12 @@
   ],
   "/": [
     "_listing",
-    "preview"
+    "preview",
+    "zarr_aoi"
   ],
   ".zarr/": [
     "zarr_aoi",
-    "zarr",
     "_listing"
-  ],
-  ".zgroup": [
-    "zarr"
-  ],
-  ".zattrs": [
-    "zarr"
-  ],
-  ".zmetadata": [
-    "zarr"
   ],
   ".shp": [
     "vector",

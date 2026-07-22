@@ -33,6 +33,41 @@ def test_plan_collects_runpython_and_assets(tmp_path):
         ("./sine.py", "sine", "files/sine.py")
     ]
     assert {a.name for a in plan.assets} == {"logo.png", "notes.txt"}
+    # A literal rawUrl/readFile target is exposed via rawUrl/readFile — source "reference".
+    assert {a.source for a in plan.assets} == {"reference"}
+
+
+def test_asset_source_reflects_how_the_file_entered_the_bundle(tmp_path):
+    # Three provenances land as three distinct `source` values so the Deploy modal's
+    # list can say whether the page is known to fetch a file via rawUrl/readFile.
+    html = (
+        _manifest_block('{"include": ["data/*.geojson"]}')
+        + "<script>fused.rawUrl('./logo.png'); const u = fused.rawUrl('data/' + n);</script>"
+    )
+    _write(tmp_path, "logo.png", "PNG")
+    _write(tmp_path, "data/a.geojson", "{}")
+    _write(tmp_path, "extra.csv", "a,b\n1,2\n")
+    plan = plan_export(html, str(tmp_path), include=["extra.csv"])
+    assert not plan.errors
+    by_name = {a.name: a.source for a in plan.assets}
+    assert by_name == {
+        "logo.png": "reference",  # literal fused.rawUrl() target
+        "data/a.geojson": "manifest",  # declared in the page's fused-bundle manifest
+        "extra.csv": "include",  # added out-of-band via the caller's include
+    }
+
+
+def test_literal_reference_wins_source_over_manifest_and_include(tmp_path):
+    # A file reachable more than one way is attributed to the strongest claim
+    # (reference > manifest > include) and bundled once.
+    html = (
+        _manifest_block('{"include": ["logo.png"]}')
+        + "<script>fused.rawUrl('./logo.png');</script>"
+    )
+    _write(tmp_path, "logo.png", "PNG")
+    plan = plan_export(html, str(tmp_path), include=["logo.png"])
+    assert not plan.errors
+    assert [(a.name, a.source) for a in plan.assets] == [("logo.png", "reference")]
 
 
 def test_dynamic_path_is_an_error(tmp_path):
@@ -47,6 +82,79 @@ def test_dynamic_asset_path_is_a_warning_not_an_error(tmp_path):
     html = "<script>const z = 2; fused.rawUrl(`./tiles/${z}.png`); fused.readFile(u);</script>"
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_manifest_backing_suppresses_computed_path_warning(tmp_path):
+    # When the page's own bundle manifest contributes files, the computed-path nag is
+    # suppressed — those files show as "bundle" (manifest) assets in the Deploy list, which
+    # is the reproducible way to back the computed call, so the warning would be redundant.
+    html = (
+        _manifest_block('{"include": ["tiles/*.png"]}')
+        + "<script>const z = 2; fused.rawUrl('tiles/' + z + '.png');</script>"
+    )
+    _write(tmp_path, "tiles/0.png", "PNG")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert not any("computed path" in w for w in plan.warnings)
+    assert [(a.name, a.source) for a in plan.assets] == [("tiles/0.png", "manifest")]
+
+
+def test_manifest_with_no_matching_files_still_warns(tmp_path):
+    # A manifest whose globs match nothing bundles no backing file, so there is still
+    # nothing for the hosted _asset route to resolve the computed key against — the
+    # computed-path warning must still fire (alongside the zero-match glob warning).
+    html = (
+        _manifest_block('{"include": ["tiles/*.png"]}')
+        + "<script>const z = 2; fused.rawUrl('tiles/' + z + '.png');</script>"
+    )
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_manual_include_does_not_suppress_computed_path_warning(tmp_path):
+    # A per-deployment include ("Add all in folder") is not checked in with the page, so a
+    # fresh export without it would still 404 — it must NOT suppress the warning (only the
+    # page's own manifest does).
+    html = "<script>const z = 2; fused.rawUrl('tiles/' + z + '.png');</script>"
+    _write(tmp_path, "tiles/0.png", "PNG")
+    plan = plan_export(html, str(tmp_path), include=["tiles/0.png"])
+    assert not plan.errors
+    assert any("computed path" in w for w in plan.warnings)
+    assert [(a.name, a.source) for a in plan.assets] == [("tiles/0.png", "include")]
+
+
+def test_manifest_file_that_is_also_a_literal_leaves_no_bundle_row_and_warns(tmp_path):
+    # Suppression keys on a SURVIVING `manifest` asset, not the raw manifest globs. When the
+    # only manifest match is also a literal rawUrl target, dedup attributes it to `reference`
+    # (literal wins), so no "bundle" row remains — the computed call still has no visible
+    # backing, so the warning must still fire (Bugbot #192).
+    html = (
+        _manifest_block('{"include": ["data/a.json"]}')
+        + "<script>fused.rawUrl('data/a.json'); const u = fused.rawUrl('data/' + n);</script>"
+    )
+    _write(tmp_path, "data/a.json", "1")
+    plan = plan_export(html, str(tmp_path))
+    assert not plan.errors
+    assert [(a.name, a.source) for a in plan.assets] == [("data/a.json", "reference")]
+    assert not any(a.source == "manifest" for a in plan.assets)
+    assert any("computed path" in w for w in plan.warnings)
+
+
+def test_excluding_the_manifest_file_reinstates_the_computed_path_warning(tmp_path):
+    # A manifest file dropped by `exclude` leaves no "bundle" row, so the suppression
+    # justification no longer holds and the warning must fire again (Bugbot #192).
+    html = (
+        _manifest_block('{"include": ["tiles/*.png"]}')
+        + "<script>const z = 2; fused.rawUrl('tiles/' + z + '.png');</script>"
+    )
+    _write(tmp_path, "tiles/0.png", "PNG")
+    # Without the exclude the warning is suppressed; excluding the sole backing file brings it back.
+    assert not any("computed path" in w for w in plan_export(html, str(tmp_path)).warnings)
+    plan = plan_export(html, str(tmp_path), exclude=["tiles/0.png"])
+    assert not plan.errors
+    assert not any(a.source == "manifest" for a in plan.assets)
     assert any("computed path" in w for w in plan.warnings)
 
 
@@ -208,6 +316,23 @@ def test_export_page_writes_bundle(tmp_path):
     assert manifest["page"] == "page.html"
     assert manifest["entrypoints"][0] == {"path": "./sine.py", "name": "sine", "key": "sine.py"}
     assert manifest["assets"][0] == {"path": "./data/logo.png", "name": "data/logo.png"}
+    assert manifest["cache_max_age"] == "0s"  # default: off
+
+
+def test_export_page_writes_cache_max_age(tmp_path):
+    _write(tmp_path, "src/page.html", "<script>fused.runPython('./sine.py', {});</script>")
+    _write(tmp_path, "src/sine.py", "def main():\n    return 1\n")
+    out = tmp_path / "bundle"
+    export_page(str(tmp_path / "src" / "page.html"), str(out), cache_max_age="5m")
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["cache_max_age"] == "5m"
+
+
+def test_export_page_rejects_invalid_cache_max_age(tmp_path):
+    _write(tmp_path, "page.html", "<html></html>")
+    with pytest.raises(ExportError, match="cache_max_age"):
+        export_page(str(tmp_path / "page.html"), str(tmp_path / "out"), cache_max_age="bogus")
+    assert not (tmp_path / "out").exists()
 
 
 def test_export_page_raises_on_error(tmp_path):
@@ -495,8 +620,9 @@ def test_manifest_glob_bundles_matching_files(tmp_path):
     plan = plan_export(html, str(tmp_path))
     assert not plan.errors
     assert {a.name for a in plan.assets} == {"data/a.json", "data/b.json"}
-    # The computed rawUrl call is still an advisory warning, now mentioning the manifest.
-    assert any("computed path" in w for w in plan.warnings)
+    # The computed rawUrl call's warning is suppressed: the manifest bundles files to back
+    # it (they show as "bundle" provenance assets), so the nag would be redundant.
+    assert not any("computed path" in w for w in plan.warnings)
 
 
 def test_manifest_recursive_glob(tmp_path):

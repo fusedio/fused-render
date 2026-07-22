@@ -324,7 +324,69 @@ def _clean_path(path):
     return (path or "").strip().strip("\"'").strip()
 
 
-def _listdir(file, path):
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.scandir/os.listdir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
+# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
+# paginated /api/fs/list — never through the kernel. _server_url + _stat are
+# copied verbatim from pyramid/overview_pyramid.py.
+import json as _json
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", _json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(src, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No src / unreachable / missing -> False (presume local, kernel listing OK)."""
+    if not src or not path:
+        return False
+    status, meta = _stat(src, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(src, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(src, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = _json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
+def _listdir(file, path, src=""):
     path = _clean_path(path)
     if path:
         directory = os.path.abspath(os.path.expanduser(path))
@@ -332,6 +394,33 @@ def _listdir(file, path):
         directory = os.path.dirname(os.path.abspath(file))
     else:
         directory = os.path.expanduser("~")
+    if _remote_dir(src, directory):
+        # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+        entries = []
+        try:
+            ents, _ = _list_remote(src, directory, cap=1000)
+        except Exception:  # noqa: BLE001
+            ents = []
+        for ent in ents:
+            if ent["name"].startswith("."):
+                continue
+            is_dir = bool(ent.get("is_dir"))
+            entries.append({
+                "name": ent["name"],
+                "path": os.path.join(directory, ent["name"]).replace(os.sep, "/"),
+                "is_dir": is_dir,
+                "size": None if is_dir else (ent.get("size") or 0),
+            })
+            if len(entries) >= 1000:
+                break
+        entries.sort(key=lambda item: (not item["is_dir"], item["name"].casefold()))
+        parent = os.path.dirname(directory)
+        return {
+            "path": directory.replace(os.sep, "/"),
+            "parent": parent.replace(os.sep, "/") if parent and parent != directory else None,
+            "entries": entries,
+            "truncated": len(entries) >= 1000,
+        }
     if not os.path.isdir(directory):
         directory = os.path.dirname(directory) or directory
     entries = []
@@ -725,10 +814,11 @@ def main(
     bins: int = 100,
     context: int = 5,
     path: str = "",
+    src: str = "",
     **params: str,
 ) -> dict:
     if op == "list":
-        return _listdir(file, path)
+        return _listdir(file, path, src)
     if op == "resolve":
         return _resolve(path)
     from_epoch = float(params.get("from") or from_epoch)

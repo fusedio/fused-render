@@ -31,10 +31,15 @@ PACKAGE_SEED_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples_seed"
 )
 
-# The two example pages the starter bookmarks point at; both existing is the
-# "examples are present" signal that gates bookmark seeding. Sine ships in its
-# own subfolder (sine/sine.html + sine/sine.py) so nothing lands loose at the
-# workspace root and sine.py's __pycache__ stays inside the subfolder.
+# The example pages the starter bookmarks point at; any of them existing is
+# the "examples are present" signal that gates bookmark seeding, and each
+# bookmark is written only when its own target exists (a legacy workspace may
+# hold an older seed set missing some of them). Showcase is also the
+# first-launch landing page (see ensure_fused_dir_and_landing). Sine ships in
+# its own subfolder (sine/sine.html + sine/sine.py) so nothing lands loose at
+# the workspace root and sine.py's __pycache__ stays inside the subfolder.
+_SHOWCASE_HTML = os.path.join("showcase", "index.html")
+_TUTORIAL_HTML = os.path.join("tutorial", "index.html")
 _SINE_HTML = os.path.join("sine", "sine.html")
 _EXPLAINER_HTML = os.path.join("how_it_works", "explainer.html")
 
@@ -118,8 +123,9 @@ def _sine_panel_url(abs_path: str) -> str:
 
 
 def _examples_present(fdir: str) -> bool:
-    return os.path.isfile(os.path.join(fdir, _SINE_HTML)) and os.path.isfile(
-        os.path.join(fdir, _EXPLAINER_HTML)
+    return any(
+        os.path.isfile(os.path.join(fdir, rel))
+        for rel in (_TUTORIAL_HTML, _SHOWCASE_HTML, _SINE_HTML, _EXPLAINER_HTML)
     )
 
 
@@ -169,6 +175,10 @@ def _seed_examples(fdir: str) -> bool:
     if nonempty:
         return False
     for entry in os.scandir(PACKAGE_SEED_DIR):
+        # Hidden metadata (.DS_Store a dev machine dropped into the package
+        # dir) is not seed content — mirror the emptiness check above.
+        if entry.name.startswith("."):
+            continue
         dest = os.path.join(fdir, entry.name)
         partial = os.path.join(fdir, "." + entry.name + ".partial")
         _remove(partial)  # defensive: no residue from this same run
@@ -181,35 +191,53 @@ def _seed_examples(fdir: str) -> bool:
 
 
 def _seed_bookmarks(fdir: str) -> None:
-    """Write the two starter bookmarks iff ~/.fused-render/bookmarks.json does
+    """Write the starter bookmarks iff ~/.fused-render/bookmarks.json does
     not exist. An existing file (even a corrupt one) is never overwritten — the
     one-time-write gate the store already relies on (D75)."""
     path = os.path.join(storage.home_dir(), "bookmarks.json")
     if os.path.exists(path):
         return
     now = int(time.time() * 1000)  # ms, matching the frontend's Date.now()
+    starters = (
+        ("Tutorial", _TUTORIAL_HTML, _view_url),
+        ("Showcase", _SHOWCASE_HTML, _view_url),
+        # Split view: rendered sine page beside its source (code mode).
+        ("Sine demo", _SINE_HTML, _sine_panel_url),
+        ("How it works", _EXPLAINER_HTML, _view_url),
+    )
     bookmarks = [
         {
             "id": str(uuid.uuid4()),  # same UUIDv4 shape as crypto.randomUUID()
-            "name": "Sine demo",
-            # Split view: rendered sine page beside its source (code mode).
-            "url": _sine_panel_url(os.path.join(fdir, _SINE_HTML)),
+            "name": name,
+            "url": url_for(os.path.join(fdir, rel)),
             "created_at": now,
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "name": "How it works",
-            "url": _view_url(os.path.join(fdir, _EXPLAINER_HTML)),
-            "created_at": now,
-        },
+        }
+        # Only bookmark pages that actually exist: a legacy workspace (older
+        # seed set, bookmarks.json deleted) may be missing some of them, and a
+        # bookmark onto a nonexistent file is worse than none.
+        for name, rel, url_for in starters
+        if os.path.isfile(os.path.join(fdir, rel))
     ]
-    storage.write_json(path, bookmarks)
+    if bookmarks:
+        storage.write_json(path, bookmarks)
 
 
 def ensure_fused_dir() -> str:
     """Create ~/Documents/Fused, seed examples into it once (empty dir only), and
     seed starter bookmarks once (absent bookmarks.json + examples present).
     Idempotent, non-destructive on upgrades. Returns the abs Fused dir."""
+    return ensure_fused_dir_and_landing()[0]
+
+
+def ensure_fused_dir_and_landing() -> tuple[str, str | None]:
+    """ensure_fused_dir plus the first-launch landing URL.
+
+    Returns (fused_dir, landing): `landing` is the /view/ URL of the seeded
+    showcase page iff THIS run performed the one-time example seed — the same
+    first-run condition that gates everything else here — so a brand-new
+    install's first browser tab opens on the showcase instead of the bare
+    workspace listing. Every later run (dir already non-empty) returns None
+    and the entry points open the root URL exactly as before."""
     fdir = os.path.abspath(fused_dir())
     os.makedirs(fdir, exist_ok=True)
 
@@ -218,4 +246,10 @@ def ensure_fused_dir() -> str:
     # kept — but never onto an unrelated dir the user filled with their own work.
     if seeded or _examples_present(fdir):
         _seed_bookmarks(fdir)
-    return fdir
+
+    landing = None
+    if seeded:
+        showcase = os.path.join(fdir, _SHOWCASE_HTML)
+        if os.path.isfile(showcase):
+            landing = _view_url(showcase)
+    return fdir, landing

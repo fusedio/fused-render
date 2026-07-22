@@ -19,7 +19,10 @@ own (claudeSessions, bookmarkHistory, lastSession, ...) is preserved through a
 read-merge-write — a later claude turn round-trips them instead of clobbering
 them off disk.
 
-Stdlib only (runs in a subprocess; cannot import fused_render.shell).
+Stdlib only, save for one guarded lazy import: _sidecar_writable consults the
+shell's mount read_only flag (fused_render.shell.mounts) to detect a read-only
+remote mount, degrading to pure os.access when fused_render isn't importable
+(a standalone copy of this template). See _sidecar_writable.
 
 Actions:
   main(action="record", file=..., comments=[...], deleted_ids=[...])
@@ -158,8 +161,24 @@ def _sidecar_writable(file: str) -> bool:
     """True iff _save_sidecar would succeed: an existing sidecar needs W_OK on
     itself (the os.replace above would otherwise bypass its read-only bit via
     the directory), a fresh one needs W_OK on the directory (mkstemp+replace
-    both land there)."""
-    path = _sidecar_path(os.path.abspath(file))
+    both land there).
+
+    False under a read-only remote mount, where os.access(W_OK) LIES: with
+    CacheMode=full a write lands in the local VFS cache and only 403s at the
+    async upload (the sidecar-write incident), so os.access would wave the
+    doomed write through. Only the shell's persisted read_only flag can answer
+    this, so this reaches for a fused_render internal via a guarded lazy import
+    (cf. templates/zarr_aoi/tile_server.py) — a standalone copy of this
+    template with no fused_render on the path keeps the pure os.access
+    behavior."""
+    file = os.path.abspath(file)
+    try:
+        from fused_render.shell.mounts import mount_read_only
+        if mount_read_only(file):
+            return False
+    except Exception:
+        pass
+    path = _sidecar_path(file)
     if os.path.exists(path):
         return os.access(path, os.W_OK)
     return os.access(os.path.dirname(path), os.W_OK)

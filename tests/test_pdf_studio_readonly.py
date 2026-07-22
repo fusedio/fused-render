@@ -21,6 +21,11 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 PDF_PY = os.path.join(HERE, os.pardir, "fused_render", "templates", "pdf_studio", "pdf.py")
 
+# os.access always says yes for root, so the chmod-based gates can't trip.
+skip_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="read-only bits are ignored when running as root")
+
 
 def _load_pdf(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("pdf_studio_target", PDF_PY)
@@ -46,6 +51,7 @@ def _original(tmp_path, content=b"%PDF-original"):
     return f
 
 
+@skip_root
 def test_save_readonly_original_raises_and_leaves_file(tmp_path, monkeypatch):
     mod = _load_pdf(tmp_path, monkeypatch)
     f = _original(tmp_path)
@@ -68,6 +74,7 @@ def test_save_readonly_original_raises_and_leaves_file(tmp_path, monkeypatch):
         os.chmod(src, 0o644)
 
 
+@skip_root
 def test_save_readonly_beats_conflict_force(tmp_path, monkeypatch):
     # Even force=1 (the conflict dialog's override) can't write a read-only
     # file — the gate sits before the conflict check.
@@ -95,6 +102,7 @@ def test_save_readonly_beats_conflict_force(tmp_path, monkeypatch):
         os.chmod(src, 0o644)
 
 
+@skip_root
 def test_rename_doc_readonly_raises_and_keeps_name(tmp_path, monkeypatch):
     mod = _load_pdf(tmp_path, monkeypatch)
     f = _original(tmp_path)

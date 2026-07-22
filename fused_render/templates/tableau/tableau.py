@@ -34,18 +34,11 @@ SOURCES = os.path.join(CACHE_ROOT, "sources")
 
 DATA_EXTS = (".csv", ".tsv", ".parquet", ".xlsx", ".hyper")
 TABLEAU_EXTS = (".twb", ".twbx", ".tds", ".tdsx")
-MAX_CHART_ROWS = 5_000  # aggregated rows sent to the chart
-MAX_DOMAIN_VALUES = 300  # distinct values sent to a filter dropdown
+MAX_CHART_ROWS = 5_000       # aggregated rows sent to the chart
+MAX_DOMAIN_VALUES = 300      # distinct values sent to a filter dropdown
 
-AGGS = {
-    "sum": "SUM",
-    "avg": "AVG",
-    "median": "MEDIAN",
-    "min": "MIN",
-    "max": "MAX",
-    "count": "COUNT",
-    "countd": "COUNT(DISTINCT",
-}
+AGGS = {"sum": "SUM", "avg": "AVG", "median": "MEDIAN", "min": "MIN", "max": "MAX",
+        "count": "COUNT", "countd": "COUNT(DISTINCT"}
 GRAINS = ("year", "quarter", "month", "week", "day")
 
 
@@ -55,7 +48,6 @@ def _safe_name(name, default):
 
 
 # ---------- duckdb helpers ----------
-
 
 def _duck(excel_ext=False):
     import duckdb
@@ -93,7 +85,6 @@ def _json_val(v):
 
 # ---------- parquet cache + schema ----------
 
-
 def _cache_dir(file):
     import hashlib
 
@@ -101,10 +92,73 @@ def _cache_dir(file):
     return os.path.join(SOURCES, f"{h}-{int(os.path.getmtime(file) * 1000)}")
 
 
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes a server origin (the `src` param) and we ask the server whether a path
+# is remote (/api/fs/stat); if so we list it via the mount-routed, paginated
+# /api/fs/list — never through the kernel. _server_url + _stat are copied
+# verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(origin, endpoint, path):
+    u = _urlparse.urlsplit(origin)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(origin, path):
+    url = _server_url(origin, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(origin, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No origin / unreachable / missing -> False (presume local, kernel OK)."""
+    if not origin or not path:
+        return False
+    status, meta = _stat(origin, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(origin, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(origin, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def _clean_stale(keep_dir):
     if not os.path.isdir(SOURCES):
         return
     prefix = os.path.basename(keep_dir).split("-")[0]
+    # SOURCES is under CACHE_ROOT (~/.fused-render) — a local parquet cache,
+    # never a user mount path; this kernel listing is safe.
     for n in os.listdir(SOURCES):
         p = os.path.join(SOURCES, n)
         if n.startswith(prefix + "-") and p != keep_dir:
@@ -155,19 +209,8 @@ def _classify(duck_type):
         return "date", "dimension"
     if t == "BOOLEAN":
         return "bool", "dimension"
-    if t in (
-        "TINYINT",
-        "SMALLINT",
-        "INTEGER",
-        "BIGINT",
-        "HUGEINT",
-        "UTINYINT",
-        "USMALLINT",
-        "UINTEGER",
-        "UBIGINT",
-        "FLOAT",
-        "DOUBLE",
-    ) or t.startswith("DECIMAL"):
+    if t in ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT",
+             "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "DOUBLE") or t.startswith("DECIMAL"):
         return "number", "measure"
     return "string", "dimension"
 
@@ -197,13 +240,8 @@ def _ensure_cache(file):
     for name, duck_type, *_ in info:
         dtype, role = _classify(duck_type)
         fields.append({"name": name, "dtype": dtype, "role": role})
-    meta = {
-        "file": file,
-        "mtime": os.path.getmtime(file),
-        "parquet": "data.parquet",
-        "nrows": nrows,
-        "fields": fields,
-    }
+    meta = {"file": file, "mtime": os.path.getmtime(file), "parquet": "data.parquet",
+            "nrows": nrows, "fields": fields}
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f)
     return meta
@@ -221,7 +259,6 @@ def _field(meta, name):
 
 
 # ---------- query building ----------
-
 
 def _filters_sql(meta, filters):
     where, params = [], []
@@ -287,7 +324,7 @@ def _agg_expr(fld, agg):
 
 def _query(file, spec):
     """spec: {dims: [{field, grain?, as}], measures: [{field, agg, as}],
-    filters: [...], sort: {by, dir}?, limit?}"""
+             filters: [...], sort: {by, dir}?, limit?}"""
     meta = _ensure_cache(file)
     dims = spec.get("dims") or []
     measures = spec.get("measures") or []
@@ -318,7 +355,10 @@ def _query(file, spec):
     con = _duck()
     rows = con.execute(sql, params).fetchall()
     truncated = len(rows) > limit
-    records = [{alias: _json_val(v) for alias, v in zip(aliases, row)} for row in rows[:limit]]
+    records = [
+        {alias: _json_val(v) for alias, v in zip(aliases, row)}
+        for row in rows[:limit]
+    ]
     return {"records": records, "truncated": truncated}
 
 
@@ -334,12 +374,8 @@ def _rows(file, offset, limit, filters):
         params + [int(limit), int(offset)],
     )
     rows = [[_json_val(v) for v in row] for row in cur.fetchall()]
-    return {
-        "columns": [f["name"] for f in meta["fields"]],
-        "rows": rows,
-        "matched": matched,
-        "total": meta["nrows"],
-    }
+    return {"columns": [f["name"] for f in meta["fields"]], "rows": rows,
+            "matched": matched, "total": meta["nrows"]}
 
 
 def _filter_domain(file, field):
@@ -356,11 +392,8 @@ def _filter_domain(file, field):
         f"SELECT CAST({col} AS VARCHAR) AS v, count(*) AS n FROM read_parquet({pq}) "
         f"GROUP BY 1 ORDER BY n DESC, v LIMIT {MAX_DOMAIN_VALUES}"
     ).fetchall()
-    return {
-        "kind": "values",
-        "total": total,
-        "values": [{"v": "" if v is None else v, "n": n} for v, n in vals],
-    }
+    return {"kind": "values", "total": total,
+            "values": [{"v": "" if v is None else v, "n": n} for v, n in vals]}
 
 
 # ---------- tableau .twb import ----------
@@ -369,52 +402,23 @@ def _filter_domain(file, field):
 # [Datasource].[none:Region:nk] — [derivation:]name[:kind], where the derivation
 # is an aggregate, a date grain, or none/attr (use the values unaggregated) and
 # the kind is a two-letter role code (nk/qk/ok).
-_TWB_AGG = {
-    "sum": "sum",
-    "avg": "avg",
-    "mdn": "median",
-    "min": "min",
-    "max": "max",
-    "cnt": "count",
-    "ctd": "countd",
-}
-_TWB_GRAIN = {
-    "yr": "year",
-    "qr": "quarter",
-    "mn": "month",
-    "wk": "week",
-    "dy": "day",
-    "tyr": "year",
-    "tqr": "quarter",
-    "tmn": "month",
-    "twk": "week",
-    "tdy": "day",
-    # sub-day grains collapse to day, the finest this viewer offers
-    "hr": "day",
-    "mi": "day",
-    "sc": "day",
-    "thr": "day",
-    "tmi": "day",
-    "tsc": "day",
-}
-_TWB_MARK = {
-    "Automatic": "auto",
-    "Bar": "bar",
-    "Line": "line",
-    "Area": "area",
-    "Square": "heatmap",
-    "Circle": "scatter",
-    "Shape": "scatter",
-    "Pie": "pie",
-    "Text": "table",
-}
+_TWB_AGG = {"sum": "sum", "avg": "avg", "mdn": "median", "min": "min", "max": "max",
+            "cnt": "count", "ctd": "countd"}
+_TWB_GRAIN = {"yr": "year", "qr": "quarter", "mn": "month", "wk": "week", "dy": "day",
+              "tyr": "year", "tqr": "quarter", "tmn": "month", "twk": "week", "tdy": "day",
+              # sub-day grains collapse to day, the finest this viewer offers
+              "hr": "day", "mi": "day", "sc": "day",
+              "thr": "day", "tmi": "day", "tsc": "day"}
+_TWB_MARK = {"Automatic": "auto", "Bar": "bar", "Line": "line", "Area": "area",
+             "Square": "heatmap", "Circle": "scatter", "Shape": "scatter",
+             "Pie": "pie", "Text": "table"}
 _TWB_FIELD = re.compile(r"\[([^\]]*)\]\.\[([^\]]*)\]")
 
 
 def _twb_pill(token, meta):
     parts = token.split(":")
     if len(parts) > 1 and re.fullmatch(r"[a-z]k", parts[-1]):
-        parts.pop()  # trailing kind code
+        parts.pop()   # trailing kind code
     prefix = parts.pop(0) if len(parts) > 1 else None
     name = ":".join(parts)
     try:
@@ -436,52 +440,55 @@ def _twb_pill(token, meta):
     return {"field": name}
 
 
-def _twb_data_file(root, twb_dir):
+def _twb_data_file(root, twb_dir, remote=False):
     """Resolve the first file-based data source. Returns (abs_path, ds_name):
     ds_name is the enclosing <datasource> name so the caller can tell which
-    worksheets bind to it (a workbook may have several data sources)."""
+    worksheets bind to it (a workbook may have several data sources).
+
+    `remote` True means twb_dir is a mount-backed directory (the .twb was opened
+    off a mount): the recursive os.walk fallback below would kernel-enumerate a
+    potentially huge S3 prefix and drop the mount, so it is skipped."""
     for ds in root.iter("datasource"):
         for conn in ds.iter("connection"):
             fn = conn.get("filename") or conn.get("dbname") or ""  # hyper uses dbname
             if not fn.lower().endswith(DATA_EXTS):
                 continue
             d = conn.get("directory") or "."
-            cands = (
-                [fn]
-                if os.path.isabs(fn)
-                else [os.path.join(twb_dir, d, fn), os.path.join(twb_dir, fn)]
-            )
+            cands = [fn] if os.path.isabs(fn) else [os.path.join(twb_dir, d, fn),
+                                                    os.path.join(twb_dir, fn)]
             for cand in cands:
                 if os.path.exists(cand):
                     return os.path.abspath(cand), ds.get("name")
-            # zip layouts vary (Data/…/file) — fall back to a name search
+            # zip layouts vary (Data/…/file) — fall back to a name search.
+            # Never walk a remote mount dir (unbounded S3 enumeration = mount
+            # drop); local dirs only.
             base = os.path.basename(fn)
-            for dirpath, _, names in os.walk(twb_dir):
-                if base in names:
-                    return os.path.abspath(os.path.join(dirpath, base)), ds.get("name")
+            if not remote:
+                for dirpath, _, names in os.walk(twb_dir):
+                    if base in names:
+                        return os.path.abspath(os.path.join(dirpath, base)), ds.get("name")
             raise ValueError(
                 f"The workbook's data source “{fn}” was not found next to the file. "
                 f"Place the data file in the same folder and reopen."
             )
-    raise ValueError(
-        "No file-based data source found (only local csv/tsv/xlsx/"
-        "parquet/hyper connections are supported)."
-    )
+    raise ValueError("No file-based data source found (only local csv/tsv/xlsx/"
+                     "parquet/hyper connections are supported).")
 
 
-def _import_twb(file):
+def _import_twb(file, remote=False):
     import xml.etree.ElementTree as ET
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src, primary_ds = _twb_data_file(root, os.path.dirname(file))
+    src, primary_ds = _twb_data_file(root, os.path.dirname(file), remote)
     meta = _ensure_cache(src)
 
     # A workbook can bind several data sources; we only load the first. When
     # more than one exists, drop pills that reference another one instead of
     # resolving them against this schema by bare name — a shared column name
     # would otherwise plot the wrong data source's values with no warning.
-    multi_source = len({ds.get("name") for ds in root.iter("datasource") if ds.get("name")}) > 1
+    multi_source = len({ds.get("name") for ds in root.iter("datasource")
+                        if ds.get("name")}) > 1
 
     def pills(text):
         out = []
@@ -511,35 +518,14 @@ def _import_twb(file):
             enc = table.find(".//pane/encodings/text")
             if enc is not None:
                 rows += pills(enc.get("column", ""))[:1]
-        sheets.append(
-            {
-                "name": ws.get("name") or f"Sheet {len(sheets) + 1}",
-                "chart": chart,
-                "cols": cols,
-                "rows": rows,
-                "color": color,
-                "filters": [],
-                "sortDir": "",
-            }
-        )
+        sheets.append({"name": ws.get("name") or f"Sheet {len(sheets) + 1}",
+                       "chart": chart, "cols": cols, "rows": rows, "color": color,
+                       "filters": [], "sortDir": ""})
     if not sheets:
-        sheets = [
-            {
-                "name": "Sheet 1",
-                "chart": "auto",
-                "cols": [],
-                "rows": [],
-                "color": [],
-                "filters": [],
-                "sortDir": "",
-            }
-        ]
-    wb = {
-        "name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
-        "source": src.replace(os.sep, "/"),
-        "sheets": sheets,
-        "active": 0,
-    }
+        sheets = [{"name": "Sheet 1", "chart": "auto", "cols": [], "rows": [],
+                   "color": [], "filters": [], "sortDir": ""}]
+    wb = {"name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
+          "source": src.replace(os.sep, "/"), "sheets": sheets, "active": 0}
     return {"workbook": wb}
 
 
@@ -580,6 +566,8 @@ def _extract_tableau_zip(file):
 
 
 def _find_by_ext(directory, ext):
+    # `directory` is always a local .twbx/.tdsx extraction dir under SOURCES
+    # (see _extract_tableau_zip) — never a user mount path; walk is safe.
     for dirpath, _, names in os.walk(directory):
         for n in names:
             if n.lower().endswith(ext):
@@ -587,29 +575,32 @@ def _find_by_ext(directory, ext):
     return None
 
 
-def _import_tds(file):
+def _import_tds(file, remote=False):
     import xml.etree.ElementTree as ET
 
     file = os.path.abspath(file)
     root = ET.parse(file).getroot()
-    src, _ = _twb_data_file(root, os.path.dirname(file))
+    src, _ = _twb_data_file(root, os.path.dirname(file), remote)
     return {"source": src.replace(os.sep, "/")}
 
 
-def _import_tableau(file):
+def _import_tableau(file, src=""):
     file = os.path.abspath(file)
     ext = os.path.splitext(file)[1].lower()
+    # A bare .twb/.tds is read from wherever the user opened it — possibly a
+    # mount; flag that so the data-file resolver skips its recursive kernel walk.
+    remote = _remote_dir(src, os.path.dirname(file))
     if ext == ".twb":
-        return _import_twb(file)
+        return _import_twb(file, remote)
     if ext == ".tds":
-        return _import_tds(file)
+        return _import_tds(file, remote)
     if ext in (".twbx", ".tdsx"):
+        # .twbx/.tdsx unpack into a local cache dir, so their inner resolution
+        # is always local (remote=False by default).
         d = _extract_tableau_zip(file)
         inner = _find_by_ext(d, ".twb" if ext == ".twbx" else ".tds")
         if not inner:
-            raise ValueError(
-                f"no {'.twb' if ext == '.twbx' else '.tds'} found inside {os.path.basename(file)}"
-            )
+            raise ValueError(f"no {'.twb' if ext == '.twbx' else '.tds'} found inside {os.path.basename(file)}")
         out = _import_twb(inner) if ext == ".twbx" else _import_tds(inner)
         if "workbook" in out:
             out["workbook"]["name"] = re.sub(r"\.twbx$", "", os.path.basename(file), flags=re.I)
@@ -619,13 +610,43 @@ def _import_tableau(file):
 
 # ---------- file browsing / boot ----------
 
-
-def _listdir(path):
+def _listdir(path, origin=""):
     path = os.path.abspath(os.path.expanduser(path or "~"))
-    if not os.path.isdir(path):
-        path = os.path.dirname(path) or "/"
+    # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+    status, meta = _stat(origin, path) if origin else ("", None)
+    if status == "ok" and meta.get("remote"):
+        # Mount-backed: list via /api/fs/list, never a kernel scan. If `path` is a
+        # file (not a dir), descend to its parent with pure string ops — never a
+        # kernel os.path call on a remote path (that call wedges the NFS mount).
+        if not meta.get("is_dir"):
+            path = os.path.dirname(path) or "/"
+        # forward slashes on every platform: the browser's crumb/join logic is "/"-based
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
+        fpath = path.replace(os.sep, "/")
+        dirs, files = [], []
+        try:
+            ents, _ = _list_remote(origin, path)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc), "path": fpath, "parent": parent,
+                    "dirs": [], "files": []}
+        for ent in ents:
+            name = ent["name"]
+            if name.startswith("."):
+                continue
+            if ent.get("is_dir"):
+                dirs.append(name)
+            elif name.lower().endswith(TABLEAU_EXTS):
+                files.append({"name": name, "size": ent.get("size") or 0, "kind": "tableau"})
+            elif name.lower().endswith(".hyper"):
+                files.append({"name": name, "size": ent.get("size") or 0, "kind": "data"})
+        dirs.sort(key=str.lower)
+        files.sort(key=lambda f: f["name"].lower())
+        return {"path": fpath, "parent": parent, "dirs": dirs, "files": files}
     # forward slashes on every platform: the browser's crumb/join logic is "/"-based
     parent = (os.path.dirname(path) or path).replace(os.sep, "/")  # dirname(root) == root
+    if not os.path.isdir(path):
+        path = os.path.dirname(path) or "/"
+        parent = (os.path.dirname(path) or path).replace(os.sep, "/")
     path = path.replace(os.sep, "/")
     dirs, files = [], []
     try:
@@ -656,7 +677,6 @@ def _boot():
 
 # ---------- export ----------
 
-
 def _export(kind, name, file, spec, raw=False):
     os.makedirs(EXPORTS, exist_ok=True)
     base = _safe_name(name, "export")
@@ -668,9 +688,7 @@ def _export(kind, name, file, spec, raw=False):
         meta = _ensure_cache(file)
         where, params = _filters_sql(meta, spec.get("filters"))
         con = _duck()
-        con.execute(
-            f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_parquet(meta))}){where}", params
-        )
+        con.execute(f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_parquet(meta))}){where}", params)
         if not con.execute("SELECT count(*) FROM t").fetchone()[0]:
             raise ValueError("nothing to export — no rows match the filters")
         if kind == "csv":
@@ -724,18 +742,17 @@ def main(
     raw: str = "",
     offset: int = 0,
     limit: int = 200,
+    src: str = "",
 ):
     if action == "boot":
         return _boot()
     if action == "listdir":
-        return _listdir(file)
+        # `src` carries the server ORIGIN for mount-safe routing.
+        return _listdir(file, src)
     if action == "open_data":
         meta = _ensure_cache(file)
-        return {
-            "file": meta["file"].replace(os.sep, "/"),
-            "nrows": meta["nrows"],
-            "fields": meta["fields"],
-        }
+        return {"file": meta["file"].replace(os.sep, "/"), "nrows": meta["nrows"],
+                "fields": meta["fields"]}
     if action == "query":
         return _query(file, json.loads(spec))
     if action == "rows":
@@ -743,7 +760,7 @@ def main(
     if action == "filter_domain":
         return _filter_domain(file, field)
     if action == "import_tableau":
-        return _import_tableau(file)
+        return _import_tableau(file, src)
     if action == "export":
         return _export(kind, name, file, json.loads(spec), raw=(raw == "1"))
     raise ValueError(f"unknown action {action!r}")

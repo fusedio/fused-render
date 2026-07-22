@@ -1,7 +1,6 @@
 """Tests for the background whole-file prefetcher (shell/prefetch.py) and
 its trigger in the /api/fs/raw proxy. A stub HTTP server stands in for the
 rclone serve; no rclone and no real mount is involved."""
-
 import json
 import os
 import threading
@@ -21,15 +20,10 @@ class StubServe:
     the client hits an IncompleteRead *mid-chunk* (partial bytes delivered,
     then the connection drops)."""
 
-    def __init__(
-        self,
-        data: bytes,
-        fail_first_gets: int = 0,
-        partial_first_gets: int = 0,
-        short_clean_first_gets: int = 0,
-    ):
+    def __init__(self, data: bytes, fail_first_gets: int = 0,
+                 partial_first_gets: int = 0, short_clean_first_gets: int = 0):
         self.data = data
-        self.requests = []  # (method, range_header)
+        self.requests = []          # (method, range_header)
         self.fail_remaining = fail_first_gets
         self.partial_remaining = partial_first_gets
         self.short_clean_remaining = short_clean_first_gets
@@ -49,7 +43,7 @@ class StubServe:
             def _body(self, rng):
                 if rng:
                     lo, hi = rng.removeprefix("bytes=").split("-")
-                    return stub.data[int(lo) : int(hi) + 1], 206
+                    return stub.data[int(lo):int(hi) + 1], 206
                 return stub.data, 200
 
             def do_GET(self):
@@ -130,17 +124,19 @@ def wait_status(path, want, timeout=5.0):
         if st == want:
             return prefetch_mod.status()[path]
         time.sleep(0.01)
-    raise AssertionError(f"prefetch of {path} never reached {want!r}: {prefetch_mod.status()}")
+    raise AssertionError(
+        f"prefetch of {path} never reached {want!r}: {prefetch_mod.status()}")
 
 
 def test_streams_whole_file_in_sequential_chunks(fast):
-    stub = StubServe(os.urandom(3000))  # 3 chunks at CHUNK_BYTES=1024
+    stub = StubServe(os.urandom(3000))          # 3 chunks at CHUNK_BYTES=1024
     try:
         prefetch_mod.schedule("/m/f.bin", stub.url)
         job = wait_status("/m/f.bin", "done")
         assert job["done"] == job["size"] == 3000
         gets = [r for r in stub.requests if r[0] == "GET"]
-        assert [r[1] for r in gets] == ["bytes=0-1023", "bytes=1024-2047", "bytes=2048-2999"]
+        assert [r[1] for r in gets] == [
+            "bytes=0-1023", "bytes=1024-2047", "bytes=2048-2999"]
     finally:
         stub.close()
 
@@ -151,20 +147,15 @@ def test_prioritizes_head_then_footer_before_middle(fast, monkeypatch):
     # first-page read racing the stream finds footer + row group 0 warm early.
     monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 1024)
     monkeypatch.setattr(prefetch_mod, "FOOTER_BYTES", 1024)
-    stub = StubServe(os.urandom(5000))  # CHUNK_BYTES=1024 -> 5 chunks
+    stub = StubServe(os.urandom(5000))          # CHUNK_BYTES=1024 -> 5 chunks
     try:
         prefetch_mod.schedule("/m/f.bin", stub.url)
         job = wait_status("/m/f.bin", "done")
         assert job["done"] == job["size"] == 5000
         gets = [r[1] for r in stub.requests if r[0] == "GET"]
         # head first, footer tail second, middle after.
-        assert gets == [
-            "bytes=0-1023",
-            "bytes=3976-4999",
-            "bytes=1024-2047",
-            "bytes=2048-3071",
-            "bytes=3072-3975",
-        ]
+        assert gets == ["bytes=0-1023", "bytes=3976-4999",
+                        "bytes=1024-2047", "bytes=2048-3071", "bytes=3072-3975"]
         # every byte covered exactly once (no gap, no overlap).
         covered = []
         for g in gets:
@@ -207,7 +198,7 @@ def test_size_gate_decides_without_start_delay(fast, monkeypatch):
     stub = StubServe(b"x" * 100)
     try:
         prefetch_mod.schedule("/m/chunk.bin", stub.url)
-        wait_status("/m/chunk.bin", "skipped", timeout=5.0)  # << 30s delay
+        wait_status("/m/chunk.bin", "skipped", timeout=5.0)   # << 30s delay
         assert not any(r[0] == "GET" for r in stub.requests)
     finally:
         stub.close()
@@ -238,13 +229,13 @@ def test_eviction_is_lru_by_access_not_completion(fast, monkeypatch):
             prefetch_mod.schedule(p, stub.url)
             wait_status(p, "done")
         # Re-read old.bin: touches it even though it completed first.
-        prefetch_mod.schedule("/m/old.bin", stub.url)  # done -> touch only
+        prefetch_mod.schedule("/m/old.bin", stub.url)   # done -> touch only
         # New file trips the cap; least-recently-read (mid.bin) is evicted.
         prefetch_mod.schedule("/m/new.bin", stub.url)
         wait_status("/m/new.bin", "done")
         st = prefetch_mod.status()
-        assert "/m/old.bin" in st  # recently re-read -> survives
-        assert "/m/mid.bin" not in st  # least-recently-read -> evicted
+        assert "/m/old.bin" in st       # recently re-read -> survives
+        assert "/m/mid.bin" not in st   # least-recently-read -> evicted
     finally:
         stub.close()
 
@@ -255,7 +246,7 @@ def test_schedule_is_idempotent(fast):
         prefetch_mod.schedule("/m/f.bin", stub.url)
         wait_status("/m/f.bin", "done")
         n = len(stub.requests)
-        prefetch_mod.schedule("/m/f.bin", stub.url)  # already done -> no-op
+        prefetch_mod.schedule("/m/f.bin", stub.url)   # already done -> no-op
         time.sleep(0.1)
         assert len(stub.requests) == n
     finally:
@@ -281,13 +272,13 @@ def test_progress_stays_exact_across_midchunk_retry(fast, monkeypatch):
     # partial delivery clears _fetch_chunk's 1MB read block and is genuinely
     # counted before the stream drops (the buggy `+= len(b)` overshoots here).
     mb = 1024 * 1024
-    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)  # one chunk
+    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)   # one chunk
     monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 8 * mb)
     stub = StubServe(os.urandom(3 * mb), partial_first_gets=1)  # ~2MB then drops
     try:
         prefetch_mod.schedule("/m/f.bin", stub.url)
         job = wait_status("/m/f.bin", "done", timeout=15.0)
-        assert job["done"] == job["size"] == 3 * mb  # exact, never > size
+        assert job["done"] == job["size"] == 3 * mb    # exact, never > size
     finally:
         stub.close()
 
@@ -300,7 +291,7 @@ def test_short_clean_read_is_retried_not_committed(fast, monkeypatch):
     # missing. _fetch_chunk must verify it consumed the whole [start, end]
     # range and raise otherwise, so the retry loop re-requests the chunk.
     mb = 1024 * 1024
-    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)  # one chunk
+    monkeypatch.setattr(prefetch_mod, "CHUNK_BYTES", 8 * mb)   # one chunk
     monkeypatch.setattr(prefetch_mod, "HEAD_BYTES", 8 * mb)
     stub = StubServe(os.urandom(3 * mb), short_clean_first_gets=1)
     try:
@@ -316,7 +307,7 @@ def test_short_clean_read_is_retried_not_committed(fast, monkeypatch):
 
 def test_gives_up_after_sustained_errors_then_retries(fast, monkeypatch):
     monkeypatch.setattr(prefetch_mod, "MAX_CONSECUTIVE_ERRORS", 2)
-    stub = StubServe(b"z" * 100, fail_first_gets=10**6)
+    stub = StubServe(b"z" * 100, fail_first_gets=10 ** 6)
     try:
         prefetch_mod.schedule("/m/f.bin", stub.url)
         wait_status("/m/f.bin", "failed", timeout=30.0)
@@ -348,11 +339,11 @@ def test_disabled_by_env(fast, monkeypatch):
 # -- trigger: /api/fs/raw schedules a prefetch for mount-backed files --------
 
 
-def test_fs_raw_schedules_prefetch_for_mount_backed_file(fast, tmp_path, monkeypatch):
+def test_fs_raw_schedules_prefetch_for_mount_backed_file(
+        fast, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-
-    import fused_render.shell.mounts as mounts_mod
     from fused_render.server import create_app
+    import fused_render.shell.mounts as mounts_mod
 
     home = tmp_path / "home"
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
@@ -363,10 +354,27 @@ def test_fs_raw_schedules_prefetch_for_mount_backed_file(fast, tmp_path, monkeyp
 
     stub = StubServe(f.read_bytes())
     (home).mkdir(exist_ok=True)
-    (home / "serves.json").write_text(json.dumps({str(mp): stub.url.rsplit("/", 1)[0]}))
+    (home / "serves.json").write_text(json.dumps(
+        {str(mp): stub.url.rsplit("/", 1)[0]}))
+    # This test seeds serves.json directly and never creates a mounts.json
+    # record for `mp` (no rclone/mount involved at all, per the module
+    # docstring) — real automount would rightly treat that as a stale entry
+    # with no backing mount and wipe it (D123's stale-serve cleanup).
+    # Disable the background automount thread create_app spawns so it can't
+    # race with/clobber this test's manual serves.json setup.
+    monkeypatch.setattr(mounts_mod, "startup", lambda: None)
+
+    # The warm-read fallthrough resolves a mount-backed path's shape through the
+    # rcd (_mount_probe), never a kernel stat — stub the parent listing so the
+    # file reads as a present regular object and the proxy is reached.
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda p, timeout=None: [{"Name": "table.parquet",
+                                                  "IsDir": False, "Size": 23,
+                                                  "ModTime": "2024-01-02T03:04:05Z"}])
 
     scheduled = []
-    monkeypatch.setattr(prefetch_mod, "schedule", lambda path, url: scheduled.append((path, url)))
+    monkeypatch.setattr(prefetch_mod, "schedule",
+                        lambda path, url: scheduled.append((path, url)))
     try:
         client = TestClient(create_app(str(tmp_path)))
         r = client.get("/api/fs/raw", params={"path": str(f)})

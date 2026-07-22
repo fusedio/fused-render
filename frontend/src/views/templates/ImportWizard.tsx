@@ -1,6 +1,8 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { commitImport, importTemplates } from "../../lib/api";
 import type { ImportItem, ImportResolution, ImportStageResult } from "../../lib/api";
+import { Modal } from "../../components/modal/Modal";
+import { ErrorBanner } from "../../components/ErrorBanner";
 
 type WizardStep = "choose" | "manifest" | "done";
 
@@ -33,20 +35,12 @@ export function ImportWizard({
   const [result, setResult] = useState<Awaited<ReturnType<typeof commitImport>> | null>(null);
 
   const alive = useRef(true);
-  useEffect(
-    () => () => {
-      alive.current = false;
-    },
-    [],
-  );
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
+  const formId = useId();
+  const fileInputId = useId();
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
@@ -122,7 +116,7 @@ export function ImportWizard({
       const payload: Record<string, ImportResolution> = {};
       for (const it of staged.items) {
         if (!it.valid) continue;
-        payload[it.name] = it.conflictsExisting ? (resolutions[it.name] ?? "skip") : "overwrite";
+        payload[it.name] = it.conflictsExisting ? resolutions[it.name] ?? "skip" : "overwrite";
       }
       const bindings = activeBindings();
       const res = await commitImport(
@@ -165,47 +159,83 @@ export function ImportWizard({
   const importCount = staged?.items.filter((i) => i.valid && !isSkipped(i)).length ?? 0;
   const bindingCount = Object.values(activeBindings()).reduce((n, keys) => n + keys.length, 0);
 
-  return (
-    <div
-      className="deploy-overlay"
-      onMouseDown={(e) => {
-        if (!busy && e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="deploy-dialog templates-import"
-        role="dialog"
-        aria-modal="true"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="deploy-head">
-          <h2>Import templates</h2>
-          <button type="button" className="deploy-close" onClick={onClose} disabled={busy}>
-            ✕
-          </button>
-        </div>
-        <div className="deploy-body">
-          {step === "choose" && (
-            <>
-              <p className="deploy-muted">
-                Choose a <code>.zip</code> of template folders. Each top-level folder with a{" "}
-                <code>template.html</code> is a template. The registry is never imported (folders
-                only).
-              </p>
-              <input
-                type="file"
-                accept=".zip"
-                disabled={busy}
-                onChange={(e) => onFile(e.target.files?.[0])}
-              />
-              {busy && <div className="deploy-muted">Staging…</div>}
-              {error && <div className="deploy-error">{error}</div>}
-            </>
-          )}
+  let footer: ReactNode = null;
+  if (step === "choose") {
+    footer = (
+      <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+        Cancel
+      </button>
+    );
+  } else if (step === "manifest" && staged) {
+    footer = (
+      <>
+        <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          type="submit"
+          form={formId}
+          className="btn btn-primary"
+          disabled={busy || validCount === 0}
+        >
+          {busy
+            ? "Importing…"
+            : hasRecs
+              ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
+                (bindingCount > 0 ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}` : "")
+              : "Import"}
+        </button>
+      </>
+    );
+  } else if (step === "done" && result) {
+    footer = (
+      <button type="button" className="btn btn-primary" onClick={onClose}>
+        Done
+      </button>
+    );
+  }
 
-          {step === "manifest" && staged && (
-            <>
-              {staged.warnings.length > 0 && (
+  return (
+    <Modal
+      title="Import templates"
+      onClose={onClose}
+      busy={busy}
+      dialogClassName="templates-import"
+      footer={footer}
+    >
+      {step === "choose" && (
+        <>
+          <p className="deploy-muted">
+            Choose a <code>.zip</code> of template folders. Each top-level folder with a{" "}
+            <code>template.html</code> is a template. The registry is never imported (folders
+            only).
+          </p>
+          <div className="templates-field">
+            <label htmlFor={fileInputId} className="templates-field-label">
+              Template zip
+            </label>
+            <input
+              id={fileInputId}
+              type="file"
+              accept=".zip"
+              disabled={busy}
+              onChange={(e) => onFile(e.target.files?.[0])}
+            />
+          </div>
+          {busy && <div className="deploy-muted">Staging…</div>}
+          {error && <ErrorBanner>{error}</ErrorBanner>}
+        </>
+      )}
+
+      {step === "manifest" && staged && (
+        <form
+          id={formId}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void doCommit();
+          }}
+        >
+          {staged.warnings.length > 0 && (
                 <div className="templates-warnings">
                   {staged.warnings.map((w, i) => (
                     <div key={i} className="deploy-muted">
@@ -262,67 +292,33 @@ export function ImportWizard({
                   </tbody>
                 </table>
               )}
-              {error && <div className="deploy-error">{error}</div>}
-              <div className="templates-actions">
-                <button
-                  type="button"
-                  className="templates-btn-secondary"
-                  onClick={onClose}
-                  disabled={busy}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="templates-btn-primary"
-                  onClick={doCommit}
-                  disabled={busy || validCount === 0}
-                >
-                  {busy
-                    ? "Importing…"
-                    : hasRecs
-                      ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
-                        (bindingCount > 0
-                          ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}`
-                          : "")
-                      : "Import"}
-                </button>
-              </div>
-            </>
-          )}
+          {error && <ErrorBanner>{error}</ErrorBanner>}
+        </form>
+      )}
 
-          {step === "done" && result && (
+      {step === "done" && result && (
+        <div className="templates-result">
+          <ResultLine label="Imported" names={result.imported} />
+          <ResultLine
+            label="Renamed"
+            names={Object.entries(result.renamed).map(([from, to]) => from + " → " + to)}
+          />
+          <ResultLine label="Overwritten" names={result.overwritten} />
+          <ResultLine label="Skipped" names={result.skipped} />
+          {(result.bindingsApplied?.length ?? 0) > 0 && (
             <>
-              <div className="templates-result">
-                <ResultLine label="Imported" names={result.imported} />
-                <ResultLine
-                  label="Renamed"
-                  names={Object.entries(result.renamed).map(([from, to]) => from + " → " + to)}
-                />
-                <ResultLine label="Overwritten" names={result.overwritten} />
-                <ResultLine label="Skipped" names={result.skipped} />
-                {(result.bindingsApplied?.length ?? 0) > 0 && (
-                  <>
-                    <div className="templates-result-line">
-                      <span className="deploy-muted">Bindings applied:</span>{" "}
-                      {result.bindingsApplied!.length}
-                    </div>
-                    <div className="templates-result-line templates-result-bindings">
-                      {groupAppliedBindings(result.bindingsApplied!)}
-                    </div>
-                  </>
-                )}
+              <div className="templates-result-line">
+                <span className="deploy-muted">Bindings applied:</span>{" "}
+                {result.bindingsApplied!.length}
               </div>
-              <div className="templates-actions">
-                <button type="button" className="templates-btn-primary" onClick={onClose}>
-                  Done
-                </button>
+              <div className="templates-result-line templates-result-bindings">
+                {groupAppliedBindings(result.bindingsApplied!)}
               </div>
             </>
           )}
         </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }
 
@@ -468,16 +464,14 @@ function ChipStrip({
             </button>
           )}
         </div>
-        {!inert &&
-          reEnabled.map((c) => (
-            <div key={c.key} className="templates-rec-warn">
-              Checking {c.key} re-enables an extension you disabled.
-            </div>
-          ))}
+        {!inert && reEnabled.map((c) => (
+          <div key={c.key} className="templates-rec-warn">
+            Checking {c.key} re-enables an extension you disabled.
+          </div>
+        ))}
         {!inert && keepBoth && anyOn && (
           <div className="templates-rec-warn">
-            Will bind under the renamed copy — added after your existing templates on these
-            extensions.
+            Will bind under the renamed copy — added after your existing templates on these extensions.
           </div>
         )}
       </td>

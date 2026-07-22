@@ -148,19 +148,19 @@ The modal handles the whole flow:
   see **Fused account** below.)
 - **Signing in & first-time setup.** Both happen in the app (see **Fused
   account** below): the modal's signed-out warning is a working *Sign in to
-  Fused* button, and its no-environments state routes to the account page's
+  Fused* button, and its no-environments state routes to the account tab's
   one-click managed-environment setup. No terminal required for the managed
   path.
 - **Environment choice.** Deploy targets are the *hosted* environments from the
   fused CLI's own store (`~/.openfused/envs.json`): a managed `fused` env (the
-  default — created in-app from the account page) or an `aws` env whose
+  default — created in-app from the account tab) or an `aws` env whose
   serving plane `fused infra serve` provisioned (still a terminal flow).
   `local` envs have no serving plane and are never offered.
 - **The URL.** Deploys mint a **public share link** — an opaque, unguessable
   URL shown with copy/open actions. Redeploying the same page republishes to
   the **same URL**; Revoke takes it down (deploying again restores the link).
 - **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
-  marks deployed files in the preview header, and the Fused account page's
+  marks deployed files in the preview header, and the Fused account tab's
   Deployments section (`fused share list`) shows every mount on the chosen
   environment, joined back to the local pages that deployed them.
 
@@ -172,9 +172,11 @@ modal verbatim.
 
 ## Fused account
 
-The person icon at the sidebar's bottom-left opens **Fused account**
-(`/view/_account`) — sign-in and environment setup for deploys, without
-copying CLI commands into a terminal (a green dot on the icon = signed in):
+Once Deploy is enabled (see **Preferences** below), the gear at the sidebar's
+bottom-left opens a **Fused account** tab alongside Render preferences
+(`/view/_prefs?tab=account` — old `/view/_account` links still redirect
+here) — sign-in and environment setup for deploys, without copying CLI
+commands into a terminal (a green dot on the gear icon = signed in):
 
 - **Sign in** opens a one-time browser sign-in to Fused and lands you back in
   the app when it completes. Credentials are stored by the fused CLI on your
@@ -190,7 +192,11 @@ copying CLI commands into a terminal (a green dot on the icon = signed in):
   untouched).
 - **Deployments** lists every mount on a chosen hosted environment
   (`fused share list`), with per-mount **Revoke** — including mounts not
-  created from this app.
+  created from this app. Each mount's **Recent errors** panel shows the failures
+  its deployed endpoints hit (via `fused share errors`) — the traceback, output
+  tails, and params behind the opaque 500s a hosted page returns, so you can
+  debug a deployed page the way the local error overlay lets you debug it here.
+  (The same panel appears in the Deploy dialog for the page you have open.)
 - **Sign out** removes the CLI's stored sign-in on this machine.
 
 Self-hosted AWS environments (`fused env create`, `fused infra serve`) remain
@@ -198,7 +204,9 @@ a terminal flow — the packaged app's bundled wrapper covers that.
 
 ## Preferences
 
-The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
+The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`),
+split into a **Render preferences** tab and — once Deploy is enabled — a
+**Fused account** tab (see above):
 
 - **Execution engine** — switch `fused.runPython` between the built-in
   executor (fresh subprocess per call) and the fused engine (PEP 723 inline
@@ -206,8 +214,9 @@ The gear at the sidebar's bottom-left opens **Preferences** (`/view/_prefs`):
   and applied to the next run, no restart; a set `FUSED_RENDER_ENGINE`
   pins the engine for the whole process and locks the switch.
 - **Logs** — this run's log file path, with an "Open logs location" action.
-- **Deployments** — the opt-in toggle for the preview header's Deploy button
-  (the per-environment share list lives on the **Fused account** page).
+- **Deploy to Fused account** — the opt-in toggle for the preview header's
+  Deploy button (the per-environment share list lives on the **Fused
+  account** tab).
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your `~/.fused-render/templates/registry.json` overrides), read-only.
 

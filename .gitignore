@@ -20,3 +20,7 @@ fused_render/static/shell-dist/
 fused_render/template_starter/.claude/skills/
 uv.lock
 fused_render/_baked_branch.py
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

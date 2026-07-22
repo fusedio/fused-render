@@ -6,7 +6,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   getDeployStatus,
-  getPrefs,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -15,9 +14,10 @@ import {
   deleteEntry,
 } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
+import { useDeployEnabled } from "../lib/prefs";
 import {
   dirname,
   join,
@@ -31,11 +31,7 @@ import {
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
 import { setClipboard } from "../lib/fs-clipboard";
-import ModeSwitcher, {
-  templateModeIcon,
-  modeTitle,
-  KNOWN_SENTINEL_MODES,
-} from "../components/ModeSwitcher";
+import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
@@ -66,22 +62,8 @@ function Header({ fsPath, stat, children, onContextMenu }: HeaderProps) {
 // (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
 // so the two views don't couple through a shared dialog type.
 type PreviewDialog =
-  | {
-      kind: "prompt";
-      title: string;
-      initial: string;
-      confirmLabel: string;
-      selectStem?: boolean;
-      onConfirm: (value: string) => void;
-    }
-  | {
-      kind: "confirm";
-      title: string;
-      message: ReactNode;
-      confirmLabel: string;
-      danger?: boolean;
-      onConfirm: () => void;
-    };
+  | { kind: "prompt"; title: string; initial: string; confirmLabel: string; selectStem?: boolean; onConfirm: (value: string) => void }
+  | { kind: "confirm"; title: string; message: ReactNode; confirmLabel: string; danger?: boolean; onConfirm: () => void };
 
 // The file context menu for the CURRENTLY OPEN preview file. Owns its own
 // menu/dialog/toast state and, unlike Listing (which refetches + re-anchors its
@@ -95,7 +77,7 @@ type PreviewDialog =
 function usePreviewFileMenu(
   fsPath: string,
   stat: StatResult,
-  loadOpenWith: () => Promise<MenuItem[]>,
+  loadOpenWith: () => Promise<MenuItem[]>
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -137,10 +119,7 @@ function usePreviewFileMenu(
         await copyEntry(fsPath, dst);
         setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
-        setToast({
-          msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }),
-          tone: "error",
-        });
+        setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
       } finally {
         duplicateInFlight.current = false;
       }
@@ -161,13 +140,9 @@ function usePreviewFileMenu(
         deleteEntry(fsPath, stat.is_dir).then(
           () => {
             clearClipboardIfDeleted(fsPath);
-            navigate(parent); // the open file is gone — leave for the parent listing
+            navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
-          (e: Error) =>
-            setToast({
-              msg: friendlyFsError(e, { verb: "delete", name: stat.name }),
-              tone: "error",
-            }),
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -176,14 +151,11 @@ function usePreviewFileMenu(
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
         clearClipboardIfDeleted(fsPath);
-        navigate(parent);
+        navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        setToast({
-          msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }),
-          tone: "error",
-        });
+        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
       }
     });
   };
@@ -213,11 +185,7 @@ function usePreviewFileMenu(
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));
           },
-          (e: Error) =>
-            setToast({
-              msg: friendlyFsError(e, { verb: "rename", name: stat.name }),
-              tone: "error",
-            }),
+          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -230,7 +198,7 @@ function usePreviewFileMenu(
 
   const doReveal = () => {
     revealPath(fsPath).catch((e) =>
-      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" }),
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
     );
   };
 
@@ -245,11 +213,7 @@ function usePreviewFileMenu(
     { label: "Duplicate", icon: MenuIcons.duplicate, onClick: doDuplicate },
     "separator",
     { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: fsPath, op: "cut" }) },
-    {
-      label: "Copy",
-      icon: MenuIcons.copy,
-      onClick: () => setClipboard({ path: fsPath, op: "copy" }),
-    },
+    { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: fsPath, op: "copy" }) },
     "separator",
     { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
@@ -262,9 +226,7 @@ function usePreviewFileMenu(
 
   const overlays = (
     <>
-      {menu && (
-        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
-      )}
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {dialog?.kind === "prompt" && (
         <PromptDialog
           title={dialog.title}
@@ -322,9 +284,7 @@ function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
 // the same fail-closed posture as a broken gate server-side.
 function useConditions(fsPath: string, templates: TemplateEntry[]): Record<string, boolean> | null {
   const anyConditional = templates.some((t) => t.conditional);
-  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(
-    anyConditional ? null : {},
-  );
+  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(anyConditional ? null : {});
   useEffect(() => {
     if (!anyConditional) {
       setVerdicts({});
@@ -355,16 +315,7 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
 // "_render" loses the button too, consistently with losing the rendered view.
 
 const DEPLOY_ICON = (
-  <svg
-    viewBox="0 0 24 24"
-    width="16"
-    height="16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-  >
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 19V5" />
     <path d="M5 12l7-7 7 7" />
   </svg>
@@ -383,12 +334,9 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   // cheap local JSON read, the bookmarks-poll freshness posture (D77)
   // without a timer.
   const aliveDot = useRef(true);
-  useEffect(
-    () => () => {
-      aliveDot.current = false;
-    },
-    [],
-  );
+  useEffect(() => () => {
+    aliveDot.current = false;
+  }, []);
   const refreshDot = () => {
     getDeployStatus(fsPath, false)
       .then((r) => {
@@ -405,9 +353,7 @@ function DeployButton({ fsPath }: { fsPath: string }) {
       <button
         type="button"
         className={"deploy-btn" + (live ? " live" : "")}
-        title={
-          live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"
-        }
+        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
         onClick={() => setOpen(true)}
       >
         {DEPLOY_ICON}
@@ -421,42 +367,18 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   );
 }
 
-// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
-// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
-// default false while loading means it never flashes on for a user who left it
-// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
-// through without a reload (same cheap-local-read posture as the deploy dot).
-function useDeployEnabled(): boolean {
-  const [enabled, setEnabled] = useState(false);
-  const alive = useRef(true);
-  useEffect(
-    () => () => {
-      alive.current = false;
-    },
-    [],
-  );
-  const refresh = () => {
-    getPrefs()
-      .then((p) => {
-        if (alive.current) setEnabled(p.deploy.enabled);
-      })
-      .catch(() => {});
-  };
-  useEffect(refresh, []); // initial read
-  useRefreshOnReturn(refresh);
-  return enabled;
-}
-
 function TemplatePreview({
   fsPath,
   stat,
   templates,
   conditions,
+  onRenderedTitle,
 }: {
   fsPath: string;
   stat: StatResult;
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
+  onRenderedTitle?: (title: string | null) => void;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -479,6 +401,58 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
+
+  // Tab title (App's StatView owns the actual document.title write, and it
+  // also feeds the default bookmark name and the Recents row — see
+  // Breadcrumb.tsx / recents.ts): only a "_render" entry is the file's OWN
+  // html, so only it can carry an authored <title> worth showing over the
+  // filename — a template's title is a fixed generic string ("CSV preview")
+  // that's strictly worse than the filename StatView falls back to. So a
+  // known title must OUTLIVE a mode switch away from "_render": switching
+  // modes is local state on this same TemplatePreview instance (`mode`),
+  // not a remount, and the filename is often undescriptive ("index.html") —
+  // clearing a real title back to that on every switch would be a strict
+  // downgrade. Only reset on true unmount (TemplatePreview swapped out
+  // entirely — the resolving spinner, FallbackPreview, a re-stat that
+  // errors), so a title never outlives the file whose page set it; the
+  // "_render" branch overwrites it (to a fresh value, or null if genuinely
+  // absent) once its iframe loads. Same-origin iframe (D3/D4 — /render
+  // always serves same-origin), so a direct contentDocument read is safe and
+  // needs no postMessage round trip.
+  const titleObserverRef = useRef<MutationObserver | null>(null);
+  useEffect(() => {
+    return () => {
+      titleObserverRef.current?.disconnect();
+      titleObserverRef.current = null;
+      onRenderedTitle?.(null);
+    };
+  }, [onRenderedTitle]);
+  const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    if (entry.mode !== "_render") return;
+    // Guards a slow "_render" iframe's load firing AFTER a switch away from
+    // it: React already detached this exact node (key={mode} swaps it out),
+    // so a late event here is stale regardless of what entry.mode's closure
+    // says — isConnected is checked at call time, not closure-capture time.
+    const frame = e.currentTarget;
+    if (!frame.isConnected) return;
+    const doc = frame.contentDocument;
+    const report = () => {
+      if (!frame.isConnected) return;
+      onRenderedTitle?.(doc?.title.trim() || null);
+    };
+    report();
+    // The authored title can change after load (e.g. a page updates
+    // document.title once async data arrives) — watch <head> (not just the
+    // <title> node) so both a text edit on an existing <title> and a
+    // <title> element added after load are caught; the isConnected guard in
+    // `report` covers the same stale-after-unmount race as above.
+    titleObserverRef.current?.disconnect();
+    if (doc?.head) {
+      const observer = new MutationObserver(report);
+      observer.observe(doc.head, { childList: true, subtree: true, characterData: true });
+      titleObserverRef.current = observer;
+    }
+  };
 
   // One switch at a time: the flush below is async, and a second click landing
   // mid-flight could resolve in either order, desyncing iframe key / local
@@ -513,7 +487,9 @@ function TemplatePreview({
     // the save.
     const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
     const flushWindow = frame?.contentWindow as
-      (Window & { __fusedFlushEdits?: () => Promise<unknown> }) | null | undefined;
+      | (Window & { __fusedFlushEdits?: () => Promise<unknown> })
+      | null
+      | undefined;
     const flush = flushWindow?.__fusedFlushEdits;
     if (typeof flush === "function") {
       try {
@@ -532,7 +508,7 @@ function TemplatePreview({
     if (next === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", next);
     const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
     setModeState(next);
   };
 
@@ -568,7 +544,8 @@ function TemplatePreview({
   // IN PLACE (setMode does the editor-flush + `_mode` replaceState) rather than
   // re-navigating to the same path — no re-stat, no iframe teardown/rebuild
   // beyond the mode change the switcher would make anyway.
-  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
+  const loadOpenWith = () =>
+    Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
   return (
@@ -588,11 +565,7 @@ function TemplatePreview({
           templates.some((t) => t.mode === "_render") &&
           /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
-          entries={templates.map((t) => ({
-            mode: t.mode,
-            icon: templateModeIcon(t),
-            pending: isPending(t),
-          }))}
+          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
           active={entry.mode}
           onSelect={setMode}
         />
@@ -610,7 +583,7 @@ function TemplatePreview({
           <Listing fsPath={fsPath} />
         ) : (
           /* key: switching mode replaces the iframe (fresh document per switch). */
-          <iframe key={mode} src={src as string} />
+          <iframe key={mode} src={src as string} onLoad={onRenderFrameLoad} />
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
@@ -660,16 +633,18 @@ function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
 interface PreviewProps {
   fsPath: string;
   stat: StatResult;
+  // Reports the "_render" iframe's own authored <title>, so callers wanting a
+  // better tab title than the filename can use it (App's StatView). Undefined
+  // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
+  onRenderedTitle?: (title: string | null) => void;
 }
 
-export default function Preview({ fsPath, stat }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
-  const templates = stat.templates.filter(
-    (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode),
-  );
+  const templates = stat.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
@@ -677,9 +652,7 @@ export default function Preview({ fsPath, stat }: PreviewProps) {
   const resolving = conditions === null;
   // While resolving, gated entries stay visible (as pending); once verdicts
   // land, denied ones drop.
-  const visible = templates.filter(
-    (t) => !t.conditional || resolving || conditions[t.mode] === true,
-  );
+  const visible = templates.filter((t) => !t.conditional || resolving || conditions[t.mode] === true);
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>
@@ -695,7 +668,13 @@ export default function Preview({ fsPath, stat }: PreviewProps) {
   }
   if (visible.length > 0)
     return (
-      <TemplatePreview fsPath={fsPath} stat={stat} templates={visible} conditions={conditions} />
+      <TemplatePreview
+        fsPath={fsPath}
+        stat={stat}
+        templates={visible}
+        conditions={conditions}
+        onRenderedTitle={onRenderedTitle}
+      />
     );
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }

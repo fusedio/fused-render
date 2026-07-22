@@ -52,3 +52,25 @@ def test_bookmark_history_survives_load_save_roundtrip(tmp_path):
     agent._save_sidecar(str(f), loaded)
     data = json.loads((tmp_path / "sample.html.json").read_text())
     assert data["bookmarkHistory"] == history
+
+
+def test_record_session_skipped_under_read_only_mount(tmp_path, monkeypatch):
+    # Chatting about a file inside a read-only S3 mount must not write a
+    # claudeSessions sidecar next to it — the mount can't take the write
+    # (CacheMode=full loops the doomed upload, the sidecar-write incident).
+    # The chat + its transcript (~/.claude/projects) still work; only the
+    # sidecar session list is skipped.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    import fused_render.shell.mounts as mounts
+
+    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
+    mp = mounts.mountpoint(m)
+    os.makedirs(mp)
+    f = os.path.join(mp, "sample.html")
+    with open(f, "w") as fh:
+        fh.write("<html></html>")
+
+    agent = _load_agent()
+    agent._record_session(f, "sid-1", "hello there", "")
+    assert not os.path.exists(f + ".json")
+    assert agent._sessions(f)["sessions"] == []

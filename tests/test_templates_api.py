@@ -1029,7 +1029,7 @@ def test_commit_applies_bindings_appending_to_core_list(ctx):
         {"key": ".myext", "template": "fresh"},
     ]
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "code", "annotate", "fresh"]
+    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "fresh"]
     assert reg[".myext"] == ["fresh"]
 
 
@@ -1100,7 +1100,7 @@ def test_commit_binding_reenables_disabled_key_with_core_list(ctx):
         headers=FUSED,
     ).json()
     assert body["bindingsApplied"] == [{"key": ".csv", "template": "fresh"}]
-    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "code", "annotate", "fresh"]
+    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "fresh"]
 
 
 def test_commit_binding_already_bound_is_noop(ctx):
@@ -1181,7 +1181,7 @@ def test_new_template_appends_to_existing_core_default(ctx):
     )
     assert resp.status_code == 200
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "code", "annotate", "mycsv"]
+    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "mycsv"]
 
 
 def test_new_template_appends_to_existing_user_override(ctx):

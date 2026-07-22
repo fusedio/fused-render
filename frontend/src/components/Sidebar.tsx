@@ -15,16 +15,17 @@ import {
   moveItem,
   createFolderWith,
   toggleFolder,
+  isDescendant,
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
   setBookmarkIcon,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile } from "../lib/api";
+import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
 import IconPicker from "./IconPicker";
-import { FolderIcon } from "./FileIcons";
-import type { Bookmark, BookmarkFolder } from "../lib/bookmarks";
+import { FolderIcon, LearnIcon } from "./FileIcons";
+import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
 import { basename } from "../lib/format";
 import {
@@ -38,6 +39,7 @@ import { splitShellSearch } from "../lib/layout-codec";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import type { FuzzyResult } from "../lib/fuzzy";
 import { useAccountLoggedIn } from "../lib/account";
+import { useDeployEnabled } from "../lib/prefs";
 
 // The fs path a bookmark targets, decoded from its /view/ url (same rule as
 // the hover card). Used for search matching and the tooltip.
@@ -57,7 +59,7 @@ function renderHighlight(text: string, positions: number[]) {
       </mark>
     ) : (
       <span key={i}>{seg.text}</span>
-    ),
+    )
   );
 }
 
@@ -178,25 +180,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({
-  b,
-  child,
-  parentId,
-  isRenaming,
-  justSaved,
-  namePositions,
-  onNameClick,
-  onSave,
-  onRename,
-  onDelete,
-  onCommitRename,
-  onCancelRename,
-  onMouseEnter,
-  onMouseLeave,
-  onGlyphClick,
-  registerRef,
-  dragProps,
-}: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -205,9 +189,7 @@ function BookmarkRow({
     : null;
   return (
     <div
-      className={
-        "bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")
-      }
+      className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -252,6 +234,8 @@ function BookmarkRow({
 
 interface FolderRowProps {
   folder: BookmarkFolder;
+  child?: boolean;
+  parentId?: string;
   activeHint: boolean;
   isRenaming: boolean;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
@@ -266,27 +250,12 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({
-  folder,
-  activeHint,
-  isRenaming,
-  onGlyphClick,
-  onRowClick,
-  onRename,
-  onDelete,
-  onCommitRename,
-  onCancelRename,
-  registerRef,
-  dragProps,
-}: FolderRowProps) {
+function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
   return (
     <div
-      className={
-        "bookmark-row folder-row" +
-        (folder.collapsed ? " collapsed" : "") +
-        (activeHint ? " active" : "")
-      }
+      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
       data-id={folder.id}
+      data-parent={child ? parentId : undefined}
       draggable="true"
       ref={registerRef}
       onClick={onRowClick}
@@ -296,11 +265,7 @@ function FolderRow({
         {FOLDER_ICON}
       </span>
       {isRenaming ? (
-        <RenameInput
-          initialName={folder.name}
-          onCommit={onCommitRename}
-          onCancel={onCancelRename}
-        />
+        <RenameInput initialName={folder.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
         <span className="bookmark-name folder-name">{folder.name}</span>
       )}
@@ -309,11 +274,7 @@ function FolderRow({
         <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
           ✎
         </button>
-        <button
-          className="icon-btn delete-btn"
-          title="Delete folder and contents"
-          onClick={onDelete}
-        >
+        <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
           ✕
         </button>
       </span>
@@ -337,8 +298,84 @@ export default function Sidebar({ config }: SidebarProps) {
   useUrlVersion();
   useBookmarksVersion();
   useRecentsVersion();
-  // Signed-in dot on the footer's Fused-account entry (SPEC AC-1).
+  // Signed-in dot on the footer's Preferences entry (SPEC AC-1): shown only
+  // once Deploy is enabled, since that's the only reason this app cares about
+  // a Fused account at all — a dot for a feature the user hasn't turned on
+  // would just be a mystery indicator.
   const accountLoggedIn = useAccountLoggedIn();
+  const deployEnabled = useDeployEnabled();
+
+  // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
+  // at page load (main.tsx), well before the server's background automount
+  // thread has finished attaching the learn mount — ensure_learn_mount now
+  // force-detaches and remounts it on every startup, so the one-shot fetch
+  // essentially always sees false and the Learn entry would never appear
+  // for the whole session. Re-poll /api/config on a short bounded interval
+  // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
+  // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
+  // (never becomes ready) doesn't poll forever.
+  //
+  // BUGBOT: the bound must comfortably exceed attach_mount's own worst case
+  // — up to ~10s for ensure_rcd to spawn/confirm the rclone daemon, plus a
+  // full 60s mount/mount rc timeout (shell/mounts.py) — or a slow-but-
+  // eventually-successful mount finishes after the poll gives up and the
+  // entry never appears without a full page reload. 2s x 60 = 120s, safely
+  // past that ~70s worst case with margin.
+  //
+  // BUGBOT: gating the poll on "only start if the INITIAL fetch saw false"
+  // was itself racy — rcd survives server restarts, so the boot-time
+  // /api/config fetch can catch a still-live mount from the PRIOR run and
+  // report true, moments before ensure_learn_mount's own forced detach (see
+  // its docstring) rips that very mount out from under it. Polling would
+  // then never engage at all, and the entry would point at an empty
+  // mountpoint for the remount window — or the whole session, if the
+  // remount fails. So this always re-verifies via a live poll after mount,
+  // regardless of the seeded initial value, and follows whatever the fresh
+  // answer says (including back to not-ready, if the detach window is
+  // caught mid-poll) rather than trusting the one-shot snapshot as final.
+  const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+    // BUGBOT: setInterval fires a new getConfig() every tick without
+    // waiting for the previous one to settle, so responses can arrive
+    // out of order (a slow earlier request resolving AFTER a faster later
+    // one). Unconditionally applying whatever resolves most recently in
+    // WALL-CLOCK order let a stale `false` from an earlier in-flight
+    // request overwrite a `true` a later request already reported —
+    // permanently, since that `true` had already cleared the interval.
+    // latestRequestId tracks which tick's request is the newest ISSUED
+    // one; only that request's response is applied, so a straggler from
+    // an earlier tick is discarded as stale rather than overwriting it.
+    let latestRequestId = 0;
+    const MAX_ATTEMPTS = 60;
+    const POLL_MS = 2000;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const requestId = ++latestRequestId;
+      getConfig().then(
+        (fresh) => {
+          if (cancelled || requestId !== latestRequestId) return;
+          setLearnMountReady(fresh.learn_mount_ready);
+          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(timer);
+          }
+        },
+        () => {
+          if (cancelled || requestId !== latestRequestId) return;
+          // Transient fetch failure — just try again next tick.
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
+        }
+      );
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // Deliberately empty deps: run once on mount only. Depending on
+    // learnMountReady here would restart the whole bounded poll window
+    // from zero every time it changes.
+  }, []);
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -348,7 +385,7 @@ export default function Sidebar({ config }: SidebarProps) {
   const [hover, setHover] = useState<HoverState | null>(null);
   // Icon picker: which bookmark's glyph was clicked + where to anchor it.
   const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
-    null,
+    null
   );
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
@@ -381,7 +418,18 @@ export default function Sidebar({ config }: SidebarProps) {
   };
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
-  const folderById = new Map<string, BookmarkFolder>(items.filter(isFolder).map((f) => [f.id, f]));
+  // Folders at every depth, keyed by id — drop handlers resolve their
+  // immediate-parent children arrays through this map.
+  const folderById = new Map<string, BookmarkFolder>();
+  const indexFolders = (list: BookmarkItem[]): void => {
+    for (const it of list) {
+      if (isFolder(it)) {
+        folderById.set(it.id, it);
+        indexFolders(it.children);
+      }
+    }
+  };
+  indexFolders(items);
   const topOrder = items.map((it) => it.id); // top-level display order
 
   // Bookmark search: a non-empty query flattens the tree to matching rows.
@@ -400,13 +448,7 @@ export default function Sidebar({ config }: SidebarProps) {
   if (bmSearching) {
     const bqLower = bq.toLowerCase();
     const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
-    const ranked: {
-      b: Bookmark;
-      namePositions: number[];
-      nameHit: boolean;
-      longestRun: number;
-      score: number;
-    }[] = [];
+    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
     // The strength of a match across all name fields that hit, for ranking. A
     // folder name match contributes its own run/score to every child it pulls in.
     const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
@@ -419,36 +461,24 @@ export default function Sidebar({ config }: SidebarProps) {
       }
       return { longestRun, score };
     };
-    for (const it of items) {
-      if (isFolder(it)) {
-        const folderM = fuzzyMatch(bq, it.name);
-        for (const c of it.children) {
-          const nameM = fuzzyMatch(bq, c.name);
-          if (folderM || nameM || pathHit(c.url)) {
+    // Walk all depths; `folderM` carries the strongest match among the
+    // bookmark's ancestor folder names (any matching ancestor pulls in its
+    // whole subtree, same as the old one-level folder-match rule).
+    const walk = (list: BookmarkItem[], folderM: FuzzyResult | null): void => {
+      for (const it of list) {
+        if (isFolder(it)) {
+          const ownM = fuzzyMatch(bq, it.name);
+          walk(it.children, ownM && (!folderM || ownM.score > folderM.score) ? ownM : folderM);
+        } else {
+          const nameM = fuzzyMatch(bq, it.name);
+          if (folderM || nameM || pathHit(it.url)) {
             const { longestRun, score } = rank(folderM, nameM);
-            ranked.push({
-              b: c,
-              namePositions: nameM ? nameM.positions : [],
-              nameHit: !!(folderM || nameM),
-              longestRun,
-              score,
-            });
+            ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
           }
         }
-      } else {
-        const nameM = fuzzyMatch(bq, it.name);
-        if (nameM || pathHit(it.url)) {
-          const { longestRun, score } = rank(null, nameM);
-          ranked.push({
-            b: it,
-            namePositions: nameM ? nameM.positions : [],
-            nameHit: !!nameM,
-            longestRun,
-            score,
-          });
-        }
       }
-    }
+    };
+    walk(items, null);
     ranked.sort((a, b) => {
       if (a.nameHit !== b.nameHit) return a.nameHit ? -1 : 1;
       if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
@@ -487,7 +517,33 @@ export default function Sidebar({ config }: SidebarProps) {
 
   const onFusedClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     e.preventDefault();
-    if (config && config.fused_dir) navigate(config.fused_dir);
+    if (config && config.fused_dir) navigate(config.fused_dir, { isDir: true });
+  };
+
+  // D123: the bundled learn.zip is mounted read-only at `${mounts_root}/learn`
+  // (LEARN_MOUNT_NAME in shell/mounts.py — always "learn"), so no separate
+  // /api/mounts round trip is needed, same as the Fused entry above.
+  const onLearnClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (!config || !config.mounts_root) return;
+    const root = `${config.mounts_root.replace(/\/+$/, "")}/learn`;
+    // Prefer the bundled index.html as the landing page when it exists;
+    // fall back to the mount folder otherwise (older learn.zip builds).
+    // The stat can be slow (mount-backed read); if the user navigated
+    // elsewhere while it was in flight, don't yank them back.
+    const before = currentUrl();
+    let dest = root;
+    let destIsDir = true;
+    try {
+      const st = await statPath(`${root}/index.html`);
+      if (!st.is_dir) {
+        dest = `${root}/index.html`;
+        destIsDir = false;
+      }
+    } catch {
+      // stat 404s (or the mount is briefly not attached) — open the folder.
+    }
+    if (currentUrl() === before) navigate(dest, { isDir: destIsDir });
   };
 
   // --- bookmark row handlers -------------------------------------------------
@@ -592,24 +648,35 @@ export default function Sidebar({ config }: SidebarProps) {
       return;
     }
     e.preventDefault();
-    if (!folder || !folder.children.length) return;
+    // Tabs are bookmarks-only: direct bookmark children open as tabs, nested
+    // folders are skipped (not flattened) — they open via their own row.
+    const tabChildren = folder ? folder.children.filter((c): c is Bookmark => !isFolder(c)) : [];
+    if (!folder || !tabChildren.length) {
+      // Nothing to open as tabs, but still expand a collapsed folder so its
+      // nested contents become reachable.
+      if (folder && folder.collapsed && folder.children.length) {
+        await toggleFolder(folder.id);
+        notifyBookmarksChanged();
+      }
+      return;
+    }
     if (folder.collapsed) await toggleFolder(folder.id); // expand only — never re-collapse
     // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
-    navigateUrl(composeFolderTabsUrl(folder.children));
+    navigateUrl(composeFolderTabsUrl(tabChildren));
   };
 
-  const onDeleteFolder = async (
-    e: React.MouseEvent<HTMLButtonElement>,
-    id: string,
-    folder: BookmarkFolder,
-  ) => {
+  const onDeleteFolder = async (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
     e.preventDefault();
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
     const armed = getArmedBookmark();
+    // Capture before the await: `folder` is the pre-delete render snapshot,
+    // so its subtree is still walkable for the armed check.
+    const holdsArmed = (list: BookmarkItem[]): boolean =>
+      list.some((c) => (isFolder(c) ? holdsArmed(c.children) : c.id === armed?.id));
     await deleteFolder(id);
-    if (armed && folder && folder.children.some((c) => c.id === armed.id)) {
+    if (armed && folder && holdsArmed(folder.children)) {
       disarmBookmark();
       window.dispatchEvent(new Event("fused:urlchange"));
     }
@@ -623,16 +690,14 @@ export default function Sidebar({ config }: SidebarProps) {
   const dropZone = (
     e: React.DragEvent<HTMLDivElement>,
     row: HTMLDivElement,
-    rowIsFolder: boolean,
-    rowIsChild: boolean,
+    rowIsFolder: boolean
   ): "above" | "below" | "into" | null => {
-    // A folder cannot be dropped inside a folder.
-    if (rowIsChild && draggedIsFolderRef.current) return null;
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
-    // Combine (folder-creation / drop-into) only for a bookmark onto a
-    // top-level bookmark or a folder — never inside a folder, never for folders.
-    const combine = !draggedIsFolderRef.current && !rowIsChild;
+    // "into": a folder row accepts anything at any depth (D121 nesting);
+    // a bookmark onto a bookmark at any depth combines into a new subfolder
+    // (dragged folders never combine — folders only nest via folder rows).
+    const combine = rowIsFolder || !draggedIsFolderRef.current;
     if (combine) {
       if (y < rect.height * 0.25) return "above";
       if (y > rect.height * 0.75) return "below";
@@ -640,6 +705,13 @@ export default function Sidebar({ config }: SidebarProps) {
     }
     return y > rect.height / 2 ? "below" : "above";
   };
+
+  // A folder must never land on itself or inside its own subtree — ignore
+  // its own descendants' rows entirely (dragover gives no drop affordance).
+  const overOwnSubtree = (rowId: string): boolean =>
+    draggedIsFolderRef.current &&
+    draggedIdRef.current !== null &&
+    isDescendant(items, draggedIdRef.current, rowId);
 
   // Top-level reorder: move dragged to sit above/below the target row.
   const moveTopLevel = (targetId: string, below: boolean): Promise<void> => {
@@ -676,13 +748,17 @@ export default function Sidebar({ config }: SidebarProps) {
   const onRowDragOver = (
     e: React.DragEvent<HTMLDivElement>,
     id: string,
-    rowIsFolder: boolean,
-    rowIsChild: boolean,
+    rowIsFolder: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
-    const zone = dropZone(e, row, rowIsFolder, rowIsChild);
-    if (zone === null) return; // ignore (e.g. folder over a child row)
+    if (overOwnSubtree(id)) {
+      // No zone classes either — the whole subtree is a dead drop target.
+      row.classList.remove("drag-above", "drag-below", "drag-into");
+      return;
+    }
+    const zone = dropZone(e, row, rowIsFolder);
+    if (zone === null) return;
     e.preventDefault(); // required to allow a drop
     e.dataTransfer.dropEffect = "move";
     row.classList.toggle("drag-above", zone === "above");
@@ -698,20 +774,21 @@ export default function Sidebar({ config }: SidebarProps) {
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean,
+    rowIsChild: boolean
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
+    if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
     const draggedId = draggedIdRef.current;
     const row = e.currentTarget;
-    const zone = dropZone(e, row, rowIsFolder, rowIsChild);
+    const zone = dropZone(e, row, rowIsFolder);
     if (zone === null) return;
     e.preventDefault();
     const below = zone === "below";
 
     if (zone === "into" && !rowIsFolder) {
-      // Bookmark onto a top-level bookmark: make a folder of the two, then
-      // immediately rename it. Reset drag state before the await so a stale
-      // ref can't leak into a follow-up drag.
+      // Bookmark onto a bookmark (any depth): make a folder of the two in the
+      // target's slot, then immediately rename it. Reset drag state before the
+      // await so a stale ref can't leak into a follow-up drag.
       draggedIdRef.current = null;
       draggedIsFolderRef.current = false;
       const folderId = await createFolderWith(id, draggedId);
@@ -757,11 +834,74 @@ export default function Sidebar({ config }: SidebarProps) {
 
   const dragProps = (id: string, rowIsFolder: boolean, rowIsChild: boolean): DragProps => ({
     onDragStart: (e) => onRowDragStart(e, id, rowIsFolder),
-    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder, rowIsChild),
+    onDragOver: (e) => onRowDragOver(e, id, rowIsFolder),
     onDragLeave: onRowDragLeave,
     onDrop: (e) => onRowDrop(e, id, rowIsFolder, rowIsChild),
     onDragEnd: onRowDragEnd,
   });
+
+  // True when the current view's bookmark lives anywhere in this subtree —
+  // keeps the collapsed-folder active hint visible at any nesting depth.
+  const subtreeHoldsActive = (list: BookmarkItem[]): boolean =>
+    list.some((c) => (isFolder(c) ? subtreeHoldsActive(c.children) : c.url === currentUrl()));
+
+  // Recursive tree render (D121). parentId is the immediate parent's id
+  // (null at top level); rows inside any folder carry it via data-parent so
+  // drop handlers can resolve the right children array. Indentation comes
+  // free from nesting .folder-children (its margin+rail compound per level).
+  const renderItems = (list: BookmarkItem[], parentId: string | null): React.ReactNode =>
+    list.map((it) => {
+      const child = parentId !== null;
+      if (isFolder(it)) {
+        const activeHint = it.collapsed && subtreeHoldsActive(it.children);
+        return (
+          <React.Fragment key={it.id}>
+            <FolderRow
+              folder={it}
+              child={child}
+              parentId={parentId ?? undefined}
+              activeHint={activeHint}
+              isRenaming={renamingId === it.id}
+              registerRef={registerRow(it.id)}
+              onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
+              onRowClick={(e) => onFolderRowClick(e, it)}
+              onRename={(e) => {
+                e.preventDefault();
+                setRenamingId(it.id);
+              }}
+              onDelete={(e) => onDeleteFolder(e, it.id, it)}
+              onCommitRename={(value) => commitRename(it.id, value, it.name)}
+              onCancelRename={cancelRename}
+              dragProps={dragProps(it.id, true, child)}
+            />
+            {!it.collapsed && (
+              <div className="folder-children">{renderItems(it.children, it.id)}</div>
+            )}
+          </React.Fragment>
+        );
+      }
+      return (
+        <BookmarkRow
+          key={it.id}
+          b={it}
+          child={child}
+          parentId={parentId ?? undefined}
+          isRenaming={renamingId === it.id}
+          justSaved={savedId === it.id}
+          registerRef={registerRow(it.id)}
+          onNameClick={(e) => onBookmarkNameClick(e, it)}
+          onSave={(e) => onSaveBookmark(e, it)}
+          onRename={(e) => onRenameBookmark(e, it.id)}
+          onDelete={(e) => onDeleteBookmark(e, it.id)}
+          onCommitRename={(value) => commitRename(it.id, value, it.name)}
+          onCancelRename={cancelRename}
+          onMouseEnter={(e) => onRowMouseEnter(e, it)}
+          onMouseLeave={hideTooltip}
+          onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
+          dragProps={dragProps(it.id, false, child)}
+        />
+      );
+    });
 
   return (
     <nav id="sidebar">
@@ -782,11 +922,13 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
-          <span className="icon">
-            <FolderIcon />
-          </span>{" "}
-          Fused
+          <span className="icon"><FolderIcon /></span> Fused
         </a>
+        {learnMountReady && (
+          <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
+            <span className="icon"><LearnIcon /></span> Learn
+          </a>
+        )}
       </div>
       <div className="sidebar-section sidebar-bookmarks">
         <div className="sidebar-heading">Bookmarks</div>
@@ -836,76 +978,7 @@ export default function Sidebar({ config }: SidebarProps) {
                 <div className="sidebar-empty">No matches</div>
               )
             ) : (
-              items.map((it) => {
-                if (isFolder(it)) {
-                  const activeHint =
-                    it.collapsed && it.children.some((c) => c.url === currentUrl());
-                  return (
-                    <React.Fragment key={it.id}>
-                      <FolderRow
-                        folder={it}
-                        activeHint={activeHint}
-                        isRenaming={renamingId === it.id}
-                        registerRef={registerRow(it.id)}
-                        onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
-                        onRowClick={(e) => onFolderRowClick(e, it)}
-                        onRename={(e) => {
-                          e.preventDefault();
-                          setRenamingId(it.id);
-                        }}
-                        onDelete={(e) => onDeleteFolder(e, it.id, it)}
-                        onCommitRename={(value) => commitRename(it.id, value, it.name)}
-                        onCancelRename={cancelRename}
-                        dragProps={dragProps(it.id, true, false)}
-                      />
-                      {!it.collapsed && (
-                        <div className="folder-children">
-                          {it.children.map((c) => (
-                            <BookmarkRow
-                              key={c.id}
-                              b={c}
-                              child
-                              parentId={it.id}
-                              isRenaming={renamingId === c.id}
-                              justSaved={savedId === c.id}
-                              registerRef={registerRow(c.id)}
-                              onNameClick={(e) => onBookmarkNameClick(e, c)}
-                              onSave={(e) => onSaveBookmark(e, c)}
-                              onRename={(e) => onRenameBookmark(e, c.id)}
-                              onDelete={(e) => onDeleteBookmark(e, c.id)}
-                              onCommitRename={(value) => commitRename(c.id, value, c.name)}
-                              onCancelRename={cancelRename}
-                              onMouseEnter={(e) => onRowMouseEnter(e, c)}
-                              onMouseLeave={hideTooltip}
-                              onGlyphClick={(e) => onBookmarkGlyphClick(e, c.id)}
-                              dragProps={dragProps(c.id, false, true)}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                }
-                return (
-                  <BookmarkRow
-                    key={it.id}
-                    b={it}
-                    isRenaming={renamingId === it.id}
-                    justSaved={savedId === it.id}
-                    registerRef={registerRow(it.id)}
-                    onNameClick={(e) => onBookmarkNameClick(e, it)}
-                    onSave={(e) => onSaveBookmark(e, it)}
-                    onRename={(e) => onRenameBookmark(e, it.id)}
-                    onDelete={(e) => onDeleteBookmark(e, it.id)}
-                    onCommitRename={(value) => commitRename(it.id, value, it.name)}
-                    onCancelRename={cancelRename}
-                    onMouseEnter={(e) => onRowMouseEnter(e, it)}
-                    onMouseLeave={hideTooltip}
-                    onGlyphClick={(e) => onBookmarkGlyphClick(e, it.id)}
-                    dragProps={dragProps(it.id, false, false)}
-                  />
-                );
-              })
+              renderItems(items, null)
             )}
           </>
         )}
@@ -944,20 +1017,12 @@ export default function Sidebar({ config }: SidebarProps) {
                   <span className="bookmark-glyph recent-glyph" aria-hidden="true">
                     {/* Clock in the star-glyph slot, inline so it follows
                         currentColor like the folder icon. */}
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                    >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
                       <circle cx="8" cy="8" r="6.2" />
                       <path d="M8 4.8V8l2.3 1.6" />
                     </svg>
                   </span>
-                  <span className="bookmark-name">{basename(fsPath)}</span>
+                  <span className="bookmark-name">{r.title || basename(fsPath)}</span>
                 </a>
               );
             })}
@@ -965,7 +1030,8 @@ export default function Sidebar({ config }: SidebarProps) {
       )}
       {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
           (margin-top: auto), deliberately unobtrusive: a muted gear row that
-          navigates to the /view/_prefs sentinel. */}
+          navigates to the /view/_prefs sentinel. Three equal columns —
+          Templates, Mounts, Preferences. */}
       <div className="sidebar-footer">
         <button
           type="button"
@@ -977,17 +1043,7 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_templates")}
         >
           <span className="icon">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="7" height="7" rx="1" />
               <rect x="14" y="3" width="7" height="7" rx="1" />
               <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -1007,53 +1063,11 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_mounts")}
         >
           <span className="icon">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
             </svg>
           </span>
           <span className="prefs-label">Mounts</span>
-        </button>
-        {/* Fused account entry — in-app sign-in/out, /view/_account
-            (SPEC AC-1). The green dot is the
-            signed-in signal, same affordance as the preview header's
-            deploy dot. */}
-        <button
-          type="button"
-          title={accountLoggedIn ? "Fused account (signed in)" : "Fused account"}
-          aria-label="Fused account"
-          className={
-            "sidebar-item prefs-link" + (location.pathname === "/view/_account" ? " active" : "")
-          }
-          onClick={() => navigateUrl("/view/_account")}
-        >
-          <span className="icon">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-            {accountLoggedIn && <span className="account-signedin-dot" />}
-          </span>
-          <span className="prefs-label">Fused account</span>
         </button>
         <button
           type="button"
@@ -1065,20 +1079,18 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_prefs")}
         >
           <span className="icon">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
+            {/* Fused-account signed-in signal (SPEC AC-1), folded onto the
+                Preferences entry now that account management lives there as
+                a tab rather than its own sidebar entry. Gated on Deploy
+                being enabled — that's the only reason a Fused account
+                matters here, and the dot rides the button's existing click
+                target rather than being its own (too small to hit on its
+                own). */}
+            {deployEnabled && accountLoggedIn && <span className="account-signedin-dot" />}
           </span>
           <span className="prefs-label">Preferences</span>
         </button>
