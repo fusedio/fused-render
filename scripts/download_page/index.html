@@ -11,26 +11,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fused Render — download</title>
 <style>
+  /* Dark-only, matching the Fused Render app (its learn/ surface + app icon:
+     the #E5FF44 sparkle on near-black). A light theme washed the page out and
+     did not match the product. */
   :root {
-    --bg: #101014;
-    --panel: #1a1a20;
-    --border: #2c2c34;
-    --text: #f2f2f4;
-    --muted: #9a9aa4;
+    --bg: #141414;
+    --panel: #1c1c1e;
+    --border: #333333;
+    --text: #ffffff;
+    --muted: #a6a6ab;
+    --code-bg: #0f0f10;
     --accent: #e5ff44;
-    --accent-text: #101014;
+    --accent-text: #141414;
     color-scheme: dark;
-  }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #fafafa;
-      --panel: #ffffff;
-      --border: #e2e2e6;
-      --text: #17171c;
-      --muted: #5c5c66;
-      --accent-text: #17171c;
-      color-scheme: light;
-    }
   }
   * { box-sizing: border-box; }
   body {
@@ -76,12 +69,13 @@
     margin: 6px 0 2px;
   }
   pre {
-    background: var(--bg);
+    background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 10px 12px;
     overflow-x: auto;
     font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text);
     margin: 8px 0;
   }
   a { color: inherit; }
