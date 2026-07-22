@@ -168,9 +168,9 @@ def _event_loop(
             elif action is tray.TrayAction.OPEN_FILE:
                 _spawn_file_dialog(port, paths)
             elif action is tray.TrayAction.OPEN_LOGS:
-                _safe_call(paths, lambda: ui.open_path(paths.logs))
+                _spawn_call(paths, lambda: ui.open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
-                _safe_call(paths, ui.open_default_apps)
+                _spawn_call(paths, ui.open_default_apps)
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
 
@@ -316,6 +316,25 @@ def _spawn_open(
             response.put(0 if ok else 1)
 
     threading.Thread(target=worker, daemon=True, name="fused-render-open").start()
+
+
+def _spawn_call(paths: DesktopPaths, action) -> None:
+    """Run a tray action (Open logs, Default apps, ...) on a dedicated thread
+    (same idiom as `_spawn_open`). These land on the loop thread that services
+    tray actions AND pipe_requests, so they must not block it: on Linux
+    `ui.open_path` -> `_xdg_open` waits up to `_XDG_OPEN_WAIT_S` on the child, so
+    a slow/foreground `xdg-open` would otherwise stall the loop — and a
+    concurrent ShutdownForUpgrade must still be answered inside the pipe
+    server's 20s window, or the upgrade fails even though the app is running
+    fine (the same reasoning as `_spawn_exit_confirm`). `_safe_call` keeps an
+    `OSError` from the action from unwinding this daemon worker."""
+
+    def worker():
+        _safe_call(paths, action)
+
+    threading.Thread(
+        target=worker, daemon=True, name="fused-render-tray-action"
+    ).start()
 
 
 def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
