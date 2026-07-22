@@ -534,12 +534,6 @@ claude plugin install fused-render@fused-render</pre>
 
     <h3>State lives in the URL</h3>
     <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Drag the slider and watch the address bar: the <b class="y">?level=</b> value updates live. Refresh, bookmark, or share that link and the page comes back exactly as you left it.</p>
-    <div class="urldemo">
-      <div class="ub-bar">
-        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
-        <div class="ub-url"><span class="ub-dim">127.0.0.1:1777/view/~/Fused/my_tool/index.html</span><span class="ub-q" id="ubQ">?level=<b id="urlVal">40</b></span></div>
-      </div>
-    </div>
     <div class="grid2">
       <div class="card ctrl">
         <label>Level <b id="vLevel">40</b></label>
@@ -548,6 +542,13 @@ claude plugin install fused-render@fused-render</pre>
       </div>
       <div class="card">
         <p style="margin:0;font-size:12.5px">The slider writes <code>fused.params.set("level", …)</code>, which appends <code>?level=</code> to the URL. Nothing is stored in hidden JS state — the URL <em>is</em> the state, so it survives a refresh and travels in a shared link.</p>
+      </div>
+    </div>
+    <p class="sub" style="margin:4px 0 8px;font-size:12px;color:var(--mut)">The page's address bar tracks it live:</p>
+    <div class="urldemo">
+      <div class="ub-bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="ub-url"><span class="ub-dim">127.0.0.1:1777/view/…/my_tool/index.html</span><span class="ub-q" id="ubQ">?level=<b id="urlVal">40</b></span></div>
       </div>
     </div>
 
@@ -720,7 +721,7 @@ claude plugin install fused-render@fused-render</pre>
     <div class="remote-eg">
       <div class="re-head">☁️ Google Cloud Storage <span class="re-tag cli">rclone config first</span></div>
       <p class="sub">GCS needs a one-time remote. In a terminal run <code>rclone config</code>, add a remote of type <code>google cloud storage</code>, and name it <code>gcs</code> (for public buckets, answer <em>yes</em> to anonymous access; otherwise point it at a service-account key):</p>
-      <div class="promptbox"><button class="copybtn" data-copy="gcsCfg">Copy</button><pre id="gcsCfg">rclone config          # n) New remote → name: gcs → storage: google cloud storage</pre></div>
+      <div class="promptbox"><button class="copybtn" data-copy="gcsCfg">Copy</button><pre id="gcsCfg">rclone config          # New remote → name: gcs → storage: google cloud storage</pre></div>
       <p class="sub">Then in the <em>Add mount</em> form, the <code>gcs</code> remote is now in the dropdown:</p>
       <div class="mountform card">
         <div class="mf-row"><label>Name</label><div class="mf-val">gcs_landsat</div></div>
@@ -736,7 +737,7 @@ claude plugin install fused-render@fused-render</pre>
     <div class="remote-eg">
       <div class="re-head">📁 Google Drive <span class="re-tag cli">rclone config first</span></div>
       <p class="sub">Google Drive is an OAuth backend, so the browser sign-in happens during <code>rclone config</code>. Add a remote of type <code>drive</code>, name it <code>gdrive</code>, and complete the sign-in it opens:</p>
-      <div class="promptbox"><button class="copybtn" data-copy="gdriveCfg">Copy</button><pre id="gdriveCfg">rclone config          # n) New remote → name: gdrive → storage: drive → sign in when the browser opens</pre></div>
+      <div class="promptbox"><button class="copybtn" data-copy="gdriveCfg">Copy</button><pre id="gdriveCfg">rclone config          # New remote → name: gdrive → storage: drive → sign in when the browser opens</pre></div>
       <p class="sub">Then mount a folder from your Drive by name (leave the path blank for the whole Drive):</p>
       <div class="mountform card">
         <div class="mf-row"><label>Name</label><div class="mf-val">my_drive</div></div>
@@ -1099,7 +1100,12 @@ mountFrame("#demoFrame", "#demoIf", demoPath, false);
 // so we escape exactly those — NOT a generic per-segment encodeURIComponent.
 const paneSeg = p => p.replace(/%/g,"%25").replace(/,/g,"%2C").replace(/;/g,"%3B")
   .replace(/\(/g,"%28").replace(/\)/g,"%29").replace(/\?/g,"%3F");
-const splitUrl = (a, b) => "/view/_panel?_layout=(" + paneSeg(a) + "," + paneSeg(b) + ")";
+// After per-segment escaping, the app runs a urlSafeLayout pass over the whole
+// codec string (%, #, space) before wrapping in _layout=(…); one decodeURIComponent
+// on read reverses it. Replicate it so a path with a space or # still yields a
+// valid URL (frontend layout-codec.ts).
+const urlSafeLayout = s => s.replace(/%/g,"%25").replace(/#/g,"%23").replace(/ /g,"%20");
+const splitUrl = (a, b) => "/view/_panel?_layout=(" + urlSafeLayout(paneSeg(a) + "," + paneSeg(b)) + ")";
 if (hasFused && demoPath) $("#demoOpen").href = splitUrl(demoPath, demoPy);
 else $("#demoOpen").style.display = "none";
 
