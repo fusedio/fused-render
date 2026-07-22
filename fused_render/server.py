@@ -770,10 +770,8 @@ def _is_file_mount_safe(path: str) -> bool:
     not a file, matching os.path.isfile), while an "indeterminate" rc probe
     fails OPEN so a transient rcd hiccup never 404s a file the user just
     opened."""
-    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
-    if is_mount_backed(path):
-        return rc_kind_for(path) in ("file", "indeterminate")
-    return os.path.isfile(path)
+    from fused_render.shell import pathops
+    return pathops.is_file(path)
 
 
 def _session_get(path: str):

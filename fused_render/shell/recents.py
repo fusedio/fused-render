@@ -127,11 +127,12 @@ def _file_path_from_url(url: str) -> str | None:
 def _local_exists(fs_path: str) -> bool:
     """Existence of a LOCAL (non-mount-backed) path. A plain os.path.isfile is
     safe and cheap here — the mount-wedging GETATTR concern only applies under a
-    managed mount, which _keep_entry routes away from this call."""
-    try:
-        return os.path.isfile(fs_path)
-    except OSError:
-        return False
+    managed mount, which _keep_entry routes away from this call. Delegates to the
+    shared local leaf (pathops.local_is_file) so the local existence check is
+    single-sourced with server._is_file_mount_safe."""
+    from fused_render.shell import pathops
+
+    return pathops.local_is_file(fs_path)
 
 
 def _mount_exists(fs_path: str) -> bool:
@@ -145,11 +146,13 @@ def _mount_exists(fs_path: str) -> bool:
     os.path.isfile): a confirmed "dir" filters the entry just like a "missing"
     would. Only a "file" or an "indeterminate" probe (rcd down / timed out /
     errored — rc can't prove anything) keeps it: we fail open rather than hide a
-    live recent on a transient rc hiccup."""
-    from fused_render.shell import mounts as shell_mounts
+    live recent on a transient rc hiccup. The rc_kind_for probe and its
+    file/indeterminate fail-open contract are single-sourced in
+    pathops.mount_is_file (shared with server._is_file_mount_safe)."""
+    from fused_render.shell import pathops
 
     try:
-        return shell_mounts.rc_kind_for(fs_path) in ("file", "indeterminate")
+        return pathops.mount_is_file(fs_path)
     except Exception:
         return True  # unexpected error -> fail open, keep the entry
 
