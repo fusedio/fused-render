@@ -406,7 +406,7 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && <Sidebar config={config} />}
       <div id="main">{main}</div>
-      <ServerStatusBanner />
+      {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );
 }

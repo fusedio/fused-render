@@ -53,7 +53,11 @@ function useServerStatus(): { banner: Banner; checkNow: () => void } {
         }
       } else {
         failsRef.current += 1;
-        if (failsRef.current >= FAIL_THRESHOLD) setBanner("down");
+        if (failsRef.current >= FAIL_THRESHOLD) {
+          // Kill any pending reconnected-dismiss so it can't hide this banner.
+          window.clearTimeout(dismissTimer);
+          setBanner("down");
+        }
       }
     }
 
