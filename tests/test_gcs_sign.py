@@ -195,6 +195,14 @@ class _FakeCreds:
 
     @property
     def valid(self):
+        # Mirror google-auth: a token that is present but past its expiry is
+        # NOT valid (so _finalize refreshes it).
+        if self.expiry is not None:
+            exp = self.expiry
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=datetime.timezone.utc)
+            if datetime.datetime.now(datetime.timezone.utc) >= exp:
+                return False
         return self._valid
 
     def refresh(self, request):
@@ -204,6 +212,7 @@ class _FakeCreds:
         if self._refresh_to is not None:
             self.token = self._refresh_to
             self._valid = True
+            self.expiry = None  # refreshed token: clear the stale expiry
 
 
 class _GoogleStub:
@@ -373,3 +382,46 @@ def test_resolve_signer_only_for_service_account_key(google_stub):
     # A remote with no SA key can't sign locally even if ADC has a token.
     assert gcssign.resolve_signer(_GCS) is None
     assert gcssign.resolve_signer({**_GCS, "anonymous": "true"}) is None
+
+
+# --------------------------------------- fix 2: rclone oauth expiry handling
+
+
+def test_parse_rclone_expiry_formats():
+    p = gcssign._parse_rclone_expiry
+    assert p("2019-08-20T00:00:00Z") == datetime.datetime(2019, 8, 20, 0, 0, 0)
+    # nanosecond precision (9 digits) is truncated to microseconds
+    assert p("2019-08-20T00:00:00.123456789Z") == \
+        datetime.datetime(2019, 8, 20, 0, 0, 0, 123456)
+    # an offset is converted to a TZ-naive UTC datetime
+    assert p("2019-08-20T01:00:00+01:00") == datetime.datetime(2019, 8, 20, 0, 0, 0)
+    assert p("") is None and p(None) is None and p("garbage") is None
+
+
+def test_oauth_stale_expiry_forces_refresh(google_stub):
+    # rclone's stored access_token is past its expiry: google-auth must treat it
+    # as expired and refresh, not hand back the dead token.
+    google_stub.user_handler = lambda kw: _FakeCreds(token="OLD", refresh_to="NEW")
+    cfg = {**_GCS, "client_id": "cid", "client_secret": "csec",
+           "token": json.dumps({"access_token": "OLD", "refresh_token": "r",
+                                 "expiry": "2000-01-01T00:00:00Z"})}
+    assert gcssign.resolve_token(cfg).access_token == "NEW"
+
+
+def test_oauth_absent_expiry_with_refresh_token_forces_refresh(google_stub):
+    # No expiry to judge staleness by, but a refresh_token can renew it — force
+    # a refresh rather than trust an expiry-less (=> "valid forever") token.
+    google_stub.user_handler = lambda kw: _FakeCreds(
+        token="OLD", refresh_to="NEW", valid=True)
+    cfg = {**_GCS, "client_id": "cid", "client_secret": "csec",
+           "token": json.dumps({"access_token": "OLD", "refresh_token": "r"})}
+    assert gcssign.resolve_token(cfg).access_token == "NEW"
+
+
+def test_resolve_credentials_returns_object_and_token_extracts(google_stub):
+    marker = _FakeCreds(token="TOK", expiry=datetime.datetime(2030, 1, 1))
+    google_stub.adc_handler = lambda scopes: (marker, "p")
+    obj = gcssign.resolve_credentials(_GCS)
+    assert obj is marker  # the OBJECT is returned (mounts caches it)
+    assert gcssign.token_from_credentials(obj).access_token == "TOK"
+    assert gcssign.token_from_credentials(None) is None

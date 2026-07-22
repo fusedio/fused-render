@@ -2140,6 +2140,7 @@ def fresh_upstream():
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
     mounts_mod._gcs_token_cache.clear()
+    mounts_mod._gcs_creds_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
     yield
@@ -2149,6 +2150,7 @@ def fresh_upstream():
     mounts_mod._upstream_region.clear()
     mounts_mod._cred_cache.clear()
     mounts_mod._gcs_token_cache.clear()
+    mounts_mod._gcs_creds_cache.clear()
     mounts_mod._sign_neg_cache.clear()
     mounts_mod._validation_locks.clear()
 
@@ -3375,13 +3377,25 @@ _CRED_GCS_CFG = {"type": "google cloud storage",
 
 def _stub_gcs_token(monkeypatch, *, token="TOKENVAL", expiry_offset=3600.0,
                     calls=None):
-    def fake(cfg):
+    """Stub the two-step GCS credential resolution (build the credential object,
+    then extract a Token). `calls` records each credential-OBJECT build — i.e.
+    each creds-cache miss — so a test can assert re-resolution behaviour."""
+    marker = object()
+
+    def fake_resolve_credentials(cfg):
         if calls is not None:
             calls.append(cfg)
-        if token is None:
+        return marker if token is not None else None
+
+    def fake_token_from_credentials(creds):
+        if creds is None or token is None:
             return None
         return gcssign_mod.Token(token, time.time() + expiry_offset)
-    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token", fake)
+
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_credentials",
+                        fake_resolve_credentials)
+    monkeypatch.setattr(mounts_mod.gcssign, "token_from_credentials",
+                        fake_token_from_credentials)
 
 
 @pytest.fixture()
@@ -3502,28 +3516,29 @@ def test_gcs_list_page_second_401_raises(home, rcd, fresh_upstream, monkeypatch,
     assert len(calls) == 2  # retried exactly once
 
 
-def test_invalidate_upstream_caches_clears_gcs_token_cache(fresh_upstream):
+def test_invalidate_upstream_caches_clears_gcs_token_and_creds_caches(fresh_upstream):
     mounts_mod._gcs_token_cache["gcp"] = (
         gcssign_mod.Token("T", time.time() + 999), time.time() + 999)
+    mounts_mod._gcs_creds_cache["gcp"] = (object(), time.time() + 999)
     mounts_mod._invalidate_upstream_caches()
     assert mounts_mod._gcs_token_cache == {}
+    assert mounts_mod._gcs_creds_cache == {}
 
 
 def test_gcs_bearer_token_ttl_tracks_expiry(fresh_upstream, monkeypatch):
-    # A short-lived token caches for < its expiry (minus slack); a long-lived
-    # one is capped at the _CRED_TTL_S re-read window.
-    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token",
-                        lambda cfg: gcssign_mod.Token("T", time.time() + 65))
+    # The token cache runs to expiry-minus-slack — NOT clamped to _CRED_TTL_S —
+    # so a live ~1h token is reused for its whole life (no per-minute OAuth).
+    _stub_gcs_token(monkeypatch, token="T", expiry_offset=65)
     mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
     _tok, exp = mounts_mod._gcs_token_cache["gcp"]
     assert 0 < exp - time.monotonic() <= 10  # ~5s (65s - 60s slack)
 
     mounts_mod._gcs_token_cache.clear()
-    monkeypatch.setattr(mounts_mod.gcssign, "resolve_token",
-                        lambda cfg: gcssign_mod.Token("T", time.time() + 86400))
+    _stub_gcs_token(monkeypatch, token="T", expiry_offset=3600)
     mounts_mod._gcs_bearer_token("gcp2", _CRED_GCS_CFG)
     _tok2, exp2 = mounts_mod._gcs_token_cache["gcp2"]
-    assert abs((exp2 - time.monotonic()) - mounts_mod._CRED_TTL_S) < 2
+    # ~1h - 60s slack, far beyond the 60s _CRED_TTL_S window it used to clamp to.
+    assert abs((exp2 - time.monotonic()) - (3600 - 60)) < 3
 
 
 def test_gcs_bearer_token_caches_within_ttl(fresh_upstream, monkeypatch):
@@ -3532,6 +3547,18 @@ def test_gcs_bearer_token_caches_within_ttl(fresh_upstream, monkeypatch):
     mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
     mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
     assert len(calls) == 1  # second call served from cache
+
+
+def test_gcs_credentials_object_cached_across_token_reresolves(fresh_upstream, monkeypatch):
+    # The credential OBJECT is built at most once per _CRED_TTL_S window even
+    # when the Token is re-derived from it multiple times (fix 6).
+    calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", expiry_offset=1, calls=calls)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    # Force the short-lived (1s) token cache to lapse, then re-derive.
+    mounts_mod._gcs_token_cache.clear()
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    assert len(calls) == 1  # creds object reused from the 60s creds cache
 
 
 # -- tiered private-GCS raw reads: gsign 307 / bearer proxy -----------------

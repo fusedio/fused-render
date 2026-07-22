@@ -31,6 +31,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import urllib.parse
 from collections import namedtuple
 
@@ -148,14 +149,142 @@ def _sa_info(cfg: dict) -> dict | None:
     return None
 
 
-def _finalize(creds) -> Token | None:
-    """Refresh `creds` if it has no valid token, then map it to a Token. The
-    refresh transport is google-auth's requests-backed Request. None when the
-    credential yields no token. Any exception propagates to the source's own
-    try/except (which moves on to the next source)."""
+def _parse_rclone_expiry(value) -> datetime.datetime | None:
+    """rclone stores an oauth token's expiry as an RFC3339 string
+    (e.g. "2019-08-20T00:00:00.000000000Z" or "...+01:00"). Parse it to a
+    TZ-NAIVE UTC datetime — what google-auth's Credentials.expiry expects, and
+    what makes it treat an already-past token as expired (so _finalize refreshes
+    instead of trusting a dead access_token). None when absent/unparseable."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    # datetime.fromisoformat on 3.10/3.11 accepts at most 6 fractional digits;
+    # rclone often emits 9 (nanoseconds), so truncate the fraction.
+    m = re.match(r"^(.*T\d\d:\d\d:\d\d)(\.\d+)?(.*)$", s)
+    if m:
+        frac = m.group(2) or ""
+        s = m.group(1) + (frac[:7] if frac else "") + m.group(3)
+    try:
+        dt = datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _refresh_if_needed(creds) -> None:
+    """Refresh `creds` via google-auth's requests transport when it has no valid
+    (present, unexpired) token. A no-op on an already-valid credential, so a
+    cached self-refreshing object only pays a network refresh near expiry."""
     from google.auth.transport.requests import Request
     if not creds.valid:
         creds.refresh(Request())
+
+
+def _creds_from_sa(cfg: dict):
+    """Source 1: a service-account key (inline JSON or file), scoped read-only.
+    Returns a refreshed google-auth credential object, or None (ImportError /
+    parse / refresh failure -> next source)."""
+    info = _sa_info(cfg)
+    if info is None:
+        return None
+    try:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=[_READ_ONLY_SCOPE])
+        _refresh_if_needed(creds)
+        return creds if creds.token else None
+    except Exception:
+        return None
+
+
+def _creds_from_oauth(cfg: dict):
+    """Source 2: rclone's stored oauth token, refreshable only with the config's
+    own client_id/client_secret. SKIPPED when either is absent — that means
+    rclone's built-in oauth client, whose compiled-in secret we won't embed (ADC
+    covers the gcloud-login user anyway). The stored access_token is usually
+    hours-expired, so parse its "expiry" onto the credential (google-auth then
+    treats an expired token as invalid and refreshes it); with no expiry but a
+    refresh_token present, force a refresh rather than trust the stale token.
+    Any failure -> None (next source)."""
+    tok_json = cfg.get("token")
+    client_id = cfg.get("client_id")
+    client_secret = cfg.get("client_secret")
+    if not tok_json or not client_id or not client_secret:
+        return None
+    try:
+        data = json.loads(tok_json) if isinstance(tok_json, str) else tok_json
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        creds = Credentials(
+            token=data.get("access_token"),
+            refresh_token=data.get("refresh_token"),
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id, client_secret=client_secret,
+            scopes=[_READ_ONLY_SCOPE])
+        expiry = _parse_rclone_expiry(data.get("expiry"))
+        if expiry is not None:
+            creds.expiry = expiry
+        # No expiry to judge staleness by: an expiry-less token reads as "valid"
+        # forever, so force one refresh when a refresh_token can renew it.
+        if expiry is None and data.get("refresh_token"):
+            creds.refresh(Request())
+        else:
+            _refresh_if_needed(creds)
+        return creds if creds.token else None
+    except Exception:
+        return None
+
+
+def _creds_from_adc(cfg: dict):
+    """Source 3: Application Default Credentials — GOOGLE_APPLICATION_CREDENTIALS,
+    `gcloud auth application-default login`, or GCE metadata. The primary
+    promise for a laptop that already ran gcloud login. Any failure -> None."""
+    try:
+        import google.auth
+        creds, _project = google.auth.default(scopes=[_READ_ONLY_SCOPE])
+        _refresh_if_needed(creds)
+        return creds if creds.token else None
+    except Exception:
+        return None
+
+
+def resolve_credentials(cfg: dict | None):
+    """Resolve a google-auth credential OBJECT for a credentialed GCS remote,
+    trying the sources in order (SA key -> rclone oauth -> ADC) and returning
+    the first that yields a token, else None. Returning the OBJECT (not just a
+    token) lets mounts.py cache it and re-extract tokens cheaply — a
+    self-refreshing credential renews near expiry without re-walking the sources.
+    Non-GCS or anonymous configs return None."""
+    if not _is_gcs_signable_shape(cfg):
+        return None
+    assert cfg is not None
+    for source in (_creds_from_sa, _creds_from_oauth, _creds_from_adc):
+        creds = source(cfg)
+        if creds is not None:
+            return creds
+    return None
+
+
+def token_from_credentials(creds) -> Token | None:
+    """Map a resolved google-auth credential to a Token, refreshing it first if
+    its token has expired (a cached, self-refreshing object thus renews near
+    expiry with a single refresh, no source re-walk). None when the credential
+    yields no token or the refresh fails."""
+    if creds is None:
+        return None
+    try:
+        _refresh_if_needed(creds)
+    except Exception:
+        return None
     if not creds.token:
         return None
     expiry = getattr(creds, "expiry", None)
@@ -171,73 +300,12 @@ def _finalize(creds) -> Token | None:
     return Token(creds.token, expiry_epoch)
 
 
-def _token_from_sa(cfg: dict) -> Token | None:
-    """Source 1: a service-account key (inline JSON or file). Scoped read-only.
-    ImportError (extra absent) or any failure -> None."""
-    info = _sa_info(cfg)
-    if info is None:
-        return None
-    try:
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=[_READ_ONLY_SCOPE])
-        return _finalize(creds)
-    except Exception:
-        return None
-
-
-def _token_from_oauth(cfg: dict) -> Token | None:
-    """Source 2: rclone's stored oauth token, refreshable only with the
-    config's own client_id/client_secret. SKIPPED when either is absent — that
-    means rclone's built-in oauth client, whose compiled-in secret we won't
-    embed (ADC covers the gcloud-login user anyway). Any failure -> None."""
-    tok_json = cfg.get("token")
-    client_id = cfg.get("client_id")
-    client_secret = cfg.get("client_secret")
-    if not tok_json or not client_id or not client_secret:
-        return None
-    try:
-        data = json.loads(tok_json) if isinstance(tok_json, str) else tok_json
-    except (ValueError, TypeError):
-        return None
-    try:
-        from google.oauth2.credentials import Credentials
-        creds = Credentials(
-            token=data.get("access_token"),
-            refresh_token=data.get("refresh_token"),
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id, client_secret=client_secret,
-            scopes=[_READ_ONLY_SCOPE])
-        return _finalize(creds)
-    except Exception:
-        return None
-
-
-def _token_from_adc(cfg: dict) -> Token | None:
-    """Source 3: Application Default Credentials — GOOGLE_APPLICATION_CREDENTIALS,
-    `gcloud auth application-default login`, or GCE metadata. The primary
-    promise for a laptop that already ran gcloud login. Any failure -> None."""
-    try:
-        import google.auth
-        creds, _project = google.auth.default(scopes=[_READ_ONLY_SCOPE])
-        return _finalize(creds)
-    except Exception:
-        return None
-
-
 def resolve_token(cfg: dict | None) -> Token | None:
-    """Resolve a bearer access token for a credentialed GCS remote, trying the
-    sources in order (SA key -> rclone oauth -> ADC) and returning the first
-    that yields a token, else None. Non-GCS or anonymous configs return None
-    (anonymous GCS reaches its objects by plain unsigned URL)."""
-    if not _is_gcs_signable_shape(cfg):
-        return None
-    assert cfg is not None
-    for source in (_token_from_sa, _token_from_oauth, _token_from_adc):
-        tok = source(cfg)
-        if tok is not None:
-            return tok
-    return None
+    """Convenience: resolve a bearer access token in one call (build the
+    credential, then extract a Token). mounts.py uses the two steps separately
+    so it can cache the credential object; this stays for direct callers/tests.
+    None for non-GCS / anonymous / unresolvable configs."""
+    return token_from_credentials(resolve_credentials(cfg))
 
 
 def resolve_signer(cfg: dict | None) -> Signer | None:

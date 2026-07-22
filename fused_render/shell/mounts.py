@@ -1539,6 +1539,7 @@ _upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
 _upstream_region: dict = {}  # fs -> region (self-corrected from x-amz-bucket-region)
 _cred_cache: dict = {}      # remote name -> (Credentials|None, monotonic expiry)
 _gcs_token_cache: dict = {}  # remote name -> (gcssign.Token|None, monotonic exp)
+_gcs_creds_cache: dict = {}  # remote name -> (google-auth creds obj|None, mono exp)
 _sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
 _validation_locks: dict = {}  # fs -> Lock: per-fs single-flight for validation
 
@@ -1594,6 +1595,7 @@ def _invalidate_upstream_caches() -> None:
         _upstream_region.clear()
         _cred_cache.clear()
         _gcs_token_cache.clear()
+        _gcs_creds_cache.clear()
         _upstream_links.clear()
         _sign_neg_cache.clear()
         _validation_locks.clear()
@@ -1804,30 +1806,61 @@ def _signable_credentials(name: str, cfg: dict | None):
     return creds
 
 
+def _gcs_credentials(name: str, cfg: dict | None):
+    """The google-auth credential OBJECT for a GCS remote, cached per name for
+    _CRED_TTL_S so the sources (SA key parse / rclone oauth / ADC + GCE metadata
+    probe) aren't re-walked per object. The cached object is self-refreshing, so
+    token_from_credentials renews it near expiry WITHOUT rebuilding the chain.
+    Re-derived from config only once per window (picks up a rotated key), and
+    dropped by _invalidate_upstream_caches / invalidate_gcs_token. None (also
+    cached) when nothing resolves."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = _gcs_creds_cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+    creds = gcssign.resolve_credentials(cfg)
+    with _upstream_lock:
+        _gcs_creds_cache[name] = (creds, now + _CRED_TTL_S)
+    return creds
+
+
 def _gcs_bearer_token(name: str, cfg: dict | None):
-    """gcssign.resolve_token for a GCS remote, cached per name — the GCS analog
-    of _signable_credentials. TTL is the shorter of the _CRED_TTL_S re-read
-    window and the token's own remaining life minus _GCS_TOKEN_SLACK_S, so a
-    dying token is re-resolved before GCS starts rejecting it. A None result
-    (not credentialed / [cloud-auth] absent) is cached for _CRED_TTL_S so the
-    listing/probe hot path doesn't re-resolve per object. Returns a
-    gcssign.Token or None."""
+    """A bearer access Token for a GCS remote, cached per name — the GCS analog
+    of _signable_credentials. Derives the token from the cached (self-refreshing)
+    credential object, so a live token is reused for its whole life instead of
+    forcing an OAuth round trip per _CRED_TTL_S window. The token cache runs to
+    expiry minus _GCS_TOKEN_SLACK_S (re-resolved before GCS would reject it); a
+    None result (not credentialed / [cloud-auth] absent) is cached for
+    _CRED_TTL_S. Returns a gcssign.Token or None."""
     now = time.monotonic()
     with _upstream_lock:
         hit = _gcs_token_cache.get(name)
         if hit is not None and hit[1] > now:
             return hit[0]
-    tok = gcssign.resolve_token(cfg)
+    creds = _gcs_credentials(name, cfg)
+    tok = gcssign.token_from_credentials(creds) if creds is not None else None
     if tok is None:
         expiry = now + _CRED_TTL_S
     else:
         # token.expiry_epoch is wall-clock (time.time); map its remaining life
-        # onto the monotonic clock the cache keys off, clamped to [0, TTL].
+        # onto the monotonic clock the cache keys off. Runs to expiry-slack (not
+        # clamped to _CRED_TTL_S) — the self-refreshing creds object is what
+        # picks up rotation on the next _CRED_TTL_S re-derivation.
         remaining = tok.expiry_epoch - time.time() - _GCS_TOKEN_SLACK_S
-        expiry = now + max(0.0, min(_CRED_TTL_S, remaining))
+        expiry = now + max(0.0, remaining)
     with _upstream_lock:
         _gcs_token_cache[name] = (tok, expiry)
     return tok
+
+
+def _invalidate_gcs_creds(name: str) -> None:
+    """Drop a remote's cached bearer token AND credential object so the next
+    resolution re-derives from config (forces a fresh token). Used by the direct
+    fetch helper and the bearer read proxy on a 401 (stale/rotated token)."""
+    with _upstream_lock:
+        _gcs_token_cache.pop(name, None)
+        _gcs_creds_cache.pop(name, None)
 
 
 def _gcs_credentialed(name: str, cfg: dict | None) -> bool:
@@ -2220,8 +2253,7 @@ def _gcs_get_direct(url: str, name: str, cfg: dict | None,
             # once. Any other status (incl. a 404 the caller treats as a
             # trustworthy negative) propagates unchanged.
             if attempt == 1 and e.code in (401, 403):
-                with _upstream_lock:
-                    _gcs_token_cache.pop(name, None)
+                _invalidate_gcs_creds(name)  # force a freshly-resolved token
                 continue
             raise
     raise urllib.error.URLError(f"{name}: GCS bearer retry exhausted")
