@@ -30,54 +30,16 @@ pip install -e .
 Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
 built-in parquet preview).
 
-### Shell development
+### Building from source
 
-The browser shell is a React + TypeScript app in `frontend/`. Its build
-output (`fused_render/static/shell-dist/`) is not committed — a source
-checkout needs one build before the server will start (Node 22).
+A source checkout builds the React shell once before the server starts
+(`cd frontend && npm install && npm run build`, Node 22) — or run
+`scripts/dev.sh` for a watch + server dev loop. Wheels and the DMG build the
+shell automatically at package time, so installed users never need Node.
 
-The one-command dev loop (shell watch-build + python server together,
-Ctrl-C stops both; extra args go to `fused-render`):
-
-```
-scripts/dev.sh                # e.g. scripts/dev.sh --port 9000
-```
-
-Edit anything under `frontend/src/` and refresh the browser — the watch
-rebuilds and the server serves files per-request with no-cache. Manual
-equivalent: `cd frontend && npm install && npm run build` (or `watch`).
-The watch skips type checking for speed; `npm run typecheck` (or a full
-`npm run build`) before committing.
-
-Wheels and the DMG build the shell automatically at package time
-(`scripts/hatch_build.py`), so end users never need node.
-
-### macOS app (DMG)
-
-```
-bash scripts/build_dmg.sh
-```
-
-Builds a standalone `FusedRender.app` via py2app and packages it as
-`dist/FusedRender-<version>.dmg`.
-
-**Signing is credential-driven** ([docs/signing.md](docs/signing.md)):
-
-- **No credentials (default):** ad-hoc signed — launches locally, testers
-  right-click → Open on first launch. Not distributable without Gatekeeper
-  warnings.
-- **Developer ID cert in your keychain:** auto-detected (or named via
-  `FUSED_RENDER_CODESIGN_IDENTITY`) and signed with the hardened runtime.
-  Distributable, and it also stops the repeated Downloads/Desktop/Documents
-  permission prompts (one stable Team ID lets macOS attribute the executor's
-  subprocess file access to the app).
-- **Signed + notarized + stapled:** additionally set
-  `FUSED_RENDER_NOTARY_PROFILE=<stored notarytool profile>`.
-
-```
-# distributable, signed + notarized:
-FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY bash scripts/build_dmg.sh
-```
+Build the macOS app with `bash scripts/build_dmg.sh` (py2app →
+`dist/FusedRender-<version>.dmg`); signing and notarization are
+credential-driven — see [docs/signing.md](docs/signing.md).
 
 ## Run
 
@@ -104,38 +66,27 @@ fused-render-open --register
 Registers fused-render into Explorer's right-click "Open with" menu (HKCU
 only, no admin) for every format it previews — double-clicking a file, or
 picking "fused-render" from Open With, reuses a running server or starts one
-detached, then opens the file's `/view` URL. `fused-render-open --unregister`
+detached, then opens the file. `fused-render-open --unregister`
 removes the associations.
 
 ### Execution engine
 
-Python files run in a fresh subprocess per call, through the built-in runner
-**by default** — whether or not the `fused` package is installed. Opt in to
-fused's local compute backend with `FUSED_RENDER_ENGINE=auto` (uses it iff
-`fused` is importable, else falls back to builtin) or `=fused` (require it —
-fails loudly at startup if missing); `pip install "fused-render[fused]"` first
-if it isn't already. Under the fused engine, PEP 723 `# /// script` inline
-requirements resolve into cached venvs, and — in addition to the bare `main()`
-convention below — a file may expose a `@fused.udf`-decorated function (any
-name; params arrive as raw JSON types) or assign `result = ...` directly. The
-active engine shows in `GET /api/config`.
+Python runs in a fresh subprocess per call through the built-in runner by
+default. Opt into fused's local compute backend — which resolves PEP 723
+`# /// script` inline requirements into cached venvs — with
+`FUSED_RENDER_ENGINE=auto` (use it when `fused` is importable, else the builtin)
+or `=fused` (require it); `pip install "fused-render[fused]"` first. Under the
+fused engine a file may also expose a `@fused.udf`-decorated function or assign
+`result = ...` directly instead of defining `main()`. You can also switch the
+engine in **Preferences**.
 
 ## Export for hosted serving
 
-fused-render is local-only, but the running server can pack a page into a portable
-bundle that a hosting layer (the `fused` wheel) can serve:
-
-```
-curl -X POST http://127.0.0.1:1777/api/export \
-  -H 'Content-Type: application/json' -H 'X-Fused: 1' \
-  -d '{"page": "/abs/path/to/examples_seed/sine/sine.html", "out": "/abs/path/to/bundle"}'
-```
-
-Both `page` and `out` must be absolute filesystem paths (same convention as every
-other endpoint — see the module docstring in `server.py`). It collects the page's
-`runPython`/`rawUrl` dependencies into a self-contained bundle. Only the portable
-subset of the runtime API is supported (no `writeFile`, `stat`, or live-reload).
-See `docs/EXPORT.md` for the bundle format and rules.
+The **Deploy** button (below) exports and publishes a page for you. For
+scripting, the running server also exposes a programmatic export
+(`POST /api/export`) that packs a page and its `runPython`/`rawUrl`
+dependencies into a portable bundle a hosting layer can serve — see
+[docs/EXPORT.md](docs/EXPORT.md) for the bundle format and rules.
 
 ## Deploy to a hosted URL
 
