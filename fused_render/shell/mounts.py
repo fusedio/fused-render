@@ -1835,17 +1835,13 @@ def _gcs_public_object_url(fs: str, rel: str) -> str | None:
     (storage.googleapis.com/<bucket>/<key>), so there is no region and no
     dotted-bucket rule. Credentialed or non-GCS remotes return None (their
     objects aren't reachable unsigned). Pure string building once
-    _remote_config has memoized the config — no rc round trip per object."""
+    _remote_config has memoized the config — no rc round trip per object. Gates
+    on anonymous, then delegates the URL construction to _gcs_object_url so the
+    path-style layout and key quoting live in one place (C2)."""
     cfg = _remote_config(fs.partition(":")[0])
     if not _gcs_anonymous(cfg or {}):
         return None
-    derived = _gcs_bucket_prefix(fs)
-    if derived is None:
-        return None
-    bucket, prefix = derived
-    key = (prefix + "/" if prefix else "") + rel
-    # Match _public_object_url's key quoting (same default safe chars).
-    return f"https://storage.googleapis.com/{bucket}/{urllib.parse.quote(key)}"
+    return _gcs_object_url(fs, rel)
 
 
 def _botocore_chain(name: str, cfg: dict | None):
@@ -2952,6 +2948,16 @@ def _gcs_sign_mode_url(fs: str, rel: str,
         reject_disp="bearer")
 
 
+def _demote_gsign(fs: str) -> None:
+    """Un-pin gsign mode for `fs` (idempotent), so the next request re-derives
+    the mode from scratch — gsign again once the signer returns, bearer meanwhile
+    if a token resolves. The demotion is NON-permanent (findings 4, 5). Shared by
+    both un-pin sites so they can't drift (C5)."""
+    with _upstream_lock:
+        if _upstream_mode.get(fs) == "gsign":
+            _upstream_mode.pop(fs, None)
+
+
 def _upstream_url_for(path: str) -> str | None:
     m, rel = _mount_for(path)
     if m is None:
@@ -2996,9 +3002,7 @@ def _upstream_url_for(path: str) -> str | None:
         # UN-PIN the mode rather than pin "bearer" permanently, so the next
         # request re-derives — bearer for now if a token resolves, gsign again
         # once the signer comes back (the demotion is non-permanent, finding 5).
-        with _upstream_lock:
-            if _upstream_mode.get(fs) == "gsign":
-                _upstream_mode.pop(fs, None)
+        _demote_gsign(fs)
         return None
     if mode == "bearer":
         # Token-only GCS: no URL may carry the token, so there is nothing to
@@ -3041,9 +3045,7 @@ def _upstream_url_for(path: str) -> str | None:
             if disp == "gsign" and signed is not None:
                 return signed
             if disp == "gsign":  # won validation but signer vanished mid-flight
-                with _upstream_lock:
-                    if _upstream_mode.get(fs) == "gsign":
-                        _upstream_mode.pop(fs, None)  # un-pin, re-derive next time
+                _demote_gsign(fs)  # un-pin, re-derive next time
                 return None
             elif disp == "retry":
                 # Contended / neg-cached / signer momentarily unresolvable: serve
