@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
 
 
@@ -35,6 +36,11 @@ def _no_ambient_aws_creds(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE",
                        str(tmp_path / "no-aws-credentials"))
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    # The optional botocore rung (s3sign) is consulted for an env_auth/profile
+    # remote once the static ladder finds nothing; disable the IMDS probe so it
+    # resolves to None immediately (deterministic, and fast) instead of
+    # resolving an EC2/CI role or stalling ~1s on metadata.
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
 
 
 class StubRcd:
@@ -2126,23 +2132,13 @@ def test_fs_raw_proxy_error_keeps_range_headers(client, home, monkeypatch):
 
 @pytest.fixture()
 def fresh_upstream():
-    """The bypass memoizes per-remote capability, config and per-object
-    links in module globals; clear around each test so results don't leak."""
-    mounts_mod._upstream_links.clear()
-    mounts_mod._upstream_mode.clear()
-    mounts_mod._upstream_cfg.clear()
-    mounts_mod._upstream_region.clear()
-    mounts_mod._cred_cache.clear()
-    mounts_mod._sign_neg_cache.clear()
-    mounts_mod._validation_locks.clear()
+    """The bypass memoizes per-remote capability, config, credentials and per-
+    object links in module globals; clear around each test so results don't leak.
+    Delegates to the production invalidator so every cache (incl. the gsign
+    bearer-fallback marks and single-flight locks) is dropped via one registry."""
+    mounts_mod._invalidate_upstream_caches()
     yield
-    mounts_mod._upstream_links.clear()
-    mounts_mod._upstream_mode.clear()
-    mounts_mod._upstream_cfg.clear()
-    mounts_mod._upstream_region.clear()
-    mounts_mod._cred_cache.clear()
-    mounts_mod._sign_neg_cache.clear()
-    mounts_mod._validation_locks.clear()
+    mounts_mod._invalidate_upstream_caches()
 
 
 def test_upstream_url_prefers_presigned_link(home, rcd, fresh_upstream):
@@ -2219,15 +2215,19 @@ def test_upstream_url_public_gcs_when_anonymous(home, rcd, fresh_upstream):
 def test_upstream_url_non_anonymous_gcs_gets_no_public_url(home, rcd, fresh_upstream):
     import os
 
-    # A non-anonymous GCS remote whose publiclink fails has no reachable
-    # unsigned URL — the verdict is cached like the credentialed-S3 case.
+    # A non-anonymous GCS remote has no reachable unsigned URL. With no SA key
+    # configured it is token-only-SHAPED, so it pins the bearer mode WITHOUT ever
+    # calling publiclink (which always fails for GCS, PublicLink: False); with no
+    # resolvable token (google-auth absent) upstream_url_for stays None and the
+    # read falls through to the serve.
     rcd.responses["operations/publiclink"] = (500, {"error": "boom"})
     rcd.responses["config/get"] = {"type": "google cloud storage"}
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
     f = os.path.join(mounts_mod.mountpoint(c), "x.parquet")
     assert mounts_mod.upstream_url_for(f) is None
     assert mounts_mod.upstream_url_for(f) is None
-    assert len([x for x in rcd.calls if x[0] == "operations/publiclink"]) == 1
+    assert mounts_mod._upstream_mode["gcp:bucket"] == "bearer"
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
 
 
 def test_upstream_url_none_is_remembered(home, rcd, fresh_upstream):
@@ -2421,9 +2421,19 @@ def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_ups
     import os
 
     rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    # Spy the REAL resolver entry points production uses (resolve_credentials is
+    # no longer called on this path — repointed per finding 8). None must fire on
+    # the anonymous path.
     resolver_calls = []
-    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials",
-                        lambda cfg: resolver_calls.append(cfg) or None)
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolver_calls.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "needs_botocore",
+                   "resolve_botocore_chain", "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy(fnname))
     validated = []
     monkeypatch.setattr(mounts_mod, "_sign_validation_status",
                         lambda url: validated.append(url) or (200, None))
@@ -2454,7 +2464,8 @@ def test_upstream_sign_demotes_to_link_when_creds_vanish(home, rcd, fresh_upstre
     assert first.startswith("https://bucket.s3.")  # presigned
     assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
     # Creds rotate away: the resolver now returns None and the cache expires.
-    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials", lambda cfg: None)
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_static_credentials",
+                        lambda cfg: None)
     mounts_mod._cred_cache.clear()
     got = mounts_mod.upstream_url_for(
         os.path.join(mounts_mod.mountpoint(c), "b.parquet"))
@@ -2942,10 +2953,25 @@ def test_s3_direct_capable_true_for_anonymous_s3(home, rcd, fresh_upstream):
     assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
 
 
-def test_s3_direct_capable_false_for_credentialed(home, rcd, fresh_upstream):
+def test_s3_direct_capable_true_for_credentialed_shape_no_resolution(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: a credentialed-SHAPED S3 remote (ambient auth opted in) is
+    # capable by config shape alone — the predicate resolves NO credentials (that
+    # unbudgeted network walk stalled the conditions/stat callers).
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    resolved = []
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolved.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "resolve_botocore_chain",
+                   "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy(fnname))
     c = mounts_mod.add_mount("corp", "corp:bucket")
-    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert resolved == []  # no credential resolution from the predicate
 
 
 def test_s3_direct_capable_false_for_custom_endpoint(home, rcd, fresh_upstream):
@@ -3241,10 +3267,13 @@ def test_gcs_direct_capable_true_for_anonymous_gcs(home, rcd, fresh_upstream):
     assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
 
 
-def test_gcs_direct_capable_false_for_non_anonymous(home, rcd, fresh_upstream):
+def test_gcs_direct_capable_true_for_non_anonymous_shape(home, rcd, fresh_upstream):
+    # FINDING 12: any non-anonymous GCS remote is capable by shape (bearer), even
+    # a bare one with no config markers (ADC-only) — the predicate resolves no
+    # token; a failed bearer read falls back to rc inside the budgeted fetch path.
     rcd.responses["config/get"] = {"type": "google cloud storage"}
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
-    assert not mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
 
 
 def test_gcs_direct_capable_false_outside_mount(home, rcd, fresh_upstream):
@@ -3353,7 +3382,501 @@ def test_gcs_list_page_non_anonymous_raises_directlisterror(home, rcd, fresh_ups
         mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
 
 
+# -- credentialed GCS: bearer-authorized direct listings and probes ---------
+#
+# A non-anonymous GCS remote whose bearer token resolves (gcssign.resolve_token)
+# joins the direct fast path: the same JSON-API pager and HEAD/list probes, now
+# with an `Authorization: Bearer` header. Anonymous GCS stays byte-identical (no
+# header, resolver never consulted). resolve_token is stubbed so the tests need
+# no google-auth and pin the degrade contract.
+
+_CRED_GCS_CFG = {"type": "google cloud storage",
+                 "service_account_file": "/keys/sa.json"}
+
+
+def _stub_gcs_token(monkeypatch, *, token="TOKENVAL", expiry_offset=3600.0,
+                    calls=None):
+    """Stub the two-step GCS credential resolution (build the credential object,
+    then extract a Token). `calls` records each credential-OBJECT build — i.e.
+    each creds-cache miss — so a test can assert re-resolution behaviour."""
+    marker = object()
+
+    def fake_resolve_credentials(cfg):
+        if calls is not None:
+            calls.append(cfg)
+        return marker if token is not None else None
+
+    def fake_token_from_credentials(creds):
+        if creds is None or token is None:
+            return None
+        return gcssign_mod.Token(token, time.time() + expiry_offset)
+
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_credentials",
+                        fake_resolve_credentials)
+    monkeypatch.setattr(mounts_mod.gcssign, "token_from_credentials",
+                        fake_token_from_credentials)
+
+
+@pytest.fixture()
+def gcs_bearer_urlopen(monkeypatch):
+    """Capture (url, Authorization-header) for GCS API GETs and hand back canned
+    JSON. box['body'] is the reply; box['raises'] a per-call list of exceptions
+    (None entry = succeed). rc calls (loopback rcd) delegate to real urlopen."""
+    calls = []
+    box = {"body": _gcs_list_json()}
+    real = mounts_mod.urllib.request.urlopen
+
+    def fake(req, timeout=None):
+        target = req if isinstance(req, str) else req.get_full_url()
+        if "storage.googleapis.com" not in target:
+            return real(req, timeout=timeout)
+        auth = None if isinstance(req, str) else req.get_header("Authorization")
+        calls.append((target, auth))
+        seq = box.get("raises")
+        if seq:
+            exc = seq.pop(0)
+            if exc is not None:
+                raise exc
+        return _FakeS3Resp(box["body"])
+
+    monkeypatch.setattr(mounts_mod.urllib.request, "urlopen", fake)
+    return calls, box
+
+
+def test_gcs_direct_capable_true_for_credentialed(home, rcd, fresh_upstream, monkeypatch):
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOK")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+
+
+def test_gcs_direct_capable_true_regardless_of_token(home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: capability is shape-based, so it holds even when no token
+    # resolves — the failed bearer read falls back to rc in the fetch path, not
+    # the predicate. The token resolver must not even be consulted here.
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token=None, calls=resolver_calls)
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert resolver_calls == []  # pure shape check, no token resolution
+
+
+def test_gcs_list_page_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, _box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    [(url, auth)] = calls
+    assert url.startswith(
+        "https://storage.googleapis.com/storage/v1/b/bucket/o?")
+    assert auth == "Bearer TOKENVAL"
+
+
+def test_gcs_head_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    box["body"] = b'{"size": "42", "updated": "2024-01-02T03:04:05Z"}'
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    got = mounts_mod.direct_head(mounts_mod.mountpoint(c) + "/x.json")
+    assert got.exists is True and got.size == 42
+    assert calls[-1][1] == "Bearer TOKENVAL"
+
+
+def test_gcs_has_children_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    box["body"] = _gcs_list_json(items=[("pre/x", 1, "2024-01-01T00:00:00Z")])
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    assert mounts_mod.direct_is_dir(mounts_mod.mountpoint(c) + "/sub") is True
+    assert calls[-1][1] == "Bearer TOKENVAL"
+
+
+def test_gcs_anonymous_never_carries_bearer_or_consults_resolver(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    # INVARIANT: anonymous GCS is byte-identical — no Authorization header, and
+    # the token resolver is never consulted (mirrors the S3 anonymous guard).
+    calls, _box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    c = mounts_mod.add_mount("open", "gcs-open:bucket/pre")
+    mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    [(_url, auth)] = calls
+    assert auth is None
+    assert resolver_calls == []
+
+
+def test_gcs_list_page_401_reresolves_then_retries(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None),
+        None]  # first 401, retry succeeds
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    entries, _tok = mounts_mod.gcs_list_page(
+        mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 2  # one 401 + one retry
+    assert calls[1][1] == "Bearer TOK"
+    # capability probe cached the token; the 401 dropped it and forced one
+    # re-resolve for the retry.
+    assert len(resolver_calls) == 2
+
+
+def test_gcs_list_page_second_401_raises(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_token(monkeypatch, token="TOK")
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None),
+        mounts_mod.urllib.error.HTTPError("https://x", 401, "no", {}, None)]
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 2  # retried exactly once
+
+
+def test_gcs_list_page_403_propagates_without_retry(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
+    # 403 = permission denial with a VALID token (per-object IAM); re-resolving
+    # wouldn't help, so it propagates immediately — no retry, no token churn.
+    calls, box = gcs_bearer_urlopen
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=resolver_calls)
+    box["raises"] = [
+        mounts_mod.urllib.error.HTTPError("https://x", 403, "no", {}, None),
+        None]  # a retry (if it happened) would succeed — it must NOT happen
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    with pytest.raises(mounts_mod.DirectListError):
+        mounts_mod.gcs_list_page(mounts_mod.mountpoint(c), max_keys=1000)
+    assert len(calls) == 1  # no retry on 403
+    assert len(resolver_calls) == 1  # token not invalidated / re-resolved
+
+
+def test_invalidate_upstream_caches_clears_gcs_token_and_creds_caches(fresh_upstream):
+    mounts_mod._gcs_token_cache["gcp"] = (
+        gcssign_mod.Token("T", time.time() + 999), time.time() + 999)
+    mounts_mod._gcs_creds_cache["gcp"] = (object(), time.time() + 999)
+    mounts_mod._invalidate_upstream_caches()
+    assert mounts_mod._gcs_token_cache == {}
+    assert mounts_mod._gcs_creds_cache == {}
+
+
+def test_gcs_bearer_token_ttl_tracks_expiry(fresh_upstream, monkeypatch):
+    # The token cache runs to expiry-minus-slack — NOT clamped to _CRED_TTL_S —
+    # so a live ~1h token is reused for its whole life (no per-minute OAuth).
+    _stub_gcs_token(monkeypatch, token="T", expiry_offset=65)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    _tok, exp = mounts_mod._gcs_token_cache["gcp"]
+    assert 0 < exp - time.monotonic() <= 10  # ~5s (65s - 60s slack)
+
+    mounts_mod._gcs_token_cache.clear()
+    _stub_gcs_token(monkeypatch, token="T", expiry_offset=3600)
+    mounts_mod._gcs_bearer_token("gcp2", _CRED_GCS_CFG)
+    _tok2, exp2 = mounts_mod._gcs_token_cache["gcp2"]
+    # ~1h - 60s slack, far beyond the 60s _CRED_TTL_S window it used to clamp to.
+    assert abs((exp2 - time.monotonic()) - (3600 - 60)) < 3
+
+
+def test_gcs_bearer_token_caches_within_ttl(fresh_upstream, monkeypatch):
+    calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", calls=calls)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    assert len(calls) == 1  # second call served from cache
+
+
+def test_gcs_credentials_object_cached_across_token_reresolves(fresh_upstream, monkeypatch):
+    # The credential OBJECT is built at most once per _CRED_TTL_S window even
+    # when the Token is re-derived from it multiple times (fix 6).
+    calls = []
+    _stub_gcs_token(monkeypatch, token="TOK", expiry_offset=1, calls=calls)
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    # Force the short-lived (1s) token cache to lapse, then re-derive.
+    mounts_mod._gcs_token_cache.clear()
+    mounts_mod._gcs_bearer_token("gcp", _CRED_GCS_CFG)
+    assert len(calls) == 1  # creds object reused from the 60s creds cache
+
+
+class _FakeBotocoreChain:
+    """A self-refreshing botocore credentials object: get_frozen_credentials
+    always answers, so re-freezing is cheap and needs no re-walk."""
+
+    def __init__(self, token=None):
+        self._token = token
+
+    def get_frozen_credentials(self):
+        class _F:
+            access_key = "AKIACHAIN"
+            secret_key = "CHAINSEC"
+        _F.token = self._token
+        return _F
+
+
+def test_signable_credentials_caches_botocore_chain_object(fresh_upstream, monkeypatch):
+    # The (IMDS-slow) provider-chain walk runs at most once per its own window;
+    # get_frozen_credentials is re-run per _CRED_TTL_S on the cached object.
+    builds = []
+
+    def fake_chain(cfg):
+        builds.append(cfg)
+        return _FakeBotocoreChain(token="STSTOK")
+
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_botocore_chain", fake_chain)
+    cfg = {"type": "s3", "env_auth": "true"}  # opts into ambient auth, no static
+    c1 = mounts_mod._signable_credentials("corp", cfg)
+    assert c1 == mounts_mod.s3sign.Credentials("AKIACHAIN", "CHAINSEC", "STSTOK")
+    # The 60s frozen cache lapses but the chain OBJECT is reused (not re-walked).
+    mounts_mod._cred_cache.clear()
+    c2 = mounts_mod._signable_credentials("corp", cfg)
+    assert c2 == c1
+    assert len(builds) == 1  # chain walked once; frozen re-extracted each window
+
+
+def test_signable_credentials_static_keys_skip_botocore(fresh_upstream, monkeypatch):
+    # A remote with static keys never triggers the chain walk.
+    builds = []
+    monkeypatch.setattr(mounts_mod.s3sign, "resolve_botocore_chain",
+                        lambda cfg: builds.append(cfg))
+    cfg = {"type": "s3", "access_key_id": "AKIACFG", "secret_access_key": "SEC"}
+    assert mounts_mod._signable_credentials("corp", cfg) == \
+        mounts_mod.s3sign.Credentials("AKIACFG", "SEC", None)
+    assert builds == []
+
+
+def test_invalidate_upstream_caches_clears_botocore_chain_cache(fresh_upstream):
+    mounts_mod._botocore_creds_cache["corp"] = (object(), time.time() + 999)
+    mounts_mod._invalidate_upstream_caches()
+    assert mounts_mod._botocore_creds_cache == {}
+
+
+# -- tiered private-GCS raw reads: gsign 307 / bearer proxy -----------------
+
+
+class _StubGcsSigner:
+    """A signer object (gcssign.Signer.signer) that returns fixed bytes, so a
+    signed URL carries a real X-Goog-Signature without any crypto."""
+
+    def sign(self, data):
+        return b"\xab\xcd\xef"
+
+
+def _stub_gcs_signer(monkeypatch, present=True):
+    signer = (gcssign_mod.Signer(_StubGcsSigner(), "svc@p.iam.gserviceaccount.com")
+              if present else None)
+    monkeypatch.setattr(mounts_mod.gcssign, "resolve_signer", lambda cfg: signer)
+
+
+def test_upstream_gsign_signs_sa_key_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a", "b.parquet")
+    url = mounts_mod.upstream_url_for(f)
+    assert url.startswith(
+        "https://storage.googleapis.com/bucket/pre/a/b.parquet?")
+    assert "X-Goog-Signature=" in url and "X-Goog-Algorithm=GOOG4-RSA-SHA256" in url
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "gsign"
+    assert mounts_mod._upstream_links == {}  # gsign never caches a link
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+    # Validation is one-time per fs: a second object does not re-validate.
+    seen = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: seen.append(url) or (206, None))
+    mounts_mod.upstream_url_for(
+        os.path.join(mounts_mod.mountpoint(c), "c.parquet"))
+    assert seen == []
+
+
+def test_upstream_gsign_403_falls_to_bearer_and_bearer_serves(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)    # SA key parses...
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")  # ...and a token resolves
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (403, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None  # signature rejected, no 307
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "bearer"
+    # FINDING 1: a remote pinned to bearer serves the token even though the SA
+    # key still parses (_gcs_signable True) — no dead-end back to the serve.
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
+    # publiclink is never attempted for a credentialed GCS remote.
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_upstream_gsign_inconclusive_not_pinned(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (0, None))  # network error -> inconclusive
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None
+    assert "gcp:bucket" not in mounts_mod._upstream_mode  # not pinned -> retried
+    assert mounts_mod._sign_neg_cache.get("gcp:bucket", 0.0) > 0.0
+
+
+def test_upstream_gsign_retry_window_serves_bearer_without_pinning(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 1: while gsign validation is inconclusive (its retry window), a raw
+    # read must still be served via the bearer proxy in the SAME request even
+    # though the SA key parses (_gcs_signable True) — not dead-end at the serve —
+    # AND bearer must NOT be permanently pinned, so gsign is retried after the
+    # window.
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)      # SA key parses (signable)
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")   # ...and a token resolves
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (0, None))  # network error -> inconclusive
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None  # no 307 URL this window
+    assert "gcp:bucket/pre" not in mounts_mod._upstream_mode  # NOT pinned bearer
+    # ...but the bearer proxy serves the token in the same window (not a dead-end)
+    # even though the SA key still parses.
+    assert mounts_mod._gcs_signable("gcp", _CRED_GCS_CFG) is True
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_upstream_gsign_transient_signer_none_not_pinned_bearer(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 2: a signable-SHAPED remote (SA key configured) whose signer
+    # momentarily resolves None must NOT be pinned to bearer permanently — once
+    # the signer comes back the remote ends up in gsign mode, not stuck bearer.
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG  # carries service_account_file
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    _stub_gcs_signer(monkeypatch, present=False)  # SA file momentarily unreadable
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is None            # served via bearer
+    assert "gcp:bucket/pre" not in mounts_mod._upstream_mode  # NOT pinned bearer
+    # Signer comes back and its cache expires: gsign now validates and pins.
+    _stub_gcs_signer(monkeypatch, present=True)
+    mounts_mod._gcs_signer_cache.clear()
+    url = mounts_mod.upstream_url_for(f)
+    assert url is not None and "X-Goog-Signature=" in url
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "gsign"
+
+
+def test_upstream_gsign_unpins_when_signer_vanishes(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: (206, None))
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.upstream_url_for(f) is not None
+    assert mounts_mod._upstream_mode["gcp:bucket"] == "gsign"
+    # SA key rotated away (and its cached signer expires): gsign mints nothing.
+    _stub_gcs_signer(monkeypatch, present=False)
+    mounts_mod._gcs_signer_cache.clear()
+    assert mounts_mod.upstream_url_for(f) is None
+    # FINDING 5: the demotion is NON-permanent — the mode is un-pinned, so the
+    # next request re-derives (gsign again once the signer returns) rather than
+    # being stuck on a wrong mode forever.
+    assert "gcp:bucket" not in mounts_mod._upstream_mode
+
+
+def test_upstream_bearer_token_only_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    # Token-only SHAPE: a non-anonymous GCS remote with no SA key configured
+    # (oauth / ADC). It pins bearer straight away (never signable) and a token
+    # resolves, so the bearer proxy serves.
+    rcd.responses["config/get"] = {"type": "google cloud storage"}
+    _stub_gcs_token(monkeypatch, token="TOKENVAL")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket/pre")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    # No URL may carry the token -> upstream_url_for returns None, mode bearer.
+    assert mounts_mod.upstream_url_for(f) is None
+    assert mounts_mod._upstream_mode["gcp:bucket/pre"] == "bearer"
+    url, headers = mounts_mod.bearer_upstream_for(f)
+    assert url == "https://storage.googleapis.com/bucket/pre/a.parquet"
+    assert headers == {"Authorization": "Bearer TOKENVAL"}
+    # publiclink (PublicLink: False for GCS) is never called.
+    assert [x for x in rcd.calls if x[0] == "operations/publiclink"] == []
+
+
+def test_bearer_upstream_none_for_anonymous_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _ANON_GCS_CFG
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token="X", calls=resolver_calls)
+    c = mounts_mod.add_mount("open", "gcs-open:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.bearer_upstream_for(f) is None
+    assert resolver_calls == []  # anonymous never consults the token resolver
+
+
+def test_bearer_upstream_none_for_sa_key_gcs(home, rcd, fresh_upstream, monkeypatch):
+    import os
+
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    _stub_gcs_signer(monkeypatch, present=True)  # signable -> 307 path, not bearer
+    _stub_gcs_token(monkeypatch, token="X")
+    c = mounts_mod.add_mount("gcp", "gcp:bucket")
+    f = os.path.join(mounts_mod.mountpoint(c), "a.parquet")
+    assert mounts_mod.bearer_upstream_for(f) is None
+
+
+def test_bearer_upstream_none_outside_mounts(fresh_upstream):
+    assert mounts_mod.bearer_upstream_for("/somewhere/else.parquet") is None
+
+
 # -- unified direct-listing dispatchers (S3 + GCS) --------------------------
+
+
+def test_direct_list_capable_resolves_no_credentials(home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: direct_list_capable is a pure config-shape check — it must walk
+    # NONE of the credential/token resolvers, so the unbudgeted conditions/stat
+    # callers can't be stalled by a black-holed metadata endpoint.
+    resolved = []
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolved.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "resolve_botocore_chain",
+                   "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy("s3:" + fnname))
+    for fnname in ("resolve_credentials", "resolve_token", "resolve_signer"):
+        monkeypatch.setattr(mounts_mod.gcssign, fnname, _spy("gcs:" + fnname))
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    s = mounts_mod.add_mount("corp", "corp:bucket")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(s))
+    mounts_mod._upstream_cfg.clear()
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    g = mounts_mod.add_mount("gcp", "gcp:bucket")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(g))
+    assert resolved == []  # no credential/token resolution from the predicate
 
 
 def test_direct_list_capable_true_for_both_backends(home, rcd, fresh_upstream):
