@@ -291,24 +291,25 @@
   .modecard p { margin:0 0 12px; font-size:13px; color:var(--dim); }
   .modecard .mc-go { margin-top:auto; font-size:12.5px; color:var(--yellow); font-weight:600; }
 
-  /* first-visit onboarding chooser */
-  .chooser { border:1px solid #4a4a2a; background:linear-gradient(180deg,#1e1e17,#1a1a1a);
-       border-radius:14px; padding:17px 19px 15px; margin:22px 0 6px; animation:chFade .45s ease both; }
-  .chooser .ch-q { font-size:14px; font-weight:600; color:var(--text); margin:0 0 12px;
-       display:flex; align-items:center; gap:8px; }
-  .chooser .ch-q .spark { color:var(--yellow); }
-  .ch-opts { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; }
-  .ch-opt { display:flex; flex-direction:column; gap:3px; text-decoration:none; color:var(--text);
-       background:var(--panel); border:1px solid var(--border); border-radius:11px; padding:14px 15px;
-       transition:border-color .12s, transform .12s; }
-  .ch-opt:hover { border-color:var(--yellow); transform:translateY(-1px); }
-  .ch-opt .ch-ic { font-size:22px; }
-  .ch-opt b { font-size:13.5px; }
-  .ch-opt .ch-sub { font-size:11.5px; color:var(--mut); line-height:1.35; }
-  .ch-skip { appearance:none; background:none; border:0; color:var(--mut); font:inherit; font-size:12px;
-       cursor:pointer; margin:11px 0 0; padding:2px 0; text-decoration:underline; text-underline-offset:2px; }
-  .ch-skip:hover { color:var(--dim); }
-  @keyframes chFade { from{opacity:0; transform:translateY(-6px)} to{opacity:1; transform:none} }
+  /* two-door landing fork (open data · build an app) */
+  .doors { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:22px 0 8px; align-items:stretch; }
+  .door { display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border);
+       border-radius:14px; padding:18px 20px; }
+  .door h3 { margin:0 0 12px; font-size:16px; }
+  .door p { margin:0 0 12px; font-size:13px; color:var(--dim); }
+  .door p b { color:var(--text); font-weight:600; }
+  .door-media { border:1px solid var(--border); border-radius:11px; overflow:hidden; margin:0 0 12px;
+       background:var(--panel2); }
+  .door-media video { display:block; width:100%; height:auto; }
+  .door .frame { margin:0 0 12px; }
+  .door-promptlab { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--yellow);
+       font-weight:700; margin:4px 0 7px; }
+  .door-cta { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding-top:4px; }
+  .door-go { text-decoration:none; color:#141414; background:var(--yellow); border:1px solid var(--yellow);
+       border-radius:10px; padding:11px 16px; font:700 13.5px/1 inherit; text-align:center; transition:filter .15s; }
+  .door-go:hover { color:#141414; filter:brightness(1.05); }
+  .door-sub { font-size:12px; color:var(--dim); text-decoration:none; text-align:center; }
+  .door-sub:hover { color:var(--text); }
 
   .navtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:0 0 8px; }
   .navtile { display:flex; align-items:flex-start; gap:12px; text-decoration:none; color:var(--text);
@@ -402,7 +403,7 @@
     .rail.open { transform:none; }
     main { margin-left:0; padding:64px 18px 80px; }
     .grid2 { grid-template-columns:1fr; }
-    .navtiles, .ideagrid, .ch-opts { grid-template-columns:1fr; }
+    .navtiles, .ideagrid, .doors { grid-template-columns:1fr; }
     .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
     .menuBtn { display:flex; position:fixed; top:12px; left:12px; z-index:25; width:38px; height:38px;
        align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border);
@@ -429,75 +430,57 @@
   <!-- ============================ HOME (landing / value) ============================ -->
   <section class="page" data-slug="home" data-title="Home">
     <p class="crumb">Fused Render</p>
-    <h1 class="title">Turn folders on your machine into live apps</h1>
-    <p class="lede">Fused Render runs on <b>your computer</b>. Point it at a folder and any HTML file becomes a live app — with a <span class="y mono">fused</span> bridge that lets the page run the <b>Python sitting right next to it</b>. No server, no build step, no upload. Your files, your machine.</p>
+    <h1 class="title">Your files, turned into live apps.</h1>
+    <p class="lede">Fused Render runs on <b>your machine</b> — no accounts, no cloud, no setup. Open the data you already have as interactive views, or build tiny apps with one HTML file and one Python file.</p>
 
-    <div class="hero-cta">
-      <a class="cta primary" href="?page=build">Build your own app →</a>
-      <a class="cta" href="?page=templates">Open your data →</a>
-    </div>
-
-    <div class="chooser" id="chooser" hidden>
-      <div class="ch-q"><span class="spark">✦</span> New here? What do you want to do first?</div>
-      <div class="ch-opts">
-        <a class="ch-opt" href="?page=build" data-intent="build">
-          <span class="ch-ic">🛠️</span>
-          <b>Build an app from scratch</b>
-          <span class="ch-sub">Describe a tool, get a live page backed by Python</span>
-        </a>
-        <a class="ch-opt" href="?page=templates" data-intent="templates">
-          <span class="ch-ic">📂</span>
-          <b>Open data I already have</b>
-          <span class="ch-sub">Render a file you have through a template</span>
-        </a>
-        <a class="ch-opt" href="?page=showcase" data-intent="showcase">
-          <span class="ch-ic">✨</span>
-          <b>Just show me what's possible</b>
-          <span class="ch-sub">Browse finished projects you can clone</span>
-        </a>
+    <div class="doors">
+      <!-- CARD A — open a file you already have -->
+      <div class="door">
+        <h3>Open a file you already have</h3>
+        <div class="door-media">
+          <video data-shot="assets/open_with_right_click.mp4" muted loop autoplay playsinline></video>
+        </div>
+        <p>Right-click any CSV, Parquet, PDF, GeoTIFF and more → <b>Open with Fused Render</b>. It opens as an interactive view — nothing to write, nothing uploaded.</p>
+        <div class="door-cta">
+          <a class="door-go" href="?page=using" data-intent="templates">See how opening files works →</a>
+          <a class="door-sub" href="?page=templates">Browse file templates</a>
+        </div>
       </div>
-      <button class="ch-skip" id="chSkip">I'll explore on my own</button>
-    </div>
 
-    <h2>See it run</h2>
-    <p class="sub">This isn't a video. Drag the slider — a <b>Python file on this machine</b> throws darts and estimates <b>π</b> from how many land inside the circle. That round trip, HTML asking Python for an answer, is what every Fused Render app is built on.</p>
-    <div class="frame short" id="demoFrame">
-      <div class="framebar">
-        <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
-        <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
+      <!-- CARD B — build a tiny app (live π demo, same mount mechanism as before) -->
+      <div class="door">
+        <h3>Build a tiny app</h3>
+        <div class="frame short" id="demoFrame">
+          <div class="framebar">
+            <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
+            <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
+          </div>
+          <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
+          <div class="ph r16 miss">
+            <span class="tagn">live embed · fallback</span>
+            <div class="ic">🎯</div>
+            <div class="lab">Live preview loads inside Fused Render</div>
+            <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
+          </div>
+        </div>
+        <p>One HTML file + one Python file = a live tool. Drag the slider — that's <b>Python running on your machine</b> right now.</p>
+        <div class="door-promptlab">✦ Faster with Claude Code</div>
+        <div class="promptbox">
+          <button class="copybtn" data-copy="homePrompt">Copy</button>
+          <pre id="homePrompt">Create a Fused Render app that shows my CPU and memory usage as live gauges.</pre>
+        </div>
+        <div class="door-cta">
+          <a class="door-go" href="?page=build" data-intent="build">Build your first app →</a>
+        </div>
       </div>
-      <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
-      <div class="ph r16 miss">
-        <span class="tagn">live embed · fallback</span>
-        <div class="ic">🎯</div>
-        <div class="lab">Live preview loads inside Fused Render</div>
-        <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
-      </div>
     </div>
 
-    <h2>Two ways to use it</h2>
-    <p class="sub">Fused Render does two distinct things. Start with either — nothing locks you in, so you can move between them whenever you want.</p>
-    <div class="grid2">
-      <a class="modecard" href="?page=build">
-        <div class="mc-ic">🛠️</div>
-        <h3>Build an app</h3>
-        <p>Describe what you want and get a live tool: a dashboard, a control panel, an interactive chart — front-end in HTML, logic in Python. Great with Claude Code.</p>
-        <span class="mc-go">Building with Fused Render →</span>
-      </a>
-      <a class="modecard" href="?page=templates">
-        <div class="mc-ic">📂</div>
-        <h3>Open your data</h3>
-        <p>Right-click a file — a Parquet, a GeoTIFF, a CSV — and it renders through a template as an interactive view. No app to write, nothing to download.</p>
-        <span class="mc-go">Templates →</span>
-      </a>
-    </div>
-
-    <h2>Everything else</h2>
+    <h2>Once you're rolling</h2>
     <div class="navtiles">
-      <a class="navtile" href="?page=using"><span class="nt-ic">🧭</span><div><h4>Using the app</h4><p>Bookmarks, split view, and getting around the explorer.</p></div></a>
-      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount remote data</h4><p>Browse S3, GCS, or Google Drive like a local folder.</p></div></a>
-      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Publish a project so anyone can open it in a browser.</p></div></a>
-      <a class="navtile" href="?page=showcase"><span class="nt-ic">✨</span><div><h4>Showcase</h4><p>Working projects you can clone and pick apart.</p></div></a>
+      <a class="navtile" href="?page=using"><span class="nt-ic">📌</span><div><h4>Bookmarks &amp; split view</h4><p>Pin the pages you use daily, side by side.</p></div></a>
+      <a class="navtile" href="?page=templates"><span class="nt-ic">🧩</span><div><h4>Custom templates</h4><p>Teach it to open your file types, your way.</p></div></a>
+      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount S3 &amp; remote buckets</h4><p>Browse remote data like a local folder.</p></div></a>
+      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Share a page as a public link.</p></div></a>
     </div>
 
     <h2>What people build</h2>
@@ -1221,24 +1204,17 @@ $("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(
 let helloPrimed = false;
 function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
 
-/* ---- first-visit onboarding chooser (Layer 1 prototype) ----
-   Shows one lightweight question on the first visit to Home, routing the user
-   toward Build / Templates / Showcase. Non-invasive (no personal data), stored
-   only in localStorage, and never a gate — every path stays available below. */
-const chooserEl = $("#chooser");
-let chooserWired = false;
-function readIntent(){ try { return localStorage.getItem("fused.learn.intent"); } catch(e){ return null; } }
+/* ---- record which door the user chose on Home ----
+   The two landing cards carry data-intent; clicking a primary CTA stores the
+   choice in localStorage. Non-invasive (no personal data) and never a gate —
+   every path stays available. */
+let intentWired = false;
 function setIntent(v){ try { localStorage.setItem("fused.learn.intent", v); } catch(e){} }
 function initChooser(){
-  if (!chooserEl) return;
-  chooserEl.hidden = !!readIntent();          // hide once a choice (or skip) is stored
-  if (chooserWired) return;
-  chooserWired = true;
-  // Options keep their ?page= hrefs, so the global router handles navigation;
-  // we only record which path was chosen.
-  chooserEl.querySelectorAll(".ch-opt").forEach(a =>
+  if (intentWired) return;
+  intentWired = true;
+  $$('[data-intent]').forEach(a =>
     a.addEventListener("click", () => setIntent(a.dataset.intent)));
-  $("#chSkip").addEventListener("click", () => { setIntent("skip"); chooserEl.hidden = true; });
 }
 
 /* live templates list (runs once, when the Templates page opens) */
