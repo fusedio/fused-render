@@ -18,6 +18,7 @@ from pathlib import Path
 
 _TITLE = "FusedRender"
 _DIALOG_TIMEOUT_S = 300  # a modal dialog a user never answers must not hang forever
+_XDG_OPEN_WAIT_S = 5  # long enough for a failing handler to exit before we call it a success
 
 
 def _dialog_tool() -> str:
@@ -93,37 +94,53 @@ def open_url(url: str) -> None:
 
 
 def _xdg_open(target: str) -> None:
-    # Detached like server.py's reveal handler; raises OSError if xdg-open is
-    # absent, which core's _safe_call / _safe_open already log-and-ignore.
-    subprocess.Popen(
+    # Detached like server.py's reveal handler, but the exit code is checked:
+    # a failed open must raise OSError so core's _safe_open answers status 1
+    # (rejection dialog) instead of silently reporting success — the regression
+    # against os.startfile. A handler that stays in the foreground never exits
+    # within the wait window, so a timeout is treated as success (the open is
+    # underway). Raises OSError if xdg-open is absent (FileNotFoundError), which
+    # core's _safe_call / _safe_open already log-and-ignore.
+    proc = subprocess.Popen(
         ["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+    try:
+        returncode = proc.wait(timeout=_XDG_OPEN_WAIT_S)
+    except subprocess.TimeoutExpired:
+        return
+    if returncode != 0:
+        raise OSError(f"xdg-open exited with status {returncode} for {target}")
 
 
 def _tk_message(kind: str, title: str, message: str):
+    # The whole thing (import AND Tk()) is guarded: on a display-less session
+    # Tk() raises TclError, and alert() is the unguarded fatal-error reporter in
+    # __main__.py — it must degrade to a best-effort no-op, never crash.
     try:
         import tkinter
         from tkinter import messagebox
-    except Exception:  # noqa: BLE001 - tkinter genuinely absent: best-effort no-op
+
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            return getattr(messagebox, kind)(title, message)
+        finally:
+            root.destroy()
+    except Exception:  # noqa: BLE001 - tk missing / no display: best-effort no-op
         return None
-    root = tkinter.Tk()
-    root.withdraw()
-    try:
-        return getattr(messagebox, kind)(title, message)
-    finally:
-        root.destroy()
 
 
 def _tk_pick_file() -> str | None:
     try:
         import tkinter
         from tkinter import filedialog
-    except Exception:  # noqa: BLE001
+
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            chosen = filedialog.askopenfilename(title="Open file")
+        finally:
+            root.destroy()
+        return chosen or None
+    except Exception:  # noqa: BLE001 - tk missing / no display: best-effort no-op
         return None
-    root = tkinter.Tk()
-    root.withdraw()
-    try:
-        chosen = filedialog.askopenfilename(title="Open file")
-    finally:
-        root.destroy()
-    return chosen or None

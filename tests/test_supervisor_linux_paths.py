@@ -169,3 +169,48 @@ def test_ui_falls_back_to_kdialog(monkeypatch):
 def test_ui_falls_back_to_tkinter(monkeypatch):
     monkeypatch.setattr(ui.shutil, "which", lambda tool: None)
     assert ui._dialog_tool() == "tkinter"
+
+
+class _FakePopen:
+    def __init__(self, returncode=0, hang=False):
+        self._returncode = returncode
+        self._hang = hang
+
+    def wait(self, timeout=None):
+        if self._hang:
+            raise ui.subprocess.TimeoutExpired(cmd="xdg-open", timeout=timeout)
+        return self._returncode
+
+
+def test_xdg_open_raises_on_nonzero_exit(monkeypatch):
+    # A failed xdg-open must raise (so core's _safe_open answers status 1 and
+    # shows the rejection dialog) instead of silently reporting success.
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: _FakePopen(returncode=3))
+    with pytest.raises(OSError):
+        ui.open_path(Path("/does/not/matter"))
+
+
+def test_xdg_open_success_on_zero_exit(monkeypatch):
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: _FakePopen(returncode=0))
+    ui.open_uri("https://example.invalid")  # returns without raising
+
+
+def test_xdg_open_treats_timeout_as_success(monkeypatch):
+    # A foreground handler that never exits within the wait window is the open
+    # succeeding, not failing — a timeout must NOT raise.
+    monkeypatch.setattr(ui.subprocess, "Popen", lambda *a, **k: _FakePopen(hang=True))
+    ui.open_url("https://example.invalid")  # returns without raising
+
+
+def test_alert_is_a_no_op_when_tk_cannot_start(monkeypatch):
+    # On a display-less session Tk() raises TclError; alert() is the unguarded
+    # fatal-error reporter in __main__.py and must degrade to a no-op, not crash.
+    monkeypatch.setattr(ui.shutil, "which", lambda tool: None)  # force the tkinter path
+
+    import tkinter
+
+    def boom():
+        raise tkinter.TclError("no display name and no $DISPLAY environment variable")
+
+    monkeypatch.setattr(tkinter, "Tk", boom)
+    assert ui.alert("something went wrong") is None
