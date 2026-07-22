@@ -23,7 +23,7 @@ import win32con
 import win32gui
 
 from fused_render._view_url_codec import view_url
-from fused_render.win_supervisor import instance, protocol, startup, tray
+from fused_render.win_supervisor import instance, protocol, startup, tray, update
 from fused_render.win_supervisor.job import Job
 from fused_render.win_supervisor.paths import DesktopPaths
 
@@ -58,17 +58,10 @@ def run(initial: protocol.Command) -> None:
         try:
             inst.send(initial, 75.0)
         except instance.CommandRejected:
-            # A healthy primary answered and rejected the specific command.
-            # Only an Open is safe to swallow this way (e.g. a bad/missing
-            # forwarded path — the app did start, just not that file): report
-            # it accurately instead of the generic "could not start" dialog.
-            # Anything else (crucially ShutdownForUpgrade) must re-raise —
-            # the installer's upgrade/uninstall step execs us with
-            # --shutdown-for-upgrade and requires a non-zero exit code on
-            # failure to know teardown didn't actually happen; swallowing a
-            # rejection there would report a clean shutdown that never
-            # occurred and let the installer proceed over a still-running
-            # supervisor.
+            # A healthy primary rejected the specific command. Swallow it only
+            # for an Open (the app started, just not that file); anything else
+            # — crucially ShutdownForUpgrade — must re-raise so the installer
+            # sees the non-zero exit and knows teardown never happened.
             if isinstance(initial, protocol.Open):
                 _report_open_rejected(initial.path)
                 return
@@ -87,12 +80,10 @@ def run(initial: protocol.Command) -> None:
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
-    # The initial open is dispatched off-thread like every other open: a hung
-    # Path.exists()/os.startfile (disconnected UNC path) must not stall run()
-    # here, before the tray and pipe server exist — the supervisor would be
-    # alive but undiscoverable and unable to answer ShutdownForUpgrade. A
-    # failed open is logged by _safe_open inside the worker and deliberately
-    # ignored: it must never tear down the Job-owned server (bugbot #7).
+    # Dispatched off-thread like every other open: a hung Path.exists()/
+    # os.startfile (disconnected UNC path) must not stall run() before the
+    # tray and pipe server exist, or the supervisor is alive but can't answer
+    # ShutdownForUpgrade. A failed open is logged and ignored, never fatal.
     _spawn_open(port, initial, paths)
 
     try:
@@ -102,6 +93,7 @@ def run(initial: protocol.Command) -> None:
         login_enabled = False
 
     tray_handle = tray.start(port, login_enabled, paths)
+    update.start_auto_checks(paths)
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
     pipe_thread = inst.serve(pipe_requests, paths.log)
 
@@ -131,21 +123,14 @@ def _event_loop(
     pipe_requests: "queue.Queue[instance.Request]",
 ) -> "tuple[_ExitReason, queue.Queue[int] | None]":
     """Services tray actions and pipe requests until something ends the
-    session, then reports WHY it ended — and nothing else. All teardown
-    lives in _teardown(), so every exit reason goes through the identical
-    sequence instead of each hand-rolling its own. The second element is
-    the installer's pending response queue for UPGRADE (it must be answered
-    only after teardown finishes, with its true status), else None.
+    session, then returns why (teardown itself lives in _teardown, so every
+    exit reason takes the same path). The second element is the installer's
+    pending UPGRADE response queue, answered only after teardown, else None.
 
-    Ordering per iteration is load-bearing: pipe requests are checked even
-    while an exit-confirm dialog sits unanswered (confirmed is absent, not
-    blocking), so ShutdownForUpgrade pre-empts the dialog — it returns
-    immediately and the dangling daemon-thread dialog vanishes at exit.
-    Forwarded opens are likewise dispatched via _spawn_open, never awaited
-    here — their pipe response is put from the worker once the open
-    actually finishes, so a hung Path.exists() (a disconnected UNC path)
-    can't stall this loop's ability to answer a concurrent
-    ShutdownForUpgrade inside the pipe server's 20s window."""
+    Ordering is load-bearing: pipe requests are polled even while an exit
+    dialog is unanswered, so a ShutdownForUpgrade pre-empts it; forwarded
+    opens are dispatched via _spawn_open, never awaited, so a hung open can't
+    stall answering a concurrent ShutdownForUpgrade in its 20s window."""
     exit_confirm: "queue.Queue[bool]" = queue.Queue()
     while True:
         while True:
@@ -161,6 +146,8 @@ def _event_loop(
                 _safe_call(paths, lambda: _open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
                 _safe_call(paths, lambda: _open_uri("ms-settings:defaultapps"))
+            elif action is tray.TrayAction.CHECK_UPDATES:
+                _spawn_update_check(paths)
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
 
@@ -237,15 +224,11 @@ def _stop_pipe(
     pipe_thread: threading.Thread,
 ) -> None:
     """Stop the pipe server under one overall deadline. `stop_serving()` is
-    retried each iteration because a single poke can race the gap between
-    `_serve_pipe`'s stop check and its `CreateNamedPipe`. Requests drained
-    here are genuine external traffic (the self-unblock never enters the
-    queue — it's rejected with status 1 inside `_serve_pipe`): a real
-    ShutdownForUpgrade gets 0 — teardown is in progress and completes right
-    after this returns — everything else gets 1. At the deadline, give up:
-    the pipe thread is a daemon, process exit reaps it, and blocking any
-    longer would stall job.close() indefinitely (bugbot: an uncapped flood
-    of forwarded commands during teardown used to hang this forever)."""
+    retried each iteration because a single poke can race `_serve_pipe`'s stop
+    check. Requests drained here are real external traffic: a genuine
+    ShutdownForUpgrade gets status 0 (teardown completes right after), all
+    else gets 1. At the deadline, give up — the daemon thread is reaped at
+    process exit, and blocking longer would stall job.close()."""
     deadline = time.monotonic() + _STOP_PIPE_TIMEOUT_S
     while pipe_thread.is_alive() and time.monotonic() < deadline:
         inst.stop_serving()
@@ -291,14 +274,11 @@ def _spawn_open(
     paths: DesktopPaths,
     response: "queue.Queue[int] | None" = None,
 ) -> None:
-    """Open on a dedicated thread (same idiom as `_spawn_file_dialog`):
-    `_open_command` can hang the caller — `Path.exists()` stalls on a
-    disconnected UNC path, `os.startfile` on a stuck shell association —
-    and the loop must keep servicing pipe_requests so a concurrent
-    ShutdownForUpgrade is answered inside `_serve_pipe`'s 20s window. For a
-    pipe-forwarded command the response is put from this worker once the
-    open actually finishes: a hung open makes THAT client's pipe call time
-    out client-side, not the whole loop."""
+    """Open on a dedicated thread: `_open_command` can hang (Path.exists on a
+    disconnected UNC path, os.startfile on a stuck association) and the loop
+    must stay free to answer a concurrent ShutdownForUpgrade. A forwarded
+    command's response is put from this worker once the open finishes, so a
+    hung open times out that client, not the loop."""
 
     def worker():
         ok = _safe_open(port, command, paths)
@@ -308,13 +288,20 @@ def _spawn_open(
     threading.Thread(target=worker, daemon=True, name="fused-render-open").start()
 
 
+def _spawn_update_check(paths: DesktopPaths) -> None:
+    """Run the manual update check off the loop — it blocks on network I/O and
+    its own dialogs. update.check is self-guarded, so a second click while a
+    check is already running is a no-op."""
+    threading.Thread(
+        target=update.check, args=(paths,), daemon=True, name="fused-render-update"
+    ).start()
+
+
 def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
-    """Open-file common dialog on a dedicated thread (bugbot #2): the
-    supervisor's main loop has no Win32 message pump, but
-    `GetOpenFileNameW` pumps its own internally — it just must not run on
-    a thread another blocking call owns, and needs an STA COM apartment
-    for shell extensions. The lock drops a second click while one dialog
-    is already open rather than stacking dialogs."""
+    """Open-file common dialog on a dedicated thread: GetOpenFileNameW pumps
+    its own messages but needs its own thread and an STA COM apartment for
+    shell extensions. The lock drops a second click while one dialog is
+    already open."""
     if not _dialog_lock.acquire(blocking=False):
         return
 
@@ -340,18 +327,11 @@ def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
 
 
 def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
-    """Exit confirmation on a dedicated thread (same idiom as
-    `_spawn_file_dialog`): `MessageBoxW` is modal and would otherwise block
-    the loop that services tray actions and pipe requests — if a
-    ShutdownForUpgrade arrives while the dialog is up, it must still be
-    answered within the pipe server's 20s window, or the upgrade fails even
-    though the app is running fine (just waiting on an unanswered dialog).
-    The upgrade wins that race: it gets serviced immediately and the process
-    exits, so the still-open dialog (on its own daemon thread) simply
-    vanishes — no attempt to dismiss it first. The lock drops a second Exit
-    click while one confirmation is already open, same as the file dialog
-    (kept as a separate lock: sharing `_dialog_lock` would make Exit
-    silently unclickable whenever a file picker happens to be open)."""
+    """Exit confirmation on a dedicated thread: the modal MessageBoxW must not
+    block the loop, so a ShutdownForUpgrade arriving while it's up is still
+    answered in the 20s window (the upgrade wins — the process exits and the
+    dialog vanishes with it). A separate lock from the file dialog, so an open
+    file picker doesn't make Exit unclickable."""
     if not _exit_dialog_lock.acquire(blocking=False):
         return
 
@@ -487,11 +467,9 @@ def _start_ready_server(paths: DesktopPaths, token: str):
         job = Job()
         process = None
         try:
-            # _start_server (job.spawn) must be inside this try too: its
-            # failure modes (pywintypes.error from AssignProcessToJobObject/
-            # ResumeThread, FileNotFoundError if the runtime is missing) are
-            # neither RuntimeError nor TimeoutError, so they used to escape
-            # this loop entirely and skip job.close() below.
+            # job.spawn must be inside this try too: its failure modes
+            # (pywintypes.error, FileNotFoundError) would otherwise escape the
+            # loop and skip job.close() below.
             process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)
             return job, process, port

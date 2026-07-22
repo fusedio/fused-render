@@ -65,9 +65,9 @@ class DesktopPaths:
             "FUSED_RENDER_HOME": str(self.state),
             "FUSED_RENDER_CACHE_DIR": str(self.cache),
             "FUSED_RENDER_LOG_DIR": str(self.logs),
-            # Explicit baseline opt-out (bugbot #5): desktop state is a flat
-            # root, never nested under a branch subfolder — _branch.py treats
-            # an explicitly-set empty FUSED_RENDER_BRANCH as "no isolation".
+            # Explicit opt-out: desktop state is a flat root, never nested
+            # under a branch subfolder — _branch.py treats an empty
+            # FUSED_RENDER_BRANCH as "no isolation".
             "FUSED_RENDER_BRANCH": "",
         }
 

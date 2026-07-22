@@ -1,17 +1,9 @@
-"""Tray icon — port of windows/supervisor/src/tray.rs (feat/windows-desktop-
-foundation, PR #162), using pystray instead of the tray-icon crate.
+"""Tray icon (pystray port of windows/supervisor/src/tray.rs).
 
-Bugbot fixes carried over from the Rust review (PR #162):
-- #1/#3 "Start at sign in" checkbox desync / registry failure kills the
-  supervisor: pystray's `checked=` menu-item argument is a *callable*,
-  re-evaluated every time the menu opens, so the checkbox is always derived
-  from `_State.login_enabled` — there is no "created once, stale forever"
-  state to desync. `_on_toggle_login` only flips `_State.login_enabled` on a
-  *successful* registry write; a failure is caught, logged via
-  `paths.log(...)`, and simply doesn't change state (which reads as the
-  checkbox "reverting"). The supervisor process itself is never at risk:
-  pystray dispatches each menu action on its own thread, and every handler
-  here is also wrapped so an unexpected exception can't propagate.
+The "Start at sign in" checkbox derives from `_State.login_enabled` via a
+`checked=` callable re-evaluated each time the menu opens, and
+`on_toggle_login` only flips that state on a successful registry write — a
+failed write is logged and leaves the checkbox unchanged.
 """
 from __future__ import annotations
 
@@ -39,6 +31,7 @@ class TrayAction(Enum):
     OPEN_FILE = auto()
     OPEN_LOGS = auto()
     DEFAULT_APPS = auto()
+    CHECK_UPDATES = auto()
     EXIT = auto()
 
 
@@ -49,14 +42,9 @@ class _State:
 
 @dataclass
 class TrayHandle:
-    """Returned by `start()`. `actions` is the queue the supervisor's main
-    loop drains; `stop()` removes the tray icon (Windows' NIM_DELETE) when
-    the supervisor has decided to actually exit — without it, the icon
-    lingers in the notification area (ghost icon) until Explorer next
-    refreshes, since nothing else tells pystray to tear it down. `_stopped`
-    also ends the retry loop in `start()`: if `stop()` lands while the loop
-    is backing off between attempts (no icon exists yet), the event keeps a
-    later retry from showing a brand-new icon after shutdown began."""
+    """`actions` is the queue the supervisor's main loop drains. `stop()`
+    removes the icon and sets `_stopped`, which also aborts a retry that is
+    mid-backoff in `start()` so no new icon appears after shutdown began."""
 
     actions: "queue.Queue[TrayAction]"
     _current_icon: list = field(default_factory=list)  # 0 or 1 pystray.Icon
@@ -73,10 +61,9 @@ class TrayHandle:
 
 def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     """Spawns the tray on its own daemon thread and returns immediately — the
-    Job/Python server lifecycle must never depend on tray success. If
-    Explorer's notification-area infrastructure isn't up yet (launched from
-    the sign-in Run key before Explorer's tray is ready), retry with backoff
-    until it succeeds: the icon shows up late, never "not at all.\""""
+    server lifecycle must never depend on tray success. Retries with backoff
+    if Explorer's notification area isn't up yet (e.g. launched from the
+    sign-in Run key before Explorer), so the icon shows up late, not never."""
     handle = TrayHandle(actions=queue.Queue())
     state = _State(login_enabled=login_enabled)
 
@@ -121,6 +108,9 @@ def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> N
     def on_default_apps(icon, item):
         emit(TrayAction.DEFAULT_APPS)
 
+    def on_check_updates(icon, item):
+        emit(TrayAction.CHECK_UPDATES)
+
     def on_exit(icon, item):
         emit(TrayAction.EXIT)
 
@@ -140,6 +130,7 @@ def _run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> N
         pystray.MenuItem(f"Running on port {port}", None, enabled=False),
         pystray.MenuItem("Open logs", on_open_logs),
         pystray.MenuItem("Default apps...", on_default_apps),
+        pystray.MenuItem("Check for updates...", on_check_updates),
         pystray.MenuItem(
             "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
         ),

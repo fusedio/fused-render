@@ -172,3 +172,65 @@ jobs:
           git add Casks/fused-render.rb
           git commit -m "fused-render ${VERSION}"
           git push origin main
+
+  build-windows-release:
+    # Runs after the DMG job so the GitHub Release already exists — this job
+    # only appends the Windows installer to it (no second release-create to
+    # race). See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
+    needs: build-sign-notarize-release
+    runs-on: windows-latest
+    permissions:
+      contents: write # attach the installer to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+      WINDOWS_PREFIX: fused-render-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      # Inno Setup was preinstalled on windows-2022 but dropped from
+      # windows-2025 (actions/runner-images#11644), so install it explicitly
+      # rather than assume the image ships it. build_windows_installer.ps1
+      # finds ISCC.exe under {pf(x86)}\Inno Setup 6, where choco installs it.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build_windows_installer.ps1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseWindows
+          aws-region: us-west-2
+
+      - name: Sign manifest, publish installer, attach to release
+        shell: bash
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          INSTALLER="$(ls dist/FusedRenderPy-*-setup.exe)"
+          # Version from the built artifact, not the tag — same rule as the DMG.
+          VERSION="$(basename "$INSTALLER" | sed -E 's/^FusedRenderPy-(.*)-setup\.exe$/\1/')"
+          BASE_URL="https://${CDN_DOMAIN}/${WINDOWS_PREFIX}"
+          uv run scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
+          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
+          # Fixed-name pointer the updater polls: no-cache so a release is never
+          # masked by a stale CDN copy (belt-and-braces with the invalidation).
+          aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
+            --cache-control no-cache
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/${WINDOWS_PREFIX}/*"
+          gh release upload "$GITHUB_REF_NAME" "$INSTALLER" --clobber
