@@ -394,6 +394,170 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert h.pointer()["token"] == "abc123"
 
 
+def test_deploy_passes_custom_token_to_create(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "create": {
+                "token": "my-name",
+                "url": "https://serve.example/my-name",
+                "status": "active",
+            }
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "my-name"
+    # A user-chosen name is recorded as `named` so the modal shows "custom name".
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
+
+    (call,) = h.calls()
+    assert call["argv"][0] == "share" and call["argv"][1] == "create"
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_default_token_is_not_named(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    # No name chosen -> the opaque default -> named is False.
+    assert resp.json()["named"] is False
+
+
+def test_named_flag_carried_forward_on_repoint(tmp_path, monkeypatch):
+    # A named mount stays "named" across a token-reuse redeploy: repoint keeps
+    # the token, so its provenance must not silently flip to unguessable.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert h.pointer()["named"] is True
+
+    h.set_scenario(
+        {
+            "list": [{"token": "my-name", "status": "active"}],
+            "repoint": {"token": "my-name", "url": "https://serve.example/my-name"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
+
+
+def test_force_new_to_unguessable_clears_named(tmp_path, monkeypatch):
+    # "Change link" from a custom name back to the unguessable default: force_new
+    # mints a fresh opaque token, and the record's `named` must follow it to
+    # False (not inherit the superseded mount's True).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "create": {"token": "xyz789", "url": "https://serve.example/xyz789", "status": "active"},
+            "revoke": {"token": "my-name", "status": "revoked"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "force_new": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "xyz789"
+    assert resp.json()["named"] is False
+    assert h.pointer()["named"] is False
+
+
+def test_deploy_trims_token_before_the_cli(tmp_path, monkeypatch):
+    # Surrounding whitespace must be stripped at the API boundary, not forwarded
+    # to `share create --token` (where it disagrees with the client's TOKEN_RE
+    # and the CLI's own token rules).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "  my-name  "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_rejects_blank_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "   "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "token" in resp.json()["error"]
+    assert h.calls() == []
+
+
+def test_deploy_rejects_non_string_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": 123},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert h.calls() == []
+
+
+def test_deploy_custom_token_ignored_on_repoint(tmp_path, monkeypatch):
+    # A redeploy of an already-active mount repoints the EXISTING token — the
+    # fused CLI's `share repoint` takes no --token argument at all, so a token
+    # supplied on a redeploy must never reach that call.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "url": "https://serve.example/abc123"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "ignored-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][1] == "repoint"
+    assert "--token" not in repoint_call["argv"]
+    assert "ignored-name" not in repoint_call["argv"]
+
+
 def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
@@ -776,6 +940,35 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     # The fresh-create fallback also carries the explicit CLI flag (not just the
     # export manifest), same as the first-deploy path.
     assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
+
+
+def test_redeploy_absent_mount_honors_a_custom_token(tmp_path, monkeypatch):
+    # The "absent" branch (a distinct create call site from the very-first-deploy
+    # one) must also thread a chosen link name through to `share create`.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [],
+            "create": {
+                "token": "chosen-name",
+                "url": "https://serve.example/chosen-name",
+                "status": "active",
+            },
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "chosen-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "chosen-name"
+    assert h.calls()[-1]["argv"][-2:] == ["--token", "chosen-name"]
 
 
 def test_fresh_create_with_new_token_never_keeps_the_old_url(tmp_path, monkeypatch):

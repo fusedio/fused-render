@@ -2212,6 +2212,53 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
+/* Inline hint under the "Link name" input when it fails the token-shape check
+   — a plain color swap, not the bordered .deploy-error card (too heavy for an
+   inline field hint that appears/disappears on every keystroke). */
+.deploy-token-hint.err {
+  color: var(--error);
+}
+
+/* The random-vs-named link picker: a borderless fieldset (the enclosing
+   .deploy-files card already frames it) with a small caption and two stacked
+   radio rows. */
+.deploy-token-modes {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-token-modes > legend {
+  padding: 0;
+  color: var(--fg-muted);
+}
+
+.deploy-token-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.deploy-token-mode input {
+  /* Keep the control aligned with the first text line of a wrapping label. */
+  margin: 0;
+  position: relative;
+  top: 2px;
+  flex: 0 0 auto;
+}
+
+/* The public/no-auth note that sits directly under the Link section — snug it
+   up against that card (overriding the body's 12px gap) so it reads as the
+   section's footnote, not a section of its own. */
+.deploy-about {
+  margin-top: -6px;
+  font-size: 12px;
+}
+
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
    full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
 .deploy-error,

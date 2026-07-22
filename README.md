@@ -142,8 +142,10 @@ See `docs/EXPORT.md` for the bundle format and rules.
 A renderable page's preview header has a **Deploy** button: it exports the page
 to a self-contained bundle and publishes it as a public URL through the `fused`
 CLI. fused-render itself hosts nothing and mints no URLs — it runs the CLI on
-your behalf. The link is opaque and unguessable; redeploying the same page keeps
-the **same URL**, and revoking takes it down.
+your behalf. The link is public and needs no sign-in to view — an unguessable
+random token by default, or a custom name you pick for a memorable URL.
+Redeploying the same page keeps the **same URL**; a **Change link** action mints
+a new one (taking the old down), and revoking takes it down.
 
 Signing in and first-time setup happen in the app, no terminal required: sign in
 to Fused once, then set up a **managed hosted environment** in one click — the

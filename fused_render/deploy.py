@@ -37,10 +37,13 @@ child process, exactly the pattern the flow app uses for project deploys
     and the share list endpoint joins mounts back to local pages via the
     pointer store.
 
-Deploys are **public share links** (opaque, unguessable capability tokens —
-`share create --public` with no --token): per spec/serve/fused-render.md,
-authed mounts can't serve a hosted page's asset GETs yet, so public is the one
-posture that works fully today.
+Deploys are **public share links** (`share create --public`): per
+spec/serve/fused-render.md, authed mounts can't serve a hosted page's asset
+GETs yet, so public is the one posture that works fully today. The token
+itself defaults to an opaque, unguessable one (no --token), but the Deploy
+dialog's "Link name" field lets the user pass an explicit --token instead —
+a deliberately public, guessable URL (fused's own gate: --public + a chosen
+--token is allowed, unlike --public + an auth gate).
 
 No import of server.py (server imports this router — keep it acyclic); the
 X-Fused guard is duplicated locally like shell/bookmarks.py does.
@@ -395,7 +398,7 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 cache_max_age: str, fallback: dict | None) -> dict:
+                 cache_max_age: str, named: bool, fallback: dict | None) -> dict:
     # `cache_max_age` here is simply what the caller requested this deploy — every
     # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
     # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
@@ -432,6 +435,13 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
         # "preserve on omit" for this — every deploy is an explicit, full statement).
         "cache_max_age": cache_max_age,
+        # Whether this mount's token is a user-chosen name (a deliberately
+        # guessable public URL) vs the default crypto-random opaque one. Set at
+        # the fresh-create that minted the token and carried forward unchanged
+        # on every token-reuse redeploy (repoint/recreate keep the token, so
+        # they keep its provenance) — the modal shows "custom name" vs
+        # "unguessable" from this without re-deriving it from the token string.
+        "named": named,
         "updated_at": _now_iso(),
     }
 
@@ -487,6 +497,7 @@ def deploy_page(
     exclude: list[str] | None = None,
     cache_max_age: str = "0s",
     force_new: bool = False,
+    custom_token: str | None = None,
 ) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -527,6 +538,17 @@ def deploy_page(
     revoked tombstone -> `share recreate --same-token` then repoint (same URL
     comes back); token absent from `share list` entirely -> fresh create
     (nothing left to revive).
+
+    `custom_token`, when given, rides along as `share create`'s `--token` on
+    every branch above that actually mints a FRESH mount (first deploy, a
+    different env, or an absent mount) — it picks the URL's token instead of
+    the default crypto-random opaque one (a deliberately public, guessable
+    link — `fused`'s own `share create --public --token` gate, spec/serve/
+    share-links.md §2). It is ignored on the two branches that redeploy an
+    EXISTING mount (`repoint`, `recreate --same-token`): neither takes a token
+    argument, because both keep the mount's original token, named or not —
+    there is nothing to apply a new choice to. An already-taken or malformed
+    name surfaces as the fused CLI's own error (via `_run_share`/DeployError).
     """
     include = include or []
     exclude = exclude or []
@@ -583,10 +605,18 @@ def deploy_page(
             if force_new and pointer and pointer.get("env") == env_name
             else None
         )
+        # Token provenance for the stored record: a fresh create's is set by
+        # whether a name was chosen this call; a token-reuse redeploy inherits
+        # the existing record's (repoint/recreate keep the token, so its
+        # named-ness is unchanged). Old records predating this field read as
+        # False (unguessable) — the token can't be reclassified retroactively.
+        named = bool(same_env.get("named")) if same_env else False
         if not token:
-            raw = _run_share(
-                env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-            )
+            named = bool(custom_token)
+            create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+            if custom_token:
+                create_args += ["--token", custom_token]
+            raw = _run_share(env_name, create_args)
         else:
             live = _classify_mount(_list_mounts(env_name), token)
             # `--cache-max-age` on every branch below: AWS re-reads the bundle's own
@@ -634,14 +664,16 @@ def deploy_page(
                     )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
-                raw = _run_share(
-                    env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-                )
+                named = bool(custom_token)  # a fresh create, like the first-deploy path
+                create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+                if custom_token:
+                    create_args += ["--token", custom_token]
+                raw = _run_share(env_name, create_args)
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=cache_max_age, fallback=same_env,
+            cache_max_age=cache_max_age, named=named, fallback=same_env,
         )
         set_deployment(page, record)
         # force_new replace: the new mount is live and the pointer now tracks it,
@@ -1030,9 +1062,29 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     force_new = body.get("force_new", False)
     if not isinstance(force_new, bool):
         return _error("'force_new' must be a boolean")
+    # Optional chosen link name (a fresh-create-only knob — deploy_page ignores
+    # it on a redeploy path that reuses an existing token). Format/uniqueness
+    # aren't re-validated here: the fused CLI's own --token validation and
+    # "already taken" check are the authority, and DeployError passes that
+    # message through verbatim, same as every other CLI-side rejection.
+    custom_token = body.get("token")
+    if custom_token is not None:
+        if not isinstance(custom_token, str) or not custom_token.strip():
+            return _error("'token' must be a non-empty string")
+        # Normalize at the boundary: forward the trimmed value, never the raw
+        # one — otherwise "my-link " passes the non-empty check but reaches
+        # `share create --token` with surrounding whitespace, which disagrees
+        # with the client's TOKEN_RE and the CLI's own token rules.
+        custom_token = custom_token.strip()
     try:
         return deploy_page(
-            page, env_name, include, exclude, cache_max_age=cache_max_age, force_new=force_new
+            page,
+            env_name,
+            include,
+            exclude,
+            cache_max_age=cache_max_age,
+            force_new=force_new,
+            custom_token=custom_token,
         )
     except ExportError as e:
         return _error(str(e))
