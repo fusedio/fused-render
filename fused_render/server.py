@@ -427,72 +427,6 @@ def _list_response(path, entries, truncated, cursor):
             "truncated": truncated, "cursor": cursor}
 
 
-def _accumulate_direct_pages(path, cursor, max_entries, *,
-                             page_timeout=None, overall_timeout=None):
-    """Accumulate raw direct-listing entries (Name/Size/IsDir/ModTime dicts, the
-    shared rc/direct shape) for a mount-backed dir on an anonymous S3 or GCS
-    remote, up to `max_entries`. The one page-accumulation loop shared by
-    /api/fs/list and the walk; the backend (S3 ListObjectsV2 vs GCS
-    objects.list) is picked per-path by shell_mounts.direct_list_page.
-
-    Each page requests only min(1000, remaining) keys, so the accumulation never
-    overshoots `max_entries` (a whole extra 1000-key page could otherwise push a
-    LIST_MAX_ENTRIES=10k cap to 10,999) while the returned continuation token
-    still resumes cleanly. `overall_timeout` bounds total wall time across pages
-    (page count is otherwise unbounded); on exhaustion the loop stops mid-listing
-    and returns the last token, a valid resume point.
-
-    Returns (raw_entries, next_token). next_token is non-None exactly when more
-    entries remain (cap hit, budget hit with more pending, or the listing was
-    truncated) — i.e. the listing is partial. Raises shell_mounts.DirectListError
-    only when the FIRST page fails (nothing fetched, so the rc fallback is worth
-    trying); a failure after at least one page returns what was accumulated with
-    the failed page's continuation token as the resume point — on a slow bucket
-    the per-page timeout shrinks toward the budget's deadline and the last
-    page routinely times out, and discarding thousands of fetched entries to
-    re-list via rc (which can't paginate at all) would turn a partial success
-    into a guaranteed 503."""
-    from fused_render.shell import mounts as shell_mounts
-
-    entries: list = []
-    token = cursor or None
-    deadline = None if overall_timeout is None else time.monotonic() + overall_timeout
-    while True:
-        remaining = max_entries - len(entries)
-        if remaining <= 0:
-            break
-        t = page_timeout
-        # The first page always runs with the full page timeout (the progress
-        # guarantee — even a zero budget returns one page). Later pages shrink
-        # to the budget's remainder, and stop before it reaches zero: a
-        # non-positive timeout would hit urlopen as a ValueError, not a
-        # DirectListError (Bugbot), and token is already a valid resume point.
-        if deadline is not None and entries:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                break
-            t = left if t is None else min(t, left)
-        try:
-            page, next_token = shell_mounts.direct_list_page(
-                path, max_keys=min(1000, remaining), continuation=token, timeout=t)
-        except shell_mounts.DirectListError:
-            if not entries:
-                raise
-            logger.warning("direct-listing page for %r failed mid-listing; "
-                           "returning %d accumulated entries as partial",
-                           path, len(entries))
-            return entries, token
-        token = next_token
-        entries.extend(page)
-        if token is None:
-            break
-        # Budget checked AFTER a page so the loop always makes progress; the
-        # token from the last fetched page is a valid resume point.
-        if deadline is not None and time.monotonic() >= deadline:
-            break
-    return entries, token
-
-
 def _list_direct(path, cursor):
     """Accumulate direct-listing pages (S3 ListObjectsV2 / GCS objects.list) for
     a mount-backed dir on an anonymous S3 or GCS remote into sorted /api/fs/list
@@ -561,6 +495,7 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
     coverage. `None` means unbounded on that axis.
     """
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import pathops
 
     oracles = {}  # repo root -> _IgnoreOracle, insertion order = LRU
 
@@ -592,36 +527,34 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
             mount_backed = shell_mounts.is_mount_backed(current)
             if mount_backed:
                 is_root = current == path
-                listed = None
                 dir_cut = False  # this dir's listing stopped short (1.3)
-                # Anonymous S3/GCS dir: page the store's own listing API (fast,
-                # non-timeout-prone) up to the remote walk cap instead of the rc
-                # listing rclone can't paginate. On any failure, fall back to rc
-                # for THIS dir (same skip-on-failure semantics as below).
-                if shell_mounts.direct_list_capable(current):
-                    try:
-                        listed, direct_token = _accumulate_direct_pages(
-                            current, None, WALK_MAX_ENTRIES_REMOTE,
-                            page_timeout=WALK_RC_LIST_TIMEOUT_S,
-                            overall_timeout=WALK_RC_LIST_TIMEOUT_S)
-                        if direct_token is not None:
-                            dir_cut = True  # more keys remained unlisted
-                    except shell_mounts.DirectListError:
-                        listed = None  # fall back to the rc path for this dir
-                if listed is None:
-                    try:
-                        listed = shell_mounts.rc_list_dir(
-                            current, timeout=WALK_RC_LIST_TIMEOUT_S)
-                    except shell_mounts.RcListError:
-                        # The ROOT listing failing is fatal — surface it with the
-                        # same status codes fs/list uses (see api_fs_walk, which
-                        # pulls the first item eagerly to catch this). A non-root
-                        # dir keeps skip-and-continue, but marks the walk
-                        # truncated so the client knows coverage is partial.
-                        if is_root:
-                            raise
-                        yield _WALK_TRUNCATED
-                        continue
+                # Mount-backed dir: the direct→rc ladder (anonymous S3/GCS page
+                # the store's own listing API up to the remote walk cap; else, or
+                # on a direct page failure, the rc listing rclone can't paginate),
+                # single-sourced in pathops.list_mount_dir.
+                try:
+                    listing = pathops.list_mount_dir(
+                        current, max_entries=WALK_MAX_ENTRIES_REMOTE,
+                        page_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        overall_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        rc_timeout=WALK_RC_LIST_TIMEOUT_S)
+                except shell_mounts.RcListError:
+                    # rc route rejected the listing (a file / missing / broken —
+                    # RcListTimeout and RcListUnavailable subclass RcListError).
+                    # The ROOT listing failing is fatal — surface it with the same
+                    # status codes fs/list uses (see api_fs_walk, which pulls the
+                    # first item eagerly to catch this). A non-root dir keeps
+                    # skip-and-continue, but marks the walk truncated so the
+                    # client knows coverage is partial.
+                    if is_root:
+                        raise
+                    yield _WALK_TRUNCATED
+                    continue
+                listed = listing.entries
+                if listing.direct:
+                    if listing.token is not None:
+                        dir_cut = True  # more keys remained unlisted
+                else:
                     # rclone can't paginate, so a huge dir comes back whole: cap
                     # it at the per-dir remote budget and flag the cut.
                     if len(listed) > WALK_MAX_ENTRIES_REMOTE:
