@@ -24,3 +24,9 @@ fused_render/_baked_branch.py
 .coverage.*
 coverage.xml
 htmlcov/
+# Local agent skills dir (per-checkout tooling, not part of the repo).
+.agents/
+# Legacy Rust supervisor build cache, superseded by the Python supervisor.
+windows/supervisor/target/
+# C launcher build byproduct (scripts/build_windows_installer.ps1).
+*.obj
