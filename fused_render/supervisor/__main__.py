@@ -21,22 +21,28 @@ try:
 except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
     pass  # fall through with whatever env we were launched with
 
-import ctypes  # noqa: E402
 import sys  # noqa: E402
 
-# `ui` is stdlib-only at import time (its pywin32 pieces load lazily), so it
-# stays importable — and `ui.alert` usable — even when the backend's import
-# below fails because pywin32 itself is broken (a bad upgrade). Import it
-# straight from _win32, not via _backend, whose Job/instance imports would trip
-# over that same broken pywin32.
-from fused_render.supervisor._win32 import ui  # noqa: E402
+# `ui` is stdlib-only at import time on every backend (Win32's pywin32 pieces
+# load lazily; Linux's dialog tools are exec'd), so it stays importable — and
+# `ui.alert` usable — even when the full backend import below fails (e.g. a
+# broken pywin32 after a bad upgrade). Import it straight from the OS package,
+# not via `_backend`, whose Job/instance imports are the fragile ones.
+if sys.platform == "win32":
+    from fused_render.supervisor._win32 import ui  # noqa: E402
+elif sys.platform.startswith("linux"):
+    from fused_render.supervisor._linux import ui  # noqa: E402
+else:
+    from fused_render.supervisor import _backend  # noqa: E402 - raises with a clear message
+
+    ui = _backend.ui
 
 try:
     from fused_render.supervisor import core, protocol  # noqa: E402
 except Exception as import_error:  # noqa: BLE001 - e.g. "DLL load failed" from a
-    # broken pywin32 after a bad upgrade. This runs under pythonw (no console)
-    # and before main() exists, so a bare raise here is an invisible exit —
-    # report it the same way main()'s fatal path does.
+    # broken pywin32 after a bad upgrade. This runs windowless (no console) and
+    # before main() exists, so a bare raise here is an invisible exit — report
+    # it the same way main()'s fatal path does.
     try:
         DesktopPaths.discover().log(str(import_error))
     except Exception:  # noqa: BLE001 - logging is best-effort, never the point of failure
@@ -48,10 +54,13 @@ _APP_USER_MODEL_ID = "Fused.FusedRender.Desktop"
 
 
 def main() -> None:
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
-    except OSError:
-        pass  # cosmetic (tray/taskbar identity) — never fatal
+    if sys.platform == "win32":
+        import ctypes
+
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
+        except OSError:
+            pass  # cosmetic (tray/taskbar identity) — never fatal
 
     command: protocol.Command | None = None
     try:

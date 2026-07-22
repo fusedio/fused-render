@@ -94,6 +94,17 @@ windows-desktop = [
     'pystray>=0.19 ; sys_platform == "win32"',
     'pillow ; sys_platform == "win32"',
 ]
+# Linux desktop supervisor backend (fused_render/supervisor/_linux,
+# docs/LINUX_DESKTOP_SPEC.md). Linux-only; installed only by the packaged
+# AppImage build (scripts/build_linux_appimage.sh). PyGObject is deliberately
+# NOT bundled: pystray's AppIndicator backend uses the distro's `gi` at runtime
+# when present and falls back to X11 (python-xlib, a pystray dependency)
+# otherwise — bundling GTK bindings is the classic AppImage size/compat trap,
+# and tray absence is an accepted degraded mode (gate (c)).
+linux-desktop = [
+    'pystray>=0.19 ; sys_platform == "linux"',
+    'pillow ; sys_platform == "linux"',
+]
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
