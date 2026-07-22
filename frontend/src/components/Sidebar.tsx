@@ -19,6 +19,7 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  getArmedBookmarkFor,
   setBookmarkIcon,
   sameSearch,
   splitBookmarkUrl,
@@ -852,20 +853,22 @@ export default function Sidebar({ config }: SidebarProps) {
 
   // Active row = the armed bookmark (the one being "followed"/edited — same
   // tracking the Update-bookmark button uses), regardless of live param
-  // drift. With nothing armed, fall back to an exact-url match so a pasted or
-  // hand-typed url still highlights its bookmark (matching never arms).
-  const armed = getArmedBookmark();
+  // drift. Read through the pathname gate: an armed entry whose page the user
+  // has left counts as not-armed here, so the highlight falls back to the
+  // exact-url match immediately instead of waiting on (or, for routes without
+  // CrumbActions, forever missing) the Breadcrumb's disarm effect. With
+  // nothing armed, exact-url match still highlights a pasted/hand-typed url
+  // (matching never arms).
+  const armed = getArmedBookmarkFor(location.pathname);
   const rowActive = (b: Bookmark): boolean =>
     armed ? armed.id === b.id : b.url === currentUrl();
   // Dirty = the armed row's current params differ from its saved url — the
   // exact visibility condition of the Update-bookmark button (Breadcrumb).
-  // A pathname mismatch isn't dirty: the Breadcrumb disarms on page change,
-  // and until its effect runs this row shouldn't flash a "*".
-  const rowDirty = (b: Bookmark): boolean => {
-    if (!armed || armed.id !== b.id) return false;
-    const { pathname, search } = splitBookmarkUrl(armed.url);
-    return location.pathname === pathname && !sameSearch(location.search, search);
-  };
+  // Pathname already matches (the gate above), so only the search differs.
+  const rowDirty = (b: Bookmark): boolean =>
+    !!armed &&
+    armed.id === b.id &&
+    !sameSearch(location.search, splitBookmarkUrl(armed.url).search);
 
   // True when the active bookmark lives anywhere in this subtree — keeps the
   // collapsed-folder active hint visible at any nesting depth.

@@ -439,6 +439,18 @@ export function splitBookmarkUrl(url: string): { pathname: string; search: strin
     : { pathname: url.slice(0, qIdx), search: url.slice(qIdx) };
 }
 
+// The armed bookmark, gated on the current page: null when nothing is armed
+// OR the armed url's pathname differs from `pathname`. Sidebar highlighting
+// reads through this so a stale armed entry (page changed, Breadcrumb's
+// disarm effect not yet run — or never run, on routes without CrumbActions)
+// can't keep the old row lit or block the exact-url fallback. Read-only: the
+// permanent disarm on page change stays Breadcrumb's job.
+export function getArmedBookmarkFor(pathname: string): ArmedBookmark | null {
+  const armed = getArmedBookmark();
+  if (!armed || splitBookmarkUrl(armed.url).pathname !== pathname) return null;
+  return armed;
+}
+
 export function getArmedBookmark(): ArmedBookmark | null {
   try {
     const raw = sessionStorage.getItem(ARMED_KEY);
