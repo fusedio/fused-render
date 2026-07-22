@@ -18,8 +18,10 @@ import fused_render
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
+# Probe the file, not the dir: a stale empty fused_render/examples_seed/ left
+# behind by git must not shadow the repo-root copy (dev checkout).
 _seed_root = Path(fused_render.__file__).parent / "examples_seed"
-if not _seed_root.is_dir():  # dev checkout: seed lives at the repo root
+if not (_seed_root / "sine" / "sine.html").is_file():
     _seed_root = Path(fused_render.__file__).parent.parent / "examples_seed"
 SINE = (_seed_root / "sine" / "sine.html").read_text(encoding="utf-8")
 
