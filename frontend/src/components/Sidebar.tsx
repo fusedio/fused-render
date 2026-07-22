@@ -405,9 +405,24 @@ export default function Sidebar({ config }: SidebarProps) {
   const [resizing, setResizing] = useState(false);
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
+  // Double-press-to-collapse is detected manually here: preventDefault on
+  // pointerdown (needed to stop a text selection starting before the
+  // body:has(.resizing) rule commits) suppresses the compatibility mouse
+  // events that produce dblclick in several engines, so onDoubleClick on the
+  // handle can't be relied on.
+  const lastHandlePressRef = useRef<{ time: number; x: number } | null>(null);
+
   const onHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     e.preventDefault(); // no text selection while dragging
+    const last = lastHandlePressRef.current;
+    if (last && e.timeStamp - last.time < 350 && Math.abs(e.clientX - last.x) < 5) {
+      // Second press of a double-press: collapse instead of starting a drag.
+      lastHandlePressRef.current = null;
+      toggleSidebarCollapsed();
+      return;
+    }
+    lastHandlePressRef.current = { time: e.timeStamp, x: e.clientX };
     dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: sidebarWidth };
     e.currentTarget.setPointerCapture(e.pointerId);
     setResizing(true);
@@ -416,6 +431,8 @@ export default function Sidebar({ config }: SidebarProps) {
   const onHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || e.pointerId !== drag.pointerId) return;
+    // A real drag isn't the first half of a double-press.
+    if (Math.abs(e.clientX - drag.startX) >= 5) lastHandlePressRef.current = null;
     const width = Math.min(
       SIDEBAR_MAX_WIDTH,
       Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (e.clientX - drag.startX))
@@ -1239,7 +1256,8 @@ export default function Sidebar({ config }: SidebarProps) {
       )}
       {/* Resize handle riding the right border: drag to resize (pointer
           capture keeps the gesture even when the cursor leaves the strip),
-          double-click to collapse. */}
+          double-press to collapse (detected in pointerdown — see
+          lastHandlePressRef). */}
       <div
         className={"sidebar-resize-handle" + (resizing ? " resizing" : "")}
         style={{ left: sidebarWidth - 3 }}
@@ -1247,7 +1265,6 @@ export default function Sidebar({ config }: SidebarProps) {
         onPointerMove={onHandlePointerMove}
         onPointerUp={onHandlePointerUp}
         onPointerCancel={onHandlePointerUp}
-        onDoubleClick={toggleSidebarCollapsed}
       />
     </nav>
   );
