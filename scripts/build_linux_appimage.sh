@@ -95,8 +95,8 @@ cp "$UV_BIN" "$PYTHON_ROOT/bin/uv"
 # error surface (mounts.py already branches to a plain FUSE mount off-darwin).
 log "Bundling rclone"
 require sha256sum
-RCLONE_VERSION="1.69.1"
-RCLONE_SHA256="231841f8d8029ae6cfca932b601b3b50d0e2c3c2cb9da3166293f1c3eae7d79c"
+RCLONE_VERSION="1.74.4"
+RCLONE_SHA256="fe435e0c36228e7c2f116a8701f01127bb1f694005fc11d1f27186c8bca4115d"
 RCLONE_ZIP="$BUILD_DIR/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
 [ -f "$RCLONE_ZIP" ] || curl -fsSL \
     "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \

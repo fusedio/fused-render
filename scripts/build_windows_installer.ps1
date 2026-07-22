@@ -184,8 +184,8 @@ Copy-Item -LiteralPath $Uv -Destination (Join-Path $PythonRoot "uv.exe") -Force
 # FUSED_RENDER_RCLONE_BIN here) so mounts work with zero user setup, matching
 # the macOS DMG and the Linux AppImage. Pinned release, published-SHA256
 # verified (same discipline as the pinned zig download above).
-$RcloneVersion = "1.69.1"
-$RcloneSha256 = "0803f06d721e5399e48794538294099b195d51cc84b27bdb67e131096ad93ee4"
+$RcloneVersion = "1.74.4"
+$RcloneSha256 = "ef097ef9de37a57feb7d9f9c7afb34148ad3c65be8025f1d8f7f521554a701ea"
 $rcloneZip = Join-Path $BuildDir "rclone-v$RcloneVersion-windows-amd64.zip"
 if (-not (Test-Path -LiteralPath $rcloneZip)) {
     Invoke-WebRequest -Uri "https://downloads.rclone.org/v$RcloneVersion/rclone-v$RcloneVersion-windows-amd64.zip" -OutFile $rcloneZip
