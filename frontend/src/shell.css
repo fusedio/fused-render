@@ -2212,6 +2212,13 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg-muted);
 }
 
+/* Inline hint under the "Link name" input when it fails the token-shape check
+   — a plain color swap, not the bordered .deploy-error card (too heavy for an
+   inline field hint that appears/disappears on every keystroke). */
+.deploy-token-hint.err {
+  color: var(--error);
+}
+
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
    full 1px error-tinted border + a subtle error-tinted wash, no left stripe. */
 .deploy-error,

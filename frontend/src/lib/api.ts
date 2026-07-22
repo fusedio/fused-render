@@ -521,6 +521,10 @@ export function deployPage(
   exclude: string[],
   cacheMaxAge: string,
   forceNew?: boolean,
+  // A chosen link name for a FRESH `share create` (see deploy.py's
+  // deploy_page) — omit for the default auto-generated opaque token. Ignored
+  // server-side on a redeploy that reuses an existing token (repoint/recreate).
+  token?: string,
 ): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy", {
     page: fsPath,
@@ -529,6 +533,7 @@ export function deployPage(
     exclude,
     cache_max_age: cacheMaxAge,
     force_new: forceNew ?? false,
+    ...(token ? { token } : {}),
   });
 }
 

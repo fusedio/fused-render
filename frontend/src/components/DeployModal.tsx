@@ -10,7 +10,9 @@
 //   3. no hosted envs — sign in / route to the account tab's setup panel
 //      (AWS env creation stays a named terminal flow, SPEC AC-9)
 //   4. the form — env picker (default: the managed fused-backend env),
-//      current deployment card (URL + copy/open), Deploy/Redeploy, Revoke.
+//      current deployment card (URL + copy/open), an optional "Link name"
+//      (fresh deploys only — picks the URL's token instead of the default
+//      opaque one), Deploy/Redeploy, Revoke.
 // The env-wide share list (every mount on an env, with revoke) lives on the
 // Fused account tab's Deployments section (SPEC AC-11), not here — this
 // modal is scoped to the current page.
@@ -39,7 +41,7 @@ import { useRefreshOnReturn } from "../lib/hooks";
 import { navigateUrl } from "../lib/router";
 import { Modal } from "./modal/Modal";
 import { ErrorBanner } from "./ErrorBanner";
-import { Select } from "./field/fields";
+import { Select, TextInput } from "./field/fields";
 
 // A path's bundle key: what dedup/exclude match on. Mirrors the server's
 // _asset_key (export.py) for the common case — strip a leading "./"; the exact
@@ -58,6 +60,13 @@ const CACHE_DURATION_PRESETS: { value: string; label: string }[] = [
   { value: "1d", label: "1 day" },
 ];
 const DEFAULT_CACHE_DURATION = "1h";
+
+// A chosen link name's allowed shape — mirrors the fused CLI's own mount-token
+// rule (fused repo's agent_core/mounts.py validate_token): lowercase letters,
+// digits, `-`/`_`, starting with a letter or digit. Checked client-side so a
+// bad name is caught before the round trip; the CLI is still the authority
+// (an already-taken name only it can know about surfaces from the deploy call).
+const TOKEN_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 // The preset list, plus the current value as its own option when it isn't a preset
 // (e.g. a duration set via `share create --cache-max-age` outside this dialog) — so
@@ -482,6 +491,11 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // fused's cache_max_age. Seeded on open from the stored record (like include/
   // exclude) and sent back on every Deploy; there is no "leave it as it was".
   const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
+  // A user-chosen link name for the NEXT create (blank = auto-generated opaque
+  // token, today's default). Only meaningful before a mount exists on the
+  // selected env — once deployed the token is fixed, so this is never seeded
+  // from the stored record and is reset on every fresh open (see `load`).
+  const [customToken, setCustomToken] = useState("");
   // The result of the last "Clear cache" click (deleted/scope), shown as a status
   // line until the next load/action clears it.
   const [clearCacheResult, setClearCacheResult] = useState<CacheClearResult | null>(null);
@@ -586,6 +600,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // that hasn't been asked about yet.
       setCachingOpen(false);
       setErrorsOpen(false);
+      setCustomToken("");
     }
     try {
       const [cfg, status] = await Promise.all([
@@ -684,6 +699,18 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     [envs, selectedEnv],
   );
 
+  // A redeploy targets an existing, still-known mount (repoint / recreate
+  // --same-token) — both keep the mount's ORIGINAL token, so a chosen link
+  // name only ever applies to a fresh `share create`: no deployment yet, a
+  // different env, or the recorded mount gone from `share list` entirely.
+  const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
+  const mountAbsent = live === "absent";
+  const isRedeploy = samePointerEnv && !mountAbsent;
+  const tokenError =
+    !isRedeploy && customToken && !TOKEN_RE.test(customToken)
+      ? "Use lowercase letters, numbers, - and _ only, starting with a letter or number."
+      : null;
+
   // Each handler applies its result (onChange always propagates to the header
   // dot), then guards the modal's OWN setState on `alive` — the dialog may
   // have been closed mid-action (#12).
@@ -693,7 +720,16 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
     setActionError(null);
     setClearCacheResult(null); // a stale "N cleared" note must not survive a redeploy
     try {
-      const record = await deployPage(fsPath, env.name, include, exclude, cacheMaxAge, forceNew);
+      const wantsCustomToken = !isRedeploy && customToken.trim() !== "";
+      const record = await deployPage(
+        fsPath,
+        env.name,
+        include,
+        exclude,
+        cacheMaxAge,
+        forceNew,
+        wantsCustomToken ? customToken.trim() : undefined,
+      );
       applyDeployment(record);
       if (!alive.current) return;
       setReconciled(true);
@@ -773,12 +809,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // Deploy/Redeploy: the button label stays stable ("Deploy" / "Redeploy" /
   // "Deploying…"); the URL nuance (same link, restored link, fresh link,
   // unconfirmed) moves to a single status line below, driven by `live` — the
-  // mount's VERIFIED `share list` classification. A redeploy is only when the
-  // pointer's env is the selected one AND the mount still exists; an absent
-  // mount does a fresh create, so it reads as "Deploy".
-  const samePointerEnv = deployment !== null && deployment.env === selectedEnv;
-  const mountAbsent = live === "absent";
-  const isRedeploy = samePointerEnv && !mountAbsent;
+  // mount's VERIFIED `share list` classification. (samePointerEnv/mountAbsent/
+  // isRedeploy are computed above, alongside the env memo — onDeploy needs
+  // isRedeploy too.)
   const deployLabel = busy === "deploy" ? "Deploying…" : isRedeploy ? "Redeploy" : "Deploy";
   // One status line for the same-env case, spelling out what happens to the URL.
   const deployStatus = !samePointerEnv
@@ -1028,6 +1061,31 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </div>
           )}
         </div>
+        {/* A chosen link name only applies to a FRESH create (see isRedeploy
+            above) — once a mount exists its token is fixed, so this control
+            hides on a redeploy rather than imply an edit that can't happen. */}
+        {!isRedeploy && (
+          <div className="deploy-files">
+            <div className="deploy-files-body">
+              <div className="deploy-form-row">
+                <label htmlFor="deploy-token-input">Link name</label>
+                <TextInput
+                  id="deploy-token-input"
+                  type="text"
+                  placeholder="auto-generated, unguessable"
+                  value={customToken}
+                  disabled={busy !== null}
+                  onChange={(e) => setCustomToken(e.target.value)}
+                />
+              </div>
+              <div className={"deploy-token-hint deploy-muted" + (tokenError ? " err" : "")}>
+                {tokenError ??
+                  "Leave blank for an unguessable public link (the default). Choosing a name " +
+                    "makes the URL guessable — anyone who knows or guesses it can open it."}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="deploy-form-row">
           <label htmlFor="deploy-env-select">Deploy to</label>
           <Select
@@ -1056,14 +1114,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               env === null ||
               preview === null ||
               previewPending ||
-              preview.errors.length > 0
+              preview.errors.length > 0 ||
+              tokenError !== null
             }
             title={
               preview === null || previewPending
                 ? "Preparing the publish preview…"
                 : preview.errors.length > 0
                   ? "Fix the export problems listed above first"
-                  : undefined
+                  : (tokenError ?? undefined)
             }
           >
             {busy === "deploy" && <span className="deploy-spinner" />}
@@ -1136,8 +1195,10 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         <details className="deploy-disclosure">
           <summary>About public links</summary>
           <div className="deploy-muted">
-            Deploys publish as a <b>public share link</b> — an unguessable URL; anyone with the link
-            can open it.
+            Deploys publish as a <b>public share link</b> — anyone with the link can open it. By
+            default the URL is an unguessable auto-generated token; the "Link name" field above
+            (fresh deploys only) lets you pick the URL's last segment instead, at the cost of it
+            becoming guessable.
           </div>
         </details>
         {actionError && <ErrorBanner>{actionError}</ErrorBanner>}

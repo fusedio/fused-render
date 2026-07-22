@@ -855,11 +855,25 @@ the product gains network access.
 - **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
   and hands that bundle to the CLI; the bundle is deleted afterwards. An export
   error blocks the deploy (400, all problems at once — nothing is uploaded).
-- **DP-9** Deploys are **public share links** (`share create --public`, no
-  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
-  cannot serve a hosted page's browser asset GETs yet (fused repo,
-  spec/serve/fused-render.md § Limitations); gate pickers become an option when
-  that lands.
+- **DP-9** Deploys are **public share links** (`share create --public`): an
+  opaque, unguessable capability URL by default. Rationale for staying public
+  (not authed): authed mounts cannot serve a hosted page's browser asset GETs
+  yet (fused repo, spec/serve/fused-render.md § Limitations); gate pickers
+  become an option when that lands.
+- **DP-9a** The token itself is choosable: the modal's **Link name** field
+  (form-visible only when the next Deploy click would mint a FRESH mount —
+  no deployment yet, a different env, or the recorded mount absent from
+  `share list`; hidden on a same-env redeploy, DP-10, since `repoint`/
+  `recreate --same-token` keep the existing token either way and take no
+  `--token` argument) sends the name through to `deploy_page`'s `custom_token`,
+  which appends `--token <name>` to that `share create --public` call — the
+  fused CLI's own allowed combination (a public mount with a chosen name is a
+  **deliberately guessable** URL; it is never produced by an omitted field,
+  only an explicit one). Left blank (the default), the token is the existing
+  crypto-random opaque one. Client-side the name is checked against the CLI's
+  own token shape (`^[a-z0-9][a-z0-9_-]*$`) before Deploy is enabled; an
+  already-taken name is a `share create` rejection the CLI itself reports
+  (surfaced verbatim, same as every other CLI-side deploy error, DP-15).
 - **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
   `share list` → `share repoint <token>` (stable URL); revoked tombstone →
   `share recreate --same-token` then repoint (a failed repoint best-effort

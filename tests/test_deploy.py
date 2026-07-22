@@ -394,6 +394,81 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert h.pointer()["token"] == "abc123"
 
 
+def test_deploy_passes_custom_token_to_create(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "create": {
+                "token": "my-name",
+                "url": "https://serve.example/my-name",
+                "status": "active",
+            }
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "my-name"
+
+    (call,) = h.calls()
+    assert call["argv"][0] == "share" and call["argv"][1] == "create"
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_rejects_blank_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "   "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "token" in resp.json()["error"]
+    assert h.calls() == []
+
+
+def test_deploy_rejects_non_string_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": 123},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert h.calls() == []
+
+
+def test_deploy_custom_token_ignored_on_repoint(tmp_path, monkeypatch):
+    # A redeploy of an already-active mount repoints the EXISTING token — the
+    # fused CLI's `share repoint` takes no --token argument at all, so a token
+    # supplied on a redeploy must never reach that call.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "url": "https://serve.example/abc123"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "ignored-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][1] == "repoint"
+    assert "--token" not in repoint_call["argv"]
+    assert "ignored-name" not in repoint_call["argv"]
+
+
 def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
