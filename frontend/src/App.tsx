@@ -15,6 +15,7 @@ import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
 import Sidebar from "./components/Sidebar";
+import ServerStatusBanner from "./components/ServerStatusBanner";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -405,6 +406,7 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && <Sidebar config={config} />}
       <div id="main">{main}</div>
+      <ServerStatusBanner />
     </div>
   );
 }
