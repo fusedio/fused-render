@@ -43,15 +43,7 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ErrorDetail({
-  env,
-  token,
-  errId,
-}: {
-  env: string;
-  token: string;
-  errId: string;
-}) {
+function ErrorDetail({ env, token, errId }: { env: string; token: string; errId: string }) {
   const [record, setRecord] = useState<DeployErrorRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,9 +73,7 @@ function ErrorDetail({
     // `!= null` (not `!== undefined`): the managed control plane serializes an
     // absent params field as JSON null, the AWS plane omits the key entirely.
     // Both must fall through to params_preview rather than render "null".
-    record.params != null
-      ? JSON.stringify(record.params, null, 2)
-      : record.params_preview;
+    record.params != null ? JSON.stringify(record.params, null, 2) : record.params_preview;
 
   return (
     <div className="deploy-err-detail">
@@ -153,8 +143,8 @@ export default function DeploymentErrors({ env, token }: { env: string; token: s
       {error && <div className="deploy-error">{error}</div>}
       {errors && errors.length === 0 && (
         <div className="deploy-muted">
-          No errors captured recently — this deployment's endpoints have not
-          failed (within the retention window), or capture was rate-capped.
+          No errors captured recently — this deployment's endpoints have not failed (within the
+          retention window), or capture was rate-capped.
         </div>
       )}
       {errors && errors.length > 0 && (

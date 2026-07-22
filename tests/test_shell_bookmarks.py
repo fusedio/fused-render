@@ -331,8 +331,7 @@ def test_bookmark_file_rejects_unsupported_version(tmp_path, monkeypatch):
 
 
 def _folder(id, name, children):
-    return {"id": id, "type": "folder", "name": name, "collapsed": False,
-            "children": children}
+    return {"id": id, "type": "folder", "name": name, "collapsed": False, "children": children}
 
 
 def test_get_keeps_nested_folder_in_children(tmp_path, monkeypatch):
@@ -377,8 +376,7 @@ def test_get_strips_garbage_inside_nested_folder(tmp_path, monkeypatch):
 
 def test_get_leaves_valid_nested_tree_unwritten(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
-    outer = _folder("f", "F", [_folder("sub", "sub", [_bm("x", "x", 0)]),
-                               _bm("1", "a", 10)])
+    outer = _folder("f", "F", [_folder("sub", "sub", [_bm("x", "x", 0)]), _bm("1", "a", 10)])
     _write_tree(home, [outer])
     raw = (home / "bookmarks.json").read_text(encoding="utf-8")
     client.get("/api/bookmarks")
@@ -389,8 +387,7 @@ def test_get_leaves_valid_nested_tree_unwritten(tmp_path, monkeypatch):
 
 def test_nested_folder_roundtrips_put_then_get(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
-    tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]),
-                               _bm("1", "top", 2)])]
+    tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]), _bm("1", "top", 2)])]
     assert client.put("/api/bookmarks", json=tree, headers=FUSED).status_code == 200
     assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": tree}
 

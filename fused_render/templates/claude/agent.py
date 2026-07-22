@@ -83,6 +83,7 @@ def _mount_read_only(file: str) -> bool:
     -ness, so only the shell's flag can answer this."""
     try:
         from fused_render.shell.mounts import mount_read_only
+
         return mount_read_only(file)
     except Exception:
         return False

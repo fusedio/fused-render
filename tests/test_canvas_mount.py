@@ -16,6 +16,7 @@ for the remote path, DELETE the on-disk siblings first: a silent kernel-listdir
 fallback would then find nothing and the sibling assertions would fail loudly,
 so the tests can only pass if the listing really came over HTTP.
 """
+
 import importlib.util
 import json
 import os
@@ -27,7 +28,6 @@ import pytest
 
 from fused_render import server
 
-
 requires_tomllib = pytest.mark.skipif(
     sys.version_info < (3, 11),
     reason="canvas.toml parsing needs tomllib (Python 3.11+)",
@@ -38,6 +38,7 @@ requires_tomllib = pytest.mark.skipif(
 # reader module (plain callable — the @fused.udf shim is optional, so no
 # importorskip("fused") is needed to exercise main()).
 # --------------------------------------------------------------------------
+
 
 def _load_reader():
     path = os.path.join(server.TEMPLATES_DIR, "canvas", "reader.py")
@@ -55,6 +56,7 @@ def reader():
 # --------------------------------------------------------------------------
 # a stand-in for /api/fs/stat + /api/fs/list
 # --------------------------------------------------------------------------
+
 
 class _FakeFS:
     """Serves /api/fs/stat (json {remote,is_dir}) and /api/fs/list (json with
@@ -82,19 +84,27 @@ class _FakeFS:
 
             def do_GET(self):
                 if self.path.startswith("/api/fs/stat"):
-                    self._json({"remote": fs.remote, "is_dir": True,
-                                "size": None, "name": "dir"})
+                    self._json({"remote": fs.remote, "is_dir": True, "size": None, "name": "dir"})
                     return
                 if self.path.startswith("/api/fs/list"):
                     fs.list_calls += 1
-                    self._json({
-                        "path": "/x",
-                        "entries": [{"name": n, "is_dir": False, "size": 0,
-                                     "mtime": 0, "ignored": False}
-                                    for n in fs.list_names],
-                        "truncated": fs.truncated,
-                        "cursor": None,
-                    })
+                    self._json(
+                        {
+                            "path": "/x",
+                            "entries": [
+                                {
+                                    "name": n,
+                                    "is_dir": False,
+                                    "size": 0,
+                                    "mtime": 0,
+                                    "ignored": False,
+                                }
+                                for n in fs.list_names
+                            ],
+                            "truncated": fs.truncated,
+                            "cursor": None,
+                        }
+                    )
                     return
                 self.send_response(404)
                 self.end_headers()
@@ -146,6 +156,7 @@ def _write_toml(tmp_path):
 # remote dir -> list over HTTP, NEVER kernel-listdir
 # --------------------------------------------------------------------------
 
+
 @requires_tomllib
 def test_remote_siblings_come_from_http_list_not_kernel(reader, fs, tmp_path):
     d = _write_toml(tmp_path)
@@ -189,6 +200,7 @@ def test_remote_truncated_page_hides_match_without_wedging(reader, fs, tmp_path)
 # --------------------------------------------------------------------------
 # local / unreachable -> kernel listdir preserved
 # --------------------------------------------------------------------------
+
 
 @requires_tomllib
 def test_local_dir_uses_kernel_listdir(reader, fs, tmp_path):

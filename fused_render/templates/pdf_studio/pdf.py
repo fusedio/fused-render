@@ -794,8 +794,7 @@ import urllib.request as _urlreq
 
 def _server_url(origin, endpoint, path):
     u = _urlparse.urlsplit(origin)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(origin, path):
@@ -855,8 +854,7 @@ def _listdir(path, origin=""):
         try:
             ents, _ = _list_remote(origin, path)
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc), "path": fpath, "parent": parent,
-                    "dirs": [], "files": []}
+            return {"error": str(exc), "path": fpath, "parent": parent, "dirs": [], "files": []}
         for ent in ents:
             name = ent["name"]
             if name.startswith("."):

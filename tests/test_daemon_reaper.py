@@ -8,10 +8,10 @@ alive for days. These tests exercise reaping WITHOUT touching real system
 processes: the only process we ever signal is a short-lived subprocess we spawn
 ourselves, and the rclone-identity guard is monkeypatched for it.
 """
+
 import os
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -54,7 +54,8 @@ def test_reap_kills_orphan_with_gone_dir_and_keeps_live(home, tmp_path, monkeypa
         # The orphan's rc port is dead, so _confirmed_our_rcd must fall through
         # to the (monkeypatched) command-line identity check.
         monkeypatch.setattr(
-            mounts_mod, "_pid_looks_like_rcd",
+            mounts_mod,
+            "_pid_looks_like_rcd",
             lambda pid: pid == orphan.pid,
         )
 
@@ -148,9 +149,7 @@ def test_conftest_teardown_guard_terminates_tracked_pid(tmp_path, monkeypatch):
 
     proc = _spawn_sleeper()
     try:
-        monkeypatch.setattr(
-            mounts_mod, "_pid_looks_like_rcd", lambda pid: pid == proc.pid
-        )
+        monkeypatch.setattr(mounts_mod, "_pid_looks_like_rcd", lambda pid: pid == proc.pid)
         # home under the system temp root, as every test home is.
         home = tempfile.mkdtemp(dir=tempfile.gettempdir())
         tracked = [(proc.pid, home)]

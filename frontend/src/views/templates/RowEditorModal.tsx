@@ -48,9 +48,12 @@ export function RowEditorModal({
   const dragIndex = useRef<number | null>(null);
 
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   const known = new Set(inventory.templates.map((t) => t.name));
   // Names that resolve to no template folder (and aren't a "_" sentinel) —

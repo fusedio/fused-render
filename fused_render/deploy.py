@@ -45,6 +45,7 @@ posture that works fully today.
 No import of server.py (server imports this router — keep it acyclic); the
 X-Fused guard is duplicated locally like shell/bookmarks.py does.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -69,10 +70,16 @@ from fused_render.export import ExportError, export_page, plan_export
 # stable.
 from fused_render.fusedcli import (
     child_env as _child_env,
+)
+from fused_render.fusedcli import (
     cli_error as _cli_error,
+)
+from fused_render.fusedcli import (
     eligible_envs,
     fused_cli,
     fused_cloud_logged_in,
+)
+from fused_render.fusedcli import (
     setup_cli_hint as _setup_cli_hint,
 )
 from fused_render.shell import storage
@@ -201,7 +208,7 @@ def install_fused() -> dict:
         raise DeployError(
             "the fused package needs Python 3.11+; this server runs "
             f"{sys.version_info.major}.{sys.version_info.minor} — recreate the venv on a "
-            "newer Python, then pip install \"fused-render[fused]\""
+            'newer Python, then pip install "fused-render[fused]"'
         )
     if not _pip_available():
         raise DeployError(
@@ -260,7 +267,7 @@ def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
         raise DeployError(
             "the fused CLI is not available: the fused package is not importable in "
             "the server's environment and no FUSED_RENDER_FUSED_BIN override is set; "
-            "install it from the Deploy dialog or run: pip install \"fused-render[fused]\""
+            'install it from the Deploy dialog or run: pip install "fused-render[fused]"'
         )
     try:
         proc = subprocess.run(
@@ -280,9 +287,7 @@ def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
         return json.loads(proc.stdout)
     except ValueError:
         tail = proc.stdout.strip()[-200:]
-        raise DeployError(
-            f"the fused CLI printed something that wasn't JSON: {tail!r}"
-        ) from None
+        raise DeployError(f"the fused CLI printed something that wasn't JSON: {tail!r}") from None
 
 
 def _list_mounts(env_name: str) -> list[dict]:
@@ -305,7 +310,7 @@ def _find_mount(mounts: list[dict], token: str) -> dict | None:
 
 
 def _classify_mount(mounts: list[dict], token: str) -> str:
-    """"active" | "revoked" | "absent" — absent (not in the list at all, e.g.
+    """ "active" | "revoked" | "absent" — absent (not in the list at all, e.g.
     after an infra teardown) is distinct from a revoked tombstone: repoint and
     recreate both fail on it, so the caller must fall through to create."""
     mount = _find_mount(mounts, token)
@@ -393,9 +398,18 @@ def set_deployment(page: str, record: dict) -> None:
 # -- deploy orchestration ------------------------------------------------------
 
 
-def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
-                 entrypoints: list[str], include: list[str], exclude: list[str],
-                 cache_max_age: str, fallback: dict | None) -> dict:
+def _record_from(
+    raw: dict,
+    *,
+    page: str,
+    env_name: str,
+    backend: str,
+    entrypoints: list[str],
+    include: list[str],
+    exclude: list[str],
+    cache_max_age: str,
+    fallback: dict | None,
+) -> dict:
     # `cache_max_age` here is simply what the caller requested this deploy — every
     # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
     # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
@@ -455,7 +469,7 @@ def preview_deploy(
     if os.path.splitext(page)[1].lower() not in (".html", ".htm"):
         raise DeployError(f"{page} is not an .html/.htm page")
     try:
-        with open(page, "r", encoding="utf-8", errors="replace") as f:
+        with open(page, encoding="utf-8", errors="replace") as f:
             html = f.read()
     except OSError as e:
         raise DeployError(f"cannot read {page}: {e}") from None
@@ -564,7 +578,9 @@ def deploy_page(
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age)
+        plan = export_page(
+            page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age
+        )
         entrypoints = [e.name for e in plan.entrypoints]
 
         # force_new deliberately treats any existing pointer as absent — never
@@ -639,9 +655,15 @@ def deploy_page(
                 )
 
         record = _record_from(
-            raw, page=page, env_name=env_name, backend=backend,
-            entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=cache_max_age, fallback=same_env,
+            raw,
+            page=page,
+            env_name=env_name,
+            backend=backend,
+            entrypoints=entrypoints,
+            include=include,
+            exclude=exclude,
+            cache_max_age=cache_max_age,
+            fallback=same_env,
         )
         set_deployment(page, record)
         # force_new replace: the new mount is live and the pointer now tracks it,
@@ -912,9 +934,7 @@ def get_error(env_name: str, token: str, err_id: str) -> dict:
     the traceback, output tails, and params behind a deployed opaque 500."""
     parsed = _run_errors(
         env_name,
-        _errors_args(
-            token, err_id, limit=1, since=None, until=None, kind=None, entrypoint=None
-        ),
+        _errors_args(token, err_id, limit=1, since=None, until=None, kind=None, entrypoint=None),
     )
     if not isinstance(parsed, dict):
         raise DeployError("the fused CLI did not return an error record")

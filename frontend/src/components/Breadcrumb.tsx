@@ -267,7 +267,10 @@ export function Breadcrumb({
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>
-      <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      <CrumbActions
+        name={renderedTitle || basename(fsPath)}
+        onSplit={(dir) => enterPanel(fsPath, dir)}
+      />
     </>
   );
 }

@@ -19,6 +19,7 @@ instead of orphaning them. Unmount is an explicit user action.
 Store: home_dir()/mounts.json, whole-file last-write-wins like
 shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 """
+
 import collections
 import configparser
 import email.utils
@@ -236,6 +237,7 @@ def _nfs_mount_opt(m: dict) -> dict:
         extra.append("rdonly")
     return {"ExtraOptions": extra}
 
+
 # Tile-server daemon state files — the two parallel implementations that can
 # hold files open under a mount (geotiff, and the grid server shared by
 # zarr + netcdf). Unmount asks each to /quit before retrying (EBUSY fix).
@@ -338,9 +340,7 @@ def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
     if not name or any(ch in name for ch in "/\\:") or name.startswith("."):
         raise ValueError("name must be a plain folder-safe name")
     if ":" not in remote:
-        raise ValueError(
-            "remote must be an rclone spec like 'gdrive:' or 's3remote:bucket/prefix'"
-        )
+        raise ValueError("remote must be an rclone spec like 'gdrive:' or 's3remote:bucket/prefix'")
     # Strict bool, not truthiness: this comes straight off a JSON body, and
     # bool("false") is True — a client sending the string would lock a
     # writable mount read-only AND suppress detection forever.
@@ -443,7 +443,9 @@ def _pid_looks_like_rcd(pid: int) -> bool:
     try:
         out = subprocess.run(
             ["ps", "-o", "command=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True,
+            text=True,
+            timeout=3,
         ).stdout.lower()
     except (OSError, subprocess.SubprocessError):
         return False
@@ -623,8 +625,7 @@ def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30)
 _RC_JOB_POLL_S = 0.05
 
 
-def _rc_cancellable(port: int, method: str, params: dict | None = None,
-                    timeout: float = 30):
+def _rc_cancellable(port: int, method: str, params: dict | None = None, timeout: float = 30):
     """Like _rc, but runs `method` as a CANCELLABLE rclone job so a timed-out
     call actually stops rclone's server-side work instead of orphaning it.
 
@@ -672,15 +673,13 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
         if remaining <= 0:
             break
         try:
-            status = _rc(port, "job/status", {"jobid": jobid},
-                         timeout=min(remaining, 10))
+            status = _rc(port, "job/status", {"jobid": jobid}, timeout=min(remaining, 10))
         except RuntimeError:
             # Polling itself failed — common near the deadline when the budget
             # (min(remaining, 10)) is tiny, or when a busy rcd is slow to answer.
             # Do NOT let it propagate uncancelled: break out and stop the job
             # below so the in-flight enumeration can't outlive us (the INCIDENT).
-            logger.warning("rc job/status failed for job %s; cancelling",
-                           jobid, exc_info=True)
+            logger.warning("rc job/status failed for job %s; cancelling", jobid, exc_info=True)
             break
         if isinstance(status, dict) and status.get("finished"):
             if status.get("error"):
@@ -801,9 +800,16 @@ def _ensure_rcd_locked() -> int:
     # console to write to anyway.
     log_path = _rotate_rcd_log()
     subprocess.Popen(
-        [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
-         f"--rc-addr=127.0.0.1:{port}",
-         f"--log-file={log_path}", "--log-level", "INFO"],
+        [
+            bin_,
+            "rcd",
+            "--rc-no-auth",
+            "--use-server-modtime",
+            f"--rc-addr=127.0.0.1:{port}",
+            f"--log-file={log_path}",
+            "--log-level",
+            "INFO",
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,  # outlives this server on purpose
@@ -848,9 +854,7 @@ def _kill_current_rcd() -> None:
     if not _confirmed_our_rcd(entry):
         # Alive but unprovable: pids get recycled, so this could be anything.
         # Fail loud instead of blind-killing (the critical safety invariant).
-        raise RuntimeError(
-            f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
-        )
+        raise RuntimeError(f"refusing to kill pid {pid}: not confirmed to be our rclone rcd")
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.kill(pid, sig)
@@ -891,8 +895,7 @@ def restart_rcd() -> None:
             try:
                 detach_mount(m, force=True)
             except Exception:
-                logger.warning("restart: detach of %r failed",
-                               m.get("name"), exc_info=True)
+                logger.warning("restart: detach of %r failed", m.get("name"), exc_info=True)
         _kill_current_rcd()
         _ensure_rcd_locked()
     run_automount()
@@ -935,11 +938,14 @@ def _http_serves(port: int) -> dict:
     except RuntimeError:
         return {}
     return {
-        s["params"]["fs"]: {"addr": s.get("addr", ""), "id": s.get("id", ""),
-                            "vfs": {k: v for k, v in s["params"].items()
-                                    if k not in ("type", "fs", "addr")}}
+        s["params"]["fs"]: {
+            "addr": s.get("addr", ""),
+            "id": s.get("id", ""),
+            "vfs": {k: v for k, v in s["params"].items() if k not in ("type", "fs", "addr")},
+        }
         for s in listed
-        if isinstance(s, dict) and s.get("params", {}).get("type") == "http"
+        if isinstance(s, dict)
+        and s.get("params", {}).get("type") == "http"
         and s.get("params", {}).get("fs")
     }
 
@@ -966,8 +972,10 @@ def _read_only_mountpoints() -> list:
     gen = _mounts_generation
     with _ro_cache_lock:
         if _ro_cache is None or _ro_cache[0] != gen:
-            _ro_cache = (gen, [os.path.abspath(mountpoint(c))
-                               for c in list_mounts() if c.get("read_only")])
+            _ro_cache = (
+                gen,
+                [os.path.abspath(mountpoint(c)) for c in list_mounts() if c.get("read_only")],
+            )
         return _ro_cache[1]
 
 
@@ -986,8 +994,7 @@ def mount_read_only(path: str) -> bool:
     if not is_mount_backed(path):
         return False
     p = os.path.abspath(path)
-    return any(p == mp or p.startswith(mp + os.sep)
-               for mp in _read_only_mountpoints())
+    return any(p == mp or p.startswith(mp + os.sep) for mp in _read_only_mountpoints())
 
 
 def _s3_without_credentials(cfg: dict) -> bool:
@@ -997,19 +1004,26 @@ def _s3_without_credentials(cfg: dict) -> bool:
     _public_object_url decides "public URL is reachable unsigned" with it
     and _detect_read_only decides "writes can never be accepted"; keep the
     definition single so the two can't drift."""
-    return (cfg.get("type") == "s3"
-            and str(cfg.get("env_auth", "")).lower() != "true"
-            and not (cfg.get("access_key_id") or cfg.get("profile")
-                     or cfg.get("shared_credentials_file")
-                     or cfg.get("session_token")))
+    return (
+        cfg.get("type") == "s3"
+        and str(cfg.get("env_auth", "")).lower() != "true"
+        and not (
+            cfg.get("access_key_id")
+            or cfg.get("profile")
+            or cfg.get("shared_credentials_file")
+            or cfg.get("session_token")
+        )
+    )
 
 
 def _gcs_anonymous(cfg: dict) -> bool:
     """A GCS remote configured anonymous=true (the built-in gcs-open
     suggestion) — rclone sends unauthenticated requests, which GCS accepts
     for public-bucket reads only, so writes can never be accepted."""
-    return (cfg.get("type") == "google cloud storage"
-            and str(cfg.get("anonymous", "")).lower() == "true")
+    return (
+        cfg.get("type") == "google cloud storage"
+        and str(cfg.get("anonymous", "")).lower() == "true"
+    )
 
 
 def _detect_read_only(port: int, fs: str) -> bool | None:
@@ -1026,8 +1040,7 @@ def _detect_read_only(port: int, fs: str) -> bool | None:
     limits to read still report writable: only a real write could tell, and
     probing with one would drop junk objects into user buckets."""
     try:
-        feats = (_rc(port, "operations/fsinfo", {"fs": fs}, timeout=10)
-                 or {}).get("Features")
+        feats = (_rc(port, "operations/fsinfo", {"fs": fs}, timeout=10) or {}).get("Features")
     except RuntimeError:
         return None
     if not isinstance(feats, dict) or not feats:
@@ -1066,8 +1079,7 @@ def _refresh_read_only_flag(m: dict, port: int | None = None) -> None:
         m["read_only"] = ro
         _update_mount(m)
     except Exception:
-        logger.warning("read-only detection for %r failed", m.get("name"),
-                       exc_info=True)
+        logger.warning("read-only detection for %r failed", m.get("name"), exc_info=True)
 
 
 def is_mount_backed(path: str) -> bool:
@@ -1215,9 +1227,9 @@ def _rc_stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     try:
         # Cancellable: operations/stat runs an UNBOUNDED ListObjectsV2 on a
         # negative/dir probe, so a timed-out sync call would orphan that walk.
-        resp = _rc_cancellable(port, "operations/stat",
-                               {"fs": m["remote"], "remote": remote},
-                               timeout=timeout)
+        resp = _rc_cancellable(
+            port, "operations/stat", {"fs": m["remote"], "remote": remote}, timeout=timeout
+        )
     except RuntimeError:
         return _STAT_INDETERMINATE
     if not isinstance(resp, dict) or "item" not in resp:
@@ -1267,8 +1279,11 @@ def _stat_item(path: str, *, timeout: float = RC_STAT_TIMEOUT_S):
     item = _rc_stat_item(path, timeout=remaining)
     if not isinstance(item, dict):
         return item  # None (missing) or _STAT_INDETERMINATE pass straight through
-    return {"IsDir": bool(item.get("IsDir")), "Size": item.get("Size"),
-            "MtimeEpoch": rc_modtime_epoch(item.get("ModTime"))}
+    return {
+        "IsDir": bool(item.get("IsDir")),
+        "Size": item.get("Size"),
+        "MtimeEpoch": rc_modtime_epoch(item.get("ModTime")),
+    }
 
 
 def rc_stat_for(path: str, *, timeout: float = RC_STAT_TIMEOUT_S) -> str:
@@ -1398,8 +1413,9 @@ def _rc_timed_out(e: BaseException) -> bool:
     cause = e.__cause__
     if isinstance(cause, TimeoutError):  # socket.timeout is an alias since 3.10
         return True
-    return (isinstance(cause, urllib.error.URLError)
-            and isinstance(getattr(cause, "reason", None), TimeoutError))
+    return isinstance(cause, urllib.error.URLError) and isinstance(
+        getattr(cause, "reason", None), TimeoutError
+    )
 
 
 def rc_list_dir(path: str, timeout: float | None = None) -> list:
@@ -1440,9 +1456,12 @@ def rc_list_dir(path: str, timeout: float | None = None) -> list:
     try:
         # Cancellable: operations/list enumerates the WHOLE prefix (the mur-sst
         # runaway), so on timeout we job/stop it instead of orphaning the walk.
-        resp = _rc_cancellable(port, "operations/list",
-                               {"fs": m["remote"], "remote": remote,
-                                "opt": {"noMimeType": True}}, timeout=timeout)
+        resp = _rc_cancellable(
+            port,
+            "operations/list",
+            {"fs": m["remote"], "remote": remote, "opt": {"noMimeType": True}},
+            timeout=timeout,
+        )
     except RuntimeError as e:
         if _rc_timed_out(e):
             raise RcListTimeout(f"listing {path} timed out after {timeout:g}s") from e
@@ -1516,8 +1535,8 @@ def serve_url_for(path: str) -> str | None:
 _LINK_TTL_S = 30 * 60.0
 _upstream_lock = threading.Lock()
 _upstream_links: dict = {}  # (fs, rel) -> (url, monotonic expiry)
-_upstream_mode: dict = {}   # fs -> "link" | "public" | "none"
-_upstream_cfg: dict = {}    # remote name -> config/get dict (successes only)
+_upstream_mode: dict = {}  # fs -> "link" | "public" | "none"
+_upstream_cfg: dict = {}  # remote name -> config/get dict (successes only)
 
 
 def _remote_config(name: str) -> dict | None:
@@ -1548,8 +1567,7 @@ def _anonymous_s3(cfg: dict | None) -> bool:
     """True when the remote is plain AWS S3 with no credentials — the one
     backend class whose objects are reachable by unsigned public URL and
     which can never presign ("unsupported signer type noAuth")."""
-    return (cfg is not None and _s3_without_credentials(cfg)
-            and not cfg.get("endpoint"))
+    return cfg is not None and _s3_without_credentials(cfg) and not cfg.get("endpoint")
 
 
 def _cannot_presign(cfg: dict | None) -> bool:
@@ -1592,8 +1610,7 @@ def _fix_dotted_bucket_url(url: str) -> str | None:
     rewritten (SigV4 covers the Host header), so drop it — the caller then
     stays on the serve proxy, which is slow but works."""
     p = urllib.parse.urlsplit(url)
-    m = re.match(r"^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$",
-                 p.hostname or "")
+    m = re.match(r"^(.+)\.s3[.-]([a-z0-9-]+)\.amazonaws\.com$", p.hostname or "")
     if not m or "." not in m.group(1):
         return url
     if p.query:
@@ -1706,8 +1723,9 @@ def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
     return joined + "/" if joined else ""
 
 
-def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
-                 timeout: float | None = None) -> tuple[list, str | None]:
+def s3_list_page(
+    path: str, *, max_keys: int, continuation: str | None = None, timeout: float | None = None
+) -> tuple[list, str | None]:
     """One ListObjectsV2 page for a mount-backed directory on an anonymous AWS
     S3 remote, fetched by a plain unsigned HTTPS GET — no kernel I/O on the
     mount, no rclone, no boto3.
@@ -1737,8 +1755,7 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
         raise S3ListError(f"{path}: remote {fs!r} carries no bucket")
     bucket, store_prefix, region = derived
     prefix = _s3_listing_prefix(store_prefix, rel)
-    params = {"list-type": "2", "delimiter": "/", "prefix": prefix,
-              "max-keys": str(max_keys)}
+    params = {"list-type": "2", "delimiter": "/", "prefix": prefix, "max-keys": str(max_keys)}
     if continuation:
         params["continuation-token"] = continuation
     query = urllib.parse.urlencode(params)
@@ -1761,27 +1778,28 @@ def s3_list_page(path: str, *, max_keys: int, continuation: str | None = None,
     entries: list = []
     for cp in root_el.findall(f"{_S3_XMLNS}CommonPrefixes"):
         p = cp.findtext(f"{_S3_XMLNS}Prefix") or ""
-        name = p[len(prefix):].rstrip("/")
+        name = p[len(prefix) :].rstrip("/")
         if name:
-            entries.append({"Name": name, "Size": None, "IsDir": True,
-                            "ModTime": None})
+            entries.append({"Name": name, "Size": None, "IsDir": True, "ModTime": None})
     for obj in root_el.findall(f"{_S3_XMLNS}Contents"):
         key = obj.findtext(f"{_S3_XMLNS}Key") or ""
         # The zero-byte object whose key IS the prefix is the directory
         # placeholder S3 consoles create — it's this directory, not an entry.
         if key == prefix:
             continue
-        name = key[len(prefix):]
+        name = key[len(prefix) :]
         if not name:
             continue
         size_txt = obj.findtext(f"{_S3_XMLNS}Size")
-        entries.append({
-            "Name": name,
-            "Size": int(size_txt) if size_txt and size_txt.isdigit() else None,
-            "IsDir": False,
-            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
-            "ModTime": obj.findtext(f"{_S3_XMLNS}LastModified"),
-        })
+        entries.append(
+            {
+                "Name": name,
+                "Size": int(size_txt) if size_txt and size_txt.isdigit() else None,
+                "IsDir": False,
+                # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+                "ModTime": obj.findtext(f"{_S3_XMLNS}LastModified"),
+            }
+        )
     next_token = None
     if (root_el.findtext(f"{_S3_XMLNS}IsTruncated") or "").lower() == "true":
         next_token = root_el.findtext(f"{_S3_XMLNS}NextContinuationToken") or None
@@ -1823,8 +1841,9 @@ def _gcs_bucket_prefix(fs: str) -> tuple[str, str] | None:
     return bucket, prefix.rstrip("/")
 
 
-def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
-                  timeout: float | None = None) -> tuple[list, str | None]:
+def gcs_list_page(
+    path: str, *, max_keys: int, continuation: str | None = None, timeout: float | None = None
+) -> tuple[list, str | None]:
     """One objects.list page for a mount-backed directory on an anonymous GCS
     remote, fetched by a plain unsigned HTTPS GET against the GCS JSON API — no
     kernel I/O on the mount, no rclone, no google SDK.
@@ -1872,28 +1891,28 @@ def gcs_list_page(path: str, *, max_keys: int, continuation: str | None = None,
         raise DirectListError(f"GCS list {path}: unparseable JSON") from e
     entries: list = []
     for p in doc.get("prefixes") or []:
-        name = str(p)[len(prefix):].rstrip("/")
+        name = str(p)[len(prefix) :].rstrip("/")
         if name:
-            entries.append({"Name": name, "Size": None, "IsDir": True,
-                            "ModTime": None})
+            entries.append({"Name": name, "Size": None, "IsDir": True, "ModTime": None})
     for obj in doc.get("items") or []:
         key = obj.get("name") or ""
         # The zero-byte object whose name IS the prefix is the directory
         # placeholder GCS consoles create — it's this directory, not an entry.
         if key == prefix:
             continue
-        name = key[len(prefix):]
+        name = key[len(prefix) :]
         if not name:
             continue
         size_txt = obj.get("size")
-        entries.append({
-            "Name": name,
-            "Size": int(size_txt) if isinstance(size_txt, str)
-            and size_txt.isdigit() else None,
-            "IsDir": False,
-            # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
-            "ModTime": obj.get("updated"),
-        })
+        entries.append(
+            {
+                "Name": name,
+                "Size": int(size_txt) if isinstance(size_txt, str) and size_txt.isdigit() else None,
+                "IsDir": False,
+                # RFC3339 already; the mapping site runs rc_modtime_epoch on it.
+                "ModTime": obj.get("updated"),
+            }
+        )
     return entries, doc.get("nextPageToken") or None
 
 
@@ -1910,18 +1929,17 @@ def direct_list_capable(path: str) -> bool:
     return s3_direct_capable(path) or gcs_direct_capable(path)
 
 
-def direct_list_page(path: str, *, max_keys: int, continuation: str | None = None,
-                     timeout: float | None = None) -> tuple[list, str | None]:
+def direct_list_page(
+    path: str, *, max_keys: int, continuation: str | None = None, timeout: float | None = None
+) -> tuple[list, str | None]:
     """One direct (unsigned) listing page for `path`, routed to the S3 or GCS
     pager by the backend the path resolves to. Returns (entries, next_token) in
     the shared rc/direct shape; raises DirectListError when the path is backed
     by neither direct-listable backend (or the chosen pager fails)."""
     if s3_direct_capable(path):
-        return s3_list_page(path, max_keys=max_keys,
-                            continuation=continuation, timeout=timeout)
+        return s3_list_page(path, max_keys=max_keys, continuation=continuation, timeout=timeout)
     if gcs_direct_capable(path):
-        return gcs_list_page(path, max_keys=max_keys,
-                            continuation=continuation, timeout=timeout)
+        return gcs_list_page(path, max_keys=max_keys, continuation=continuation, timeout=timeout)
     raise DirectListError(f"{path}: no direct-listable backend")
 
 
@@ -2010,8 +2028,7 @@ def _direct_stat_item(path: str, *, deadline: float):
         raise DirectProbeError(f"{path}: budget spent before head probe")
     head = direct_head(path, timeout=remaining)
     if head.exists:
-        return {"IsDir": False, "Size": head.size,
-                "MtimeEpoch": rc_modtime_epoch(head.mtime)}
+        return {"IsDir": False, "Size": head.size, "MtimeEpoch": rc_modtime_epoch(head.mtime)}
     if deadline - time.monotonic() < _DIRECT_PROBE_MIN_S:
         raise DirectProbeError(f"{path}: budget spent before dir probe")
     if direct_is_dir(path, timeout=deadline - time.monotonic()):
@@ -2034,7 +2051,8 @@ def _s3_head(path: str, timeout: float) -> DirectHead:
             return DirectHead(
                 True,
                 int(size) if size and size.isdigit() else None,
-                _http_date_epoch(resp.headers.get("Last-Modified")))
+                _http_date_epoch(resp.headers.get("Last-Modified")),
+            )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return DirectHead(False, None, None)  # trustworthy negative
@@ -2053,8 +2071,7 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
         raise DirectProbeError(f"{path}: remote {fs!r} carries no bucket")
     bucket, store_prefix = derived
     key = (store_prefix + "/" if store_prefix else "") + rel
-    url = _GCS_OBJ_URL.format(bucket=bucket,
-                              key=urllib.parse.quote(key, safe=""))
+    url = _GCS_OBJ_URL.format(bucket=bucket, key=urllib.parse.quote(key, safe=""))
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             body = resp.read()
@@ -2070,9 +2087,8 @@ def _gcs_head(path: str, timeout: float) -> DirectHead:
         raise DirectProbeError(f"GCS head {path}: unparseable JSON") from e
     size = doc.get("size")
     return DirectHead(
-        True,
-        int(size) if isinstance(size, str) and size.isdigit() else None,
-        doc.get("updated"))  # RFC3339 already
+        True, int(size) if isinstance(size, str) and size.isdigit() else None, doc.get("updated")
+    )  # RFC3339 already
 
 
 def _s3_has_children(path: str, timeout: float) -> bool:
@@ -2165,9 +2181,15 @@ def _upstream_url_for(path: str) -> str | None:
         if port is None:
             return None
         try:
-            url = _rc(port, "operations/publiclink",
-                      {"fs": fs, "remote": rel, "expire": "1h"},
-                      timeout=10).get("url") or None
+            url = (
+                _rc(
+                    port,
+                    "operations/publiclink",
+                    {"fs": fs, "remote": rel, "expire": "1h"},
+                    timeout=10,
+                ).get("url")
+                or None
+            )
         except RuntimeError:
             url = None
         if url is not None:
@@ -2227,12 +2249,17 @@ def _sync_serves_locked() -> None:
             serve = None
         if serve is None:
             try:
-                addr = _rc(port, "serve/start", {
-                    "type": "http",
-                    "fs": fs,
-                    "addr": "127.0.0.1:0",
-                    **want_vfs,
-                }, timeout=30).get("addr", "")
+                addr = _rc(
+                    port,
+                    "serve/start",
+                    {
+                        "type": "http",
+                        "fs": fs,
+                        "addr": "127.0.0.1:0",
+                        **want_vfs,
+                    },
+                    timeout=30,
+                ).get("addr", "")
             except RuntimeError as e:
                 logger.warning("http serve for %r failed: %s", m["name"], e)
                 continue
@@ -2266,8 +2293,7 @@ def attach_mount(m: dict) -> str | None:
         # has no queryable fs — adopted as-is, the pre-rcd prototype case.)
         fs = rcd_mount_map().get(mp)
         if fs is not None and fs != m["remote"]:
-            return (f"mountpoint already serves '{fs}' — unmount it before "
-                    f"mounting '{m['remote']}'")
+            return f"mountpoint already serves '{fs}' — unmount it before mounting '{m['remote']}'"
         # Refresh read_only BEFORE reconciling serves: sync_serves derives the
         # serve's read_only param from this record, so refreshing afterwards
         # would leave the serve on the stale flag (disagreeing with the mount
@@ -2281,9 +2307,7 @@ def attach_mount(m: dict) -> str | None:
         # flag exists to prevent. mounted_read_only records what was actually
         # baked in at mount time; on mismatch, remount to apply. Only for
         # rcd-known mounts (fs set) — a foreign kernel mount is adopted as-is.
-        if fs is not None and bool(m.get("read_only")) != bool(
-            m.get("mounted_read_only")
-        ):
+        if fs is not None and bool(m.get("read_only")) != bool(m.get("mounted_read_only")):
             return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
         # HTTP serve may still be missing (a prior serve/start failed, or the
@@ -2347,8 +2371,7 @@ def _quit_tile_daemons() -> None:
         tok = state.get("token")
         path = f"/quit?t={tok}" if tok else "/quit"
         try:
-            urllib.request.urlopen(
-                f"http://127.0.0.1:{state['port']}{path}", timeout=3).read()
+            urllib.request.urlopen(f"http://127.0.0.1:{state['port']}{path}", timeout=3).read()
         except OSError:
             continue
 
@@ -2392,8 +2415,9 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         if os.path.ismount(mp):
             if force:
                 return _force_unmount(mp)
-            return ("mounted outside the app (no rclone daemon running) — "
-                    "unmount it from the terminal")
+            return (
+                "mounted outside the app (no rclone daemon running) — unmount it from the terminal"
+            )
         return None
     params = {"mountPoint": mp}
     try:
@@ -2540,8 +2564,9 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT) -> str
 _UNSET = object()
 
 
-def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
-                         state: str | None = None, cred_status=_UNSET) -> str | None:
+def mount_restart_reason(
+    m: dict, rcd_mounts: set | None = None, state: str | None = None, cred_status=_UNSET
+) -> str | None:
     """Why restarting rclone would help this mount, or None. Surfaced on
     mount_view so the UI can prompt (both reasons route to the SAME global
     Restart button):
@@ -2590,8 +2615,9 @@ def mount_restart_reason(m: dict, rcd_mounts: set | None = None,
     return None
 
 
-def mount_view(m: dict, rcd_mounts: set | None = None, state: str | None = None,
-               cred_status=_UNSET) -> dict:
+def mount_view(
+    m: dict, rcd_mounts: set | None = None, state: str | None = None, cred_status=_UNSET
+) -> dict:
     mp = mountpoint(m)
     listed = mounted_paths() if rcd_mounts is None else rcd_mounts
     if state is None:
@@ -2695,9 +2721,7 @@ def ensure_learn_mount() -> None:
         detach_target: tuple[dict, str] | None = None
         with _store_lock:
             mounts = list_mounts()
-            builtin = next(
-                (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
-            )
+            builtin = next((m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None)
             if path is None:
                 if builtin is not None:
                     old_remote = builtin["remote"]
@@ -2719,18 +2743,20 @@ def ensure_learn_mount() -> None:
                     detach_target = (builtin, old_remote)
                 elif any(m["name"] == LEARN_MOUNT_NAME for m in mounts):
                     logger.warning(
-                        "not adding the builtin learn mount: a user mount "
-                        "named %r already exists", LEARN_MOUNT_NAME,
+                        "not adding the builtin learn mount: a user mount named %r already exists",
+                        LEARN_MOUNT_NAME,
                     )
                 else:
-                    mounts.append({
-                        "id": uuid.uuid4().hex[:12],
-                        "name": LEARN_MOUNT_NAME,
-                        "remote": remote,
-                        "read_only": True,
-                        "read_only_user": True,
-                        "builtin": LEARN_MOUNT_NAME,
-                    })
+                    mounts.append(
+                        {
+                            "id": uuid.uuid4().hex[:12],
+                            "name": LEARN_MOUNT_NAME,
+                            "remote": remote,
+                            "read_only": True,
+                            "read_only_user": True,
+                            "builtin": LEARN_MOUNT_NAME,
+                        }
+                    )
                     _write(mounts)
         if detach_target is not None:
             _force_detach_learn_mount(*detach_target)
@@ -2758,9 +2784,7 @@ def learn_mount_ready() -> bool:
     os.path.ismount() (the kernel mount table) is exactly attach_mount's own
     signal for "there is nothing left to attach" (see its `os.path.ismount`
     check), so this reads true only once that loop has actually succeeded."""
-    builtin = next(
-        (m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None
-    )
+    builtin = next((m for m in list_mounts() if m.get("builtin") == LEARN_MOUNT_NAME), None)
     if builtin is None:
         return False
     mp = mountpoint(builtin)
@@ -2926,7 +2950,7 @@ def _aws_profiles() -> list[str]:
             continue
         for section in parser.sections():
             if is_config and section.startswith("profile "):
-                names.add(section[len("profile "):].strip())
+                names.add(section[len("profile ") :].strip())
             else:
                 names.add(section.strip())
     return sorted(n for n in names if n)
@@ -2944,54 +2968,64 @@ def _credential_suggestions() -> list[dict]:
     (or expired) cloud creds. region is just the endpoint rclone starts at; it
     follows S3's region redirect to reach buckets in any region. The rest are
     credential-backed (kind="detected", defaulted in _suggestions_view)."""
-    out: list[dict] = [{
-        "id": "aws-open-public",
-        "label": "AWS S3 — public buckets (no credentials)",
-        "remote_name": "aws-open",
-        "backend": "s3",
-        "kind": "public",
-        "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
-    }, {
-        "id": "gcs-open-public",
-        "label": "Google Cloud Storage — public buckets (no credentials)",
-        "remote_name": "gcs-open",
-        "backend": "google cloud storage",
-        "kind": "public",
-        "params": {"anonymous": "true"},
-    }]
+    out: list[dict] = [
+        {
+            "id": "aws-open-public",
+            "label": "AWS S3 — public buckets (no credentials)",
+            "remote_name": "aws-open",
+            "backend": "s3",
+            "kind": "public",
+            "params": {"provider": "AWS", "env_auth": "false", "region": "us-west-2"},
+        },
+        {
+            "id": "gcs-open-public",
+            "label": "Google Cloud Storage — public buckets (no credentials)",
+            "remote_name": "gcs-open",
+            "backend": "google cloud storage",
+            "kind": "public",
+            "params": {"anonymous": "true"},
+        },
+    ]
     for prof in _aws_profiles():
-        out.append({
-            "id": f"aws-profile:{prof}",
-            "label": f"AWS S3 — {prof} profile",
-            "remote_name": "aws" if prof == "default" else f"aws-{_slug(prof)}",
-            "backend": "s3",
-            "params": {"provider": "AWS", "env_auth": "true", "profile": prof},
-        })
+        out.append(
+            {
+                "id": f"aws-profile:{prof}",
+                "label": f"AWS S3 — {prof} profile",
+                "remote_name": "aws" if prof == "default" else f"aws-{_slug(prof)}",
+                "backend": "s3",
+                "params": {"provider": "AWS", "env_auth": "true", "profile": prof},
+            }
+        )
     if os.environ.get("AWS_ACCESS_KEY_ID"):
-        out.append({
-            "id": "aws-env",
-            "label": "AWS S3 — environment credentials",
-            "remote_name": "aws-env",
-            "backend": "s3",
-            "params": {"provider": "AWS", "env_auth": "true"},
-        })
-    if os.path.exists(os.path.expanduser(
-            "~/.config/gcloud/application_default_credentials.json")):
-        out.append({
-            "id": "gcs-adc",
-            "label": "Google Cloud Storage — application default credentials",
-            "remote_name": "gcs",
-            "backend": "google cloud storage",
-            "params": {"env_auth": "true"},
-        })
+        out.append(
+            {
+                "id": "aws-env",
+                "label": "AWS S3 — environment credentials",
+                "remote_name": "aws-env",
+                "backend": "s3",
+                "params": {"provider": "AWS", "env_auth": "true"},
+            }
+        )
+    if os.path.exists(os.path.expanduser("~/.config/gcloud/application_default_credentials.json")):
+        out.append(
+            {
+                "id": "gcs-adc",
+                "label": "Google Cloud Storage — application default credentials",
+                "remote_name": "gcs",
+                "backend": "google cloud storage",
+                "params": {"env_auth": "true"},
+            }
+        )
     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        out.append({
-            "id": "gcs-env",
-            "label": "Google Cloud Storage — environment credentials",
-            "remote_name": "gcs-env",
-            "backend": "google cloud storage",
-            "params": {"env_auth": "true"},
-        })
+        out.append(
+            {
+                "id": "gcs-env",
+                "label": "Google Cloud Storage — environment credentials",
+                "remote_name": "gcs-env",
+                "backend": "google cloud storage",
+                "params": {"env_auth": "true"},
+            }
+        )
     return out
 
 
@@ -3025,10 +3059,11 @@ def _remote_label(remote: str, suggestions: list[dict], configs: dict) -> str:
     (rclone normalizes booleans). No match (e.g. "myminio:") → the bare string."""
     cfg = configs.get(remote.rstrip(":"), {})
     for s in suggestions:
-        if (f'{s["remote_name"]}:' == remote
-                and str(cfg.get("type", "")).lower() == s["backend"].lower()
-                and all(str(cfg.get(k, "")).lower() == str(v).lower()
-                        for k, v in s["params"].items())):
+        if (
+            f"{s['remote_name']}:" == remote
+            and str(cfg.get("type", "")).lower() == s["backend"].lower()
+            and all(str(cfg.get(k, "")).lower() == str(v).lower() for k, v in s["params"].items())
+        ):
             return s["label"]
     return remote
 
@@ -3039,15 +3074,18 @@ def _suggestions_view(remotes: list[str]) -> list[dict]:
     under Remotes instead). `kind` groups them in the dropdown: 'public' vs the
     default 'detected'."""
     return [
-        {"id": s["id"], "label": s["label"], "remote_name": s["remote_name"],
-         "kind": s.get("kind", "detected")}
+        {
+            "id": s["id"],
+            "label": s["label"],
+            "remote_name": s["remote_name"],
+            "kind": s.get("kind", "detected"),
+        }
         for s in _credential_suggestions()
-        if f'{s["remote_name"]}:' not in remotes
+        if f"{s['remote_name']}:" not in remotes
     ]
 
 
-def _rclone_state_view(version: str | None, names: list[str],
-                       bin_: str | None) -> dict:
+def _rclone_state_view(version: str | None, names: list[str], bin_: str | None) -> dict:
     """Assemble the available:True payload from a version string and the remote
     names (each carrying its verbatim rclone spec, incl trailing ':', used
     unchanged as the mount base). Each remote also gets a friendly `label` so it
@@ -3058,10 +3096,13 @@ def _rclone_state_view(version: str | None, names: list[str],
     config dump is then skipped and labels degrade to bare names."""
     suggestions = _credential_suggestions()
     configs = _rclone_config_dump(bin_) if bin_ else {}
-    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)}
-               for n in names]
-    return {"available": True, "version": version, "remotes": remotes,
-            "suggested": _suggestions_view(names)}
+    remotes = [{"name": n, "label": _remote_label(n, suggestions, configs)} for n in names]
+    return {
+        "available": True,
+        "version": version,
+        "remotes": remotes,
+        "suggested": _suggestions_view(names),
+    }
 
 
 def _rclone_state() -> dict:
@@ -3117,7 +3158,7 @@ def broken_mount_error(path: str) -> str | None:
     p = os.path.abspath(path)
     if not p.startswith(root + os.sep):
         return None
-    name = p[len(root) + 1:].split(os.sep, 1)[0]
+    name = p[len(root) + 1 :].split(os.sep, 1)[0]
     m = next((c for c in list_mounts() if c["name"] == name), None)
     if m is None:
         return None
@@ -3140,15 +3181,16 @@ def broken_mount_error(path: str) -> str | None:
         # to the generic reconnect message (a transient failure or a
         # non-credential remote must NOT suggest a restart).
         if cred_status == "valid":
-            return (f"mount '{name}' — your credentials look refreshed; restart "
-                    f"rclone from the Mounts page in the sidebar to pick up the "
-                    f"new credentials")
+            return (
+                f"mount '{name}' — your credentials look refreshed; restart "
+                f"rclone from the Mounts page in the sidebar to pick up the "
+                f"new credentials"
+            )
     # "stale" (the INCIDENT split-brain) and "disconnected" both mean a mount
     # that was there and stopped flowing — same user-facing wording; only a
     # never-mounted mount reads as "not mounted".
     reason = "not mounted" if state == "unmounted" else "disconnected"
-    return (f"mount '{name}' is {reason} — reconnect it from the Mounts page "
-            f"in the sidebar")
+    return f"mount '{name}' is {reason} — reconnect it from the Mounts page in the sidebar"
 
 
 @router.get("/api/mounts")
@@ -3167,6 +3209,7 @@ def get_mounts():
     cred_statuses: list[str] = ["n/a"] * len(mounts)
     threads = []
     for i, m in enumerate(mounts):
+
         def probe(i=i, m=m):
             st = mount_state(m, live)
             states[i] = st
@@ -3174,6 +3217,7 @@ def get_mounts():
             # one never pays the lsd probe.
             if st in ("disconnected", "stale"):
                 cred_statuses[i] = _mount_credential_status(m, bin_)
+
         t = threading.Thread(target=probe, daemon=True)
         t.start()
         threads.append(t)
@@ -3199,8 +3243,9 @@ def create_mount(body: dict = Body(...), x_fused: str | None = Header(default=No
         # An explicit read_only in the body wins over attach-time detection —
         # the caller knows their credentials better than the probe does.
         # add_mount validates it (strict bool or absent).
-        m = add_mount(body.get("name") or "", body.get("remote") or "",
-                      read_only=body.get("read_only"))
+        m = add_mount(
+            body.get("name") or "", body.get("remote") or "", read_only=body.get("read_only")
+        )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     err = attach_mount(m)
@@ -3258,8 +3303,7 @@ def restart_endpoint(x_fused: str | None = Header(default=None, alias="X-Fused")
 
 
 @router.post("/api/mounts/{cid}/unmount")
-def unmount_endpoint(cid: str, force: str = "0",
-                     x_fused: str | None = Header(default=None)):
+def unmount_endpoint(cid: str, force: str = "0", x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -3323,11 +3367,19 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
         return JSONResponse({"error": "invalid remote name"}, status_code=400)
     p = body.get("params") or {}
     cmd = [
-        bin_, "config", "create", name, "s3",
-        "provider", p.get("provider") or "Other",
-        "access_key_id", p.get("access_key_id") or "",
-        "secret_access_key", p.get("secret_access_key") or "",
-        "env_auth", "false",
+        bin_,
+        "config",
+        "create",
+        name,
+        "s3",
+        "provider",
+        p.get("provider") or "Other",
+        "access_key_id",
+        p.get("access_key_id") or "",
+        "secret_access_key",
+        p.get("secret_access_key") or "",
+        "env_auth",
+        "false",
     ]
     if p.get("endpoint"):
         cmd += ["endpoint", p["endpoint"]]
@@ -3347,13 +3399,21 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
 # credentials that merely lack a permission (AccessDenied) or a transient
 # network failure. Matched case-insensitively against rclone's output.
 _BAD_CRED_MARKERS = (
-    "expiredtoken", "expired token", "token has expired", "token is expired",
+    "expiredtoken",
+    "expired token",
+    "token has expired",
+    "token is expired",
     # Google ADC/OAuth refresh failure: "Token has been expired or revoked."
     # — matches neither "has expired" nor "is expired" above.
     "has been expired or revoked",
-    "invalidaccesskeyid", "invalidclienttokenid", "signaturedoesnotmatch",
-    "no valid credential", "nocredentialproviders",
-    "invalid_grant", "unauthenticated", "401 unauthorized",
+    "invalidaccesskeyid",
+    "invalidclienttokenid",
+    "signaturedoesnotmatch",
+    "no valid credential",
+    "nocredentialproviders",
+    "invalid_grant",
+    "unauthenticated",
+    "401 unauthorized",
     "could not find default credentials",
 )
 
@@ -3381,10 +3441,25 @@ def _credential_probe(bin_: str, name: str) -> str:
     prompt, or a transient failure would spam a false restart suggestion."""
     try:
         r = subprocess.run(
-            [bin_, "lsd", f"{name}:", "--max-depth", "1",
-             "--contimeout", "5s", "--timeout", "10s",
-             "--retries", "1", "--low-level-retries", "2"],
-            capture_output=True, text=True, timeout=30)
+            [
+                bin_,
+                "lsd",
+                f"{name}:",
+                "--max-depth",
+                "1",
+                "--contimeout",
+                "5s",
+                "--timeout",
+                "10s",
+                "--retries",
+                "1",
+                "--low-level-retries",
+                "2",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return "inconclusive"
     if r.returncode == 0:
@@ -3485,14 +3560,17 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
             # succeeded — a silently-lingering remote would be reported ok on
             # the next detect and re-invite the doomed mount.
             try:
-                d = subprocess.run([bin_, "config", "delete", name],
-                                   capture_output=True, text=True, timeout=30)
+                d = subprocess.run(
+                    [bin_, "config", "delete", name], capture_output=True, text=True, timeout=30
+                )
                 removed = d.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
                 removed = False
             if not removed:
-                cred_err += (" (the half-created remote could not be removed "
-                             "automatically — delete it manually before "
-                             "retrying)")
+                cred_err += (
+                    " (the half-created remote could not be removed "
+                    "automatically — delete it manually before "
+                    "retrying)"
+                )
             return JSONResponse({"error": cred_err}, status_code=502)
     return {"ok": True, "name": name + ":"}

@@ -10,7 +10,14 @@ import { useEffect, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
-import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
+import {
+  statPath,
+  getMounts,
+  reconnectMount,
+  type Config,
+  type Mount,
+  type StatResult,
+} from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
@@ -26,9 +33,7 @@ import Mounts from "./views/Mounts";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
-  | { status: "loading" }
-  | { status: "ok"; stat: StatResult }
-  | { status: "error"; message: string };
+  { status: "loading" } | { status: "ok"; stat: StatResult } | { status: "error"; message: string };
 
 // `reloadKey` re-runs the stat without a navigation — used to recover after a
 // disconnected mount is reconnected in place (StatErrorView), where fsPath and
@@ -44,7 +49,7 @@ function useStat(fsPath: string | null, epoch: number, reloadKey: number): StatS
     setState({ status: "loading" });
     statPath(fsPath).then(
       (stat) => alive && setState({ status: "ok", stat }),
-      (err: Error) => alive && setState({ status: "error", message: err.message })
+      (err: Error) => alive && setState({ status: "error", message: err.message }),
     );
     return () => {
       alive = false;
@@ -84,7 +89,7 @@ function StatErrorView({
           .sort((a, b) => b.mountpoint.length - a.mountpoint.length)[0];
         setMount(hit ?? null);
       },
-      () => alive && setMount(null)
+      () => alive && setMount(null),
     );
     return () => {
       alive = false;
@@ -306,7 +311,7 @@ export default function App({ config }: { config: Config }) {
                 ? "Bookmark"
                 : fsPath
                   ? undefined
-                  : null
+                  : null,
   );
 
   let main;
@@ -397,7 +402,12 @@ export default function App({ config }: { config: Config }) {
   } else {
     // Windows expanduser returns backslashes; fsPath is always forward-slash.
     main = (
-      <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home.replace(/\\/g, "/")} />
+      <StatView
+        key={epoch + ":" + fsPath}
+        fsPath={fsPath}
+        epoch={epoch}
+        home={config.home.replace(/\\/g, "/")}
+      />
     );
   }
 

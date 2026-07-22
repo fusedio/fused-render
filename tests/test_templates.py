@@ -2,6 +2,7 @@
 unified suffix-pattern matcher (multi-dot keys, `*` wildcard segments,
 trailing-"/" directory keys), user-registry precedence, and sentinel rules.
 """
+
 import json
 import os
 
@@ -9,8 +10,8 @@ import pytest
 
 from fused_render import server
 
-
 # ---------------------------------------------------------------- fixtures
+
 
 @pytest.fixture
 def user_dir(tmp_path, monkeypatch):
@@ -46,6 +47,7 @@ def modes(path, is_dir=False):
 
 # ------------------------------------------------- built-in registry sanity
 
+
 def test_builtin_registry_parses_and_all_names_resolve():
     with open(server.BUILTIN_REGISTRY, encoding="utf-8") as f:
         registry = json.load(f)
@@ -75,7 +77,15 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor"]
+    assert [e["mode"] for e in entries] == [
+        "duckdb",
+        "structure",
+        "h3",
+        "claude",
+        "annotate",
+        "history",
+        "geometry_editor",
+    ]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -124,6 +134,7 @@ def test_unmapped_file_empty_and_plain_dir_lists():
 
 # --------------------------------------------- text sniff for unmapped files
 
+
 def test_unmapped_text_file_falls_back_to_text_viewers(tmp_path):
     # Whole-name dotfiles and extensionless files can't match any suffix key,
     # but they're plain text -> the sniff offers the same viewers .txt gets.
@@ -160,6 +171,7 @@ def test_mapped_file_never_hits_text_sniff(tmp_path):
 
 
 # ------------------------------------------------------------------ matcher
+
 
 def test_specificity_literal_beats_wildcard_beats_shorter():
     reg = {".json": "a", ".*.json": "b", ".xyz.json": "c"}
@@ -221,6 +233,7 @@ def test_universal_dir_key_lowest_specificity():
 
 
 # ------------------------------------------------------------ user registry
+
 
 def test_user_override_beats_builtin(user_dir):
     user_dir.template("geo")
@@ -422,9 +435,7 @@ def test_condition_missing_is_unconditional(user_dir, csv_file):
 
 
 def test_condition_error_disallows_and_reports(user_dir, csv_file):
-    user_dir.template(
-        "special", condition="def main(path):\n    raise ValueError('boom')\n"
-    )
+    user_dir.template("special", condition="def main(path):\n    raise ValueError('boom')\n")
     user_dir.registry({".csv": ["special", "code"]})
     cond, error = conditions(csv_file)
     assert cond == {"special": False}
@@ -451,9 +462,7 @@ def test_condition_reevaluated_per_call(user_dir, csv_file):
     user_dir.registry({".csv": ["special", "code"]})
     assert conditions(csv_file)[0] == {"special": False}
 
-    (user_dir.path / "special" / "condition.py").write_text(
-        "def main(path):\n    return True\n"
-    )
+    (user_dir.path / "special" / "condition.py").write_text("def main(path):\n    return True\n")
     assert conditions(csv_file)[0] == {"special": True}
 
 
@@ -651,8 +660,8 @@ def test_zarr_condition_fail_closed(tmp_path):
     # Fail closed: any bad input returns False and never raises.
     main = _zarr_condition_main()
     assert main("/no/such/directory/anywhere") is False  # nonexistent
-    assert main(__file__) is False                        # a file, not .zarr
-    assert main("") is False                              # empty
+    assert main(__file__) is False  # a file, not .zarr
+    assert main("") is False  # empty
     # a plain existing dir with no markers is False, trailing slash handled
     plain = tmp_path / "nope"
     plain.mkdir()

@@ -59,7 +59,7 @@ function renderHighlight(text: string, positions: number[]) {
       </mark>
     ) : (
       <span key={i}>{seg.text}</span>
-    )
+    ),
   );
 }
 
@@ -180,7 +180,25 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({
+  b,
+  child,
+  parentId,
+  isRenaming,
+  justSaved,
+  namePositions,
+  onNameClick,
+  onSave,
+  onRename,
+  onDelete,
+  onCommitRename,
+  onCancelRename,
+  onMouseEnter,
+  onMouseLeave,
+  onGlyphClick,
+  registerRef,
+  dragProps,
+}: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -189,7 +207,9 @@ function BookmarkRow({ b, child, parentId, isRenaming, justSaved, namePositions,
     : null;
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")}
+      className={
+        "bookmark-row" + (child ? " child-row" : "") + (b.url === currentUrl() ? " active" : "")
+      }
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -250,10 +270,29 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
+function FolderRow({
+  folder,
+  child,
+  parentId,
+  activeHint,
+  isRenaming,
+  onGlyphClick,
+  onRowClick,
+  onRename,
+  onDelete,
+  onCommitRename,
+  onCancelRename,
+  registerRef,
+  dragProps,
+}: FolderRowProps) {
   return (
     <div
-      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
+      className={
+        "bookmark-row folder-row" +
+        (child ? " child-row" : "") +
+        (folder.collapsed ? " collapsed" : "") +
+        (activeHint ? " active" : "")
+      }
       data-id={folder.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -265,7 +304,11 @@ function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphCli
         {FOLDER_ICON}
       </span>
       {isRenaming ? (
-        <RenameInput initialName={folder.name} onCommit={onCommitRename} onCancel={onCancelRename} />
+        <RenameInput
+          initialName={folder.name}
+          onCommit={onCommitRename}
+          onCancel={onCancelRename}
+        />
       ) : (
         <span className="bookmark-name folder-name">{folder.name}</span>
       )}
@@ -274,7 +317,11 @@ function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphCli
         <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
           ✎
         </button>
-        <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
+        <button
+          className="icon-btn delete-btn"
+          title="Delete folder and contents"
+          onClick={onDelete}
+        >
           ✕
         </button>
       </span>
@@ -365,7 +412,7 @@ export default function Sidebar({ config }: SidebarProps) {
           if (cancelled || requestId !== latestRequestId) return;
           // Transient fetch failure — just try again next tick.
           if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
-        }
+        },
       );
     }, POLL_MS);
     return () => {
@@ -385,7 +432,7 @@ export default function Sidebar({ config }: SidebarProps) {
   const [hover, setHover] = useState<HoverState | null>(null);
   // Icon picker: which bookmark's glyph was clicked + where to anchor it.
   const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
-    null
+    null,
   );
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // id -> row DOM node, for imperative drag-class toggling (mirrors the
@@ -448,7 +495,13 @@ export default function Sidebar({ config }: SidebarProps) {
   if (bmSearching) {
     const bqLower = bq.toLowerCase();
     const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
-    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
+    const ranked: {
+      b: Bookmark;
+      namePositions: number[];
+      nameHit: boolean;
+      longestRun: number;
+      score: number;
+    }[] = [];
     // The strength of a match across all name fields that hit, for ranking. A
     // folder name match contributes its own run/score to every child it pulls in.
     const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
@@ -473,7 +526,13 @@ export default function Sidebar({ config }: SidebarProps) {
           const nameM = fuzzyMatch(bq, it.name);
           if (folderM || nameM || pathHit(it.url)) {
             const { longestRun, score } = rank(folderM, nameM);
-            ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
+            ranked.push({
+              b: it,
+              namePositions: nameM ? nameM.positions : [],
+              nameHit: !!(folderM || nameM),
+              longestRun,
+              score,
+            });
           }
         }
       }
@@ -666,7 +725,11 @@ export default function Sidebar({ config }: SidebarProps) {
     navigateUrl(composeFolderTabsUrl(tabChildren));
   };
 
-  const onDeleteFolder = async (e: React.MouseEvent<HTMLButtonElement>, id: string, folder: BookmarkFolder) => {
+  const onDeleteFolder = async (
+    e: React.MouseEvent<HTMLButtonElement>,
+    id: string,
+    folder: BookmarkFolder,
+  ) => {
     e.preventDefault();
     // Deleting a folder removes its children too; disarm if the armed
     // bookmark is one of them (mirrors the bookmark delete handler).
@@ -690,7 +753,7 @@ export default function Sidebar({ config }: SidebarProps) {
   const dropZone = (
     e: React.DragEvent<HTMLDivElement>,
     row: HTMLDivElement,
-    rowIsFolder: boolean
+    rowIsFolder: boolean,
   ): "above" | "below" | "into" | null => {
     const rect = row.getBoundingClientRect();
     const y = e.clientY - rect.top;
@@ -745,11 +808,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e.dataTransfer.setData("text/plain", id); // Firefox needs data set to start a drag
   };
 
-  const onRowDragOver = (
-    e: React.DragEvent<HTMLDivElement>,
-    id: string,
-    rowIsFolder: boolean
-  ) => {
+  const onRowDragOver = (e: React.DragEvent<HTMLDivElement>, id: string, rowIsFolder: boolean) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     const row = e.currentTarget;
     if (overOwnSubtree(id)) {
@@ -774,7 +833,7 @@ export default function Sidebar({ config }: SidebarProps) {
     e: React.DragEvent<HTMLDivElement>,
     id: string,
     rowIsFolder: boolean,
-    rowIsChild: boolean
+    rowIsChild: boolean,
   ) => {
     if (draggedIdRef.current === null || draggedIdRef.current === id) return;
     if (overOwnSubtree(id)) return; // moveItem's cycle guard is the backstop
@@ -922,11 +981,17 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
-          <span className="icon"><FolderIcon /></span> Fused
+          <span className="icon">
+            <FolderIcon />
+          </span>{" "}
+          Fused
         </a>
         {learnMountReady && (
           <a href="#" id="learn-link" className="sidebar-item" onClick={onLearnClick}>
-            <span className="icon"><LearnIcon /></span> Learn
+            <span className="icon">
+              <LearnIcon />
+            </span>{" "}
+            Learn
           </a>
         )}
       </div>
@@ -1017,7 +1082,15 @@ export default function Sidebar({ config }: SidebarProps) {
                   <span className="bookmark-glyph recent-glyph" aria-hidden="true">
                     {/* Clock in the star-glyph slot, inline so it follows
                         currentColor like the folder icon. */}
-                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                    >
                       <circle cx="8" cy="8" r="6.2" />
                       <path d="M8 4.8V8l2.3 1.6" />
                     </svg>
@@ -1043,7 +1116,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_templates")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <rect x="3" y="3" width="7" height="7" rx="1" />
               <rect x="14" y="3" width="7" height="7" rx="1" />
               <rect x="3" y="14" width="7" height="7" rx="1" />
@@ -1063,7 +1146,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_mounts")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <path d="M17.5 19a4.5 4.5 0 1 0-.9-8.9 6 6 0 1 0-11.4 2.4A3.5 3.5 0 0 0 6.5 19h11z" />
             </svg>
           </span>
@@ -1079,7 +1172,17 @@ export default function Sidebar({ config }: SidebarProps) {
           onClick={() => navigateUrl("/view/_prefs")}
         >
           <span className="icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>

@@ -67,7 +67,6 @@ export default function DeploymentsList() {
     // mount the user never chose to inspect on the new env.
     setOpenErrors(null);
     if (env !== null) void load(env);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
 
   const onRevoke = async (token: string) => {
@@ -88,9 +87,9 @@ export default function DeploymentsList() {
   return (
     <>
       <p className="deploy-muted">
-        Everything <code>fused share list</code> reports on the chosen environment — from any
-        app or machine. Rows with a file name were deployed from this app. Revoking takes the
-        link down (a page can be deployed again from its Deploy dialog).
+        Everything <code>fused share list</code> reports on the chosen environment — from any app or
+        machine. Rows with a file name were deployed from this app. Revoking takes the link down (a
+        page can be deployed again from its Deploy dialog).
       </p>
       {config && envs.length === 0 && (
         <div className="deploy-muted">
@@ -162,8 +161,7 @@ export default function DeploymentsList() {
               items.push("separator");
               items.push({
                 label: openErrors === m.token ? "Hide recent errors" : "Recent errors",
-                onClick: () =>
-                  setOpenErrors((cur) => (cur === m.token ? null : m.token)),
+                onClick: () => setOpenErrors((cur) => (cur === m.token ? null : m.token)),
               });
               if (m.status !== "revoked") {
                 items.push("separator");
@@ -182,8 +180,15 @@ export default function DeploymentsList() {
               return (
                 <Fragment key={m.token}>
                   <tr>
-                    <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
-                      {m.page ? basename(m.page) : <span className="deploy-muted">not from this app</span>}
+                    <td
+                      className="share-page"
+                      title={m.page ?? "Deployed by the CLI, another app, or another machine"}
+                    >
+                      {m.page ? (
+                        basename(m.page)
+                      ) : (
+                        <span className="deploy-muted">not from this app</span>
+                      )}
                     </td>
                     <td className="share-token" title={m.token}>
                       {m.token}

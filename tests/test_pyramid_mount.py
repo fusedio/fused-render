@@ -9,6 +9,7 @@ pure-python pieces without rasterio/tifffile: URL building, the range reader,
 the seekable HTTP file object, remote gating in main(), and the build/cogify
 refusal. A threaded localhost HTTP server stands in for the two fs endpoints.
 """
+
 import io
 import json
 import os
@@ -19,10 +20,10 @@ import pytest
 
 from fused_render.templates.pyramid import overview_pyramid as op
 
-
 # --------------------------------------------------------------------------
 # a stand-in for /api/fs/stat + /api/fs/raw
 # --------------------------------------------------------------------------
+
 
 class _FakeFS:
     """Serves /api/fs/stat (json) and /api/fs/raw (ranged bytes) for one blob.
@@ -31,8 +32,7 @@ class _FakeFS:
     `honor_range` False -> /api/fs/raw ignores Range and returns 200 whole-body
     (the fallback path the reader must handle)."""
 
-    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True,
-                 is_dir=False):
+    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True, is_dir=False):
         self.blob = blob
         self.remote = remote
         self.exists = exists
@@ -51,11 +51,14 @@ class _FakeFS:
                         self.end_headers()
                         self.wfile.write(b'{"error":"no such file"}')
                         return
-                    body = json.dumps({
-                        "remote": fs.remote,
-                        "size": None if fs.is_dir else len(fs.blob),
-                        "is_dir": fs.is_dir, "name": "x.tif",
-                    }).encode()
+                    body = json.dumps(
+                        {
+                            "remote": fs.remote,
+                            "size": None if fs.is_dir else len(fs.blob),
+                            "is_dir": fs.is_dir,
+                            "name": "x.tif",
+                        }
+                    ).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -68,10 +71,9 @@ class _FakeFS:
                         s, _, e = rng[6:].partition("-")
                         s = int(s)
                         e = int(e) if e else len(fs.blob) - 1
-                        chunk = fs.blob[s:e + 1]
+                        chunk = fs.blob[s : e + 1]
                         self.send_response(206)
-                        self.send_header("Content-Range",
-                                         f"bytes {s}-{e}/{len(fs.blob)}")
+                        self.send_header("Content-Range", f"bytes {s}-{e}/{len(fs.blob)}")
                         self.send_header("Content-Length", str(len(chunk)))
                         self.end_headers()
                         self.wfile.write(chunk)
@@ -116,6 +118,7 @@ def fs():
 # _server_url — origin from src, path rebuilt + quoted
 # --------------------------------------------------------------------------
 
+
 def test_server_url_uses_src_origin_only_and_quotes_path():
     src = "http://host:8123/api/fs/raw?path=%2Fclient%2Fraw%2Fpath.tif"
     url = op._server_url(src, "/api/fs/stat", "/a dir/file.tif")
@@ -128,6 +131,7 @@ def test_server_url_uses_src_origin_only_and_quotes_path():
 # --------------------------------------------------------------------------
 # _stat — ok / missing(404) / unreachable
 # --------------------------------------------------------------------------
+
 
 def test_stat_ok_reports_remote_and_size(fs):
     s = fs(blob=b"x" * 321, remote=True)
@@ -163,6 +167,7 @@ def test_stat_unreachable_when_no_server():
 # _RangeReader — windowed reads + whole-body fallback
 # --------------------------------------------------------------------------
 
+
 def test_range_reader_reads_window(fs):
     blob = bytes(range(256)) * 4
     s = fs(blob=blob)
@@ -182,11 +187,11 @@ def test_range_reader_whole_body_fallback(fs):
 # _HttpRangeFile — a seekable file object rasterio/tifffile can read
 # --------------------------------------------------------------------------
 
+
 def test_http_range_file_read_all_matches_blob(fs):
     blob = bytes((i * 37) % 256 for i in range(5000))
     s = fs(blob=blob)
-    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"),
-                          len(blob), block=512)
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), len(blob), block=512)
     assert f.seekable()
     assert f.read() == blob
 
@@ -194,8 +199,7 @@ def test_http_range_file_read_all_matches_blob(fs):
 def test_http_range_file_seek_and_partial_reads(fs):
     blob = bytes((i * 7) % 256 for i in range(5000))
     s = fs(blob=blob)
-    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"),
-                          len(blob), block=512)
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), len(blob), block=512)
     f.seek(1000)
     assert f.tell() == 1000
     assert f.read(300) == blob[1000:1300]
@@ -216,11 +220,14 @@ def test_http_range_file_default_block_is_4mib(fs):
     assert f._block == 4 << 20
 
 
-@pytest.mark.parametrize("block,expected", [
-    (4 << 20, 64),        # 4MiB blocks -> 64 resident (256MiB budget)
-    (1 << 20, 256),       # 1MiB blocks -> 256 resident
-    (512 << 20, 4),       # block larger than the budget -> floor of 4
-])
+@pytest.mark.parametrize(
+    "block,expected",
+    [
+        (4 << 20, 64),  # 4MiB blocks -> 64 resident (256MiB budget)
+        (1 << 20, 256),  # 1MiB blocks -> 256 resident
+        (512 << 20, 4),  # block larger than the budget -> floor of 4
+    ],
+)
 def test_http_range_file_cache_is_byte_bounded(fs, block, expected):
     # The LRU is bounded by BYTES (256MiB), not a fixed block count, so the cap
     # tracks the block size rather than silently scaling with it. The budget is
@@ -228,8 +235,7 @@ def test_http_range_file_cache_is_byte_bounded(fs, block, expected):
     # file at block granularity, so a too-small cap thrashes (evict/re-fetch).
     # max_blocks scales inversely with block size, with a floor of 4.
     s = fs(blob=b"x")
-    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), 1,
-                          block=block)
+    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"), 1, block=block)
     assert f._max_blocks == expected
     # Memory bound holds except where the floor dominates (huge blocks).
     assert f._max_blocks * f._block <= (256 << 20) or f._max_blocks == 4
@@ -240,8 +246,9 @@ def test_http_range_file_evicts_beyond_max_blocks(fs):
     # cap keeps only the cap-many most-recent, and the bytes are still correct.
     blob = bytes((i * 13) % 256 for i in range(5000))
     s = fs(blob=blob)
-    f = op._HttpRangeFile(op._server_url(s.src, "/api/fs/raw", "/x.tif"),
-                          len(blob), block=512)  # 10 blocks over the blob
+    f = op._HttpRangeFile(
+        op._server_url(s.src, "/api/fs/raw", "/x.tif"), len(blob), block=512
+    )  # 10 blocks over the blob
     f._max_blocks = 3  # force eviction with a tiny cap
     assert f.read() == blob  # sequential read touches all 10 blocks
     assert len(f._cache) <= 3
@@ -251,6 +258,7 @@ def test_http_range_file_evicts_beyond_max_blocks(fs):
 # --------------------------------------------------------------------------
 # main() remote gating
 # --------------------------------------------------------------------------
+
 
 def test_main_remote_missing_returns_not_a_file(fs):
     s = fs(exists=False)
@@ -264,8 +272,9 @@ def test_main_remote_dir_returns_not_a_file(fs, monkeypatch):
     # file" — never spawn a worker with size=None (which crashes _HttpRangeFile
     # on int(None)).
     s = fs(remote=True, is_dir=True)
-    monkeypatch.setattr(op, "_venv_python",
-                        lambda: (_ for _ in ()).throw(AssertionError("spawned")))
+    monkeypatch.setattr(
+        op, "_venv_python", lambda: (_ for _ in ()).throw(AssertionError("spawned"))
+    )
     res = op.main(file="/mnt/x.tif", action="analyze", src=s.src)
     assert "not a file" in res.get("error", "")
     assert not res.get("started")
@@ -274,8 +283,9 @@ def test_main_remote_dir_returns_not_a_file(fs, monkeypatch):
 def test_main_build_refused_for_remote(fs, monkeypatch):
     s = fs(blob=b"II*\x00" + b"0" * 100, remote=True)
     # if gating fails, these would run; make them explode so the test is honest
-    monkeypatch.setattr(op, "_venv_python",
-                        lambda: (_ for _ in ()).throw(AssertionError("spawned")))
+    monkeypatch.setattr(
+        op, "_venv_python", lambda: (_ for _ in ()).throw(AssertionError("spawned"))
+    )
     res = op.main(file="/mnt/x.tif", action="build", src=s.src)
     assert "remote mount" in res.get("error", "")
     assert not res.get("started")
@@ -283,8 +293,9 @@ def test_main_build_refused_for_remote(fs, monkeypatch):
 
 def test_main_cogify_refused_for_remote(fs, monkeypatch):
     s = fs(blob=b"II*\x00" + b"0" * 100, remote=True)
-    monkeypatch.setattr(op, "_venv_python",
-                        lambda: (_ for _ in ()).throw(AssertionError("spawned")))
+    monkeypatch.setattr(
+        op, "_venv_python", lambda: (_ for _ in ()).throw(AssertionError("spawned"))
+    )
     res = op.main(file="/mnt/x.tif", action="cogify", src=s.src)
     assert "remote mount" in res.get("error", "")
     assert not res.get("started")
@@ -307,6 +318,7 @@ def test_main_local_no_src_preserves_existing_behavior():
 # remote analyze wiring — worker gets raw_url/remote/size, no kernel probe
 # --------------------------------------------------------------------------
 
+
 def test_main_remote_analyze_passes_raw_url_to_worker(fs, monkeypatch):
     s = fs(blob=b"II*\x00" + b"0" * 100, remote=True)
 
@@ -322,6 +334,7 @@ def test_main_remote_analyze_passes_raw_url_to_worker(fs, monkeypatch):
         return _Proc()
 
     import subprocess
+
     monkeypatch.setattr(op, "_venv_python", lambda: "/fake/python")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -355,8 +368,8 @@ def test_worker_opener_rejects_sidecar_probes():
     # overviews then reports dozens of bogus levels), defeating the whole
     # no-overview thumbnail bound.
     src = op._worker_source()
-    assert 'raise FileNotFoundError(p)' in src
-    assert 'REMOTE_ID' in src
+    assert "raise FileNotFoundError(p)" in src
+    assert "REMOTE_ID" in src
 
 
 # --------------------------------------------------------------------------
@@ -365,16 +378,28 @@ def test_worker_opener_rejects_sidecar_probes():
 # rio-cogeo are the worker's own uv-venv deps, absent from a plain repo venv).
 # --------------------------------------------------------------------------
 
+
 def _make_tif(path, with_overviews):
     import numpy as np
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.transform import from_origin
+
     data = (np.random.default_rng(0).random((3, 1024, 1024)) * 255).astype("uint8")
-    with rasterio.open(path, "w", driver="GTiff", height=1024, width=1024,
-                       count=3, dtype="uint8", crs="EPSG:4326",
-                       transform=from_origin(0, 10, 0.01, 0.01),
-                       tiled=True, blockxsize=256, blockysize=256) as ds:
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=1024,
+        width=1024,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(0, 10, 0.01, 0.01),
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+    ) as ds:
         ds.write(data)
         if with_overviews:
             ds.build_overviews([2, 4], Resampling.average)
@@ -387,6 +412,7 @@ def _run_worker(path, action="analyze", fs_srv=None):
     import subprocess
     import sys
     import tempfile
+
     if fs_srv is not None:
         raw_url = op._server_url(fs_srv.src, "/api/fs/raw", "/x.tif")
         opts = {"remote": True, "raw_url": raw_url, "size": len(fs_srv.blob)}
@@ -395,8 +421,12 @@ def _run_worker(path, action="analyze", fs_srv=None):
     wf = tempfile.mktemp(suffix=".py")
     with open(wf, "w") as f:
         f.write(op._worker_source())
-    proc = subprocess.run([sys.executable, wf, path, action, json.dumps(opts)],
-                          capture_output=True, text=True, timeout=300)
+    proc = subprocess.run(
+        [sys.executable, wf, path, action, json.dumps(opts)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
     os.remove(wf)
     assert proc.returncode == 0, proc.stderr[-2000:]
     return json.loads(proc.stdout)

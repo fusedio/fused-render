@@ -14,16 +14,17 @@ cutoff is the mechanism under test, so it must be exercised for real), mirroring
 the CHECK_BUDGET_S pattern in tests/test_shell_recents.py. Real rclone is never
 invoked; FUSED_RENDER_HOME is redirected per test.
 """
+
 import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
+from test_shell_mounts import StubRcd
 
 import fused_render.server as server
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
-from test_shell_mounts import StubRcd
 
 
 @pytest.fixture()
@@ -73,7 +74,8 @@ def test_gate_probe_budget_caps_serialized_hanging_probes(home, rcd, tmp_path, m
         "    a = os.path.isfile(path + '/a')\n"
         "    b = os.path.isfile(path + '/b')\n"
         "    c = os.path.isfile(path + '/c')\n"
-        "    return a or b or c\n")
+        "    return a or b or c\n"
+    )
 
     start = time.monotonic()
     allowed, err = server._run_condition(str(gate), store)

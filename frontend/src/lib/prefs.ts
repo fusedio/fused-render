@@ -25,9 +25,12 @@ export function notifyPrefsChanged() {
 export function useDeployEnabled(): boolean {
   const [enabled, setEnabled] = useState(false);
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const refresh = () => {
     getPrefs()
       .then((p) => {
@@ -41,7 +44,6 @@ export function useDeployEnabled(): boolean {
     const onChange = () => refresh();
     window.addEventListener(PREFS_EVENT, onChange);
     return () => window.removeEventListener(PREFS_EVENT, onChange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return enabled;
 }

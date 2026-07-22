@@ -15,6 +15,7 @@ mount-AGNOSTIC — it never imports shell.mounts and never matches mount paths.
 The two helpers below are duplicated verbatim from pyramid/overview_pyramid.py
 (templates avoid cross-template imports); _list is the listing sibling of _stat.
 """
+
 import json as _json
 import urllib.error as _urlerr
 import urllib.parse as _urlparse
@@ -28,16 +29,15 @@ def _server_url(src, endpoint, path):
     expansion — judging remote-ness on one path string and range-reading another
     would 404. So we quote OUR path onto the endpoint, ignoring src's path."""
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):
     """Ask /api/fs/stat about `path`. Returns:
-      ("ok", payload)      — payload has bool `remote` and int `size`
-      ("missing", None)    — server says the path does not exist (404)
-      ("unreachable", None)— server could not be reached / errored; the caller
-                             falls back to a local kernel probe (presumed local).
+    ("ok", payload)      — payload has bool `remote` and int `size`
+    ("missing", None)    — server says the path does not exist (404)
+    ("unreachable", None)— server could not be reached / errored; the caller
+                           falls back to a local kernel probe (presumed local).
     """
     url = _server_url(src, "/api/fs/stat", path)
     try:
@@ -64,8 +64,13 @@ def _list(src, path):
         return ("error", None)
 
 
-def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
-         store_exts: str = ".zarr", src: str = ""):
+def main(
+    dir: str = "~",
+    exts: str = ".zarr",
+    show_all: bool = False,
+    store_exts: str = ".zarr",
+    src: str = "",
+):
     import os
 
     dir = os.path.abspath(os.path.expanduser(dir or "~"))
@@ -78,8 +83,7 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
     if src:
         status, payload = _stat(src, dir)
         if status == "missing":
-            return {"error": f"cannot list {dir}", "dir": dir,
-                    "parent": os.path.dirname(dir)}
+            return {"error": f"cannot list {dir}", "dir": dir, "parent": os.path.dirname(dir)}
         if status == "ok" and payload.get("remote"):
             remote = True
             # stat replaces the kernel isdir probe: if `dir` is actually a file,
@@ -91,12 +95,11 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
     if remote:
         status, listing = _list(src, dir)
         if status != "ok":
-            return {"error": f"cannot list {dir}", "dir": dir,
-                    "parent": os.path.dirname(dir)}
+            return {"error": f"cannot list {dir}", "dir": dir, "parent": os.path.dirname(dir)}
         triples = []
         for e in listing.get("entries", []):
             name = e.get("name")
-            if not name or name.startswith("."):   # hide dotfiles
+            if not name or name.startswith("."):  # hide dotfiles
                 continue
             triples.append((name, bool(e.get("is_dir")), e.get("size")))
     else:
@@ -105,11 +108,10 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
         try:
             names = os.listdir(dir)
         except OSError as e:
-            return {"error": f"cannot list {dir}: {e}", "dir": dir,
-                    "parent": os.path.dirname(dir)}
+            return {"error": f"cannot list {dir}: {e}", "dir": dir, "parent": os.path.dirname(dir)}
         triples = []
         for name in names:
-            if name.startswith("."):            # hide dotfiles
+            if name.startswith("."):  # hide dotfiles
                 continue
             full = os.path.join(dir, name)
             try:
@@ -126,16 +128,32 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
             # a directory whose name ends in a store extension (e.g. .zarr) is a
             # loadable store, not just a folder to descend into.
             if any(name.lower().endswith(s) for s in stores):
-                files.append({"name": name, "path": full, "is_dir": True,
-                              "size": None, "ext": ".zarr", "loadable": True})
+                files.append(
+                    {
+                        "name": name,
+                        "path": full,
+                        "is_dir": True,
+                        "size": None,
+                        "ext": ".zarr",
+                        "loadable": True,
+                    }
+                )
             else:
                 dirs.append({"name": name, "path": full, "is_dir": True})
         else:
             ext = os.path.splitext(name)[1].lower()
             loadable = ext in allow
             if loadable or show_all:
-                files.append({"name": name, "path": full, "is_dir": False,
-                              "size": size, "ext": ext, "loadable": loadable})
+                files.append(
+                    {
+                        "name": name,
+                        "path": full,
+                        "is_dir": False,
+                        "size": size,
+                        "ext": ext,
+                        "loadable": loadable,
+                    }
+                )
 
     dirs.sort(key=lambda e: e["name"].lower())
     files.sort(key=lambda e: e["name"].lower())
@@ -160,6 +178,7 @@ def main(dir: str = "~", exts: str = ".zarr", show_all: bool = False,
 # entrypoints; a bare main() silently returns null. Register main via the shim.
 try:
     import fused as _fused
+
     _udf_main = _fused.udf(main)
 except ImportError:
     pass

@@ -266,7 +266,13 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // resolving and will drive the correct final view (a file <Preview>) a beat
 // later, so we show the neutral loading body and let stat commit the real view.
 // Absent/false (the committed post-stat render), errors show normally.
-export default function Listing({ fsPath, provisional = false }: { fsPath: string; provisional?: boolean }) {
+export default function Listing({
+  fsPath,
+  provisional = false,
+}: {
+  fsPath: string;
+  provisional?: boolean;
+}) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -1139,7 +1145,11 @@ export default function Listing({ fsPath, provisional = false }: { fsPath: strin
   const rowMenu = (row: RowCtx): MenuEntry[] => {
     const dir = targetDirOf(row);
     return [
-      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
+      {
+        label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open",
+        icon: MenuIcons.open,
+        onClick: () => navigate(row.path, { isDir: row.isDir }),
+      },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },

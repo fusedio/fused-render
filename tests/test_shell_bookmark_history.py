@@ -180,6 +180,7 @@ def test_embed_prefix_handled(tmp_path):
 # mirror must be skipped: the mount can't take the write (CacheMode=full loops
 # the doomed PutObject — the sidecar-write incident).
 
+
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
@@ -195,7 +196,6 @@ def ro_mount(tmp_path, monkeypatch):
 
 
 def test_history_skipped_under_read_only_mount(ro_mount):
-    resp = _post({"id": "bk-1", "name": "cog.tif",
-                  "url": "/view" + ro_mount + "?stretch=2,1471"})
+    resp = _post({"id": "bk-1", "name": "cog.tif", "url": "/view" + ro_mount + "?stretch=2,1471"})
     assert resp == {"recorded": False}
     assert not os.path.exists(ro_mount + ".json")

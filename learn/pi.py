@@ -18,7 +18,7 @@ def main(n: int = 200) -> dict:
     rng = random.Random(42)
 
     inside = 0
-    draw_cap = 2500                      # only send this many points to the page
+    draw_cap = 2500  # only send this many points to the page
     step = max(1, n // draw_cap)
     pts = []
     for i in range(n):
@@ -31,9 +31,9 @@ def main(n: int = 200) -> dict:
             pts.append([round(x, 4), round(y, 4), 1 if hit else 0])
 
     return {
-        "points": pts,                    # sampled darts to draw: [x, y, inside]
-        "n": n,                           # total darts thrown
-        "inside": inside,                 # how many landed in the circle
-        "pi": round(4.0 * inside / n, 5), # the estimate
+        "points": pts,  # sampled darts to draw: [x, y, inside]
+        "n": n,  # total darts thrown
+        "inside": inside,  # how many landed in the circle
+        "pi": round(4.0 * inside / n, 5),  # the estimate
         "ms": round((time.perf_counter() - t0) * 1000, 1),
     }

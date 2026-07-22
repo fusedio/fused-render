@@ -173,3 +173,15 @@ ignore = [
     "UP022", # subprocess PIPE -> capture_output — ruff itself flags this as
              # an unsafe (not plain `--fix`) rewrite; one call site today
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests widely re-import a shared fixture (e.g. `home`) from a helper module
+# and also take it as a request parameter — legitimate pytest usage that ruff's
+# static analysis reads as a redefinition.
+"tests/*" = ["F811"]
+# `_stat`/`_server_url` etc. are defined in the `_SHARED` raw-string preamble
+# and injected into this module's real namespace via `exec(_SHARED,
+# globals())` (so the worker script, run in a separate venv without
+# fused_render importable, gets the same helpers as plain source) — undefined
+# by static analysis, real at runtime.
+"fused_render/templates/pyramid/overview_pyramid.py" = ["F821"]

@@ -174,6 +174,7 @@ def _sidecar_writable(file: str) -> bool:
     file = os.path.abspath(file)
     try:
         from fused_render.shell.mounts import mount_read_only
+
         if mount_read_only(file):
             return False
     except Exception:

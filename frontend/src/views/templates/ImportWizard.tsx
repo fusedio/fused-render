@@ -35,9 +35,12 @@ export function ImportWizard({
   const [result, setResult] = useState<Awaited<ReturnType<typeof commitImport>> | null>(null);
 
   const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
 
   const formId = useId();
   const fileInputId = useId();
@@ -116,7 +119,7 @@ export function ImportWizard({
       const payload: Record<string, ImportResolution> = {};
       for (const it of staged.items) {
         if (!it.valid) continue;
-        payload[it.name] = it.conflictsExisting ? resolutions[it.name] ?? "skip" : "overwrite";
+        payload[it.name] = it.conflictsExisting ? (resolutions[it.name] ?? "skip") : "overwrite";
       }
       const bindings = activeBindings();
       const res = await commitImport(
@@ -182,7 +185,9 @@ export function ImportWizard({
             ? "Importing…"
             : hasRecs
               ? `Import ${importCount} template${importCount === 1 ? "" : "s"}` +
-                (bindingCount > 0 ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}` : "")
+                (bindingCount > 0
+                  ? ` · ${bindingCount} binding${bindingCount === 1 ? "" : "s"}`
+                  : "")
               : "Import"}
         </button>
       </>
@@ -207,8 +212,7 @@ export function ImportWizard({
         <>
           <p className="deploy-muted">
             Choose a <code>.zip</code> of template folders. Each top-level folder with a{" "}
-            <code>template.html</code> is a template. The registry is never imported (folders
-            only).
+            <code>template.html</code> is a template. The registry is never imported (folders only).
           </p>
           <div className="templates-field">
             <label htmlFor={fileInputId} className="templates-field-label">
@@ -236,62 +240,61 @@ export function ImportWizard({
           }}
         >
           {staged.warnings.length > 0 && (
-                <div className="templates-warnings">
-                  {staged.warnings.map((w, i) => (
-                    <div key={i} className="deploy-muted">
-                      ⚠ {w}
-                    </div>
-                  ))}
+            <div className="templates-warnings">
+              {staged.warnings.map((w, i) => (
+                <div key={i} className="deploy-muted">
+                  ⚠ {w}
                 </div>
-              )}
-              {hasRecs && validCount > 0 && (
-                <div className="templates-recs-toggle">
-                  <label className="templates-recs-toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={applyRecs}
-                      onChange={(e) => setApplyRecs(e.target.checked)}
+              ))}
+            </div>
+          )}
+          {hasRecs && validCount > 0 && (
+            <div className="templates-recs-toggle">
+              <label className="templates-recs-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={applyRecs}
+                  onChange={(e) => setApplyRecs(e.target.checked)}
+                />
+                <span>Apply author's recommended bindings</span>
+              </label>
+              <div className="templates-recs-subline deploy-muted">
+                {applyRecs
+                  ? "Author of this bundle suggests file extensions for each template. Toggle chips to accept or reject."
+                  : "Bindings skipped — templates import as unbound. Bind later in File bindings tab."}
+              </div>
+            </div>
+          )}
+          {validCount === 0 ? (
+            <div className="deploy-muted">
+              No valid template folders found in this zip (each needs a <code>template.html</code>).
+            </div>
+          ) : (
+            <table className="templates-import-table">
+              <tbody>
+                {staged.items.map((it) => (
+                  <Fragment key={it.name}>
+                    <ImportRow
+                      item={it}
+                      resolution={resolutions[it.name] ?? "skip"}
+                      onResolution={(r) => setRes(it.name, r)}
                     />
-                    <span>Apply author's recommended bindings</span>
-                  </label>
-                  <div className="templates-recs-subline deploy-muted">
-                    {applyRecs
-                      ? "Author of this bundle suggests file extensions for each template. Toggle chips to accept or reject."
-                      : "Bindings skipped — templates import as unbound. Bind later in File bindings tab."}
-                  </div>
-                </div>
-              )}
-              {validCount === 0 ? (
-                <div className="deploy-muted">
-                  No valid template folders found in this zip (each needs a{" "}
-                  <code>template.html</code>).
-                </div>
-              ) : (
-                <table className="templates-import-table">
-                  <tbody>
-                    {staged.items.map((it) => (
-                      <Fragment key={it.name}>
-                        <ImportRow
-                          item={it}
-                          resolution={resolutions[it.name] ?? "skip"}
-                          onResolution={(r) => setRes(it.name, r)}
-                        />
-                        {it.valid && (chips[it.name]?.length ?? 0) > 0 && (
-                          <ChipStrip
-                            item={it}
-                            chips={chips[it.name]}
-                            enabled={applyRecs}
-                            skipped={isSkipped(it)}
-                            keepBoth={isKeepBoth(it)}
-                            onToggle={(key) => toggleChip(it.name, key)}
-                            onAdd={(key) => addChip(it.name, key)}
-                          />
-                        )}
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    {it.valid && (chips[it.name]?.length ?? 0) > 0 && (
+                      <ChipStrip
+                        item={it}
+                        chips={chips[it.name]}
+                        enabled={applyRecs}
+                        skipped={isSkipped(it)}
+                        keepBoth={isKeepBoth(it)}
+                        onToggle={(key) => toggleChip(it.name, key)}
+                        onAdd={(key) => addChip(it.name, key)}
+                      />
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </form>
       )}
@@ -464,14 +467,16 @@ function ChipStrip({
             </button>
           )}
         </div>
-        {!inert && reEnabled.map((c) => (
-          <div key={c.key} className="templates-rec-warn">
-            Checking {c.key} re-enables an extension you disabled.
-          </div>
-        ))}
+        {!inert &&
+          reEnabled.map((c) => (
+            <div key={c.key} className="templates-rec-warn">
+              Checking {c.key} re-enables an extension you disabled.
+            </div>
+          ))}
         {!inert && keepBoth && anyOn && (
           <div className="templates-rec-warn">
-            Will bind under the renamed copy — added after your existing templates on these extensions.
+            Will bind under the renamed copy — added after your existing templates on these
+            extensions.
           </div>
         )}
       </td>

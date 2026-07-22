@@ -12,6 +12,7 @@ while the fake server reports it as a remote directory. Any accidental kernel
 fallback would fail to find the path (empty/NotADirectory) instead of returning
 the HTTP-served entries — so a silent-fallback regression fails loudly.
 """
+
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,13 +20,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from fused_render.templates.map import discover as map_discover
-from fused_render.templates.photos import reader as photos
-from fused_render.templates.log_studio import reader as logstudio
-from fused_render.templates.excel import reader as excel
 from fused_render.templates.docs import docs
+from fused_render.templates.excel import reader as excel
 from fused_render.templates.latex import engine
+from fused_render.templates.log_studio import reader as logstudio
+from fused_render.templates.map import discover as map_discover
 from fused_render.templates.pdf_studio import pdf as pdf_studio
+from fused_render.templates.photos import reader as photos
 from fused_render.templates.tableau import tableau
 
 
@@ -59,21 +60,25 @@ class _FakeFS:
                     if not fs.exists:
                         self._json(404, {"error": "no such file"})
                         return
-                    self._json(200, {"remote": fs.remote, "is_dir": True,
-                                     "size": None, "name": "d"})
+                    self._json(
+                        200, {"remote": fs.remote, "is_dir": True, "size": None, "name": "d"}
+                    )
                     return
                 if parts.path == "/api/fs/list":
                     qs = parse_qs(parts.query)
                     start = int(qs.get("cursor", ["0"])[0] or "0")
-                    chunk = fs.entries[start:start + fs.page]
+                    chunk = fs.entries[start : start + fs.page]
                     nxt = start + fs.page
                     more = nxt < len(fs.entries)
-                    self._json(200, {
-                        "path": "/mnt/d",
-                        "entries": chunk,
-                        "truncated": more,
-                        "cursor": str(nxt) if more else "",
-                    })
+                    self._json(
+                        200,
+                        {
+                            "path": "/mnt/d",
+                            "entries": chunk,
+                            "truncated": more,
+                            "cursor": str(nxt) if more else "",
+                        },
+                    )
                     return
                 self._json(404, {"error": "not found"})
 
@@ -109,13 +114,13 @@ REMOTE_DIR = "/definitely/not/here/on/disk/mnt-dir"
 
 
 def _ent(name, is_dir=False, size=0, mtime=0.0):
-    return {"name": name, "is_dir": is_dir, "size": size, "mtime": mtime,
-            "ignored": False}
+    return {"name": name, "is_dir": is_dir, "size": size, "mtime": mtime, "ignored": False}
 
 
 # --------------------------------------------------------------------------
 # shared helper block (identical across templates — test one copy: photos)
 # --------------------------------------------------------------------------
+
 
 def test_server_url_uses_origin_only_and_quotes_path():
     src = "http://host:8123/api/fs/raw?path=%2Fclient%2Fraw.tif"
@@ -159,6 +164,7 @@ def test_list_remote_caps(fs):
 # reader routing — remote dir listed via HTTP, never the kernel
 # --------------------------------------------------------------------------
 
+
 def test_map_discover_routes_remote(fs):
     s = fs([_ent("sub", is_dir=True), _ent("a.tif", size=10), _ent("note.txt")])
     res = map_discover.main(dir=REMOTE_DIR, src=s.src)
@@ -178,9 +184,7 @@ def test_photos_folders_routes_remote(fs):
 
 
 def test_photos_list_dir_routes_remote(fs):
-    s = fs([_ent("sub", is_dir=True),
-            _ent("p.jpg", size=5, mtime=100.0),
-            _ent("readme.md")])
+    s = fs([_ent("sub", is_dir=True), _ent("p.jpg", size=5, mtime=100.0), _ent("readme.md")])
     res = photos.list_dir(REMOTE_DIR, "new", 0, 200, "", "", "", src=s.src)
     assert res["ok"] is True
     assert [i["name"] for i in res["items"]] == ["p.jpg"]
@@ -212,6 +216,7 @@ def test_reader_unreachable_falls_back_to_kernel_local(tmp_path):
 # parent dir path, so a missing file-to-parent descent fails loudly (empty).
 # --------------------------------------------------------------------------
 
+
 class _PathFakeFS:
     """Serves /api/fs/stat + /api/fs/list keyed by the requested `path`, so a
     FILE path and its parent DIR behave differently: stat reports the file as
@@ -242,18 +247,15 @@ class _PathFakeFS:
                 p = parse_qs(parts.query).get("path", [""])[0]
                 if parts.path == "/api/fs/stat":
                     if p == fs.file_path:
-                        self._json(200, {"remote": True, "is_dir": False,
-                                         "size": 1, "name": "f"})
+                        self._json(200, {"remote": True, "is_dir": False, "size": 1, "name": "f"})
                     elif p == fs.dir_path:
-                        self._json(200, {"remote": True, "is_dir": True,
-                                         "size": None, "name": "d"})
+                        self._json(200, {"remote": True, "is_dir": True, "size": None, "name": "d"})
                     else:
                         self._json(404, {"error": "no such file"})
                     return
                 if parts.path == "/api/fs/list":
                     ents = fs.dir_entries if p == fs.dir_path else []
-                    self._json(200, {"path": p, "entries": ents,
-                                     "truncated": False, "cursor": ""})
+                    self._json(200, {"path": p, "entries": ents, "truncated": False, "cursor": ""})
                     return
                 self._json(404, {"error": "not found"})
 
@@ -345,8 +347,9 @@ def slides_mod():
     import sys
     import types
 
-    slides_py = os.path.join(os.path.dirname(__file__), "..",
-                             "fused_render", "templates", "slides", "slides.py")
+    slides_py = os.path.join(
+        os.path.dirname(__file__), "..", "fused_render", "templates", "slides", "slides.py"
+    )
     saved = sys.modules.get("engine")
     sys.modules["engine"] = types.ModuleType("engine")
     try:
@@ -377,6 +380,7 @@ def test_slides_listdir_remote_file_descends_to_parent(pathfs, slides_mod):
 # break the folder picker/tree). stat says remote-dir; /api/fs/list 500s.
 # --------------------------------------------------------------------------
 
+
 class _ListFailsFS:
     def __init__(self):
         class H(BaseHTTPRequestHandler):
@@ -386,8 +390,9 @@ class _ListFailsFS:
             def do_GET(self):
                 parts = urlsplit(self.path)
                 if parts.path == "/api/fs/stat":
-                    body = json.dumps({"remote": True, "is_dir": True,
-                                       "size": None, "name": "d"}).encode()
+                    body = json.dumps(
+                        {"remote": True, "is_dir": True, "size": None, "name": "d"}
+                    ).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))

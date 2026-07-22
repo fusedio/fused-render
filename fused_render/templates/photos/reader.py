@@ -18,8 +18,7 @@ import urllib.request as _urlreq
 
 def _server_url(src, endpoint, path):
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):
@@ -140,7 +139,6 @@ def _open_oriented(path: str):
 
 
 def _encode(img, dst: str, quality: int):
-    from PIL import Image
 
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
@@ -184,8 +182,13 @@ def _transpose_ops():
         from PIL import Image
 
         _TRANSPOSE = {
-            2: Image.FLIP_LEFT_RIGHT, 3: Image.ROTATE_180, 4: Image.FLIP_TOP_BOTTOM,
-            5: Image.TRANSPOSE, 6: Image.ROTATE_270, 7: Image.TRANSVERSE, 8: Image.ROTATE_90,
+            2: Image.FLIP_LEFT_RIGHT,
+            3: Image.ROTATE_180,
+            4: Image.FLIP_TOP_BOTTOM,
+            5: Image.TRANSPOSE,
+            6: Image.ROTATE_270,
+            7: Image.TRANSVERSE,
+            8: Image.ROTATE_90,
         }
     return _TRANSPOSE
 
@@ -296,21 +299,34 @@ def folders(path: str, src: str = "") -> dict:
             ents, _ = _list_remote(src, d)
         except Exception as exc:  # noqa: BLE001
             parent = os.path.dirname(d)
-            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
-                    "path": _fwd(d),
-                    "parent": _fwd(parent) if parent and parent != d else "",
-                    "photos": 0, "dirs": []}
-        dirs = [{"name": e["name"], "path": _fwd(os.path.join(d, e["name"]))}
-                for e in ents
-                if e.get("is_dir") and not e["name"].startswith(".")]
+            return {
+                "ok": False,
+                "error": "list-failed",
+                "detail": str(exc)[:200],
+                "path": _fwd(d),
+                "parent": _fwd(parent) if parent and parent != d else "",
+                "photos": 0,
+                "dirs": [],
+            }
+        dirs = [
+            {"name": e["name"], "path": _fwd(os.path.join(d, e["name"]))}
+            for e in ents
+            if e.get("is_dir") and not e["name"].startswith(".")
+        ]
         n_photos = sum(
-            1 for e in ents if not e.get("is_dir")
-            and os.path.splitext(e["name"])[1].lower() in PHOTO_EXT)
+            1
+            for e in ents
+            if not e.get("is_dir") and os.path.splitext(e["name"])[1].lower() in PHOTO_EXT
+        )
         dirs.sort(key=lambda e: e["name"].lower())
         parent = os.path.dirname(d)
-        return {"ok": True, "path": _fwd(d),
-                "parent": _fwd(parent) if parent and parent != d else "",
-                "photos": n_photos, "dirs": dirs}
+        return {
+            "ok": True,
+            "path": _fwd(d),
+            "parent": _fwd(parent) if parent and parent != d else "",
+            "photos": n_photos,
+            "dirs": dirs,
+        }
     if not os.path.isdir(d):
         raise NotADirectoryError(f"not a directory: {path}")
     dirs = []
@@ -357,7 +373,16 @@ def _day_epoch(day: str, end: bool) -> float:
     return t.timestamp()
 
 
-def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: str, date_to: str, src: str = "") -> dict:
+def list_dir(
+    path: str,
+    sort: str,
+    offset: int,
+    limit: int,
+    q: str,
+    date_from: str,
+    date_to: str,
+    src: str = "",
+) -> dict:
     d = os.path.abspath(os.path.expanduser(path))
     limit = max(1, min(limit, 1000))
     ql = q.lower().strip()
@@ -376,9 +401,16 @@ def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: s
             # Carry the full success shape (items/total/offset/subdirs) so the
             # frontend's loadDir/buildTiles never touch undefined fields — it
             # keys off `ok:false` to surface the error instead of crashing.
-            return {"ok": False, "error": "list-failed", "detail": str(exc)[:200],
-                    "dir": _fwd(d), "total": 0, "offset": offset,
-                    "items": [], "subdirs": []}
+            return {
+                "ok": False,
+                "error": "list-failed",
+                "detail": str(exc)[:200],
+                "dir": _fwd(d),
+                "total": 0,
+                "offset": offset,
+                "items": [],
+                "subdirs": [],
+            }
         for e in ents:
             name = e["name"]
             if name.startswith("."):
@@ -396,14 +428,16 @@ def list_dir(path: str, sort: str, offset: int, limit: int, q: str, date_from: s
                 continue
             if hi is not None and mt > hi:
                 continue
-            items.append({
-                "name": name,
-                "path": _fwd(os.path.join(d, name)),
-                "size": e.get("size") or 0,
-                "mtime": mt,
-                "ext": ext,
-                "kind": _kind(ext),
-            })
+            items.append(
+                {
+                    "name": name,
+                    "path": _fwd(os.path.join(d, name)),
+                    "size": e.get("size") or 0,
+                    "mtime": mt,
+                    "ext": ext,
+                    "kind": _kind(ext),
+                }
+            )
         return _list_dir_result(d, items, subdirs, sort, offset, limit)
     if not os.path.isdir(d):
         raise NotADirectoryError(f"not a directory: {path}")
@@ -468,16 +502,29 @@ def thumbs(paths: str) -> dict:
     for p in arr:
         try:
             if not os.path.isfile(p):
-                results.append({"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"})
+                results.append(
+                    {"path": _fwd(p), "ok": False, "error": "not-found", "detail": "file missing"}
+                )
                 continue
             results.append(_make_thumb(p))
         except RuntimeError as e:
             if str(e) == "no-decoder":
-                results.append({"path": _fwd(p), "ok": False, "error": "no-decoder", "detail": "install pillow-heif"})
+                results.append(
+                    {
+                        "path": _fwd(p),
+                        "ok": False,
+                        "error": "no-decoder",
+                        "detail": "install pillow-heif",
+                    }
+                )
             else:
-                results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
+                results.append(
+                    {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
+                )
         except Exception as e:
-            results.append({"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]})
+            results.append(
+                {"path": _fwd(p), "ok": False, "error": "decode-failed", "detail": str(e)[:120]}
+            )
     return {"ok": True, "results": results}
 
 
@@ -504,7 +551,7 @@ def _gps_to_decimal(coord, ref) -> str:
 
 
 def exif(path: str) -> dict:
-    from PIL import Image, ExifTags
+    from PIL import ExifTags, Image
 
     file = {
         "name": os.path.basename(path),
@@ -528,8 +575,14 @@ def exif(path: str) -> dict:
         w, h = h, w
     image = {"w": w, "h": h, "format": fmt}
     wanted = {
-        "DateTimeOriginal", "Make", "Model", "LensModel",
-        "FNumber", "ExposureTime", "ISOSpeedRatings", "FocalLength",
+        "DateTimeOriginal",
+        "Make",
+        "Model",
+        "LensModel",
+        "FNumber",
+        "ExposureTime",
+        "ISOSpeedRatings",
+        "FocalLength",
     }
     out = {}
     try:

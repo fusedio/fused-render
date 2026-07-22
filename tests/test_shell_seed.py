@@ -5,6 +5,7 @@ first-launch landing URL.
 FUSED_RENDER_DIR (the Fused dir) and FUSED_RENDER_HOME (~/.fused-render, holding
 bookmarks.json) are both redirected to tmp dirs so no test touches a real dir.
 """
+
 import json
 from urllib.parse import unquote
 
@@ -89,17 +90,11 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     ]
     # Tutorial/Showcase/How-it-works are plain /view/ + per-segment-encoded
     # absolute paths; the Sine demo is a two-pane _panel split (page | code).
-    assert marks[0]["url"] == "/view" + _encoded(
-        str(fdir / "tutorial" / "index.html")
-    )
-    assert marks[1]["url"] == "/view" + _encoded(
-        str(fdir / "showcase" / "index.html")
-    )
+    assert marks[0]["url"] == "/view" + _encoded(str(fdir / "tutorial" / "index.html"))
+    assert marks[1]["url"] == "/view" + _encoded(str(fdir / "showcase" / "index.html"))
     sine = str(fdir / "sine" / "sine.html")
     assert marks[2]["url"] == f"/view/_panel?_layout=({sine},{sine}?_mode=code)"
-    assert marks[3]["url"] == "/view" + _encoded(
-        str(fdir / "how_it_works" / "explainer.html")
-    )
+    assert marks[3]["url"] == "/view" + _encoded(str(fdir / "how_it_works" / "explainer.html"))
     # UUIDv4 ids + a numeric created_at, matching the store's shape.
     for m in marks:
         assert len(m["id"]) == 36 and m["id"].count("-") == 4
@@ -128,7 +123,7 @@ def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
     assert "My%20Fused%20Dir" in url  # space encoded, not literal
     assert " " not in url
     # Decoding the /view/ path yields the real absolute file path.
-    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
+    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/") :].split("/"))
     assert decoded == str(fdir / "tutorial" / "index.html")
 
 

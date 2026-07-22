@@ -572,7 +572,11 @@ def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, m
 
     h.set_scenario(
         {
-            "create": {"token": "new789", "url": "https://serve.example/new789", "status": "active"},
+            "create": {
+                "token": "new789",
+                "url": "https://serve.example/new789",
+                "status": "active",
+            },
             "revoke": {"token": "abc123", "status": "revoked"},
         }
     )
@@ -1291,9 +1295,7 @@ def test_errors_old_cli_gives_upgrade_hint(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
 
     def _boom(env_name, args, timeout=60.0):
-        raise deploy_mod.DeployError(
-            "fused share errors failed: Error: No such command 'errors'."
-        )
+        raise deploy_mod.DeployError("fused share errors failed: Error: No such command 'errors'.")
 
     monkeypatch.setattr(deploy_mod, "_run_share", _boom)
     with pytest.raises(deploy_mod.DeployError) as ei:

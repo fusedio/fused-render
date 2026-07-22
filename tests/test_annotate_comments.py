@@ -24,7 +24,8 @@ import pytest
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load_annotate():
@@ -264,6 +265,7 @@ def test_status_readonly_parent_dir(tmp_path):
 # template shows its "history not saved" badge instead of looping the doomed
 # upload. Commenting itself still works — the URL is the live store.
 
+
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
@@ -286,9 +288,12 @@ def test_status_not_writable_under_read_only_mount(ro_mount):
 def test_record_refuses_under_read_only_mount(ro_mount):
     ann = _load_annotate()
     with pytest.raises(PermissionError):
-        ann._record(ro_mount, [
-            {"id": "c1", "content": "hi", "createdAt": 1720000000000,
-             "view": "_render"},
-        ], [])
+        ann._record(
+            ro_mount,
+            [
+                {"id": "c1", "content": "hi", "createdAt": 1720000000000, "view": "_render"},
+            ],
+            [],
+        )
     # Nothing written next to the mounted file.
     assert not os.path.exists(ro_mount + ".json")

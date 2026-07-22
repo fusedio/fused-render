@@ -19,8 +19,8 @@ handles.
 
 
 def main():
-    import os
     import json
+    import os
 
     home = os.path.expanduser("~")
     root = os.path.join(home, ".fused-render")
@@ -30,6 +30,7 @@ def main():
     core_dir = None
     try:
         import fused_render  # noqa: F401
+
         cand = os.path.join(os.path.dirname(fused_render.__file__), "templates")
         if os.path.isdir(cand):
             core_dir = cand
@@ -88,8 +89,7 @@ def main():
         the extensions they're bound to.
         """
         rev = {}
-        for p in (os.path.join(core_dir, "registry.json"),
-                  os.path.join(user_dir, "registry.json")):
+        for p in (os.path.join(core_dir, "registry.json"), os.path.join(user_dir, "registry.json")):
             try:
                 with open(p) as f:
                     registry = json.load(f)

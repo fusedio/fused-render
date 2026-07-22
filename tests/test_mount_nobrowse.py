@@ -8,6 +8,7 @@ created and mdutil is never invoked — FUSED_RENDER_HOME is redirected so the
 marker lands under a tmp dir, and the mount flag is asserted on the option list
 directly.
 """
+
 import os
 
 import pytest
@@ -48,6 +49,4 @@ def test_ensure_mounts_dir_is_idempotent(home):
     # Called on every attach; a second call must not raise or clobber.
     mounts_mod.ensure_mounts_dir()
     mounts_mod.ensure_mounts_dir()
-    assert os.path.isfile(
-        os.path.join(mounts_mod.mounts_dir(), ".metadata_never_index")
-    )
+    assert os.path.isfile(os.path.join(mounts_mod.mounts_dir(), ".metadata_never_index"))

@@ -68,7 +68,8 @@ ARCHIVES = [(zip_reader, _zip), (tar_reader, _tar)]
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 @skip_root

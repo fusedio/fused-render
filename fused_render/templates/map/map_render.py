@@ -57,7 +57,7 @@ def _vector_layer(target, port, layer, token):
     params = {"file": target}
     if layer:
         params["layer"] = layer
-    if token:                      # per-daemon token gates every endpoint (?t=)
+    if token:  # per-daemon token gates every endpoint (?t=)
         params["t"] = token
     qs = urllib.parse.urlencode(params)
 
@@ -162,7 +162,7 @@ def _raster_tiles(target, colormap, rescale):
         return _err(ensured.get("error", "tile daemon failed to start"))
 
     rparams = {"file": target}
-    if token:                      # per-daemon token gates every endpoint (?t=)
+    if token:  # per-daemon token gates every endpoint (?t=)
         rparams["t"] = token
     qs = urllib.parse.urlencode(rparams)
     try:

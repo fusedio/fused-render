@@ -102,7 +102,12 @@ export function PromptDialog({
     <Overlay onCancel={onCancel}>
       <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
+        <button
+          type="button"
+          className="modal-close deploy-close"
+          onClick={onCancel}
+          aria-label="Close"
+        >
           ✕
         </button>
       </div>
@@ -166,7 +171,12 @@ export function ConfirmDialog({
     <Overlay onCancel={onCancel}>
       <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
+        <button
+          type="button"
+          className="modal-close deploy-close"
+          onClick={onCancel}
+          aria-label="Close"
+        >
           ✕
         </button>
       </div>

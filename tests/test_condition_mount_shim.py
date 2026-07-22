@@ -13,7 +13,7 @@ monkeypatched (the helpers themselves are tested against a real stub rcd in
 tests/test_shell_mounts.py), and GUARD the real kernel os.* so any leak fails
 loudly — the mount-safety property is the whole point.
 """
-import json
+
 import os
 
 import pytest
@@ -59,6 +59,7 @@ def guard_kernel(monkeypatch):
             if isinstance(p, str) and p.startswith(MOUNT_PREFIX):
                 raise AssertionError(f"kernel os.{name} on mount path {p!r}")
             return fn(p, *a, **k)
+
         return wrapped
 
     for name in ("isfile", "isdir", "exists"):
@@ -72,8 +73,9 @@ def _mount(monkeypatch, kind_map, read_bytes=None):
     """Route the mount prefix through fake rc helpers. `kind_map` maps an exact
     path (or the string "*") to a rc_kind_for verdict; `read_bytes` is what
     rc_read_bounded returns for the zarr.json probe."""
-    monkeypatch.setattr(mounts_mod, "is_mount_backed",
-                        lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
+    monkeypatch.setattr(
+        mounts_mod, "is_mount_backed", lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX)
+    )
 
     def _kind(p, **k):  # shim now passes a per-probe `timeout=` (budget backstop)
         return kind_map.get(p, kind_map.get("*", "missing"))
@@ -183,8 +185,7 @@ def _gate(tmp_path, body):
 def test_import_os_path_dotted_routed(monkeypatch, guard_kernel, tmp_path):
     # `import os.path` -> __import__("os.path") must yield the shim, not real os.
     _mount(monkeypatch, {STORE: "file"})
-    cf = _gate(tmp_path, "import os.path\n"
-                         "def main(path):\n    return os.path.isfile(path)\n")
+    cf = _gate(tmp_path, "import os.path\ndef main(path):\n    return os.path.isfile(path)\n")
     assert server._run_condition(cf, STORE) == (True, None)
 
 
@@ -192,42 +193,48 @@ def test_from_os_path_import_isfile_routed(monkeypatch, guard_kernel, tmp_path):
     # `from os.path import isfile` -> __import__("os.path", fromlist=("isfile",))
     # must return the shim's path submodule so isfile binds the shimmed function.
     _mount(monkeypatch, {STORE: "file"})
-    cf = _gate(tmp_path, "from os.path import isfile\n"
-                         "def main(path):\n    return isfile(path)\n")
+    cf = _gate(tmp_path, "from os.path import isfile\ndef main(path):\n    return isfile(path)\n")
     assert server._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_path_import_isdir_exists_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "dir"})
-    cf = _gate(tmp_path, "from os.path import isdir, exists\n"
-                         "def main(path):\n    return isdir(path) and exists(path)\n")
+    cf = _gate(
+        tmp_path,
+        "from os.path import isdir, exists\n"
+        "def main(path):\n    return isdir(path) and exists(path)\n",
+    )
     assert server._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_import_stat_routed(monkeypatch, guard_kernel, tmp_path):
     import stat as _s
+
     _mount(monkeypatch, {STORE: "dir"})
     monkeypatch.setattr(
-        mounts_mod, "rc_stat_result",
-        lambda p, **k: os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)))
-    cf = _gate(tmp_path, "from os import stat\n"
-                         "def main(path):\n"
-                         "    import stat as s\n"
-                         "    return s.S_ISDIR(stat(path).st_mode)\n")
+        mounts_mod,
+        "rc_stat_result",
+        lambda p, **k: os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0)),
+    )
+    cf = _gate(
+        tmp_path,
+        "from os import stat\n"
+        "def main(path):\n"
+        "    import stat as s\n"
+        "    return s.S_ISDIR(stat(path).st_mode)\n",
+    )
     assert server._run_condition(cf, STORE) == (True, None)
 
 
 def test_import_os_aliased_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
-    cf = _gate(tmp_path, "import os as o\n"
-                         "def main(path):\n    return o.path.isfile(path)\n")
+    cf = _gate(tmp_path, "import os as o\ndef main(path):\n    return o.path.isfile(path)\n")
     assert server._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_import_path_aliased_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
-    cf = _gate(tmp_path, "from os import path as p\n"
-                         "def main(path):\n    return p.isfile(path)\n")
+    cf = _gate(tmp_path, "from os import path as p\ndef main(path):\n    return p.isfile(path)\n")
     assert server._run_condition(cf, STORE) == (True, None)
 
 
@@ -273,6 +280,7 @@ def test_fs_stat_mount_routes_via_rc_not_kernel(monkeypatch, guard_kernel):
 
     def _stat_result(p):
         import stat as _s
+
         return os.stat_result((_s.S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0.0, 0.0))
 
     monkeypatch.setattr(mounts_mod, "rc_stat_result", _stat_result)

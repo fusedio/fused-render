@@ -354,10 +354,7 @@ export function getRecents(): Promise<RecentsResult> {
 // Server no-ops (recorded: false) for directory/sentinel/missing-file urls,
 // so callers need not pre-classify the target.
 export function postRecentOpen(url: string, title?: string | null): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>(
-    "/api/recents/open",
-    title ? { url, title } : { url }
-  );
+  return postJson<{ recorded: boolean }>("/api/recents/open", title ? { url, title } : { url });
 }
 
 export function putRecentsCollapsed(collapsed: boolean): Promise<void> {

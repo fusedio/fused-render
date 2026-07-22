@@ -31,7 +31,11 @@ import {
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
 import { setClipboard } from "../lib/fs-clipboard";
-import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
+import ModeSwitcher, {
+  templateModeIcon,
+  modeTitle,
+  KNOWN_SENTINEL_MODES,
+} from "../components/ModeSwitcher";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
@@ -62,8 +66,22 @@ function Header({ fsPath, stat, children, onContextMenu }: HeaderProps) {
 // (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
 // so the two views don't couple through a shared dialog type.
 type PreviewDialog =
-  | { kind: "prompt"; title: string; initial: string; confirmLabel: string; selectStem?: boolean; onConfirm: (value: string) => void }
-  | { kind: "confirm"; title: string; message: ReactNode; confirmLabel: string; danger?: boolean; onConfirm: () => void };
+  | {
+      kind: "prompt";
+      title: string;
+      initial: string;
+      confirmLabel: string;
+      selectStem?: boolean;
+      onConfirm: (value: string) => void;
+    }
+  | {
+      kind: "confirm";
+      title: string;
+      message: ReactNode;
+      confirmLabel: string;
+      danger?: boolean;
+      onConfirm: () => void;
+    };
 
 // The file context menu for the CURRENTLY OPEN preview file. Owns its own
 // menu/dialog/toast state and, unlike Listing (which refetches + re-anchors its
@@ -77,7 +95,7 @@ type PreviewDialog =
 function usePreviewFileMenu(
   fsPath: string,
   stat: StatResult,
-  loadOpenWith: () => Promise<MenuItem[]>
+  loadOpenWith: () => Promise<MenuItem[]>,
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -119,7 +137,10 @@ function usePreviewFileMenu(
         await copyEntry(fsPath, dst);
         setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
-        setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
+        setToast({
+          msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }),
+          tone: "error",
+        });
       } finally {
         duplicateInFlight.current = false;
       }
@@ -142,7 +163,11 @@ function usePreviewFileMenu(
             clearClipboardIfDeleted(fsPath);
             navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
-          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
+          (e: Error) =>
+            setToast({
+              msg: friendlyFsError(e, { verb: "delete", name: stat.name }),
+              tone: "error",
+            }),
         );
       },
     });
@@ -155,7 +180,10 @@ function usePreviewFileMenu(
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
+        setToast({
+          msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }),
+          tone: "error",
+        });
       }
     });
   };
@@ -185,7 +213,11 @@ function usePreviewFileMenu(
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));
           },
-          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
+          (e: Error) =>
+            setToast({
+              msg: friendlyFsError(e, { verb: "rename", name: stat.name }),
+              tone: "error",
+            }),
         );
       },
     });
@@ -198,7 +230,7 @@ function usePreviewFileMenu(
 
   const doReveal = () => {
     revealPath(fsPath).catch((e) =>
-      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
+      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" }),
     );
   };
 
@@ -213,7 +245,11 @@ function usePreviewFileMenu(
     { label: "Duplicate", icon: MenuIcons.duplicate, onClick: doDuplicate },
     "separator",
     { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: fsPath, op: "cut" }) },
-    { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: fsPath, op: "copy" }) },
+    {
+      label: "Copy",
+      icon: MenuIcons.copy,
+      onClick: () => setClipboard({ path: fsPath, op: "copy" }),
+    },
     "separator",
     { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: doReveal },
@@ -226,7 +262,9 @@ function usePreviewFileMenu(
 
   const overlays = (
     <>
-      {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
+      )}
       {dialog?.kind === "prompt" && (
         <PromptDialog
           title={dialog.title}
@@ -284,7 +322,9 @@ function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
 // the same fail-closed posture as a broken gate server-side.
 function useConditions(fsPath: string, templates: TemplateEntry[]): Record<string, boolean> | null {
   const anyConditional = templates.some((t) => t.conditional);
-  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(anyConditional ? null : {});
+  const [verdicts, setVerdicts] = useState<Record<string, boolean> | null>(
+    anyConditional ? null : {},
+  );
   useEffect(() => {
     if (!anyConditional) {
       setVerdicts({});
@@ -315,7 +355,16 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
 // "_render" loses the button too, consistently with losing the rendered view.
 
 const DEPLOY_ICON = (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
     <path d="M12 19V5" />
     <path d="M5 12l7-7 7 7" />
   </svg>
@@ -334,9 +383,12 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   // cheap local JSON read, the bookmarks-poll freshness posture (D77)
   // without a timer.
   const aliveDot = useRef(true);
-  useEffect(() => () => {
-    aliveDot.current = false;
-  }, []);
+  useEffect(
+    () => () => {
+      aliveDot.current = false;
+    },
+    [],
+  );
   const refreshDot = () => {
     getDeployStatus(fsPath, false)
       .then((r) => {
@@ -353,7 +405,9 @@ function DeployButton({ fsPath }: { fsPath: string }) {
       <button
         type="button"
         className={"deploy-btn" + (live ? " live" : "")}
-        title={live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"}
+        title={
+          live ? "Deployed — open the Deploy dialog to manage" : "Deploy this page to a hosted URL"
+        }
         onClick={() => setOpen(true)}
       >
         {DEPLOY_ICON}
@@ -487,9 +541,7 @@ function TemplatePreview({
     // the save.
     const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
     const flushWindow = frame?.contentWindow as
-      | (Window & { __fusedFlushEdits?: () => Promise<unknown> })
-      | null
-      | undefined;
+      (Window & { __fusedFlushEdits?: () => Promise<unknown> }) | null | undefined;
     const flush = flushWindow?.__fusedFlushEdits;
     if (typeof flush === "function") {
       try {
@@ -544,8 +596,7 @@ function TemplatePreview({
   // IN PLACE (setMode does the editor-flush + `_mode` replaceState) rather than
   // re-navigating to the same path — no re-stat, no iframe teardown/rebuild
   // beyond the mode change the switcher would make anyway.
-  const loadOpenWith = () =>
-    Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, (m) => void setMode(m)));
   const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
 
   return (
@@ -565,7 +616,11 @@ function TemplatePreview({
           templates.some((t) => t.mode === "_render") &&
           /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
         <ModeSwitcher
-          entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
+          entries={templates.map((t) => ({
+            mode: t.mode,
+            icon: templateModeIcon(t),
+            pending: isPending(t),
+          }))}
           active={entry.mode}
           onSelect={setMode}
         />
@@ -644,7 +699,9 @@ export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps)
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
-  const templates = stat.templates.filter((t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode));
+  const templates = stat.templates.filter(
+    (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode),
+  );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
@@ -652,7 +709,9 @@ export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps)
   const resolving = conditions === null;
   // While resolving, gated entries stay visible (as pending); once verdicts
   // land, denied ones drop.
-  const visible = templates.filter((t) => !t.conditional || resolving || conditions[t.mode] === true);
+  const visible = templates.filter(
+    (t) => !t.conditional || resolving || conditions[t.mode] === true,
+  );
   if (resolving && templates.length > 0 && templates.every((t) => t.conditional)) {
     return (
       <>

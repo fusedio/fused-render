@@ -341,8 +341,7 @@ import urllib.request as _urlreq
 
 def _server_url(src, endpoint, path):
     u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(src, path):
@@ -405,12 +404,14 @@ def _listdir(file, path, src=""):
             if ent["name"].startswith("."):
                 continue
             is_dir = bool(ent.get("is_dir"))
-            entries.append({
-                "name": ent["name"],
-                "path": os.path.join(directory, ent["name"]).replace(os.sep, "/"),
-                "is_dir": is_dir,
-                "size": None if is_dir else (ent.get("size") or 0),
-            })
+            entries.append(
+                {
+                    "name": ent["name"],
+                    "path": os.path.join(directory, ent["name"]).replace(os.sep, "/"),
+                    "is_dir": is_dir,
+                    "size": None if is_dir else (ent.get("size") or 0),
+                }
+            )
             if len(entries) >= 1000:
                 break
         entries.sort(key=lambda item: (not item["is_dir"], item["name"].casefold()))

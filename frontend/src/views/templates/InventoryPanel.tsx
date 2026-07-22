@@ -300,9 +300,8 @@ function DeleteConfirm({
       }
     >
       <p className="deploy-muted">
-        This removes the user template folder for <code>{t.name}</code>. Without a bindings
-        cleanup, bindings that use it keep the name and show as broken until you rebind or remove
-        them.
+        This removes the user template folder for <code>{t.name}</code>. Without a bindings cleanup,
+        bindings that use it keep the name and show as broken until you rebind or remove them.
       </p>
       <div className="templates-delete-opts">
         <label className="templates-delete-opt">

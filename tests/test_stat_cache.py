@@ -9,9 +9,8 @@ stub (and force is_mount_backed True) so cache hits vs recomputes can be
 asserted directly, mirroring tests/test_conditions_cache.py.
 """
 
-from fastapi.testclient import TestClient
-
 import pytest
+from fastapi.testclient import TestClient
 
 from fused_render import server
 from fused_render.shell import mounts

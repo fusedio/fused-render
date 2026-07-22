@@ -8,6 +8,7 @@ walks and pinned a CPU for 14h. The fix submits these commands with
 in-flight enumeration. These tests assert that stop-on-timeout contract against
 the async-aware StubRcd (real rclone is never invoked).
 """
+
 import pytest
 
 import fused_render.shell.mounts as mounts_mod
@@ -48,8 +49,7 @@ def test_stat_timeout_stops_the_job_and_reports_indeterminate(home, rcd):
 
     # timeout must clear _DIRECT_PROBE_MIN_S (else _stat_item bails to
     # indeterminate before ever issuing the rc call we want to cancel).
-    assert mounts_mod.rc_stat_for(
-        mounts_mod.mountpoint(c) + "/f", timeout=1.0) == "indeterminate"
+    assert mounts_mod.rc_stat_for(mounts_mod.mountpoint(c) + "/f", timeout=1.0) == "indeterminate"
 
     stops = [b for (m, b) in rcd.calls if m == "job/stop"]
     assert len(stops) == 1
@@ -60,10 +60,12 @@ def test_list_fast_success_returns_normally_without_stopping(home, rcd):
     # The hot path: a job that finishes at once returns the SAME shape the old
     # synchronous call did, and never touches job/stop.
     c = mounts_mod.add_mount("data", "remote:bucket")
-    rcd.responses["operations/list"] = {"list": [
-        {"Name": "a", "IsDir": True, "Size": -1},
-        {"Name": "b.txt", "IsDir": False, "Size": 7},
-    ]}
+    rcd.responses["operations/list"] = {
+        "list": [
+            {"Name": "a", "IsDir": True, "Size": -1},
+            {"Name": "b.txt", "IsDir": False, "Size": 7},
+        ]
+    }
 
     entries = mounts_mod.rc_list_dir(mounts_mod.mountpoint(c) + "/sub", timeout=5)
     assert [e["Name"] for e in entries] == ["a", "b.txt"]
@@ -86,9 +88,9 @@ def test_failed_job_maps_to_rc_list_error_not_timeout(home, rcd):
 def _one_shot_server(reply_for):
     """Spin a localhost HTTP server that answers each POST with reply_for(body),
     recording the request bodies it saw. Returns (port, seen, shutdown)."""
+    import json as _json
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    import json as _json
 
     seen = []
 
@@ -124,8 +126,7 @@ def test_rc_cancellable_reuses_sync_payload_when_no_jobid(home):
 
     port, seen, shutdown = _one_shot_server(reply)
     try:
-        out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
-                                         timeout=2)
+        out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"}, timeout=2)
     finally:
         shutdown()
 
@@ -145,8 +146,7 @@ def test_rc_cancellable_falls_back_on_empty_ack(home):
 
     port, seen, shutdown = _one_shot_server(reply)
     try:
-        out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
-                                         timeout=2)
+        out = mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"}, timeout=2)
     finally:
         shutdown()
 
@@ -164,16 +164,15 @@ def test_rc_cancellable_stops_job_when_polling_fails(home):
     # cancellation"). The raised error must read as a timeout to callers.
     def reply(method, body):
         if method == "job/status":
-            return 500, {"error": "server busy"}   # _rc -> RuntimeError
+            return 500, {"error": "server busy"}  # _rc -> RuntimeError
         if method == "job/stop":
             return 200, {}
-        return 200, {"jobid": 1}                    # the async submit
+        return 200, {"jobid": 1}  # the async submit
 
     port, seen, shutdown = _one_shot_server(reply)
     try:
         with pytest.raises(RuntimeError) as exc:
-            mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"},
-                                       timeout=2)
+            mounts_mod._rc_cancellable(port, "operations/list", {"fs": "r:"}, timeout=2)
     finally:
         shutdown()
 

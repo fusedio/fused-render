@@ -168,12 +168,18 @@ def test_non_direct_mount_root_never_lists(home, monkeypatch):
     assert entry._is_mount_root is True
     assert entry._direct_capable is False
 
-    monkeypatch.setattr(mounts_mod, "rc_list_dir",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("rc_list_dir called on a mount root")))
-    monkeypatch.setattr(mounts_mod, "direct_list_page",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("direct_list_page called on a mount root")))
+    monkeypatch.setattr(
+        mounts_mod,
+        "rc_list_dir",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc_list_dir called on a mount root")),
+    )
+    monkeypatch.setattr(
+        mounts_mod,
+        "direct_list_page",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("direct_list_page called on a mount root")
+        ),
+    )
     assert entry._mount_signal() is server._UNCHANGED
 
 
@@ -256,14 +262,17 @@ def test_mount_file_signal_direct_capable_empty_page_uses_modtime(home, monkeypa
     # moves when the file content changes.
     entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
-    monkeypatch.setattr(mounts_mod, "s3_list_page",
-                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    monkeypatch.setattr(
+        mounts_mod,
+        "s3_list_page",
+        lambda path, *, max_keys, continuation=None, timeout=None: ([], None),
+    )
     mtimes = iter(["2024-01-02T03:04:05Z", "2024-01-02T09:09:09Z"])
     monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: next(mtimes))
 
     sig1 = entry._mount_signal()
-    assert sig1 == "2024-01-02T03:04:05Z"           # real ModTime, not empty-hash
-    assert not sig1.startswith("L")                 # not a listing hash
+    assert sig1 == "2024-01-02T03:04:05Z"  # real ModTime, not empty-hash
+    assert not sig1.startswith("L")  # not a listing hash
     assert entry._mount_signal() == "2024-01-02T09:09:09Z"  # content change -> CHANGED
 
 
@@ -272,8 +281,11 @@ def test_mount_file_signal_direct_capable_empty_page_none_modtime_unchanged(home
     # (matching the RcListError file arm) rather than a constant empty-hash.
     entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
-    monkeypatch.setattr(mounts_mod, "s3_list_page",
-                        lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
+    monkeypatch.setattr(
+        mounts_mod,
+        "s3_list_page",
+        lambda path, *, max_keys, continuation=None, timeout=None: ([], None),
+    )
     monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: None)
     assert entry._mount_signal() is server._UNCHANGED
 

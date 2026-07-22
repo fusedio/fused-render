@@ -24,7 +24,8 @@ PDF_PY = os.path.join(HERE, os.pardir, "fused_render", "templates", "pdf_studio"
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="read-only bits are ignored when running as root")
+    reason="read-only bits are ignored when running as root",
+)
 
 
 def _load_pdf(tmp_path, monkeypatch):

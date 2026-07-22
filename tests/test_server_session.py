@@ -144,6 +144,7 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
 # so _session_put must consult the mount's read_only flag and skip the write
 # entirely rather than loop the doomed PutObject.
 
+
 @pytest.fixture
 def ro_mount(tmp_path, monkeypatch):
     """A real file under a fake read-only mountpoint inside a redirected
@@ -162,8 +163,7 @@ def ro_mount(tmp_path, monkeypatch):
 
 def test_put_skips_under_read_only_mount(ro_mount):
     # A qualifying (non-_mode) query would normally start a session.
-    resp = PUT(body={"path": ro_mount, "search": "_mode=geotiff&stretch=2,1471"},
-               x_fused="1")
+    resp = PUT(body={"path": ro_mount, "search": "_mode=geotiff&stretch=2,1471"}, x_fused="1")
     assert resp == {"ok": True, "skipped": True}
     # No sidecar written next to the mounted file.
     assert not os.path.exists(ro_mount + ".json")
@@ -178,6 +178,7 @@ def test_put_skips_under_read_only_mount(ro_mount):
 # The gate is files-only, matching os.path.isfile: "file" passes, "dir" and
 # "missing" 404, and an "indeterminate" rc probe fails OPEN (never 404s a file
 # the user just opened on a transient rcd hiccup).
+
 
 @pytest.fixture
 def mount_gate(monkeypatch):
@@ -198,12 +199,15 @@ def mount_gate(monkeypatch):
     return _set
 
 
-@pytest.mark.parametrize("kind,ok", [
-    ("file", True),           # a real file -> gate passes
-    ("indeterminate", True),  # rcd down/timeout -> fail open, gate passes
-    ("dir", False),           # a directory is not a file -> 404
-    ("missing", False),       # confirmed absent -> 404
-])
+@pytest.mark.parametrize(
+    "kind,ok",
+    [
+        ("file", True),  # a real file -> gate passes
+        ("indeterminate", True),  # rcd down/timeout -> fail open, gate passes
+        ("dir", False),  # a directory is not a file -> 404
+        ("missing", False),  # confirmed absent -> 404
+    ],
+)
 def test_get_gate_is_files_only_via_rc(mount_gate, kind, ok):
     mount_gate(kind)
     resp = GET(path="/mnt/pub/big-prefix/cog.tif")

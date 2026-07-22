@@ -34,11 +34,18 @@ SOURCES = os.path.join(CACHE_ROOT, "sources")
 
 DATA_EXTS = (".csv", ".tsv", ".parquet", ".xlsx", ".hyper")
 TABLEAU_EXTS = (".twb", ".twbx", ".tds", ".tdsx")
-MAX_CHART_ROWS = 5_000       # aggregated rows sent to the chart
-MAX_DOMAIN_VALUES = 300      # distinct values sent to a filter dropdown
+MAX_CHART_ROWS = 5_000  # aggregated rows sent to the chart
+MAX_DOMAIN_VALUES = 300  # distinct values sent to a filter dropdown
 
-AGGS = {"sum": "SUM", "avg": "AVG", "median": "MEDIAN", "min": "MIN", "max": "MAX",
-        "count": "COUNT", "countd": "COUNT(DISTINCT"}
+AGGS = {
+    "sum": "SUM",
+    "avg": "AVG",
+    "median": "MEDIAN",
+    "min": "MIN",
+    "max": "MAX",
+    "count": "COUNT",
+    "countd": "COUNT(DISTINCT",
+}
 GRAINS = ("year", "quarter", "month", "week", "day")
 
 
@@ -48,6 +55,7 @@ def _safe_name(name, default):
 
 
 # ---------- duckdb helpers ----------
+
 
 def _duck(excel_ext=False):
     import duckdb
@@ -85,6 +93,7 @@ def _json_val(v):
 
 # ---------- parquet cache + schema ----------
 
+
 def _cache_dir(file):
     import hashlib
 
@@ -108,8 +117,7 @@ import urllib.request as _urlreq
 
 def _server_url(origin, endpoint, path):
     u = _urlparse.urlsplit(origin)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+    return f"{u.scheme}://{u.netloc}{endpoint}?path=" + _urlparse.quote(path)
 
 
 def _stat(origin, path):
@@ -209,8 +217,19 @@ def _classify(duck_type):
         return "date", "dimension"
     if t == "BOOLEAN":
         return "bool", "dimension"
-    if t in ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT",
-             "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "DOUBLE") or t.startswith("DECIMAL"):
+    if t in (
+        "TINYINT",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "HUGEINT",
+        "UTINYINT",
+        "USMALLINT",
+        "UINTEGER",
+        "UBIGINT",
+        "FLOAT",
+        "DOUBLE",
+    ) or t.startswith("DECIMAL"):
         return "number", "measure"
     return "string", "dimension"
 
@@ -240,8 +259,13 @@ def _ensure_cache(file):
     for name, duck_type, *_ in info:
         dtype, role = _classify(duck_type)
         fields.append({"name": name, "dtype": dtype, "role": role})
-    meta = {"file": file, "mtime": os.path.getmtime(file), "parquet": "data.parquet",
-            "nrows": nrows, "fields": fields}
+    meta = {
+        "file": file,
+        "mtime": os.path.getmtime(file),
+        "parquet": "data.parquet",
+        "nrows": nrows,
+        "fields": fields,
+    }
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f)
     return meta
@@ -259,6 +283,7 @@ def _field(meta, name):
 
 
 # ---------- query building ----------
+
 
 def _filters_sql(meta, filters):
     where, params = [], []
@@ -324,7 +349,7 @@ def _agg_expr(fld, agg):
 
 def _query(file, spec):
     """spec: {dims: [{field, grain?, as}], measures: [{field, agg, as}],
-             filters: [...], sort: {by, dir}?, limit?}"""
+    filters: [...], sort: {by, dir}?, limit?}"""
     meta = _ensure_cache(file)
     dims = spec.get("dims") or []
     measures = spec.get("measures") or []
@@ -355,10 +380,7 @@ def _query(file, spec):
     con = _duck()
     rows = con.execute(sql, params).fetchall()
     truncated = len(rows) > limit
-    records = [
-        {alias: _json_val(v) for alias, v in zip(aliases, row)}
-        for row in rows[:limit]
-    ]
+    records = [{alias: _json_val(v) for alias, v in zip(aliases, row)} for row in rows[:limit]]
     return {"records": records, "truncated": truncated}
 
 
@@ -374,8 +396,12 @@ def _rows(file, offset, limit, filters):
         params + [int(limit), int(offset)],
     )
     rows = [[_json_val(v) for v in row] for row in cur.fetchall()]
-    return {"columns": [f["name"] for f in meta["fields"]], "rows": rows,
-            "matched": matched, "total": meta["nrows"]}
+    return {
+        "columns": [f["name"] for f in meta["fields"]],
+        "rows": rows,
+        "matched": matched,
+        "total": meta["nrows"],
+    }
 
 
 def _filter_domain(file, field):
@@ -392,8 +418,11 @@ def _filter_domain(file, field):
         f"SELECT CAST({col} AS VARCHAR) AS v, count(*) AS n FROM read_parquet({pq}) "
         f"GROUP BY 1 ORDER BY n DESC, v LIMIT {MAX_DOMAIN_VALUES}"
     ).fetchall()
-    return {"kind": "values", "total": total,
-            "values": [{"v": "" if v is None else v, "n": n} for v, n in vals]}
+    return {
+        "kind": "values",
+        "total": total,
+        "values": [{"v": "" if v is None else v, "n": n} for v, n in vals],
+    }
 
 
 # ---------- tableau .twb import ----------
@@ -402,23 +431,52 @@ def _filter_domain(file, field):
 # [Datasource].[none:Region:nk] — [derivation:]name[:kind], where the derivation
 # is an aggregate, a date grain, or none/attr (use the values unaggregated) and
 # the kind is a two-letter role code (nk/qk/ok).
-_TWB_AGG = {"sum": "sum", "avg": "avg", "mdn": "median", "min": "min", "max": "max",
-            "cnt": "count", "ctd": "countd"}
-_TWB_GRAIN = {"yr": "year", "qr": "quarter", "mn": "month", "wk": "week", "dy": "day",
-              "tyr": "year", "tqr": "quarter", "tmn": "month", "twk": "week", "tdy": "day",
-              # sub-day grains collapse to day, the finest this viewer offers
-              "hr": "day", "mi": "day", "sc": "day",
-              "thr": "day", "tmi": "day", "tsc": "day"}
-_TWB_MARK = {"Automatic": "auto", "Bar": "bar", "Line": "line", "Area": "area",
-             "Square": "heatmap", "Circle": "scatter", "Shape": "scatter",
-             "Pie": "pie", "Text": "table"}
+_TWB_AGG = {
+    "sum": "sum",
+    "avg": "avg",
+    "mdn": "median",
+    "min": "min",
+    "max": "max",
+    "cnt": "count",
+    "ctd": "countd",
+}
+_TWB_GRAIN = {
+    "yr": "year",
+    "qr": "quarter",
+    "mn": "month",
+    "wk": "week",
+    "dy": "day",
+    "tyr": "year",
+    "tqr": "quarter",
+    "tmn": "month",
+    "twk": "week",
+    "tdy": "day",
+    # sub-day grains collapse to day, the finest this viewer offers
+    "hr": "day",
+    "mi": "day",
+    "sc": "day",
+    "thr": "day",
+    "tmi": "day",
+    "tsc": "day",
+}
+_TWB_MARK = {
+    "Automatic": "auto",
+    "Bar": "bar",
+    "Line": "line",
+    "Area": "area",
+    "Square": "heatmap",
+    "Circle": "scatter",
+    "Shape": "scatter",
+    "Pie": "pie",
+    "Text": "table",
+}
 _TWB_FIELD = re.compile(r"\[([^\]]*)\]\.\[([^\]]*)\]")
 
 
 def _twb_pill(token, meta):
     parts = token.split(":")
     if len(parts) > 1 and re.fullmatch(r"[a-z]k", parts[-1]):
-        parts.pop()   # trailing kind code
+        parts.pop()  # trailing kind code
     prefix = parts.pop(0) if len(parts) > 1 else None
     name = ":".join(parts)
     try:
@@ -454,8 +512,11 @@ def _twb_data_file(root, twb_dir, remote=False):
             if not fn.lower().endswith(DATA_EXTS):
                 continue
             d = conn.get("directory") or "."
-            cands = [fn] if os.path.isabs(fn) else [os.path.join(twb_dir, d, fn),
-                                                    os.path.join(twb_dir, fn)]
+            cands = (
+                [fn]
+                if os.path.isabs(fn)
+                else [os.path.join(twb_dir, d, fn), os.path.join(twb_dir, fn)]
+            )
             for cand in cands:
                 if os.path.exists(cand):
                     return os.path.abspath(cand), ds.get("name")
@@ -471,8 +532,10 @@ def _twb_data_file(root, twb_dir, remote=False):
                 f"The workbook's data source “{fn}” was not found next to the file. "
                 f"Place the data file in the same folder and reopen."
             )
-    raise ValueError("No file-based data source found (only local csv/tsv/xlsx/"
-                     "parquet/hyper connections are supported).")
+    raise ValueError(
+        "No file-based data source found (only local csv/tsv/xlsx/"
+        "parquet/hyper connections are supported)."
+    )
 
 
 def _import_twb(file, remote=False):
@@ -487,8 +550,7 @@ def _import_twb(file, remote=False):
     # more than one exists, drop pills that reference another one instead of
     # resolving them against this schema by bare name — a shared column name
     # would otherwise plot the wrong data source's values with no warning.
-    multi_source = len({ds.get("name") for ds in root.iter("datasource")
-                        if ds.get("name")}) > 1
+    multi_source = len({ds.get("name") for ds in root.iter("datasource") if ds.get("name")}) > 1
 
     def pills(text):
         out = []
@@ -518,14 +580,35 @@ def _import_twb(file, remote=False):
             enc = table.find(".//pane/encodings/text")
             if enc is not None:
                 rows += pills(enc.get("column", ""))[:1]
-        sheets.append({"name": ws.get("name") or f"Sheet {len(sheets) + 1}",
-                       "chart": chart, "cols": cols, "rows": rows, "color": color,
-                       "filters": [], "sortDir": ""})
+        sheets.append(
+            {
+                "name": ws.get("name") or f"Sheet {len(sheets) + 1}",
+                "chart": chart,
+                "cols": cols,
+                "rows": rows,
+                "color": color,
+                "filters": [],
+                "sortDir": "",
+            }
+        )
     if not sheets:
-        sheets = [{"name": "Sheet 1", "chart": "auto", "cols": [], "rows": [],
-                   "color": [], "filters": [], "sortDir": ""}]
-    wb = {"name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
-          "source": src.replace(os.sep, "/"), "sheets": sheets, "active": 0}
+        sheets = [
+            {
+                "name": "Sheet 1",
+                "chart": "auto",
+                "cols": [],
+                "rows": [],
+                "color": [],
+                "filters": [],
+                "sortDir": "",
+            }
+        ]
+    wb = {
+        "name": re.sub(r"\.twb$", "", os.path.basename(file), flags=re.I),
+        "source": src.replace(os.sep, "/"),
+        "sheets": sheets,
+        "active": 0,
+    }
     return {"workbook": wb}
 
 
@@ -600,7 +683,9 @@ def _import_tableau(file, src=""):
         d = _extract_tableau_zip(file)
         inner = _find_by_ext(d, ".twb" if ext == ".twbx" else ".tds")
         if not inner:
-            raise ValueError(f"no {'.twb' if ext == '.twbx' else '.tds'} found inside {os.path.basename(file)}")
+            raise ValueError(
+                f"no {'.twb' if ext == '.twbx' else '.tds'} found inside {os.path.basename(file)}"
+            )
         out = _import_twb(inner) if ext == ".twbx" else _import_tds(inner)
         if "workbook" in out:
             out["workbook"]["name"] = re.sub(r"\.twbx$", "", os.path.basename(file), flags=re.I)
@@ -609,6 +694,7 @@ def _import_tableau(file, src=""):
 
 
 # ---------- file browsing / boot ----------
+
 
 def _listdir(path, origin=""):
     path = os.path.abspath(os.path.expanduser(path or "~"))
@@ -627,8 +713,7 @@ def _listdir(path, origin=""):
         try:
             ents, _ = _list_remote(origin, path)
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc), "path": fpath, "parent": parent,
-                    "dirs": [], "files": []}
+            return {"error": str(exc), "path": fpath, "parent": parent, "dirs": [], "files": []}
         for ent in ents:
             name = ent["name"]
             if name.startswith("."):
@@ -677,6 +762,7 @@ def _boot():
 
 # ---------- export ----------
 
+
 def _export(kind, name, file, spec, raw=False):
     os.makedirs(EXPORTS, exist_ok=True)
     base = _safe_name(name, "export")
@@ -688,7 +774,9 @@ def _export(kind, name, file, spec, raw=False):
         meta = _ensure_cache(file)
         where, params = _filters_sql(meta, spec.get("filters"))
         con = _duck()
-        con.execute(f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_parquet(meta))}){where}", params)
+        con.execute(
+            f"CREATE TABLE t AS SELECT * FROM read_parquet({_q(_parquet(meta))}){where}", params
+        )
         if not con.execute("SELECT count(*) FROM t").fetchone()[0]:
             raise ValueError("nothing to export — no rows match the filters")
         if kind == "csv":
@@ -751,8 +839,11 @@ def main(
         return _listdir(file, src)
     if action == "open_data":
         meta = _ensure_cache(file)
-        return {"file": meta["file"].replace(os.sep, "/"), "nrows": meta["nrows"],
-                "fields": meta["fields"]}
+        return {
+            "file": meta["file"].replace(os.sep, "/"),
+            "nrows": meta["nrows"],
+            "fields": meta["fields"],
+        }
     if action == "query":
         return _query(file, json.loads(spec))
     if action == "rows":

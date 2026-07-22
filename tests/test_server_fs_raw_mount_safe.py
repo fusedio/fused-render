@@ -12,13 +12,10 @@
 Shared fixtures/helpers (home, _mount, _entry, _no_kernel_on_mount,
 _list_returns, _list_raises) live in _mount_safe_helpers.
 """
+
 import os
 
 import pytest
-from fastapi.testclient import TestClient
-
-import fused_render.shell.mounts as mounts_mod
-from fused_render.server import create_app
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _entry,
     _list_raises,
@@ -27,6 +24,10 @@ from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _no_kernel_on_mount,
     home,
 )
+from fastapi.testclient import TestClient
+
+import fused_render.shell.mounts as mounts_mod
+from fused_render.server import create_app
 
 
 @pytest.fixture()
@@ -34,12 +35,14 @@ def raw_client(home, monkeypatch):
     """A TestClient plus a factory that arms a live serve for a mountpoint and
     stubs prefetch (whose background reader would otherwise touch the file)."""
     import fused_render.shell.prefetch as prefetch
+
     monkeypatch.setattr(prefetch, "schedule", lambda *a, **k: None)
     monkeypatch.setattr(prefetch, "is_done", lambda *a, **k: True)
     client = TestClient(create_app(start_dir=str(home)))
 
     def arm_serve(mp):
         from fused_render.shell import storage
+
         storage.write_json(mounts_mod.serves_path(), {mp: "http://127.0.0.1:1"})
 
     return client, arm_serve
@@ -75,8 +78,10 @@ def test_raw_head_unknown_size_reports_zero_not_negative(raw_client, home, monke
     _no_kernel_on_mount(monkeypatch, mp)
     # rclone reports Size:-1 for an object of unknown length; `-1 or 0` is -1,
     # which would emit an invalid content-length: -1. It must clamp to 0.
-    _list_returns(monkeypatch, [{"Name": "blob.bin", "IsDir": False, "Size": -1,
-                                 "ModTime": "2024-01-02T03:04:05Z"}])
+    _list_returns(
+        monkeypatch,
+        [{"Name": "blob.bin", "IsDir": False, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"}],
+    )
     r = client.head("/api/fs/raw", params={"path": os.path.join(mp, "blob.bin")})
     assert r.status_code == 200
     assert r.headers["content-length"] == "0"
@@ -92,8 +97,7 @@ def test_raw_head_indeterminate_is_503(raw_client, home, monkeypatch):
     assert r.status_code == 503
 
 
-def test_raw_serve_lost_but_mount_backed_returns_503_not_kernel_read(
-        raw_client, home, monkeypatch):
+def test_raw_serve_lost_but_mount_backed_returns_503_not_kernel_read(raw_client, home, monkeypatch):
     client, _ = raw_client
     mp = _mount("rw", read_only=False)
     # No serve armed -> serve_url_for returns None; the path IS mount-backed,

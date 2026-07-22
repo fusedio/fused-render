@@ -17,6 +17,7 @@ These tests stand up a threaded localhost HTTP server for the two fs endpoints
 _stat_payload, _HttpRangeFile, _ltile_remote gating, and the rasterio opener —
 including the phantom-.ovr guard (rasterio available in the repo .venv).
 """
+
 import io
 import json
 import os
@@ -27,10 +28,10 @@ import pytest
 
 from fused_render.templates.geotiff import tile_server as ts
 
-
 # --------------------------------------------------------------------------
 # a stand-in for /api/fs/stat + /api/fs/raw (one blob)
 # --------------------------------------------------------------------------
+
 
 class _FakeFS:
     """Serves /api/fs/stat (json) and /api/fs/raw (ranged bytes) for one blob.
@@ -41,8 +42,7 @@ class _FakeFS:
     set of paths it was asked about, so a test can assert GDAL never probed for
     sidecars (.ovr/.msk/.aux.xml)."""
 
-    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True,
-                 is_dir=False):
+    def __init__(self, blob=b"", remote=True, exists=True, honor_range=True, is_dir=False):
         self.blob = blob
         self.remote = remote
         self.exists = exists
@@ -62,11 +62,14 @@ class _FakeFS:
                         self.end_headers()
                         self.wfile.write(b'{"error":"no such file"}')
                         return
-                    body = json.dumps({
-                        "remote": fs.remote,
-                        "size": None if fs.is_dir else len(fs.blob),
-                        "is_dir": fs.is_dir, "name": "x.tif",
-                    }).encode()
+                    body = json.dumps(
+                        {
+                            "remote": fs.remote,
+                            "size": None if fs.is_dir else len(fs.blob),
+                            "is_dir": fs.is_dir,
+                            "name": "x.tif",
+                        }
+                    ).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -80,10 +83,9 @@ class _FakeFS:
                         s, _, e = rng[6:].partition("-")
                         s = int(s)
                         e = int(e) if e else len(fs.blob) - 1
-                        chunk = fs.blob[s:e + 1]
+                        chunk = fs.blob[s : e + 1]
                         self.send_response(206)
-                        self.send_header("Content-Range",
-                                         f"bytes {s}-{e}/{len(fs.blob)}")
+                        self.send_header("Content-Range", f"bytes {s}-{e}/{len(fs.blob)}")
                         self.send_header("Content-Length", str(len(chunk)))
                         self.end_headers()
                         self.wfile.write(chunk)
@@ -128,6 +130,7 @@ def fs():
 # _stat_payload — full payload (remote + size) / 404 / unreachable
 # --------------------------------------------------------------------------
 
+
 def test_stat_payload_reports_remote_and_size(fs):
     s = fs(blob=b"x" * 321, remote=True)
     p = ts._stat_payload(s.src, "/x.tif")
@@ -149,11 +152,11 @@ def test_stat_payload_unreachable_returns_none():
 # _HttpRangeFile — a seekable file object rasterio's opener can read
 # --------------------------------------------------------------------------
 
+
 def test_http_range_file_read_all_matches_blob(fs):
     blob = bytes((i * 37) % 256 for i in range(5000))
     s = fs(blob=blob)
-    f = ts._HttpRangeFile(ts._server_url(s.src, "/api/fs/raw", "/x.tif"),
-                          len(blob), block=512)
+    f = ts._HttpRangeFile(ts._server_url(s.src, "/api/fs/raw", "/x.tif"), len(blob), block=512)
     assert f.seekable()
     assert f.read() == blob
 
@@ -161,8 +164,7 @@ def test_http_range_file_read_all_matches_blob(fs):
 def test_http_range_file_seek_and_partial_reads(fs):
     blob = bytes((i * 7) % 256 for i in range(5000))
     s = fs(blob=blob)
-    f = ts._HttpRangeFile(ts._server_url(s.src, "/api/fs/raw", "/x.tif"),
-                          len(blob), block=512)
+    f = ts._HttpRangeFile(ts._server_url(s.src, "/api/fs/raw", "/x.tif"), len(blob), block=512)
     f.seek(1000)
     assert f.tell() == 1000
     assert f.read(300) == blob[1000:1300]
@@ -175,6 +177,7 @@ def test_http_range_file_seek_and_partial_reads(fs):
 # --------------------------------------------------------------------------
 # _ltile_remote — remote gating for the /ltile chain
 # --------------------------------------------------------------------------
+
 
 def test_ltile_remote_builds_descriptor_for_mount_file(fs):
     s = fs(blob=b"z" * 100, remote=True)
@@ -206,10 +209,14 @@ def test_ltile_remote_none_when_unreachable():
 def test_lvl_tok_uses_raw_url_size_for_remote_no_getmtime(monkeypatch):
     # for a remote file the cache token must NOT call os.path.getmtime (which
     # would kernel-stat the mount) — it comes straight from the descriptor.
-    monkeypatch.setattr(os.path, "getmtime",
-                        lambda p: (_ for _ in ()).throw(AssertionError("getmtime")))
-    rem = {"raw_url": "http://h/api/fs/raw?path=/x.tif", "size": 5,
-           "key": "http://h/api/fs/raw?path=/x.tif|5"}
+    monkeypatch.setattr(
+        os.path, "getmtime", lambda p: (_ for _ in ()).throw(AssertionError("getmtime"))
+    )
+    rem = {
+        "raw_url": "http://h/api/fs/raw?path=/x.tif",
+        "size": 5,
+        "key": "http://h/api/fs/raw?path=/x.tif|5",
+    }
     assert ts._lvl_tok("/mnt/x.tif", rem) == rem["key"]
 
 
@@ -218,16 +225,28 @@ def test_lvl_tok_uses_raw_url_size_for_remote_no_getmtime(monkeypatch):
 # (present in the repo .venv; skipped otherwise).
 # --------------------------------------------------------------------------
 
+
 def _make_tif(path, with_overviews):
     import numpy as np
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.transform import from_origin
+
     data = (np.random.default_rng(0).random((3, 1024, 1024)) * 255).astype("uint8")
-    with rasterio.open(path, "w", driver="GTiff", height=1024, width=1024,
-                       count=3, dtype="uint8", crs="EPSG:4326",
-                       transform=from_origin(0, 10, 0.01, 0.01),
-                       tiled=True, blockxsize=256, blockysize=256) as ds:
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=1024,
+        width=1024,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=from_origin(0, 10, 0.01, 0.01),
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+    ) as ds:
         ds.write(data)
         if with_overviews:
             ds.build_overviews([2, 4], Resampling.average)
@@ -263,8 +282,7 @@ def test_rio_open_remote_no_phantom_overviews(fs, tmp_path):
     # bytes came over /api/fs/raw and the guard rejected sidecar probes:
     # every raw request was for our exact path, never x.tif.ovr/.msk/.aux.xml
     assert s.raw_paths, "expected range reads over /api/fs/raw"
-    assert all(".ovr" not in p and ".msk" not in p and ".aux" not in p
-               for p in s.raw_paths)
+    assert all(".ovr" not in p and ".msk" not in p and ".aux" not in p for p in s.raw_paths)
 
 
 def test_rio_open_remote_uses_internal_overviews(fs, tmp_path):

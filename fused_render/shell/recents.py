@@ -19,6 +19,7 @@ persisted folder collapse. Entries whose file has since been deleted are
 hidden from the GET response but never deleted from disk — the file may come
 back (a mount reconnect, an undeleted trash item).
 """
+
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -53,9 +54,7 @@ CHECK_BUDGET_S = 1.5
 # shared default executor makes the request wait for them at loop teardown.
 # ENTRY_CAP-wide so every entry's check can run at once (true fan-out); slots
 # free themselves as the local isfile / bounded rc_mtime_for calls return.
-_CHECK_POOL = ThreadPoolExecutor(
-    max_workers=ENTRY_CAP, thread_name_prefix="recents-exists"
-)
+_CHECK_POOL = ThreadPoolExecutor(max_workers=ENTRY_CAP, thread_name_prefix="recents-exists")
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -89,7 +88,7 @@ def _decoded_fs_path(url: str) -> str | None:
     path = parts.path
     if not path.startswith(VIEW_PREFIX):
         return None
-    segments = [unquote(s) for s in path[len(VIEW_PREFIX):].split("/") if s]
+    segments = [unquote(s) for s in path[len(VIEW_PREFIX) :].split("/") if s]
     # Any `_`-prefixed top-level pathname is a shell sentinel (`_panel`,
     # `_prefs`, `_templates`, `_listing`, ...) — the whole namespace is
     # shell-owned, so reject the prefix rather than enumerating names.
@@ -119,8 +118,10 @@ def _file_path_from_url(url: str) -> str | None:
     # POST /api/recents/open resolves the just-opened file through here). Route
     # mounts via the rc API (_mount_exists), locals via the kernel (_local_exists).
     from fused_render.shell import mounts as shell_mounts
-    exists = (_mount_exists(fs_path) if shell_mounts.is_mount_backed(fs_path)
-              else _local_exists(fs_path))
+
+    exists = (
+        _mount_exists(fs_path) if shell_mounts.is_mount_backed(fs_path) else _local_exists(fs_path)
+    )
     return fs_path if exists else None
 
 
@@ -210,9 +211,7 @@ async def get_recents():
 
 
 @router.post("/api/recents/open")
-def post_recent_open(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def post_recent_open(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -257,9 +256,7 @@ def post_recent_open(
 
 
 @router.put("/api/recents/collapsed")
-def put_recents_collapsed(
-    payload: dict = Body(...), x_fused: str | None = Header(default=None)
-):
+def put_recents_collapsed(payload: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
