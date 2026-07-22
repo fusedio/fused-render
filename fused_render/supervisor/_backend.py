@@ -36,9 +36,18 @@ if sys.platform == "win32":
     # RuntimeError, so the run loop's retry must catch it explicitly. A future
     # Linux backend spawning with stdlib primitives would leave this empty.
     SPAWN_ERRORS: tuple[type[BaseException], ...] = (pywintypes.error,)
+elif sys.platform.startswith("linux"):
+    from fused_render.supervisor._linux import instance, startup, ui
+    from fused_render.supervisor._linux.tree import Job
+
+    # The Linux keeper spawns via stdlib primitives (subprocess / os), which
+    # raise only OSError/RuntimeError/TimeoutError — all already handled by the
+    # run loop — so there are no extra spawn exception types to declare here.
+    SPAWN_ERRORS: tuple[type[BaseException], ...] = ()
 else:
     raise RuntimeError(
-        f"no desktop supervisor backend for {sys.platform!r} (supported: win32)"
+        f"no desktop supervisor backend for {sys.platform!r} "
+        "(supported: win32, linux)"
     )
 
 __all__ = ["Job", "SPAWN_ERRORS", "instance", "startup", "ui"]
