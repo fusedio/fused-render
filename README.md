@@ -157,11 +157,11 @@ The modal handles the whole flow:
   serving plane `fused infra serve` provisioned (still a terminal flow).
   `local` envs have no serving plane and are never offered.
 - **The URL.** Deploys mint a **public share link** shown with copy/open
-  actions. By default the token is an opaque, unguessable one; the modal's
-  **Link name** field (fresh deploys only — a redeploy keeps its existing
-  token either way) lets you pass an explicit `--token` instead, trading
-  unguessability for a URL you chose. Redeploying the same page republishes to
-  the **same URL**; Revoke takes it down (deploying again restores the link).
+  actions. A **Link** picker (fresh deploys only — a redeploy keeps its
+  existing token either way) chooses between an **unguessable** random token
+  (the default) and a **custom name** you pick, trading unguessability for a
+  memorable URL. Redeploying the same page republishes to the **same URL**;
+  Revoke takes it down (deploying again restores the link).
 - **What's deployed.** A per-page pointer (`~/.fused-render/deployments.json`)
   marks deployed files in the preview header, and the Fused account tab's
   Deployments section (`fused share list`) shows every mount on the chosen
