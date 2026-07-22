@@ -110,14 +110,12 @@ echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
 # --- prune caches ------------------------------------------------------------
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
-# --- smoke tests (drop the pywin32 imports; add supervisor + pystray) --------
+# --- smoke tests (drop the pywin32 imports; add supervisor + tray) -----------
 log "Smoke tests"
-# pystray picks its backend at import time; on a headless build host (CI,
-# docker) the X11 backend raises DisplayNameError. The smoke only checks the
-# bundle is importable, so force the dummy backend. (-I strips PYTHON* vars
-# only — this one still reaches the child.)
-PYSTRAY_BACKEND=dummy "$BUNDLE_PYTHON" -I -c \
-    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, pystray; print('bundle imports ok')"
+# The Linux tray is StatusNotifierItem over D-Bus (dbus-fast), which imports
+# without a display — so no headless-backend workaround is needed here.
+"$BUNDLE_PYTHON" -I -c \
+    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, fused_render.supervisor._linux.tray, dbus_fast; print('bundle imports ok')"
 "$PYTHON_ROOT/bin/uv" --version
 "$PYTHON_ROOT/bin/rclone" version
 SMOKE_REQUEST="$(mktemp)"

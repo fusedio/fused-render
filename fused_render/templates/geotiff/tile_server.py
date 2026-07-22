@@ -34,6 +34,7 @@ import io
 import json
 import math
 import os
+import struct
 import sys
 import threading
 import time
@@ -185,6 +186,40 @@ def _stat_payload(src, path):
         with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
                                     timeout=10) as r:
             return json.load(r)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Header-parse read budget for a mount-backed native-engine file. A COG writes
+# every IFD (incl. overviews) and the tile index at the FRONT, so this prefix
+# covers the whole header — we never read the pixel body (tiles range-read over
+# HTTP on demand). 8MB is generous for COGs (IFDs + tile-offset/bytecount arrays
+# for even a huge image are a few tens of KB); reading the whole file instead
+# would drag the entire object cold from the store just to parse tags (measured:
+# a 127MB tif took ~50s). The rare non-COG whose directory sits at EOF trips the
+# struct.error retry in open_file, which re-reads the whole file.
+_REMOTE_HEADER_PREFIX = 8 << 20
+
+
+def _remote_header_bytes(src, path, size, want=None):
+    """Header bytes for a MOUNT-backed TIFF, read over HTTP /api/fs/raw instead
+    of open()+mmap over the kernel NFS mount — the mmap readahead page-fault on
+    a big tif stalls the NFS client and drops the whole mount (measured: a 4.6s
+    header open dropped source.coop). Returns a real bytes buffer so the native
+    struct parser (_tiff_core.parse_header) is unchanged, or None when the size
+    is unknown / the read errors (caller falls back to the mmap path, the same
+    residual risk as an unreachable stat). `size` is from /api/fs/stat, so we
+    never kernel-stat the mount. `want` caps the read (None = whole file)."""
+    try:
+        total = int(size)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    n = total if want is None else min(int(want), total)
+    try:
+        return _RangeReader(
+            _server_url(src, "/api/fs/raw", path) + "&pooled=1").read(0, n)
     except Exception:  # noqa: BLE001
         return None
 
@@ -486,9 +521,35 @@ def _serve():
             return f
         # No src -> remote-ness UNKNOWN (not False): a later request that does
         # carry src can still stat + upgrade a mount-backed file off the mmap.
-        remote = _stat_remote(src, path) if src else None
-        buf, en, t0, next_off = T.parse_header(path)
-        meta = T.header_meta(path, buf, en, t0, next_off)
+        # For a mount-backed file, parse the header from HTTP range reads, NOT
+        # open()+mmap over the kernel NFS mount: the mmap readahead page-fault
+        # on a big tif stalls the NFS client and drops the whole mount (this is
+        # the wedge the engine's remote path exists to avoid; it used to happen
+        # HERE because the header parse always mmapped before the reader upgrade
+        # below). One /api/fs/stat gives remote + size without kernel-statting.
+        remote, size, data = None, None, None
+        if src:
+            payload = _stat_payload(src, path)
+            if payload is not None:
+                remote = bool(payload.get("remote"))
+                if remote:
+                    size = payload.get("size")
+                    data = _remote_header_bytes(src, path, size,
+                                                _REMOTE_HEADER_PREFIX)
+        try:
+            buf, en, t0, next_off = T.parse_header(path, data=data)
+        except (struct.error, IndexError):
+            # A prefix that didn't reach IFD0 (a non-COG whose directory is at
+            # EOF): re-read the whole file over HTTP (still no kernel mmap) and
+            # parse that. Only reachable when `data` was a bounded prefix.
+            if data is None:
+                raise
+            data = _remote_header_bytes(src, path, size)
+            buf, en, t0, next_off = T.parse_header(path, data=data)
+        # Pass the stat size (remote) so header_meta skips os.path.getsize — a
+        # kernel stat over NFS that stalls seconds on a cold mount file. size is
+        # None for a local file, where getsize is cheap and correct.
+        meta = T.header_meta(path, buf, en, t0, next_off, file_size=size)
         levels = [_parse_level(buf, en, t0)]
         off, hops = next_off, 0
         while off and hops < 32:
@@ -514,9 +575,10 @@ def _serve():
         if remote is not None:
             f["remote"] = remote
         if remote:
-            # Mount-backed: header parse above (single-threaded, brief) can ride
-            # the mmap, but the CONCURRENT chunk reads must not — route them over
-            # HTTP so nothing page-faults the NFS mount.
+            # Mount-backed: the header was parsed from HTTP-read bytes above (no
+            # kernel mmap), and the CONCURRENT chunk reads must stay off the
+            # mount too — attach the HTTP reader and drop the header bytes (its
+            # .close() is a harmless no-op vs a local mmap's real close).
             old_buf = _attach_reader(f, src, path)
             try:
                 if old_buf is not None:
@@ -948,13 +1010,16 @@ def _serve():
                                            if lon == lon and abs(lon) != float("inf")
                                            else None)})
             m["corners"] = corners
-        # sidecar files
-        base = f["path"].rsplit(".", 1)[0]
+        # sidecar files — LOCAL only. os.path.isfile kernel-stats each candidate
+        # on the mount; the store rarely carries GDAL sidecars and every probe is
+        # NFS I/O (a wedge risk), so a mount-backed file reports just itself.
         files = [f["path"]]
-        for ext in (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj"):
-            for cand in (f["path"] + ext, base + ext):
-                if os.path.isfile(cand) and cand not in files:
-                    files.append(cand)
+        if not f.get("remote"):
+            base = f["path"].rsplit(".", 1)[0]
+            for ext in (".aux.xml", ".ovr", ".msk", ".tfw", ".wld", ".prj"):
+                for cand in (f["path"] + ext, base + ext):
+                    if os.path.isfile(cand) and cand not in files:
+                        files.append(cand)
         m["files"] = files
         # per-band info: dtype, colorinterp, approx min/max, block, overviews
         lv0 = f["levels"][0]

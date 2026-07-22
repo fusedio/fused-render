@@ -53,6 +53,13 @@ class StubRcd:
         self.delay = {}  # method -> seconds to sleep before responding (timeouts)
         self.jobs = {}   # jobid -> job dict (for the _async / job/* path)
         self._next_jobid = 1
+        # Faithfully model the kernel mount table: a successful mount/mount
+        # adds its mountPoint here and mount/unmount drops it, so the fixture
+        # can back os.path.ismount off this set. attach_mount now verifies the
+        # kernel mount actually attached (_await_ismount), so a stub that
+        # answers mount/mount 200 but leaves ismount False would (correctly)
+        # fail every attach — this keeps the stub's two views consistent.
+        self.mounted = set()
         self.responses = {
             "core/pid": {"pid": 4242},
             "mount/mount": {},
@@ -139,6 +146,13 @@ class StubRcd:
                 if method in stub.delay:
                     time.sleep(stub.delay[method])
                 code, payload = self._resolve(method)
+                # Track the kernel mount table so the fixture's os.path.ismount
+                # sees a mount appear/disappear exactly when rcd reports success.
+                if code == 200 and body.get("mountPoint"):
+                    if method == "mount/mount":
+                        stub.mounted.add(body["mountPoint"])
+                    elif method == "mount/unmount":
+                        stub.mounted.discard(body["mountPoint"])
                 self._reply(code, payload)
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
@@ -150,11 +164,19 @@ class StubRcd:
 
 
 @pytest.fixture()
-def rcd(home):
+def rcd(home, monkeypatch):
     """A live stub rcd whose port is recorded in the state file, so
-    _ensure_rcd reuses it instead of spawning real rclone."""
+    _ensure_rcd reuses it instead of spawning real rclone.
+
+    os.path.ismount is backed by the stub's simulated kernel mount table so
+    attach_mount's post-mount verify (_await_ismount) passes on the happy path
+    exactly when the stub reports mount/mount success. A test that needs a
+    different ismount view (stale/disconnected, adopt-an-existing-mount) still
+    monkeypatches os.path.ismount itself in its body — that runs after this and
+    wins."""
     stub = StubRcd()
     mounts_mod.write_rcd_state(stub.port, 4242)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in stub.mounted)
     yield stub
     stub.close()
 
@@ -1474,8 +1496,11 @@ def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatc
     c, mp = _make_mount(home, rcd, served=False)
     rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
     still_mounted = {"v": True}
+    # Wedged at entry (still_mounted); once the force umount clears it, the
+    # remount re-attaches via the stub's mount table (mount/mount -> mounted),
+    # which is what attach_mount's post-mount verify now checks.
     monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: p == mp and still_mounted["v"])
+                        lambda p: p == mp and (still_mounted["v"] or p in rcd.mounted))
     forced = []
 
     def fake_run(cmd, **kw):
@@ -1575,6 +1600,10 @@ def test_fs_list_errors_for_dead_mount_instead_of_empty(client, rcd, home):
     # state != "mounted" -> the empty listing is not trustworthy.
     rcd.responses["mount/listmounts"] = {
         "mountPoints": [{"Fs": "r:bucket", "MountPoint": mp}]}
+    # Creating the mount kernel-mounted it (mount/mount -> stub.mounted); now
+    # simulate the kernel dropping it while rcd keeps listing it — the "stale"
+    # split-brain, where ismount is False but the listing is not trustworthy.
+    rcd.mounted.discard(mp)
     r = client.get("/api/fs/list", params={"path": mp})
     assert r.status_code == 503
     assert "Mounts page" in r.json()["error"]
@@ -1714,6 +1743,36 @@ def test_attach_records_mounted_read_only(home, rcd):
     assert mounts_mod.get_mount(c["id"])["mounted_read_only"] is True
 
 
+# attach_mount verifies the kernel mount actually attached after mount/mount:
+# on a flap-prone loopback NFS mount rcd can report mount/mount success while
+# the kernel mount silently never takes (or drops within seconds), leaving
+# rcd's serve alive over an empty mountpoint — the "stale" split-brain that a
+# /reconnect used to report as OK. See _await_ismount / attach_mount.
+
+
+def test_attach_errors_when_kernel_mount_never_attaches(home, rcd, monkeypatch):
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    # rcd answers mount/mount 200, but the kernel mount never appears.
+    monkeypatch.setattr(mounts_mod, "_await_ismount", lambda mp: False)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None and "did not attach" in err
+    # It still issued the mount/mount — the failure is detected after, not by
+    # skipping the attempt.
+    assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_await_ismount_true_promptly_when_mounted(monkeypatch):
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    assert mounts_mod._await_ismount("/x", deadline=5.0) is True
+
+
+def test_await_ismount_false_after_deadline_when_absent(monkeypatch):
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    start = time.monotonic()
+    assert mounts_mod._await_ismount("/x", deadline=0.15) is False
+    assert time.monotonic() - start >= 0.15
+
+
 def test_adopted_mount_remounts_when_vfs_predates_read_only(home, rcd, monkeypatch):
     c = mounts_mod.add_mount("ro", "remote:bucket", read_only=True)
     # Live rcd mount, but the record has no mounted_read_only: it was created
@@ -1721,10 +1780,11 @@ def test_adopted_mount_remounts_when_vfs_predates_read_only(home, rcd, monkeypat
     mp = mounts_mod.mountpoint(c)
     rcd.responses["mount/listmounts"] = {
         "mountPoints": [{"Fs": "remote:bucket", "MountPoint": mp}]}
-    # Kernel mount is up for the adopt check, gone once reconnect unmounts.
-    seq = iter([True])
-    monkeypatch.setattr(mounts_mod.os.path, "ismount",
-                        lambda p: next(seq, False))
+    # Kernel-mounted at entry (adopt check); reconnect's mount/unmount drops it
+    # from the stub table, then the remount re-adds it — os.path.ismount tracks
+    # that lifecycle so attach_mount's post-mount verify passes.
+    rcd.mounted.add(mp)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in rcd.mounted)
     assert mounts_mod.attach_mount(c) is None
     methods = [m for m, _ in rcd.calls]
     assert methods.index("mount/unmount") < methods.index("mount/mount")
@@ -1769,7 +1829,9 @@ def test_reconnect_stale_unmounts_rcd_entry_before_remounting(home, rcd, monkeyp
     # would refuse to remount over its stale entry, so reconnect must issue
     # mount/unmount (clearing the entry) BEFORE mount/mount.
     c, mp = _make_mount(home, rcd)  # served=True
-    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    # Stale: rcd lists it but the kernel dropped it (not in the stub table), so
+    # ismount is False until the reconnect's remount re-adds it (mount/mount).
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p in rcd.mounted)
     assert mounts_mod.reconnect_mount(c) is None
     methods = [m for m, _ in rcd.calls]
     assert "mount/unmount" in methods and "mount/mount" in methods
@@ -4504,3 +4566,70 @@ def test_get_mounts_probes_credentials_off_serial_path(
     # 4 x 0.5s SERIALLY would be >= 2s; parallel is ~0.5s.
     assert elapsed < 1.3, f"credential probes ran serially ({elapsed:.2f}s)"
     assert all(mv["restart_reason"] == "credentials" for mv in data["mounts"])
+
+
+# --------------------------------------------------- health monitor: episode dedup
+
+
+def test_health_monitor_notifies_once_per_episode(monkeypatch):
+    """poll_once is DETECTION-ONLY: it emits exactly one "disconnected" event
+    per broken episode and NEVER calls reconnect_mount (auto-reconnect is off —
+    it churned on flap-prone mounts). A healthy->broken transition notifies once,
+    staying broken emits nothing more, a return to "mounted" re-arms, and
+    "unmounted" (user-detached) never notifies. Classification is I/O-free
+    (probe_io=False)."""
+    # Isolate module-level monitor state so ids/episodes don't leak across tests.
+    monkeypatch.setattr(mounts_mod, "_health_episodes", {})
+    monkeypatch.setattr(mounts_mod, "_health_events",
+                        __import__("collections").deque(maxlen=100))
+    monkeypatch.setattr(mounts_mod, "_health_event_seq", 0)
+
+    m = {"id": "m1", "name": "n1", "remote": "r:bucket"}
+    monkeypatch.setattr(mounts_mod, "list_mounts", lambda: [m])
+    monkeypatch.setattr(mounts_mod, "mounted_paths", lambda: set())
+
+    current = {"state": "mounted"}
+    # The monitor calls mount_state(..., probe_io=False); accept the kwarg.
+    monkeypatch.setattr(
+        mounts_mod, "mount_state",
+        lambda mm, live, timeout=None, probe_io=True: current["state"])
+
+    # Auto-reconnect is disabled: the monitor must NEVER call reconnect_mount.
+    reconnects = []
+    monkeypatch.setattr(mounts_mod, "reconnect_mount",
+                        lambda mm: reconnects.append(mm["id"]))
+
+    def kinds():
+        return [e["kind"] for e in mounts_mod._health_events]
+
+    # 1. Healthy tick: nothing.
+    mounts_mod.poll_once()
+    assert kinds() == []
+
+    # 2. healthy -> disconnected: exactly one "disconnected" event.
+    current["state"] = "disconnected"
+    mounts_mod.poll_once()
+    assert kinds() == ["disconnected"]
+
+    # 3. still broken across ticks: no repeat (episode already notified).
+    mounts_mod.poll_once()
+    mounts_mod.poll_once()
+    assert kinds() == ["disconnected"]
+
+    # 4. mounted again -> re-arm; a fresh drop (the other broken state) notifies.
+    current["state"] = "mounted"
+    mounts_mod.poll_once()
+    current["state"] = "stale"
+    mounts_mod.poll_once()
+    assert kinds() == ["disconnected", "disconnected"]
+
+    # 5. "unmounted" (user-detached) never notifies, even from healthy.
+    current["state"] = "mounted"
+    mounts_mod.poll_once()
+    current["state"] = "unmounted"
+    mounts_mod.poll_once()
+    assert kinds() == ["disconnected", "disconnected"]
+
+    # Monotonic, distinct ids; and NOT ONCE did the monitor auto-reconnect.
+    assert [e["id"] for e in mounts_mod._health_events] == [1, 2]
+    assert reconnects == []
