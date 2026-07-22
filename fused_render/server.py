@@ -1835,41 +1835,55 @@ async def _pooled_response(r, request: Request):
     return StreamingResponse(body(), status_code=r.status_code, headers=out)
 
 
+def _bearer_status_passes(status: int) -> bool:
+    """Whether a bearer-proxy upstream status is a client-facing answer. 2xx/3xx
+    (success/redirect) and the meaningful store answers 404 (absent) and 416
+    (unsatisfiable range) pass through; everything else (401, 403, 429, 5xx) is
+    NOT a client-facing answer in bearer mode — there is no 307 URL for the
+    client to retry against, and on main these reads went via the rclone serve
+    whose pacer retries transient errors — so the caller falls through to the
+    serve instead of leaking the error status (finding 9)."""
+    return 200 <= status < 400 or status in (404, 416)
+
+
 async def _proxy_raw_bearer(request: Request, path: str):
     """Proxy a cold private-GCS read through the pooled client with the bearer
     Authorization header attached out-of-band (the token must never reach the
-    client in a URL/redirect). On a 401/403 — a stale/rotated token — invalidate
-    the cached credential, re-resolve, and retry ONCE; a second 401/403 (or a
-    None bearer resolution) returns None so the caller falls through to the
-    serve. Returns None (never an error status) when the fast path can't serve,
-    so the read still completes via the serve. The open upstream response is
-    always closed before a retry."""
+    client in a URL/redirect).
+
+    On a 401 (stale/rotated token) invalidate the cached credential, re-resolve,
+    and retry ONCE. A 403 is an IAM denial WITH a valid token, so it does NOT
+    invalidate — churning the credential per denied read would evict the live
+    token out from under concurrent legitimate reads (mirrors _gcs_get_direct's
+    401-only policy) — it simply falls through to the serve. Any non-pass-through
+    status (a second 401, 403, 429, 5xx) also falls through by returning None
+    (never an error status to the client), so the read still completes via the
+    serve. The open upstream response is always closed before a retry or a
+    fall-through."""
     from fused_render.shell import mounts as shell_mounts
 
-    bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
-    if bearer is None:
-        return None
-    # Only now (a real bearer remote) is the pooled client needed — reaching for
-    # it before the bearer check would break the non-bearer fall-through paths.
-    client = request.app.state.pooled_client
-    url, extra_headers = bearer
-    r = await _pooled_send(client, url, request, extra_headers)
-    if r is None:
-        return None
-    if r.status_code in (401, 403):
-        await r.aclose()
-        await asyncio.to_thread(shell_mounts.invalidate_gcs_token, path)
+    for attempt in (1, 2):
         bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
         if bearer is None:
             return None
+        # Only now (a real bearer remote) is the pooled client needed — reaching
+        # for it before the bearer check would break the non-bearer fall-through.
+        client = request.app.state.pooled_client
         url, extra_headers = bearer
         r = await _pooled_send(client, url, request, extra_headers)
         if r is None:
             return None
-        if r.status_code in (401, 403):
-            await r.aclose()
-            return None  # still denied -> fall through to the serve
-    return await _pooled_response(r, request)
+        if _bearer_status_passes(r.status_code):
+            return await _pooled_response(r, request)
+        await r.aclose()
+        # 401 on the first attempt: token went stale/rotated -> re-resolve and
+        # retry once. 403 (IAM denial), transient 429/5xx, and a second 401 all
+        # fall through to the serve WITHOUT invalidating.
+        if attempt == 1 and r.status_code == 401:
+            await asyncio.to_thread(shell_mounts.invalidate_gcs_token, path)
+            continue
+        return None
+    return None
 
 
 def _stat_or_none(path: str) -> os.stat_result | None:

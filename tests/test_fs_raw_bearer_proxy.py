@@ -49,6 +49,10 @@ class _FakeStore:
         # When set, any Authorization != accept_auth is answered 401 (models a
         # stale/rotated token that self-heals only after re-resolution).
         self.accept_auth = None
+        # When set, every GET is answered with this HTTP status (models an IAM
+        # denial / transient upstream error the proxy must handle without leaking
+        # it to the client).
+        self.force_status = None
         store = self
 
         class H(BaseHTTPRequestHandler):
@@ -58,6 +62,9 @@ class _FakeStore:
             def do_GET(self):
                 auth = self.headers.get("Authorization")
                 store.auth_seen.append(auth)
+                if store.force_status is not None:
+                    self.send_error(store.force_status)
+                    return
                 if store.accept_auth is not None and auth != store.accept_auth:
                     self.send_error(401)
                     return
@@ -210,3 +217,47 @@ def test_bearer_persistent_401_falls_through_to_serve(cold_bearer_dynamic, monke
                    follow_redirects=False)
     assert r.status_code == 503  # mount serve unavailable, not a 401
     assert len(store.auth_seen) == 2  # exactly one retry
+
+
+# ----------------------------------- fix 3 + 9: 403/error statuses fall through
+
+
+def test_bearer_403_falls_through_without_invalidating(cold_bearer, monkeypatch):
+    # FINDING 3: a 403 is an IAM denial WITH a valid token — the proxy must NOT
+    # invalidate/re-resolve (that would churn the credential per denied read and
+    # evict the live token out from under concurrent legitimate reads). It closes
+    # and falls through to the serve. Serve base is unreachable -> 503.
+    client, file_path, store = cold_bearer
+    store.force_status = 403
+    invalidated = []
+    monkeypatch.setattr(mounts_mod, "invalidate_gcs_token",
+                        lambda p: invalidated.append(p))
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 503  # fell through to the serve, not a leaked 403
+    assert len(store.auth_seen) == 1  # no retry
+    assert invalidated == []  # token never invalidated on a 403
+
+
+def test_bearer_503_falls_through_to_serve(cold_bearer):
+    # FINDING 9: a transient upstream 503 is NOT passed through to the client
+    # (bearer mode has no 307 URL to retry against); it falls through to the
+    # serve, which on main's rclone pacer would retry it. Serve unreachable ->
+    # 503 from the serve-unavailable path, never a leaked upstream error status.
+    client, file_path, store = cold_bearer
+    store.force_status = 503
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 503
+    assert len(store.auth_seen) == 1  # no retry on a 5xx
+
+
+def test_bearer_404_passes_through(cold_bearer):
+    # FINDING 9: 404 is a meaningful store answer (object absent) — it passes
+    # through to the client rather than falling to the serve.
+    client, file_path, store = cold_bearer
+    store.force_status = 404
+    r = client.get("/api/fs/raw", params={"path": file_path},
+                   follow_redirects=False)
+    assert r.status_code == 404
+    assert len(store.auth_seen) == 1
