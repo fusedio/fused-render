@@ -105,12 +105,34 @@ Two candidates, both implemented thin behind `_linux/tree.py`, selected by
   enabled (default on Ubuntu/Fedora/Debian ≥ 12, sometimes disabled by
   hardening).
 
-**Decision:** _to be recorded after the gate (a) run on the target VMs
-(Task 8)._ Baseline ships if namespaces prove flaky on a target; namespace ships
-if the gate confirms userns is reliably available and the escaped-grandchild
-guarantee is wanted. The `tests/test_supervisor_linux_tree.py` matrix measures
-both.
+**Decision (default committed, pending the VM walk):** `pgroup` ships as the
+default (`FUSED_RENDER_LINUX_TREE_KILL` unset → `pgroup`); `namespace` is
+opt-in. Rationale: `pgroup` has no host prerequisite, so it works on every
+target including hosts that disable unprivileged userns by hardening;
+`namespace`'s airtight escaped-grandchild guarantee is available for operators
+who want it and whose hosts allow userns. This is revisited to make `namespace`
+the default only if the VM walk shows userns is reliably available across the
+target matrix AND the escaped-grandchild case matters in practice (the escaping
+daemons the app spawns — rclone rcd, tile daemons — are the same ones the spec
+already accepts dying with the app). `tests/test_supervisor_linux_tree.py`
+measures both mechanisms wherever userns is available.
 
 ## Decision record (gate results)
 
-_to be filled in by Task 8 after the CI job + manual VM walk._
+- **(a) no-orphans — partially enforced in CI, full guarantee pending VM.**
+  `tests/test_supervisor_linux_tree.py` runs in the `linux-desktop` CI job. On a
+  stock GitHub runner unprivileged userns is usually unavailable, so only the
+  `pgroup` parametrization runs there — it enforces "the direct child dies when
+  the supervisor is SIGKILLed" and "job.close() reaps the same-session tree" on
+  every push. The `namespace` parametrization (and thus the escaped-grandchild
+  guarantee) runs only where userns is enabled: a self-hosted/privileged runner
+  or the manual VM walk. **Action for the VM walk:** confirm on Ubuntu 22.04 +
+  Debian 12 that `kill -9` of the supervisor leaves zero `fused`/server/rclone
+  processes under each mechanism the host supports.
+- **(b)–(f):** pending the manual VM walk (see the "Which gates run where"
+  table). The AppImage build + its import/`_child.py`/rclone smoke tests run in
+  the CI job (a slice of (f)); tray/dialogs/open-with/upgrade are the manual
+  desktop-session checklist.
+
+_The manual VM sign-off (KDE + stock-GNOME, Ubuntu 22.04 + Debian 12) is
+recorded here at release time._
