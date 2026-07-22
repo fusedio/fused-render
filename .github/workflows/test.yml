@@ -36,6 +36,13 @@ jobs:
               - 'scripts/hatch_build.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
+              # Packaging paths from the linux_desktop filter below: every
+              # linux_desktop path must also be an app path, because the
+              # linux-desktop job (where the gated smoke step lives) only runs
+              # when app fires. Keep the two filters in sync.
+              - 'scripts/build_linux_appimage.sh'
+              - 'scripts/linux/**'
+              - 'scripts/file_associations.*'
             # Gates only the expensive AppImage build smoke (several minutes of
             # toolchain downloads); the cheap Linux backend test run stays on
             # the broad `app` filter above. macOS has no per-PR packaging job
