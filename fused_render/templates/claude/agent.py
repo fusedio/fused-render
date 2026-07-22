@@ -17,7 +17,8 @@ Actions:
   main(action="start", file=..., message=..., session_id="", model="", effort="")
       -> {"run_id": ...}
   main(action="poll", run_id=...)
-      -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N, "phase": ...}
+      -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
+          "phase": ..., "message": <the run's first message, for re-attach>}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
@@ -271,6 +272,7 @@ def _poll(run_id: str) -> dict:
     tokens_done = 0      # output tokens of finished messages this turn
     tokens_current = 0   # cumulative usage of the in-flight message
     phase = "thinking"
+    pending_sep = False  # a message ended; separate it from the next one's text
 
     try:
         lines = open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
@@ -292,6 +294,9 @@ def _poll(run_id: str) -> dict:
             if et == "content_block_delta":
                 delta = ev.get("delta", {})
                 if delta.get("type") == "text_delta":
+                    if pending_sep:
+                        text_parts.append("\n\n")
+                        pending_sep = False
                     text_parts.append(delta.get("text", ""))
                     phase = "composing"
                 elif delta.get("type") == "thinking_delta":
@@ -302,6 +307,9 @@ def _poll(run_id: str) -> dict:
             elif et == "message_stop":
                 tokens_done += tokens_current
                 tokens_current = 0
+                # A tool-using turn is several assistant messages; without a
+                # break their texts concatenate mid-word ("orange.After").
+                pending_sep = bool(text_parts)
             elif et == "content_block_start":
                 block = (ev.get("content_block") or {}).get("type")
                 if block == "tool_use":
@@ -327,23 +335,39 @@ def _poll(run_id: str) -> dict:
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
 
+    # The run's own first message rides back on every poll so a re-attaching
+    # page (mode switch / reload killed the poll loop, subprocess kept going)
+    # can restore the user turn it never saw.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+
     # First poll that sees the session id writes it to the sidecar (marker
     # file keeps the write one-shot across the remaining polls).
     marker = os.path.join(run_dir, "recorded")
-    if new_session and not error and not os.path.exists(marker):
+    if new_session and not error and not os.path.exists(marker) and "file" in meta:
         try:
-            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
-                meta = json.load(f)
-            _record_session(meta["file"], new_session, meta["message"],
+            _record_session(meta["file"], new_session, meta.get("message", ""),
                             meta.get("resumed_from", ""))
             open(marker, "w", encoding="utf-8").close()
-        except (OSError, json.JSONDecodeError, KeyError):
+        except OSError:
             pass  # sidecar bookkeeping must never break the chat itself
 
-    # The final result is authoritative; partial deltas cover the streaming window.
-    text = result_text if (done and result_text and not error) else "".join(text_parts)
+    # The streamed deltas are the full turn; the `result` row holds only the
+    # LAST assistant message, so swapping to it after a tool-using turn threw
+    # away every earlier message (the mid-sentence-freeze bug). Keep the
+    # accumulated stream; fall back to `result` only when nothing streamed
+    # (older CLI without --include-partial-messages).
+    text = "".join(text_parts)
+    if not text and done and result_text and not error:
+        text = result_text
     return {"text": text, "done": done, "session_id": new_session, "error": error,
-            "tokens": tokens_done + tokens_current, "phase": phase}
+            "tokens": tokens_done + tokens_current, "phase": phase,
+            "message": meta.get("message", "")}
 
 
 # ------------------------------------------------------- sessions & history

@@ -365,6 +365,12 @@
   </div>
 
 <script>
+// A chat must never reload out from under a live conversation: the runtime
+// watches _file (LR-1), so Claude's own edit to the target file would reload
+// THIS frame mid-stream — killing the poll loop mid-sentence and orphaning the
+// run (a sibling _render pane still live-refreshes; only the chat opts out).
+fused.autoReload(false);
+
 const log = document.getElementById("log");
 const box = document.getElementById("box");
 const sessionEl = document.getElementById("session");
@@ -431,6 +437,7 @@ showSession();
 document.getElementById("back").onclick = () => {
   if (sending) return;  // mid-turn back would orphan the streaming run's UI
   fused.params.set("session_id", "");
+  fused.params.set("run", "");  // a failed re-attach must not chase us home
   showSession();
   log.innerHTML = "";
   document.body.classList.add("home");
@@ -697,6 +704,13 @@ function makeTyper(bodyEl) {
 
   function tick() {
     raf = null;
+    if (shown > target.length) {
+      // Target got rewritten shorter (authoritative final text): without this
+      // clamp `remaining` goes negative, nothing ever redraws, and the frozen
+      // frame keeps stale mid-word text forever.
+      shown = target.length;
+      bodyEl.innerHTML = renderMd(target);
+    }
     const remaining = target.length - shown;
     if (remaining > 0) {
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
@@ -731,27 +745,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // UI and corrupting the transcript. `sending` gates both submit handlers.
 let sending = false;
 
-async function sendMessage(message) {
-  if (sending) return;
-  sending = true;
-  addUser(message);
+// Stream one run into the log: working line + typewriter, polling until done.
+// The `run` URL param marks the run as in-flight for the page's whole life —
+// if this frame dies mid-loop (mode switch, reload), the subprocess keeps
+// going and the next boot re-attaches via resumeRun. Cleared only when a
+// poll reports the run finished.
+async function pollLoop(run_id) {
   const w = addWorking();
   let reply = null;
   let typer = null;
   try {
-    const { run_id, error } = await fused.runPython("./agent.py", {
-      action: "start",
-      file: FILE,
-      message,
-      session_id: fused.params.get("session_id") || "",
-      model: fused.params.get("model") || DEFAULT_MODEL,
-      effort: fused.params.get("effort") || DEFAULT_EFFORT,
-      // key:null — all agent.py calls opt out of default per-file cancellation
-      // (D114): start/poll/history/sessions share this file, and superseding an
-      // awaited poll would leave it pending and hang the streaming loop.
-    }, { key: null });
-    if (error) throw new Error(error);
-
     while (true) {
       const data = await fused.runPython("./agent.py", { action: "poll", run_id }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
@@ -767,6 +770,7 @@ async function sendMessage(message) {
         if (!data.done) typer.update(data.text);
       }
       if (data.done) {
+        fused.params.set("run", "");
         w.stop(); w.el.remove();
         if (data.error) {
           if (typer) typer.abort();
@@ -783,16 +787,77 @@ async function sendMessage(message) {
     }
   } catch (err) {
     // Mirror the data.error cleanup: kill the rAF loop and drop the partial
-    // bubble so a failed run never leaves a half-streamed reply behind.
+    // bubble so a failed run never leaves a half-streamed reply behind. The
+    // `run` param is deliberately NOT cleared: a poll that died with the page
+    // being torn down should still re-attach on the next boot.
     if (typer) typer.abort();
     if (reply) reply.remove();
     addError(err.message);
   } finally {
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
+  }
+}
+
+async function sendMessage(message) {
+  if (sending) return;
+  sending = true;
+  addUser(message);
+  try {
+    const { run_id, error } = await fused.runPython("./agent.py", {
+      action: "start",
+      file: FILE,
+      message,
+      session_id: fused.params.get("session_id") || "",
+      model: fused.params.get("model") || DEFAULT_MODEL,
+      effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      // key:null — all agent.py calls opt out of default per-file cancellation
+      // (D114): start/poll/history/sessions share this file, and superseding an
+      // awaited poll would leave it pending and hang the streaming loop.
+    }, { key: null });
+    if (error) throw new Error(error);
+    fused.params.set("run", run_id);
+    await pollLoop(run_id);
+  } catch (err) {
+    addError(err.message);
+  } finally {
     sending = false;
   }
   log.scrollTop = log.scrollHeight;
   box.focus();
+}
+
+// Re-attach to a run that was streaming when this page last unloaded (mode
+// switch / reload): only the poll loop died with the frame — the detached
+// claude subprocess kept working. Boot lands here when the `run` param is
+// still set; the poll replays the WHOLE turn's text, so any partial rows the
+// history restore already rendered for this turn are trimmed first.
+async function resumeRun(run_id) {
+  if (sending) return;
+  sending = true;
+  try {
+    const probe = await fused.runPython("./agent.py", { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id") {
+      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach to
+      fused.params.set("run", "");
+      return;
+    }
+    const users = log.querySelectorAll(".user");
+    const lastUser = users[users.length - 1];
+    if (lastUser && lastUser.textContent === probe.message) {
+      // this run's turn is (partially) in the restored history: keep the user
+      // line, drop the partial assistant rows — pollLoop re-streams them all
+      while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
+    } else if (probe.message) {
+      // frame died before the transcript had any rows: restore the user turn
+      addUser(probe.message);
+    }
+    await pollLoop(run_id);
+  } catch (err) {
+    console.warn("run re-attach failed:", err.message);
+  } finally {
+    sending = false;
+    box.focus();
+  }
 }
 
 document.getElementById("inputbox").onsubmit = (e) => {
@@ -893,11 +958,15 @@ async function loadRecent() {
   clearTopClaudeComments();
   renderAttachments();  // chips show in whichever view boots (home or chat)
   const session_id = fused.params.get("session_id");
-  if (session_id) {
+  const run_id = fused.params.get("run");
+  if (session_id || run_id) {
     // Resuming a chat with a comment handoff: enter chat, where the chips show
-    // above the input and fold into the session's next message.
+    // above the input and fold into the session's next message. A bare `run`
+    // param (frame died before the first poll saw the session id) still means
+    // an in-flight conversation — enter chat and re-attach.
     enterChat();
-    await loadHistory(session_id);
+    if (session_id) await loadHistory(session_id);
+    if (run_id) await resumeRun(run_id);
   } else {
     homebox.focus();  // chips (if any) show on the home page under the card
     await loadRecent();
