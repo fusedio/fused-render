@@ -847,6 +847,15 @@ export default function Listing({
   );
   navRowsRef.current = navRows;
 
+  // Whether navRows reflects a LOADED listing (not a transient empty while the
+  // fetch is in flight). Only the non-search listing can be mid-load with rows
+  // still empty AND a selection already set — that's the folder-open case: the
+  // resolved Listing mounts with a selection restored from the pre-stat
+  // provisional one, but its own /api/fs/list is briefly loading. Search keeps
+  // its prior behavior (results stream in). Used by the reconcile effect so a
+  // real, still-valid selection is never cleared as "vanished" during a reload.
+  const listingLoaded = searching ? true : state.status === "ok";
+
   // Keep the keyboard selection scrolled into view as it moves.
   useEffect(() => {
     if (!selectedPath) return;
@@ -904,13 +913,20 @@ export default function Listing({
       lastSelIndexRef.current = i; // selection still valid; remember its slot
       return;
     }
+    // Selection isn't in the current rows. While the listing is still LOADING
+    // (rows transiently empty during a fetch — notably the pre-stat provisional
+    // Listing being swapped for the resolved one right after a folder opens),
+    // don't treat it as vanished: keep it and rerun once rows arrive. Clearing
+    // here is what dropped an arrow-key selection made just after opening a
+    // folder, even with the selection carried across the remount.
+    if (!listingLoaded) return;
     if (rows.length === 0) {
       setSelectedPath(null);
       return;
     }
     const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
     setSelectedPath(rows[clamped]);
-  }, [navRows, selectedPath]);
+  }, [navRows, selectedPath, listingLoaded]);
 
   // --- file operations ------------------------------------------------------
 
