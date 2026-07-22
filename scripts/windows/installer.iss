@@ -64,6 +64,12 @@ Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\cache"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\runtime"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\temp"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\logs"
+; the [Icons] entries below were renamed from "FusedRender (Python Supervisor)"
+; — Inno's uninstall log only tracks additions per run, so upgrading over an
+; older install would otherwise leave these old .lnk files orphaned in the
+; Start Menu.
+Type: files; Name: "{group}\FusedRender (Python Supervisor).lnk"
+Type: files; Name: "{group}\Uninstall FusedRender (Python Supervisor).lnk"
 
 [Icons]
 Name: "{group}\FusedRender"; Filename: "{app}\payload\{#ExeName}"; IconFilename: "{#InstalledIcon}"; AppUserModelID: "{#AppUserModelId}"
