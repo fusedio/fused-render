@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app: ${{ steps.filter.outputs.app }}
+      linux_desktop: ${{ steps.filter.outputs.linux_desktop }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -33,6 +34,19 @@ jobs:
               - 'frontend/**'
               - 'examples_seed/**'
               - 'scripts/hatch_build.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+            # Gates only the expensive AppImage build smoke (several minutes of
+            # toolchain downloads); the cheap Linux backend test run stays on
+            # the broad `app` filter above. macOS has no per-PR packaging job
+            # at all (the DMG is release-tag only), so this keeps Linux at
+            # parity-or-better without paying the smoke on every server PR.
+            linux_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/shell/mounts.py'
+              - 'scripts/build_linux_appimage.sh'
+              - 'scripts/linux/**'
+              - 'scripts/file_associations.*'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
 
@@ -185,6 +199,11 @@ jobs:
         # These skip on macOS but execute here: the process-tree gate,
         # Unix-socket IPC, XDG paths/autostart/UI resolution, the tray retry
         # contract, the association-table sync, and rclone_bin resolution.
+        env:
+          # pystray picks its backend at import time; on a headless runner the
+          # X11 backend raises DisplayNameError during test collection. The
+          # tray test stubs the run loop anyway — force the dummy backend.
+          PYSTRAY_BACKEND: dummy
         run: >
           python -m pytest -q
           tests/test_supervisor_linux_tree.py
@@ -198,6 +217,9 @@ jobs:
         # Exercises the full pipeline (wheel → relocatable CPython → desktop
         # extra → DuckDB extensions → bundled uv + rclone → import/_child.py/
         # rclone smoke tests → AppDir → appimagetool with the static runtime).
+        # Step-gated to desktop/packaging changes: it's minutes of toolchain
+        # downloads, pointless on a server-only PR.
+        if: needs.detect-changes.outputs.linux_desktop == 'true'
         run: bash scripts/build_linux_appimage.sh
 
   test-status:
