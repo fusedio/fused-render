@@ -2789,23 +2789,32 @@ def _validate_and_sign(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
     return None, verdict
 
 
-def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
-    """Resolve/serve sign mode for one request with per-fs single-flight, so N
-    concurrent first reads issue ONE validation GET instead of N. Returns
-    (url, disposition):
-      - (url, "sign")  sign mode active/just-validated -> use this presigned URL
-                       (url may be None if creds rotated away mid-flight — the
-                       caller then demotes and falls through, finding 4);
-      - (None, "link") validated as a definite reject, OR another thread owns
-                       validation -> use the publiclink ladder for this request;
-                       it's safe to cache mode="link";
-      - (None, "retry") validation inconclusive or negative-cached -> use the
-                       publiclink ladder for THIS request but DON'T pin a mode,
-                       so sign is re-attempted once the window lapses (findings
-                       5 and 7)."""
+def _sign_single_flight(fs: str, mode_name: str, mint_fn, validate_fn,
+                        reject_disp: str) -> tuple[str | None, str]:
+    """The per-fs single-flight state machine shared by S3 sign mode and GCS
+    gsign mode, so N concurrent first reads issue ONE validation GET instead of
+    N. Parameterized on:
+      - mode_name    the mode string pinned on success ("sign" / "gsign");
+      - mint_fn()    -> url|None, the per-object URL when the mode is
+                     active/just-validated (a presigned S3 URL / a signed GCS
+                     URL); None means creds/signer rotated away mid-flight;
+      - validate_fn() -> (url, verdict) with verdict "ok"/"reject"/
+                     "inconclusive" — the one-time validation probe;
+      - reject_disp  the disposition returned on a definite reject ("link" for
+                     S3's publiclink ladder, "bearer" for GCS's proxy).
+    Returns (url, disposition):
+      - (url, mode_name)  mode active/just-validated -> use this URL (url may be
+                     None if creds/signer rotated away mid-flight — the caller
+                     demotes and falls through, finding 4);
+      - (None, reject_disp)  validated as a definite reject -> caller settles on
+                     the fallback path; safe to cache that mode;
+      - (None, "retry")  validation inconclusive OR negative-cached OR ANOTHER
+                     THREAD holds the validation lock -> serve THIS request via
+                     the fallback but DON'T pin a mode, so the mode is
+                     re-attempted once the window lapses (findings 5 and 7)."""
     now = time.monotonic()
     with _upstream_lock:
-        if _upstream_mode.get(fs) == "sign":
+        if _upstream_mode.get(fs) == mode_name:
             active = True
         else:
             active = False
@@ -2813,33 +2822,44 @@ def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
                 return None, "retry"  # recently failed -> skip validation window
         lock = _validation_locks.setdefault(fs, threading.Lock())
     if active:
-        return _s3_request_url(fs, rel, method="GET"), "sign"
+        return mint_fn(), mode_name
     if not lock.acquire(blocking=False):
         return None, "retry"  # another thread is validating; don't pile on
     try:
         with _upstream_lock:
-            if _upstream_mode.get(fs) == "sign":
+            if _upstream_mode.get(fs) == mode_name:
                 won = False
             elif _sign_neg_cache.get(fs, 0.0) > time.monotonic():
                 return None, "retry"
             else:
                 won = True
         if not won:  # a racer finished validating while we took the lock
-            return _s3_request_url(fs, rel, method="GET"), "sign"
-        url, verdict = _validate_and_sign(fs, rel, cfg)
+            return mint_fn(), mode_name
+        url, verdict = validate_fn()
         if verdict == "ok":
             with _upstream_lock:
-                _upstream_mode[fs] = "sign"
+                _upstream_mode[fs] = mode_name
                 _sign_neg_cache.pop(fs, None)
-            return url, "sign"
-        # Failed: negative-cache so we don't re-run the blocking validation GETs
-        # on every request while no fallback is committed (rcd down); a definite
-        # reject settles on "link", an inconclusive one leaves the mode open.
+            return url, mode_name
+        # Failed: negative-cache so we don't re-run the blocking validation GET
+        # on every request while no fallback is committed; a definite reject
+        # settles on the fallback mode, an inconclusive one leaves it open.
         with _upstream_lock:
             _sign_neg_cache[fs] = time.monotonic() + _SIGN_NEG_TTL_S
-        return None, ("link" if verdict == "reject" else "retry")
+        return None, (reject_disp if verdict == "reject" else "retry")
     finally:
         lock.release()
+
+
+def _sign_mode_url(fs: str, rel: str, cfg: dict) -> tuple[str | None, str]:
+    """S3 sign mode via the shared single-flight machine: mint a presigned URL
+    when active/won, validate once otherwise, and fall to the publiclink ladder
+    ("link") on a definite reject (findings 4, 5, 7 — see _sign_single_flight)."""
+    return _sign_single_flight(
+        fs, "sign",
+        mint_fn=lambda: _s3_request_url(fs, rel, method="GET"),
+        validate_fn=lambda: _validate_and_sign(fs, rel, cfg),
+        reject_disp="link")
 
 
 def _gcs_validate_and_sign(fs: str, rel: str,
@@ -2866,58 +2886,20 @@ def _gcs_validate_and_sign(fs: str, rel: str,
 
 def _gcs_sign_mode_url(fs: str, rel: str,
                        cfg: dict) -> tuple[str | None, str]:
-    """Resolve/serve gsign mode for one request with per-fs single-flight — the
-    GCS analog of _sign_mode_url. Returns (url, disposition):
-      - (url, "gsign")  gsign active/just-validated -> use this signed URL (url
-                        may be None if the signer rotated away mid-flight — the
-                        caller then demotes and falls through);
-      - (None, "bearer") validated as a definite reject, OR the remote isn't
-                        signer-capable, OR another thread owns validation -> the
-                        caller serves this request via the bearer proxy; safe to
-                        cache mode="bearer";
-      - (None, "retry") validation inconclusive or negative-cached -> bearer for
-                        THIS request but DON'T pin a mode, so gsign is
-                        re-attempted once the window lapses."""
-    now = time.monotonic()
-    with _upstream_lock:
-        if _upstream_mode.get(fs) == "gsign":
-            active = True
-        else:
-            active = False
-            if _sign_neg_cache.get(fs, 0.0) > now:
-                return None, "retry"
-        lock = _validation_locks.setdefault(fs, threading.Lock())
-    if active:
-        return _gcs_signed_url(fs, rel), "gsign"
-    if not lock.acquire(blocking=False):
-        return None, "retry"  # another thread is validating; don't pile on
-    try:
-        with _upstream_lock:
-            if _upstream_mode.get(fs) == "gsign":
-                won = False
-            elif _sign_neg_cache.get(fs, 0.0) > time.monotonic():
-                return None, "retry"
-            else:
-                won = True
-        if not won:  # a racer finished validating while we took the lock
-            return _gcs_signed_url(fs, rel), "gsign"
-        signer = _gcs_signer(fs.partition(":")[0], cfg)
-        if signer is None:  # not signer-capable -> bearer path
-            return None, "bearer"
-        signed, verdict = _gcs_validate_and_sign(fs, rel, signer)
-        if verdict == "ok":
-            with _upstream_lock:
-                _upstream_mode[fs] = "gsign"
-                _sign_neg_cache.pop(fs, None)
-            return signed, "gsign"
-        # Failed: negative-cache so we don't re-run the blocking validation GET
-        # on every request; a definite reject settles on bearer, an
-        # inconclusive one leaves the mode open (retry).
-        with _upstream_lock:
-            _sign_neg_cache[fs] = time.monotonic() + _SIGN_NEG_TTL_S
-        return None, ("bearer" if verdict == "reject" else "retry")
-    finally:
-        lock.release()
+    """GCS gsign mode via the shared single-flight machine. The signer-capability
+    pre-check is hoisted BEFORE the machine — a remote with no SA key can't sign
+    at all, so it goes straight to the bearer path without touching the neg-cache
+    or validation lock. Otherwise mint a V4-signed URL when active/won, validate
+    once, and fall to the bearer proxy ("bearer") on a definite reject (see
+    _sign_single_flight)."""
+    signer = _gcs_signer(fs.partition(":")[0], cfg)
+    if signer is None:  # not signer-capable -> bearer path
+        return None, "bearer"
+    return _sign_single_flight(
+        fs, "gsign",
+        mint_fn=lambda: _gcs_signed_url(fs, rel),
+        validate_fn=lambda: _gcs_validate_and_sign(fs, rel, signer),
+        reject_disp="bearer")
 
 
 def _upstream_url_for(path: str) -> str | None:
