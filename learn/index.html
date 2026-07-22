@@ -897,6 +897,7 @@ function render(slug, hash){
   buildPager(p);
   if (p.slug === "claude") checkClaude();
   if (p.slug === "templates") loadTemplates();
+  if (p.slug === "build") maybeHello();
   // scroll: to heading if hash, else top of content
   if (hash) {
     const t = document.getElementById(hash);
@@ -1056,6 +1057,11 @@ async function hello(){
 }
 $("#helloBtn").addEventListener("click", hello);
 $("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(); });
+// The hello demo lives on the Build page (not the default Home), so pre-populate
+// it lazily the first time Build is opened — never on initial Learn load, so we
+// don't fire a hidden runPython round-trip for users who stay on Home.
+let helloPrimed = false;
+function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
 
 /* live templates list (runs once, when the Templates page opens) */
 let tplLoaded = false, coreTpls = [], customTpls = [];
@@ -1173,7 +1179,7 @@ if (hasFused && fused.params){
 (function boot(){
   const slug = currentParams().get("page") || PAGES[0].slug;
   render(slug, location.hash ? location.hash.slice(1) : null);
-  hello();
+  // hello() is primed lazily via maybeHello() when the Build page opens — see render().
 })();
 </script>
 </body>
