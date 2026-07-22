@@ -107,12 +107,11 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
 
 
 def _encoded(abs_path: str) -> str:
-    # Mirror seed._view_url without importing it: leading slash kept as the
-    # /view join, each segment percent-encoded (round-trip check below covers
-    # the encoding rule itself).
-    from urllib.parse import quote
+    # The seed delegates to the shared codec (fused_render._view_url_codec),
+    # which owns the encoding rules and has its own tests (test_view_url_codec.py).
+    from fused_render._view_url_codec import view_url_path
 
-    return "/" + "/".join(quote(s, safe="!*'()") for s in abs_path.lstrip("/").split("/") if s)
+    return view_url_path(abs_path)[len("/view"):]
 
 
 def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
@@ -127,9 +126,27 @@ def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
     url = _bookmarks(home)[0]["url"]  # "Tutorial" — a plain /view/ URL
     assert "My%20Fused%20Dir" in url  # space encoded, not literal
     assert " " not in url
-    # Decoding the /view/ path yields the real absolute file path.
-    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
-    assert decoded == str(fdir / "tutorial" / "index.html")
+    # Decoding the /view/ path yields the real absolute file path (drive-letter
+    # backslashes are normalized to '/' by the codec, so compare in '/' form).
+    decoded = "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
+    expected = str(fdir / "tutorial" / "index.html").replace("\\", "/").lstrip("/")
+    assert decoded == expected
+
+
+def test_bookmark_urls_match_shared_codec(tmp_path, monkeypatch):
+    # The first-run seed must produce the same URL as the shared codec that
+    # winopen/deeplink already use — on Windows a drive path like
+    # C:\...\showcase\index.html must segment as /view/C%3A/... rather than
+    # collapsing into one %5C-encoded blob the frontend can't decode.
+    from fused_render._view_url_codec import view_url_path
+
+    fdir, home = _setup(tmp_path, monkeypatch)
+    _, landing = ensure_fused_dir_and_landing()
+
+    assert landing == view_url_path(str(fdir / "showcase" / "index.html"))
+    assert "%5C" not in landing
+    for m in _bookmarks(home):
+        assert "%5C" not in m["url"]
 
 
 def test_existing_bookmarks_never_overwritten(tmp_path, monkeypatch):
