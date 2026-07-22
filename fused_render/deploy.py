@@ -137,7 +137,7 @@ def _now_iso() -> str:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post9-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
@@ -826,6 +826,101 @@ def list_shares(env_name: str) -> dict:
     return {"env": env_name, "mounts": out}
 
 
+# -- error viewing (`fused share errors`; the fused repo's error-reporting) ----
+
+
+def _errors_args(
+    token: str,
+    err_id: str | None,
+    *,
+    limit: int,
+    since: str | None,
+    until: str | None,
+    kind: str | None,
+    entrypoint: str | None,
+) -> list[str]:
+    args = ["errors"]
+    if err_id:
+        # A single-record fetch (`errors TOKEN ERR_ID`) takes no list filters.
+        # `--` terminates option parsing so a browser-supplied token/err_id that
+        # begins with '-' can never be mis-parsed as a flag (e.g. token "--env"
+        # silently flipping the per-mount list into an env-wide sweep).
+        args += ["--", token, err_id]
+        return args
+    args += ["--limit", str(limit)]
+    if since:
+        args += ["--since", since]
+    if until:
+        args += ["--until", until]
+    if kind:
+        args += ["--kind", kind]
+    if entrypoint:
+        args += ["--entrypoint", entrypoint]
+    # `--` before the positional token: see the err_id branch above.
+    args += ["--", token]
+    return args
+
+
+def _run_errors(env_name: str, args: list[str]):
+    try:
+        return _run_share(env_name, args, timeout=LIST_TIMEOUT)
+    except DeployError as e:
+        # A fused CLI predating `share errors` exits with click's "No such
+        # command 'errors'" — translate that to an upgrade hint the user can act
+        # on, rather than surfacing a raw argument-parser error.
+        msg = str(e).lower()
+        if "no such command" in msg and "errors" in msg:
+            raise DeployError(
+                "this fused CLI is too old to read deployed errors — upgrade it "
+                '(pip install -U "fused-render[fused]") so `fused share errors` exists.'
+            ) from None
+        raise
+
+
+def list_errors(
+    env_name: str,
+    token: str,
+    *,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+) -> dict:
+    """Recent captured failures for one deployed mount, newest first
+    (`fused share errors TOKEN`). Each item is a summary (id, time, entrypoint,
+    kind, first error line); fetch the full record with `get_error`. This is the
+    owner-only diagnostic channel — the deployed page's viewers never see it."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token,
+            None,
+            limit=limit,
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        ),
+    )
+    errors = [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else []
+    return {"env": env_name, "token": token, "errors": errors}
+
+
+def get_error(env_name: str, token: str, err_id: str) -> dict:
+    """One full error record by mount + id (`fused share errors TOKEN ERR_ID`) —
+    the traceback, output tails, and params behind a deployed opaque 500."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token, err_id, limit=1, since=None, until=None, kind=None, entrypoint=None
+        ),
+    )
+    if not isinstance(parsed, dict):
+        raise DeployError("the fused CLI did not return an error record")
+    return {"env": env_name, "token": token, "record": parsed}
+
+
 # -- routes --------------------------------------------------------------------
 
 
@@ -870,6 +965,44 @@ def api_deploy_preview(body: dict = Body(...)):
 def api_deploy_shares(env: str):
     try:
         return list_shares(env)
+    except DeployError as e:
+        return _error(str(e))
+
+
+# Read-only diagnostics (no X-Fused guard, like /status and /shares): the owner's
+# recent captured failures for a deployed mount, read through `fused share errors`.
+@router.get("/api/deploy/errors")
+def api_deploy_errors(
+    env: str,
+    token: str,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+):
+    if not env or not token:
+        return _error("'env' and 'token' are required")
+    try:
+        return list_errors(
+            env,
+            token,
+            limit=max(1, min(limit, 100)),
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        )
+    except DeployError as e:
+        return _error(str(e))
+
+
+@router.get("/api/deploy/error")
+def api_deploy_error(env: str, token: str, err_id: str):
+    if not env or not token or not err_id:
+        return _error("'env', 'token', and 'err_id' are required")
+    try:
+        return get_error(env, token, err_id)
     except DeployError as e:
         return _error(str(e))
 

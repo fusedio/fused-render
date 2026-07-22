@@ -7,10 +7,11 @@
 // needs AWS credentials, not a managed-Fused sign-in — a `fused`-backend
 // env's list does need that sign-in, so being signed out there surfaces as
 // an expected quiet note rather than an error (see the `error` render below).
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { getDeployConfig, listShares, revokeMount } from "../lib/api";
 import type { DeployConfig, ShareMount } from "../lib/api";
 import { basename } from "../lib/format";
+import DeploymentErrors from "./DeploymentErrors";
 import RowActionsMenu from "./RowActionsMenu";
 import type { MenuEntry } from "./ContextMenu";
 
@@ -21,6 +22,10 @@ export default function DeploymentsList() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
+  // Which row's recent-errors panel is expanded (by token). Lazy: the panel
+  // (and its `share errors` CLI call) only mounts when a row is opened, so
+  // listing an env with many mounts doesn't fan out one subprocess per row.
+  const [openErrors, setOpenErrors] = useState<string | null>(null);
   // Supersession guard, same discipline as DeployModal's load.
   const loadSeq = useRef(0);
 
@@ -56,6 +61,11 @@ export default function DeploymentsList() {
   };
 
   useEffect(() => {
+    // Collapse any open recent-errors panel when the environment changes: the
+    // expanded token belongs to the previous env, so leaving it open would
+    // silently re-mount the panel (and re-run its `share errors` call) for a
+    // mount the user never chose to inspect on the new env.
+    setOpenErrors(null);
     if (env !== null) void load(env);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env]);
@@ -147,6 +157,14 @@ export default function DeploymentsList() {
                 // Preserves the old "—" tooltip's explanation, now inside the menu.
                 items.push({ label: "No link reported yet", disabled: true });
               }
+              // Recent errors: owner-only diagnostics for the mount, expanded in
+              // a panel below the row (loaded lazily when opened).
+              items.push("separator");
+              items.push({
+                label: openErrors === m.token ? "Hide recent errors" : "Recent errors",
+                onClick: () =>
+                  setOpenErrors((cur) => (cur === m.token ? null : m.token)),
+              });
               if (m.status !== "revoked") {
                 items.push("separator");
                 items.push({
@@ -162,24 +180,33 @@ export default function DeploymentsList() {
               }
               const rowLabel = m.page ? basename(m.page) : m.token;
               return (
-                <tr key={m.token}>
-                  <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
-                    {m.page ? basename(m.page) : <span className="deploy-muted">not from this app</span>}
-                  </td>
-                  <td className="share-token" title={m.token}>
-                    {m.token}
-                  </td>
-                  <td>
-                    <span className={"share-status " + m.status}>{m.status}</span>
-                  </td>
-                  <td className="row-actions-cell">
-                    {revoking === m.token ? (
-                      <span className="deploy-muted">Revoking…</span>
-                    ) : (
-                      <RowActionsMenu items={items} label={`Actions for ${rowLabel}`} />
-                    )}
-                  </td>
-                </tr>
+                <Fragment key={m.token}>
+                  <tr>
+                    <td className="share-page" title={m.page ?? "Deployed by the CLI, another app, or another machine"}>
+                      {m.page ? basename(m.page) : <span className="deploy-muted">not from this app</span>}
+                    </td>
+                    <td className="share-token" title={m.token}>
+                      {m.token}
+                    </td>
+                    <td>
+                      <span className={"share-status " + m.status}>{m.status}</span>
+                    </td>
+                    <td className="row-actions-cell">
+                      {revoking === m.token ? (
+                        <span className="deploy-muted">Revoking…</span>
+                      ) : (
+                        <RowActionsMenu items={items} label={`Actions for ${rowLabel}`} />
+                      )}
+                    </td>
+                  </tr>
+                  {openErrors === m.token && env && (
+                    <tr className="deploy-errors-row">
+                      <td colSpan={4}>
+                        <DeploymentErrors env={env} token={m.token} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>

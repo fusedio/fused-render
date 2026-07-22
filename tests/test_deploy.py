@@ -1191,3 +1191,107 @@ def test_shares_cli_failure_is_400(tmp_path, monkeypatch):
     h.set_scenario({})
     resp = h.client.get("/api/deploy/shares", params={"env": "cloud"})
     assert resp.status_code == 400
+
+
+# -- errors (`fused share errors`) --------------------------------------------
+
+
+def test_errors_list_passes_filters_and_returns_summaries(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "errors": [
+                {
+                    "err_id": "e1",
+                    "occurred_at": "2026-07-17T12:00:00Z",
+                    "token": "tok",
+                    "entrypoint": "sine",
+                    "kind": "user-code",
+                    "error": "ZeroDivisionError: division by zero",
+                    "truncated": False,
+                }
+            ]
+        }
+    )
+    resp = h.client.get(
+        "/api/deploy/errors",
+        params={
+            "env": "cloud",
+            "token": "tok",
+            "limit": 5,
+            "since": "2h",
+            "kind": "user-code",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token"] == "tok"
+    assert [e["err_id"] for e in body["errors"]] == ["e1"]
+    # The filters travel through to the CLI verbatim (it parses the sugar).
+    (call,) = h.calls()
+    assert call["argv"][:2] == ["share", "errors"]
+    # The mount token is passed after `--` so a '-'-leading token can't be
+    # mis-parsed as an option (see test_errors_dashed_token_is_not_parsed).
+    assert call["argv"][-2:] == ["--", "tok"]
+    assert call["env"] == "cloud"
+    assert call["argv"][call["argv"].index("--limit") + 1] == "5"
+    assert call["argv"][call["argv"].index("--since") + 1] == "2h"
+    assert call["argv"][call["argv"].index("--kind") + 1] == "user-code"
+
+
+def test_error_detail_returns_full_record(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    record = {
+        "version": 1,
+        "err_id": "e1",
+        "occurred_at": "2026-07-17T12:00:00Z",
+        "env": "prod",
+        "token": "tok",
+        "kind": "user-code",
+        "error": "Traceback (most recent call last): ...",
+        "stdout_tail": "hi",
+        "truncated": False,
+    }
+    h.set_scenario({"errors": record})
+    resp = h.client.get(
+        "/api/deploy/error", params={"env": "cloud", "token": "tok", "err_id": "e1"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["record"]["error"].startswith("Traceback")
+    # A single-record fetch passes TOKEN ERR_ID (after `--`) and no list filters.
+    (call,) = h.calls()
+    assert call["argv"] == ["share", "errors", "--", "tok", "e1"]
+
+
+def test_errors_dashed_token_is_not_parsed_as_option(tmp_path, monkeypatch):
+    # A token beginning with '-' (e.g. "--env") must be passed as a positional,
+    # never parsed by click as a flag that would flip the per-mount list into an
+    # env-wide sweep. The `--` separator guarantees the token stays positional.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"errors": []})
+    resp = h.client.get("/api/deploy/errors", params={"env": "cloud", "token": "--env"})
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--", "--env"]
+
+
+def test_error_detail_requires_err_id(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.get("/api/deploy/error", params={"env": "cloud", "token": "tok"})
+    assert resp.status_code == 422  # err_id is a required query param
+
+
+def test_errors_old_cli_gives_upgrade_hint(tmp_path, monkeypatch):
+    # A fused CLI predating `share errors` fails with click's "No such command";
+    # the server translates that into an actionable upgrade hint.
+    h = _harness(tmp_path, monkeypatch)
+
+    def _boom(env_name, args, timeout=60.0):
+        raise deploy_mod.DeployError(
+            "fused share errors failed: Error: No such command 'errors'."
+        )
+
+    monkeypatch.setattr(deploy_mod, "_run_share", _boom)
+    with pytest.raises(deploy_mod.DeployError) as ei:
+        deploy_mod.list_errors("cloud", "tok")
+    assert "too old" in str(ei.value)

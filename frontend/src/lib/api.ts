@@ -553,6 +553,91 @@ export function revokeMount(env: string, token: string): Promise<void> {
   return postJson<unknown>("/api/deploy/revoke", { env, token }).then(() => undefined);
 }
 
+// -- Deployed error viewing (`fused share errors`; the fused repo's -----------
+// error-reporting.md). Owner-only diagnostics behind a deployed mount's opaque
+// 500s — the page's own viewers never see any of this.
+
+// One row of the newest-first list: identity plus the first line of the error.
+// `error` is a single line here; the full traceback lives on the record fetched
+// by `getDeployErrorDetail`.
+export interface DeployErrorSummary {
+  err_id: string;
+  occurred_at: string;
+  token: string;
+  entrypoint: string | null;
+  kind: string; // "user-code" | "bad-result" | "invoke-failure"
+  error: string;
+  truncated: boolean;
+}
+
+// The full captured record — the traceback (`error`), output tails, and the
+// params that triggered it. Free-text fields are size-capped at capture and
+// `truncated` marks a record that was cut. Fields beyond the summary are
+// optional: an `invoke-failure` carries no streams, `bad-result` no traceback.
+export interface DeployErrorRecord {
+  version: number;
+  err_id: string;
+  occurred_at: string;
+  env: string;
+  token: string;
+  app?: string | null;
+  entrypoint?: string | null;
+  entrypoint_kind?: string | null;
+  kind: string;
+  http_method?: string;
+  duration_ms?: number | null;
+  error?: string;
+  stdout_tail?: string;
+  stderr_tail?: string;
+  params?: unknown;
+  params_preview?: string;
+  params_truncated?: boolean;
+  truncated: boolean;
+}
+
+export interface DeployErrorsResult {
+  env: string;
+  token: string;
+  errors: DeployErrorSummary[];
+}
+
+export interface DeployErrorDetailResult {
+  env: string;
+  token: string;
+  record: DeployErrorRecord;
+}
+
+export interface DeployErrorFilters {
+  limit?: number;
+  since?: string;
+  until?: string;
+  kind?: string;
+  entrypoint?: string;
+}
+
+export function listDeployErrors(
+  env: string,
+  token: string,
+  filters: DeployErrorFilters = {},
+): Promise<DeployErrorsResult> {
+  const q = new URLSearchParams({ env, token });
+  if (filters.limit != null) q.set("limit", String(filters.limit));
+  if (filters.since) q.set("since", filters.since);
+  if (filters.until) q.set("until", filters.until);
+  if (filters.kind) q.set("kind", filters.kind);
+  if (filters.entrypoint) q.set("entrypoint", filters.entrypoint);
+  return getJson<DeployErrorsResult>("/api/deploy/errors?" + q.toString());
+}
+
+export function getDeployErrorDetail(
+  env: string,
+  token: string,
+  errId: string,
+): Promise<DeployErrorDetailResult> {
+  const q = new URLSearchParams({ env, token, err_id: errId });
+  return getJson<DeployErrorDetailResult>("/api/deploy/error?" + q.toString());
+}
+
 // -- Fused account (account.py; SPEC §27) -------------------------------------
 
 // One org/env the signed-in account can target (`fused cloud orgs`).
