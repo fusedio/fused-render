@@ -113,14 +113,6 @@ class PrimaryInstance:
         thread.start()
         return thread
 
-    @property
-    def stop_event(self) -> threading.Event:
-        """The stop flag the serving thread polls. Exposed so a
-        ShutdownForUpgrade answered by a client worker can self-stop the accept
-        loop (the documented teardown contract core.py relies on), matching
-        _win32/_serve_pipe setting `stop` after a ShutdownForUpgrade."""
-        return self._stop
-
     def stop_serving(self) -> None:
         """Idempotent. Setting the flag is enough: the accept loop is parked in
         a `select` with a _SELECT_TICK_S timeout, never in a blocking accept, so
