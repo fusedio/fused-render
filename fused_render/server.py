@@ -2191,9 +2191,11 @@ class _WatchEntry:
         self.path = path
         self.is_mount = shell_mounts.is_mount_backed(path)
         # These flags fix the poll interval and change-detection strategy once,
-        # at creation. direct_list_capable can do REMOTE I/O (it consults the
-        # credential resolvers for signable S3 / credentialed GCS), so
-        # _WatchRegistry.subscribe constructs each entry OFF the event loop.
+        # at creation. direct_list_capable can do REMOTE I/O (a memoized
+        # config/get rc call the first time a remote is classified), so
+        # _WatchRegistry.subscribe constructs each entry OFF the event loop. It
+        # resolves NO credentials — the classification is a pure config-shape
+        # check (finding 12).
         if self.is_mount:
             # direct_list_capable: the remote can be enumerated by a cheap,
             # bounded page — unsigned (anonymous S3/GCS) or credentialed (signed

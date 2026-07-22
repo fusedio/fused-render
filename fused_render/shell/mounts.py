@@ -2165,17 +2165,29 @@ S3ListError = DirectListError
 
 
 def s3_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page
-    can enumerate directly — anonymous (unsigned) OR signable (locally
-    presigned). Lets the server pick the fast path without re-deriving the
-    predicates. _anonymous_s3 is tested first, so an anonymous remote never
-    reaches the credential resolver."""
+    """True when `path` is mount-backed by a plain-AWS-S3 remote s3_list_page can
+    enumerate directly — anonymous (unsigned) OR credentialed-SHAPED (static keys
+    present, or ambient auth opted into via env_auth/profile/shared_credentials).
+
+    A PURE config-shape check: it resolves NO credentials (finding 12). The
+    conditions/stat callers gate on this unbudgeted, and a live provider-chain
+    walk here (~1-2s on a black-holed IMDS) stalled fs/stat and fs/conditions.
+    Actual credential resolution happens inside the budgeted fetch paths
+    (s3_list_page / direct_head), which fall back to rc on failure — so a
+    credentialed-shaped remote whose creds don't resolve costs one cheap direct
+    attempt, not a stalled predicate."""
     m, _ = _mount_for(path)
     if m is None:
         return False
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
-    return _anonymous_s3(cfg) or _s3_signable(name, cfg)
+    if _anonymous_s3(cfg):
+        return True
+    if not _s3_signable_shape(cfg):  # plain AWS S3, no custom endpoint
+        return False
+    assert cfg is not None
+    return bool(cfg.get("access_key_id") and cfg.get("secret_access_key")) \
+        or s3sign.needs_botocore(cfg)
 
 
 def _s3_listing_prefix(store_prefix: str, rel: str) -> str:
@@ -2288,17 +2300,22 @@ _GCS_LIST_URL = "https://storage.googleapis.com/storage/v1/b/{bucket}/o"
 
 
 def gcs_direct_capable(path: str) -> bool:
-    """True when `path` is mount-backed by a GCS remote gcs_list_page can
-    enumerate directly — anonymous (unsigned) OR credentialed (a bearer token
-    resolves). Mirrors s3_direct_capable, which unions anonymous and signable.
-    _gcs_anonymous is tested first, so an anonymous remote never reaches the
-    token resolver."""
+    """True when `path` is mount-backed by a Google Cloud Storage remote
+    gcs_list_page can enumerate directly — anonymous (unsigned) OR credentialed
+    (bearer). Credentialed covers SA-key, oauth-token and ADC-only remotes alike;
+    an ADC-only remote carries no config marker, so the shape check is permissive
+    — ANY GCS remote qualifies.
+
+    A PURE config-shape check that resolves NO token (finding 12): a live
+    ADC/GCE-metadata probe here stalled the unbudgeted conditions/stat callers.
+    Actual token resolution happens inside the budgeted fetch paths
+    (gcs_list_page / direct_head), which fall back to rc on failure."""
     m, _ = _mount_for(path)
     if m is None:
         return False
     name = m["remote"].partition(":")[0]
     cfg = _remote_config(name)
-    return _gcs_anonymous(cfg or {}) or _gcs_credentialed(name, cfg)
+    return isinstance(cfg, dict) and cfg.get("type") == "google cloud storage"
 
 
 def _gcs_get_direct(url: str, name: str, cfg: dict | None,

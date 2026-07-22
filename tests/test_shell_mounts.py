@@ -2439,9 +2439,19 @@ def test_upstream_anonymous_s3_unchanged_and_never_resolves(home, rcd, fresh_ups
     import os
 
     rcd.responses["config/get"] = {**_ANON_S3_CFG, "region": "us-west-2"}
+    # Spy the REAL resolver entry points production uses (resolve_credentials is
+    # no longer called on this path — repointed per finding 8). None must fire on
+    # the anonymous path.
     resolver_calls = []
-    monkeypatch.setattr(mounts_mod.s3sign, "resolve_credentials",
-                        lambda cfg: resolver_calls.append(cfg) or None)
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolver_calls.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "needs_botocore",
+                   "resolve_botocore_chain", "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy(fnname))
     validated = []
     monkeypatch.setattr(mounts_mod, "_sign_validation_status",
                         lambda url: validated.append(url) or (200, None))
@@ -2961,10 +2971,25 @@ def test_s3_direct_capable_true_for_anonymous_s3(home, rcd, fresh_upstream):
     assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
 
 
-def test_s3_direct_capable_false_for_credentialed(home, rcd, fresh_upstream):
+def test_s3_direct_capable_true_for_credentialed_shape_no_resolution(
+        home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: a credentialed-SHAPED S3 remote (ambient auth opted in) is
+    # capable by config shape alone — the predicate resolves NO credentials (that
+    # unbudgeted network walk stalled the conditions/stat callers).
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    resolved = []
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolved.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "resolve_botocore_chain",
+                   "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy(fnname))
     c = mounts_mod.add_mount("corp", "corp:bucket")
-    assert not mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert mounts_mod.s3_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert resolved == []  # no credential resolution from the predicate
 
 
 def test_s3_direct_capable_false_for_custom_endpoint(home, rcd, fresh_upstream):
@@ -3260,10 +3285,13 @@ def test_gcs_direct_capable_true_for_anonymous_gcs(home, rcd, fresh_upstream):
     assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/analysed_sst")
 
 
-def test_gcs_direct_capable_false_for_non_anonymous(home, rcd, fresh_upstream):
+def test_gcs_direct_capable_true_for_non_anonymous_shape(home, rcd, fresh_upstream):
+    # FINDING 12: any non-anonymous GCS remote is capable by shape (bearer), even
+    # a bare one with no config markers (ADC-only) — the predicate resolves no
+    # token; a failed bearer read falls back to rc inside the budgeted fetch path.
     rcd.responses["config/get"] = {"type": "google cloud storage"}
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
-    assert not mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
 
 
 def test_gcs_direct_capable_false_outside_mount(home, rcd, fresh_upstream):
@@ -3440,11 +3468,16 @@ def test_gcs_direct_capable_true_for_credentialed(home, rcd, fresh_upstream, mon
     assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
 
 
-def test_gcs_direct_capable_false_when_token_absent(home, rcd, fresh_upstream, monkeypatch):
+def test_gcs_direct_capable_true_regardless_of_token(home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: capability is shape-based, so it holds even when no token
+    # resolves — the failed bearer read falls back to rc in the fetch path, not
+    # the predicate. The token resolver must not even be consulted here.
     rcd.responses["config/get"] = _CRED_GCS_CFG
-    _stub_gcs_token(monkeypatch, token=None)
+    resolver_calls = []
+    _stub_gcs_token(monkeypatch, token=None, calls=resolver_calls)
     c = mounts_mod.add_mount("gcp", "gcp:bucket")
-    assert not mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert mounts_mod.gcs_direct_capable(mounts_mod.mountpoint(c) + "/x")
+    assert resolver_calls == []  # pure shape check, no token resolution
 
 
 def test_gcs_list_page_credentialed_carries_bearer(home, rcd, fresh_upstream, monkeypatch, gcs_bearer_urlopen):
@@ -3836,6 +3869,32 @@ def test_bearer_upstream_none_outside_mounts(fresh_upstream):
 
 
 # -- unified direct-listing dispatchers (S3 + GCS) --------------------------
+
+
+def test_direct_list_capable_resolves_no_credentials(home, rcd, fresh_upstream, monkeypatch):
+    # FINDING 12: direct_list_capable is a pure config-shape check — it must walk
+    # NONE of the credential/token resolvers, so the unbudgeted conditions/stat
+    # callers can't be stalled by a black-holed metadata endpoint.
+    resolved = []
+
+    def _spy(fnname):
+        def f(*a, **k):
+            resolved.append(fnname)
+        return f
+
+    for fnname in ("resolve_static_credentials", "resolve_botocore_chain",
+                   "resolve_credentials"):
+        monkeypatch.setattr(mounts_mod.s3sign, fnname, _spy("s3:" + fnname))
+    for fnname in ("resolve_credentials", "resolve_token", "resolve_signer"):
+        monkeypatch.setattr(mounts_mod.gcssign, fnname, _spy("gcs:" + fnname))
+    rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
+    s = mounts_mod.add_mount("corp", "corp:bucket")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(s))
+    mounts_mod._upstream_cfg.clear()
+    rcd.responses["config/get"] = _CRED_GCS_CFG
+    g = mounts_mod.add_mount("gcp", "gcp:bucket")
+    assert mounts_mod.direct_list_capable(mounts_mod.mountpoint(g))
+    assert resolved == []  # no credential/token resolution from the predicate
 
 
 def test_direct_list_capable_true_for_both_backends(home, rcd, fresh_upstream):
