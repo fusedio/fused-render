@@ -18,6 +18,7 @@ import { InventoryPanel } from "./templates/InventoryPanel";
 import { NewTemplateModal } from "./templates/NewTemplateModal";
 import { RowEditorModal } from "./templates/RowEditorModal";
 import { navigateUrl } from "../lib/router";
+import { ErrorBanner } from "../components/ErrorBanner";
 
 type PageTab = "bindings" | "library";
 
@@ -96,7 +97,7 @@ export default function Templates() {
           Library
         </button>
       </div>
-      {error && <div className="deploy-error">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
       {!error && (!inventory || !registry) && <div className="deploy-muted">Loading…</div>}
       {inventory && registry && tab === "bindings" && (
         <BindingsTable

@@ -82,12 +82,93 @@ def _state(cache_dir, budget, crop=1):
             "progress": progress, "running": running, "ready": ready}
 
 
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.scandir/os.listdir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
+# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
+# paginated /api/fs/list — never through the kernel. _server_url + _stat are
+# copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(src, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No src / unreachable / missing -> False (presume local, kernel listing OK)."""
+    if not src or not path:
+        return False
+    status, meta = _stat(src, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(src, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(src, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def main(action: str = "inspect", file: str = "", budget: int = 1000000,
-         crop: int = 1, dir: str = ""):
+         crop: int = 1, dir: str = "", src: str = ""):
     if action == "browse":
         base = dir or (os.path.dirname(file) if file else os.path.expanduser("~"))
         base = os.path.abspath(base)
         dirs, entries = [], []
+        if _remote_dir(src, base):
+            # Mount-backed dir: list via /api/fs/list, never a kernel scan.
+            try:
+                ents, _ = _list_remote(src, base)
+            except Exception as exc:  # noqa: BLE001
+                return {"dir": base, "parent": os.path.dirname(base),
+                        "dirs": [], "entries": [], "error": str(exc)}
+            for ent in ents:
+                nm = ent["name"]
+                if nm.startswith("."):
+                    continue
+                full = os.path.join(base, nm)
+                if ent.get("is_dir"):
+                    dirs.append({"name": nm, "path": full})
+                elif nm.lower().endswith(LOADABLE):
+                    entries.append({"name": nm, "path": full,
+                                    "size": ent.get("size") or 0})
+            parent = os.path.dirname(base)
+            return {"dir": base, "parent": parent if parent != base else None,
+                    "dirs": dirs, "entries": entries}
         try:
             for name in sorted(os.listdir(base), key=str.lower):
                 if name.startswith("."):

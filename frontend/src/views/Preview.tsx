@@ -6,7 +6,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   getDeployStatus,
-  getPrefs,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -15,9 +14,10 @@ import {
   deleteEntry,
 } from "../lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { useRefreshOnReturn } from "../lib/hooks";
+import { useDeployEnabled } from "../lib/prefs";
 import {
   dirname,
   join,
@@ -43,16 +43,22 @@ interface HeaderProps {
   fsPath: string;
   stat: StatResult;
   children?: ReactNode;
+  // Rendered right after the name, in the same group (e.g. the directory
+  // listing's "Open as app" button) — nothing renders there by default.
+  afterName?: ReactNode;
   // Right-click on the header chrome opens the file context menu for the open
   // file (views hosting a real preview wire this; transient resolving/loading
   // headers leave it undefined).
   onContextMenu?: (e: React.MouseEvent) => void;
 }
 
-function Header({ fsPath, stat, children, onContextMenu }: HeaderProps) {
+function Header({ fsPath, stat, children, afterName, onContextMenu }: HeaderProps) {
   return (
     <div className="preview-header" onContextMenu={onContextMenu}>
-      <h1 title={fsPath}>{stat.name}</h1>
+      <div className="preview-title">
+        <h1 title={fsPath}>{stat.name}</h1>
+        {afterName}
+      </div>
       <div className="preview-actions">{children}</div>
     </div>
   );
@@ -140,7 +146,7 @@ function usePreviewFileMenu(
         deleteEntry(fsPath, stat.is_dir).then(
           () => {
             clearClipboardIfDeleted(fsPath);
-            navigate(parent); // the open file is gone — leave for the parent listing
+            navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
           (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
@@ -151,7 +157,7 @@ function usePreviewFileMenu(
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
         clearClipboardIfDeleted(fsPath);
-        navigate(parent);
+        navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
@@ -367,39 +373,18 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   );
 }
 
-// Whether the Deploy affordance is enabled (Preferences → Deployments; SPEC
-// §20). Deploy is opt-in, so the button stays hidden until the pref reads on —
-// default false while loading means it never flashes on for a user who left it
-// off. Re-read on focus/visibility so toggling it in the Preferences tab shows
-// through without a reload (same cheap-local-read posture as the deploy dot).
-function useDeployEnabled(): boolean {
-  const [enabled, setEnabled] = useState(false);
-  const alive = useRef(true);
-  useEffect(() => () => {
-    alive.current = false;
-  }, []);
-  const refresh = () => {
-    getPrefs()
-      .then((p) => {
-        if (alive.current) setEnabled(p.deploy.enabled);
-      })
-      .catch(() => {});
-  };
-  useEffect(refresh, []); // initial read
-  useRefreshOnReturn(refresh);
-  return enabled;
-}
-
 function TemplatePreview({
   fsPath,
   stat,
   templates,
   conditions,
+  onRenderedTitle,
 }: {
   fsPath: string;
   stat: StatResult;
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
+  onRenderedTitle?: (title: string | null) => void;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
@@ -422,6 +407,62 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
+  // Path of the directory's lone top-level HTML file, reported by Listing
+  // (null when there isn't exactly one) — drives the "Open as app" button
+  // between the directory name and the mode switcher.
+  const [singleAppPath, setSingleAppPath] = useState<string | null>(null);
+
+  // Tab title (App's StatView owns the actual document.title write, and it
+  // also feeds the default bookmark name and the Recents row — see
+  // Breadcrumb.tsx / recents.ts): only a "_render" entry is the file's OWN
+  // html, so only it can carry an authored <title> worth showing over the
+  // filename — a template's title is a fixed generic string ("CSV preview")
+  // that's strictly worse than the filename StatView falls back to. So a
+  // known title must OUTLIVE a mode switch away from "_render": switching
+  // modes is local state on this same TemplatePreview instance (`mode`),
+  // not a remount, and the filename is often undescriptive ("index.html") —
+  // clearing a real title back to that on every switch would be a strict
+  // downgrade. Only reset on true unmount (TemplatePreview swapped out
+  // entirely — the resolving spinner, FallbackPreview, a re-stat that
+  // errors), so a title never outlives the file whose page set it; the
+  // "_render" branch overwrites it (to a fresh value, or null if genuinely
+  // absent) once its iframe loads. Same-origin iframe (D3/D4 — /render
+  // always serves same-origin), so a direct contentDocument read is safe and
+  // needs no postMessage round trip.
+  const titleObserverRef = useRef<MutationObserver | null>(null);
+  useEffect(() => {
+    return () => {
+      titleObserverRef.current?.disconnect();
+      titleObserverRef.current = null;
+      onRenderedTitle?.(null);
+    };
+  }, [onRenderedTitle]);
+  const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+    if (entry.mode !== "_render") return;
+    // Guards a slow "_render" iframe's load firing AFTER a switch away from
+    // it: React already detached this exact node (key={mode} swaps it out),
+    // so a late event here is stale regardless of what entry.mode's closure
+    // says — isConnected is checked at call time, not closure-capture time.
+    const frame = e.currentTarget;
+    if (!frame.isConnected) return;
+    const doc = frame.contentDocument;
+    const report = () => {
+      if (!frame.isConnected) return;
+      onRenderedTitle?.(doc?.title.trim() || null);
+    };
+    report();
+    // The authored title can change after load (e.g. a page updates
+    // document.title once async data arrives) — watch <head> (not just the
+    // <title> node) so both a text edit on an existing <title> and a
+    // <title> element added after load are caught; the isConnected guard in
+    // `report` covers the same stale-after-unmount race as above.
+    titleObserverRef.current?.disconnect();
+    if (doc?.head) {
+      const observer = new MutationObserver(report);
+      observer.observe(doc.head, { childList: true, subtree: true, characterData: true });
+      titleObserverRef.current = observer;
+    }
+  };
 
   // One switch at a time: the flush below is async, and a second click landing
   // mid-flight could resolve in either order, desyncing iframe key / local
@@ -473,7 +514,7 @@ function TemplatePreview({
     if (next === defaultEntry.mode) params.delete("_mode");
     else params.set("_mode", next);
     const search = params.toString();
-    history.replaceState(null, "", location.pathname + (search ? "?" + search : ""));
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
     setModeState(next);
   };
 
@@ -515,7 +556,22 @@ function TemplatePreview({
 
   return (
     <>
-      <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu}>
+      <Header
+        fsPath={fsPath}
+        stat={stat}
+        onContextMenu={fileMenu.onContextMenu}
+        afterName={
+          isListing && singleAppPath ? (
+            <button
+              type="button"
+              className="open-as-app-btn"
+              onClick={() => navigate(singleAppPath, { isDir: false })}
+            >
+              Open as app
+            </button>
+          ) : null
+        }
+      >
         {/* Deployable = the mode list carries the "_render" sentinel AND the
             file is .html/.htm — the exporter's actual contract. The extension
             check matters because a registry rebind can put "_render" on any
@@ -545,10 +601,10 @@ function TemplatePreview({
             Checking if this view applies…
           </div>
         ) : isListing ? (
-          <Listing fsPath={fsPath} />
+          <Listing fsPath={fsPath} onSingleApp={setSingleAppPath} />
         ) : (
           /* key: switching mode replaces the iframe (fresh document per switch). */
-          <iframe key={mode} src={src as string} />
+          <iframe key={mode} src={src as string} onLoad={onRenderFrameLoad} />
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
@@ -557,6 +613,21 @@ function TemplatePreview({
               : counterpart === defaultEntry.mode
                 ? "Back"
                 : modeTitle(counterpart as string)}
+          </button>
+        )}
+        {/* Embed hides .preview-header (see afterName above), so the "Open as
+            app" affordance also rides as a corner chip pinned over the
+            listing, revealed only in embed — same pattern as
+            preview-browse-chip. Opposite corner so the two can coexist (a
+            directory can have both a browsable counterpart mode AND a lone
+            HTML file). */}
+        {isListing && singleAppPath && (
+          <button
+            type="button"
+            className="open-as-app-chip"
+            onClick={() => navigate(singleAppPath, { isDir: false })}
+          >
+            Open as app
           </button>
         )}
       </div>
@@ -598,9 +669,13 @@ function FallbackPreview({ fsPath, stat }: { fsPath: string; stat: StatResult })
 interface PreviewProps {
   fsPath: string;
   stat: StatResult;
+  // Reports the "_render" iframe's own authored <title>, so callers wanting a
+  // better tab title than the filename can use it (App's StatView). Undefined
+  // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
+  onRenderedTitle?: (title: string | null) => void;
 }
 
-export default function Preview({ fsPath, stat }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -628,6 +703,14 @@ export default function Preview({ fsPath, stat }: PreviewProps) {
     );
   }
   if (visible.length > 0)
-    return <TemplatePreview fsPath={fsPath} stat={stat} templates={visible} conditions={conditions} />;
+    return (
+      <TemplatePreview
+        fsPath={fsPath}
+        stat={stat}
+        templates={visible}
+        conditions={conditions}
+        onRenderedTitle={onRenderedTitle}
+      />
+    );
   return <FallbackPreview fsPath={fsPath} stat={stat} />;
 }

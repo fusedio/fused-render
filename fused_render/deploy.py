@@ -137,7 +137,7 @@ def _now_iso() -> str:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post6-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
@@ -395,7 +395,12 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 fallback: dict | None) -> dict:
+                 cache_max_age: str, fallback: dict | None) -> dict:
+    # `cache_max_age` here is simply what the caller requested this deploy — every
+    # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
+    # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
+    # cache_settings is changeable in place via repoint, not just fixed at first
+    # create), so the record's stored value and the live mount agree on every path.
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -422,6 +427,11 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # files bundled beyond the auto-scan, and files dropped from it.
         "include": include,
         "exclude": exclude,
+        # The caching choice deployed with (see deploy_page) — persisted the same way
+        # as include/exclude so reopening the modal shows the current setting, and a
+        # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
+        # "preserve on omit" for this — every deploy is an explicit, full statement).
+        "cache_max_age": cache_max_age,
         "updated_at": _now_iso(),
     }
 
@@ -460,7 +470,10 @@ def preview_deploy(
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
-        "assets": [{"path": a.path, "name": a.name} for a in plan.assets],
+        # `source` lets the "Will publish" list say HOW each asset is exposed: a
+        # scanned literal rawUrl/readFile reference, a manifest-declared bundle file
+        # (backs a computed path), or a hand-added include. See export.Asset.
+        "assets": [{"path": a.path, "name": a.name, "source": a.source} for a in plan.assets],
         "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
         "warnings": plan.warnings,
@@ -472,6 +485,8 @@ def deploy_page(
     env_name: str,
     include: list[str] | None = None,
     exclude: list[str] | None = None,
+    cache_max_age: str = "0s",
+    force_new: bool = False,
 ) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -480,11 +495,38 @@ def deploy_page(
     extra files bundled beyond the auto-scan, and files dropped from it. They are
     persisted on the record so a reopened modal reloads the same selection.
 
-    First deploy (or a pointer on a different env): `share create --public` —
-    a fresh opaque capability URL. Redeploy on the same env keeps the URL:
-    active mount -> `share repoint <token>`; revoked tombstone -> `share
-    recreate --same-token` then repoint (same URL comes back); token absent
-    from `share list` entirely -> fresh create (nothing left to revive).
+    `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
+    dialog's caching choice: how long a page's result may be served from cache
+    instead of re-executed. It rides the export bundle's own manifest
+    (`export.export_page`) AND is passed explicitly as `--cache-max-age` on
+    every `share create`/`repoint` call — the two backends read it from
+    different places (`fused` repo's spec/serve/fused-render.md § Caching): an
+    AWS environment's `build_html_artifact` reads the manifest field (so either
+    source works, including on a later `repoint`); a managed Fused environment
+    reads it only from the explicit flag, as its own mount-level
+    `cache_settings` field (`application` repo spec `021` §3.1), wholly
+    independent of the bundle. `cache_settings` is no longer pinned for the
+    life of a token — `repoint` (and a revoked-token revive's follow-up
+    `repoint`) now carries `--cache-max-age` too, so a redeploy that reuses the
+    token applies whatever `cache_max_age` this call requested, same as a fresh
+    `create`. `force_new=True` still replaces the deployment outright — mints a
+    fresh `share create` (a new token, new URL) with the requested
+    `cache_max_age`, repoints this page's pointer to it, then **best-effort
+    revokes the old mount** so the page is never left with two live URLs. The
+    revoke is deliberately last (after the new mount is live) so a create
+    failure never takes the page down, and best-effort (a revoke failure
+    doesn't fail the deploy — the new URL is live and correct; the superseded
+    mount lingers and is revocable from the Fused account page's deployments
+    list). Because the pointer now tracks the new mount, the modal's Revoke
+    button targets the new URL, as expected — there is no orphaned URL the user
+    must chase separately.
+
+    First deploy (or a pointer on a different env, or `force_new=True`):
+    `share create --public` — a fresh opaque capability URL. Otherwise, redeploy
+    on the same env keeps the URL: active mount -> `share repoint <token>`;
+    revoked tombstone -> `share recreate --same-token` then repoint (same URL
+    comes back); token absent from `share list` entirely -> fresh create
+    (nothing left to revive).
     """
     include = include or []
     exclude = exclude or []
@@ -522,22 +564,47 @@ def deploy_page(
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle, include=include, exclude=exclude)
+        plan = export_page(page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age)
         entrypoints = [e.name for e in plan.entrypoints]
 
-        same_env = pointer if pointer and pointer.get("env") == env_name else None
+        # force_new deliberately treats any existing pointer as absent — never
+        # reused for token lookup below — so the branch that follows always
+        # takes the fresh-create path and mints a new token (see docstring).
+        same_env = (
+            None if force_new else (pointer if pointer and pointer.get("env") == env_name else None)
+        )
         token = same_env.get("token") if same_env else None
-
+        # On a force_new replace, the mount we're superseding (same page + env) —
+        # revoked best-effort AFTER the new one is live, so the page never ends up
+        # with two URLs the pointer can't both track. None unless force_new found a
+        # prior same-env token.
+        superseded_token = (
+            pointer.get("token")
+            if force_new and pointer and pointer.get("env") == env_name
+            else None
+        )
         if not token:
-            raw = _run_share(env_name, ["create", bundle, "--public"])
+            raw = _run_share(
+                env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+            )
         else:
             live = _classify_mount(_list_mounts(env_name), token)
+            # `--cache-max-age` on every branch below: AWS re-reads the bundle's own
+            # manifest on every repoint anyway (so this is a no-op-equivalent
+            # restatement of the same value), and on a managed Fused env `repoint`
+            # now updates the mount's own `cache_settings` in place too
+            # (`application` repo spec 021 §3.1, amended) — no fresh mount required
+            # to change caching on a redeploy that reuses the token.
             if live == "active":
-                raw = _run_share(env_name, ["repoint", token, bundle])
+                raw = _run_share(
+                    env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                )
             elif live == "revoked":
                 _run_share(env_name, ["recreate", token, "--same-token"])
                 try:
-                    raw = _run_share(env_name, ["repoint", token, bundle])
+                    raw = _run_share(
+                        env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                    )
                 except DeployError as repoint_err:
                     # The revive (recreate) succeeded but the republish
                     # (repoint) failed — so the mount is live again with its
@@ -567,13 +634,31 @@ def deploy_page(
                     )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
-                raw = _run_share(env_name, ["create", bundle, "--public"])
+                raw = _run_share(
+                    env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+                )
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
-            entrypoints=entrypoints, include=include, exclude=exclude, fallback=same_env,
+            entrypoints=entrypoints, include=include, exclude=exclude,
+            cache_max_age=cache_max_age, fallback=same_env,
         )
         set_deployment(page, record)
+        # force_new replace: the new mount is live and the pointer now tracks it,
+        # so take the superseded mount down — otherwise the page would serve at two
+        # URLs while the pointer (and the modal's Revoke) tracks only the new one,
+        # leaving the old one orphaned. Best-effort and LAST: the new URL is already
+        # live and persisted, so a revoke failure must not fail the deploy — the
+        # superseded mount just lingers and is revocable from the account page's
+        # deployments list. Skip if the token didn't actually change (defensive: a
+        # create that somehow returned the same token needs no self-revoke).
+        if superseded_token and superseded_token != record["token"]:
+            try:
+                _run_share(env_name, ["revoke", superseded_token])
+            except DeployError:
+                # New deployment stands; the old mount outlives it until manually
+                # revoked (account page / `fused share revoke <token>`). Not fatal.
+                pass
         return record
     finally:
         shutil.rmtree(bundle, ignore_errors=True)
@@ -589,6 +674,22 @@ def revoke_deployment(page: str) -> dict:
     record = {**pointer, "status": "revoked", "updated_at": _now_iso()}
     set_deployment(page, record)
     return record
+
+
+def clear_cache_deployment(page: str) -> dict:
+    """Clear every cached result for the page's deployed mount (`fused share
+    cache-clear <token>`) — forces the next request to recompute instead of
+    waiting out `cache_max_age`.
+
+    Doesn't touch the mount record, its URL, or the deployment pointer: this is
+    orthogonal to caching being on or off (it's a no-op cost if it was already
+    off — nothing was cached). Returns the CLI's result verbatim
+    (`{token, deleted, scope, prefix}`) so the modal can show what was cleared.
+    """
+    pointer = get_deployment(page)
+    if pointer is None or not pointer.get("token") or not pointer.get("env"):
+        raise DeployError("this page has no recorded deployment to clear the cache of")
+    return _run_share(pointer["env"], ["cache-clear", pointer["token"]])
 
 
 def revoke_mount(env_name: str, token: str) -> dict:
@@ -725,6 +826,101 @@ def list_shares(env_name: str) -> dict:
     return {"env": env_name, "mounts": out}
 
 
+# -- error viewing (`fused share errors`; the fused repo's error-reporting) ----
+
+
+def _errors_args(
+    token: str,
+    err_id: str | None,
+    *,
+    limit: int,
+    since: str | None,
+    until: str | None,
+    kind: str | None,
+    entrypoint: str | None,
+) -> list[str]:
+    args = ["errors"]
+    if err_id:
+        # A single-record fetch (`errors TOKEN ERR_ID`) takes no list filters.
+        # `--` terminates option parsing so a browser-supplied token/err_id that
+        # begins with '-' can never be mis-parsed as a flag (e.g. token "--env"
+        # silently flipping the per-mount list into an env-wide sweep).
+        args += ["--", token, err_id]
+        return args
+    args += ["--limit", str(limit)]
+    if since:
+        args += ["--since", since]
+    if until:
+        args += ["--until", until]
+    if kind:
+        args += ["--kind", kind]
+    if entrypoint:
+        args += ["--entrypoint", entrypoint]
+    # `--` before the positional token: see the err_id branch above.
+    args += ["--", token]
+    return args
+
+
+def _run_errors(env_name: str, args: list[str]):
+    try:
+        return _run_share(env_name, args, timeout=LIST_TIMEOUT)
+    except DeployError as e:
+        # A fused CLI predating `share errors` exits with click's "No such
+        # command 'errors'" — translate that to an upgrade hint the user can act
+        # on, rather than surfacing a raw argument-parser error.
+        msg = str(e).lower()
+        if "no such command" in msg and "errors" in msg:
+            raise DeployError(
+                "this fused CLI is too old to read deployed errors — upgrade it "
+                '(pip install -U "fused-render[fused]") so `fused share errors` exists.'
+            ) from None
+        raise
+
+
+def list_errors(
+    env_name: str,
+    token: str,
+    *,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+) -> dict:
+    """Recent captured failures for one deployed mount, newest first
+    (`fused share errors TOKEN`). Each item is a summary (id, time, entrypoint,
+    kind, first error line); fetch the full record with `get_error`. This is the
+    owner-only diagnostic channel — the deployed page's viewers never see it."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token,
+            None,
+            limit=limit,
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        ),
+    )
+    errors = [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else []
+    return {"env": env_name, "token": token, "errors": errors}
+
+
+def get_error(env_name: str, token: str, err_id: str) -> dict:
+    """One full error record by mount + id (`fused share errors TOKEN ERR_ID`) —
+    the traceback, output tails, and params behind a deployed opaque 500."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token, err_id, limit=1, since=None, until=None, kind=None, entrypoint=None
+        ),
+    )
+    if not isinstance(parsed, dict):
+        raise DeployError("the fused CLI did not return an error record")
+    return {"env": env_name, "token": token, "record": parsed}
+
+
 # -- routes --------------------------------------------------------------------
 
 
@@ -773,6 +969,44 @@ def api_deploy_shares(env: str):
         return _error(str(e))
 
 
+# Read-only diagnostics (no X-Fused guard, like /status and /shares): the owner's
+# recent captured failures for a deployed mount, read through `fused share errors`.
+@router.get("/api/deploy/errors")
+def api_deploy_errors(
+    env: str,
+    token: str,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+):
+    if not env or not token:
+        return _error("'env' and 'token' are required")
+    try:
+        return list_errors(
+            env,
+            token,
+            limit=max(1, min(limit, 100)),
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        )
+    except DeployError as e:
+        return _error(str(e))
+
+
+@router.get("/api/deploy/error")
+def api_deploy_error(env: str, token: str, err_id: str):
+    if not env or not token or not err_id:
+        return _error("'env', 'token', and 'err_id' are required")
+    try:
+        return get_error(env, token, err_id)
+    except DeployError as e:
+        return _error(str(e))
+
+
 @router.post("/api/deploy")
 def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
@@ -790,8 +1024,16 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     exclude = _str_list(body, "exclude")
     if include is None or exclude is None:
         return _error("'include'/'exclude' must be arrays of relative file paths")
+    cache_max_age = body.get("cache_max_age", "0s")
+    if not isinstance(cache_max_age, str):
+        return _error("'cache_max_age' must be a string, e.g. '0s'/'5m'/'1h'")
+    force_new = body.get("force_new", False)
+    if not isinstance(force_new, bool):
+        return _error("'force_new' must be a boolean")
     try:
-        return deploy_page(page, env_name, include, exclude)
+        return deploy_page(
+            page, env_name, include, exclude, cache_max_age=cache_max_age, force_new=force_new
+        )
     except ExportError as e:
         return _error(str(e))
     except DeployError as e:
@@ -817,6 +1059,20 @@ def api_deploy_revoke(body: dict = Body(...), x_fused: str | None = Header(defau
         return _error("provide 'page' (absolute path) or 'env' + 'token'")
     try:
         return revoke_deployment(page)
+    except DeployError as e:
+        return _error(str(e))
+
+
+@router.post("/api/deploy/clear-cache")
+def api_deploy_clear_cache(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    page = body.get("page")
+    if not isinstance(page, str) or not page or not os.path.isabs(page):
+        return _error("'page' must be an absolute path to the .html page")
+    try:
+        return clear_cache_deployment(page)
     except DeployError as e:
         return _error(str(e))
 

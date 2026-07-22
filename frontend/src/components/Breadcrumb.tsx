@@ -11,24 +11,14 @@ import {
   armBookmark,
   disarmBookmark,
   getArmedBookmark,
+  sameSearch,
+  splitBookmarkUrl,
 } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
 import { SplitRightIcon, SplitDownIcon } from "./SplitIcons";
 import { FinderIcon } from "./FinderIcon";
-
-// True when two query strings carry the same decoded `_layout` and the same
-// key/value multiset of remaining params, ignoring encoding and ordering
-// differences. `_layout` may contain literal `&` (D51), so both sides go
-// through the codec's splitShellSearch, never raw URLSearchParams.
-function sameSearch(a: string, b: string): boolean {
-  const norm = (s: string) => {
-    const { layout, params } = splitShellSearch(s);
-    return JSON.stringify([layout, [...params].sort()]);
-  };
-  return norm(a) === norm(b);
-}
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
 // change or a deleted bookmark disarms permanently), so it runs in an effect,
@@ -54,9 +44,7 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
       return setVisible(false);
     }
 
-    const qIdx = armed.url.indexOf("?");
-    const armedPathname = qIdx === -1 ? armed.url : armed.url.slice(0, qIdx);
-    const armedSearch = qIdx === -1 ? "" : armed.url.slice(qIdx);
+    const { pathname: armedPathname, search: armedSearch } = splitBookmarkUrl(armed.url);
 
     if (location.pathname !== armedPathname) {
       disarmBookmark(); // page change = permanent disarm
@@ -187,10 +175,21 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
 function navigatePreservingMode(target: string): void {
   const mode = new URLSearchParams(location.search).get("_mode");
   if (mode) navigateUrl(urlForFsPath(target, "?_mode=" + encodeURIComponent(mode)));
-  else navigate(target);
+  else navigate(target, { isDir: true }); // breadcrumb targets are always dirs
 }
 
-export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) {
+export function Breadcrumb({
+  fsPath,
+  home,
+  renderedTitle,
+}: {
+  fsPath: string;
+  home?: string;
+  // The previewed page's own <title>, when known (see StatView) — preferred
+  // over the file's basename for the default bookmark name (and, via
+  // Recents, for its sidebar row) so "My DB app" beats "index.html".
+  renderedTitle?: string | null;
+}) {
   // Strictly below home only — home itself shows its full path, not a lone "~".
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
@@ -251,7 +250,7 @@ export function Breadcrumb({ fsPath, home }: { fsPath: string; home?: string }) 
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>
-      <CrumbActions name={basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
     </>
   );
 }

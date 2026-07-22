@@ -20,13 +20,13 @@ def test_extensions_are_single_suffix_and_clean():
 
 
 def test_view_url_no_path():
-    assert winopen._view_url(1777, None) == "http://127.0.0.1:1777/"
+    # winopen re-exports the shared codec (fused_render._view_url_codec) —
+    # full encoding-rule coverage lives in tests/test_view_url_codec.py.
+    assert winopen.view_url(1777, None) == "http://127.0.0.1:1777/"
 
 
-def test_view_url_encodes_drive_path(monkeypatch):
-    # stub abspath so the encoding is exercised the same on POSIX CI as on Windows
-    monkeypatch.setattr(winopen.os.path, "abspath", lambda p: p)
-    assert winopen._view_url(1777, r"C:\data\sales.csv") == (
+def test_view_url_encodes_drive_path():
+    assert winopen.view_url(1777, r"C:\data\sales.csv") == (
         "http://127.0.0.1:1777/view/C%3A/data/sales.csv"
     )
 

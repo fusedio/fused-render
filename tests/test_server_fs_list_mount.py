@@ -364,6 +364,32 @@ def test_list_s3_failure_falls_back_to_rc(home, rcd, tmp_path, monkeypatch, fres
     assert any(x[0] == "operations/list" for x in rcd.calls)
 
 
+ANON_GCS = {"type": "google cloud storage", "anonymous": "true"}
+
+
+def test_list_gcs_direct_routes_through_gcs_pager(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
+    # An anonymous GCS mount takes the direct fast path exactly as anonymous S3
+    # does — the unified dispatcher routes it to the GCS pager, not rc.
+    rcd.responses["config/get"] = ANON_GCS
+    c = mounts_mod.add_mount("gopen", "gcs-open:mur-sst/zarr-v1")
+    got = {}
+
+    def fake(path, *, max_keys, continuation=None, timeout=None):
+        got["continuation"] = continuation
+        return ([_entry("x.txt", size=1)], None)
+
+    monkeypatch.setattr(mounts_mod, "gcs_list_page", fake)
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("rc used")))
+    data = _client(tmp_path).get(
+        "/api/fs/list",
+        params={"path": mounts_mod.mountpoint(c), "cursor": "RESUME"}).json()
+    assert got["continuation"] == "RESUME"
+    assert [e["name"] for e in data["entries"]] == ["x.txt"]
+    assert data["truncated"] is False
+    assert data["cursor"] is None
+
+
 # -- fs/walk on S3-capable mounts --------------------------------------------
 
 

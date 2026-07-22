@@ -9,9 +9,10 @@
 // on first focus (or a URL-seeded query) and is cached until the dir watch
 // fires.
 import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch } from "../lib/router";
 import {
   listDir,
+  prefetchListDir,
   walkDirStream,
   revealPath,
   writeFile,
@@ -39,7 +40,7 @@ import {
 import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
-import { iconForEntry } from "../components/FileIcons";
+import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -252,7 +253,44 @@ type WalkState =
 
 const IDLE_WALK: WalkState = { status: "idle" };
 
-export default function Listing({ fsPath }: { fsPath: string }) {
+// `provisional`: this Listing is rendering inside the pre-stat loading scaffold
+// (App LoadingScaffold), mounted off a directory NAV HINT rather than a
+// confirmed stat. The hint is authoritative in practice but can be stale — if
+// the path is actually a file, /api/fs/list 404s. In that provisional phase a
+// failed listing must NOT paint the hard "Failed to list" error: stat is still
+// resolving and will drive the correct final view (a file <Preview>) a beat
+// later, so we show the neutral loading body and let stat commit the real view.
+// Absent/false (the committed post-stat render), errors show normally.
+// Keyboard selection (the arrow-key row highlight) survives this component's
+// per-folder remount. Opening a folder first paints App's pre-stat scaffold
+// with a PROVISIONAL Listing, then swaps it for the resolved one when stat
+// lands ~1s later — a remount that would otherwise wipe an in-progress arrow
+// selection mid-keystroke (press Down during the open → the highlight vanishes).
+// Like fs-clipboard, the state lives just outside the remount boundary. A single
+// entry keyed by fsPath is enough (only one Listing is mounted at a time): it
+// bridges the scaffold→resolved swap and restores the highlight if you browse
+// back to the same folder.
+let lastSelection: { fsPath: string; path: string | null } | null = null;
+function recallSelection(fsPath: string): string | null {
+  return lastSelection && lastSelection.fsPath === fsPath ? lastSelection.path : null;
+}
+function rememberSelection(fsPath: string, path: string | null): void {
+  lastSelection = { fsPath, path };
+}
+
+export default function Listing({
+  fsPath,
+  provisional = false,
+  onSingleApp,
+}: {
+  fsPath: string;
+  provisional?: boolean;
+  // Reports the path of this directory's lone top-level HTML file (an
+  // "app"), or null when there isn't exactly one — the caller (Preview's
+  // header) uses this to surface an "Open as app" button. Fires whenever the
+  // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
+  onSingleApp?: (path: string | null) => void;
+}) {
   const [state, setState] = useState<ListingState>({ status: "loading" });
   // Sort lives in the URL; mirror it in state so clicks re-render without a
   // navigation (vanilla re-ran renderListing after its replaceState).
@@ -272,7 +310,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
   }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   // loadMore captures the refresh generation it started in; a dir-watch refresh
@@ -304,7 +342,12 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   // row scrolls into view, resets on every query change.
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Path of the keyboard-selected row (arrow-key navigation); null = none.
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // Seeded from the cross-remount store so a selection made in the pre-stat
+  // provisional Listing survives the swap to the resolved one (see
+  // recallSelection / lastSelection above).
+  const [selectedPath, setSelectedPath] = useState<string | null>(() =>
+    recallSelection(fsPath)
+  );
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -332,6 +375,17 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // Mirror the selection into the cross-remount store so it's already there
+  // when the resolved Listing mounts (the provisional one has no unmount step
+  // that would clear it). Keyed by fsPath, so a real nav to another folder
+  // starts fresh.
+  useEffect(() => {
+    rememberSelection(fsPath, selectedPath);
+  }, [fsPath, selectedPath]);
+  // Path -> RowCtx for the rendered rows, read by the once-registered keydown
+  // handler so Enter can pass the row's is_dir as a nav hint (see rowCtxByPath
+  // below, which assigns this each render).
+  const rowCtxByPathRef = useRef<Map<string, RowCtx>>(new Map());
   // True while a context menu or a modal dialog is open. The document-level nav
   // and shortcut handlers (registered once, reading refs) hard-guard on this so
   // an open overlay owns the keyboard — a stray Enter can't navigate a row and
@@ -407,7 +461,8 @@ export default function Listing({ fsPath }: { fsPath: string }) {
         if (!rows.length) return;
         const idx = rows.indexOf(selectedPathRef.current ?? "");
         e.preventDefault();
-        navigate(idx === -1 ? rows[0] : rows[idx]);
+        const target = idx === -1 ? rows[0] : rows[idx];
+        navigate(target, { isDir: rowCtxByPathRef.current.get(target)?.isDir });
         return;
       }
       // Start typing → focus the search box so the character lands there. Only
@@ -440,7 +495,11 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     // A fresh fetch (navigation or dir-watch refresh) resets any accumulated
     // Load more pages: the new listing replaces the array wholesale.
     setLoadingMore(false);
-    listDir(fsPath).then(
+    // Initial mount goes through the prefetch cache so a listing kicked off by
+    // the loading scaffold (in parallel with stat) is reused when the real
+    // preview remounts this component for the same path — no duplicate request.
+    // A dir-watch refresh (refresh > 0) must see live data, so it bypasses.
+    (refresh === 0 ? prefetchListDir(fsPath) : listDir(fsPath)).then(
       (data) =>
         alive &&
         setState({
@@ -648,7 +707,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       if (value) params.set("q", value);
       else params.delete("q");
       const qs = params.toString();
-      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
     }, URL_SYNC_MS);
   };
 
@@ -660,7 +719,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     const params = new URLSearchParams(location.search);
     params.set("sort", next.sort);
     params.set("order", next.order);
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
+    replaceSearch(location.pathname + "?" + params.toString());
     setSortState(next);
     // Remember this folder's choice so returning to it later restores this sort.
     // Only sort/order are persisted — the in-folder search `q` stays transient.
@@ -754,6 +813,28 @@ export default function Listing({ fsPath }: { fsPath: string }) {
 
   const base = fsPath.replace(/\/$/, "");
 
+  // Tell the caller whether this folder's top level holds exactly one HTML
+  // ("app") file. Keyed off the plain listing, not the search results — the
+  // button this drives describes the folder's own contents, regardless of
+  // what's currently typed into the in-folder search box.
+  //   • A truncated listing (the server-cap banner) only ever holds a partial
+  //     page, so a lone HTML match there doesn't mean it's the folder's only
+  //     one — withhold the report rather than risk a false "app" button.
+  //   • "loading" reports nothing either way (neither null nor a path) so a
+  //     same-path remount (e.g. switching a mode away from `_listing` and
+  //     back) doesn't flicker an already-known button off for the length of
+  //     the refetch; only "ok"/"error" settle the caller's state.
+  useEffect(() => {
+    if (!onSingleApp) return;
+    if (state.status === "loading") return;
+    if (state.status !== "ok" || state.truncated) {
+      onSingleApp(null);
+      return;
+    }
+    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
+    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
+  }, [state, base, onSingleApp]);
+
   // Flat, ordered list of the paths the arrow keys step through: the rendered
   // search hits while searching, otherwise the sorted listing. Keyed off the
   // same memoized arrays the table renders, so selection never drifts from view.
@@ -765,6 +846,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     [searching, visibleHits, sortedEntries, base]
   );
   navRowsRef.current = navRows;
+
+  // Whether navRows reflects a LOADED listing (not a transient empty while the
+  // fetch is in flight). Only the non-search listing can be mid-load with rows
+  // still empty AND a selection already set — that's the folder-open case: the
+  // resolved Listing mounts with a selection restored from the pre-stat
+  // provisional one, but its own /api/fs/list is briefly loading. Search keeps
+  // its prior behavior (results stream in). Used by the reconcile effect so a
+  // real, still-valid selection is never cleared as "vanished" during a reload.
+  // "Settled" = not mid-fetch: an ok listing OR a terminal error (rows are
+  // then genuinely empty, so the reconcile below should clear/reclamp a stale
+  // selection). Only the transient `loading` status suppresses reconcile.
+  const listingLoaded = searching ? true : state.status !== "loading";
 
   // Keep the keyboard selection scrolled into view as it moves.
   useEffect(() => {
@@ -823,13 +916,20 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       lastSelIndexRef.current = i; // selection still valid; remember its slot
       return;
     }
+    // Selection isn't in the current rows. While the listing is still LOADING
+    // (rows transiently empty during a fetch — notably the pre-stat provisional
+    // Listing being swapped for the resolved one right after a folder opens),
+    // don't treat it as vanished: keep it and rerun once rows arrive. Clearing
+    // here is what dropped an arrow-key selection made just after opening a
+    // folder, even with the selection carried across the remount.
+    if (!listingLoaded) return;
     if (rows.length === 0) {
       setSelectedPath(null);
       return;
     }
     const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
     setSelectedPath(rows[clamped]);
-  }, [navRows, selectedPath]);
+  }, [navRows, selectedPath, listingLoaded]);
 
   // --- file operations ------------------------------------------------------
 
@@ -863,6 +963,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
     }
     return m;
   }, [searching, visibleHits, sortedEntries, base]);
+  rowCtxByPathRef.current = rowCtxByPath;
 
   const refetch = () => setRefresh((n) => n + 1);
 
@@ -1088,7 +1189,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
   const rowMenu = (row: RowCtx): MenuEntry[] => {
     const dir = targetDirOf(row);
     return [
-      { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path) },
+      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
@@ -1212,7 +1313,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
                     (childPath === selectedPath ? " selected" : "") +
                     (childPath === cutPath ? " cut" : "")
                   }
-                  onClick={() => navigate(childPath)}
+                  onClick={() => navigate(childPath, { isDir: entry.is_dir })}
                   onContextMenu={(e) =>
                     openRowMenu(e, {
                       path: childPath,
@@ -1277,7 +1378,18 @@ export default function Listing({ fsPath }: { fsPath: string }) {
       </tr>
     );
   } else if (state.status === "error") {
-    body = (
+    // In the provisional scaffold phase a list failure is most likely a stale
+    // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
+    // error and show neutral loading — stat is still resolving and will replace
+    // this scaffold with the correct file view. Post-stat (committed render),
+    // a genuine list failure surfaces normally.
+    body = provisional ? (
+      <tr>
+        <td colSpan={3} className="status-message">
+          Loading…
+        </td>
+      </tr>
+    ) : (
       <tr>
         <td colSpan={3} className="status-message error">
           Failed to list {fsPath}: {state.message}
@@ -1295,7 +1407,7 @@ export default function Listing({ fsPath }: { fsPath: string }) {
             (childPath === selectedPath ? " selected" : "") +
             (childPath === cutPath ? " cut" : "")
           }
-          onClick={() => navigate(childPath)}
+          onClick={() => navigate(childPath, { isDir: entry.is_dir })}
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,

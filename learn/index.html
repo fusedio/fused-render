@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Learn — Fused Render</title>
+<style>
+  :root {
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44; --code-bg:#0f0f10;
+    --rail:260px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0; background:var(--bg); color:var(--text);
+         font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  code, .mono { font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  a { color:var(--dim); }
+  a:hover { color:var(--text); }
+
+  /* ---------- sidebar ---------- */
+  .rail { position:fixed; top:0; left:0; bottom:0; width:var(--rail); overflow-y:auto;
+          background:#101011; border-right:1px solid var(--border); padding:22px 16px 40px; z-index:20; }
+  .brand { display:flex; align-items:baseline; gap:8px; margin:0 6px 18px; }
+  .brand .dot { width:9px; height:9px; border-radius:2px; background:var(--yellow); align-self:center; }
+  .brand h1 { font-size:15px; margin:0; letter-spacing:-.2px; }
+  .brand span { font-size:11px; color:var(--mut); }
+
+  /* search */
+  .search { position:relative; margin:0 4px 18px; }
+  .search input { width:100%; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+       border-radius:9px; padding:9px 11px 9px 30px; font:13px/1 inherit; }
+  .search input:focus { outline:none; border-color:var(--yellow); }
+  .search .mag { position:absolute; left:10px; top:9px; color:var(--mut); font-size:13px; pointer-events:none; }
+  .search .kbd { position:absolute; right:9px; top:8px; font-size:10px; color:var(--mut); border:1px solid var(--border);
+       border-radius:4px; padding:1px 5px; pointer-events:none; }
+  .results { position:absolute; top:38px; left:0; right:0; background:var(--panel); border:1px solid var(--border);
+       border-radius:10px; padding:5px; max-height:340px; overflow-y:auto; z-index:30; display:none;
+       box-shadow:0 12px 30px rgba(0,0,0,.5); }
+  .results.open { display:block; }
+  .results .r { display:block; padding:7px 9px; border-radius:7px; text-decoration:none; cursor:pointer; }
+  .results .r:hover, .results .r.sel { background:var(--panel2); }
+  .results .r .rt { display:block; font-size:12.5px; color:var(--text); }
+  .results .r .rp { display:block; font-size:10.5px; color:var(--mut); margin-top:1px; }
+  .results .r mark { background:transparent; color:var(--yellow); }
+  .results .none { padding:10px; font-size:12px; color:var(--mut); text-align:center; }
+
+  /* nav */
+  .nav a.top { display:block; padding:8px 11px; margin:2px 0; border-radius:8px; border:1px solid transparent;
+       font-size:13px; color:var(--dim); text-decoration:none; }
+  .nav a.top:hover { color:var(--text); background:var(--panel); }
+  .nav a.top.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .nav a.top .beta { font-size:9px; color:var(--yellow); border:1px solid #4a4a2a; border-radius:4px;
+       padding:1px 4px; margin-left:6px; vertical-align:1px; }
+  .subnav { margin:1px 0 6px 6px; padding-left:10px; border-left:1px solid var(--border); display:none; }
+  .subnav.show { display:block; }
+  .subnav a { display:block; padding:4px 10px; font-size:11.5px; color:var(--mut); text-decoration:none; border-radius:6px; }
+  .subnav a:hover, .subnav a.active { color:var(--text); }
+  .subnav a.active { color:var(--yellow); }
+
+  /* ---------- content ---------- */
+  main { margin-left:var(--rail); padding:50px 40px 90px; }
+  .wrap { max-width:860px; margin:0 auto; }
+  .page { display:none; }
+  .page.active { display:block; }
+  .crumb { font-size:11px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut); margin:0 0 8px; font-weight:700; }
+  h1.title { font-size:29px; margin:0 0 12px; letter-spacing:-.5px; }
+  .lede { color:var(--dim); font-size:16px; margin:0 0 12px; }
+  .lede b { color:var(--text); font-weight:600; }
+  .lede .y, .y { color:var(--yellow); }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:44px 0 6px; font-weight:700; scroll-margin-top:24px; }
+  h2 .n { display:none; }   /* section numbers hidden so any section can be hidden without leaving gaps */
+  h3 { font-size:15px; margin:26px 0 5px; scroll-margin-top:24px; }
+  .sub { color:var(--dim); font-size:13.5px; margin:0 0 14px; }
+  .sub code, p code, li code { color:var(--text); font-size:12px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+  p { color:var(--dim); margin:0 0 12px; }
+  ul { color:var(--dim); margin:0 0 14px; padding-left:20px; }
+  li { margin:4px 0; }
+
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px; margin:0 0 14px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  pre { margin:0; background:var(--code-bg); border:1px solid var(--border); border-radius:9px;
+        padding:13px 15px; font-size:12px; line-height:1.55; overflow-x:auto; color:#d0d0d4; }
+  pre .k { color:#c7c7cc; } pre .s { color:#e4e4e7; } pre .f { color:var(--yellow); } pre .c { color:var(--mut); }
+
+  .promptbox { position:relative; margin:0 0 14px; }
+  .promptbox pre { padding-right:70px; white-space:pre-wrap; }
+  .copybtn { position:absolute; top:9px; right:9px; appearance:none; cursor:pointer;
+       border:1px solid var(--border); background:var(--panel2); color:var(--dim);
+       font:600 11px/1 inherit; padding:6px 10px; border-radius:7px; transition:all .15s; }
+  .copybtn:hover { border-color:var(--yellow); color:var(--text); }
+  .copybtn.done { background:var(--yellow); color:#141414; border-color:var(--yellow); }
+
+  .callout { border:1px solid #4a4a2a; background:#1f1f14; border-radius:10px; padding:12px 15px; margin:0 0 14px; }
+  .envcheck { display:flex; align-items:center; gap:9px; margin-top:11px; padding:9px 12px; border-radius:9px;
+       font-size:12.5px; border:1px solid var(--border); background:#141410; }
+  .envcheck .ec-ic { font-weight:700; font-size:14px; }
+  .envcheck code { font-size:11.5px; }
+  .envcheck.checking { color:var(--dim); }
+  .spin { display:inline-block; width:13px; height:13px; border:2px solid var(--border);
+       border-top-color:var(--yellow); border-radius:50%; animation:spin .7s linear infinite; vertical-align:-2px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .envcheck.ok { border-color:#2e5a2e; background:#132013; color:#cdebcd; }
+  .envcheck.ok .ec-ic { color:#5fd35f; }
+  .envcheck.bad { border-color:#5a2e2e; background:#201313; color:#f0cccc; }
+  .envcheck.bad .ec-ic { color:#ff6b6b; }
+  .envcheck .ec-path { color:var(--mut); font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11px; }
+
+  .callout.beta { border-color:#3a3a4a; background:#16161f; }
+  .callout b { color:var(--text); }
+  .callout .lab { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--yellow); font-weight:700; }
+  .callout.beta .lab { color:#8ab4ff; }
+
+  /* media placeholders — reserve real space where a GIF/screenshot goes */
+  .ph { position:relative; border:2px dashed #45451f; border-radius:12px; background:#18180e;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        text-align:center; color:var(--yellow); margin:0 0 16px; padding:20px; }
+  .ph.r16 { aspect-ratio:16/9; }
+  .ph .ic { font-size:30px; margin-bottom:8px; opacity:.85; }
+  .ph .lab { font-size:12.5px; font-weight:700; letter-spacing:.3px; }
+  .ph .hint { font-size:11px; color:var(--mut); margin-top:5px; max-width:520px; }
+  .ph .tagn { position:absolute; top:8px; left:10px; font-size:9.5px; text-transform:uppercase;
+       letter-spacing:.6px; color:var(--mut); border:1px solid var(--border); border-radius:5px;
+       padding:2px 6px; background:#141410; }
+
+  /* real product screenshots */
+  .figure { margin:0 0 16px; border:1px solid var(--border); border-radius:12px; overflow:hidden; background:var(--panel); }
+  .figure img { display:block; width:100%; height:auto; }
+  .figure figcaption { padding:9px 14px; font-size:12px; color:var(--mut); border-top:1px solid var(--border); background:var(--panel2); }
+  .figure figcaption b { color:var(--dim); font-weight:600; }
+
+  /* live embeds */
+  .frame { position:relative; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+           background:var(--panel); margin:0 0 16px; }
+  .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
+  .frame.short iframe { height:380px; }
+  .frame.tall iframe { height:540px; }
+  .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+              padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
+  .framebar .cap { color:var(--dim); font-size:12px; }
+  .framebar .cap b { color:var(--text); }
+  .framebar a { font-size:12px; color:var(--yellow); text-decoration:none; white-space:nowrap; }
+  .frame .miss { display:none; }
+
+  /* hello.py round-trip */
+  .helloform { display:flex; gap:10px; margin:0 0 12px; }
+  .helloform input { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--border);
+       color:var(--text); border-radius:9px; padding:10px 13px; font:13px/1 inherit; }
+  .helloform input:focus { outline:none; border-color:var(--yellow); }
+  button.act { appearance:none; border:1px solid var(--border); background:var(--panel2); color:var(--text);
+       cursor:pointer; font:600 13px/1 inherit; padding:10px 16px; border-radius:9px; }
+  button.act.hot { background:var(--yellow); color:#141414; border-color:var(--yellow); }
+  button.act:disabled { opacity:.5; cursor:default; }
+  .helloout { font-size:20px; font-weight:600; min-height:28px; margin:0 0 8px; }
+  .status { color:var(--mut); font-size:12px; min-height:16px; }
+
+  /* URL-state slider */
+  .ctrl label { display:flex; justify-content:space-between; font-size:13px; margin-bottom:7px; color:var(--dim); }
+  .ctrl label b { color:var(--yellow); font-variant-numeric:tabular-nums; }
+  input[type=range]{ width:100%; accent-color:var(--yellow); }
+  .meter { height:24px; background:var(--panel2); border:1px solid var(--border); border-radius:8px;
+           overflow:hidden; margin:12px 0; }
+  .meter i { display:block; height:100%; background:var(--yellow); transition:width .2s ease; width:40%; }
+  .urlbox { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; color:var(--mut); word-break:break-all; }
+  .urlbox b { color:var(--yellow); }
+
+  /* showcase cards */
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:0 0 8px; }
+  .cards .feat { grid-column:span 2; }
+  .scard { display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border);
+       border-radius:14px; overflow:hidden; text-decoration:none; color:var(--text); }
+  .scard:hover { border-color:#4a4a4e; }
+  .scard .media { position:relative; aspect-ratio:16/9; background:var(--panel2); border-bottom:1px solid var(--border);
+       display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .scard .mono-fb { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+       font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:30px; font-weight:700;
+       color:#3a3a3d; letter-spacing:2px; }
+  .scard .media img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:top; }
+  .scard .cbody { padding:13px 15px; display:flex; flex-direction:column; flex:1; }
+  .scard h4 { margin:0 0 3px; font-size:14px; display:flex; align-items:baseline; gap:7px; }
+  .scard h4 .cn { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:10.5px; color:var(--mut); font-weight:400; }
+  .scard p { margin:0 0 11px; color:var(--dim); font-size:12px; }
+  .scard .tags { margin-top:auto; display:flex; flex-wrap:wrap; gap:5px; }
+  .scard .t { font-size:10px; color:var(--dim); background:var(--panel2); border:1px solid var(--border);
+       border-radius:5px; padding:2px 6px; }
+  .scard .t.key { color:var(--yellow); border-color:#4a4a2a; background:transparent; }
+
+  /* templates live list */
+  .tpl-toolbar { display:flex; gap:10px; align-items:center; margin:0 0 16px; }
+  .tpl-search { position:relative; flex:1; }
+  .tpl-search .mag { position:absolute; left:11px; top:9px; color:var(--mut); font-size:13px; pointer-events:none; }
+  .tpl-search input { width:100%; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+       border-radius:9px; padding:9px 12px 9px 31px; font:13px/1 inherit; }
+  .tpl-search input:focus { outline:none; border-color:var(--yellow); }
+  .tpl-gallery { white-space:nowrap; text-decoration:none; font-size:12.5px; color:var(--yellow);
+       border:1px solid #4a4a2a; border-radius:9px; padding:9px 13px; }
+  .tpl-gallery:hover { background:#1f1f14; color:var(--yellow); }
+  .tpl-block { margin:0 0 16px; }
+  .tpl-head { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); font-weight:700; margin:0 0 8px; }
+  .tpl-count { color:var(--yellow); margin-left:5px; }
+  .tpl-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+  .tpl-loading { color:var(--mut); font-size:12.5px; }
+  .tpl-empty { color:var(--mut); font-size:12.5px; }
+  .tpl { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:9px 11px; }
+  .tpl .tn { font-size:12.5px; font-weight:600; color:var(--text); }
+  .tpl .tx { margin-top:5px; display:flex; flex-wrap:wrap; gap:4px; }
+  .tpl .tx span { font-size:9.5px; color:var(--mut); font-family:"SF Mono",ui-monospace,Menlo,monospace;
+       background:var(--panel2); border:1px solid var(--border); border-radius:4px; padding:1px 5px; }
+  .tpl .tx span.hit { color:#141414; background:var(--yellow); border-color:var(--yellow); font-weight:700; }
+  .tpl .tx .more { border:0; background:none; }
+
+  /* conditional-template interactive demo */
+  .cond-row { display:flex; align-items:center; gap:10px; margin:14px 0 8px; }
+  .cond-lab { font-size:12.5px; color:var(--dim); white-space:nowrap; }
+  .cond-row input { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+       border-radius:9px; padding:9px 12px; font:12.5px/1 "SF Mono",ui-monospace,Menlo,monospace; }
+  .cond-row input:focus { outline:none; border-color:var(--yellow); }
+  .cond-chips { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
+  .cond-chip { cursor:pointer; font:400 11px/1 "SF Mono",ui-monospace,Menlo,monospace; color:var(--dim);
+       background:var(--panel2); border:1px solid var(--border); border-radius:6px; padding:5px 8px; }
+  .cond-chip:hover { border-color:var(--yellow); color:var(--text); }
+  .cond-views { display:flex; align-items:center; gap:14px; }
+  .cond-view { flex:1; text-align:center; background:var(--panel2); border:1px solid var(--border); border-radius:12px;
+       padding:16px 12px; transition:all .18s; opacity:.45; }
+  .cond-view.on { opacity:1; border-color:var(--yellow); box-shadow:0 0 0 1px var(--yellow) inset; }
+  .cond-view.off { opacity:.25; }
+  .cond-view .cv-ic { font-size:26px; }
+  .cond-view .cv-t { font-size:13px; font-weight:600; margin-top:6px; }
+  .cond-view .cv-s { font-size:10.5px; color:var(--mut); margin-top:2px; }
+  .cond-arrow { color:var(--mut); font-size:18px; }
+  .cond-out { margin-top:14px; font-size:12.5px; color:var(--dim); min-height:18px; }
+  .cond-out b { color:var(--yellow); }
+
+  /* mount form mock */
+  .mountform { padding:16px 18px; }
+  .mf-row { display:flex; align-items:center; gap:14px; margin-bottom:11px; }
+  .mf-row label { width:64px; flex-shrink:0; font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); font-weight:700; }
+  .mf-val { flex:1; min-width:0; background:var(--panel2); border:1px solid var(--border); border-radius:8px;
+       padding:9px 12px; font:12.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--text); word-break:break-all; }
+  .mf-select { display:flex; justify-content:space-between; align-items:center; font-family:inherit; color:var(--dim); }
+  .mf-caret { color:var(--mut); }
+  .mf-path { position:relative; padding-right:64px; }
+  .mf-copy { top:6px; right:6px; }
+  .mf-note { font-size:12px; color:var(--mut); margin-top:4px; }
+  .mf-note code { color:var(--dim); }
+  .mount-steps { color:var(--dim); font-size:13px; margin:0 0 16px; padding-left:20px; }
+  .mount-steps li { margin:5px 0; }
+  .mount-steps code { font-size:11.5px; }
+
+  /* browser-frame mockup (deployed app preview) */
+  .browser { display:block; text-decoration:none; border:1px solid var(--border); border-radius:12px;
+       overflow:hidden; background:var(--panel); margin:0 0 8px; }
+  .browser:hover { border-color:#4a4a4e; }
+  .browser .bar { display:flex; align-items:center; gap:11px; padding:9px 13px; background:var(--panel2);
+       border-bottom:1px solid var(--border); }
+  .browser .dots { display:flex; gap:6px; flex-shrink:0; }
+  .browser .dots i { width:11px; height:11px; border-radius:50%; display:block; }
+  .browser .url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:7px;
+       padding:5px 11px; font:11.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--dim);
+       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .browser .go { flex-shrink:0; font-size:11.5px; color:var(--yellow); }
+  .browser img { display:block; width:100%; height:auto; }
+
+  .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:0 0 14px; }
+  .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .step .num { width:22px; height:22px; border-radius:7px; background:var(--panel2); border:1px solid var(--border);
+       display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:var(--yellow); margin-bottom:10px; }
+  .step h4 { margin:0 0 5px; font-size:13.5px; }
+  .step p { margin:0; font-size:12px; }
+
+  .pager { display:flex; justify-content:space-between; gap:12px; margin-top:52px; border-top:1px solid var(--border); padding-top:18px; }
+  .pager a { display:block; text-decoration:none; color:var(--dim); font-size:13px; }
+  .pager a:hover { color:var(--text); }
+  .pager .nxt { text-align:right; }
+  .pager .cap { display:block; font-size:10.5px; color:var(--mut); text-transform:uppercase; letter-spacing:.6px; margin-bottom:2px; }
+
+  /* ---------- landing / home ---------- */
+  .hero-cta { display:flex; gap:12px; flex-wrap:wrap; margin:20px 0 10px; }
+  .cta { display:inline-flex; align-items:center; text-decoration:none; font:600 14px/1 inherit;
+       padding:12px 20px; border-radius:10px; border:1px solid var(--border); color:var(--text); background:var(--panel); }
+  .cta:hover { border-color:#4a4a4e; color:var(--text); }
+  .cta.primary { background:var(--yellow); color:#141414; border-color:var(--yellow); }
+  .cta.primary:hover { color:#141414; filter:brightness(1.05); }
+
+  .modecard { display:flex; flex-direction:column; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px 22px; }
+  .modecard:hover { border-color:#4a4a4e; }
+  .modecard .mc-ic { font-size:28px; margin-bottom:8px; }
+  .modecard h3 { margin:0 0 6px; font-size:16px; }
+  .modecard p { margin:0 0 12px; font-size:13px; color:var(--dim); }
+  .modecard .mc-go { margin-top:auto; font-size:12.5px; color:var(--yellow); font-weight:600; }
+
+  /* first-visit onboarding chooser */
+  .chooser { border:1px solid #4a4a2a; background:linear-gradient(180deg,#1e1e17,#1a1a1a);
+       border-radius:14px; padding:17px 19px 15px; margin:22px 0 6px; animation:chFade .45s ease both; }
+  .chooser .ch-q { font-size:14px; font-weight:600; color:var(--text); margin:0 0 12px;
+       display:flex; align-items:center; gap:8px; }
+  .chooser .ch-q .spark { color:var(--yellow); }
+  .ch-opts { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; }
+  .ch-opt { display:flex; flex-direction:column; gap:3px; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:11px; padding:14px 15px;
+       transition:border-color .12s, transform .12s; }
+  .ch-opt:hover { border-color:var(--yellow); transform:translateY(-1px); }
+  .ch-opt .ch-ic { font-size:22px; }
+  .ch-opt b { font-size:13.5px; }
+  .ch-opt .ch-sub { font-size:11.5px; color:var(--mut); line-height:1.35; }
+  .ch-skip { appearance:none; background:none; border:0; color:var(--mut); font:inherit; font-size:12px;
+       cursor:pointer; margin:11px 0 0; padding:2px 0; text-decoration:underline; text-underline-offset:2px; }
+  .ch-skip:hover { color:var(--dim); }
+  @keyframes chFade { from{opacity:0; transform:translateY(-6px)} to{opacity:1; transform:none} }
+
+  .navtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:0 0 8px; }
+  .navtile { display:flex; align-items:flex-start; gap:12px; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:15px 17px; }
+  .navtile:hover { border-color:#4a4a4e; }
+  .navtile .nt-ic { font-size:20px; line-height:1.2; flex-shrink:0; }
+  .navtile h4 { margin:0 0 3px; font-size:14px; }
+  .navtile p { margin:0; font-size:12px; color:var(--dim); }
+  .home-foot { display:flex; gap:18px; flex-wrap:wrap; margin-top:8px; font-size:13px; }
+
+  /* ---------- build page: prominent prompt + api table ---------- */
+  .promptbox.big pre { font-size:14px; line-height:1.6; padding:18px 74px 18px 18px; }
+
+  /* hero prompt — the "grab this" Claude prompt, made the focal point */
+  .heroprompt { border:1px solid #5c5c2e; background:linear-gradient(180deg,#1c1c10,#181811);
+       border-radius:14px; overflow:hidden; margin:4px 0 14px;
+       box-shadow:0 0 0 1px rgba(229,255,68,.05), 0 12px 34px rgba(0,0,0,.4); }
+  .heroprompt .hp-head { display:flex; align-items:center; gap:8px; padding:11px 18px;
+       border-bottom:1px solid #45451f; background:#21210f;
+       font-size:11px; text-transform:uppercase; letter-spacing:.8px; font-weight:700; color:var(--yellow); }
+  .heroprompt .hp-head .spark { font-size:13px; }
+  .heroprompt .hp-body { padding:17px 20px 4px; }
+  .heroprompt pre { background:transparent; border:0; padding:0; margin:0; font-size:15px; line-height:1.6;
+       color:#f3f3e8; white-space:pre-wrap; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  .heroprompt .hp-copy { position:static; display:flex; align-items:center; justify-content:center; gap:8px;
+       width:100%; margin:15px 0 17px; padding:12px; border-radius:10px; cursor:pointer;
+       border:1px solid var(--yellow); background:var(--yellow); color:#141414;
+       font:700 13.5px/1 inherit; transition:filter .15s; }
+  .heroprompt .hp-copy:hover { filter:brightness(1.06); }
+  .heroprompt .hp-copy.done { background:#141414; color:var(--yellow); border-color:var(--yellow); }
+
+  /* mental-model file tree */
+  .filetree { background:var(--code-bg); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:0 0 14px; }
+  .filetree .ft-dir { font:600 14.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--text); }
+  .filetree .ft-item { display:grid; grid-template-columns:auto auto auto 1fr; align-items:baseline; gap:10px;
+       margin-top:11px; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:13px; }
+  .filetree .ft-branch { color:var(--mut); }
+  .filetree .ft-name { color:var(--text); white-space:nowrap; }
+  .filetree .ft-arrow { color:var(--mut); }
+  .filetree .ft-role { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-role b { color:var(--text); font-weight:600; }
+  .filetree .ft-bridge { margin:17px 0 0; padding:11px 12px; text-align:center; background:var(--panel);
+       border:1px solid var(--border); border-radius:9px; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-bridge b { color:var(--yellow); }
+  .filetree .ft-live { margin-top:14px; padding-top:13px; border-top:1px solid var(--border); font-size:12.5px; color:var(--dim); }
+  .filetree .ft-live code { color:var(--text); font-size:11.5px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+
+  /* URL-state demo: a live browser address bar */
+  .urldemo { margin:0 0 12px; }
+  .urldemo .ub-bar { display:flex; align-items:center; gap:11px; padding:10px 14px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:11px; }
+  .urldemo .dots { display:flex; gap:6px; flex-shrink:0; }
+  .urldemo .dots i { width:11px; height:11px; border-radius:50%; display:block; }
+  .urldemo .ub-url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+       padding:8px 13px; font:12.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace;
+       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .urldemo .ub-dim { color:var(--mut); }
+  .urldemo .ub-q { color:var(--yellow); font-weight:600; }
+  .urldemo .ub-q b { color:#141414; background:var(--yellow); border-radius:4px; padding:1px 6px;
+       font-variant-numeric:tabular-nums; transition:transform .12s ease; display:inline-block; }
+  .urldemo .ub-q.flash b { transform:scale(1.14); }
+  .apitable { width:100%; border-collapse:collapse; margin:0 0 10px; font-size:12.5px; }
+  .apitable td { border:1px solid var(--border); padding:9px 11px; vertical-align:top; }
+  .apitable td:first-child { white-space:nowrap; width:1%; }
+  .apitable code { color:var(--text); background:var(--code-bg); border:1px solid var(--border);
+       border-radius:5px; padding:1px 6px; font-size:11.5px; }
+  .apitable td:last-child { color:var(--dim); }
+  .ideagrid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:0 0 8px; }
+  .idea { position:relative; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 15px; }
+  .idea .it { font-size:12.5px; color:var(--text); font-weight:600; margin:0 0 8px; }
+  .idea pre { font-size:11px; padding:10px 11px; white-space:pre-wrap; }
+  .idea .copybtn { position:static; margin-top:9px; width:100%; text-align:center; }
+
+  /* per-remote mount examples */
+  .remote-eg { margin:0 0 12px; }
+  .remote-eg .re-head { display:flex; align-items:center; gap:9px; font-size:13.5px; font-weight:600;
+       color:var(--text); margin:0 0 8px; }
+  .remote-eg .re-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; font-weight:700;
+       border:1px solid var(--border); border-radius:5px; padding:2px 7px; color:var(--mut); }
+  .remote-eg .re-tag.inapp { color:#5fd35f; border-color:#2e5a2e; background:#132013; }
+  .remote-eg .re-tag.cli { color:#8ab4ff; border-color:#3a3a4a; background:#16161f; }
+
+  .menuBtn { display:none; }
+  @media (max-width:960px){
+    .cards { grid-template-columns:repeat(2,1fr); } .cards .feat { grid-column:span 2; }
+    .steps { grid-template-columns:1fr; }
+  }
+  @media (max-width:760px){
+    .rail { transform:translateX(-100%); transition:transform .2s; }
+    .rail.open { transform:none; }
+    main { margin-left:0; padding:64px 18px 80px; }
+    .grid2 { grid-template-columns:1fr; }
+    .navtiles, .ideagrid, .ch-opts { grid-template-columns:1fr; }
+    .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
+    .menuBtn { display:flex; position:fixed; top:12px; left:12px; z-index:25; width:38px; height:38px;
+       align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border);
+       border-radius:9px; color:var(--text); cursor:pointer; font-size:16px; }
+  }
+</style>
+</head>
+<body>
+<button class="menuBtn" id="menuBtn">☰</button>
+<nav class="rail" id="rail">
+  <div class="brand"><span class="dot"></span><h1>Fused Render</h1><span>Learn</span></div>
+  <div class="search">
+    <span class="mag">⌕</span>
+    <input id="q" type="text" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
+    <span class="kbd">/</span>
+    <div class="results" id="results"></div>
+  </div>
+  <div class="nav" id="nav"><!-- built by JS from the pages --></div>
+</nav>
+
+<main>
+<div class="wrap">
+
+  <!-- ============================ HOME (landing / value) ============================ -->
+  <section class="page" data-slug="home" data-title="Home">
+    <p class="crumb">Fused Render</p>
+    <h1 class="title">Turn folders on your machine into live apps</h1>
+    <p class="lede">Fused Render runs on <b>your computer</b>. Point it at a folder and any HTML file becomes a live app — with a <span class="y mono">fused</span> bridge that lets the page run the <b>Python sitting right next to it</b>. No server, no build step, no upload. Your files, your machine.</p>
+
+    <div class="hero-cta">
+      <a class="cta primary" href="?page=build">Build your own app →</a>
+      <a class="cta" href="?page=templates">Open your data →</a>
+    </div>
+
+    <div class="chooser" id="chooser" hidden>
+      <div class="ch-q"><span class="spark">✦</span> New here? What do you want to do first?</div>
+      <div class="ch-opts">
+        <a class="ch-opt" href="?page=build" data-intent="build">
+          <span class="ch-ic">🛠️</span>
+          <b>Build an app from scratch</b>
+          <span class="ch-sub">Describe a tool, get a live page backed by Python</span>
+        </a>
+        <a class="ch-opt" href="?page=templates" data-intent="templates">
+          <span class="ch-ic">📂</span>
+          <b>Open data I already have</b>
+          <span class="ch-sub">Render a file you have through a template</span>
+        </a>
+        <a class="ch-opt" href="?page=showcase" data-intent="showcase">
+          <span class="ch-ic">✨</span>
+          <b>Just show me what's possible</b>
+          <span class="ch-sub">Browse finished projects you can clone</span>
+        </a>
+      </div>
+      <button class="ch-skip" id="chSkip">I'll explore on my own</button>
+    </div>
+
+    <h2>See it run</h2>
+    <p class="sub">This isn't a video. Drag the slider — a <b>Python file on this machine</b> throws darts and estimates <b>π</b> from how many land inside the circle. That round trip, HTML asking Python for an answer, is what every Fused Render app is built on.</p>
+    <div class="frame short" id="demoFrame">
+      <div class="framebar">
+        <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
+        <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
+      </div>
+      <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
+      <div class="ph r16 miss">
+        <span class="tagn">live embed · fallback</span>
+        <div class="ic">🎯</div>
+        <div class="lab">Live preview loads inside Fused Render</div>
+        <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
+      </div>
+    </div>
+
+    <h2>Two ways to use it</h2>
+    <p class="sub">Fused Render does two distinct things. Start with either — nothing locks you in, so you can move between them whenever you want.</p>
+    <div class="grid2">
+      <a class="modecard" href="?page=build">
+        <div class="mc-ic">🛠️</div>
+        <h3>Build an app</h3>
+        <p>Describe what you want and get a live tool: a dashboard, a control panel, an interactive chart — front-end in HTML, logic in Python. Great with Claude Code.</p>
+        <span class="mc-go">Building with Fused Render →</span>
+      </a>
+      <a class="modecard" href="?page=templates">
+        <div class="mc-ic">📂</div>
+        <h3>Open your data</h3>
+        <p>Right-click a file — a Parquet, a GeoTIFF, a CSV — and it renders through a template as an interactive view. No app to write, nothing to download.</p>
+        <span class="mc-go">Templates →</span>
+      </a>
+    </div>
+
+    <h2>Everything else</h2>
+    <div class="navtiles">
+      <a class="navtile" href="?page=using"><span class="nt-ic">🧭</span><div><h4>Using the app</h4><p>Bookmarks, split view, and getting around the explorer.</p></div></a>
+      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount remote data</h4><p>Browse S3, GCS, or Google Drive like a local folder.</p></div></a>
+      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Publish a project so anyone can open it in a browser.</p></div></a>
+      <a class="navtile" href="?page=showcase"><span class="nt-ic">✨</span><div><h4>Showcase</h4><p>Working projects you can clone and pick apart.</p></div></a>
+    </div>
+
+    <h2>What people build</h2>
+    <p class="sub">Each of these is just a folder with a page and a Python file. Browse them all in the <a href="?page=showcase">Showcase</a>.</p>
+    <div class="cards" id="homeShowcase"></div>
+    <div class="home-foot">
+      <a href="https://github.com/fusedio/fused-render-examples" target="_blank" rel="noopener">Examples on GitHub ↗</a>
+      <a href="https://www.fused.io" target="_blank" rel="noopener">Get a Fused account ↗</a>
+    </div>
+  </section>
+
+  <!-- ============================ BUILDING WITH FUSED RENDER ============================ -->
+  <section class="page" data-slug="build" data-title="Building with Fused Render">
+    <p class="crumb">Make something</p>
+    <h1 class="title">Building with Fused Render</h1>
+    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
+
+    <div class="heroprompt">
+      <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
+      <div class="hp-body">
+        <pre id="buildPrompt">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
+        <button class="copybtn hp-copy" data-copy="buildPrompt">📋&nbsp; Copy prompt</button>
+      </div>
+    </div>
+    <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
+
+    <div class="callout beta"><span class="lab">Coming soon · Fused Render skills</span>
+      <p style="margin:6px 0 0">A one-line install that teaches Claude Code the Fused Render layout and the <code>fused</code> bridge is on the way. It'll look like this:</p>
+      <div class="promptbox" style="margin-top:11px">
+        <button class="copybtn" data-copy="skillInstall">Copy</button>
+        <pre id="skillInstall">claude plugin marketplace add fusedio/fused-render
+claude plugin install fused-render@fused-render</pre>
+      </div>
+      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">Until it lands, Claude still does well when it can see an existing project — open one from the <a href="?page=showcase">Showcase</a> and ask it to build something similar. (Don't have Claude Code? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.)</p>
+    </div>
+
+    <h2>The mental model</h2>
+    <p class="sub">A project is just a folder with two files. The HTML is what you see; the Python is the work. That's the whole structure:</p>
+    <div class="filetree">
+      <div class="ft-dir">📁 my_tool/</div>
+      <div class="ft-item">
+        <span class="ft-branch">├──</span>
+        <span class="ft-name">📄 index.html</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>what you see</b> — the UI, in HTML &amp; JS</span>
+      </div>
+      <div class="ft-item">
+        <span class="ft-branch">└──</span>
+        <span class="ft-name">🐍 tool.py</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>the work</b> — a <code>main()</code> that returns JSON</span>
+      </div>
+      <div class="ft-bridge">HTML&nbsp; <b>⇄</b> &nbsp;Python — they talk over the <span class="y mono">fused</span> bridge injected into every page</div>
+      <div class="ft-live">▸ Click <code>index.html</code> and it renders as a live page. Edit either file and the page reloads itself.</div>
+    </div>
+
+    <h3>HTML calls Python</h3>
+    <p class="sub">Next to a page sits its Python. The page sends input to it and renders what comes back — try it: this calls <code>hello.py</code> for real when opened in the app.</p>
+    <div class="grid2">
+      <div class="card">
+        <div class="helloform">
+          <input id="nameInput" type="text" placeholder="your name" maxlength="40">
+          <button class="act hot" id="helloBtn">Say hello</button>
+        </div>
+        <div class="helloout" id="helloOut"></div>
+        <div class="status" id="helloStatus">Python hasn't said anything yet.</div>
+      </div>
+      <div class="card">
+<pre><span class="c"># hello.py — the whole contract</span>
+<span class="k">def</span> <span class="f">main</span>(name: str = <span class="s">"world"</span>):
+    <span class="k">return</span> {<span class="s">"greeting"</span>: <span class="s">f"Hello, {name}!"</span>}</pre>
+        <p style="margin:10px 0 0;font-size:12px">The page's side is one line: <code>await fused.runPython("./hello.py", {name})</code>. A function named <code>main()</code> that returns JSON is all it takes.</p>
+      </div>
+    </div>
+
+    <h3>State lives in the URL</h3>
+    <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Drag the slider and watch the address bar: the <b class="y">?level=</b> value updates live. Refresh, bookmark, or share that link and the page comes back exactly as you left it.</p>
+    <div class="grid2">
+      <div class="card ctrl">
+        <label>Level <b id="vLevel">40</b></label>
+        <input type="range" id="level" min="0" max="100" step="1" value="40">
+        <div class="meter" style="margin-bottom:0"><i id="bar"></i></div>
+      </div>
+      <div class="card">
+        <p style="margin:0;font-size:12.5px">The slider writes <code>fused.params.set("level", …)</code>, which appends <code>?level=</code> to the URL. Nothing is stored in hidden JS state — the URL <em>is</em> the state, so it survives a refresh and travels in a shared link.</p>
+      </div>
+    </div>
+    <p class="sub" style="margin:4px 0 8px;font-size:12px;color:var(--mut)">The page's address bar tracks it live:</p>
+    <div class="urldemo">
+      <div class="ub-bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="ub-url"><span class="ub-dim">127.0.0.1:1777/view/…/my_tool/index.html</span><span class="ub-q" id="ubQ">?level=<b id="urlVal">40</b></span></div>
+      </div>
+    </div>
+
+    <h2>The <span class="y mono">fused</span> API</h2>
+    <p class="sub">Everything your page can call. It's injected automatically — never <code>&lt;script src&gt;</code> anything for it. On the Python side, you only ever write a function named <code>main()</code>.</p>
+    <table class="apitable">
+      <tr><td><code>await fused.runPython(path, params)</code></td><td>Runs <code>main(**params)</code> of the <code>.py</code> at <code>path</code> (relative to the page) and resolves with its return value. Params are strings; scrubbing a slider auto-cancels the runs it moves past.</td></tr>
+      <tr><td><code>fused.params.get(k)</code></td><td>Read a URL param (a string, or <code>undefined</code>). The URL is your state.</td></tr>
+      <tr><td><code>fused.params.set(k, v)</code></td><td>Write a URL param — <code>v</code> must be a string, so <code>String(n)</code> yourself. Then fires <code>onChange</code>.</td></tr>
+      <tr><td><code>fused.params.onChange(cb)</code></td><td>Run <code>cb</code> after every applied <code>set</code> — the single place you re-render from.</td></tr>
+      <tr><td><code>await fused.readFile(path)</code></td><td>File contents as text — no Python needed when you just want the bytes.</td></tr>
+      <tr><td><code>await fused.writeFile(path, text)</code></td><td>Write text atomically (optional mtime lock to avoid clobbering).</td></tr>
+      <tr><td><code>await fused.stat(path)</code></td><td>Metadata <code>{size, mtime, is_dir, …}</code> — size-guard before reading big files.</td></tr>
+      <tr><td><code>fused.rawUrl(path)</code></td><td>A URL for the raw bytes — use it as the <code>src</code> of an <code>&lt;img&gt;</code>, <code>&lt;video&gt;</code>, or a download link.</td></tr>
+    </table>
+    <div class="callout"><span class="lab">Good to know</span>
+      <p style="margin:6px 0 0">Each <code>runPython</code> call runs <code>main()</code> in a fresh subprocess that's killed at <b>30&nbsp;seconds</b>. For a genuinely long job, write the result to a file from a separate script and have the page read the finished file.</p></div>
+
+    <h2>Starter ideas</h2>
+    <p class="sub">Copy any of these into Claude Code to see the shape of a project fast.</p>
+    <div class="ideagrid">
+      <div class="idea"><p class="it">🖥️ System monitor</p><pre id="idea1">Create a Fused Render project that shows a live, top-style table of my running processes sorted by memory.</pre><button class="copybtn" data-copy="idea1">Copy</button></div>
+      <div class="idea"><p class="it">📊 CSV explorer</p><pre id="idea2">Create a Fused Render project that lets me pick a CSV file and browse it as a sortable, searchable table.</pre><button class="copybtn" data-copy="idea2">Copy</button></div>
+      <div class="idea"><p class="it">🗂️ Disk treemap</p><pre id="idea3">Create a Fused Render project that shows a treemap of what's using space in a folder I choose.</pre><button class="copybtn" data-copy="idea3">Copy</button></div>
+    </div>
+
+    <h2>Next</h2>
+    <p class="sub">Render other file types through <a href="?page=templates">Templates</a>, pull in remote data with <a href="?page=mount">Mount</a>, then <a href="?page=deploy">Deploy</a> so others can open your app in a browser. Or see finished projects in the <a href="?page=showcase">Showcase</a>.</p>
+  </section>
+
+  <!-- ============================ 2 · CLAUDE CODE ============================ -->
+  <!-- Claude Code integration: hidden for now (feature not ready to advertise).
+       To show it again, delete the data-hidden attribute below. Nothing else to change. -->
+  <section class="page" data-slug="claude" data-title="Claude Code integration" data-hidden>
+    <p class="crumb">Workflow</p>
+    <h1 class="title">Claude Code integration</h1>
+    <p class="lede">Fused Render drives your locally installed <b>Claude Code</b> CLI, right inside the app. Ask it to build a project, explain a file, or edit a page — and with <b>feedback mode</b>, point at the part of a page you want changed.</p>
+    <div class="callout"><span class="lab">Prerequisite</span>
+      <p style="margin:6px 0 0 0">The Claude panel shells out to the <code>claude</code> command, so <b>Claude Code must be installed</b> on your machine and on your PATH.</p>
+      <div class="envcheck checking" id="claudeCheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
+    </div>
+
+    <h2><span class="n">1</span>The basics</h2>
+    <p class="sub">Open the Claude panel on any file, then describe what you want in the chat. Claude reads the files in that folder and writes changes back in place, reloading the page as it goes.</p>
+    <div class="callout"><span class="lab">Why a GIF, not a live demo</span>
+      <p style="margin:6px 0 0">An embedded Claude session repeatedly asks for permissions the embed can't grant — so this section uses a recording instead of a live panel.</p></div>
+    <div class="ph r16"><span class="tagn">gif</span><div class="ic">🎬</div>
+      <div class="lab">[ GIF: opening the Claude panel on a file and asking for a change ]</div></div>
+
+    <h2><span class="n">2</span>Feedback mode</h2>
+    <p class="sub">Click any element on a rendered page to attach a comment to it. The comment travels to Claude alongside an <b>anchor</b> for the element you clicked, so it knows exactly what on the page you're talking about.</p>
+    <div class="ph r16"><span class="tagn">gif</span><div class="ic">🎬</div>
+      <div class="lab">[ GIF: click-to-comment on a preview → Claude acts on that comment ]</div></div>
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:13.5px">What gets passed</h4>
+      <p style="margin:0;font-size:12.5px">Each comment carries the clicked element's <code>id</code> (plus a DOM-path fallback), the view it was made in, and its text — together with the file path. That anchors the request to what you pointed at; edits are still scoped to the file as guidance, not locked to a single element.</p>
+    </div>
+  </section>
+
+  <!-- ============================ 2b · CLAUDE CODE SKILLS ============================ -->
+  <section class="page" data-slug="skills" data-title="Claude Code skills" data-ix="2">
+    <p class="crumb">Workflow</p>
+    <h1 class="title">Claude Code skills</h1>
+    <p class="lede">Fused Render ships a set of Claude Code <b>skills</b> — packaged instructions that teach the <code>claude</code> CLI how this project works. Install them once and Claude authors views, drives the explorer, and registers templates fluently, without you spelling out the conventions each time.</p>
+    <div class="callout"><span class="lab">Prerequisite</span>
+      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p></div>
+
+    <h2><span class="n">1</span>What you get</h2>
+    <p class="sub">Three skills cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-usage</code></h4>
+      <p style="margin:0;font-size:12.5px">Running and using a project — start the local server, browse the filesystem, and open views or files by URL (embed vs full-shell modes).</p></div>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-authoring</code></h4>
+      <p style="margin:0;font-size:12.5px">Writing and debugging views — the <code>fused.runPython()</code> bridge to local Python, the <code>main()</code> contract, URL-synced params, and the file-IO helpers (<code>readFile</code>/<code>writeFile</code>/<code>stat</code>/<code>rawUrl</code>).</p></div>
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-custom-templates</code></h4>
+      <p style="margin:0;font-size:12.5px">Registering your own preview template for a file extension under <code>~/.fused-render/templates/</code> — so opening that file type renders <em>your</em> page (or offers it as a switchable mode). Pairs with the <a href="?page=templates">Templates</a> concepts page.</p></div>
+
+    <h2><span class="n">2</span>Install the plugin</h2>
+    <p class="sub">The skills are distributed as a Claude Code <b>plugin</b> from this repo's marketplace. From inside Claude Code, add the marketplace, then install the plugin:</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsMkt">Copy</button>
+      <pre id="skillsMkt">/plugin marketplace add fusedio/fused-render</pre></div>
+    <div class="promptbox" style="margin-top:8px">
+      <button class="copybtn" data-copy="skillsInstall">Copy</button>
+      <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
+    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session — including when Claude Code is driven from inside the app's Claude panel.</p>
+    <div class="callout"><span class="lab">Working inside the repo?</span>
+      <p style="margin:6px 0 0 0">If you're developing fused-render itself, the skills are already present as <code>./skills/</code> in the checkout — no install needed. Maintainer-only skills (dev-env setup, cutting a release) live separately under <code>.claude/skills/</code> and never ship in the plugin.</p></div>
+
+    <h2><span class="n">3</span>Just ask</h2>
+    <p class="sub">With the plugin installed you describe the outcome in plain language; Claude loads the matching skill and follows its conventions. No need to mention HTML, Python, or the <code>fused</code> API.</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsAsk">Copy</button>
+      <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
+    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=using">Using Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
+  </section>
+
+  <!-- ============================ 3 · TEMPLATES ============================ -->
+  <section class="page" data-slug="templates" data-title="Templates" data-ix="3">
+    <p class="crumb">Concepts</p>
+    <h1 class="title">Templates</h1>
+    <p class="lede">A <b>template</b> decides how a file renders. HTML files are their own template; every other file type opens through a template that turns it into a page.</p>
+
+    <h2><span class="n">1</span>Core vs custom templates</h2>
+    <p class="sub"><b>Core templates</b> ship with Fused Render and cover common file types out of the box. <b>Custom templates</b> are ones you write — replace a built-in, or bind your own to a file type or pattern.</p>
+    <div class="grid2">
+      <div class="card"><h4 style="margin:0 0 6px;font-size:13.5px">Core</h4>
+        <p style="margin:0;font-size:12.5px">Built in, always available. Sensible defaults for the file types you open most.</p></div>
+      <div class="card"><h4 style="margin:0 0 6px;font-size:13.5px">Custom</h4>
+        <p style="margin:0;font-size:12.5px">Your own HTML template, bound to a type or path. Let Claude read the existing templates to build on top of them.</p></div>
+    </div>
+    <p class="sub">The <b>Templates</b> page (bottom-left of the app) is where these bindings live — every file type maps to an ordered list of templates, and the first is the default.</p>
+    <figure class="figure"><img data-shot="assets/shot_templates.webp" alt="The Fused Render Templates bindings page">
+      <figcaption><b>Templates → File bindings</b> — search a pattern, reorder templates, or add your own.</figcaption></figure>
+
+    <h2><span class="n">2</span>Templates on your machine</h2>
+    <p class="sub">The templates available right now — read live from your install. Search by file type to see what can open it.</p>
+    <div class="tpl-toolbar">
+      <div class="tpl-search"><span class="mag">⌕</span><input id="tplSearch" type="text" placeholder="Filter by extension or name — e.g. .parquet, geo, csv" autocomplete="off" spellcheck="false"></div>
+      <a class="tpl-gallery" id="tplGalleryLink" target="_top" style="display:none">Open template gallery ↗</a>
+    </div>
+    <div class="tpl-block">
+      <div class="tpl-head">Core <span class="tpl-count" id="coreCount"></span></div>
+      <div class="tpl-grid" id="coreTemplates"><div class="tpl-loading">Loading templates…</div></div>
+    </div>
+    <div class="tpl-block">
+      <div class="tpl-head">Custom <span class="tpl-count" id="customCount"></span></div>
+      <div class="tpl-grid" id="customTemplates"></div>
+      <div class="tpl-empty" id="customEmpty" style="display:none">No custom templates yet — see <a href="?page=templates#conditional">conditional templates</a> below to add your own.</div>
+    </div>
+    <p class="sub" id="tplHint" style="display:none;font-size:12px;color:var(--mut)"></p>
+
+    <h2><span class="n">3</span>Right-click to open</h2>
+    <p class="sub">Right-click a file → <em>Open with FusedRender</em> renders it through the matching template. The OS-level menu entry is registered by the packaged macOS app; on Windows you register it once with <code>fused-render-open --register</code>.</p>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — rendered through the matching template.</figcaption></figure>
+
+    <h2 id="conditional"><span class="n">4</span>Conditional templates</h2>
+    <p class="sub">Each template can <b>gate itself</b> for a given file. Drop a <code>condition.py</code> with <code>def main(path) -> bool</code> next to the template — return <code>True</code> and it offers to render that file. Try it below: this condition only accepts files whose name contains <code>special</code>.</p>
+    <div class="card">
+      <pre><span class="c"># special_view/condition.py</span>
+<span class="k">def</span> <span class="f">main</span>(path: str) -> bool:
+    <span class="k">return</span> <span class="s">"special"</span> <span class="k">in</span> path.lower()</pre>
+      <div class="cond-row">
+        <span class="cond-lab">Open a file named:</span>
+        <input id="condFile" type="text" value="report.parquet" spellcheck="false">
+      </div>
+      <div class="cond-chips">
+        <button class="cond-chip" data-f="report.parquet">report.parquet</button>
+        <button class="cond-chip" data-f="special_report.parquet">special_report.parquet</button>
+        <button class="cond-chip" data-f="notes.txt">notes.txt</button>
+        <button class="cond-chip" data-f="my_special_map.geojson">my_special_map.geojson</button>
+      </div>
+      <div class="cond-views">
+        <div class="cond-view" id="condDefault"><div class="cv-ic">📄</div><div class="cv-t">Default template</div><div class="cv-s">always offered</div></div>
+        <div class="cond-arrow">→</div>
+        <div class="cond-view" id="condSpecial"><div class="cv-ic">✨</div><div class="cv-t">Special View</div><div class="cv-s">condition gated</div></div>
+      </div>
+      <div class="cond-out" id="condOut"></div>
+    </div>
+  </section>
+
+  <!-- ============================ USING FUSED RENDER (the app / UI guide) ============================ -->
+  <section class="page" data-slug="using" data-title="Using Fused Render">
+    <p class="crumb">The app</p>
+    <h1 class="title">Using Fused Render</h1>
+    <p class="lede">The Fused Render window is a file explorer for your project folders — click an HTML file and it renders live. Here's how to get around it.</p>
+
+    <h2>Bookmarks</h2>
+    <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
+    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
+      <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
+
+    <h2>Split view</h2>
+    <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
+    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
+      <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
+
+    <h2>Opening files with templates</h2>
+    <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See <a href="?page=templates">Templates</a> for how templates are chosen and customized.</p>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
+  </section>
+
+  <!-- ============================ 4 · MOUNT ============================ -->
+  <section class="page" data-slug="mount" data-title="Mount" data-ix="4">
+    <p class="crumb">Data</p>
+    <h1 class="title">Mount</h1>
+    <p class="lede">Mount a remote store — <b>S3-compatible buckets, Google Drive, anything rclone speaks</b> — and it shows up in the file tree like a local folder, ready to browse and open through a template.</p>
+
+    <h2><span class="n">1</span>Mounting a remote</h2>
+    <p class="sub">Mounts are powered by <b>rclone</b>, so anything rclone speaks works. The <em>Add mount</em> form asks for just three things — a <b>name</b>, a <b>remote</b>, and a <b>path</b>. Public <b>S3</b> works with no setup; other backends (GCS, Google Drive) need a one-time <code>rclone config</code> in a terminal, after which they appear in the <b>Remote</b> dropdown. Below are the exact values to fill in for each.</p>
+
+    <div class="remote-eg">
+      <div class="re-head">🪣 Amazon S3 — public bucket <span class="re-tag inapp">In-app, no setup</span></div>
+      <p class="sub">Fused Render ships a built-in <b>public-S3</b> remote (no credentials), so open data is a copy-paste. Here we mount building footprints from <a href="https://source.coop" target="_blank" rel="noopener">source.coop</a>:</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">source_coop</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">AWS S3 — public buckets (no credentials) <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="mountPath">us-west-2.opendata.source.coop/vida/google-microsoft-open-buildings/pmtiles/by_country/country_iso=AND</span>
+          <button class="copybtn mf-copy" data-copy="mountPath">Copy</button></div>
+        </div>
+        <div class="mf-note">Region <code>us-west-2</code> is set by that remote already. For a <b>private</b> bucket, pick the credentialed S3 remote instead and it'll ask for your access keys.</div>
+      </div>
+    </div>
+
+    <div class="remote-eg">
+      <div class="re-head">☁️ Google Cloud Storage <span class="re-tag cli">rclone config first</span></div>
+      <p class="sub">GCS needs a one-time remote. In a terminal run <code>rclone config</code>, add a remote of type <code>google cloud storage</code>, and name it <code>gcs</code> (for public buckets, answer <em>yes</em> to anonymous access; otherwise point it at a service-account key):</p>
+      <div class="promptbox"><button class="copybtn" data-copy="gcsCfg">Copy</button><pre id="gcsCfg">rclone config          # New remote → name: gcs → storage: google cloud storage</pre></div>
+      <p class="sub">Then in the <em>Add mount</em> form, the <code>gcs</code> remote is now in the dropdown:</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">gcs_landsat</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">gcs <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="gcsPath">gcp-public-data-landsat/LC08/01/044/034</span>
+          <button class="copybtn mf-copy" data-copy="gcsPath">Copy</button></div>
+        </div>
+        <div class="mf-note">Path is <code>bucket/prefix</code>. <code>gcp-public-data-landsat</code> is an open Google bucket — no credentials needed with anonymous access.</div>
+      </div>
+    </div>
+
+    <div class="remote-eg">
+      <div class="re-head">📁 Google Drive <span class="re-tag cli">rclone config first</span></div>
+      <p class="sub">Google Drive is an OAuth backend, so the browser sign-in happens during <code>rclone config</code>. Add a remote of type <code>drive</code>, name it <code>gdrive</code>, and complete the sign-in it opens:</p>
+      <div class="promptbox"><button class="copybtn" data-copy="gdriveCfg">Copy</button><pre id="gdriveCfg">rclone config          # New remote → name: gdrive → storage: drive → sign in when the browser opens</pre></div>
+      <p class="sub">Then mount a folder from your Drive by name (leave the path blank for the whole Drive):</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">my_drive</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">gdrive <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="gdrivePath">Reports/2026</span>
+          <button class="copybtn mf-copy" data-copy="gdrivePath">Copy</button></div>
+        </div>
+        <div class="mf-note">Path is a folder inside your Drive (e.g. <code>Reports/2026</code>), or empty for the root.</div>
+      </div>
+    </div>
+
+    <figure class="figure"><img data-shot="assets/shot_mount.webp" alt="The Fused Render Mounts page with the Add mount form and existing mounts">
+      <figcaption><b>The Mounts page</b> — the <em>Add mount</em> form (name · remote · path) plus mounts already connected, like open datasets on source.coop and CMIP6.</figcaption></figure>
+
+    <h2><span class="n">2</span>Navigate & open</h2>
+    <p class="sub">Once mounted, <b>source_coop</b> appears in the file tree beside your local folders. Open it, click <code>AND.pmtiles</code>, and it renders through the <code>pmtiles</code> template as an interactive map of Andorra's buildings — nothing downloaded up front, just the byte ranges the map needs.</p>
+    <ol class="mount-steps">
+      <li>Add the mount with the values above.</li>
+      <li>In the file tree, expand <b>source_coop</b> → the <code>country_iso=AND</code> folder.</li>
+      <li>Click <code>AND.pmtiles</code> → it opens as a map.</li>
+    </ol>
+    <figure class="figure"><img data-shot="assets/shot_mount_open.webp" alt="AND.pmtiles from the mounted source.coop bucket, rendered as a building-footprint map">
+      <figcaption><b>Andorra building footprints</b>, opened straight from the mounted <code>source coop</code> bucket (see the breadcrumb) — rendered by the <code>pmtiles</code> template.</figcaption></figure>
+  </section>
+
+  <!-- ============================ 5 · DEPLOY (BETA) ============================ -->
+  <section class="page" data-slug="deploy" data-title="Deploy your Render" data-ix="5" data-beta="1">
+    <p class="crumb">Publish</p>
+    <h1 class="title">Deploy your Render <span class="y" style="font-size:15px">· Beta</span></h1>
+    <p class="lede">Take a project that runs on your machine and <b>deploy it</b> so others can open it in a browser.</p>
+
+    <div class="callout beta"><span class="lab">Beta · limited availability</span>
+      <p style="margin:6px 0 0">Performance won't match local, and you can't move much data through a deployed app yet. Expect rough edges while this matures.</p></div>
+
+    <h2><span class="n">1</span>Requirements</h2>
+    <ul>
+      <li><b>Turn Deploy on</b> — it's off by default while in beta. Open <b>Preferences</b> and enable the Deploy button; it then appears on every page.</li>
+      <li>A <b>Fused account</b> — sign up at <a href="https://www.fused.io" target="_blank" rel="noopener">fused.io</a> and sign in with the <code>fused</code> CLI.</li>
+      <li>Your project should already run locally the way you want it.</li>
+    </ul>
+    <div class="callout beta"><span class="lab">Enable it first</span>
+      <p style="margin:6px 0 0">Don't see a <b>Deploy</b> button on your pages? It's hidden until you switch it on in <b>Preferences</b> — that's expected during the beta.</p></div>
+
+    <h2><span class="n">2</span>Deploying</h2>
+    <p class="sub">Hit <b>Deploy</b> on any page. Pick which files ship (the page, its Python, and any bundled data), choose a managed Fused environment, and you get a shareable <code>open.fused.io</code> URL — redeploying keeps the same link.</p>
+    <figure class="figure"><img data-shot="assets/shot_deploy.webp" alt="The Deploy dialog: active URL, the files that will publish, and Redeploy / Revoke">
+      <figcaption><b>The Deploy dialog</b> — the live URL, the files that will publish, and Redeploy / Revoke.</figcaption></figure>
+
+    <h2><span class="n">3</span>See a live one</h2>
+    <p class="sub">The <b>COG Overview Pyramid</b> example, deployed — it opens a cloud-optimized GeoTIFF and stacks every resolution level into an interactive 3D pyramid, with each level's pixel size and byte cost. Open it in your browser, no install:</p>
+    <a class="browser" href="https://open.fused.io/5p5yp52aolmwqks63j7l4e7x3u" target="_blank" rel="noopener">
+      <div class="bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="url">open.fused.io/5p5yp52aolmwqks63j7l4e7x3u</div>
+        <span class="go">open ↗</span>
+      </div>
+      <img data-shot="assets/shot_cog_pyramid.webp" alt="Deployed COG Overview Pyramid running in the browser, on a Maxar optical scene">
+    </a>
+    <p class="sub" style="font-size:12px;color:var(--mut)">Deployed straight from the <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener">cog_overview_pyramid</a> example — hosted it runs in a read-only mode on a bundled sample COG (a Maxar optical scene of Manila).</p>
+  </section>
+
+  <!-- ============================ 6 · SHOWCASE ============================ -->
+  <section class="page" data-slug="showcase" data-title="Showcase & Best Practices" data-ix="6">
+    <p class="crumb">Examples</p>
+    <h1 class="title">Showcase &amp; Best Practices</h1>
+    <p class="lede">Working projects you can open and pick apart — each one is a <b>page plus a Python file</b> in a folder, like everything in Fused Render. Clicking a card clones it into your workspace.</p>
+
+    <h2><span class="n">1</span>Local tools</h2>
+    <p class="sub">Fused Render pointed at your own machine — files, processes, and settings as web pages.</p>
+    <div class="cards" id="localCards"></div>
+
+    <h2><span class="n">2</span>Geospatial</h2>
+    <p class="sub">Maps, hexagons, rasters, and public datasets — analysis that runs on your machine.</p>
+    <div class="cards" id="geoCards"></div>
+
+    <h2><span class="n">3</span>Best practices</h2>
+    <p class="sub">How the team gets things working.</p>
+    <div class="grid2">
+      <div class="card"><h4 style="margin:0 0 6px;font-size:13.5px">For a project</h4>
+        <p style="margin:0;font-size:12.5px">Use <b>query params</b> to debug — drive the page into any state from the URL and reproduce it instantly. See <a href="?page=using">state lives in the URL</a>.</p></div>
+      <div class="card"><h4 style="margin:0 0 6px;font-size:13.5px">For templates</h4>
+        <p style="margin:0;font-size:12.5px">Let Claude <b>read the existing templates</b> first, then build on top of them rather than from scratch.</p></div>
+    </div>
+    <p class="sub" style="margin-top:16px">Browse the source of every example at <a href="https://github.com/fusedio/fused-render-examples" target="_blank" rel="noopener">github.com/fusedio/fused-render-examples</a>.</p>
+  </section>
+
+  <div class="pager" id="pager"></div>
+</div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const hasFused = typeof fused !== "undefined";
+
+/* ---------------- showcase data (local tools first, then geospatial) ---------------- */
+const LOCAL = [
+  { n:"visual_claude", t:"Visual Claude", feat:true, d:"A visual settings page for Claude Code. Edits write straight to ~/.claude, with git keeping every version.", tags:["local machine","git-versioned"] },
+  { n:"pytop", t:"pytop", d:"A live, top-style system and process monitor built from the Python stdlib alone.", tags:["local machine","stdlib only"] },
+  { n:"disk_usage", t:"Disk Usage", d:"A treemap of your disk. Find what's eating space and clean it up.", tags:["local machine","treemap"] },
+  { n:"notion_db", t:"Notion-style Tasks", d:"A task tracker with views and filters, backed by a local Parquet lake.", tags:["local machine","Parquet"] },
+];
+const GEO = [
+  { n:"hexagon_lab", t:"Hexagon Lab", feat:true, d:"A three-tab H3 sandbox: aggregate buildings, sample terrain rasters, and diff dataset releases — all on one hexagonal grid.", tags:["H3","rasters","diffs"] },
+  { n:"locker_network_simulator", t:"Locker Network Simulator", feat:true, d:"Place parcel lockers on a real road network and watch delivery routes re-optimize as you move them.", tags:["routing","optimization"] },
+  { n:"buildings_to_hexagons", t:"Buildings to Hexagons", d:"An interactive explainer that turns every building on Earth into H3 hexes, step by step.", tags:["H3","explainer"] },
+  { n:"cog_range_viewer", t:"COG Range Viewer", d:"Stream tiles out of a huge cloud-optimized GeoTIFF with HTTP range requests — nothing is downloaded.", tags:["COG","HTTP ranges"] },
+  { n:"cog_overview_pyramid", t:"COG Overview Pyramid", d:"Every resolution level of a COG stacked into an interactive 3D pyramid.", tags:["COG","3D"] },
+  { n:"overture_census_isochrone", t:"Isochrone Explorer", d:"Combine a travel-time isochrone with Overture POIs and Census income on H3 hexes.", tags:["H3","Overture","Census"] },
+  { n:"zonal_stats_hex", t:"Zonal Stats", d:"Who lives at what elevation: Census population joined against a DEM in DuckDB.", tags:["DuckDB","DEM","Census"] },
+  { n:"store_site_selection", t:"Store Site Selection", d:"Where should a cafe open? Score census tracts with weights you control — opens with an Austin demo, no setup.", tags:["Census","scoring"] },
+  { n:"forest_carbon_monitor", t:"Forest Carbon Monitor", d:"Track deforestation inside protected areas using Global Forest Watch data.", tags:["GFW","time series"] },
+  { n:"disaster_response_dashboard", t:"Disaster Response Dashboard", d:"Satellite imagery, a storm track, and building footprints fused for one disaster event.", tags:["imagery","buildings"] },
+  { n:"gers_pixel_ref", t:"GERS Pixel References", d:"eopix: mint and resolve GERS-anchored byte-range references to individual pixels.", tags:["GERS","COG"] },
+];
+const REPO = "https://github.com/fusedio/fused-render-examples/tree/main/";
+const monogram = n => n.split("_").map(w => w[0]).join("").slice(0,3).toUpperCase();
+// Our own absolute path, however this page was served: /render?path=<abs>,
+// or /view/<abs> and /embed/<abs> (per-segment-encoded path in the URL).
+function detectOwnPath(){
+  const q = new URLSearchParams(location.search).get("path");
+  if (q) return q;
+  const m = location.pathname.match(/^\/(?:view|embed|render)\/(.+)$/);
+  if (m) return "/" + m[1].split("/").map(s => { try { return decodeURIComponent(s); } catch(e){ return s; } }).join("/");
+  return null;
+}
+// Resolve a card thumbnail. rawUrl wants an ABSOLUTE path, so images work in the
+// app; falls back to a relative path for file://.
+const _ownPath = detectOwnPath();
+const _ownDir = _ownPath ? _ownPath.slice(0, _ownPath.lastIndexOf("/")) : null;
+function imgSrc(rel){
+  if (typeof fused !== "undefined" && fused.rawUrl && _ownDir) return fused.rawUrl(_ownDir + "/" + rel);
+  return rel;
+}
+function assetUrl(name){ return imgSrc("assets/" + name + ".jpg"); }
+function cardHtml(p, prefix){
+  const tags = p.tags.map(t => '<span class="t">'+t+'</span>').join("") + (p.key ? '<span class="t key">needs API key (free)</span>' : "");
+  return '<a class="scard'+(p.feat?' feat':'')+'" href="fused-render://open?git='+REPO+prefix+p.n+'">'+
+    '<div class="media"><span class="mono-fb">'+monogram(p.n)+'</span>'+
+    '<img loading="lazy" alt="" src="'+assetUrl(p.n)+'" onerror="this.remove()"></div>'+
+    '<div class="cbody"><h4>'+p.t+' <span class="cn">'+p.n+'</span></h4><p>'+p.d+'</p>'+
+    '<div class="tags">'+tags+'</div></div></a>';
+}
+function renderCards(el, list, prefix){ if (el) el.innerHTML = list.map(p => cardHtml(p, prefix)).join(""); }
+renderCards($("#localCards"), LOCAL, "local-tools/");
+renderCards($("#geoCards"), GEO, "geospatial/");
+
+// Home page shows a curated, mixed row (local + geo). Strip `feat` so they render
+// as equal-width cards in the 3-column grid.
+const HOME_PICKS = [["visual_claude","local-tools/"],["hexagon_lab","geospatial/"],["pytop","local-tools/"]];
+const findCard = n => LOCAL.concat(GEO).find(x => x.n === n);
+const homeShow = $("#homeShowcase");
+if (homeShow) homeShow.innerHTML = HOME_PICKS.map(([n, pfx]) => {
+  const p = findCard(n); return p ? cardHtml(Object.assign({}, p, { feat:false }), pfx) : "";
+}).join("");
+
+/* ---------------- assign stable ids to headings (for deep links + search) ---------------- */
+const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+$$(".page").forEach(pg => {
+  pg.querySelectorAll("h2,h3").forEach(h => {
+    const txt = (h.querySelector(".n") ? h.textContent.replace(/^\s*\d+\s*/,"") : h.textContent).trim();
+    if (!h.id) h.id = slugify(txt) || ("s-"+Math.abs(txt.length));
+    h.dataset.text = txt;
+  });
+});
+
+/* ---------------- build sidebar nav ---------------- */
+// A section with the `data-hidden` attribute is dropped from the nav, router,
+// pager and search entirely (its markup stays, so it's a one-attribute toggle).
+const PAGES = $$(".page:not([data-hidden])").map(pg => ({
+  slug: pg.dataset.slug, title: pg.dataset.title,
+  beta: pg.dataset.beta === "1", el: pg,
+}));
+const navEl = $("#nav");
+PAGES.forEach(p => {
+  const a = document.createElement("a");
+  a.className = "top"; a.href = "?page=" + p.slug; a.dataset.slug = p.slug;
+  a.innerHTML = p.title + (p.beta ? '<span class="beta">Beta</span>' : "");
+  a.addEventListener("click", e => { e.preventDefault(); goto(p.slug); });
+  navEl.appendChild(a);
+  const sub = document.createElement("div");
+  sub.className = "subnav"; sub.dataset.for = p.slug;
+  p.el.querySelectorAll("h2").forEach(h => {
+    const link = document.createElement("a");
+    link.href = "?page="+p.slug+"#"+h.id; link.textContent = h.dataset.text; link.dataset.target = h.id;
+    link.addEventListener("click", e => { e.preventDefault(); goto(p.slug, h.id); });
+    sub.appendChild(link);
+  });
+  navEl.appendChild(sub);
+});
+
+// Neutralize any in-content links that point at a hidden page (so they don't
+// dead-end); turn them into plain text.
+const HIDDEN = new Set($$(".page[data-hidden]").map(pg => pg.dataset.slug));
+if (HIDDEN.size) $$('a[href^="?page="]').forEach(a => {
+  const slug = new URLSearchParams(a.getAttribute("href").slice(1).split("#")[0]).get("page");
+  if (HIDDEN.has(slug)) { const s = document.createElement("span"); s.textContent = a.textContent; a.replaceWith(s); }
+});
+
+/* ---------------- router ---------------- */
+function currentParams(){
+  if (hasFused && fused.params) return { get: k => fused.params.get(k) };
+  const u = new URLSearchParams(location.search);
+  return { get: k => u.get(k) };
+}
+function setPageParam(slug, hash){
+  // In the app, write through fused.params so the page survives refresh /
+  // bookmark / share (the read path uses fused.params too). Plain history for
+  // file:// where there's no shell.
+  if (hasFused && fused.params && fused.params.set) {
+    fused.params.set("page", slug);
+    return;
+  }
+  const u = new URLSearchParams(location.search);
+  u.set("page", slug);
+  const url = location.pathname + "?" + u.toString() + (hash ? "#"+hash : "");
+  history.pushState({ slug, hash }, "", url);
+}
+function goto(slug, hash){ setPageParam(slug, hash); render(slug, hash); }
+
+function render(slug, hash){
+  const p = PAGES.find(x => x.slug === slug) || PAGES[0];
+  PAGES.forEach(x => x.el.classList.toggle("active", x === p));
+  $$("#nav a.top").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
+  $$(".subnav").forEach(s => s.classList.toggle("show", s.dataset.for === p.slug));
+  document.title = p.title + " — Fused Render Learn";
+  buildPager(p);
+  if (p.slug === "claude") checkClaude();
+  if (p.slug === "templates") loadTemplates();
+  if (p.slug === "build") maybeHello();
+  if (p.slug === "home") initChooser();
+  // scroll: to heading if hash, else top of content
+  if (hash) {
+    const t = document.getElementById(hash);
+    if (t) { t.scrollIntoView({ behavior:"smooth", block:"start" }); markSub(hash); return; }
+  }
+  window.scrollTo({ top:0, behavior:"instant" in window ? "instant" : "auto" });
+  markSub(null);
+}
+function markSub(hash){
+  $$(".subnav.show a").forEach(a => a.classList.toggle("active", a.dataset.target === hash));
+}
+function buildPager(p){
+  const i = PAGES.indexOf(p), prev = PAGES[i-1], next = PAGES[i+1];
+  $("#pager").innerHTML =
+    (prev ? '<a href="?page='+prev.slug+'" data-slug="'+prev.slug+'"><span class="cap">← Previous</span>'+prev.title+'</a>' : '<span></span>')+
+    (next ? '<a class="nxt" href="?page='+next.slug+'" data-slug="'+next.slug+'"><span class="cap">Next →</span>'+next.title+'</a>' : '<span></span>');
+  $$("#pager a[data-slug]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); goto(a.dataset.slug); }));
+}
+window.addEventListener("popstate", () => {
+  const slug = currentParams().get("page") || PAGES[0].slug;
+  render(slug, location.hash ? location.hash.slice(1) : null);
+});
+
+/* ---------------- search ---------------- */
+const INDEX = [];
+PAGES.forEach(p => {
+  p.el.querySelectorAll("h2,h3").forEach(h => {
+    // gather the following prose until the next heading for match context
+    let ctx = "", n = h.nextElementSibling;
+    while (n && !/^H[23]$/.test(n.tagName)) { ctx += " " + n.textContent; n = n.nextElementSibling; }
+    INDEX.push({ page:p.slug, pageTitle:p.title, id:h.id, title:h.dataset.text, text:ctx.toLowerCase(), depth:h.tagName });
+  });
+});
+const qEl = $("#q"), resEl = $("#results");
+let selIdx = -1, curRes = [];
+function highlight(text, q){
+  const i = text.toLowerCase().indexOf(q);
+  if (i < 0) return text;
+  return text.slice(0,i)+"<mark>"+text.slice(i,i+q.length)+"</mark>"+text.slice(i+q.length);
+}
+function runSearch(){
+  const q = qEl.value.trim().toLowerCase();
+  if (!q) { closeSearch(); return; }
+  curRes = INDEX.filter(r => r.title.toLowerCase().includes(q) || r.text.includes(q))
+    .sort((a,b) => (b.title.toLowerCase().includes(q)?1:0) - (a.title.toLowerCase().includes(q)?1:0))
+    .slice(0, 12);
+  selIdx = curRes.length ? 0 : -1;
+  drawResults(q);
+}
+function drawResults(q){
+  if (!curRes.length) { resEl.innerHTML = '<div class="none">No matches</div>'; resEl.classList.add("open"); return; }
+  resEl.innerHTML = curRes.map((r,i) =>
+    '<a class="r'+(i===selIdx?" sel":"")+'" data-i="'+i+'"><span class="rt">'+highlight(r.title,q)+'</span>'+
+    '<span class="rp">'+r.pageTitle+'</span></a>').join("");
+  resEl.classList.add("open");
+  resEl.querySelectorAll(".r").forEach(a => {
+    a.addEventListener("mousedown", e => { e.preventDefault(); pickResult(+a.dataset.i); });
+  });
+}
+function pickResult(i){
+  const r = curRes[i]; if (!r) return;
+  qEl.value = ""; closeSearch(); goto(r.page, r.id);
+}
+function closeSearch(){ resEl.classList.remove("open"); resEl.innerHTML = ""; curRes = []; selIdx = -1; }
+qEl.addEventListener("input", runSearch);
+qEl.addEventListener("keydown", e => {
+  if (!curRes.length) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); selIdx = (selIdx+1)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); selIdx = (selIdx-1+curRes.length)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
+  else if (e.key === "Enter") { e.preventDefault(); pickResult(selIdx); }
+  else if (e.key === "Escape") { qEl.value=""; closeSearch(); qEl.blur(); }
+});
+document.addEventListener("click", e => { if (!e.target.closest(".search")) closeSearch(); });
+// "/" focuses search
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement !== qEl) { e.preventDefault(); qEl.focus(); }
+});
+
+/* in-content links like <a href="?page=x"> should route without reload */
+document.addEventListener("click", e => {
+  const a = e.target.closest('a[href^="?page="]');
+  if (!a || a.closest("#nav") || a.closest("#pager")) return;
+  e.preventDefault();
+  // Split the hash off before parsing the query, else "?page=x#sec" parses the
+  // slug as "x#sec" and matches no page.
+  const [qs, hash] = a.getAttribute("href").slice(1).split("#");
+  goto(new URLSearchParams(qs).get("page"), hash || null);
+});
+
+/* mobile menu */
+$("#menuBtn").addEventListener("click", () => $("#rail").classList.toggle("open"));
+
+/* wire real product screenshots (rawUrl needs the abs path we detected) */
+$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => { el.closest(".figure")?.remove(); }); });
+
+/* copy buttons — copy the target element's text */
+$$(".copybtn").forEach(btn => btn.addEventListener("click", async () => {
+  const src = document.getElementById(btn.dataset.copy);
+  if (!src) return;
+  try { await navigator.clipboard.writeText(src.textContent.trim()); }
+  catch { const r = document.createRange(); r.selectNode(src); getSelection().removeAllRanges(); getSelection().addRange(r); document.execCommand("copy"); getSelection().removeAllRanges(); }
+  const old = btn.textContent; btn.textContent = "Copied!"; btn.classList.add("done");
+  setTimeout(() => { btn.textContent = old; btn.classList.remove("done"); }, 1400);
+}));
+
+/* ---------------- live embeds (degrade gracefully without fused) ---------------- */
+const ownPath = detectOwnPath();
+const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
+const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
+const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+const embedUrl = p => "/embed/" + encPath(p);
+const viewUrl  = p => "/view/"  + encPath(p);
+
+function mountFrame(frameSel, ifSel, absPath, useShell){
+  const frame = $(frameSel);
+  if (!hasFused || !absPath) { frame.querySelector("iframe").style.display="none"; frame.querySelector(".miss").style.display="flex"; return; }
+  fused.stat(absPath).then(() => {
+    $(ifSel).src = useShell ? viewUrl(absPath) : embedUrl(absPath);
+  }).catch(() => { frame.querySelector("iframe").style.display="none"; frame.querySelector(".miss").style.display="flex"; });
+}
+// The demo lives in this folder, so the embed works wherever the Learn page is
+// opened (no dependency on a sibling example).
+const demoPath = ownDir ? ownDir + "/pi.html" : null;
+const demoPy   = ownDir ? ownDir + "/pi.py"   : null;
+mountFrame("#demoFrame", "#demoIf", demoPath, false);
+// "Show code": open the page and its Python side by side in a split view so you
+// can see exactly what's driving the demo. The `_layout` codec keeps slashes
+// literal and only escapes % , ; ( ) ? per segment (see frontend layout-codec.ts),
+// so we escape exactly those — NOT a generic per-segment encodeURIComponent.
+const paneSeg = p => p.replace(/%/g,"%25").replace(/,/g,"%2C").replace(/;/g,"%3B")
+  .replace(/\(/g,"%28").replace(/\)/g,"%29").replace(/\?/g,"%3F");
+// After per-segment escaping, the app runs a urlSafeLayout pass over the whole
+// codec string (%, #, space) before wrapping in _layout=(…); one decodeURIComponent
+// on read reverses it. Replicate it so a path with a space or # still yields a
+// valid URL (frontend layout-codec.ts).
+const urlSafeLayout = s => s.replace(/%/g,"%25").replace(/#/g,"%23").replace(/ /g,"%20");
+const splitUrl = (a, b) => "/view/_panel?_layout=(" + urlSafeLayout(paneSeg(a) + "," + paneSeg(b)) + ")";
+if (hasFused && demoPath) $("#demoOpen").href = splitUrl(demoPath, demoPy);
+else $("#demoOpen").style.display = "none";
+
+/* hello.py round trip */
+function sayGreeting(text){   // set the greeting as TEXT (never HTML) inside the yellow span
+  const s = document.createElement("span"); s.className = "y"; s.textContent = text;
+  const o = $("#helloOut"); o.textContent = ""; o.appendChild(s);
+}
+async function hello(){
+  const name = $("#nameInput").value.trim() || "world";
+  if (!hasFused) {
+    sayGreeting("Hello, " + name + "!");
+    $("#helloStatus").textContent = "(preview — open in Fused Render to run the real Python)";
+    return;
+  }
+  $("#helloStatus").textContent = "running hello.py…";
+  $("#helloBtn").disabled = true;
+  const t0 = performance.now();
+  try {
+    const data = await fused.runPython("./hello.py", { name });
+    sayGreeting(data.greeting);
+    $("#helloStatus").innerHTML = '✓ Python '+(data.python||"")+' answered in '+Math.round(performance.now()-t0)+' ms';
+  } catch(err){ $("#helloStatus").textContent = "error: " + err.message; }
+  $("#helloBtn").disabled = false;
+}
+$("#helloBtn").addEventListener("click", hello);
+$("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(); });
+// The hello demo lives on the Build page (not the default Home), so pre-populate
+// it lazily the first time Build is opened — never on initial Learn load, so we
+// don't fire a hidden runPython round-trip for users who stay on Home.
+let helloPrimed = false;
+function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
+
+/* ---- first-visit onboarding chooser (Layer 1 prototype) ----
+   Shows one lightweight question on the first visit to Home, routing the user
+   toward Build / Templates / Showcase. Non-invasive (no personal data), stored
+   only in localStorage, and never a gate — every path stays available below. */
+const chooserEl = $("#chooser");
+let chooserWired = false;
+function readIntent(){ try { return localStorage.getItem("fused.learn.intent"); } catch(e){ return null; } }
+function setIntent(v){ try { localStorage.setItem("fused.learn.intent", v); } catch(e){} }
+function initChooser(){
+  if (!chooserEl) return;
+  chooserEl.hidden = !!readIntent();          // hide once a choice (or skip) is stored
+  if (chooserWired) return;
+  chooserWired = true;
+  // Options keep their ?page= hrefs, so the global router handles navigation;
+  // we only record which path was chosen.
+  chooserEl.querySelectorAll(".ch-opt").forEach(a =>
+    a.addEventListener("click", () => setIntent(a.dataset.intent)));
+  $("#chSkip").addEventListener("click", () => { setIntent("skip"); chooserEl.hidden = true; });
+}
+
+/* live templates list (runs once, when the Templates page opens) */
+let tplLoaded = false, coreTpls = [], customTpls = [];
+const bareExt = e => e.toLowerCase().replace(/^\./, "");
+const extHit = (e, bare) => bare && bareExt(e).includes(bare);
+function tplChip(list, bare){
+  // With a search term active, float the matching extensions to the front and
+  // highlight them, so the reason a template matched is always visible.
+  let exts = list;
+  if (bare) exts = [...list].sort((a, b) => (extHit(b, bare) ? 1 : 0) - (extHit(a, bare) ? 1 : 0));
+  const shown = exts.slice(0, 5);
+  const more = exts.length - shown.length;
+  return shown.map(x => '<span'+(extHit(x, bare) ? ' class="hit"' : '')+'>'+x+'</span>').join("")
+    + (more > 0 ? '<span class="more">+'+more+'</span>' : "");
+}
+function tplMatches(t, term){
+  if (!term) return true;
+  const bare = term.replace(/^\./, "");
+  if (t.title.toLowerCase().includes(term) || t.name.toLowerCase().includes(term)) return true;
+  return (t.extensions || []).some(e => extHit(e, bare));
+}
+function drawTemplates(el, list, bare){
+  el.innerHTML = list.length ? list.map(t =>
+    '<div class="tpl"><div class="tn">'+t.title+'</div>'+
+    (t.extensions && t.extensions.length ? '<div class="tx">'+tplChip(t.extensions, bare)+'</div>' : '')+
+    '</div>').join("") : '<div class="tpl-empty">No match.</div>';
+}
+function filterTemplates(){
+  const term = ($("#tplSearch").value || "").trim().toLowerCase();
+  const bare = term.replace(/^\./, "");
+  const core = coreTpls.filter(t => tplMatches(t, term));
+  const cust = customTpls.filter(t => tplMatches(t, term));
+  drawTemplates($("#coreTemplates"), core, bare); $("#coreCount").textContent = core.length;
+  const custEl = $("#customTemplates");
+  if (customTpls.length) { custEl.style.display = ""; drawTemplates(custEl, cust, bare); $("#customCount").textContent = cust.length; $("#customEmpty").style.display = "none"; }
+  else { custEl.style.display = "none"; $("#customEmpty").style.display = "block"; }
+}
+async function loadTemplates(){
+  if (tplLoaded) return; tplLoaded = true;
+  // Link to the app's own template gallery (relative to the current origin, so
+  // no host/port is hard-coded); only meaningful when served over http(s).
+  const gl = $("#tplGalleryLink");
+  if (/^https?:$/.test(location.protocol)) { gl.href = "/view/_templates"; gl.style.display = ""; }
+  const coreEl = $("#coreTemplates");
+  if (!hasFused) {
+    coreEl.innerHTML = '<div class="tpl-loading">Open this page inside Fused Render to list the templates installed on your machine.</div>';
+    return;
+  }
+  try {
+    const r = await fused.runPython("./list_templates.py", {});
+    coreTpls = (r && r.core) || []; customTpls = (r && r.custom) || [];
+    filterTemplates();
+    const hint = $("#tplHint"); hint.style.display = "block";
+    hint.innerHTML = "When you open a file, Fused Render offers every template registered for that type — pick one, or set a default.";
+    $("#tplSearch").addEventListener("input", filterTemplates);
+  } catch(err){ coreEl.innerHTML = '<div class="tpl-loading">Couldn\'t read templates ('+err.message+').</div>'; }
+}
+
+/* conditional-template interactive demo */
+function condEval(){
+  const f = ($("#condFile").value || "").trim();
+  const match = f.toLowerCase().includes("special");
+  $("#condSpecial").classList.toggle("on", match);
+  $("#condSpecial").classList.toggle("off", !match);
+  $("#condDefault").classList.add("on");
+  $("#condOut").innerHTML = f
+    ? (match
+        ? '<code>condition.py</code> returned <b>True</b> → <b>Special View</b> is offered alongside the default.'
+        : '<code>condition.py</code> returned <b>False</b> → only the <b>Default template</b> shows.')
+    : 'Type a file name above.';
+}
+(function wireCond(){
+  const inp = $("#condFile"); if (!inp) return;
+  inp.addEventListener("input", condEval);
+  $$(".cond-chip").forEach(c => c.addEventListener("click", () => { inp.value = c.dataset.f; condEval(); }));
+  condEval();
+})();
+
+/* live claude-install check (runs once, when the Claude page opens) */
+let claudeChecked = false;
+async function checkClaude(){
+  if (claudeChecked) return;
+  claudeChecked = true;
+  const el = $("#claudeCheck"); if (!el) return;
+  const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
+  if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
+  try {
+    const r = await fused.runPython("./check_env.py", {});
+    const c = r && r.claude;
+    if (c && c.installed) {
+      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+c.version.replace(/\s*\(.*\)/,"")+"</b>" : "") +
+        (c.path ? ' <span class="ec-path">'+c.path+'</span>' : "") + ". You're ready to go.");
+    } else {
+      set("bad", "✗", "The <code>claude</code> command wasn't found on your PATH. Install Claude Code, then reload this page — <a href=\"https://claude.com/claude-code\" target=\"_blank\" rel=\"noopener\">get it here ↗</a>.");
+    }
+  } catch(err){ set("", "○", "Couldn't run the check ("+err.message+")."); }
+}
+
+/* URL-state slider */
+function drawLevel(v){
+  $("#level").value = v; $("#vLevel").textContent = v; $("#bar").style.width = v+"%"; $("#urlVal").textContent = v;
+  const q = $("#ubQ");
+  if (q) { q.classList.add("flash"); clearTimeout(q._t); q._t = setTimeout(() => q.classList.remove("flash"), 130); }
+}
+if (hasFused && fused.params){
+  const P = fused.params;
+  const read = () => drawLevel(P.get("level") || "40");
+  $("#level").addEventListener("input", e => P.set("level", String(e.target.value)));
+  if (P.onChange) P.onChange(read);
+  read();
+} else {
+  $("#level").addEventListener("input", e => drawLevel(e.target.value));
+  drawLevel("40");
+}
+
+/* ---------------- boot ---------------- */
+(function boot(){
+  const slug = currentParams().get("page") || PAGES[0].slug;
+  render(slug, location.hash ? location.hash.slice(1) : null);
+  // hello() is primed lazily via maybeHello() when the Build page opens — see render().
+})();
+</script>
+</body>
+</html>

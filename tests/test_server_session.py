@@ -9,7 +9,9 @@ module importable in venvs where TestClient's httpx dependency is missing, and
 sidesteps create_app's built-shell requirement).
 """
 import json
+import os
 
+import pytest
 from fastapi.responses import JSONResponse
 
 from fused_render.server import _session_get as GET
@@ -133,3 +135,88 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
     PUT(body={"path": str(f), "search": "city=oslo"}, x_fused="1")
     assert PUT(body={"path": str(f), "search": ""}, x_fused="1")["skipped"] is True
     assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
+
+
+# ------------------------------------------------- read-only remote mounts
+# A file browsed inside a read-only S3 mount must not get a lastSession
+# sidecar: os.access(W_OK) lies under CacheMode=full (the write lands in the
+# VFS cache and only 403s at the async upload — the sidecar-write incident),
+# so _session_put must consult the mount's read_only flag and skip the write
+# entirely rather than loop the doomed PutObject.
+
+@pytest.fixture
+def ro_mount(tmp_path, monkeypatch):
+    """A real file under a fake read-only mountpoint inside a redirected
+    FUSED_RENDER_HOME. Returns the absolute file path."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    import fused_render.shell.mounts as mounts
+
+    m = mounts.add_mount("pub", "pub-remote:bucket", read_only=True)
+    mp = mounts.mountpoint(m)
+    os.makedirs(mp)
+    f = os.path.join(mp, "cog.tif")
+    with open(f, "w") as fh:
+        fh.write("x")
+    return f
+
+
+def test_put_skips_under_read_only_mount(ro_mount):
+    # A qualifying (non-_mode) query would normally start a session.
+    resp = PUT(body={"path": ro_mount, "search": "_mode=geotiff&stretch=2,1471"},
+               x_fused="1")
+    assert resp == {"ok": True, "skipped": True}
+    # No sidecar written next to the mounted file.
+    assert not os.path.exists(ro_mount + ".json")
+    # And GET reports no session for it.
+    assert GET(path=ro_mount)["lastSession"] is None
+
+
+# --- mount-safe existence gate (_is_file_mount_safe) ----------------------
+# GET/PUT gate on _is_file_mount_safe. On a mount-backed path it MUST answer
+# via the rclone rc API (rc_kind_for), NEVER a kernel os.path.isfile — a cold
+# GETATTR there enumerates the whole parent S3 prefix and wedges the mount.
+# The gate is files-only, matching os.path.isfile: "file" passes, "dir" and
+# "missing" 404, and an "indeterminate" rc probe fails OPEN (never 404s a file
+# the user just opened on a transient rcd hiccup).
+
+@pytest.fixture
+def mount_gate(monkeypatch):
+    """Force every path mount-backed, make any kernel os.path.isfile on it fail
+    loudly, and let each test dictate rc_kind_for's answer. Returns a setter."""
+    import fused_render.shell.mounts as mounts
+
+    monkeypatch.setattr(mounts, "is_mount_backed", lambda p: True)
+
+    def _no_isfile(path):
+        raise AssertionError(f"kernel os.path.isfile({path}) touched the mount")
+
+    monkeypatch.setattr(os.path, "isfile", _no_isfile)
+
+    def _set(kind):
+        monkeypatch.setattr(mounts, "rc_kind_for", lambda path, **kw: kind)
+
+    return _set
+
+
+@pytest.mark.parametrize("kind,ok", [
+    ("file", True),           # a real file -> gate passes
+    ("indeterminate", True),  # rcd down/timeout -> fail open, gate passes
+    ("dir", False),           # a directory is not a file -> 404
+    ("missing", False),       # confirmed absent -> 404
+])
+def test_get_gate_is_files_only_via_rc(mount_gate, kind, ok):
+    mount_gate(kind)
+    resp = GET(path="/mnt/pub/big-prefix/cog.tif")
+    if ok:
+        assert _status(resp) == 200
+        assert resp == {"lastSession": None}
+    else:
+        assert _status(resp) == 404
+
+
+def test_put_gate_rejects_mount_directory_via_rc(mount_gate):
+    # A mount-backed DIRECTORY must 404 at the existence gate before any write,
+    # answered by rc_kind_for — regression for the gate accepting dirs.
+    mount_gate("dir")
+    resp = PUT(body={"path": "/mnt/pub/big-prefix", "search": "a=1"}, x_fused="1")
+    assert _status(resp) == 404

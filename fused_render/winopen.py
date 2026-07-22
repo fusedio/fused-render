@@ -10,7 +10,6 @@ import ctypes
 import json
 import logging
 import os
-import re
 import socket
 import subprocess
 import sys
@@ -22,7 +21,8 @@ import webbrowser
 from contextlib import contextmanager
 from urllib.parse import quote
 
-from fused_render._branch import branch_port, branch_ref, branch_suffix
+from fused_render._branch import branch_dir, branch_port, branch_suffix
+from fused_render._view_url_codec import view_url
 from fused_render.logs import setup_logging
 
 logger = logging.getLogger("fused_render")
@@ -82,9 +82,7 @@ _ICON_VARIANT_FOR_TOKEN = {
 
 _LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
 _APP_SUPPORT_BASE = os.path.join(_LOCALAPPDATA, "fused-render")
-APP_SUPPORT_DIR = (
-    _APP_SUPPORT_BASE if not branch_ref() else os.path.join(_APP_SUPPORT_BASE, branch_ref())
-)
+APP_SUPPORT_DIR = branch_dir(_APP_SUPPORT_BASE)
 PIDFILE = os.path.join(APP_SUPPORT_DIR, "server.pid")
 PORTFILE = os.path.join(APP_SUPPORT_DIR, "server.port")
 SERVER_LOG = os.path.join(APP_SUPPORT_DIR, "server.out.log")
@@ -246,19 +244,6 @@ def _ensure_server(requested: int | None) -> int:
         return _spawn(pick_port())
 
 
-_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def _view_url(port: int, path: str | None) -> str:
-    """Encode an fs path into a /view URL the way the frontend codec
-    (router.ts urlForFsPath) decodes it: only drive-letter paths get their
-    backslashes normalized, so a UNC path stays one percent-encoded segment."""
-    if not path:
-        return f"http://127.0.0.1:{port}/"
-    fs_path = os.path.abspath(path)
-    norm = fs_path.replace("\\", "/") if _DRIVE_PATH.match(fs_path) else fs_path
-    segments = [quote(seg, safe="") for seg in norm.lstrip("/").split("/") if seg]
-    return f"http://127.0.0.1:{port}/view/" + "/".join(segments)
 
 
 def _clone_url(port: int, raw_url: str) -> str:
@@ -437,7 +422,7 @@ def _open(path: str | None, requested_port: int | None) -> None:
     else:
         if path and not os.path.exists(path):
             raise RuntimeError(f"file not found: {path}")
-        url = _view_url(_ensure_server(requested_port), path)
+        url = view_url(_ensure_server(requested_port), os.path.abspath(path) if path else None)
     logger.info("opening %s", url)
     webbrowser.open(url)
 

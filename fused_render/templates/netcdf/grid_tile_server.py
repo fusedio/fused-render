@@ -24,8 +24,9 @@ Endpoints (GET, CORS *):
   /img?file=&var=&index=&max_cells=&cmap=...  -> whole-slice PNG (fallback
                                view for non-geographic grids)
 
-This file is kept BYTE-IDENTICAL in netcdf/ and zarr/ (the daemon
-version is a content hash, so both copies share one daemon).
+This daemon is keyed by a content hash of the script, so identical copies
+across templates share one running daemon. netcdf/ is now the sole copy (the
+former byte-identical zarr/ twin was removed when that template was retired).
 """
 # /// script
 # dependencies = ["numpy", "scipy", "zarr"]
@@ -110,11 +111,12 @@ def main(action: str = "ensure"):
         with open(STATE) as f:
             st = json.load(f)
         if _alive(st.get("port"), version):
-            return {"port": st["port"], "reused": True}
+            return {"port": st["port"], "token": st.get("token"), "reused": True}
         try:
             import urllib.request
             urllib.request.urlopen(
-                f"http://127.0.0.1:{st.get('port')}/quit", timeout=1).read()
+                f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
+                timeout=1).read()
         except Exception:
             pass
     except (OSError, ValueError):
@@ -131,7 +133,8 @@ def main(action: str = "ensure"):
             with open(STATE) as f:
                 st = json.load(f)
             if st.get("version") == version and _alive(st.get("port"), version):
-                return {"port": st["port"], "reused": False}
+                return {"port": st["port"], "token": st.get("token"),
+                        "reused": False}
         except (OSError, ValueError):
             continue
     return {"error": f"grid daemon did not start — see {log}"}
@@ -147,8 +150,13 @@ except ImportError:
 # ================================================================ daemon
 def _serve():
     import numpy as np
+    import secrets
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
+
+    # Per-daemon secret required on every data endpoint (except /ping), threaded
+    # in by the template as ?t=; see geotiff/tile_server.py for the rationale.
+    TOKEN = secrets.token_urlsafe(32)
 
     here = os.path.dirname(_me())
     sys.path.insert(0, here)
@@ -401,6 +409,12 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         if not py:
             raise Z.Unsupported(f"needs a system Python with {module} (set GEO_PYTHON)")
         env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        # NetCDF4/HDF5 opens request a POSIX file lock. Mounted buckets are
+        # served over NFS (see shell/mounts.py), which grants no locks, so HDF5
+        # aborts with "errno = 77, No locks available" (ENOLCK). The mounts are
+        # read-only, so disabling locking is safe. setdefault leaves an explicit
+        # host override intact.
+        env.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
         r = subprocess.run([py, "-c", code], input=json.dumps(params),
                            capture_output=True, text=True, timeout=180, env=env)
         if r.returncode != 0:
@@ -770,8 +784,6 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         vals = sample_bbox(s, mx0, my0, mx1, my1, TILE, TILE)
         return 200, encode_png(np.ascontiguousarray(colorize(q, s, vals))), "image/png"
 
-    dir_sizes = {}     # store path -> capped-walk size (None when capped)
-
     def do_meta(q):
         path = os.path.abspath(os.path.expanduser(q1(q, "file")))
         s = slice_of(q)
@@ -784,35 +796,18 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                "stats": s["stats"], "stretch": [s["stretch"]],
                "shape": [rows, cols],
                "lonlat_bounds": (g["bounds"] if g else None)}
+        # file_size: getsize() a regular file (a NetCDF, single stat — safe),
+        # but NEVER walk a directory store. INVARIANT: a zarr store can hold
+        # millions of chunk files and a single os.walk/os.scandir over a remote
+        # rclone NFS mount lists the whole S3 prefix — that trips the macOS NFS
+        # deadman and DROPS THE MOUNT, wedging the daemon. The old capped walk
+        # did NOT help: os.walk builds a directory's whole file list at once, so
+        # the fatal enumeration happens before any per-file cap is consulted.
+        # The daemon endpoints receive no `src`, so it cannot ask /api/fs/stat
+        # whether the path is remote (see GAP note) — hence size is simply
+        # omitted for directory stores. It is cosmetic; correctness > a number.
         try:
-            if os.path.isfile(path):
-                out["file_size"] = os.path.getsize(path)
-            elif path in dir_sizes:
-                out["file_size"] = dir_sizes[path]
-            else:
-                # capped walk: a store can hold millions of chunk files and on
-                # a remote mount every listing/stat is a network round-trip —
-                # give up after a short deadline instead of stalling /meta,
-                # and cache the answer so only the first /meta per store pays
-                deadline = time.time() + 2.0
-                total, files, capped = 0, 0, False
-                for dp, _, fs in os.walk(path):
-                    for f in fs:
-                        files += 1
-                        # Check per file, not per directory: a flat store can
-                        # hold all its chunks in one dir, and a per-dir check
-                        # would stat every one before the cap could fire.
-                        if time.time() > deadline or files > 20000:
-                            capped = True
-                            break
-                        try:
-                            total += os.path.getsize(os.path.join(dp, f))
-                        except OSError:
-                            pass
-                    if capped:
-                        break
-                dir_sizes[path] = None if capped else total
-                out["file_size"] = dir_sizes[path]
+            out["file_size"] = os.path.getsize(path) if os.path.isfile(path) else None
         except OSError:
             out["file_size"] = None
         return 200, json.dumps(out, default=str).encode(), "application/json"
@@ -878,6 +873,9 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
             last_hit[0] = time.time()
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            if u.path != "/ping" and q.get("t", [""])[0] != TOKEN:
+                self._send(403, b"forbidden", "text/plain")
+                return
             try:
                 if u.path == "/ping":
                     code, body, ct = 200, json.dumps(
@@ -923,7 +921,8 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
     port = srv.server_address[1]
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     with open(STATE, "w") as fh:
-        json.dump({"port": port, "pid": os.getpid(), "version": VERSION}, fh)
+        json.dump({"port": port, "token": TOKEN,
+                   "pid": os.getpid(), "version": VERSION}, fh)
 
     def reaper():
         while True:

@@ -1,14 +1,14 @@
 """Tests for first-run onboarding (fused_render/shell/seed.py, D81): the
-~/Documents/Fused workspace, its seeded examples, and starter bookmarks.
+~/Documents/Fused workspace, its seeded examples, starter bookmarks, and the
+first-launch landing URL.
 
 FUSED_RENDER_DIR (the Fused dir) and FUSED_RENDER_HOME (~/.fused-render, holding
 bookmarks.json) are both redirected to tmp dirs so no test touches a real dir.
 """
 import json
-import re
 from urllib.parse import unquote
 
-from fused_render.shell.seed import _sine_panel_url, ensure_fused_dir
+from fused_render.shell.seed import ensure_fused_dir, ensure_fused_dir_and_landing
 
 
 def _setup(tmp_path, monkeypatch):
@@ -23,19 +23,27 @@ def _bookmarks(home):
     return json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
 
 
+# Every project folder the packaged seed ships (dot-metadata like .DS_Store on
+# a dev machine is skipped by the seeder and must never land).
+SEED_DIRS = ["how_it_works", "showcase", "sine", "tutorial"]
+
+
 def test_seeds_examples_into_empty_dir(tmp_path, monkeypatch):
     fdir, _ = _setup(tmp_path, monkeypatch)
     returned = ensure_fused_dir()
 
     assert returned == str(fdir)
-    # All four packaged seed files land, each inside its own subfolder — nothing
+    # The packaged seed files land, each inside its own subfolder — nothing
     # loose at the workspace root.
     assert (fdir / "sine" / "sine.html").is_file()
     assert (fdir / "sine" / "sine.py").is_file()
     assert (fdir / "how_it_works" / "demo.py").is_file()
     assert (fdir / "how_it_works" / "explainer.html").is_file()
-    # Nothing spilled to the root: only the two example subfolders exist.
-    assert sorted(p.name for p in fdir.iterdir()) == ["how_it_works", "sine"]
+    assert (fdir / "showcase" / "index.html").is_file()
+    assert (fdir / "tutorial" / "index.html").is_file()
+    assert (fdir / "tutorial" / "hello.py").is_file()
+    # Nothing spilled to the root: only the example subfolders exist.
+    assert sorted(p.name for p in fdir.iterdir()) == SEED_DIRS
 
 
 def test_non_empty_dir_is_left_untouched(tmp_path, monkeypatch):
@@ -48,7 +56,7 @@ def test_non_empty_dir_is_left_untouched(tmp_path, monkeypatch):
     # Existing content preserved; no examples copied in over a user's own dir.
     assert (fdir / "my_work.html").read_text(encoding="utf-8") == "mine"
     assert not (fdir / "sine").exists()
-    assert not (fdir / "how_it_works").exists()
+    assert not (fdir / "showcase").exists()
 
 
 def test_dir_with_only_ds_store_still_seeds(tmp_path, monkeypatch):
@@ -60,7 +68,7 @@ def test_dir_with_only_ds_store_still_seeds(tmp_path, monkeypatch):
 
     ensure_fused_dir()
 
-    assert (fdir / "sine" / "sine.html").is_file()
+    assert (fdir / "showcase" / "index.html").is_file()
     assert (fdir / "how_it_works" / "explainer.html").is_file()
     # The hidden file survives — seeding never deletes anything.
     assert (fdir / ".DS_Store").read_bytes() == b"\x00"
@@ -73,14 +81,23 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
     ensure_fused_dir()
 
     marks = _bookmarks(home)
-    assert [m["name"] for m in marks] == ["Sine demo", "How it works"]
-    # Sine demo opens a two-pane panel split (render | code) — parses back under
-    # the layout codec to the SAME sine page in both panes, right in code mode.
-    left, right = _parse_panel(marks[0]["url"])
-    assert left == (str(fdir / "sine" / "sine.html"), "")
-    assert right == (str(fdir / "sine" / "sine.html"), "?_mode=code")
-    # How it works stays a plain /view/ + per-segment-encoded absolute path.
+    assert [m["name"] for m in marks] == [
+        "Tutorial",
+        "Showcase",
+        "Sine demo",
+        "How it works",
+    ]
+    # Tutorial/Showcase/How-it-works are plain /view/ + per-segment-encoded
+    # absolute paths; the Sine demo is a two-pane _panel split (page | code).
+    assert marks[0]["url"] == "/view" + _encoded(
+        str(fdir / "tutorial" / "index.html")
+    )
     assert marks[1]["url"] == "/view" + _encoded(
+        str(fdir / "showcase" / "index.html")
+    )
+    sine = (fdir / "sine" / "sine.html").as_posix()
+    assert marks[2]["url"] == f"/view/_panel?_layout=({sine},{sine}?_mode=code)"
+    assert marks[3]["url"] == "/view" + _encoded(
         str(fdir / "how_it_works" / "explainer.html")
     )
     # UUIDv4 ids + a numeric created_at, matching the store's shape.
@@ -90,70 +107,11 @@ def test_bookmarks_created_when_absent_with_view_urls(tmp_path, monkeypatch):
 
 
 def _encoded(abs_path: str) -> str:
-    # Mirror seed._view_url without importing it: leading slash kept as the
-    # /view join, each segment percent-encoded (round-trip check below covers
-    # the encoding rule itself).
-    from urllib.parse import quote
+    # The seed delegates to the shared codec (fused_render._view_url_codec),
+    # which owns the encoding rules and has its own tests (test_view_url_codec.py).
+    from fused_render._view_url_codec import view_url_path
 
-    return "/" + "/".join(quote(s, safe="!*'()") for s in abs_path.lstrip("/").split("/") if s)
-
-
-def _dec_seg(s: str) -> str:
-    # layout-codec.ts decSeg: reverse only the structural escapes in one pass.
-    return re.sub(r"%(25|2C|3B|28|29|3F)", lambda m: chr(int(m.group(1), 16)), s)
-
-
-def _split_top(s: str, sep: str) -> list:
-    # layout-codec.ts splitDepthAware: split on sep only at paren depth 0.
-    out, depth, cur = [], 0, ""
-    for ch in s:
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        if ch == sep and depth == 0:
-            out.append(cur)
-            cur = ""
-        else:
-            cur += ch
-    out.append(cur)
-    return out
-
-
-def _parse_panel(url: str) -> list:
-    # Faithful mini-port of splitShellSearch + parseLayout for a flat row split:
-    # balanced-paren extract the _layout span, one decodeURIComponent pass, then
-    # depth-aware split on ';' (rows) and ',' (columns), un-escaping each leaf.
-    assert url.startswith("/view/_panel?_layout=(") and url.endswith(")")
-    inner = unquote(url[len("/view/_panel?_layout=("):-1])
-    rows = _split_top(inner, ";")
-    assert len(rows) == 1  # single row, panes side by side
-    leaves = []
-    for cell in _split_top(rows[0], ","):
-        q = cell.find("?")
-        if q == -1:
-            leaves.append((_dec_seg(cell), ""))
-        else:
-            leaves.append((_dec_seg(cell[:q]), "?" + _dec_seg(cell[q + 1:])))
-    return leaves
-
-
-def test_sine_panel_url_exact_split_encoding():
-    # Exact expected string for a fake home: the panel codec keeps `/ ? & =`
-    # literal (it is NOT the /view/ per-segment encoding) and emits render|code.
-    p = "/fake/Documents/Fused/sine/sine.html"
-    assert _sine_panel_url(p) == (
-        "/view/_panel?_layout=("
-        "/fake/Documents/Fused/sine/sine.html,"
-        "/fake/Documents/Fused/sine/sine.html?_mode=code)"
-    )
-    # A space in the path is escaped by urlSafeLayout (%20), not left literal,
-    # and round-trips back through the codec to the original path.
-    spaced = "/fake/My Dir/sine/sine.html"
-    url = _sine_panel_url(spaced)
-    assert " " not in url and "My%20Dir" in url
-    left, right = _parse_panel(url)
-    assert left == (spaced, "") and right == (spaced, "?_mode=code")
+    return view_url_path(abs_path)[len("/view"):]
 
 
 def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
@@ -165,12 +123,30 @@ def test_bookmark_urls_encode_special_segments(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
     ensure_fused_dir()
 
-    url = _bookmarks(home)[1]["url"]  # "How it works" — a plain /view/ URL
+    url = _bookmarks(home)[0]["url"]  # "Tutorial" — a plain /view/ URL
     assert "My%20Fused%20Dir" in url  # space encoded, not literal
     assert " " not in url
-    # Decoding the /view/ path yields the real absolute file path.
-    decoded = "/" + "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
-    assert decoded == str(fdir / "how_it_works" / "explainer.html")
+    # Decoding the /view/ path yields the real absolute file path (drive-letter
+    # backslashes are normalized to '/' by the codec, so compare in '/' form).
+    decoded = "/".join(unquote(s) for s in url[len("/view/"):].split("/"))
+    expected = str(fdir / "tutorial" / "index.html").replace("\\", "/").lstrip("/")
+    assert decoded == expected
+
+
+def test_bookmark_urls_match_shared_codec(tmp_path, monkeypatch):
+    # The first-run seed must produce the same URL as the shared codec that
+    # winopen/deeplink already use — on Windows a drive path like
+    # C:\...\showcase\index.html must segment as /view/C%3A/... rather than
+    # collapsing into one %5C-encoded blob the frontend can't decode.
+    from fused_render._view_url_codec import view_url_path
+
+    fdir, home = _setup(tmp_path, monkeypatch)
+    _, landing = ensure_fused_dir_and_landing()
+
+    assert landing == view_url_path(str(fdir / "showcase" / "index.html"))
+    assert "%5C" not in landing
+    for m in _bookmarks(home):
+        assert "%5C" not in m["url"]
 
 
 def test_existing_bookmarks_never_overwritten(tmp_path, monkeypatch):
@@ -182,7 +158,7 @@ def test_existing_bookmarks_never_overwritten(tmp_path, monkeypatch):
     ensure_fused_dir()
 
     # Examples still seeded, but the pre-existing bookmarks file is untouched.
-    assert (fdir / "sine" / "sine.html").is_file()
+    assert (fdir / "showcase" / "index.html").is_file()
     assert _bookmarks(home) == existing
 
 
@@ -213,8 +189,8 @@ def test_partial_seed_leftover_is_cleaned_and_reseeded(tmp_path, monkeypatch):
     # Leftover gone; both examples fully seeded; nothing else at the root.
     assert not partial.exists()
     assert (fdir / "sine" / "sine.html").is_file()
-    assert (fdir / "how_it_works" / "explainer.html").is_file()
-    assert sorted(p.name for p in fdir.iterdir()) == ["how_it_works", "sine"]
+    assert (fdir / "showcase" / "index.html").is_file()
+    assert sorted(p.name for p in fdir.iterdir()) == SEED_DIRS
     # Bookmarks ride along with the completed seed.
     assert (home / "bookmarks.json").is_file()
 
@@ -230,3 +206,60 @@ def test_idempotent_second_run_is_noop(tmp_path, monkeypatch):
 
     assert (fdir / "sine" / "sine.html").read_text(encoding="utf-8") == "edited"
     assert _bookmarks(home) == first
+
+
+def test_first_launch_landing_is_showcase(tmp_path, monkeypatch):
+    # The one run that seeds the examples also reports the showcase /view/ URL
+    # so the entry points open the browser there on a brand-new install.
+    fdir, _ = _setup(tmp_path, monkeypatch)
+    returned, landing = ensure_fused_dir_and_landing()
+
+    assert returned == str(fdir)
+    assert landing == "/view" + _encoded(str(fdir / "showcase" / "index.html"))
+
+
+def test_no_landing_on_subsequent_runs(tmp_path, monkeypatch):
+    # Only the first (seeding) run lands on showcase; every later launch opens
+    # the root URL as before — existing installs see no behavior change.
+    _setup(tmp_path, monkeypatch)
+    ensure_fused_dir()
+
+    _, landing = ensure_fused_dir_and_landing()
+    assert landing is None
+
+
+def test_bookmarks_skip_missing_targets_on_legacy_workspace(tmp_path, monkeypatch):
+    # A legacy workspace (older seed set, bookmarks.json deleted): bookmark
+    # seeding re-runs but must only bookmark pages that actually exist —
+    # never a dangling bookmark onto a file that isn't there.
+    fdir, home = _setup(tmp_path, monkeypatch)
+    (fdir / "tutorial").mkdir(parents=True)
+    (fdir / "tutorial" / "index.html").write_text("old seed", encoding="utf-8")
+    # No showcase/ — the older seed never shipped it.
+
+    ensure_fused_dir()
+
+    marks = _bookmarks(home)
+    assert [m["name"] for m in marks] == ["Tutorial"]
+
+
+def test_no_bookmarks_when_no_targets_exist(tmp_path, monkeypatch):
+    # No bookmark target present in a non-empty dir: nothing to point at,
+    # so no bookmarks.json is written at all.
+    fdir, home = _setup(tmp_path, monkeypatch)
+    (fdir / "my_stuff").mkdir(parents=True)
+    (fdir / "my_stuff" / "notes.html").write_text("user content", encoding="utf-8")
+
+    ensure_fused_dir()
+
+    assert not (home / "bookmarks.json").exists()
+
+
+def test_no_landing_when_dir_has_user_content(tmp_path, monkeypatch):
+    # A non-empty dir never seeds, so it never redirects the first tab either.
+    fdir, _ = _setup(tmp_path, monkeypatch)
+    fdir.mkdir(parents=True)
+    (fdir / "notes.txt").write_text("hi", encoding="utf-8")
+
+    _, landing = ensure_fused_dir_and_landing()
+    assert landing is None

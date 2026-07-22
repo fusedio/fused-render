@@ -80,16 +80,22 @@ def available() -> bool:
 
 def get_backend():
     # Lazy singleton: importing the backend pulls in the fused package tree,
-    # and constructing it is only needed once per server process. 30s matches
-    # the built-in executor's per-run timeout.
+    # and constructing it is only needed once per server process. 60s matches
+    # the built-in executor's per-run timeout (executor.DEFAULT_TIMEOUT) — a
+    # cold overview read of a large remote COG legitimately takes ~30-40s, so
+    # the two engines must agree or the cold pyramid analyze dies at 30s here.
     global _backend
     if _backend is None:
         from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
 
+        from fused_render.executor import DEFAULT_TIMEOUT
+
         # cache_storage=None disables result caching explicitly (PY-9: fresh
         # execution every call). It is the upstream default today, but we may
         # track a nightly wheel — don't rely on a default staying put.
-        _backend = LocalPythonComputeBackend(timeout_seconds=30, cache_storage=None)
+        _backend = LocalPythonComputeBackend(
+            timeout_seconds=int(DEFAULT_TIMEOUT), cache_storage=None
+        )
     return _backend
 
 
