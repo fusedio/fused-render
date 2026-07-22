@@ -55,6 +55,9 @@ body {
   width: 6px;
   height: 100vh;
   cursor: col-resize;
+  /* Touch input: without this the browser claims the drag as a pan/scroll
+     and fires pointercancel mid-resize, despite pointer capture. */
+  touch-action: none;
   z-index: 10;
 }
 
@@ -76,6 +79,7 @@ body:has(.sidebar-resize-handle.resizing) {
   margin-left: auto;
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 /* Collapsed sidebar = a slim full-height strip that expands it back.
@@ -167,6 +171,17 @@ body:has(.sidebar-resize-handle.resizing) {
   color: var(--accent);
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+}
+
+/* Title truncates when the sidebar is dragged narrow (min 180px) so the
+   brand row never overflows; logo, version and collapse button keep their
+   size and the version stays visible beside the ellipsis. */
+.sidebar-brand .brand-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Package version after the name — smaller and muted grey. */
@@ -174,6 +189,7 @@ body:has(.sidebar-resize-handle.resizing) {
   font-size: 10.5px;
   font-weight: 500;
   color: var(--fg-muted);
+  flex-shrink: 0;
 }
 
 .sidebar-section {

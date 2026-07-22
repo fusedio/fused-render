@@ -1029,7 +1029,7 @@ export default function Sidebar({ config }: SidebarProps) {
             />
           </svg>
         </span>{" "}
-        fused-render
+        <span className="brand-title">fused-render</span>
         <span className="brand-version">v{config.version}</span>
         <button
           type="button"
