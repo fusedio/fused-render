@@ -341,6 +341,12 @@ body:has(.sidebar-resize-handle.resizing) {
   color: var(--error);
   font-size: 11px;
   cursor: help;
+  /* a.bookmark-name::after stretches over the whole row (see below); without
+     its own stacking context this badge would sit under that overlay and
+     never receive the hover/title it needs — same reason .bookmark-glyph
+     carries position+z-index. */
+  position: relative;
+  z-index: 1;
 }
 
 .bookmark-row.dragging {
