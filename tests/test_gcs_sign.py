@@ -418,6 +418,18 @@ def test_oauth_absent_expiry_with_refresh_token_forces_refresh(google_stub):
     assert gcssign.resolve_token(cfg).access_token == "NEW"
 
 
+def test_oauth_no_expiry_no_refresh_token_falls_through_to_adc(google_stub):
+    # FINDING 4: a stored oauth token with NO parseable expiry AND NO
+    # refresh_token would read as valid forever (expiry=None), trusting a
+    # possibly-dead access_token and never trying ADC. _creds_from_oauth must
+    # return None so resolution falls through to ADC.
+    google_stub.user_handler = lambda kw: _FakeCreds(token="OLD", valid=True)
+    google_stub.adc_handler = lambda scopes: (_FakeCreds(token="ADC_TOK"), "p")
+    cfg = {**_GCS, "client_id": "cid", "client_secret": "csec",
+           "token": json.dumps({"access_token": "OLD"})}  # no expiry/refresh
+    assert gcssign.resolve_token(cfg).access_token == "ADC_TOK"
+
+
 def test_resolve_credentials_returns_object_and_token_extracts(google_stub):
     marker = _FakeCreds(token="TOK", expiry=datetime.datetime(2030, 1, 1))
     google_stub.adc_handler = lambda scopes: (marker, "p")

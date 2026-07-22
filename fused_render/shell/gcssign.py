@@ -244,11 +244,17 @@ def _creds_from_oauth(cfg: dict):
             client_id=client_id, client_secret=client_secret,
             scopes=[_READ_ONLY_SCOPE])
         expiry = _parse_rclone_expiry(data.get("expiry"))
+        # No expiry to judge staleness by AND no refresh_token to renew with: the
+        # stored access_token would read as "valid forever" (google-auth trusts a
+        # None expiry) so a possibly-dead token would be trusted and ADC never
+        # tried. Treat it as unusable so resolution falls through to ADC (fix 4).
+        if expiry is None and not data.get("refresh_token"):
+            return None
         if expiry is not None:
             creds.expiry = expiry
-        # No expiry to judge staleness by: an expiry-less token reads as "valid"
-        # forever, so force one refresh when a refresh_token can renew it.
-        if expiry is None and data.get("refresh_token"):
+        # No expiry but a refresh_token is present (guarded above): force one
+        # refresh rather than trust the stale, expiry-less token.
+        if expiry is None:
             creds.refresh(Request())
         else:
             _refresh_if_needed(creds)
