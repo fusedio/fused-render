@@ -524,14 +524,14 @@
     </div>
     <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
 
-    <div class="callout beta"><span class="lab">Coming soon · Fused Render skills</span>
-      <p style="margin:6px 0 0">A one-line install that teaches Claude Code the Fused Render layout and the <code>fused</code> bridge is on the way. It'll look like this:</p>
+    <div class="callout"><span class="lab">Tip · Fused Render skills</span>
+      <p style="margin:6px 0 0">A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time:</p>
       <div class="promptbox" style="margin-top:11px">
         <button class="copybtn" data-copy="skillInstall">Copy</button>
-        <pre id="skillInstall">claude plugin marketplace add fusedio/fused-render
-claude plugin install fused-render@fused-render</pre>
+        <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
+/plugin install fused-render@fused-render</pre>
       </div>
-      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">Until it lands, Claude still does well when it can see an existing project — open one from the <a href="?page=showcase">Showcase</a> and ask it to build something similar. (Don't have Claude Code? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.)</p>
+      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">See the <a href="?page=skills">Claude Code skills</a> page for what each skill does. No Claude Code yet? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.</p>
     </div>
 
     <h2>The mental model</h2>
@@ -621,8 +621,7 @@ claude plugin install fused-render@fused-render</pre>
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
-  <!-- Claude Code integration: hidden for now (feature not ready to advertise).
-       To show it again, delete the data-hidden attribute below. Nothing else to change. -->
+  <!-- Not shown in nav yet (data-hidden). Remove data-hidden to surface it. -->
   <section class="page" data-slug="claude" data-title="Claude Code integration" data-hidden>
     <p class="crumb">Workflow</p>
     <h1 class="title">Claude Code integration</h1>
@@ -686,7 +685,7 @@ claude plugin install fused-render@fused-render</pre>
     <div class="promptbox">
       <button class="copybtn" data-copy="skillsAsk">Copy</button>
       <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
-    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=using">Using Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
+    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=build">Building with Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
   </section>
 
   <!-- ============================ 3 · TEMPLATES ============================ -->
@@ -1178,14 +1177,14 @@ const demoPy   = ownDir ? ownDir + "/pi.py"   : null;
 mountFrame("#demoFrame", "#demoIf", demoPath, false);
 // "Show code": open the page and its Python side by side in a split view so you
 // can see exactly what's driving the demo. The `_layout` codec keeps slashes
-// literal and only escapes % , ; ( ) ? per segment (see frontend layout-codec.ts),
+// literal and only escapes % , ; ( ) ? per segment (see the shell's layout URL codec),
 // so we escape exactly those — NOT a generic per-segment encodeURIComponent.
 const paneSeg = p => p.replace(/%/g,"%25").replace(/,/g,"%2C").replace(/;/g,"%3B")
   .replace(/\(/g,"%28").replace(/\)/g,"%29").replace(/\?/g,"%3F");
 // After per-segment escaping, the app runs a urlSafeLayout pass over the whole
 // codec string (%, #, space) before wrapping in _layout=(…); one decodeURIComponent
 // on read reverses it. Replicate it so a path with a space or # still yields a
-// valid URL (frontend layout-codec.ts).
+// valid URL (the shell's layout URL codec).
 const urlSafeLayout = s => s.replace(/%/g,"%25").replace(/#/g,"%23").replace(/ /g,"%20");
 const splitUrl = (a, b) => "/view/_panel?_layout=(" + urlSafeLayout(paneSeg(a) + "," + paneSeg(b)) + ")";
 if (hasFused && demoPath) $("#demoOpen").href = splitUrl(demoPath, demoPy);
@@ -1324,14 +1323,17 @@ async function checkClaude(){
   if (claudeChecked) return;
   claudeChecked = true;
   const el = $("#claudeCheck"); if (!el) return;
+  // Escape via the browser's own text→HTML encoding (not a hand-rolled
+  // replace-chain) for values that come from the local filesystem / subprocess.
+  const escHtml = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
   const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
   if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
   try {
     const r = await fused.runPython("./check_env.py", {});
     const c = r && r.claude;
     if (c && c.installed) {
-      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+c.version.replace(/\s*\(.*\)/,"")+"</b>" : "") +
-        (c.path ? ' <span class="ec-path">'+c.path+'</span>' : "") + ". You're ready to go.");
+      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+escHtml(c.version.replace(/\s*\(.*\)/,""))+"</b>" : "") +
+        (c.path ? ' <span class="ec-path">'+escHtml(c.path)+'</span>' : "") + ". You're ready to go.");
     } else {
       set("bad", "✗", "The <code>claude</code> command wasn't found on your PATH. Install Claude Code, then reload this page — <a href=\"https://claude.com/claude-code\" target=\"_blank\" rel=\"noopener\">get it here ↗</a>.");
     }

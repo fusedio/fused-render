@@ -880,9 +880,13 @@ the product gains network access.
 - **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
   succeeds on a given backend is the installed fused CLI's contract, not ours —
   the fused repo's spec/serve/fused-render.md publishes bundles via
-  `share create` on AWS envs and lists the managed backend's inline-upload
-  bundle classification as a follow-up. fused-render passes the CLI's own
-  error through verbatim rather than second-guessing the installed version.
+  `share create` on AWS envs and classifies them for inline upload
+  (`kind="html"`) on the managed backend, both as of fused 2.9.3.post6 (the
+  wheel this package pins as of that decision; the pin has since advanced —
+  see the `[fused]` extra in pyproject.toml); a control plane running an
+  older fused rejects the upload server-side. fused-render passes the CLI's
+  own error through verbatim rather than second-guessing the installed
+  version.
 - **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
   results") plus a duration select (1m/5m/15m/1h/6h/1d/7d/14d presets, default
   **1h**, plus the current value verbatim when it isn't one of them — e.g. set by a
@@ -902,7 +906,7 @@ the product gains network access.
   `repoint`/redeploy can change it too); for a managed `fused` environment the
   manifest field is not read at all — only the explicit `--cache-max-age` flag
   is, as the mount's own `cache_settings` (a control-plane concept independent
-  of the bundle, `application` repo spec `021` §3.1, amended). `deploy_page`
+  of the bundle, defined by the managed Fused service, amended). `deploy_page`
   now sends `--cache-max-age` on every path — `create`, `repoint`, and the
   follow-up `repoint` after a revoked-token `recreate --same-token` — so a
   redeploy on either backend applies whatever the dialog's checkbox/duration

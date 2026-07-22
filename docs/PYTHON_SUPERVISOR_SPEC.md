@@ -4,11 +4,9 @@ Status: experiment. Goal is to decide whether the Windows desktop supervisor can
 be pure Python (removing the Rust toolchain) without losing the guarantees the
 Rust version already ships.
 
-The **behavioral contract** is the working Rust supervisor on branch
-`feat/windows-desktop-foundation` (PR #162), `windows/supervisor/src/*.rs`, and
-`docs/WINDOWS_DESKTOP_ARCHITECTURE.md` on that branch. This branch (`experiment/
-python-supervisor`) is cut from `main` and does **not** contain that code — read
-it from the PR branch. Match its behavior; do not invent new semantics.
+The **behavioral contract** is the working Rust supervisor — the Windows desktop
+supervisor implementation and its architecture doc, tracked separately and not
+yet on `main`. Match its behavior; do not invent new semantics.
 
 ## Why this experiment
 
