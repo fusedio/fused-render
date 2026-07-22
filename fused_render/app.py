@@ -47,12 +47,15 @@ def view_url_path(fs_path: str) -> str:
     describes (the frontend resolves its relative paths against the file's
     own directory). Everything else opens as a plain `/view/<path>`.
     Module-level (not a closure) so it is testable without AppKit.
-    """
-    from urllib.parse import quote
 
-    if fs_path.lower().endswith(".bookmark"):
-        return "/view/_bookmark?file=" + quote(fs_path, safe="")
-    return "/view" + quote(fs_path)
+    Delegates to the shared `_view_url_codec` (the single body, now 4/4
+    consumers with winopen/deeplink/shell.seed) so macOS encodes paths exactly
+    as the frontend router and the Windows supervisor do — per-segment with the
+    `!*'()` safe set of `encodeURIComponent`.
+    """
+    from fused_render._view_url_codec import view_url_path as _shared
+
+    return _shared(fs_path)
 
 
 def clone_url_path(raw_url: str) -> str:
