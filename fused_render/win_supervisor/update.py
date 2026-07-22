@@ -51,6 +51,11 @@ _IDYES = 6
 # while _check_lock is held, so the set needs no separate guard.
 _check_lock = threading.Lock()
 _prompted_versions: set[str] = set()
+# Set once an installer has been launched. The app stays up until the Inno
+# wizard finishes and --shutdown-for-upgrade fires; this latch stops a check in
+# that window from downloading again and launching a second setup. Only touched
+# under _check_lock.
+_install_launched = False
 
 
 class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
@@ -104,6 +109,10 @@ def check(paths: DesktopPaths) -> None:
         _alert("An update check or install is already in progress.", _MB_ICONINFORMATION)
         return
     try:
+        if _install_launched:
+            _alert("An update has already been started. Restart FusedRender to check again.",
+                   _MB_ICONINFORMATION)
+            return
         try:
             manifest = _fetch_manifest()
             newer = _is_newer(manifest["version"], __version__)
@@ -126,6 +135,8 @@ def _auto_check(paths: DesktopPaths) -> None:
     if not _check_lock.acquire(blocking=False):
         return
     try:
+        if _install_launched:
+            return
         try:
             manifest = _fetch_manifest()
             if not _is_newer(manifest["version"], __version__):
@@ -146,6 +157,7 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
     app. A declined version is remembered so the background loop won't re-offer
     it this session; an accepted-but-failed launch is not, so it retries. Call
     only while _check_lock is held."""
+    global _install_launched
     version = manifest["version"]
     try:
         installer = _download_verified(manifest)
@@ -171,6 +183,10 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
         # Always alert (even on the background path): the user clicked Install,
         # so a failure here must not look like a silent no-op.
         _alert("The update could not be started.", _MB_ICONERROR)
+        return
+    # Launched: the app is about to be replaced. Latch so no later check can
+    # download again and launch a second setup during the wizard window.
+    _install_launched = True
 
 
 def _fetch_manifest() -> dict:

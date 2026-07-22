@@ -138,8 +138,9 @@ def paths():
 
 
 @pytest.fixture(autouse=True)
-def _reset_prompted(monkeypatch):
+def _reset_state(monkeypatch):
     monkeypatch.setattr(update, "_prompted_versions", set())
+    monkeypatch.setattr(update, "_install_launched", False)
 
 
 def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.exe"):
@@ -164,6 +165,17 @@ def test_auto_check_installs_when_accepted(monkeypatch, paths):
     started, prompts, _ = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
     update._auto_check(paths)
     assert prompts == ["0.4.0"] and started == ["C:/tmp/setup.exe"]
+
+
+def test_no_second_install_after_launch(monkeypatch, paths):
+    started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
+    update._auto_check(paths)
+    assert started == ["C:/tmp/setup.exe"]  # first install launched
+    # Once launched, neither a background tick nor a manual check starts a
+    # second install while the app waits for the wizard to finish.
+    update._auto_check(paths)
+    update.check(paths)
+    assert started == ["C:/tmp/setup.exe"] and any("already been started" in a for a in alerts)
 
 
 def test_auto_check_no_install_when_declined(monkeypatch, paths):
