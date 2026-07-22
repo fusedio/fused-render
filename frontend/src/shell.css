@@ -1744,6 +1744,46 @@ body.embed .open-as-app-chip:hover {
   color: var(--fg);
 }
 
+/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
+.listing-toast-action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
+.listing-toast-action:hover {
+  border-color: var(--fg-muted);
+}
+
+/* Global toast host (ToastHost): a fixed, bottom-centre stack over any view.
+   Neutralises .listing-toast's own absolute positioning so entries stack —
+   newest at the bottom (column-reverse), nearest the user's eye. */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast-host .listing-toast {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  pointer-events: auto;
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;

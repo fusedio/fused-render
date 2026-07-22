@@ -3285,6 +3285,197 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
         logger.warning("force-detach of builtin learn mount failed", exc_info=True)
 
 
+# ------------------------------------------------------ mount health monitor
+# A background poll loop that watches every mount for a wedge/disconnect and
+# auto-reconnects it ONCE per disconnect episode, so the common macOS NFS drop
+# (rclone's serve dies, the kernel mount entry survives, reads hang forever)
+# self-heals without the user having to hit Reconnect. It drives the exact same
+# primitives the UI does — mount_state (the cheap ismount + listmounts-membership
+# probe, timeout-isolated) as the detector, reconnect_mount (force-unmount +
+# fresh mount, taking _rcd_lock) as the repair — just on a timer.
+#
+# Everything here is in-process only: this is live health telemetry, not a
+# persisted record. mounts.json already survives restarts on its own, and a
+# fresh server re-derives health from scratch on its next tick.
+
+HEALTH_POLL_INTERVAL = 20.0  # seconds between health ticks
+
+# Bounded event log the frontend polls (GET /api/mounts/health). We keep a
+# window (not just the latest) so a briefly-away user still sees what the loop
+# did. Ids are a monotonic in-process counter — NOT time/random — so the
+# frontend can reliably dedup / "seen up to id N" even when two events share a
+# ts (time.time() has coarse resolution and two reconnect events can collide).
+_health_log_lock = threading.Lock()
+_health_events: "collections.deque[dict]" = collections.deque(maxlen=100)
+_health_event_seq = 0  # next event id; only mutated under _health_log_lock
+
+# Per-mount episode state, keyed by mount id: the last state we observed and
+# whether this episode's single reconnect has been spent. An "episode" is one
+# continuous stretch of not-healthy; we RE-ARM (allow a fresh attempt) only
+# after the mount is observed "mounted" again — so a mount that stays wedged
+# gets exactly one reconnect, not one every tick. Owned by the single health
+# loop thread (poll_once); health_snapshot only does GIL-atomic reads of it.
+_health_episodes: "dict[str, dict]" = {}
+_health_thread: "threading.Thread | None" = None
+_health_started = threading.Lock()  # guards start_health_monitor idempotency
+
+# States that mean "remote data isn't flowing, a reconnect would help". Note
+# "unmounted" is deliberately EXCLUDED: mount_state returns it when neither the
+# kernel nor rcd knows the mountpoint, which is exactly what detach_mount leaves
+# behind (it unmounts but keeps the mounts.json record). Auto-reconnecting that
+# would resurrect a mount the user intentionally detached — attach/detach stays
+# a user decision, so the monitor never touches an "unmounted" mount.
+_NEEDS_RECONNECT = ("disconnected", "stale")
+
+
+def _health_emit(mount_id: str, name: str, kind: str, detail: str = "") -> None:
+    """Append one event to the bounded log under its lock. kind is one of
+    "disconnected" | "reconnected" | "reconnect_failed". ts is epoch seconds —
+    wall-clock is fine for a UI log; ordering is by the monotonic id, not ts."""
+    global _health_event_seq
+    with _health_log_lock:
+        _health_event_seq += 1
+        _health_events.append({
+            "id": _health_event_seq,
+            "mount_id": mount_id,
+            "name": name,
+            "kind": kind,
+            "ts": time.time(),
+            "detail": detail,
+        })
+
+
+# A just-reconnected mount is not trusted until it actually answers. attach_mount
+# returns as soon as rclone ACCEPTS mount/mount, but the NFS mount attaches a beat
+# later and a racing serve restart can tear a just-mounted mount straight back
+# down (observed: a "reconnected" event while `ls` on the mount still failed). So
+# re-probe for a few seconds before reporting success — cheap, and only on the
+# reconnect path (once per episode).
+_RECONNECT_VERIFY_DEADLINE_S = 6.0
+_RECONNECT_VERIFY_POLL_S = 1.0
+
+
+def _verify_reconnected(m: dict) -> str:
+    """Re-probe a mount reconnect_mount just claimed to repair until it reports
+    "mounted" or a short deadline passes. Each probe takes a FRESH mounted_paths()
+    snapshot — rcd's served set changes as the mount attaches. Returns the last
+    observed mount_state ("mounted" on success, otherwise why it's still down)."""
+    deadline = time.monotonic() + _RECONNECT_VERIFY_DEADLINE_S
+    while True:
+        state = mount_state(m, mounted_paths())
+        if state == "mounted" or time.monotonic() >= deadline:
+            return state
+        time.sleep(_RECONNECT_VERIFY_POLL_S)
+
+
+def poll_once() -> None:
+    """One health tick: snapshot rcd's served set once, then classify every
+    mount against it and drive the per-mount episode state machine.
+
+    Reconnect is serialized against a user-initiated /reconnect by reconnect_mount
+    itself — its attach_mount + rc calls take _rcd_lock — so the loop can never
+    fight an in-flight manual reconnect; whichever grabs the lock second simply
+    runs after the first. We only ACT on a genuine healthy->broken transition
+    (prev == "mounted"): a mount that was already broken at startup is left to
+    the automount thread / the user, which avoids racing automount's initial
+    attach and never resurrects a never-yet-healthy mount."""
+    # One mount/listmounts call per tick, shared across every mount_state (the
+    # /api/mounts view does the same) — avoids N rc round-trips per tick.
+    live = mounted_paths()
+    for m in list_mounts():
+        mid = m["id"]
+        state = mount_state(m, live)
+        ep = _health_episodes.setdefault(mid, {"state": None, "attempted": False})
+        prev = ep["state"]
+        ep["state"] = state
+        if state == "mounted":
+            # Healthy: close any open episode so the NEXT drop re-arms.
+            ep["attempted"] = False
+            continue
+        if state not in _NEEDS_RECONNECT:
+            # "unmounted" (user-detached) or any unexpected state: hands off.
+            continue
+        # A needs-reconnect state. Fire only on the transition INTO the episode
+        # (prev healthy) and only once (attempted guards the rest of the stretch,
+        # even though prev != "mounted" on later ticks would already gate it).
+        if prev != "mounted" or ep["attempted"]:
+            continue
+        # Spend the episode's single attempt UP FRONT, so a raise below can't
+        # turn into a retry every 20s.
+        ep["attempted"] = True
+        _health_emit(mid, m["name"], "disconnected", detail=f"state={state}")
+        try:
+            err = reconnect_mount(m)
+        except Exception as e:
+            # reconnect_mount is subprocess + rc heavy; a raise must not kill the
+            # tick (let alone the loop) or stop us classifying the other mounts.
+            _health_emit(mid, m["name"], "reconnect_failed", detail=str(e))
+            continue
+        if err:
+            _health_emit(mid, m["name"], "reconnect_failed", detail=err)
+            continue
+        # reconnect_mount returned no error, but that only means mount/mount was
+        # ACCEPTED — verify the mount actually attached before telling the user
+        # it's back, so a "reconnected" toast never appears over a mount that ls
+        # still can't read.
+        verified = _verify_reconnected(m)
+        if verified == "mounted":
+            _health_emit(mid, m["name"], "reconnected")
+            # Reflect reality at once (not the pre-attempt broken state) and
+            # re-arm: a healthy mount was reached, so a fresh drop is a new episode.
+            ep["state"] = "mounted"
+            ep["attempted"] = False
+        else:
+            _health_emit(mid, m["name"], "reconnect_failed",
+                         detail=f"mount did not attach (state={verified})")
+
+
+def _health_loop() -> None:
+    """Daemon-thread body: poll_once() on a timer, forever. A tick's exceptions
+    are already caught inside poll_once, but wrap here too so nothing — not even
+    an error building `live` — can ever kill the loop."""
+    while True:
+        try:
+            poll_once()
+        except Exception:
+            logger.exception("mount health poll tick failed")
+        time.sleep(HEALTH_POLL_INTERVAL)
+
+
+def start_health_monitor() -> None:
+    """Start the background health poll loop. Idempotent — safe to call once at
+    server startup; a redundant call while the thread is alive is a no-op."""
+    global _health_thread
+    with _health_started:
+        if _health_thread is not None and _health_thread.is_alive():
+            return
+        _health_thread = threading.Thread(
+            target=_health_loop, daemon=True, name="mounts-health-monitor")
+        _health_thread.start()
+
+
+def health_snapshot() -> dict:
+    """The GET /api/mounts/health payload: current per-mount state + the running
+    event log. Per-mount state is served from the loop's last observation (at
+    most HEALTH_POLL_INTERVAL stale) so a frequently-polled UI never pays a
+    per-mount PROBE_TIMEOUT on the request path; a mount added since the last
+    tick (no cached state yet) gets one fresh probe."""
+    live = mounted_paths()
+    mounts_out = []
+    for m in list_mounts():
+        ep = _health_episodes.get(m["id"])
+        state = ep["state"] if ep and ep["state"] is not None else mount_state(m, live)
+        mounts_out.append({
+            "id": m["id"],
+            "name": m["name"],
+            "state": state,
+            "mountpoint": mountpoint(m),
+        })
+    with _health_log_lock:
+        events = list(_health_events)  # oldest->newest; sort by id UI-side
+    return {"mounts": mounts_out, "events": events}
+
+
 def run_automount() -> None:
     """Remount every mount that isn't already mounted. All mounts are
     remounted at startup — there is no per-mount opt-in. Adoption is implicit:

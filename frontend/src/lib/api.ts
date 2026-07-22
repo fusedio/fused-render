@@ -903,6 +903,37 @@ export function getMounts(): Promise<MountsResult> {
   return getJson<MountsResult>("/api/mounts");
 }
 
+// Lightweight health snapshot for the background mount-health poll (the global
+// disconnect/reconnect toast, useMountHealth). Cheaper than getMounts — no
+// rclone enumeration — and carries a bounded, append-only `events` log with
+// monotonically increasing int ids the poller tracks a high-water mark against.
+export interface MountHealth {
+  id: string;
+  name: string;
+  state: Mount["state"];
+  mountpoint: string;
+}
+
+export type MountEventKind = "disconnected" | "reconnected" | "reconnect_failed";
+
+export interface MountEvent {
+  id: number; // monotonic, append-only — the poll's high-water mark keys on it
+  mount_id: string;
+  name: string;
+  kind: MountEventKind;
+  ts: number; // epoch seconds
+  detail: string;
+}
+
+export interface MountsHealthResult {
+  mounts: MountHealth[];
+  events: MountEvent[];
+}
+
+export function getMountsHealth(): Promise<MountsHealthResult> {
+  return getJson<MountsHealthResult>("/api/mounts/health");
+}
+
 export function createMount(name: string, remote: string): Promise<Mount> {
   return postJson<Mount>("/api/mounts", { name, remote });
 }

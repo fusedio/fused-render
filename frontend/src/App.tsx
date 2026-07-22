@@ -12,9 +12,11 @@ import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
 import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
+import { useMountHealth } from "./lib/mountHealth";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
 import Sidebar from "./components/Sidebar";
+import ToastHost from "./components/ToastHost";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -251,6 +253,10 @@ function StatView({ fsPath, epoch, home }: { fsPath: string; epoch: number; home
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
+  // Background mount-health poll → global disconnect/reconnect toasts. Mounted
+  // once here for the page's lifetime (no-ops in embed); renders via ToastHost.
+  useMountHealth();
+
   // First-run onboarding tour: fire once after first paint so the listing and
   // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already
   // seen). Empty deps — App mounts once for the page's lifetime.
@@ -405,6 +411,7 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && <Sidebar config={config} />}
       <div id="main">{main}</div>
+      <ToastHost />
     </div>
   );
 }
