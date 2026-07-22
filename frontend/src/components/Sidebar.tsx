@@ -437,6 +437,12 @@ export default function Sidebar({ config }: SidebarProps) {
   };
 
   const toggleSidebarCollapsed = () => {
+    // Collapsing unmounts the overlay surfaces but not their state — clear it
+    // so expanding doesn't resurrect a stale-anchored icon picker, an
+    // in-progress rename, or a tooltip.
+    setIconPicker(null);
+    setRenamingId(null);
+    setHover(null);
     setSidebarState((s) => {
       const next = { ...s, collapsed: !s.collapsed };
       saveSidebarState(next);
