@@ -87,6 +87,23 @@ def test_menu_layout_structure(login_enabled):
     assert len(separators) == 2
 
 
+# --- root node children-display ----------------------------------------------
+
+
+def test_root_props_advertise_submenu():
+    # waybar only renders the root's children as a menu when the root node
+    # advertises children-display == "submenu"; without it the menu is empty.
+    assert linux_tray._ROOT_PROPS["children-display"] == "submenu"
+    assert "children-display" in linux_tray._MENU_PROP_TYPES
+
+
+def test_root_props_encode_to_string_variant():
+    variants = linux_tray._props_to_variants(linux_tray._ROOT_PROPS)
+    variant = variants["children-display"]
+    assert variant.signature == "s"
+    assert variant.value == "submenu"
+
+
 # --- _dispatch_event ---------------------------------------------------------
 
 

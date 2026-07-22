@@ -153,7 +153,13 @@ _MENU_PROP_TYPES = {
     "type": "s",
     "toggle-type": "s",
     "toggle-state": "i",
+    "children-display": "s",
 }
+
+# Root-node properties returned by GetLayout. `children-display: submenu` is the
+# signal StatusNotifier hosts (waybar, KDE) require before they render the root's
+# children as a menu; without it the tray shows an empty context menu.
+_ROOT_PROPS = {"children-display": "submenu"}
 
 
 def _props_to_variants(properties: dict) -> dict:
@@ -244,7 +250,7 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
                 )
                 for child in children
             ]
-            layout = [_ROOT_ID, {}, child_nodes]
+            layout = [_ROOT_ID, _props_to_variants(_ROOT_PROPS), child_nodes]
             return [revision_ref[0], layout]
 
         @method()
