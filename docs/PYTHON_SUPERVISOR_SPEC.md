@@ -1,8 +1,15 @@
 # Python supervisor — experiment spec
 
-Status: experiment. Goal is to decide whether the Windows desktop supervisor can
-be pure Python (removing the Rust toolchain) without losing the guarantees the
-Rust version already ships.
+Status: **landed (PR #222); superseded by [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md).**
+The experiment concluded — the pure-Python supervisor shipped — and the code has
+since been restructured into the platform-neutral `fused_render/supervisor/`
+package with a per-OS backend seam. This document is kept for historical context
+(the why, and the Rust behavioral contract it was built against); the current
+architecture and platform matrix live in `DESKTOP_SUPERVISOR.md`.
+
+Original goal: decide whether the Windows desktop supervisor can be pure Python
+(removing the Rust toolchain) without losing the guarantees the Rust version
+already ships.
 
 The **behavioral contract** is the working Rust supervisor on branch
 `feat/windows-desktop-foundation` (PR #162), `windows/supervisor/src/*.rs`, and
