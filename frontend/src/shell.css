@@ -34,7 +34,8 @@ body {
   height: 100vh;
 }
 
-/* Sidebar */
+/* Sidebar — the 232px basis is only the pre-hydration default; the component
+   overrides flex-basis/width inline from persisted state (drag to resize). */
 #sidebar {
   flex: 0 0 232px;
   width: 232px;
@@ -43,6 +44,105 @@ body {
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+}
+
+/* Drag handle riding the sidebar's right border. Fixed-positioned (the
+   component sets `left` inline) so the sidebar's own overflow-y scroll can't
+   clip or move it; a 6px hit area around the 1px border line. */
+.sidebar-resize-handle {
+  position: fixed;
+  top: 0;
+  width: 6px;
+  height: 100vh;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.resizing {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* While a drag is captured, keep the cursor stable and text unselected
+   everywhere the pointer sweeps. */
+body:has(.sidebar-resize-handle.resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapse chevron in the brand row, pushed to the right edge. */
+.sidebar-collapse-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+/* Collapsed sidebar = a slim full-height strip that expands it back.
+   overflow: visible (not the expanded state's auto) so the bubble can
+   protrude past the strip into the content area. */
+#sidebar.sidebar-collapsed {
+  flex: 0 0 10px;
+  width: 10px;
+  overflow: visible;
+  /* The bubble overhangs #content; lift the whole strip above it so a
+     stacking context inside #content can't paint over the bubble. */
+  position: relative;
+  z-index: 10;
+}
+
+.sidebar-expand-strip {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sidebar-expand-strip:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Circular expand bubble, vertically centered, half overlapping the strip's
+   right edge (classic collapsed-panel pill). Purely visual — the strip is
+   the button; hover/focus styling keys off the strip's state. */
+.sidebar-expand-bubble {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  color: var(--fg-muted);
+  /* Protrudes over #content — stay above its content. */
+  z-index: 10;
+}
+
+.sidebar-expand-strip:hover .sidebar-expand-bubble {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+}
+
+.sidebar-expand-strip:focus-visible {
+  outline: none;
+}
+
+.sidebar-expand-strip:focus-visible .sidebar-expand-bubble {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
 }
 
 /* Phones: give the whole width to the rendered view */
