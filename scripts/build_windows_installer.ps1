@@ -67,10 +67,16 @@ function Resolve-VcVars() {
 
 function Build-Launcher([string]$OutputExe) {
     $source = Join-Path $RepoRoot "windows\launcher\launcher.c"
+    # The .rc embeds fused-render.ico so Explorer, the taskbar, and the "Open
+    # with" picker all show the app icon (the picker ignores DefaultIcon and
+    # reads the exe's own icon). rc.exe finds the .ico via the /i include path.
+    $rc = Join-Path $RepoRoot "windows\launcher\launcher.rc"
+    $iconDir = Join-Path $RepoRoot "fused_render\assets"
+    $res = Join-Path $BuildDir "launcher.res"
     $vcvars = Resolve-VcVars
     if ($vcvars) {
         Write-Host "Building launcher with cl.exe ($vcvars)"
-        $cmd = "call `"$vcvars`" >nul 2>&1 && cl.exe /nologo /W3 /O2 /DUNICODE /D_UNICODE `"$source`" /Fe:`"$OutputExe`" /link /SUBSYSTEM:WINDOWS user32.lib"
+        $cmd = "call `"$vcvars`" >nul 2>&1 && rc.exe /nologo /i `"$iconDir`" /fo `"$res`" `"$rc`" && cl.exe /nologo /W3 /O2 /DUNICODE /D_UNICODE `"$source`" `"$res`" /Fe:`"$OutputExe`" /link /SUBSYSTEM:WINDOWS user32.lib"
         cmd.exe /c $cmd
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputExe)) {
             throw "cl.exe failed to build the launcher"
@@ -89,7 +95,8 @@ function Build-Launcher([string]$OutputExe) {
         Invoke-WebRequest -Uri "https://ziglang.org/download/$zigVersion/zig-windows-x86_64-$zigVersion.zip" -OutFile $archive
         Expand-Archive -Path $archive -DestinationPath $zigDir -Force
     }
-    Invoke-Native $zigExe @("cc", "-municode", "-mwindows", "-O2", "-DUNICODE", "-D_UNICODE", $source, "-o", $OutputExe, "-luser32")
+    Invoke-Native $zigExe @("rc", "/i", $iconDir, "/fo", $res, $rc)
+    Invoke-Native $zigExe @("cc", "-municode", "-mwindows", "-O2", "-DUNICODE", "-D_UNICODE", $source, $res, "-o", $OutputExe, "-luser32")
 }
 
 $Uv = Resolve-Tool "uv" @()
@@ -102,7 +109,7 @@ $Branch = (& git -C $RepoRoot branch --show-current).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "could not resolve the Git branch"
 }
-Write-Host "Building FusedRender (Python Supervisor) $Version from $Branch"
+Write-Host "Building FusedRender $Version from $Branch"
 
 New-Item -ItemType Directory -Force -Path $BuildDir, $DistDir | Out-Null
 Get-ChildItem -Path $DistDir -Filter "fused_render-*.whl" -ErrorAction SilentlyContinue |

@@ -275,6 +275,123 @@
   .pager .nxt { text-align:right; }
   .pager .cap { display:block; font-size:10.5px; color:var(--mut); text-transform:uppercase; letter-spacing:.6px; margin-bottom:2px; }
 
+  /* ---------- landing / home ---------- */
+  .hero-cta { display:flex; gap:12px; flex-wrap:wrap; margin:20px 0 10px; }
+  .cta { display:inline-flex; align-items:center; text-decoration:none; font:600 14px/1 inherit;
+       padding:12px 20px; border-radius:10px; border:1px solid var(--border); color:var(--text); background:var(--panel); }
+  .cta:hover { border-color:#4a4a4e; color:var(--text); }
+  .cta.primary { background:var(--yellow); color:#141414; border-color:var(--yellow); }
+  .cta.primary:hover { color:#141414; filter:brightness(1.05); }
+
+  .modecard { display:flex; flex-direction:column; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px 22px; }
+  .modecard:hover { border-color:#4a4a4e; }
+  .modecard .mc-ic { font-size:28px; margin-bottom:8px; }
+  .modecard h3 { margin:0 0 6px; font-size:16px; }
+  .modecard p { margin:0 0 12px; font-size:13px; color:var(--dim); }
+  .modecard .mc-go { margin-top:auto; font-size:12.5px; color:var(--yellow); font-weight:600; }
+
+  /* first-visit onboarding chooser */
+  .chooser { border:1px solid #4a4a2a; background:linear-gradient(180deg,#1e1e17,#1a1a1a);
+       border-radius:14px; padding:17px 19px 15px; margin:22px 0 6px; animation:chFade .45s ease both; }
+  .chooser .ch-q { font-size:14px; font-weight:600; color:var(--text); margin:0 0 12px;
+       display:flex; align-items:center; gap:8px; }
+  .chooser .ch-q .spark { color:var(--yellow); }
+  .ch-opts { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; }
+  .ch-opt { display:flex; flex-direction:column; gap:3px; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:11px; padding:14px 15px;
+       transition:border-color .12s, transform .12s; }
+  .ch-opt:hover { border-color:var(--yellow); transform:translateY(-1px); }
+  .ch-opt .ch-ic { font-size:22px; }
+  .ch-opt b { font-size:13.5px; }
+  .ch-opt .ch-sub { font-size:11.5px; color:var(--mut); line-height:1.35; }
+  .ch-skip { appearance:none; background:none; border:0; color:var(--mut); font:inherit; font-size:12px;
+       cursor:pointer; margin:11px 0 0; padding:2px 0; text-decoration:underline; text-underline-offset:2px; }
+  .ch-skip:hover { color:var(--dim); }
+  @keyframes chFade { from{opacity:0; transform:translateY(-6px)} to{opacity:1; transform:none} }
+
+  .navtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:0 0 8px; }
+  .navtile { display:flex; align-items:flex-start; gap:12px; text-decoration:none; color:var(--text);
+       background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:15px 17px; }
+  .navtile:hover { border-color:#4a4a4e; }
+  .navtile .nt-ic { font-size:20px; line-height:1.2; flex-shrink:0; }
+  .navtile h4 { margin:0 0 3px; font-size:14px; }
+  .navtile p { margin:0; font-size:12px; color:var(--dim); }
+  .home-foot { display:flex; gap:18px; flex-wrap:wrap; margin-top:8px; font-size:13px; }
+
+  /* ---------- build page: prominent prompt + api table ---------- */
+  .promptbox.big pre { font-size:14px; line-height:1.6; padding:18px 74px 18px 18px; }
+
+  /* hero prompt — the "grab this" Claude prompt, made the focal point */
+  .heroprompt { border:1px solid #5c5c2e; background:linear-gradient(180deg,#1c1c10,#181811);
+       border-radius:14px; overflow:hidden; margin:4px 0 14px;
+       box-shadow:0 0 0 1px rgba(229,255,68,.05), 0 12px 34px rgba(0,0,0,.4); }
+  .heroprompt .hp-head { display:flex; align-items:center; gap:8px; padding:11px 18px;
+       border-bottom:1px solid #45451f; background:#21210f;
+       font-size:11px; text-transform:uppercase; letter-spacing:.8px; font-weight:700; color:var(--yellow); }
+  .heroprompt .hp-head .spark { font-size:13px; }
+  .heroprompt .hp-body { padding:17px 20px 4px; }
+  .heroprompt pre { background:transparent; border:0; padding:0; margin:0; font-size:15px; line-height:1.6;
+       color:#f3f3e8; white-space:pre-wrap; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  .heroprompt .hp-copy { position:static; display:flex; align-items:center; justify-content:center; gap:8px;
+       width:100%; margin:15px 0 17px; padding:12px; border-radius:10px; cursor:pointer;
+       border:1px solid var(--yellow); background:var(--yellow); color:#141414;
+       font:700 13.5px/1 inherit; transition:filter .15s; }
+  .heroprompt .hp-copy:hover { filter:brightness(1.06); }
+  .heroprompt .hp-copy.done { background:#141414; color:var(--yellow); border-color:var(--yellow); }
+
+  /* mental-model file tree */
+  .filetree { background:var(--code-bg); border:1px solid var(--border); border-radius:12px; padding:18px 20px; margin:0 0 14px; }
+  .filetree .ft-dir { font:600 14.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace; color:var(--text); }
+  .filetree .ft-item { display:grid; grid-template-columns:auto auto auto 1fr; align-items:baseline; gap:10px;
+       margin-top:11px; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:13px; }
+  .filetree .ft-branch { color:var(--mut); }
+  .filetree .ft-name { color:var(--text); white-space:nowrap; }
+  .filetree .ft-arrow { color:var(--mut); }
+  .filetree .ft-role { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-role b { color:var(--text); font-weight:600; }
+  .filetree .ft-bridge { margin:17px 0 0; padding:11px 12px; text-align:center; background:var(--panel);
+       border:1px solid var(--border); border-radius:9px; font-size:12.5px; color:var(--dim); }
+  .filetree .ft-bridge b { color:var(--yellow); }
+  .filetree .ft-live { margin-top:14px; padding-top:13px; border-top:1px solid var(--border); font-size:12.5px; color:var(--dim); }
+  .filetree .ft-live code { color:var(--text); font-size:11.5px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:5px; padding:1px 5px; }
+
+  /* URL-state demo: a live browser address bar */
+  .urldemo { margin:0 0 12px; }
+  .urldemo .ub-bar { display:flex; align-items:center; gap:11px; padding:10px 14px; background:var(--panel2);
+       border:1px solid var(--border); border-radius:11px; }
+  .urldemo .dots { display:flex; gap:6px; flex-shrink:0; }
+  .urldemo .dots i { width:11px; height:11px; border-radius:50%; display:block; }
+  .urldemo .ub-url { flex:1; min-width:0; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+       padding:8px 13px; font:12.5px/1.4 "SF Mono",ui-monospace,Menlo,monospace;
+       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .urldemo .ub-dim { color:var(--mut); }
+  .urldemo .ub-q { color:var(--yellow); font-weight:600; }
+  .urldemo .ub-q b { color:#141414; background:var(--yellow); border-radius:4px; padding:1px 6px;
+       font-variant-numeric:tabular-nums; transition:transform .12s ease; display:inline-block; }
+  .urldemo .ub-q.flash b { transform:scale(1.14); }
+  .apitable { width:100%; border-collapse:collapse; margin:0 0 10px; font-size:12.5px; }
+  .apitable td { border:1px solid var(--border); padding:9px 11px; vertical-align:top; }
+  .apitable td:first-child { white-space:nowrap; width:1%; }
+  .apitable code { color:var(--text); background:var(--code-bg); border:1px solid var(--border);
+       border-radius:5px; padding:1px 6px; font-size:11.5px; }
+  .apitable td:last-child { color:var(--dim); }
+  .ideagrid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:0 0 8px; }
+  .idea { position:relative; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px 15px; }
+  .idea .it { font-size:12.5px; color:var(--text); font-weight:600; margin:0 0 8px; }
+  .idea pre { font-size:11px; padding:10px 11px; white-space:pre-wrap; }
+  .idea .copybtn { position:static; margin-top:9px; width:100%; text-align:center; }
+
+  /* per-remote mount examples */
+  .remote-eg { margin:0 0 12px; }
+  .remote-eg .re-head { display:flex; align-items:center; gap:9px; font-size:13.5px; font-weight:600;
+       color:var(--text); margin:0 0 8px; }
+  .remote-eg .re-tag { font-size:9.5px; text-transform:uppercase; letter-spacing:.5px; font-weight:700;
+       border:1px solid var(--border); border-radius:5px; padding:2px 7px; color:var(--mut); }
+  .remote-eg .re-tag.inapp { color:#5fd35f; border-color:#2e5a2e; background:#132013; }
+  .remote-eg .re-tag.cli { color:#8ab4ff; border-color:#3a3a4a; background:#16161f; }
+
   .menuBtn { display:none; }
   @media (max-width:960px){
     .cards { grid-template-columns:repeat(2,1fr); } .cards .feat { grid-column:span 2; }
@@ -285,6 +402,7 @@
     .rail.open { transform:none; }
     main { margin-left:0; padding:64px 18px 80px; }
     .grid2 { grid-template-columns:1fr; }
+    .navtiles, .ideagrid, .ch-opts { grid-template-columns:1fr; }
     .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
     .menuBtn { display:flex; position:fixed; top:12px; left:12px; z-index:25; width:38px; height:38px;
        align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border);
@@ -308,18 +426,45 @@
 <main>
 <div class="wrap">
 
-  <!-- ============================ 1 · USING FUSED RENDER ============================ -->
-  <section class="page" data-slug="using" data-title="Using Fused Render" data-ix="1">
-    <p class="crumb">Get started</p>
-    <h1 class="title">Using Fused Render</h1>
-    <p class="lede">Fused Render turns folders on your machine into <b>live pages</b>. Any HTML file renders as an app, and a <span class="y mono">fused</span> global lets that page run the Python sitting right next to it — <b>no server, no build step</b>.</p>
+  <!-- ============================ HOME (landing / value) ============================ -->
+  <section class="page" data-slug="home" data-title="Home">
+    <p class="crumb">Fused Render</p>
+    <h1 class="title">Turn folders on your machine into live apps</h1>
+    <p class="lede">Fused Render runs on <b>your computer</b>. Point it at a folder and any HTML file becomes a live app — with a <span class="y mono">fused</span> bridge that lets the page run the <b>Python sitting right next to it</b>. No server, no build step, no upload. Your files, your machine.</p>
 
-    <h2><span class="n">1</span>The basics</h2>
-    <p class="sub">A project is just a folder with a page and a Python file. Here's one embedded live — drag the slider to throw more darts, and the Python next to it estimates <b>π</b> from the share that land inside the circle.</p>
+    <div class="hero-cta">
+      <a class="cta primary" href="?page=build">Build your own app →</a>
+      <a class="cta" href="?page=templates">Open your data →</a>
+    </div>
+
+    <div class="chooser" id="chooser" hidden>
+      <div class="ch-q"><span class="spark">✦</span> New here? What do you want to do first?</div>
+      <div class="ch-opts">
+        <a class="ch-opt" href="?page=build" data-intent="build">
+          <span class="ch-ic">🛠️</span>
+          <b>Build an app from scratch</b>
+          <span class="ch-sub">Describe a tool, get a live page backed by Python</span>
+        </a>
+        <a class="ch-opt" href="?page=templates" data-intent="templates">
+          <span class="ch-ic">📂</span>
+          <b>Open data I already have</b>
+          <span class="ch-sub">Render a file you have through a template</span>
+        </a>
+        <a class="ch-opt" href="?page=showcase" data-intent="showcase">
+          <span class="ch-ic">✨</span>
+          <b>Just show me what's possible</b>
+          <span class="ch-sub">Browse finished projects you can clone</span>
+        </a>
+      </div>
+      <button class="ch-skip" id="chSkip">I'll explore on my own</button>
+    </div>
+
+    <h2>See it run</h2>
+    <p class="sub">This isn't a video. Drag the slider — a <b>Python file on this machine</b> throws darts and estimates <b>π</b> from how many land inside the circle. That round trip, HTML asking Python for an answer, is what every Fused Render app is built on.</p>
     <div class="frame short" id="demoFrame">
       <div class="framebar">
         <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
-        <a id="demoOpen" target="_blank" rel="noopener">open in the app ↗</a>
+        <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
       </div>
       <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
       <div class="ph r16 miss">
@@ -330,8 +475,87 @@
       </div>
     </div>
 
+    <h2>Two ways to use it</h2>
+    <p class="sub">Fused Render does two distinct things. Start with either — nothing locks you in, so you can move between them whenever you want.</p>
+    <div class="grid2">
+      <a class="modecard" href="?page=build">
+        <div class="mc-ic">🛠️</div>
+        <h3>Build an app</h3>
+        <p>Describe what you want and get a live tool: a dashboard, a control panel, an interactive chart — front-end in HTML, logic in Python. Great with Claude Code.</p>
+        <span class="mc-go">Building with Fused Render →</span>
+      </a>
+      <a class="modecard" href="?page=templates">
+        <div class="mc-ic">📂</div>
+        <h3>Open your data</h3>
+        <p>Right-click a file — a Parquet, a GeoTIFF, a CSV — and it renders through a template as an interactive view. No app to write, nothing to download.</p>
+        <span class="mc-go">Templates →</span>
+      </a>
+    </div>
+
+    <h2>Everything else</h2>
+    <div class="navtiles">
+      <a class="navtile" href="?page=using"><span class="nt-ic">🧭</span><div><h4>Using the app</h4><p>Bookmarks, split view, and getting around the explorer.</p></div></a>
+      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount remote data</h4><p>Browse S3, GCS, or Google Drive like a local folder.</p></div></a>
+      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Publish a project so anyone can open it in a browser.</p></div></a>
+      <a class="navtile" href="?page=showcase"><span class="nt-ic">✨</span><div><h4>Showcase</h4><p>Working projects you can clone and pick apart.</p></div></a>
+    </div>
+
+    <h2>What people build</h2>
+    <p class="sub">Each of these is just a folder with a page and a Python file. Browse them all in the <a href="?page=showcase">Showcase</a>.</p>
+    <div class="cards" id="homeShowcase"></div>
+    <div class="home-foot">
+      <a href="https://github.com/fusedio/fused-render-examples" target="_blank" rel="noopener">Examples on GitHub ↗</a>
+      <a href="https://www.fused.io" target="_blank" rel="noopener">Get a Fused account ↗</a>
+    </div>
+  </section>
+
+  <!-- ============================ BUILDING WITH FUSED RENDER ============================ -->
+  <section class="page" data-slug="build" data-title="Building with Fused Render">
+    <p class="crumb">Make something</p>
+    <h1 class="title">Building with Fused Render</h1>
+    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
+
+    <div class="heroprompt">
+      <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
+      <div class="hp-body">
+        <pre id="buildPrompt">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
+        <button class="copybtn hp-copy" data-copy="buildPrompt">📋&nbsp; Copy prompt</button>
+      </div>
+    </div>
+    <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
+
+    <div class="callout beta"><span class="lab">Coming soon · Fused Render skills</span>
+      <p style="margin:6px 0 0">A one-line install that teaches Claude Code the Fused Render layout and the <code>fused</code> bridge is on the way. It'll look like this:</p>
+      <div class="promptbox" style="margin-top:11px">
+        <button class="copybtn" data-copy="skillInstall">Copy</button>
+        <pre id="skillInstall">claude plugin marketplace add fusedio/fused-render
+claude plugin install fused-render@fused-render</pre>
+      </div>
+      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">Until it lands, Claude still does well when it can see an existing project — open one from the <a href="?page=showcase">Showcase</a> and ask it to build something similar. (Don't have Claude Code? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.)</p>
+    </div>
+
+    <h2>The mental model</h2>
+    <p class="sub">A project is just a folder with two files. The HTML is what you see; the Python is the work. That's the whole structure:</p>
+    <div class="filetree">
+      <div class="ft-dir">📁 my_tool/</div>
+      <div class="ft-item">
+        <span class="ft-branch">├──</span>
+        <span class="ft-name">📄 index.html</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>what you see</b> — the UI, in HTML &amp; JS</span>
+      </div>
+      <div class="ft-item">
+        <span class="ft-branch">└──</span>
+        <span class="ft-name">🐍 tool.py</span>
+        <span class="ft-arrow">→</span>
+        <span class="ft-role"><b>the work</b> — a <code>main()</code> that returns JSON</span>
+      </div>
+      <div class="ft-bridge">HTML&nbsp; <b>⇄</b> &nbsp;Python — they talk over the <span class="y mono">fused</span> bridge injected into every page</div>
+      <div class="ft-live">▸ Click <code>index.html</code> and it renders as a live page. Edit either file and the page reloads itself.</div>
+    </div>
+
     <h3>HTML calls Python</h3>
-    <p class="sub">Next to this page sits <code>hello.py</code>. The button sends your input to it and renders what comes back — that round trip is the whole product.</p>
+    <p class="sub">Next to a page sits its Python. The page sends input to it and renders what comes back — try it: this calls <code>hello.py</code> for real when opened in the app.</p>
     <div class="grid2">
       <div class="card">
         <div class="helloform">
@@ -345,56 +569,55 @@
 <pre><span class="c"># hello.py — the whole contract</span>
 <span class="k">def</span> <span class="f">main</span>(name: str = <span class="s">"world"</span>):
     <span class="k">return</span> {<span class="s">"greeting"</span>: <span class="s">f"Hello, {name}!"</span>}</pre>
-        <p style="margin:10px 0 0;font-size:12px">The page's side is one line: <code>await fused.runPython("./hello.py", {name})</code>. A function named <code>main()</code> is all it takes.</p>
+        <p style="margin:10px 0 0;font-size:12px">The page's side is one line: <code>await fused.runPython("./hello.py", {name})</code>. A function named <code>main()</code> that returns JSON is all it takes.</p>
       </div>
     </div>
 
     <h3>State lives in the URL</h3>
-    <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Refresh, bookmark, or share the link and the page comes back exactly as you left it.</p>
+    <p class="sub">Controls don't keep private state — they write to the page's URL through <code>fused.params</code>. Drag the slider and watch the address bar: the <b class="y">?level=</b> value updates live. Refresh, bookmark, or share that link and the page comes back exactly as you left it.</p>
     <div class="grid2">
       <div class="card ctrl">
         <label>Level <b id="vLevel">40</b></label>
         <input type="range" id="level" min="0" max="100" step="1" value="40">
+        <div class="meter" style="margin-bottom:0"><i id="bar"></i></div>
       </div>
       <div class="card">
-        <div class="meter"><i id="bar"></i></div>
-        <div class="urlbox">this page's URL now ends in&nbsp; ?<b>level</b>=<span id="urlVal">40</span></div>
-        <p style="margin:8px 0 0;font-size:12px">Move the slider, then refresh — the level survives, because the URL is the state.</p>
+        <p style="margin:0;font-size:12.5px">The slider writes <code>fused.params.set("level", …)</code>, which appends <code>?level=</code> to the URL. Nothing is stored in hidden JS state — the URL <em>is</em> the state, so it survives a refresh and travels in a shared link.</p>
+      </div>
+    </div>
+    <p class="sub" style="margin:4px 0 8px;font-size:12px;color:var(--mut)">The page's address bar tracks it live:</p>
+    <div class="urldemo">
+      <div class="ub-bar">
+        <div class="dots"><i style="background:#ff5f56"></i><i style="background:#ffbd2e"></i><i style="background:#27c93f"></i></div>
+        <div class="ub-url"><span class="ub-dim">127.0.0.1:1777/view/…/my_tool/index.html</span><span class="ub-q" id="ubQ">?level=<b id="urlVal">40</b></span></div>
       </div>
     </div>
 
-    <h2><span class="n">2</span>UI guide</h2>
-    <h3>Bookmarks</h3>
-    <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
-    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
-      <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
+    <h2>The <span class="y mono">fused</span> API</h2>
+    <p class="sub">Everything your page can call. It's injected automatically — never <code>&lt;script src&gt;</code> anything for it. On the Python side, you only ever write a function named <code>main()</code>.</p>
+    <table class="apitable">
+      <tr><td><code>await fused.runPython(path, params)</code></td><td>Runs <code>main(**params)</code> of the <code>.py</code> at <code>path</code> (relative to the page) and resolves with its return value. Params are strings; scrubbing a slider auto-cancels the runs it moves past.</td></tr>
+      <tr><td><code>fused.params.get(k)</code></td><td>Read a URL param (a string, or <code>undefined</code>). The URL is your state.</td></tr>
+      <tr><td><code>fused.params.set(k, v)</code></td><td>Write a URL param — <code>v</code> must be a string, so <code>String(n)</code> yourself. Then fires <code>onChange</code>.</td></tr>
+      <tr><td><code>fused.params.onChange(cb)</code></td><td>Run <code>cb</code> after every applied <code>set</code> — the single place you re-render from.</td></tr>
+      <tr><td><code>await fused.readFile(path)</code></td><td>File contents as text — no Python needed when you just want the bytes.</td></tr>
+      <tr><td><code>await fused.writeFile(path, text)</code></td><td>Write text atomically (optional mtime lock to avoid clobbering).</td></tr>
+      <tr><td><code>await fused.stat(path)</code></td><td>Metadata <code>{size, mtime, is_dir, …}</code> — size-guard before reading big files.</td></tr>
+      <tr><td><code>fused.rawUrl(path)</code></td><td>A URL for the raw bytes — use it as the <code>src</code> of an <code>&lt;img&gt;</code>, <code>&lt;video&gt;</code>, or a download link.</td></tr>
+    </table>
+    <div class="callout"><span class="lab">Good to know</span>
+      <p style="margin:6px 0 0">Each <code>runPython</code> call runs <code>main()</code> in a fresh subprocess that's killed at <b>30&nbsp;seconds</b>. For a genuinely long job, write the result to a file from a separate script and have the page read the finished file.</p></div>
 
-    <h3>Split view</h3>
-    <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
-    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
-      <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
-
-    <h2><span class="n">3</span>Opening local files with templates</h2>
-    <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See the <a href="?page=templates">Templates</a> section for how templates are chosen and customized.</p>
-    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
-      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
-
-    <h2><span class="n">4</span>Build your own</h2>
-    <p class="sub">A project is a folder with a page and a Python file. That's the entire setup.</p>
-    <div class="steps">
-      <div class="step"><div class="num">1</div><h4>Make a folder</h4><p>Anywhere Fused Render can see — <code>~/Documents/Fused/my_tool/</code> works.</p></div>
-      <div class="step"><div class="num">2</div><h4>Drop in two files</h4><p>An <code>index.html</code> for what you see, a <code>tool.py</code> for the work.</p></div>
-      <div class="step"><div class="num">3</div><h4>Click the HTML file</h4><p>It renders as a live page. Edit either file and the page reloads itself.</p></div>
+    <h2>Starter ideas</h2>
+    <p class="sub">Copy any of these into Claude Code to see the shape of a project fast.</p>
+    <div class="ideagrid">
+      <div class="idea"><p class="it">🖥️ System monitor</p><pre id="idea1">Create a Fused Render project that shows a live, top-style table of my running processes sorted by memory.</pre><button class="copybtn" data-copy="idea1">Copy</button></div>
+      <div class="idea"><p class="it">📊 CSV explorer</p><pre id="idea2">Create a Fused Render project that lets me pick a CSV file and browse it as a sortable, searchable table.</pre><button class="copybtn" data-copy="idea2">Copy</button></div>
+      <div class="idea"><p class="it">🗂️ Disk treemap</p><pre id="idea3">Create a Fused Render project that shows a treemap of what's using space in a folder I choose.</pre><button class="copybtn" data-copy="idea3">Copy</button></div>
     </div>
-    <p class="sub">Or hand it to <b>Claude Code</b> — copy this prompt to scaffold a project:</p>
-    <div class="promptbox">
-      <button class="copybtn" data-copy="prompt1">Copy</button>
-      <pre id="prompt1">Create a new Fused Render project that shows my computer's CPU and memory usage as live gauges, refreshing every second.</pre>
-    </div>
-    <p class="sub">No need to mention HTML or Python — Claude knows the Fused Render layout. Swap in your own idea after <em>“…that”</em>: a treemap of my Downloads folder, a searchable table from a CSV I pick, a world-clock for three timezones.</p>
 
-    <h2><span class="n">5</span>See what's possible</h2>
-    <p class="sub">Ready for real examples? The <a href="?page=showcase">Showcase</a> has working projects — local tools and geospatial — you can clone into your workspace with one click.</p>
+    <h2>Next</h2>
+    <p class="sub">Render other file types through <a href="?page=templates">Templates</a>, pull in remote data with <a href="?page=mount">Mount</a>, then <a href="?page=deploy">Deploy</a> so others can open your app in a browser. Or see finished projects in the <a href="?page=showcase">Showcase</a>.</p>
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
@@ -424,6 +647,46 @@
       <h4 style="margin:0 0 6px;font-size:13.5px">What gets passed</h4>
       <p style="margin:0;font-size:12.5px">Each comment carries the clicked element's <code>id</code> (plus a DOM-path fallback), the view it was made in, and its text — together with the file path. That anchors the request to what you pointed at; edits are still scoped to the file as guidance, not locked to a single element.</p>
     </div>
+  </section>
+
+  <!-- ============================ 2b · CLAUDE CODE SKILLS ============================ -->
+  <section class="page" data-slug="skills" data-title="Claude Code skills" data-ix="2">
+    <p class="crumb">Workflow</p>
+    <h1 class="title">Claude Code skills</h1>
+    <p class="lede">Fused Render ships a set of Claude Code <b>skills</b> — packaged instructions that teach the <code>claude</code> CLI how this project works. Install them once and Claude authors views, drives the explorer, and registers templates fluently, without you spelling out the conventions each time.</p>
+    <div class="callout"><span class="lab">Prerequisite</span>
+      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p></div>
+
+    <h2><span class="n">1</span>What you get</h2>
+    <p class="sub">Three skills cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-usage</code></h4>
+      <p style="margin:0;font-size:12.5px">Running and using a project — start the local server, browse the filesystem, and open views or files by URL (embed vs full-shell modes).</p></div>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-authoring</code></h4>
+      <p style="margin:0;font-size:12.5px">Writing and debugging views — the <code>fused.runPython()</code> bridge to local Python, the <code>main()</code> contract, URL-synced params, and the file-IO helpers (<code>readFile</code>/<code>writeFile</code>/<code>stat</code>/<code>rawUrl</code>).</p></div>
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-custom-templates</code></h4>
+      <p style="margin:0;font-size:12.5px">Registering your own preview template for a file extension under <code>~/.fused-render/templates/</code> — so opening that file type renders <em>your</em> page (or offers it as a switchable mode). Pairs with the <a href="?page=templates">Templates</a> concepts page.</p></div>
+
+    <h2><span class="n">2</span>Install the plugin</h2>
+    <p class="sub">The skills are distributed as a Claude Code <b>plugin</b> from this repo's marketplace. From inside Claude Code, add the marketplace, then install the plugin:</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsMkt">Copy</button>
+      <pre id="skillsMkt">/plugin marketplace add fusedio/fused-render</pre></div>
+    <div class="promptbox" style="margin-top:8px">
+      <button class="copybtn" data-copy="skillsInstall">Copy</button>
+      <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
+    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session — including when Claude Code is driven from inside the app's Claude panel.</p>
+    <div class="callout"><span class="lab">Working inside the repo?</span>
+      <p style="margin:6px 0 0 0">If you're developing fused-render itself, the skills are already present as <code>./skills/</code> in the checkout — no install needed. Maintainer-only skills (dev-env setup, cutting a release) live separately under <code>.claude/skills/</code> and never ship in the plugin.</p></div>
+
+    <h2><span class="n">3</span>Just ask</h2>
+    <p class="sub">With the plugin installed you describe the outcome in plain language; Claude loads the matching skill and follows its conventions. No need to mention HTML, Python, or the <code>fused</code> API.</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsAsk">Copy</button>
+      <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
+    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=using">Using Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
   </section>
 
   <!-- ============================ 3 · TEMPLATES ============================ -->
@@ -491,6 +754,28 @@
     </div>
   </section>
 
+  <!-- ============================ USING FUSED RENDER (the app / UI guide) ============================ -->
+  <section class="page" data-slug="using" data-title="Using Fused Render">
+    <p class="crumb">The app</p>
+    <h1 class="title">Using Fused Render</h1>
+    <p class="lede">The Fused Render window is a file explorer for your project folders — click an HTML file and it renders live. Here's how to get around it.</p>
+
+    <h2>Bookmarks</h2>
+    <p class="sub">Pin any page you're working on so it's one click away — the <b>+ Bookmark</b> button, top right. Bookmarks live in the left sidebar (and group into folders); each stores the file <em>and</em> its query params, so you return to the exact state.</p>
+    <figure class="figure"><img data-shot="assets/shot_bookmarks.webp" alt="Bookmarks sidebar in the Fused Render shell">
+      <figcaption><b>The shell sidebar</b> — bookmarks and folders on the left, the <b>+ Bookmark</b> button top right.</figcaption></figure>
+
+    <h2>Split view</h2>
+    <p class="sub">Open two files side by side — a page and its Python, or two previews — and work across them without losing either. Each pane keeps its own URL and state.</p>
+    <figure class="figure"><img data-shot="assets/shot_splitview.webp" alt="Two panes side by side in Fused Render">
+      <figcaption><b>Split view</b> — two panes, each an independent preview.</figcaption></figure>
+
+    <h2>Opening files with templates</h2>
+    <p class="sub">Any file on your machine can render through a <b>template</b> — right-click it and pick <em>Open with FusedRender</em> (registered by the desktop app). See <a href="?page=templates">Templates</a> for how templates are chosen and customized.</p>
+    <figure class="figure"><video data-shot="assets/open_with_right_click.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Right-click → Open with FusedRender</b> — any file renders through its matching template.</figcaption></figure>
+  </section>
+
   <!-- ============================ 4 · MOUNT ============================ -->
   <section class="page" data-slug="mount" data-title="Mount" data-ix="4">
     <p class="crumb">Data</p>
@@ -498,19 +783,54 @@
     <p class="lede">Mount a remote store — <b>S3-compatible buckets, Google Drive, anything rclone speaks</b> — and it shows up in the file tree like a local folder, ready to browse and open through a template.</p>
 
     <h2><span class="n">1</span>Mounting a remote</h2>
-    <p class="sub">Mounts are powered by <b>rclone</b>. Public and credentialed <b>S3</b> remotes can be added right in the app; OAuth backends like Google Drive need a one-time <code>rclone config</code> in a terminal. The <em>Add mount</em> form asks for just three things — a name, a remote, and a path.</p>
+    <p class="sub">Mounts are powered by <b>rclone</b>, so anything rclone speaks works. The <em>Add mount</em> form asks for just three things — a <b>name</b>, a <b>remote</b>, and a <b>path</b>. Public <b>S3</b> works with no setup; other backends (GCS, Google Drive) need a one-time <code>rclone config</code> in a terminal, after which they appear in the <b>Remote</b> dropdown. Below are the exact values to fill in for each.</p>
 
-    <h3>Worked example — mount an open dataset</h3>
-    <p class="sub">Fused Render ships a built-in <b>public-S3</b> remote (no credentials), so mounting open data is a copy-paste. Here we mount building footprints from <a href="https://source.coop" target="_blank" rel="noopener">source.coop</a>. Fill the form like this:</p>
-    <div class="mountform card">
-      <div class="mf-row"><label>Name</label><div class="mf-val">source_coop</div></div>
-      <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">AWS S3 — public buckets (no credentials) <span class="mf-caret">▾</span></div></div>
-      <div class="mf-row"><label>Path</label>
-        <div class="mf-val mf-path"><span id="mountPath">us-west-2.opendata.source.coop/vida/google-microsoft-open-buildings/pmtiles/by_country/country_iso=AND</span>
-        <button class="copybtn mf-copy" data-copy="mountPath">Copy</button></div>
+    <div class="remote-eg">
+      <div class="re-head">🪣 Amazon S3 — public bucket <span class="re-tag inapp">In-app, no setup</span></div>
+      <p class="sub">Fused Render ships a built-in <b>public-S3</b> remote (no credentials), so open data is a copy-paste. Here we mount building footprints from <a href="https://source.coop" target="_blank" rel="noopener">source.coop</a>:</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">source_coop</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">AWS S3 — public buckets (no credentials) <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="mountPath">us-west-2.opendata.source.coop/vida/google-microsoft-open-buildings/pmtiles/by_country/country_iso=AND</span>
+          <button class="copybtn mf-copy" data-copy="mountPath">Copy</button></div>
+        </div>
+        <div class="mf-note">Region <code>us-west-2</code> is set by that remote already. For a <b>private</b> bucket, pick the credentialed S3 remote instead and it'll ask for your access keys.</div>
       </div>
-      <div class="mf-note">Region <code>us-west-2</code> is already set by that remote — nothing else to configure.</div>
     </div>
+
+    <div class="remote-eg">
+      <div class="re-head">☁️ Google Cloud Storage <span class="re-tag cli">rclone config first</span></div>
+      <p class="sub">GCS needs a one-time remote. In a terminal run <code>rclone config</code>, add a remote of type <code>google cloud storage</code>, and name it <code>gcs</code> (for public buckets, answer <em>yes</em> to anonymous access; otherwise point it at a service-account key):</p>
+      <div class="promptbox"><button class="copybtn" data-copy="gcsCfg">Copy</button><pre id="gcsCfg">rclone config          # New remote → name: gcs → storage: google cloud storage</pre></div>
+      <p class="sub">Then in the <em>Add mount</em> form, the <code>gcs</code> remote is now in the dropdown:</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">gcs_landsat</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">gcs <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="gcsPath">gcp-public-data-landsat/LC08/01/044/034</span>
+          <button class="copybtn mf-copy" data-copy="gcsPath">Copy</button></div>
+        </div>
+        <div class="mf-note">Path is <code>bucket/prefix</code>. <code>gcp-public-data-landsat</code> is an open Google bucket — no credentials needed with anonymous access.</div>
+      </div>
+    </div>
+
+    <div class="remote-eg">
+      <div class="re-head">📁 Google Drive <span class="re-tag cli">rclone config first</span></div>
+      <p class="sub">Google Drive is an OAuth backend, so the browser sign-in happens during <code>rclone config</code>. Add a remote of type <code>drive</code>, name it <code>gdrive</code>, and complete the sign-in it opens:</p>
+      <div class="promptbox"><button class="copybtn" data-copy="gdriveCfg">Copy</button><pre id="gdriveCfg">rclone config          # New remote → name: gdrive → storage: drive → sign in when the browser opens</pre></div>
+      <p class="sub">Then mount a folder from your Drive by name (leave the path blank for the whole Drive):</p>
+      <div class="mountform card">
+        <div class="mf-row"><label>Name</label><div class="mf-val">my_drive</div></div>
+        <div class="mf-row"><label>Remote</label><div class="mf-val mf-select">gdrive <span class="mf-caret">▾</span></div></div>
+        <div class="mf-row"><label>Path</label>
+          <div class="mf-val mf-path"><span id="gdrivePath">Reports/2026</span>
+          <button class="copybtn mf-copy" data-copy="gdrivePath">Copy</button></div>
+        </div>
+        <div class="mf-note">Path is a folder inside your Drive (e.g. <code>Reports/2026</code>), or empty for the root.</div>
+      </div>
+    </div>
+
     <figure class="figure"><img data-shot="assets/shot_mount.webp" alt="The Fused Render Mounts page with the Add mount form and existing mounts">
       <figcaption><b>The Mounts page</b> — the <em>Add mount</em> form (name · remote · path) plus mounts already connected, like open datasets on source.coop and CMIP6.</figcaption></figure>
 
@@ -536,9 +856,12 @@
 
     <h2><span class="n">1</span>Requirements</h2>
     <ul>
+      <li><b>Turn Deploy on</b> — it's off by default while in beta. Open <b>Preferences</b> and enable the Deploy button; it then appears on every page.</li>
       <li>A <b>Fused account</b> — sign up at <a href="https://www.fused.io" target="_blank" rel="noopener">fused.io</a> and sign in with the <code>fused</code> CLI.</li>
       <li>Your project should already run locally the way you want it.</li>
     </ul>
+    <div class="callout beta"><span class="lab">Enable it first</span>
+      <p style="margin:6px 0 0">Don't see a <b>Deploy</b> button on your pages? It's hidden until you switch it on in <b>Preferences</b> — that's expected during the beta.</p></div>
 
     <h2><span class="n">2</span>Deploying</h2>
     <p class="sub">Hit <b>Deploy</b> on any page. Pick which files ship (the page, its Python, and any bundled data), choose a managed Fused environment, and you get a shareable <code>open.fused.io</code> URL — redeploying keeps the same link.</p>
@@ -605,9 +928,9 @@ const GEO = [
   { n:"buildings_to_hexagons", t:"Buildings to Hexagons", d:"An interactive explainer that turns every building on Earth into H3 hexes, step by step.", tags:["H3","explainer"] },
   { n:"cog_range_viewer", t:"COG Range Viewer", d:"Stream tiles out of a huge cloud-optimized GeoTIFF with HTTP range requests — nothing is downloaded.", tags:["COG","HTTP ranges"] },
   { n:"cog_overview_pyramid", t:"COG Overview Pyramid", d:"Every resolution level of a COG stacked into an interactive 3D pyramid.", tags:["COG","3D"] },
-  { n:"overture_census_isochrone", t:"Isochrone Explorer", d:"Combine a travel-time isochrone with Overture POIs and Census income on H3 hexes.", tags:["H3","Overture","Census"], key:true },
+  { n:"overture_census_isochrone", t:"Isochrone Explorer", d:"Combine a travel-time isochrone with Overture POIs and Census income on H3 hexes.", tags:["H3","Overture","Census"] },
   { n:"zonal_stats_hex", t:"Zonal Stats", d:"Who lives at what elevation: Census population joined against a DEM in DuckDB.", tags:["DuckDB","DEM","Census"] },
-  { n:"store_site_selection", t:"Store Site Selection", d:"Where should a cafe open? Score census tracts with weights you control.", tags:["Census","scoring"], key:true },
+  { n:"store_site_selection", t:"Store Site Selection", d:"Where should a cafe open? Score census tracts with weights you control — opens with an Austin demo, no setup.", tags:["Census","scoring"] },
   { n:"forest_carbon_monitor", t:"Forest Carbon Monitor", d:"Track deforestation inside protected areas using Global Forest Watch data.", tags:["GFW","time series"] },
   { n:"disaster_response_dashboard", t:"Disaster Response Dashboard", d:"Satellite imagery, a storm track, and building footprints fused for one disaster event.", tags:["imagery","buildings"] },
   { n:"gers_pixel_ref", t:"GERS Pixel References", d:"eopix: mint and resolve GERS-anchored byte-range references to individual pixels.", tags:["GERS","COG"] },
@@ -632,18 +955,26 @@ function imgSrc(rel){
   return rel;
 }
 function assetUrl(name){ return imgSrc("assets/" + name + ".jpg"); }
-function renderCards(el, list, prefix){
-  el.innerHTML = list.map(p => {
-    const tags = p.tags.map(t => '<span class="t">'+t+'</span>').join("") + (p.key ? '<span class="t key">needs API key (free)</span>' : "");
-    return '<a class="scard'+(p.feat?' feat':'')+'" href="fused-render://open?git='+REPO+prefix+p.n+'">'+
-      '<div class="media"><span class="mono-fb">'+monogram(p.n)+'</span>'+
-      '<img loading="lazy" alt="" src="'+assetUrl(p.n)+'" onerror="this.remove()"></div>'+
-      '<div class="cbody"><h4>'+p.t+' <span class="cn">'+p.n+'</span></h4><p>'+p.d+'</p>'+
-      '<div class="tags">'+tags+'</div></div></a>';
-  }).join("");
+function cardHtml(p, prefix){
+  const tags = p.tags.map(t => '<span class="t">'+t+'</span>').join("") + (p.key ? '<span class="t key">needs API key (free)</span>' : "");
+  return '<a class="scard'+(p.feat?' feat':'')+'" href="fused-render://open?git='+REPO+prefix+p.n+'">'+
+    '<div class="media"><span class="mono-fb">'+monogram(p.n)+'</span>'+
+    '<img loading="lazy" alt="" src="'+assetUrl(p.n)+'" onerror="this.remove()"></div>'+
+    '<div class="cbody"><h4>'+p.t+' <span class="cn">'+p.n+'</span></h4><p>'+p.d+'</p>'+
+    '<div class="tags">'+tags+'</div></div></a>';
 }
+function renderCards(el, list, prefix){ if (el) el.innerHTML = list.map(p => cardHtml(p, prefix)).join(""); }
 renderCards($("#localCards"), LOCAL, "local-tools/");
 renderCards($("#geoCards"), GEO, "geospatial/");
+
+// Home page shows a curated, mixed row (local + geo). Strip `feat` so they render
+// as equal-width cards in the 3-column grid.
+const HOME_PICKS = [["visual_claude","local-tools/"],["hexagon_lab","geospatial/"],["pytop","local-tools/"]];
+const findCard = n => LOCAL.concat(GEO).find(x => x.n === n);
+const homeShow = $("#homeShowcase");
+if (homeShow) homeShow.innerHTML = HOME_PICKS.map(([n, pfx]) => {
+  const p = findCard(n); return p ? cardHtml(Object.assign({}, p, { feat:false }), pfx) : "";
+}).join("");
 
 /* ---------------- assign stable ids to headings (for deep links + search) ---------------- */
 const slugify = s => s.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
@@ -718,6 +1049,8 @@ function render(slug, hash){
   buildPager(p);
   if (p.slug === "claude") checkClaude();
   if (p.slug === "templates") loadTemplates();
+  if (p.slug === "build") maybeHello();
+  if (p.slug === "home") initChooser();
   // scroll: to heading if hash, else top of content
   if (hash) {
     const t = document.getElementById(hash);
@@ -841,8 +1174,21 @@ function mountFrame(frameSel, ifSel, absPath, useShell){
 // The demo lives in this folder, so the embed works wherever the Learn page is
 // opened (no dependency on a sibling example).
 const demoPath = ownDir ? ownDir + "/pi.html" : null;
+const demoPy   = ownDir ? ownDir + "/pi.py"   : null;
 mountFrame("#demoFrame", "#demoIf", demoPath, false);
-if (hasFused && demoPath) $("#demoOpen").href = viewUrl(demoPath);
+// "Show code": open the page and its Python side by side in a split view so you
+// can see exactly what's driving the demo. The `_layout` codec keeps slashes
+// literal and only escapes % , ; ( ) ? per segment (see frontend layout-codec.ts),
+// so we escape exactly those — NOT a generic per-segment encodeURIComponent.
+const paneSeg = p => p.replace(/%/g,"%25").replace(/,/g,"%2C").replace(/;/g,"%3B")
+  .replace(/\(/g,"%28").replace(/\)/g,"%29").replace(/\?/g,"%3F");
+// After per-segment escaping, the app runs a urlSafeLayout pass over the whole
+// codec string (%, #, space) before wrapping in _layout=(…); one decodeURIComponent
+// on read reverses it. Replicate it so a path with a space or # still yields a
+// valid URL (frontend layout-codec.ts).
+const urlSafeLayout = s => s.replace(/%/g,"%25").replace(/#/g,"%23").replace(/ /g,"%20");
+const splitUrl = (a, b) => "/view/_panel?_layout=(" + urlSafeLayout(paneSeg(a) + "," + paneSeg(b)) + ")";
+if (hasFused && demoPath) $("#demoOpen").href = splitUrl(demoPath, demoPy);
 else $("#demoOpen").style.display = "none";
 
 /* hello.py round trip */
@@ -869,6 +1215,31 @@ async function hello(){
 }
 $("#helloBtn").addEventListener("click", hello);
 $("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(); });
+// The hello demo lives on the Build page (not the default Home), so pre-populate
+// it lazily the first time Build is opened — never on initial Learn load, so we
+// don't fire a hidden runPython round-trip for users who stay on Home.
+let helloPrimed = false;
+function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
+
+/* ---- first-visit onboarding chooser (Layer 1 prototype) ----
+   Shows one lightweight question on the first visit to Home, routing the user
+   toward Build / Templates / Showcase. Non-invasive (no personal data), stored
+   only in localStorage, and never a gate — every path stays available below. */
+const chooserEl = $("#chooser");
+let chooserWired = false;
+function readIntent(){ try { return localStorage.getItem("fused.learn.intent"); } catch(e){ return null; } }
+function setIntent(v){ try { localStorage.setItem("fused.learn.intent", v); } catch(e){} }
+function initChooser(){
+  if (!chooserEl) return;
+  chooserEl.hidden = !!readIntent();          // hide once a choice (or skip) is stored
+  if (chooserWired) return;
+  chooserWired = true;
+  // Options keep their ?page= hrefs, so the global router handles navigation;
+  // we only record which path was chosen.
+  chooserEl.querySelectorAll(".ch-opt").forEach(a =>
+    a.addEventListener("click", () => setIntent(a.dataset.intent)));
+  $("#chSkip").addEventListener("click", () => { setIntent("skip"); chooserEl.hidden = true; });
+}
 
 /* live templates list (runs once, when the Templates page opens) */
 let tplLoaded = false, coreTpls = [], customTpls = [];
@@ -970,6 +1341,8 @@ async function checkClaude(){
 /* URL-state slider */
 function drawLevel(v){
   $("#level").value = v; $("#vLevel").textContent = v; $("#bar").style.width = v+"%"; $("#urlVal").textContent = v;
+  const q = $("#ubQ");
+  if (q) { q.classList.add("flash"); clearTimeout(q._t); q._t = setTimeout(() => q.classList.remove("flash"), 130); }
 }
 if (hasFused && fused.params){
   const P = fused.params;
@@ -986,7 +1359,7 @@ if (hasFused && fused.params){
 (function boot(){
   const slug = currentParams().get("page") || PAGES[0].slug;
   render(slug, location.hash ? location.hash.slice(1) : null);
-  hello();
+  // hello() is primed lazily via maybeHello() when the Build page opens — see render().
 })();
 </script>
 </body>

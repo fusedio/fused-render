@@ -284,6 +284,73 @@ def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):
     assert entry._mount_signal() is server._UNCHANGED
 
 
+def test_mount_dir_signal_credentialed_direct_error_falls_back_to_rc(home, monkeypatch):
+    # (finding 12 regression) direct_list_capable is now a PURE config-shape
+    # check, so a credentialed-SHAPED S3/GCS remote is "capable" without its
+    # creds having been resolved. When they don't resolve (cloud-auth libs
+    # absent, ambient creds expired) direct_list_page raises DirectListError.
+    # A non-root dir must fall back to rc_list_dir — the same recovery the
+    # fs/list handler and the s3/gcs_direct_capable docstrings promise — rather
+    # than landing in the blanket except and going permanently _UNCHANGED.
+    entry = server._WatchEntry(str(home / "mounts" / "priv" / "dir"))
+    assert entry.is_mount is True and entry._is_mount_root is False
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: False)
+    monkeypatch.setattr(
+        mounts_mod, "direct_list_page",
+        lambda path, *, max_keys, continuation=None, timeout=None:
+        (_ for _ in ()).throw(mounts_mod.DirectListError("creds unresolved")))
+    listing = [{"Name": "a", "Size": 1, "ModTime": "t1"}]
+    rc_calls = []
+
+    def fake_rc(p, timeout=None):
+        rc_calls.append(p)
+        return list(listing)
+
+    monkeypatch.setattr(mounts_mod, "rc_list_dir", fake_rc)
+    sig = entry._mount_signal()
+    assert sig.startswith("L")  # rc listing hash, not _UNCHANGED
+    assert rc_calls == [str(home / "mounts" / "priv" / "dir")]
+
+
+def test_mount_root_credentialed_direct_error_unchanged_no_rc(home, monkeypatch):
+    # A credentialed-shaped mount ROOT whose direct page fails must NOT fall
+    # through to rc_list_dir: an rc listing of the whole top prefix every tick is
+    # the standing background enumeration the watcher deliberately refuses
+    # (P1 #4). It stays best-effort _UNCHANGED.
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
+    entry = server._WatchEntry(str(home / "mounts" / "privbucket"))
+    assert entry._is_mount_root is True and entry._direct_capable is True
+    monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: False)
+    monkeypatch.setattr(
+        mounts_mod, "direct_list_page",
+        lambda path, *, max_keys, continuation=None, timeout=None:
+        (_ for _ in ()).throw(mounts_mod.DirectListError("creds unresolved")))
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("rc_list_dir called on a mount root")))
+    assert entry._mount_signal() is server._UNCHANGED
+
+
+def test_mount_dir_signal_anonymous_direct_error_unchanged_no_rc(home, monkeypatch):
+    # HARD INVARIANT: an anonymous S3/GCS remote carries no creds to fail on and
+    # historically returned _UNCHANGED on DirectListError. That behavior stays
+    # byte-identical — NO rc fallback for anonymous, even on a non-root dir.
+    entry = server._WatchEntry(str(home / "mounts" / "open" / "dir"))
+    assert entry._is_mount_root is False
+    monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: True)
+    monkeypatch.setattr(
+        mounts_mod, "direct_list_page",
+        lambda path, *, max_keys, continuation=None, timeout=None:
+        (_ for _ in ()).throw(mounts_mod.DirectListError("boom")))
+    monkeypatch.setattr(mounts_mod, "rc_list_dir",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("rc_list_dir called for anonymous remote")))
+    assert entry._mount_signal() is server._UNCHANGED
+
+
 def test_read_consumes_a_completed_slow_stat(tmp_path, monkeypatch):
     # (3.3) A stat that outlives its wait_for keeps running; the NEXT tick must
     # CONSUME its finished result rather than discard the done future and start

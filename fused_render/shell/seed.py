@@ -20,7 +20,7 @@ import shutil
 import time
 import uuid
 
-from fused_render._view_url_codec import view_url_path
+from fused_render._view_url_codec import _is_drive_path, view_url_path
 from fused_render.shell import storage
 
 # Seed examples live at the repo root (examples_seed/) and are force-included
@@ -114,8 +114,9 @@ def _sine_panel_url(abs_path: str) -> str:
     where L = the page in default render mode and R = the same page with
     `_mode=code`. `,` is the row (side-by-side) separator; the whole layout is
     parenthesized and emitted last, per the D51 grammar in buildSentinelUrl()."""
-    left = _encode_pane_segment(abs_path, "")
-    right = _encode_pane_segment(abs_path, "?_mode=code")
+    norm = abs_path.replace("\\", "/") if _is_drive_path(abs_path) else abs_path
+    left = _encode_pane_segment(norm, "")
+    right = _encode_pane_segment(norm, "?_mode=code")
     codec = left + "," + right
     return "/view/_panel?_layout=(" + _url_safe_layout(codec) + ")"
 
