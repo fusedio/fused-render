@@ -42,9 +42,16 @@ getConfig().then(
     // Poll every 30 s so another tab's/window's bookmark edits converge here
     // (D77). refreshBookmarks() re-renders only when the tree actually changed.
     const BOOKMARK_POLL_MS = 30_000;
-    setInterval(() => {
+    const pollBookmarks = () => {
       refreshBookmarks().then((changed) => changed && notifyBookmarksChanged());
-    }, BOOKMARK_POLL_MS);
+    };
+    setInterval(pollBookmarks, BOOKMARK_POLL_MS);
+    // Also refresh the instant the window regains focus — the common case for
+    // the missing-file flag (D127): switch away, fix/restore the file, switch
+    // back, and the sidebar reflects it immediately instead of waiting out the
+    // rest of the 30 s tick. Same "refresh on focus" posture as
+    // ServerStatusBanner's health probe (D126).
+    window.addEventListener("focus", pollBookmarks);
   },
   (err: Error) =>
     root.render(
