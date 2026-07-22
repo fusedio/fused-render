@@ -1550,6 +1550,62 @@ _gcs_creds_cache: dict = {}  # remote name -> (google-auth creds obj|None, mono 
 _gcs_signer_cache: dict = {}  # remote name -> (gcssign.Signer|None, monotonic exp)
 _sign_neg_cache: dict = {}  # fs -> monotonic expiry: skip sign validation until
 _validation_locks: dict = {}  # fs -> Lock: per-fs single-flight for validation
+# fs -> monotonic expiry: a signable-shaped GCS remote whose gsign is in its
+# retry window (contended validation, neg-cached, or a momentarily-unresolvable
+# signer) should serve THIS request via the bearer proxy rather than dead-end at
+# the serve — so bearer_upstream_for treats the remote as bearer-eligible while
+# this is live even though its SA key still parses (finding 1).
+_gcs_bearer_fallback: dict = {}
+# Per-(cache, name) single-flight locks: a cold miss on any upstream resolver
+# runs the (network-blocking) source ONCE across N concurrent readers instead of
+# each thread independently walking it. Keyed by the cache's id() so every
+# per-name cache shares this one registry (the GCS token refresh also serializes
+# through it, giving the shared google-auth credential object a single refresher,
+# finding 7).
+_cache_locks: dict = {}
+
+# Registries so an invalidator can't miss a cache. _NAME_CACHES are the per-
+# remote-name resolver caches; _GCS_NAME_CACHES the subset _invalidate_gcs_creds
+# drops (the GCS token + credential object); _UPSTREAM_MAPS the per-fs / per-
+# remote state that full invalidation also clears.
+_GCS_NAME_CACHES = (_gcs_token_cache, _gcs_creds_cache)
+_NAME_CACHES = (_cred_cache, _botocore_creds_cache, _gcs_signer_cache,
+                *_GCS_NAME_CACHES)
+_UPSTREAM_MAPS = (_upstream_cfg, _upstream_mode, _upstream_region,
+                  _upstream_links, _sign_neg_cache, _validation_locks,
+                  _gcs_bearer_fallback)
+
+
+def _cached_resolve(cache: dict, name: str, ttl, resolve):
+    """Per-name TTL cache with per-name single-flight, shared by every upstream
+    resolver cache. `cache` maps name -> (value, monotonic expiry); on a miss,
+    exactly ONE thread (per name) runs `resolve()` while the rest wait on the
+    per-name lock and then read the value it cached — so N concurrent cold reads
+    don't each walk a black-holed IMDS probe / OAuth+ADC round trip.
+
+    `ttl` is the lifetime in seconds, or a callable value->seconds when the
+    lifetime depends on the resolved value (the GCS bearer token runs to its own
+    expiry). A None result IS cached — the negative caching is load-bearing (it
+    bounds how often an absent [cloud-auth] / black-holed metadata endpoint is
+    re-probed). Double-checked: the cache is re-read after the lock is acquired
+    so a racer that already resolved is reused, not re-resolved. resolve() runs
+    WITHOUT _upstream_lock held, so it may call other _cached_resolve caches."""
+    now = time.monotonic()
+    with _upstream_lock:
+        hit = cache.get(name)
+        if hit is not None and hit[1] > now:
+            return hit[0]
+        lock = _cache_locks.setdefault((id(cache), name), threading.Lock())
+    with lock:
+        with _upstream_lock:
+            hit = cache.get(name)
+            if hit is not None and hit[1] > time.monotonic():
+                return hit[0]
+        value = resolve()
+        ttl_s = ttl(value) if callable(ttl) else ttl
+        with _upstream_lock:
+            cache[name] = (value, time.monotonic() + ttl_s)
+        return value
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1598,17 +1654,9 @@ def _invalidate_upstream_caches() -> None:
     are rare, user-initiated events, and for anonymous remotes it only forces a
     cheap re-derivation of the public mode."""
     with _upstream_lock:
-        _upstream_cfg.clear()
-        _upstream_mode.clear()
-        _upstream_region.clear()
-        _cred_cache.clear()
-        _botocore_creds_cache.clear()
-        _gcs_token_cache.clear()
-        _gcs_creds_cache.clear()
-        _gcs_signer_cache.clear()
-        _upstream_links.clear()
-        _sign_neg_cache.clear()
-        _validation_locks.clear()
+        for d in (*_UPSTREAM_MAPS, *_NAME_CACHES):
+            d.clear()
+        _cache_locks.clear()
 
 
 def _store_upstream_link(key, url: str, expiry: float, now: float) -> None:
@@ -1806,16 +1854,10 @@ def _botocore_chain(name: str, cfg: dict | None):
     per _BOTOCORE_CHAIN_TTL_S; the cached object self-refreshes STS near expiry,
     so frozen_from_botocore on it is cheap between walks. Cleared by
     _invalidate_upstream_caches. None (also cached) when the chain yields
-    nothing."""
-    now = time.monotonic()
-    with _upstream_lock:
-        hit = _botocore_creds_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    chain = s3sign.resolve_botocore_chain(cfg)
-    with _upstream_lock:
-        _botocore_creds_cache[name] = (chain, now + _BOTOCORE_CHAIN_TTL_S)
-    return chain
+    nothing. Single-flight per name via _cached_resolve so a black-holed IMDS
+    probe is walked once, not once per concurrent cold reader (finding 10)."""
+    return _cached_resolve(_botocore_creds_cache, name, _BOTOCORE_CHAIN_TTL_S,
+                           lambda: s3sign.resolve_botocore_chain(cfg))
 
 
 def _signable_credentials(name: str, cfg: dict | None):
@@ -1825,18 +1867,14 @@ def _signable_credentials(name: str, cfg: dict | None):
     path. The botocore rung rides the LONGER-lived, self-refreshing chain-object
     cache (_botocore_chain), so the expensive provider-chain walk isn't repeated
     every _CRED_TTL_S — only get_frozen_credentials runs per window. None (also
-    cached) when nothing resolves."""
-    now = time.monotonic()
-    with _upstream_lock:
-        hit = _cred_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    creds = s3sign.resolve_static_credentials(cfg)
-    if creds is None and s3sign.needs_botocore(cfg):
-        creds = s3sign.frozen_from_botocore(_botocore_chain(name, cfg))
-    with _upstream_lock:
-        _cred_cache[name] = (creds, now + _CRED_TTL_S)
-    return creds
+    cached) when nothing resolves. Single-flight per name via _cached_resolve
+    (finding 10)."""
+    def resolve():
+        creds = s3sign.resolve_static_credentials(cfg)
+        if creds is None and s3sign.needs_botocore(cfg):
+            creds = s3sign.frozen_from_botocore(_botocore_chain(name, cfg))
+        return creds
+    return _cached_resolve(_cred_cache, name, _CRED_TTL_S, resolve)
 
 
 def _gcs_credentials(name: str, cfg: dict | None):
@@ -1846,16 +1884,11 @@ def _gcs_credentials(name: str, cfg: dict | None):
     token_from_credentials renews it near expiry WITHOUT rebuilding the chain.
     Re-derived from config only once per window (picks up a rotated key), and
     dropped by _invalidate_upstream_caches / invalidate_gcs_token. None (also
-    cached) when nothing resolves."""
-    now = time.monotonic()
-    with _upstream_lock:
-        hit = _gcs_creds_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    creds = gcssign.resolve_credentials(cfg)
-    with _upstream_lock:
-        _gcs_creds_cache[name] = (creds, now + _CRED_TTL_S)
-    return creds
+    cached) when nothing resolves. Single-flight per name via _cached_resolve so
+    the ADC/GCE-metadata probe is walked once, not per concurrent cold reader,
+    and the shared credential object gets a single refresher (findings 7, 10)."""
+    return _cached_resolve(_gcs_creds_cache, name, _CRED_TTL_S,
+                           lambda: gcssign.resolve_credentials(cfg))
 
 
 def _gcs_bearer_token(name: str, cfg: dict | None):
@@ -1865,35 +1898,35 @@ def _gcs_bearer_token(name: str, cfg: dict | None):
     forcing an OAuth round trip per _CRED_TTL_S window. The token cache runs to
     expiry minus _GCS_TOKEN_SLACK_S (re-resolved before GCS would reject it); a
     None result (not credentialed / [cloud-auth] absent) is cached for
-    _CRED_TTL_S. Returns a gcssign.Token or None."""
-    now = time.monotonic()
-    with _upstream_lock:
-        hit = _gcs_token_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    creds = _gcs_credentials(name, cfg)
-    tok = gcssign.token_from_credentials(creds) if creds is not None else None
-    if tok is None:
-        expiry = now + _CRED_TTL_S
-    else:
+    _CRED_TTL_S. Returns a gcssign.Token or None. Single-flight per name via
+    _cached_resolve — the one refresher requirement of finding 7 (the shared
+    google-auth credential's refresh() runs under this per-name lock)."""
+    def resolve():
+        creds = _gcs_credentials(name, cfg)
+        return (gcssign.token_from_credentials(creds)
+                if creds is not None else None)
+
+    def ttl(tok):
+        if tok is None:
+            return _CRED_TTL_S  # None (not credentialed / no [cloud-auth])
         # token.expiry_epoch is wall-clock (time.time); map its remaining life
-        # onto the monotonic clock the cache keys off. Runs to expiry-slack (not
-        # clamped to _CRED_TTL_S) — the self-refreshing creds object is what
-        # picks up rotation on the next _CRED_TTL_S re-derivation.
-        remaining = tok.expiry_epoch - time.time() - _GCS_TOKEN_SLACK_S
-        expiry = now + max(0.0, remaining)
-    with _upstream_lock:
-        _gcs_token_cache[name] = (tok, expiry)
-    return tok
+        # onto the monotonic clock _cached_resolve keys off. Runs to expiry-slack
+        # (not clamped to _CRED_TTL_S) — the self-refreshing creds object picks
+        # up rotation on the next _CRED_TTL_S re-derivation.
+        return max(0.0, tok.expiry_epoch - time.time() - _GCS_TOKEN_SLACK_S)
+
+    return _cached_resolve(_gcs_token_cache, name, ttl, resolve)
 
 
 def _invalidate_gcs_creds(name: str) -> None:
     """Drop a remote's cached bearer token AND credential object so the next
     resolution re-derives from config (forces a fresh token). Used by the direct
-    fetch helper and the bearer read proxy on a 401 (stale/rotated token)."""
+    fetch helper and the bearer read proxy on a 401 (stale/rotated token). Clears
+    exactly the GCS token + credential-object caches (the registry keeps this in
+    lockstep with what those caches are)."""
     with _upstream_lock:
-        _gcs_token_cache.pop(name, None)
-        _gcs_creds_cache.pop(name, None)
+        for cache in _GCS_NAME_CACHES:
+            cache.pop(name, None)
 
 
 def _gcs_credentialed(name: str, cfg: dict | None) -> bool:
@@ -1934,16 +1967,10 @@ def _gcs_signer(name: str, cfg: dict | None):
     (once per object) — and a transient open() error would otherwise stick as a
     permanent demotion; the cache bounds that window to one TTL. None (also
     cached) when the remote has no signer-capable SA key. Returns a
-    gcssign.Signer or None."""
-    now = time.monotonic()
-    with _upstream_lock:
-        hit = _gcs_signer_cache.get(name)
-        if hit is not None and hit[1] > now:
-            return hit[0]
-    signer = gcssign.resolve_signer(cfg)
-    with _upstream_lock:
-        _gcs_signer_cache[name] = (signer, now + _CRED_TTL_S)
-    return signer
+    gcssign.Signer or None. Single-flight per name via _cached_resolve
+    (finding 10)."""
+    return _cached_resolve(_gcs_signer_cache, name, _CRED_TTL_S,
+                           lambda: gcssign.resolve_signer(cfg))
 
 
 def _gcs_signable(name: str, cfg: dict | None) -> bool:

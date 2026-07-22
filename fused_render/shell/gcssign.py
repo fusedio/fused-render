@@ -285,7 +285,13 @@ def token_from_credentials(creds) -> Token | None:
         _refresh_if_needed(creds)
     except Exception:
         return None
-    if not creds.token:
+    # Read the token ONCE into a local and reuse it: a concurrent refresh of the
+    # shared credential object could otherwise pair an old .token with the new
+    # .expiry, caching a dead token until the false expiry (finding 7). The
+    # mounts-side per-name single-flight makes a concurrent refresh unlikely, but
+    # reading once removes the non-atomicity by construction.
+    token = creds.token
+    if not token:
         return None
     expiry = getattr(creds, "expiry", None)
     if expiry is None:
@@ -297,7 +303,7 @@ def token_from_credentials(creds) -> Token | None:
         if expiry.tzinfo is None:
             expiry = expiry.replace(tzinfo=datetime.timezone.utc)
         expiry_epoch = expiry.timestamp()
-    return Token(creds.token, expiry_epoch)
+    return Token(token, expiry_epoch)
 
 
 def resolve_token(cfg: dict | None) -> Token | None:
