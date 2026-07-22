@@ -23,7 +23,10 @@ from pathlib import Path
 from fused_render.supervisor.paths import DesktopPaths
 from fused_render.supervisor.tray import TrayAction, TrayHandle, _State
 
-_ICON_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "fused-render.ico"
+# The macOS "template" diamond: a black glyph on a transparent background. macOS
+# tints it white in the menu bar; waybar/StatusNotifier has no such template
+# auto-tinting, so _icon_pixmap recolors it to white itself (see _tint_white).
+_ICON_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "menubar-template.png"
 
 # Panel-tray render size. Hosts scale as needed; a single 22px pixmap is the
 # conventional freedesktop tray size and keeps the ARGB payload small.
@@ -53,13 +56,10 @@ _ACTION_BY_ID: dict[int, TrayAction] = {
 }
 
 
-def _icon_pixmap(path) -> tuple[int, int, bytes]:
-    """Load `path`, scale to `_ICON_SIZE`, and repack to the SNI IconPixmap
-    payload: ARGB32 in **network byte order** (big-endian), i.e. each pixel is
-    the four bytes A, R, G, B. Pillow gives RGBA, so we reorder per pixel."""
-    from PIL import Image
-
-    image = Image.open(path).convert("RGBA").resize((_ICON_SIZE, _ICON_SIZE))
+def _pack_argb32(image) -> tuple[int, int, bytes]:
+    """Repack an RGBA Pillow image to the SNI IconPixmap payload: ARGB32 in
+    **network byte order** (big-endian), i.e. each pixel is the four bytes
+    A, R, G, B. Pillow gives RGBA, so we reorder per pixel. No recolor."""
     rgba = image.tobytes()  # R, G, B, A per pixel
     argb = bytearray(len(rgba))
     for i in range(0, len(rgba), 4):
@@ -68,7 +68,32 @@ def _icon_pixmap(path) -> tuple[int, int, bytes]:
         argb[i + 1] = r
         argb[i + 2] = g
         argb[i + 3] = b
-    return _ICON_SIZE, _ICON_SIZE, bytes(argb)
+    return image.width, image.height, bytes(argb)
+
+
+def _tint_white(image):
+    """Map every pixel of an RGBA image to white (255, 255, 255) while keeping
+    its original alpha. Turns the black-on-transparent macOS template glyph into
+    a white-on-transparent one. White (255,255,255) is symmetric under any R/B
+    swap, so the emitted pixmap is correct regardless of channel order."""
+    from PIL import Image
+
+    alpha = image.getchannel("A")
+    white = Image.new("RGBA", image.size, (255, 255, 255, 0))
+    white.putalpha(alpha)
+    return white
+
+
+def _icon_pixmap(path) -> tuple[int, int, bytes]:
+    """Load `path`, tint it white, scale to `_ICON_SIZE`, and repack to the SNI
+    IconPixmap ARGB32 payload. The white glyph assumes a dark bar: waybar/SNI has
+    no template auto-tinting like macOS, so an untinted glyph would be invisible
+    (or a colored blob) on a typically dark panel — we emit white ourselves."""
+    from PIL import Image
+
+    image = Image.open(path).convert("RGBA")
+    image = _tint_white(image).resize((_ICON_SIZE, _ICON_SIZE))
+    return _pack_argb32(image)
 
 
 def _item(item_id: int, properties: dict) -> dict:

@@ -40,18 +40,47 @@ def test_icon_pixmap_dimensions_and_length():
     assert len(data) == w * h * 4
 
 
-def test_icon_pixmap_is_argb32_big_endian(tmp_path):
-    # A solid image already at the target size resizes to itself (no interpolated
-    # edges), so every 4-byte group must be the ARGB32 (network byte order)
-    # repack of the source RGBA pixel — A, R, G, B.
-    src = tmp_path / "solid.png"
+def test_pack_argb32_is_big_endian():
+    # The pure packer does ONLY the RGBA→ARGB32 (network byte order) repack: each
+    # source pixel R,G,B,A becomes the four bytes A,R,G,B, no recolor.
     size = linux_tray._ICON_SIZE
-    Image.new("RGBA", (size, size), (10, 20, 30, 40)).save(src)
+    image = Image.new("RGBA", (size, size), (10, 20, 30, 40))
 
-    w, h, data = linux_tray._icon_pixmap(src)
+    w, h, data = linux_tray._pack_argb32(image)
 
+    assert (w, h) == (size, size)
     assert data[:4] == bytes([40, 10, 20, 30])  # A, R, G, B
     assert data == bytes([40, 10, 20, 30]) * (w * h)
+
+
+# --- _tint_white -------------------------------------------------------------
+
+
+def test_tint_white_maps_glyph_to_white_preserving_alpha():
+    # opaque black glyph → opaque white; transparent bg → stays transparent;
+    # a mid-alpha pixel keeps its exact alpha. Only the alpha channel survives.
+    image = Image.new("RGBA", (1, 3))
+    image.putpixel((0, 0), (0, 0, 0, 255))    # opaque glyph pixel
+    image.putpixel((0, 1), (0, 0, 0, 0))      # transparent background
+    image.putpixel((0, 2), (12, 34, 56, 128))  # mid-alpha pixel
+
+    tinted = linux_tray._tint_white(image)
+
+    assert tinted.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert tinted.getpixel((0, 1))[3] == 0
+    assert tinted.getpixel((0, 2)) == (255, 255, 255, 128)
+
+
+def test_icon_pixmap_emits_white_on_transparent():
+    # End-to-end on the real menubar-template.png: the tinted pixmap must have at
+    # least one fully-transparent pixel and at least one fully-opaque WHITE pixel.
+    w, h, data = linux_tray._icon_pixmap(linux_tray._ICON_PATH)
+    assert (w, h) == (linux_tray._ICON_SIZE, linux_tray._ICON_SIZE)
+    assert len(data) == w * h * 4
+
+    pixels = [tuple(data[i : i + 4]) for i in range(0, len(data), 4)]  # A, R, G, B
+    assert any(pixel[0] == 0 for pixel in pixels)  # a fully-transparent pixel
+    assert (255, 255, 255, 255) in pixels  # a fully-opaque white pixel (A,R,G,B)
 
 
 # --- _menu_layout ------------------------------------------------------------
