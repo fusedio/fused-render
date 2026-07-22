@@ -1058,6 +1058,11 @@ table.listing-table td.mtime {
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
+  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+     padding + 1px border) so the header can't grow when the loading spinner is
+     replaced by the real switcher on stat resolve — otherwise the name and the
+     whole body below shift down on every navigation. */
+  min-height: 49px;
 }
 
 /* Groups the name with whatever renders right after it (e.g. the directory
@@ -1165,6 +1170,18 @@ table.listing-table td.mtime {
   background: var(--accent);
   color: #10131a;
   border-color: var(--accent);
+}
+
+/* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
+   a borderless box the size of one .mode-switcher-btn so the header holds the
+   switcher's height while stat is in flight — no growth/shift when the real
+   switcher lands. */
+.preview-actions .mode-switcher-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
 }
 
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
