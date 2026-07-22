@@ -1744,6 +1744,46 @@ body.embed .open-as-app-chip:hover {
   color: var(--fg);
 }
 
+/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
+.listing-toast-action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
+.listing-toast-action:hover {
+  border-color: var(--fg-muted);
+}
+
+/* Global toast host (ToastHost): a fixed, bottom-centre stack over any view.
+   Neutralises .listing-toast's own absolute positioning so entries stack —
+   newest at the bottom (column-reverse), nearest the user's eye. */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast-host .listing-toast {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  pointer-events: auto;
+}
+
 /* ---- Server-status banner (bottom-right, backend health) ----------------- */
 /* Shown by ServerStatusBanner after two failed /api/config probes; the green
    -reconnected variant auto-dismisses. Sits above the listing toast (1000). */
@@ -3004,12 +3044,22 @@ select.field-control:has(option[value=""]:checked) {
 
 .prefs-page {
   padding: 18px 22px 32px;
-  max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  /* Full-width scroll container so the scrollbar sits at the window edge, not
+     inset at the 760px content boundary. The content column is capped by the
+     child rule below (previously max-width lived here, which made the narrow
+     760px box itself the scroller — a mid-page scrollbar). */
   overflow-y: auto;
   font-size: 13px;
+}
+
+/* Cap the settings/mounts content column while the scroller stays full-width.
+   Left-aligned (no auto margin), matching the previous look. */
+.prefs-page > * {
+  max-width: 760px;
+  width: 100%;
 }
 
 /* Render preferences / Fused account tabs (D125) — same look as the
