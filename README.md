@@ -238,19 +238,16 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
-- **Logs** — this run's log file path, with an action to reveal it.
+- **Logs** — the path to this run's log file, with an action to reveal it. The
+  server writes this log for debugging: when something goes wrong (an "Internal
+  Server Error" in the browser, or a misbehaving file-open) it has the traceback.
+  Each run writes its own file in your system temp directory (the CLI also prints
+  the path on startup; the packaged app reveals it from **menu bar → Open
+  logs**). It's disposable — it rotates so it can't grow without bound, and
+  living in temp means the OS reclaims it; set `FUSED_RENDER_LOG_DIR` to keep
+  logs somewhere persistent instead.
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your own overrides), read-only.
-
-## Logs
-
-The server writes an application log for debugging — when something goes wrong
-(an "Internal Server Error" in the browser, or a misbehaving file-open) it has
-the traceback. Each run writes its own file in your system temp directory; the
-CLI prints the exact path on startup, and the packaged app reveals it from
-**menu bar → Open logs**. It's disposable — it rotates so it can't grow without
-bound, and living in temp means the OS reclaims it. Set `FUSED_RENDER_LOG_DIR`
-to keep logs somewhere persistent instead.
 
 ## Claude Code plugin
 
