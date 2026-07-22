@@ -728,7 +728,12 @@ the product gains network access.
   install panel; no hosted env configured → guidance (`fused env create` /
   `fused cloud setup`, naming the envs file); else the form — env picker,
   current-deployment card (status chip, URL with copy/open), a **"Will
-  publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
+  publish" preview** (DP-2a), a collapsible **Link** section (DP-9a), a
+  collapsible **Caching** section (DP-17), an owner-only collapsible **Recent
+  errors** diagnostics section (the deployed mount's captured failures via
+  `fused share errors`; rendered for an undeployed page too, but **disabled**
+  with a hint, so the chrome is consistent rather than popping in on first
+  deploy), Deploy/Redeploy, and Revoke. The modal is scoped
   to the current page; the **env-wide** deployment list (DP-13) lives on the
   Fused account tab's Deployments section (AC-11, moved from Preferences
   when the account surface landed), not in the modal.
@@ -855,11 +860,44 @@ the product gains network access.
 - **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
   and hands that bundle to the CLI; the bundle is deleted afterwards. An export
   error blocks the deploy (400, all problems at once — nothing is uploaded).
-- **DP-9** Deploys are **public share links** (`share create --public`, no
-  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
-  cannot serve a hosted page's browser asset GETs yet (fused repo,
-  spec/serve/fused-render.md § Limitations); gate pickers become an option when
-  that lands.
+- **DP-9** Deploys are **public share links** (`share create --public`): an
+  opaque, unguessable capability URL by default. Rationale for staying public
+  (not authed): authed mounts cannot serve a hosted page's browser asset GETs
+  yet (fused repo, spec/serve/fused-render.md § Limitations); gate pickers
+  become an option when that lands.
+- **DP-9a** The token is choosable through a **collapsible "Link" section**
+  (like Caching, DP-17) whose one-line summary shows the current setting
+  (`unguessable` / `custom: <name>`). It has two body modes:
+  - **Picking** — a **random-vs-named radio**: **Unguessable link** (default)
+    keeps the crypto-random opaque token; **Custom name** reveals a name input
+    whose value rides through to `deploy_page`'s `custom_token`, appended as
+    `--token <name>` on that `share create --public` call (the fused CLI's own
+    allowed combination — a public mount with a chosen name is a **deliberately
+    guessable** URL, never produced by an omitted field, only an explicit
+    choice, so it is a two-way toggle rather than a "blank = random" field).
+    Shown when the next Deploy would mint a FRESH mount (no deployment yet, a
+    different env, or the recorded mount absent from `share list`), and in the
+    Change-link flow below. Client-side the name is checked against the CLI's
+    own token shape (`^[a-z0-9][a-z0-9_-]*$`); a malformed name (red error) and
+    a missing one (Custom name chosen, field empty — a quiet prompt) both
+    disable Deploy. An already-taken name is a `share create` rejection the CLI
+    itself reports (surfaced verbatim, DP-15).
+  - **Read-only summary** — once the mount's liveness is CONFIRMED
+    (active/revoked) on the same env, the picker is replaced by a summary of the
+    current link (custom name vs unguessable, read from the record's `named`
+    provenance) plus a **Change link** action. A plain redeploy keeps the token
+    (`repoint`/`recreate --same-token` take no `--token`, DP-10), so changing
+    the URL needs `force_new`: Change link re-reveals the picker and the next
+    Deploy takes the `force_new` path (mint a new token, best-effort revoke the
+    old — DP-10). An *unconfirmed* same-env status (env unreachable at open)
+    shows the picker, not the summary, since the next click may still fall
+    through to a fresh create.
+  The record persists a **`named`** boolean (whether the token is a chosen name
+  vs the opaque default), set at the fresh create that minted it and carried
+  forward unchanged on every token-reuse redeploy — the summary reads it rather
+  than re-deriving named-ness from the token string. The always-public,
+  **no-auth** posture (which the guessable/unguessable choice does not itself
+  state) is a note kept directly beneath the Link section, always visible.
 - **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
   `share list` → `share repoint <token>` (stable URL); revoked tombstone →
   `share recreate --same-token` then repoint (a failed repoint best-effort
