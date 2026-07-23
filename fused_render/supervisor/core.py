@@ -21,7 +21,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from fused_render import desktop_probe
-from fused_render._view_url_codec import view_url
+from fused_render._view_url_codec import is_launch_url, open_target_url, view_url
 from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.supervisor import _backend, protocol, tray
 from fused_render.supervisor.paths import DesktopPaths
@@ -385,7 +385,13 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
 def _open_command(port: int, command: protocol.Command) -> None:
     if isinstance(command, protocol.Open):
-        url = _view_url(port, Path(command.path))
+        if is_launch_url(command.path):
+            # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
+            # no file to stat — route through the shared helper (deep link ->
+            # /clone?src=, file: -> /view).
+            url = open_target_url(port, command.path)
+        else:
+            url = _view_url(port, Path(command.path))
     elif isinstance(command, protocol.OpenHome):
         url = f"http://127.0.0.1:{port}/"
     else:
@@ -411,7 +417,14 @@ def _launch_token() -> str:
 
 
 def _absolute_command(command: protocol.Command) -> protocol.Command:
-    if isinstance(command, protocol.Open) and not Path(command.path).is_absolute():
+    # A URL payload (a `fused-render:` deep link, a `file:`/scheme:// URI) is
+    # not a filesystem path — prepending cwd would mangle it. Only resolve a
+    # genuine relative path.
+    if (
+        isinstance(command, protocol.Open)
+        and not is_launch_url(command.path)
+        and not Path(command.path).is_absolute()
+    ):
         return protocol.Open(str(Path.cwd() / command.path))
     return command
 
