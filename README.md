@@ -9,11 +9,11 @@ Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
 for the full design.
 
-[![Watch the demo: right-click a file in Explorer → Open with → fused-render](learn/assets/open_with_right_click_poster.png)](learn/assets/open_with_right_click.mp4)
+<video src="https://fused-magic.s3.us-west-2.amazonaws.com/fused-render-videos/open_with_right_click.mp4" poster="https://raw.githubusercontent.com/fusedio/fused-render/main/learn/assets/open_with_right_click_poster.png" controls muted playsinline width="100%"></video>
 
 Right-click a file in Explorer → **Open with** → fused-render, and it opens in
-your browser (click the image above to play the demo). See
-[Windows: Explorer "Open with"](#windows-explorer-open-with) to enable it.
+your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
+to enable it.
 
 ## Install
 
