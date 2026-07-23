@@ -732,10 +732,14 @@ a.bookmark-name::after {
 /* Truncate a single over-long folder name so it can't eat the whole strip
    (main bar only — the panel pane keeps its crumbs untruncated). inline-block
    is what lets text-overflow apply to these inline <a>/<span> crumbs; the full
-   name stays reachable via the title tooltip and horizontal scroll. */
+   name stays reachable via the title tooltip and horizontal scroll.
+   flex-shrink 0 is load-bearing: overflow:hidden zeroes a flex item's
+   automatic minimum size, so shrinkable crumbs would all squeeze to slivers
+   and the strip would never overflow — i.e. never scroll. */
 #breadcrumb .path-crumb {
   display: inline-block;
   vertical-align: bottom;
+  flex: 0 0 auto;
   max-width: 16em;
   overflow: hidden;
   text-overflow: ellipsis;
