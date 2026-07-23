@@ -53,3 +53,28 @@ def test_ensure_server_spawns_when_alone(monkeypatch):
     monkeypatch.setattr(winopen, "pick_port", lambda *a, **k: 1778)
     monkeypatch.setattr(winopen, "_spawn", lambda port: port)
     assert winopen._ensure_server(None) == 1778
+
+
+def test_open_launch_deeplink_ensures_server_and_opens_no_tab(monkeypatch, tmp_path):
+    # fused-render://launch (D128): server is ensured, browser stays closed —
+    # the down-banner page that linked here reconnects on its own.
+    monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(winopen, "setup_logging", lambda: None)
+    ensured = []
+    monkeypatch.setattr(winopen, "_ensure_server", lambda port: ensured.append(port) or 1777)
+    monkeypatch.setattr(
+        winopen.webbrowser, "open", lambda url: pytest.fail(f"opened a tab: {url}")
+    )
+    winopen._open("fused-render://launch", None)
+    assert ensured == [None]
+
+
+def test_open_clone_deeplink_still_opens_confirm_page(monkeypatch, tmp_path):
+    monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(winopen, "setup_logging", lambda: None)
+    monkeypatch.setattr(winopen, "_ensure_server", lambda port: 1777)
+    opened = []
+    monkeypatch.setattr(winopen.webbrowser, "open", lambda url: opened.append(url))
+    winopen._open("fused-render://open?git=https://github.com/o/r", None)
+    assert len(opened) == 1
+    assert opened[0].startswith("http://127.0.0.1:1777/clone?src=")

@@ -684,6 +684,42 @@ a.bookmark-name::after {
   font-size: 12px;
 }
 
+/* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
+   .panel-crumbs below). flex:1 1 auto makes the strip own the bar's free
+   width — the whitespace right of the last crumb is the click-to-edit target.
+   The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
+   wheel-scrollable strip carries no chrome; the tail is pinned into view from
+   JS on every path change. */
+#breadcrumb .crumbs {
+  flex: 1 1 auto;
+  scrollbar-width: none;
+}
+
+#breadcrumb .crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
+   monospace as the crumbs, fills the strip, and takes the bar's own
+   background so it reads as the bar turning editable rather than a popped-in
+   widget; a quiet border picks up the accent on focus. */
+#breadcrumb .crumb-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+#breadcrumb .crumb-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .path-crumb,
 .panel-crumb {
   color: var(--fg-muted);
@@ -691,6 +727,31 @@ a.bookmark-name::after {
   cursor: pointer;
   padding: 2px 1px;
   border-radius: 3px;
+}
+
+/* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
+   keeps its crumbs untruncated). Crumbs never shrink by default; ones marked
+   .shrink (names longer than 1.5x their floor, Breadcrumb.tsx) may compress
+   under space pressure down to a min-width floor, ellipsizing as they go.
+   The floors are load-bearing twice over: overflow:hidden zeroes a flex
+   item's automatic minimum size (without a floor everything squeezes to
+   slivers), and flex can't shrink below min-width, so once every .shrink
+   crumb hits its floor the strip genuinely overflows and scrolling takes
+   over. The current dir's 4x floor makes the tail compress last; full names
+   stay reachable via the title tooltip. */
+#breadcrumb .path-crumb {
+  flex: 0 0 auto;
+}
+
+#breadcrumb .path-crumb.shrink {
+  flex-shrink: 1;
+  min-width: 7ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#breadcrumb .path-crumb.last.shrink {
+  min-width: 28ch;
 }
 
 .path-crumb.last,
@@ -1058,6 +1119,11 @@ table.listing-table td.mtime {
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
+  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+     padding + 1px border) so the header can't grow when the loading spinner is
+     replaced by the real switcher on stat resolve — otherwise the name and the
+     whole body below shift down on every navigation. */
+  min-height: 49px;
 }
 
 /* Groups the name with whatever renders right after it (e.g. the directory
@@ -1165,6 +1231,18 @@ table.listing-table td.mtime {
   background: var(--accent);
   color: #10131a;
   border-color: var(--accent);
+}
+
+/* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
+   a borderless box the size of one .mode-switcher-btn so the header holds the
+   switcher's height while stat is in flight — no growth/shift when the real
+   switcher lands. */
+.preview-actions .mode-switcher-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
 }
 
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
@@ -1963,7 +2041,8 @@ body.embed .open-as-app-chip:hover {
   line-height: 1.5;
 }
 
-.server-status-retry {
+.server-status-retry,
+.server-status-launch {
   margin-top: 8px;
   padding: 3px 10px;
   font-size: 12px;
@@ -1974,8 +2053,18 @@ body.embed .open-as-app-chip:hover {
   cursor: pointer;
 }
 
-.server-status-retry:hover {
+.server-status-retry:hover,
+.server-status-launch:hover {
   border-color: var(--fg-muted);
+}
+
+/* The "Start fused-render" fused-render://launch link (D128): an anchor
+   dressed as the sibling button; inline-block so padding/margin apply. */
+.server-status-launch {
+  display: inline-block;
+  margin-right: 8px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .server-status-reconnected {

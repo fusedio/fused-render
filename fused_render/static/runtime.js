@@ -687,7 +687,7 @@
     overlay.appendChild(title);
 
     // Headline the failing line of the USER's script (err.where, set by the
-    // executor, D128) as the prominent culprit, so it's readable without
+    // executor, D132) as the prominent culprit, so it's readable without
     // scanning a stack — then keep the full traceback collapsed so it doesn't
     // repeat the line the trimmed traceback now leads with. EXCEPT for a
     // SyntaxError (family): its traceback is the `format_exception_only` caret

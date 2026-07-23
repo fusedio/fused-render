@@ -4,7 +4,15 @@ No sys.platform guard: the codec is built on pathlib.PureWindowsPath, a pure
 path class that performs no OS calls and is instantiable on any platform, so
 these tests run (and must pass) on Windows, macOS, and Linux alike.
 """
-from fused_render._view_url_codec import view_url, view_url_path
+import pytest
+
+from fused_render._view_url_codec import (
+    is_launch_url,
+    open_target_path,
+    open_target_url,
+    view_url,
+    view_url_path,
+)
 
 
 def test_drive_letter_path():
@@ -52,3 +60,95 @@ def test_bookmark_on_unc_path():
 
 def test_none_path_is_home():
     assert view_url(8000, None) == "http://127.0.0.1:8000/"
+
+
+# ---- open_target_* : raw launch argument -> shell URL (deep link / file:// / path)
+
+
+def test_open_target_deep_link_goes_to_clone():
+    raw = "fused-render://open?git=https://github.com/o/r"
+    assert open_target_path(raw) == (
+        "/clone?src=fused-render%3A%2F%2Fopen%3Fgit%3Dhttps%3A%2F%2Fgithub.com%2Fo%2Fr"
+    )
+
+
+def test_open_target_deep_link_scheme_is_case_insensitive():
+    assert open_target_path("FUSED-RENDER://open?git=x").startswith("/clone?src=")
+
+
+def test_open_target_deep_link_round_trips_the_quoting():
+    from urllib.parse import unquote
+
+    raw = "fused-render://open?git=https://github.com/o/r/tree/main/a+b&x=1"
+    path = open_target_path(raw)
+    assert unquote(path[len("/clone?src="):]) == raw
+
+
+def test_open_target_file_uri_matches_bare_path():
+    assert open_target_path("file:///home/u/a.parquet") == open_target_path(
+        "/home/u/a.parquet"
+    )
+    assert open_target_path("file:///home/u/a.parquet") == "/view/home/u/a.parquet"
+
+
+def test_open_target_file_uri_decodes_percent_escapes():
+    assert open_target_path("file:///home/u/my%20report.html") == (
+        "/view/home/u/my%20report.html"
+    )
+
+
+def test_open_target_plain_absolute_path():
+    assert open_target_path("/data/report.parquet") == "/view/data/report.parquet"
+
+
+def test_open_target_folder_path():
+    assert open_target_path("/home/u/project") == "/view/home/u/project"
+
+
+def test_open_target_url_prefixes_host_and_port():
+    assert open_target_url(8000, "/data/x.parquet") == (
+        "http://127.0.0.1:8000/view/data/x.parquet"
+    )
+    assert open_target_url(8000, "fused-render://open?git=x") == (
+        "http://127.0.0.1:8000/clone?src=fused-render%3A%2F%2Fopen%3Fgit%3Dx"
+    )
+
+
+def test_open_target_file_uri_localhost_is_local():
+    # RFC 8089: an empty authority and "localhost" both mean this machine.
+    assert open_target_path("file://localhost/home/u/a.parquet") == (
+        "/view/home/u/a.parquet"
+    )
+
+
+def test_open_target_file_uri_with_remote_host_fails_loudly():
+    # file://server/share/x names a REMOTE host; decoding it to /share/x would
+    # open a garbage /view page for a local path that doesn't exist. Must raise
+    # (an OSError, so _safe_open answers status 1 and the rejection dialog
+    # shows) instead of mangling.
+    with pytest.raises(OSError):
+        open_target_path("file://server/share/x.parquet")
+
+
+def test_open_target_http_url_fails_loudly():
+    # Any non-fused-render, non-file scheme has no filesystem path to view;
+    # falling through to view_url_path produced /view/https:/example.com/x.
+    with pytest.raises(OSError):
+        open_target_path("https://example.com/x")
+    with pytest.raises(OSError):
+        open_target_url(8000, "http://example.com/x")
+
+
+def test_open_target_unknown_scheme_fails_loudly():
+    with pytest.raises(OSError):
+        open_target_path("ftp://example.com/pub/data.csv")
+
+
+def test_is_launch_url_classification():
+    assert is_launch_url("fused-render://open?git=x")
+    assert is_launch_url("FUSED-RENDER:open")
+    assert is_launch_url("file:///home/u/a.parquet")
+    assert is_launch_url("https://example.com/x")
+    assert not is_launch_url("/home/u/a.parquet")
+    assert not is_launch_url("relative/path")
+    assert not is_launch_url("C:\\Users\\x")

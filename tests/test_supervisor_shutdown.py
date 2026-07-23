@@ -11,8 +11,9 @@ import pytest
 
 pytest.importorskip("win32event")
 
-from fused_render.win_supervisor import __main__ as entry
-from fused_render.win_supervisor import instance, protocol, supervisor
+from fused_render.supervisor import __main__ as entry
+from fused_render.supervisor import core, protocol
+from fused_render.supervisor._win32 import instance
 
 _NAMES = instance.InstanceNames(mutex="m", pipe="p", sid="s")
 
@@ -40,7 +41,7 @@ def test_rejected_shutdown_for_upgrade_raises(monkeypatch):
     sec = _Secondary(send_error=instance.CommandRejected("rejected"))
     monkeypatch.setattr(instance, "acquire", lambda names: sec)
     with pytest.raises(instance.CommandRejected):
-        supervisor.run(protocol.ShutdownForUpgrade())
+        core.run(protocol.ShutdownForUpgrade())
     assert not sec.waited
 
 
@@ -50,8 +51,8 @@ def test_rejected_open_is_reported_not_raised(monkeypatch):
         lambda names: _Secondary(send_error=instance.CommandRejected("rejected")),
     )
     shown = []
-    monkeypatch.setattr(supervisor, "_report_open_rejected", shown.append)
-    supervisor.run(protocol.Open(r"C:\missing.csv"))
+    monkeypatch.setattr(core.ui, "report_open_rejected", shown.append)
+    core.run(protocol.Open(r"C:\missing.csv"))
     assert shown == [r"C:\missing.csv"]
 
 
@@ -59,7 +60,7 @@ def test_shutdown_wait_timeout_propagates(monkeypatch):
     sec = _Secondary(wait_error=TimeoutError("supervisor did not exit"))
     monkeypatch.setattr(instance, "acquire", lambda names: sec)
     with pytest.raises(TimeoutError):
-        supervisor.run(protocol.ShutdownForUpgrade())
+        core.run(protocol.ShutdownForUpgrade())
     assert sec.waited
 
 
@@ -75,7 +76,7 @@ def test_main_exits_nonzero_without_dialog_on_rejected_shutdown(monkeypatch):
         lambda names: _Secondary(send_error=instance.CommandRejected("rejected")),
     )
     monkeypatch.setattr(entry, "DesktopPaths", _NoPaths)
-    monkeypatch.setattr(sys, "argv", ["win_supervisor", "--shutdown-for-upgrade"])
+    monkeypatch.setattr(sys, "argv", ["supervisor", "--shutdown-for-upgrade"])
     dialogs = []
     monkeypatch.setattr(
         ctypes.windll.user32, "MessageBoxW", lambda *a: dialogs.append(a) or 1
@@ -101,8 +102,8 @@ def test_exit_confirm_never_blocks_the_loop_thread(monkeypatch):
     monkeypatch.setattr(ctypes.windll.user32, "MessageBoxW", fake_messagebox)
     results: "queue.Queue[bool]" = queue.Queue()
 
-    supervisor._spawn_exit_confirm(results)  # returns without blocking
-    supervisor._spawn_exit_confirm(results)  # dropped: dialog already open
+    core._spawn_exit_confirm(results)  # returns without blocking
+    core._spawn_exit_confirm(results)  # dropped: dialog already open
     assert results.empty()  # loop thread is free while the dialog is up
 
     answered.set()
@@ -114,11 +115,11 @@ def test_mid_session_failure_dialog_says_stopped_not_could_not_start(monkeypatch
     # Bugbot: a server that died AFTER a successful startup was reported as
     # "FusedRender could not start", misreporting the failure mode.
     def dying_run(command):
-        raise supervisor.SupervisorStoppedError("Python server exited unexpectedly")
+        raise core.SupervisorStoppedError("Python server exited unexpectedly")
 
-    monkeypatch.setattr(supervisor, "run", dying_run)
+    monkeypatch.setattr(core, "run", dying_run)
     monkeypatch.setattr(entry, "DesktopPaths", _NoPaths)
-    monkeypatch.setattr(sys, "argv", ["win_supervisor"])
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
     dialogs = []
     monkeypatch.setattr(
         ctypes.windll.user32, "MessageBoxW", lambda *a: dialogs.append(a) or 1
@@ -135,9 +136,9 @@ def test_startup_failure_dialog_still_says_could_not_start(monkeypatch):
     def failing_run(command):
         raise TimeoutError("Python server did not become ready")
 
-    monkeypatch.setattr(supervisor, "run", failing_run)
+    monkeypatch.setattr(core, "run", failing_run)
     monkeypatch.setattr(entry, "DesktopPaths", _NoPaths)
-    monkeypatch.setattr(sys, "argv", ["win_supervisor"])
+    monkeypatch.setattr(sys, "argv", ["supervisor"])
     dialogs = []
     monkeypatch.setattr(
         ctypes.windll.user32, "MessageBoxW", lambda *a: dialogs.append(a) or 1
@@ -158,15 +159,15 @@ def test_start_ready_server_closes_job_when_spawn_raises(monkeypatch):
         def close(self):
             closed.append(self)
 
-    monkeypatch.setattr(supervisor, "Job", _FakeJob)
-    monkeypatch.setattr(supervisor, "_available_port", lambda: 12345)
+    monkeypatch.setattr(core, "Job", _FakeJob)
+    monkeypatch.setattr(core, "_available_port", lambda: 12345)
 
     def failing_start(job, paths, port, token):
         raise pywintypes.error(5, "AssignProcessToJobObject", "access denied")
 
-    monkeypatch.setattr(supervisor, "_start_server", failing_start)
+    monkeypatch.setattr(core, "_start_server", failing_start)
     with pytest.raises(pywintypes.error):
-        supervisor._start_ready_server(object(), "tok")
+        core._start_ready_server(object(), "tok")
     assert len(closed) == 3  # every retry attempt's job was closed
 
 
@@ -184,7 +185,7 @@ def test_stop_pipe_has_an_overall_deadline_under_request_flood(monkeypatch):
     # Finding: every non-shutdown request reset the 5s get() timer, so a
     # steady stream of secondary launches during teardown hung _stop_pipe
     # (and therefore job.close()) forever.
-    monkeypatch.setattr(supervisor, "_STOP_PIPE_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(core, "_STOP_PIPE_TIMEOUT_S", 1.0)
     requests: "queue.Queue[instance.Request]" = queue.Queue()
     stop_feeding = threading.Event()
     responses = []
@@ -203,7 +204,7 @@ def test_stop_pipe_has_an_overall_deadline_under_request_flood(monkeypatch):
 
     primary = _FakePrimary()
     started = time.monotonic()
-    supervisor._stop_pipe(primary, requests, stuck_pipe_thread)
+    core._stop_pipe(primary, requests, stuck_pipe_thread)
     elapsed = time.monotonic() - started
     stop_feeding.set()
 
@@ -227,7 +228,7 @@ def test_stop_pipe_answers_genuine_concurrent_upgrade_with_zero():
 
     t = threading.Thread(target=fake_pipe_thread, daemon=True)
     t.start()
-    supervisor._stop_pipe(_FakePrimary(), requests, t)
+    core._stop_pipe(_FakePrimary(), requests, t)
     assert answered.get(timeout=1) == 0
     assert not t.is_alive()
 
@@ -245,7 +246,7 @@ def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
         release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
         raise OSError("host unreachable")
 
-    monkeypatch.setattr(supervisor, "_open_command", hung_open)
+    monkeypatch.setattr(core, "_open_command", hung_open)
 
     class _Process:
         def wait(self, timeout_ms):
@@ -264,7 +265,7 @@ def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
 
     loop = threading.Thread(
         target=lambda: result.put(
-            supervisor._event_loop(1, _Process(), _Paths(), tray_actions, pipe_requests)
+            core._event_loop(1, _Process(), _Paths(), tray_actions, pipe_requests)
         ),
         daemon=True,
     )
@@ -275,7 +276,7 @@ def test_forwarded_open_never_blocks_the_loop_thread(monkeypatch):
     pipe_requests.put(instance.Request(protocol.ShutdownForUpgrade(), upgrade_resp))
 
     reason, response = result.get(timeout=2)  # loop answered while the open still hangs
-    assert reason is supervisor._ExitReason.UPGRADE
+    assert reason is core._ExitReason.UPGRADE
     assert response is upgrade_resp
     assert open_resp.empty()  # no premature answer for the stuck open
 
@@ -297,7 +298,7 @@ def test_initial_open_never_blocks_startup(monkeypatch):
         release_open.wait(30)  # stands in for a disconnected-UNC Path.exists()
         raise OSError("host unreachable")
 
-    monkeypatch.setattr(supervisor, "_open_command", hung_open)
+    monkeypatch.setattr(core, "_open_command", hung_open)
 
     class _Paths:
         @staticmethod
@@ -321,23 +322,23 @@ def test_initial_open_never_blocks_startup(monkeypatch):
         actions: "queue.Queue" = queue.Queue()
 
     monkeypatch.setattr(instance, "acquire", lambda names: _Primary())
-    monkeypatch.setattr(supervisor, "DesktopPaths", _Paths)
+    monkeypatch.setattr(core, "DesktopPaths", _Paths)
     monkeypatch.setattr(
-        supervisor, "_start_ready_server", lambda paths, token: (object(), object(), 1)
+        core, "_start_ready_server", lambda paths, token: (object(), object(), 1)
     )
-    monkeypatch.setattr(supervisor.startup, "enabled", lambda: False)
-    monkeypatch.setattr(supervisor.tray, "start", lambda port, enabled, paths: _Tray())
+    monkeypatch.setattr(core.startup, "enabled", lambda: False)
+    monkeypatch.setattr(core.tray, "start", lambda port, enabled, paths: _Tray())
     stages = []
     monkeypatch.setattr(
-        supervisor, "_event_loop",
-        lambda *a: stages.append("loop") or (supervisor._ExitReason.TRAY_EXIT, None),
+        core, "_event_loop",
+        lambda *a: stages.append("loop") or (core._ExitReason.TRAY_EXIT, None),
     )
-    monkeypatch.setattr(supervisor, "_teardown", lambda *a, **k: stages.append("teardown"))
+    monkeypatch.setattr(core, "_teardown", lambda *a, **k: stages.append("teardown"))
 
     done = threading.Event()
 
     def run_supervisor():
-        supervisor.run(protocol.Open(r"\dead-host\share\x.csv"))
+        core.run(protocol.Open(r"\dead-host\share\x.csv"))
         done.set()
 
     threading.Thread(target=run_supervisor, daemon=True).start()

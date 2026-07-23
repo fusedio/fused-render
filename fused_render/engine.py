@@ -21,7 +21,7 @@ Code contract under this engine (the fused contract, plus a compat bridge):
 The wire shape returned here is the built-in executor's
 ``{ok, result, error: {type, message, traceback, where}, stdout}`` (plus
 additive ``stderr``/``duration_ms`` keys), so runtime.js and every template
-consume one shape regardless of which engine ran the code. ``where`` (D128) is
+consume one shape regardless of which engine ran the code. ``where`` (D132) is
 populated the same on both engines — the built-in executor reads it off a live
 exception, this one parses it out of the backend's already-cleaned traceback
 string.
@@ -298,7 +298,7 @@ def _clean_error(error_text: str, script_path: str) -> str:
 
 def _error_dict(err_type: str, message: str, tb: str = "") -> dict:
     # The built-in executor's wire shape, so all failures render uniformly.
-    # where=None (D128): none of these callers (missing file, unreadable, bad
+    # where=None (D132): none of these callers (missing file, unreadable, bad
     # PEP 723 header, backend/engine-internal failure) ever reached the user's
     # file.
     return {

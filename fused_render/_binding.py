@@ -8,7 +8,7 @@ module means both paths agree on:
   * how string params from the URL map onto annotated signatures
     (`coerce`/`bind_params`);
   * how a failure is reported to the page (`trim_harness_frames`/
-    `user_location`, D128) — the traceback starts at the caller's code and the
+    `user_location`, D132) — the traceback starts at the caller's code and the
     error dict carries a structured `where` pointing at the failing line.
 """
 import inspect

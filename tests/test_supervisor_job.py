@@ -12,7 +12,7 @@ pytest.importorskip("win32job")
 import pywintypes
 import win32job
 
-from fused_render.win_supervisor.job import Job
+from fused_render.supervisor._win32.job import Job
 
 
 def test_each_job_is_a_private_kernel_object():

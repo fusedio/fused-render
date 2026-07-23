@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 CHILD = os.path.join(os.path.dirname(__file__), "_child.py")
 # Runner plumbing trimmed off the front of an in-process helper traceback
-# (D128): this module and the shared param binder. Mirrors _child.py's set for
+# (D132): this module and the shared param binder. Mirrors _child.py's set for
 # the subprocess path, so both paths report failures the same way.
 _HARNESS_FILES = {
     os.path.abspath(__file__),
@@ -86,7 +86,7 @@ INPROCESS_HELPERS = frozenset(
 
 
 def _error(err_type: str, message: str, detail: str = "") -> dict:
-    # where=None (D128): these errors (missing file, timeout, worker crash)
+    # where=None (D132): these errors (missing file, timeout, worker crash)
     # never reached a user-script frame, so there is no line to point at.
     return {
         "ok": False,
@@ -145,7 +145,7 @@ def _run_inprocess(path: str, params: dict) -> dict:
             ) from None
         return {"ok": True, "result": result, "stdout": ""}
     except BaseException as e:  # noqa: BLE001 — mirror the child's catch-all
-        # Same error DX as the subprocess path (D128): trim this runner's own
+        # Same error DX as the subprocess path (D132): trim this runner's own
         # frames, and point `where` at the failing line of the helper file.
         tb = trim_harness_frames(e.__traceback__, _HARNESS_FILES)
         if tb is None:

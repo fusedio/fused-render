@@ -1,7 +1,7 @@
 # fused-render — Requirements Specification
 
-**Status:** Draft v0.1
-**Scope:** Fully local system. Never deployed to cloud. Single user, single machine.
+**Status:** Living specification, maintained alongside the shipped product.
+**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the `fused` CLI (bundled in the macOS app, a pip extra otherwise — §19, §27); see Non-Goals.
 
 ---
 
@@ -24,8 +24,9 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
-  (Unchanged by §19/§27: deploying delegates to the separately-installed fused
-  CLI, and the §27 "Fused account" surface manages the *fused CLI's own*
+  (Unchanged by §19/§27: deploying delegates to the fused CLI — bundled in the
+  packaged macOS app, a pip extra for source/pip installs — and the §27 "Fused
+  account" surface manages the *fused CLI's own*
   credentials for those deploys — fused-render itself still has no accounts,
   no tokens, and no server-side users.)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
@@ -74,7 +75,7 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 - **FS-7** **DONE (M14):** in-folder filename search over a streamed recursive walk — see §22.
 - **FS-8** "Open raw" escape hatch for any file: streams bytes with correct MIME type (used for download and by templates for images/video/pdf).
 
-### Sidebar & Bookmarks (M2 — next)
+### Sidebar & Bookmarks (M2)
 
 Left sidebar in the shell, always visible:
 
@@ -139,7 +140,7 @@ fused.env
 
 - **RH-1** **DECIDED:** `path` may be **relative to the HTML file's own location** or **absolute** (anywhere on the machine — whole filesystem is in scope, consistent with FS-3).
 - **RH-2** `params` is a flat JSON object; keys map to the Python function's keyword arguments (§5.2).
-- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback, where }` on Python exception, missing file, missing `main` function, or timeout. `traceback` starts at the caller's code (runner frames trimmed, D128); `where` = `{file, line, func, source}` of the deepest frame in the user's own script, or `null` when the error never touched it.
+- **RH-3** Returns a Promise. Resolves with the deserialized return value; rejects with a structured error `{ type, message, traceback, where }` on Python exception, missing file, missing `main` function, or timeout. `traceback` starts at the caller's code (runner frames trimmed, D132); `where` = `{file, line, func, source}` of the deepest frame in the user's own script, or `null` when the error never touched it.
 - **RH-4** Concurrent calls to **different** `.py` files are independent (e.g. a page fires 3 data fetches on load); the server may queue or parallelize, and ordering is not guaranteed. Concurrent calls to the **same** file are, by default, a latest-wins channel (RH-9): the newer supersedes the older. A caller that needs several concurrent calls to one file to all complete opts out with `opts.key: null`.
 - **RH-5** Calls have a configurable timeout (default e.g. 30 s), after which the worker is killed and the promise rejects.
 - **RH-9** **DECIDED (D114, supersedes D113's opt-in):** stale-request cancellation is **on by default**. Every call belongs to a **latest-wins channel**; the default channel key is the **`.py` path**, so firing a new `runPython` for a file **aborts the prior in-flight call for that same file** — a slider scrubbed through many values leaves only the last value's request alive (superseded fetches are cancelled: browser connection freed, and the server drops the now-irrelevant subprocess when it sees the closed socket). The optional third argument `opts` tunes this: `opts.key` (a string) **regroups** the channel (e.g. share one channel across several files, or split one file into several); `opts.key: null` **opts out** entirely (fully concurrent — required for same-file polling loops, per-tile fetches, and writes that must finish); `opts.signal` (a standard `AbortSignal`) **composes** with the channel, aborting the fetch on whichever fires first. A call **superseded** by a newer same-channel call **never settles** — its promise neither resolves nor rejects, so the caller's stale continuation (its `await`/`.then`, even inside a `try/catch`) simply stops and draws nothing; this keeps a scrub silent for every page shape, with no `AbortError` flashing through the page's own error handling while the latest value is still computing. An abort from the caller's **own** `opts.signal` instead rejects with a standard **AbortError** (`DOMException`, `name === "AbortError"`), which the runtime's unhandledrejection handler treats as benign (no overlay per RH-3/D17, no console noise). Applies identically to the hosted/exported runtime (§18).
@@ -183,7 +184,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.4 Return value serialization
 
-**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — is a structured "return type not serializable" error; the user converts himself (e.g. `df.to_dict("records")`).
+**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — is a structured "return type not serializable" error; the user converts it themselves (e.g. `df.to_dict("records")`).
 
 Deferred to later milestones (needed for data templates):
 
@@ -202,7 +203,7 @@ Deferred to later milestones (needed for data templates):
 
 - **PY-12** `/api/run` executes the built-in executor **by default**, regardless of whether the `fused` package is importable. `FUSED_RENDER_ENGINE=auto` opts in to running code through its local compute backend (`engine.py`) instead — fresh subprocess per call in a temp exec dir (PY-6 semantics preserved), PEP 723 `# /// script` inline requirements resolved into a cached venv (plus a default data-stack set mirroring the `bundled` extra), params delivered via `_params.json` — falling back to the built-in executor if `fused` isn't importable; `FUSED_RENDER_ENGINE=fused` requires it (startup error if missing); `=builtin` (or unset) always uses the built-in executor (D70). The active engine is reported in `GET /api/config` (`engine`) and logged at startup — the choice changes the code contract, so it is never silent.
 - **PY-13** **Code contract under the fused engine:** a function decorated with **`@fused.udf`** — any name, the last decorated one is the entrypoint — receiving params as **raw JSON values** (no annotation coercion; the calling JS owns types); or a plain script assigning **`result = ...`**. A bare **`main()`** remains supported as a compat bridge with PY-4 coercion and PY-8 cwd semantics, so pages and the built-in templates behave identically under either engine. A file with none of the three → the PY-1 structured error, extended to name the alternatives.
-- **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback, where}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped. `where` (D128) is populated identically on both engines: `{file, line, func, source}` of the deepest frame in the user's own file, or `null` when the error never reached it.
+- **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback, where}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped. `where` (D132) is populated identically on both engines: `{file, line, func, source}` of the deepest frame in the user's own file, or `null` when the error never reached it.
 
 ---
 
@@ -338,11 +339,13 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 ## 12b. Milestones
 
-- **M1 — Base layer (current focus):** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry (dispatch: template > html > fallback) + **parquet, image, text templates**. No security, no WS, no caching.
+*Historical build order, kept for context — not an exhaustive or current status list; later milestones (M10–M12, M15, M17–M18) ship as their own numbered sections (§18–§27), and the numbered requirement sections above are authoritative.*
+
+- **M1 — Base layer:** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry + **parquet, image, text templates**. No security, no WS, no caching.
 - **M2 — Sidebar & bookmarks:** SHIPPED.
 - **M3 — DMG distribution:** menu-bar app + bundled CPython + build script (§12).
-- **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
-- **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
+- **M4 — Live editing:** autosave + live change feed (WebSocket, D74) + auto-reloading views (§13).
+- **M5 — Layout mode:** split-pane grid of embed views, layout + pane-local params in one bookmarkable URL (§14, D72).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
 - **M7 — Custom templates:** user template folders in `~/.fused-render/templates/` + `registry.json` extension bindings, overriding built-ins (§16).
 - **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar (the `"..."` splice shipped here was later removed, D94), `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
@@ -354,7 +357,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
 
-Goal: a live-preview loop. Edit a file (in our editor or externally) → it saves itself → every open view of it reacts. Combined with embed mode (D39) this gives "source in one tab, rendered output in another, updates as you type".
+Goal: a live-preview loop. Edit a file (in the built-in editor or externally) → it saves itself → every open view of it reacts. Combined with embed mode (D39) this gives "source in one tab, rendered output in another, updates as you type".
 
 ### 13.1 Autosave (code editor)
 
@@ -382,7 +385,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
 - **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its watch `WebSocket` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once. Unlike `EventSource`, a WebSocket does not auto-reconnect — the runtime retries a dropped socket after 1 s.
-- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
+- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). The `claude` template calls it too — Claude's own edit to the watched `_file` would otherwise reload the chat mid-stream, killing the poll loop and orphaning the run (a sibling `_render` pane still live-refreshes; only the chat frame opts out). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
 
@@ -513,7 +516,7 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 ## 17. Annotation — An Ordinary View Template (M9, superseded)
 
 Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
-injected into every view (AN-1…AN-23, M9) — and was then **rebuilt as an
+injected into every view (M9) — and was then **rebuilt as an
 ordinary view template**, the same pattern as `templates/claude/`:
 `templates/annotate/` is a self-contained template.html, bound in registry.json
 as a trailing mode on annotatable extensions, swappable/shadowable like any
@@ -527,7 +530,7 @@ view they were made on so anchors never cross-resolve between views.
 Rationale: annotation is a review layer, not app chrome — as a template it
 needs no shell code, no server injection, and users can replace or extend it
 by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
-param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
+param, the header toggle, the injected `static/annotate.js`, and
 the code template's selection adapter are gone.
 
 **Containment invariant:** every line of annotation logic lives inside
@@ -702,7 +705,7 @@ nothing. Full detail: `docs/EXPORT.md`.
 Goal: close the gap between §18's bundle and a working URL, from the shell. The
 local-only invariant (§1) is unchanged in kind: fused-render still binds
 127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
-action that delegates to the separately-installed `fused` CLI** (`fused share`,
+action that delegates to the `fused` CLI** (bundled in the packaged app, a pip extra otherwise; `fused share`,
 the fused repo's one URL-minting operation — its spec/serve/share-links.md and
 spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
 project deploys). The server orchestrates the child process; nothing else in
@@ -1112,7 +1115,7 @@ never imports server).
   Deploy-button toggle plus a link to the Fused account tab, where the list
   now renders beside the environments table.
 
-### 20.6 Tabs (D125)
+### 20.5 Tabs (D125)
 
 - **PF-9** The page is split into two tabs, active tab in the URL
   (`?tab=account`, default clean-URL tab is **Render preferences** —
@@ -1124,7 +1127,7 @@ never imports server).
   with nothing pointing at it. This is also where the sidebar footer's
   signed-in dot now points — see AC-1.
 
-### 20.5 Template registry view
+### 20.6 Template registry view
 
 - **PF-7** `GET /api/templates/registry` returns the merged
   extension→templates bindings from both registries (SPEC §16): one row per
@@ -1141,7 +1144,7 @@ never imports server).
 
   **Superseded (2026-07-09, owner call):** the read-only registry section was
   removed from the Preferences page when the full Template Management view
-  shipped (§22, `/view/_templates`) — a single home for bindings rather than a
+  shipped (§23, `/view/_templates`) — a single home for bindings rather than a
   glance in one place and an editor in another. The **`GET /api/templates/registry`
   endpoint stays** (unchanged contract, TV-4); it is now consumed by the
   Templates view instead of Preferences.
@@ -1194,7 +1197,7 @@ subtree, and whose truncation is always visible. The searcher is the shell
 and per-keystroke re-ranking must not pay a network round trip); the server's
 job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
 
-### 21.1 Walk order & pruning (server)
+### 22.1 Walk order & pruning (server)
 
 - **SR-1** `GET /api/fs/walk` traverses **breadth-first** (`_walk_bfs`): every
   depth-N entry is emitted before any depth-N+1 entry; within one parent, dirs
@@ -1254,7 +1257,7 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   pathological trees (mounted volumes, cache farms). The response carries
   `truncated` so the UI can be honest about it (SR-10).
 
-### 21.2 Streaming wire format
+### 22.2 Streaming wire format
 
 - **SR-6** `?stream=1` returns `application/x-ndjson`: zero or more
   `{"entries": [...]}` batch lines (`WALK_BATCH_SIZE` = 500 per line), then
@@ -1271,7 +1274,7 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
          done + one giant JSON                  ▶ "N matches · M scanned…"
   ```
 
-### 21.3 Shell search behavior
+### 22.3 Shell search behavior
 
 - **SR-7** The listing's search (`?q=`, URL-synced like sort) fetches **one
   hidden-inclusive dataset** (`hidden=1` always) and filters dot-entries at

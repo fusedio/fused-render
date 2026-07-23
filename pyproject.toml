@@ -120,14 +120,25 @@ app = [
 fused = [
     'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl ; python_version >= "3.11"',
 ]
-# Windows desktop supervisor shell (experiment/python-supervisor,
-# docs/PYTHON_SUPERVISOR_SPEC.md). Windows-only; not a core dependency so
+# Windows desktop supervisor backend (fused_render/supervisor/_win32,
+# docs/DESKTOP_SUPERVISOR.md). Windows-only; not a core dependency so
 # `pip install fused-render` stays cross-platform. Only the packaged desktop
 # build (scripts/build_windows_installer.ps1) installs this extra.
 windows-desktop = [
     'pywin32>=306 ; sys_platform == "win32"',
     'pystray>=0.19 ; sys_platform == "win32"',
     'pillow ; sys_platform == "win32"',
+]
+# Linux desktop supervisor backend (fused_render/supervisor/_linux,
+# docs/LINUX_DESKTOP_SPEC.md). Linux-only; installed only by the packaged
+# AppImage build (scripts/build_linux_appimage.sh). The tray is a native
+# StatusNotifierItem exported over D-Bus via dbus-fast (pure-Python, manylinux
+# wheels → bundles cleanly, no GTK/X11); the icon is absent only where no
+# StatusNotifier host runs (stock GNOME w/o extension) — an accepted degraded
+# mode (gate (c)). pillow repacks the icon into the SNI ARGB32 pixmap.
+linux-desktop = [
+    'dbus-fast ; sys_platform == "linux"',
+    'pillow ; sys_platform == "linux"',
 ]
 
 [project.urls]

@@ -1,4 +1,4 @@
-"""Tests for the built-in executor (fused_render/executor.py + _child.py, D128).
+"""Tests for the built-in executor (fused_render/executor.py + _child.py, D132).
 
 Runs real subprocesses via run_python — no mocking, since the worker's own
 process boundary (and the traceback frames it produces) is exactly what's under

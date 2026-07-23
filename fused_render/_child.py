@@ -23,7 +23,7 @@ import traceback
 from _binding import bind_params, trim_harness_frames, user_location
 
 # Frames in these files are runner plumbing, trimmed off the front of a user
-# traceback (D128): this worker itself and the shared param binder next to it.
+# traceback (D132): this worker itself and the shared param binder next to it.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _HARNESS_FILES = {
     os.path.abspath(__file__),

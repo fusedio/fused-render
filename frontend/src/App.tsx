@@ -149,10 +149,19 @@ function StatErrorView({
 function LoadingScaffold({ fsPath, isDir }: { fsPath: string; isDir: boolean }) {
   return (
     <>
+      {/* Mirror the loaded Header exactly (Preview.tsx `Header`): the name in a
+          `.preview-title` group, and a `.mode-switcher-placeholder` that reserves
+          the mode switcher's button height in the actions slot. Without this the
+          header grows (spinner → 28px buttons) when stat resolves, dropping the
+          name and the whole body — a visible layout shift on every navigation. */}
       <div className="preview-header">
-        <h1 title={fsPath}>{basename(fsPath)}</h1>
+        <div className="preview-title">
+          <h1 title={fsPath}>{basename(fsPath)}</h1>
+        </div>
         <div className="preview-actions">
-          <span className="mode-icon-spinner" aria-label="Loading" />
+          <span className="mode-switcher-placeholder" aria-label="Loading">
+            <span className="mode-icon-spinner" />
+          </span>
         </div>
       </div>
       <div className="preview-body">

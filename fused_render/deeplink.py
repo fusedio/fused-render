@@ -46,6 +46,16 @@ router = APIRouter()
 # params on the same action instead of new grammar (owner call, D110).
 _OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
 
+# The launch action (D128) is payload-free by definition: any query or extra
+# path makes the link NOT a launch link (strictness keeps the grammar clean —
+# a future launch payload would be a query param on this same action, and
+# silently ignoring one today would freeze "ignored" into the contract).
+# `fused-render:launch` (no slashes) is included because some carriers strip
+# the empty authority from an opaque scheme URL.
+_LAUNCH_FORMS = frozenset(
+    {"fused-render://launch", "fused-render://launch/", "fused-render:launch"}
+)
+
 _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 
 # Conservative GitHub owner/repo shapes; blocks anything that could smuggle
@@ -74,6 +84,13 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
+def is_launch_url(src: str) -> bool:
+    """True for a `fused-render://launch` deep link (D128): the action-only
+    "make sure the app/server is running" form. Case-insensitive, optional
+    trailing slash tolerated; a query string or any payload disqualifies it."""
+    return (src or "").strip().lower() in _LAUNCH_FORMS
+
+
 def github_url_from(src: str) -> str:
     """Accept either a raw deep link (`fused-render://open?git=<github url>`)
     or a bare GitHub URL, percent-encoded or not, and return the GitHub URL.
@@ -91,7 +108,8 @@ def github_url_from(src: str) -> str:
     else:
         if low.startswith("fused-render:"):
             raise DeeplinkError(
-                f"unsupported fused-render link (expected fused-render://open?git=…): {src}"
+                "unsupported fused-render link (expected fused-render://open?git=… "
+                f"or fused-render://launch): {src}"
             )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the

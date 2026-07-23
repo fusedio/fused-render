@@ -50,7 +50,39 @@ Rules that matter (each has a reason):
 - **Relative paths in your code resolve next to the .py file** (the working directory is set there). `open("./data.csv")` next to your script just works.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
 - **`print()` output goes to the browser console** (prefixed `[python]`) — use it freely for debugging; it cannot corrupt the result.
-- **Calls time out at 60 s** and errors return `{type, message, traceback, where}` to the page — `traceback` starts at your code (runner internals are trimmed), and `where` pinpoints the failing line of your own script (`{file, line, func, source}`, or `null` for errors that never reached it, like a bad param). The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
+- **Calls time out at 60 s** and errors return `{type, message, traceback, where}` to the page — `traceback` starts at your code (runner internals are trimmed), and `where` pinpoints the failing line of your own script (`{file, line, func, source}`, or `null` for errors that never reached it, like a bad param).
+
+### Available Python libraries
+
+Write `main()` against **stdlib plus the supported library set** below — the packaged app bundles exactly these (its users cannot pip install), and dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in `pyproject.toml`, plus core deps):
+
+- **Data:** numpy, pandas, polars, pyarrow, duckdb, scipy, openpyxl, msgpack
+- **Geospatial:** shapely, geopandas, rasterio, zarr
+- **Plots & images:** matplotlib, pillow
+- **Documents:** pymupdf, pikepdf, fpdf2, python-pptx
+- **Network & cloud:** requests, httpx, botocore, google-auth
+- **Logs:** drain3
+
+Anything outside this set (e.g. torch, sklearn, xarray, plotly) may be missing — don't reach for it unless the user confirms it's installed in the Python that launched the server. If a needed import fails, prefer rewriting with the supported set over asking the user to install packages.
+
+Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
+
+```bash
+cat > /tmp/probe.py <<'EOF'
+def main(names: str = "pandas,numpy"):
+    from importlib import metadata
+    out = {}
+    for n in names.split(","):
+        try: out[n] = metadata.version(n)
+        except Exception: out[n] = None
+    return out
+EOF
+curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,geopandas,duckdb"}}'
+```
+
+A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.
 
 ## The HTML side: `window.fused` API
 
@@ -193,6 +225,7 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
 - Missing annotation on a numeric param → `main` receives `"50"` (string) and comparisons silently misbehave.
 - Expecting module state to persist between `runPython` calls → each call is a fresh process.
+- Importing a library outside the supported set (torch, sklearn, xarray, plotly, ...) → `ModuleNotFoundError` in the packaged app; stick to the "Available Python libraries" list above.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
 - Heavy import + slider wired without debounce → one full subprocess per tick; debounce inputs ~150 ms when `main` is slow.
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.

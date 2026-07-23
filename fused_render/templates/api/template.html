@@ -347,7 +347,7 @@
         const err = data.error || {};
         const where = err.where;
         fullError = `${err.type || "Error"}: ${err.message || ""}\n\n${err.traceback || err.message || "run failed"}`;
-        // err.where (D128) headlines the failing line as the prominent culprit;
+        // err.where (D132) headlines the failing line as the prominent culprit;
         // the full traceback stays collapsed so it doesn't repeat the line the
         // trimmed traceback leads with — BUT rendered sr-only (invisible yet
         // still captured by select-all) so a whole-page copy keeps it, and with
