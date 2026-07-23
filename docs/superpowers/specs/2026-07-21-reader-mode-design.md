@@ -98,3 +98,7 @@ layouts (tables, code) are awkward to karaoke-highlight.
 - Multi-column PDF reading order: extraction joins same-height text items in
   content-stream order, so two-column PDFs can interleave columns. Needs
   x-position-aware line building.
+- Paginated tabular views (duckdb/csv mount ~100 rows per page): extraction
+  walks the mounted DOM once, so playback covers the first page. Page-walking
+  via the views' own `offset`/`sheet` params (the annotate navigation
+  precedent) is the v1 path; meanwhile the `code` view reads the whole file.
