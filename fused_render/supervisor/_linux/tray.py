@@ -405,16 +405,28 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
 
     async def _bringup() -> "MessageBus":
         connection = await MessageBus(bus_type=BusType.SESSION).connect()
-        sni, menu = _make_interfaces(port, state, handle, paths, set_enabled, revision_ref)
-        connection.export(_SNI_PATH, sni)
-        connection.export(_MENU_PATH, menu)
-        await connection.request_name(f"org.kde.StatusNotifierItem-{os.getpid()}-1")
-        introspection = await connection.introspect(_WATCHER_NAME, _WATCHER_PATH)
-        watcher = connection.get_proxy_object(
-            _WATCHER_NAME, _WATCHER_PATH, introspection
-        ).get_interface(_WATCHER_NAME)
-        # Raises if no StatusNotifier host is running → out to the retry loop.
-        await watcher.call_register_status_notifier_item(_SNI_PATH)
+        # From here on the connection is live but run()'s local `bus` is still
+        # None, so its finally-block disconnect can't fire — any failure below
+        # (no watcher on the bus is the COMMON case on stock GNOME, retried
+        # forever by tray.start()) must disconnect here or every retry leaks a
+        # bus connection.
+        try:
+            sni, menu = _make_interfaces(port, state, handle, paths, set_enabled, revision_ref)
+            connection.export(_SNI_PATH, sni)
+            connection.export(_MENU_PATH, menu)
+            await connection.request_name(f"org.kde.StatusNotifierItem-{os.getpid()}-1")
+            introspection = await connection.introspect(_WATCHER_NAME, _WATCHER_PATH)
+            watcher = connection.get_proxy_object(
+                _WATCHER_NAME, _WATCHER_PATH, introspection
+            ).get_interface(_WATCHER_NAME)
+            # Raises if no StatusNotifier host is running → out to the retry loop.
+            await watcher.call_register_status_notifier_item(_SNI_PATH)
+        except BaseException:
+            try:
+                connection.disconnect()
+            except Exception:  # noqa: BLE001 - best-effort; the bring-up error wins
+                pass
+            raise
         return connection
 
     try:

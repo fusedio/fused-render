@@ -401,6 +401,69 @@ def test_about_to_show_group_reports_unknown_ids():
     assert id_errors == [unknown]
 
 
+# --- bring-up failure must not leak the connected bus (bus-free) -------------
+#
+# `_bringup` connects first, then exports/registers; any of the post-connect
+# steps can raise (no watcher on the bus is the common case, out to the retry
+# loop in tray.start()). run()'s local `bus` is still None at that point, so its
+# finally-block disconnect never fires — _bringup itself must disconnect the
+# connection it opened before re-raising, or every retry leaks a bus connection.
+
+
+class _FailingConnection:
+    """Fake dbus-fast connection: bring-up succeeds through request_name, then
+    the watcher introspect raises (exactly what a watcher-less session does)."""
+
+    def __init__(self):
+        self.disconnected = False
+
+    def export(self, path, interface):
+        pass
+
+    async def request_name(self, name):
+        pass
+
+    async def introspect(self, name, path):
+        raise RuntimeError("no StatusNotifierWatcher on the bus")
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+class _FakeMessageBus:
+    last_connection = None
+
+    def __init__(self, bus_type=None):
+        self._connection = _FailingConnection()
+        _FakeMessageBus.last_connection = self._connection
+
+    async def connect(self):
+        return self._connection
+
+
+@pytest.mark.skipif(
+    not __import__("sys").platform.startswith("linux"),
+    reason="run() imports the Linux supervisor backend",
+)
+def test_run_disconnects_bus_when_bringup_fails_after_connect(monkeypatch):
+    pytest.importorskip("dbus_fast")
+    import dbus_fast.aio
+
+    monkeypatch.setattr(dbus_fast.aio, "MessageBus", _FakeMessageBus)
+    _FakeMessageBus.last_connection = None
+
+    handle = _stub_handle()
+    state = tray._State(login_enabled=False)
+    paths = _Paths()
+
+    with pytest.raises(RuntimeError):
+        linux_tray.run(1777, state, handle, paths)
+
+    connection = _FakeMessageBus.last_connection
+    assert connection is not None  # bring-up did connect
+    assert connection.disconnected is True  # ...and cleaned up before re-raising
+
+
 # --- D-Bus bring-up / teardown (integration, needs a session bus) ------------
 
 
