@@ -23,6 +23,7 @@ import {
   setBookmarkIcon,
   sameSearch,
   splitBookmarkUrl,
+  isBookmarkMissing,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
@@ -30,6 +31,12 @@ import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
+import {
+  loadSidebarState,
+  saveSidebarState,
+  SIDEBAR_MIN_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+} from "../lib/sidebarstate";
 import { basename } from "../lib/format";
 import {
   useUrlVersion,
@@ -78,7 +85,7 @@ const FOLDER_ICON = (
 // Hover card content: target fs path + saved params. The saved search is
 // split via splitShellSearch so the literal `&` inside the `_layout=(...)`
 // span doesn't leak bogus param rows (D51).
-function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
+function TooltipContent({ bookmark, missing }: { bookmark: Bookmark; missing: boolean }) {
   const qIdx = bookmark.url.indexOf("?");
   const search = qIdx !== -1 ? bookmark.url.slice(qIdx) : "";
   const fsPath = bookmarkFsPath(bookmark.url);
@@ -89,6 +96,7 @@ function TooltipContent({ bookmark }: { bookmark: Bookmark }) {
   return (
     <>
       <div className="tip-path">{fsPath}</div>
+      {missing && <div className="tip-missing">⚠ File not found — the target was moved or deleted</div>}
       {params.length ? (
         <div className="tip-params">
           {params.map(([k, v], i) => (
@@ -169,6 +177,7 @@ interface BookmarkRowProps {
   parentId?: string;
   active: boolean;
   dirty: boolean; // active via armed AND current params differ from saved -> "*" suffix
+  missing: boolean; // target confirmed gone from disk (server's GET-time flag)
   isRenaming: boolean;
   justSaved: boolean; // transient ✓ on the save button after a successful export
   namePositions?: number[]; // search-match highlight positions in b.name
@@ -186,7 +195,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onMouseEnter, onMouseLeave, onGlyphClick, registerRef, dragProps }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -195,7 +204,7 @@ function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved,
     : null;
   return (
     <div
-      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "")}
+      className={"bookmark-row" + (child ? " child-row" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
       data-id={b.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -218,6 +227,11 @@ function BookmarkRow({ b, child, parentId, active, dirty, isRenaming, justSaved,
           {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
           {dirty && "*"}
         </a>
+      )}
+      {missing && (
+        <span className="bookmark-missing-badge" title={`File not found: ${bookmarkFsPath(b.url)}`}>
+          ⚠
+        </span>
       )}
       <span className="bookmark-actions">
         <button
@@ -387,6 +401,79 @@ export default function Sidebar({ config }: SidebarProps) {
     // learnMountReady here would restart the whole bounded poll window
     // from zero every time it changes.
   }, []);
+
+  // Sidebar chrome: draggable width + collapsed flag, persisted once per
+  // gesture (drag end / toggle), not per mousemove. Width lives in React
+  // state — per-pointermove setState is fine (React 18 batches) and there is
+  // no transition during a drag, so no jank.
+  const [{ width: sidebarWidth, collapsed: sidebarCollapsed }, setSidebarState] =
+    useState(loadSidebarState);
+  // True only while the handle is captured — used to suppress the collapse
+  // transition and text selection mid-drag.
+  const [resizing, setResizing] = useState(false);
+  const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+
+  // Double-press-to-collapse is detected manually here: preventDefault on
+  // pointerdown (needed to stop a text selection starting before the
+  // body:has(.resizing) rule commits) suppresses the compatibility mouse
+  // events that produce dblclick in several engines, so onDoubleClick on the
+  // handle can't be relied on.
+  const lastHandlePressRef = useRef<{ time: number; x: number } | null>(null);
+
+  const onHandlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); // no text selection while dragging
+    const last = lastHandlePressRef.current;
+    if (last && e.timeStamp - last.time < 350 && Math.abs(e.clientX - last.x) < 5) {
+      // Second press of a double-press: collapse instead of starting a drag.
+      lastHandlePressRef.current = null;
+      toggleSidebarCollapsed();
+      return;
+    }
+    lastHandlePressRef.current = { time: e.timeStamp, x: e.clientX };
+    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: sidebarWidth };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setResizing(true);
+  };
+
+  const onHandlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    // A real drag isn't the first half of a double-press.
+    if (Math.abs(e.clientX - drag.startX) >= 5) lastHandlePressRef.current = null;
+    const width = Math.min(
+      SIDEBAR_MAX_WIDTH,
+      Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (e.clientX - drag.startX))
+    );
+    setSidebarState((s) => (s.width === width ? s : { ...s, width }));
+  };
+
+  const onHandlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    dragRef.current = null;
+    setResizing(false);
+    // Persist the final width (functional read — the last pointermove's
+    // setState may not have committed yet).
+    setSidebarState((s) => {
+      saveSidebarState(s);
+      return s;
+    });
+  };
+
+  const toggleSidebarCollapsed = () => {
+    // Collapsing unmounts the overlay surfaces but not their state — clear it
+    // so expanding doesn't resurrect a stale-anchored icon picker, an
+    // in-progress rename, or a tooltip.
+    setIconPicker(null);
+    setRenamingId(null);
+    setHover(null);
+    setSidebarState((s) => {
+      const next = { ...s, collapsed: !s.collapsed };
+      saveSidebarState(next);
+      return next;
+    });
+  };
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
@@ -918,6 +1005,7 @@ export default function Sidebar({ config }: SidebarProps) {
           parentId={parentId ?? undefined}
           active={rowActive(it)}
           dirty={rowDirty(it)}
+          missing={isBookmarkMissing(it.id)}
           isRenaming={renamingId === it.id}
           justSaved={savedId === it.id}
           registerRef={registerRow(it.id)}
@@ -935,8 +1023,32 @@ export default function Sidebar({ config }: SidebarProps) {
       );
     });
 
+  if (sidebarCollapsed) {
+    // Collapsed: the whole sidebar shrinks to a slim strip that expands it
+    // back. Still the same #sidebar node, so the <=700px media hide applies.
+    return (
+      <nav id="sidebar" className="sidebar-collapsed">
+        <button
+          type="button"
+          className="sidebar-expand-strip"
+          aria-label="Expand sidebar"
+          title="Expand sidebar"
+          onClick={toggleSidebarCollapsed}
+        >
+          {/* Bubble protruding into the content area — the visible half of
+              the affordance; the whole strip is still the click target. */}
+          <span className="sidebar-expand-bubble" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </span>
+        </button>
+      </nav>
+    );
+  }
+
   return (
-    <nav id="sidebar">
+    <nav id="sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
       <div className="sidebar-brand">
         {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
             follows .logo's color so it stays on the accent token. */}
@@ -949,8 +1061,19 @@ export default function Sidebar({ config }: SidebarProps) {
             />
           </svg>
         </span>{" "}
-        fused-render
+        <span className="brand-title">fused-render</span>
         <span className="brand-version">v{config.version}</span>
+        <button
+          type="button"
+          className="icon-btn sidebar-collapse-btn"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          onClick={toggleSidebarCollapsed}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+        </button>
       </div>
       <div className="sidebar-section">
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
@@ -993,6 +1116,7 @@ export default function Sidebar({ config }: SidebarProps) {
                     namePositions={namePositions}
                     active={rowActive(b)}
                     dirty={rowDirty(b)}
+                    missing={isBookmarkMissing(b.id)}
                     isRenaming={renamingId === b.id}
                     justSaved={savedId === b.id}
                     registerRef={() => {}}
@@ -1130,7 +1254,7 @@ export default function Sidebar({ config }: SidebarProps) {
         </button>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
-        {hover && <TooltipContent bookmark={hover.bookmark} />}
+        {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
       </div>
       {iconPicker && (
         <IconPicker
@@ -1140,6 +1264,18 @@ export default function Sidebar({ config }: SidebarProps) {
           onClose={() => setIconPicker(null)}
         />
       )}
+      {/* Resize handle riding the right border: drag to resize (pointer
+          capture keeps the gesture even when the cursor leaves the strip),
+          double-press to collapse (detected in pointerdown — see
+          lastHandlePressRef). */}
+      <div
+        className={"sidebar-resize-handle" + (resizing ? " resizing" : "")}
+        style={{ left: sidebarWidth - 3 }}
+        onPointerDown={onHandlePointerDown}
+        onPointerMove={onHandlePointerMove}
+        onPointerUp={onHandlePointerUp}
+        onPointerCancel={onHandlePointerUp}
+      />
     </nav>
   );
 }

@@ -2,7 +2,7 @@
 
 **Status:** POC, 2026-07-08. Not a locked design; every choice below was made
 for implementation simplicity and is expected to be revisited.
-Origin: adapted from Sina's `ClaudeChat` sandbox POC (detached `claude -p`
+Origin: adapted from an internal chat sandbox POC (detached `claude -p`
 subprocess + stream-json log + poll loop).
 
 ## What it is
@@ -15,7 +15,7 @@ landing + terminal-style chat) that talks to the local Claude Code CLI
 
 ```
 fused_render/templates/claude/
-├── template.html   # chat UI; adapted from the ClaudeChat sandbox POC
+├── template.html   # chat UI; adapted from the internal chat sandbox POC
 ├── agent.py        # runPython backend: start/poll/sessions/history/cancel; stdlib only
 └── icon.svg        # monochrome asterisk for the mode switcher
 ```

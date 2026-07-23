@@ -620,14 +620,14 @@
     </div>
     <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
 
-    <div class="callout beta"><span class="lab">Coming soon · Fused Render skills</span>
-      <p style="margin:6px 0 0">A one-line install that teaches Claude Code the Fused Render layout and the <code>fused</code> bridge is on the way. It'll look like this:</p>
+    <div class="callout"><span class="lab">Tip · Fused Render skills</span>
+      <p style="margin:6px 0 0">A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time:</p>
       <div class="promptbox" style="margin-top:11px">
         <button class="copybtn" data-copy="skillInstall">Copy</button>
-        <pre id="skillInstall">claude plugin marketplace add fusedio/fused-render
-claude plugin install fused-render@fused-render</pre>
+        <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
+/plugin install fused-render@fused-render</pre>
       </div>
-      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">Until it lands, Claude still does well when it can see an existing project — open one from the <a href="?page=showcase">Showcase</a> and ask it to build something similar. (Don't have Claude Code? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.)</p>
+      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">See the <a href="?page=skills">Claude Code skills</a> page for what each skill does. No Claude Code yet? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.</p>
     </div>
 
     <h2>The mental model</h2>
@@ -717,8 +717,7 @@ claude plugin install fused-render@fused-render</pre>
   </section>
 
   <!-- ============================ 2 · CLAUDE CODE ============================ -->
-  <!-- Claude Code integration: hidden for now (feature not ready to advertise).
-       To show it again, delete the data-hidden attribute below. Nothing else to change. -->
+  <!-- Not shown in nav yet (data-hidden). Remove data-hidden to surface it. -->
   <section class="page" data-slug="claude" data-title="Claude Code integration" data-hidden>
     <p class="crumb">Workflow</p>
     <h1 class="title">Claude Code integration</h1>
@@ -782,7 +781,7 @@ claude plugin install fused-render@fused-render</pre>
     <div class="promptbox">
       <button class="copybtn" data-copy="skillsAsk">Copy</button>
       <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
-    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=using">Using Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
+    <p class="sub">This is the same promise behind the “hand it to Claude Code” prompt on the <a href="?page=build">Building with Fused Render</a> page — the skills are what make “Claude knows the Fused Render layout” true.</p>
   </section>
 
   <!-- ============================ 3 · TEMPLATES ============================ -->
@@ -848,6 +847,36 @@ claude plugin install fused-render@fused-render</pre>
       </div>
       <div class="cond-out" id="condOut"></div>
     </div>
+
+    <h2 id="share"><span class="n">5</span>Share templates — export &amp; import</h2>
+    <p class="sub">Templates you write are just folders — so they travel. Export any set of templates as a <b>zip</b> and hand it to a friend or teammate; they import it through a short wizard and get the same templates, with your file-type bindings offered as one-click suggestions.</p>
+
+    <h3 style="font-size:14px;margin:18px 0 6px">Exporting</h3>
+    <p class="sub">Open the <b>Templates</b> page and switch to the <b>Library</b> tab — it lists every template on your machine, core and custom. Select one or more and hit <b>Export</b>; a zip downloads with each template's folder at its top level.</p>
+    <figure class="figure"><img data-shot="assets/shot_export_templates.webp" alt="Selecting templates in the Library tab and exporting them as a zip">
+      <figcaption><b>Templates → Library</b> — select templates and export them as a zip.</figcaption></figure>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px">What's in the zip</h4>
+      <p style="margin:0;font-size:12.5px">Template <b>folders only</b> — your registry (which file types open with what) never ships, because bindings are a local choice. Instead the zip carries a small <code>recommendation.json</code> sidecar recording which file types each template was bound to <em>at export time</em>, so the importer can offer those as suggestions rather than impose them.</p></div>
+    <div class="callout"><span class="lab">Core templates export too</span>
+      <p style="margin:6px 0 0 0">You can export built-in templates as well — handy as a starting point for a custom one, or to share a core template with someone on an older version.</p></div>
+
+    <h3 style="font-size:14px;margin:18px 0 6px">Importing</h3>
+    <p class="sub">On the receiving machine, the same <b>Library</b> tab has an <b>Import</b> button. Drop the zip in and a three-step wizard takes over:</p>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px">1 · Review what's inside</h4>
+      <p style="margin:0;font-size:12.5px">The zip is unpacked to a staging area first — nothing touches your templates yet. You see each template it contains, whether it's valid, and whether it <b>conflicts</b> with a template you already have.</p></div>
+    <div class="card" style="margin-bottom:10px">
+      <h4 style="margin:0 0 6px;font-size:13.5px">2 · Resolve conflicts &amp; pick bindings</h4>
+      <p style="margin:0;font-size:12.5px">For each name clash choose <b>overwrite</b>, <b>skip</b>, or <b>keep both</b> (the incoming copy is renamed, and any bindings follow the new name). Below that, the exporter's recommended file-type bindings appear as toggle chips — new bindings default <b>on</b>; bindings for file types you've deliberately disabled default <b>off</b> and only re-enable if you opt in.</p></div>
+    <div class="card">
+      <h4 style="margin:0 0 6px;font-size:13.5px">3 · Done</h4>
+      <p style="margin:0;font-size:12.5px">A summary shows what was imported, skipped, overwritten, or renamed — and which bindings were applied.</p></div>
+    <figure class="figure"><video data-shot="assets/import_wizard.mp4" autoplay muted loop playsinline style="width:100%;display:block"></video>
+      <figcaption><b>Import wizard</b> — stage the zip, resolve conflicts, apply recommended bindings.</figcaption></figure>
+    <div class="callout"><span class="lab">Bindings are additive</span>
+      <p style="margin:6px 0 0 0">Applying a recommended binding <b>appends</b> the template to that file type's list — it never replaces your existing defaults. Reorder anytime on the <a href="?page=templates">File bindings</a> tab.</p></div>
+    <p class="sub">Imports are safe by construction: zips are size- and path-checked (no zip-slip, no zip bombs), and until you commit the wizard, nothing is written to <code>~/.fused-render/templates/</code>.</p>
   </section>
 
   <!-- ============================ USING FUSED RENDER (the app / UI guide) ============================ -->
@@ -1299,14 +1328,14 @@ const demoPy   = ownDir ? ownDir + "/pi.py"   : null;
 mountFrame("#demoFrame", "#demoIf", demoPath, false);
 // "Show code": open the page and its Python side by side in a split view so you
 // can see exactly what's driving the demo. The `_layout` codec keeps slashes
-// literal and only escapes % , ; ( ) ? per segment (see frontend layout-codec.ts),
+// literal and only escapes % , ; ( ) ? per segment (see the shell's layout URL codec),
 // so we escape exactly those — NOT a generic per-segment encodeURIComponent.
 const paneSeg = p => p.replace(/%/g,"%25").replace(/,/g,"%2C").replace(/;/g,"%3B")
   .replace(/\(/g,"%28").replace(/\)/g,"%29").replace(/\?/g,"%3F");
 // After per-segment escaping, the app runs a urlSafeLayout pass over the whole
 // codec string (%, #, space) before wrapping in _layout=(…); one decodeURIComponent
 // on read reverses it. Replicate it so a path with a space or # still yields a
-// valid URL (frontend layout-codec.ts).
+// valid URL (the shell's layout URL codec).
 const urlSafeLayout = s => s.replace(/%/g,"%25").replace(/#/g,"%23").replace(/ /g,"%20");
 const splitUrl = (a, b) => "/view/_panel?_layout=(" + urlSafeLayout(paneSeg(a) + "," + paneSeg(b)) + ")";
 if (hasFused && demoPath) $("#demoOpen").href = splitUrl(demoPath, demoPy);
@@ -1455,14 +1484,17 @@ async function checkClaude(){
   if (claudeChecked) return;
   claudeChecked = true;
   const el = $("#claudeCheck"); if (!el) return;
+  // Escape via the browser's own text→HTML encoding (not a hand-rolled
+  // replace-chain) for values that come from the local filesystem / subprocess.
+  const escHtml = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
   const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
   if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
   try {
     const r = await fused.runPython("./check_env.py", {});
     const c = r && r.claude;
     if (c && c.installed) {
-      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+c.version.replace(/\s*\(.*\)/,"")+"</b>" : "") +
-        (c.path ? ' <span class="ec-path">'+c.path+'</span>' : "") + ". You're ready to go.");
+      set("ok", "✓", "Claude Code is installed" + (c.version ? " — <b>"+escHtml(c.version.replace(/\s*\(.*\)/,""))+"</b>" : "") +
+        (c.path ? ' <span class="ec-path">'+escHtml(c.path)+'</span>' : "") + ". You're ready to go.");
     } else {
       set("bad", "✗", "The <code>claude</code> command wasn't found on your PATH. Install Claude Code, then reload this page — <a href=\"https://claude.com/claude-code\" target=\"_blank\" rel=\"noopener\">get it here ↗</a>.");
     }

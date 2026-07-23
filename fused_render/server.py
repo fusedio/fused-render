@@ -2943,6 +2943,18 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
+    # Background mount-health monitor (shell/mounts.py): polls every mount on a
+    # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect
+    # episode, and records an event log the Mounts panel polls. Started AFTER
+    # startup() so the automount thread owns the initial attach — the monitor
+    # only acts on a later healthy->disconnected transition.
+    shell_mounts.start_health_monitor()
+
+    # Mount-health telemetry the Mounts panel polls: current per-mount state
+    # plus the auto-reconnect event log. A read — no X-Fused guard.
+    @app.get("/api/mounts/health")
+    def api_mounts_health():
+        return shell_mounts.health_snapshot()
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
