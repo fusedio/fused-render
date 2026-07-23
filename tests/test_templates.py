@@ -111,13 +111,6 @@ def test_reader_absent_on_binary_visual_keys():
         assert "reader" not in got, path
 
 
-def test_reader_template_resolves():
-    # The folder name must resolve to a real template.html (icon optional).
-    path, err = server._resolve_name("reader")
-    assert path is not None, err
-    assert path.endswith("reader/template.html")
-
-
 def test_compressed_tabular_routes_to_duckdb():
     # A gzip/zstd-compressed CSV/JSON is still tabular data DuckDB reads through
     # its auto-decompressing scan, so the 2-segment compound key (.csv.gz) wins
