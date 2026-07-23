@@ -24,3 +24,6 @@ fused_render/_baked_branch.py
 .coverage.*
 coverage.xml
 htmlcov/
+# Runtime sidecar written next to an opened *.html (bookmark/session state,
+# e.g. learn/index.html.json); it's per-machine state, never source.
+*.html.json

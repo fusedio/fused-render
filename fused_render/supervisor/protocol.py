@@ -97,7 +97,7 @@ def parse_args(args: list[str]) -> Command:
         return OpenHome()
     if len(args) > 1:
         raise ProtocolError(
-            "expected one file path, --startup, or --shutdown-for-upgrade"
+            "expected one file path or URL, --startup, or --shutdown-for-upgrade"
         )
     first = args[0]
     if first == "--startup":

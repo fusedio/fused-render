@@ -23,3 +23,10 @@ def test_bookmark_file_routes_to_bookmark_sentinel():
 
 def test_bookmark_extension_is_case_insensitive():
     assert view_url_path("/data/S.BookMark").startswith("/view/_bookmark?file=")
+
+
+def test_shell_safe_punctuation_stays_literal():
+    # The shared codec matches the frontend's encodeURIComponent safe set
+    # (!*'()): these characters round-trip literally, unlike the old app.py
+    # body which percent-encoded them (e.g. ! -> %21).
+    assert view_url_path("/data/a!b'c(d).txt") == "/view/data/a!b'c(d).txt"

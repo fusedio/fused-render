@@ -12,7 +12,8 @@ pytest.importorskip("win32pipe")
 import pywintypes
 import win32pipe
 
-from fused_render.win_supervisor import instance, protocol
+from fused_render.supervisor import protocol
+from fused_render.supervisor._win32 import instance
 
 _MAGIC = 0x3153_5246
 

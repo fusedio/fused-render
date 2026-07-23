@@ -6,13 +6,13 @@
  * private CPython we bundle can't itself be that target (pythonw.exe would
  * show as generic "Python" in Open-With, and per-invocation argv handling
  * needs to live somewhere stable across supervisor rewrites). It execs
- * `pythonw.exe -I -m fused_render.win_supervisor <args>` and gets out of the
+ * `pythonw.exe -I -m fused_render.supervisor <args>` and gets out of the
  * way — all argument parsing, single-instance logic, job-object ownership,
- * and tray/IPC live in fused_render/win_supervisor/*.py.
+ * and tray/IPC live in fused_render/supervisor/*.py.
  *
  * Built by scripts/build_windows_installer.ps1 (cl.exe if present, else a
  * pinned zig cc) at release time only — day-to-day supervisor iteration runs
- * `python -m fused_render.win_supervisor` directly and never touches this.
+ * `python -m fused_render.supervisor` directly and never touches this.
  */
 #include <windows.h>
 #include <wchar.h>
@@ -38,10 +38,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     wchar_t pythonw_path[MAX_PATH];
     swprintf_s(pythonw_path, MAX_PATH, L"%s\\python\\pythonw.exe", install_dir);
 
-    /* Build: "<pythonw>" -I -m fused_render.win_supervisor <passthrough argv> */
+    /* Build: "<pythonw>" -I -m fused_render.supervisor <passthrough argv> */
     wchar_t command_line[32768];
     int written = swprintf_s(command_line, 32768,
-                              L"\"%s\" -I -m fused_render.win_supervisor", pythonw_path);
+                              L"\"%s\" -I -m fused_render.supervisor", pythonw_path);
     if (written < 0) {
         MessageBoxW(NULL, L"FusedRender could not build its launch command line.",
                     L"FusedRender", MB_OK | MB_ICONERROR);

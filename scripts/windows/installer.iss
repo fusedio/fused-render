@@ -19,7 +19,7 @@
 ; docs/PYTHON_SUPERVISOR_SPEC.md's must-match behaviors (mutex/pipe names,
 ; AppUserModelID, Desktop paths under %LOCALAPPDATA%\FusedRender\Desktop)
 ; stay identical to the Rust contract on purpose — those live in
-; fused_render/win_supervisor/*.py, not here.
+; fused_render/supervisor/*.py, not here.
 #define AppUserModelId "Fused.FusedRender.Desktop"
 #define ExeName "FusedRenderPy.exe"
 #define InstalledIcon "{app}\payload\assets\icons\fused-render.ico"
