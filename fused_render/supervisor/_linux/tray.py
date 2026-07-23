@@ -18,6 +18,7 @@ The shared `TrayAction`/`_State`/`TrayHandle` types come from
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from fused_render.supervisor.paths import DesktopPaths
@@ -84,11 +85,14 @@ def _tint_white(image):
     return white
 
 
+@functools.lru_cache(maxsize=1)
 def _icon_pixmap(path) -> tuple[int, int, bytes]:
     """Load `path`, tint it white, scale to `_ICON_SIZE`, and repack to the SNI
     IconPixmap ARGB32 payload. The white glyph assumes a dark bar: waybar/SNI has
     no template auto-tinting like macOS, so an untinted glyph would be invisible
-    (or a colored blob) on a typically dark panel — we emit white ourselves."""
+    (or a colored blob) on a typically dark panel — we emit white ourselves.
+    Cached: bring-up retries forever on watcher-less sessions, and the decoded
+    pixmap for the one bundled icon never changes."""
     from PIL import Image
 
     image = Image.open(path).convert("RGBA")
