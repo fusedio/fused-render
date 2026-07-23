@@ -305,25 +305,99 @@
   .modecard p { margin:0 0 12px; font-size:13px; color:var(--dim); }
   .modecard .mc-go { margin-top:auto; font-size:12.5px; color:var(--yellow); font-weight:600; }
 
-  /* two-door landing fork (open data · build an app) */
-  .doors { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:22px 0 8px; align-items:stretch; }
-  .door { display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border);
-       border-radius:14px; padding:18px 20px; }
-  .door h3 { margin:0 0 12px; font-size:16px; }
+  /* two-door landing fork (open data · build an app) — flat variant A: "hairline split".
+     No card chrome: content sits on the page background, columns separated by a
+     single 1px vertical rule with generous breathing room. */
+  .doors { display:grid; grid-template-columns:1fr 1fr; gap:0; margin:26px 0 8px; align-items:stretch;
+       position:relative; }
+  /* ambient light — one cool radial at top centre, one faint warm radial behind the
+     left (screenshot) stream. Opacities kept tiny so nothing reads as a "background". */
+  .doors::before { content:""; position:absolute; inset:-70px -50px -40px; pointer-events:none; z-index:-1;
+       background:
+         radial-gradient(640px 340px at 50% -10%, rgba(229,255,68,.045), transparent 62%),
+         radial-gradient(520px 320px at 16% 34%, rgba(255,140,60,.035), transparent 60%); }
+  .door { display:flex; flex-direction:column; background:transparent; border:0;
+       border-radius:0; padding:0 40px 0 0; position:relative; }
+  /* living hairline divider: a gradient thread with a slow, quiet vertical drift */
+  .door + .door { padding:0 0 0 40px; }
+  .door + .door::before { content:""; position:absolute; left:-0.5px; top:0; bottom:0; width:1px;
+       background:linear-gradient(180deg,
+         transparent 0%, rgba(255,255,255,.10) 28%, rgba(229,255,68,.32) 50%,
+         rgba(255,255,255,.10) 72%, transparent 100%);
+       background-size:100% 260%; background-position:50% 0%;
+       animation:doorThread 6.5s ease-in-out infinite alternate; }
+  @keyframes doorThread { from { background-position:50% 0%; } to { background-position:50% 100%; } }
+  .door h3 { margin:0 0 12px; font-size:17px; font-weight:600; letter-spacing:-.01em;
+       color:rgba(255,255,255,.87); transition:color .3s ease; }
+  .door:hover h3 { color:#fff; }
+
+  /* entrance choreography — router adds .doors-in the first time Home shows */
+  @keyframes doorRise { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .doors-in .door > * { animation:doorRise .5s cubic-bezier(.16,1,.3,1) both; }
+  .doors-in .door:nth-child(1) > *:nth-child(1) { animation-delay:.03s; }
+  .doors-in .door:nth-child(1) > *:nth-child(2) { animation-delay:.10s; }
+  .doors-in .door:nth-child(1) > *:nth-child(3) { animation-delay:.17s; }
+  .doors-in .door:nth-child(1) > *:nth-child(4) { animation-delay:.24s; }
+  .doors-in .door:nth-child(1) > *:nth-child(5) { animation-delay:.31s; }
+  .doors-in .door:nth-child(1) > *:nth-child(6) { animation-delay:.38s; }
+  .doors-in .door:nth-child(2) > *:nth-child(1) { animation-delay:.15s; }
+  .doors-in .door:nth-child(2) > *:nth-child(2) { animation-delay:.22s; }
+  .doors-in .door:nth-child(2) > *:nth-child(3) { animation-delay:.29s; }
+  .doors-in .door:nth-child(2) > *:nth-child(4) { animation-delay:.36s; }
+  .doors-in .door:nth-child(2) > *:nth-child(5) { animation-delay:.43s; }
+  .doors-in .door:nth-child(2) > *:nth-child(6) { animation-delay:.50s; }
+  .doors-in .door + .door::before { animation:doorRise .6s cubic-bezier(.16,1,.3,1) .25s both,
+       doorThread 6.5s ease-in-out .85s infinite alternate; }
   .door p { margin:0 0 12px; font-size:13px; color:var(--dim); }
   .door p b { color:var(--text); font-weight:600; }
+  /* hover depth: media gently lifts and picks up a soft ambient glow tuned per stream
+     (warm orange for the screenshot side, faint yellow for the live π side) */
+  .door-media, .door .frame { transition:transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s ease; }
   .door-media { border:1px solid var(--border); border-radius:11px; overflow:hidden; margin:0 0 12px;
        background:var(--panel2); }
+  .door:hover .door-media { transform:translateY(-2px);
+       box-shadow:0 14px 38px rgba(0,0,0,.35), 0 4px 22px rgba(255,140,60,.12); }
   .door-media video { display:block; width:100%; height:auto; }
   .door .frame { margin:0 0 12px; }
+  .door:hover .frame { transform:translateY(-2px);
+       box-shadow:0 14px 38px rgba(0,0,0,.35), 0 4px 22px rgba(229,255,68,.10); }
   .door-promptlab { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--yellow);
        font-weight:700; margin:4px 0 7px; }
-  .door-cta { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding-top:4px; }
-  .door-go { text-decoration:none; color:#141414; background:var(--yellow); border:1px solid var(--yellow);
-       border-radius:10px; padding:11px 16px; font:700 13.5px/1 inherit; text-align:center; transition:filter .15s; }
-  .door-go:hover { color:#141414; filter:brightness(1.05); }
-  .door-sub { font-size:12px; color:var(--dim); text-decoration:none; text-align:center; }
+  .door .promptbox pre { background:transparent; border:1px solid rgba(255,255,255,.12); }
+  .door-cta { margin-top:auto; display:flex; flex-direction:column; gap:8px; padding-top:4px;
+       align-items:flex-start; }
+  .door-go { text-decoration:none; color:var(--yellow); background:transparent; border:0;
+       border-radius:0; padding:2px 0; font:600 14px/1.4 inherit; text-align:left;
+       position:relative; display:inline-flex; align-items:baseline; gap:6px; }
+  /* underline sweeps in from the left */
+  .door-go::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:1px;
+       background:var(--yellow); transform:scaleX(0); transform-origin:left center;
+       transition:transform .3s cubic-bezier(.16,1,.3,1); }
+  .door-go:hover { color:var(--yellow); }
+  .door-go:hover::after, .door:hover .door-go::after { transform:scaleX(1); }
+  /* magnetic arrow */
+  .door-go .arr { display:inline-block; transition:transform .3s cubic-bezier(.16,1,.3,1); }
+  .door-go:hover .arr { transform:translateX(4px); }
+  .door:hover .door-go .arr { transform:translateX(3px); }
+  .door:hover .door-go:hover .arr { transform:translateX(4px); }
+  .door-sub { font-size:12px; color:var(--mut); text-decoration:none; text-align:left; }
   .door-sub:hover { color:var(--text); }
+  @media (max-width:900px){
+    .doors { grid-template-columns:1fr; }
+    .door { padding:0; }
+    .door + .door { padding:28px 0 0; margin-top:24px;
+         border-top:1px solid rgba(255,255,255,.08); }
+    .door + .door::before { display:none; }
+  }
+  /* motion off = all door animation off; hovers stay colour-only */
+  @media (prefers-reduced-motion: reduce){
+    .door + .door::before, .doors-in .door + .door::before { animation:none;
+         background:rgba(255,255,255,.08); }
+    .doors-in .door > * { animation:none; }
+    .door-media, .door .frame, .door-go::after, .door-go .arr { transition:none; }
+    .door:hover .door-media, .door:hover .frame { transform:none; }
+    .door-go:hover .arr, .door:hover .door-go .arr { transform:none; }
+  }
 
   .navtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:0 0 8px; }
   .navtile { display:flex; align-items:flex-start; gap:12px; text-decoration:none; color:var(--text);
@@ -461,7 +535,7 @@
         </div>
         <p>Right-click any CSV, Parquet, PDF, GeoTIFF and more → <b>Open with Fused Render</b>. It opens as an interactive view — nothing to write, nothing uploaded.</p>
         <div class="door-cta">
-          <a class="door-go" href="?page=using" data-intent="templates">See how opening files works →</a>
+          <a class="door-go" href="?page=using" data-intent="templates">See how opening files works <span class="arr">→</span></a>
           <a class="door-sub" href="?page=templates">Browse file templates</a>
         </div>
       </div>
@@ -489,7 +563,7 @@
           <pre id="homePrompt">Create a Fused Render app that shows my CPU and memory usage as live gauges.</pre>
         </div>
         <div class="door-cta">
-          <a class="door-go" href="?page=build" data-intent="build">Build your first app →</a>
+          <a class="door-go" href="?page=build" data-intent="build">Build your first app <span class="arr">→</span></a>
         </div>
       </div>
     </div>
@@ -1254,7 +1328,20 @@ function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
    every path stays available. */
 let intentWired = false;
 function setIntent(v){ try { localStorage.setItem("fused.learn.intent", v); } catch(e){} }
+
+/* entrance choreography for the two home doors — runs once per page load,
+   the first time Home is shown. Pure class toggle; CSS does the rest and
+   prefers-reduced-motion disables it entirely. */
+let doorsRevealed = false;
+function revealDoors(){
+  if (doorsRevealed) return;
+  doorsRevealed = true;
+  const d = document.querySelector('.page[data-slug="home"] .doors');
+  if (d) requestAnimationFrame(() => d.classList.add("doors-in"));
+}
+
 function initChooser(){
+  revealDoors();
   if (intentWired) return;
   intentWired = true;
   $$('[data-intent]').forEach(a =>
