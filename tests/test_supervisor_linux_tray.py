@@ -184,6 +184,81 @@ def test_dispatch_event_login_toggle_keeps_state_on_oserror():
     assert paths.messages  # logged
 
 
+# --- dbusmenu GetLayout signature / parentId --------------------------------
+
+
+def _make_menu(port=1777, login_enabled=False):
+    """Build the DBusMenu ServiceInterface with bus-free stubs so we can inspect
+    its dbus-fast method metadata and call its methods directly."""
+    pytest.importorskip("dbus_fast")
+    handle = _stub_handle()
+    state = tray._State(login_enabled=login_enabled)
+    paths = _Paths()
+    _sni, menu = linux_tray._make_interfaces(
+        port, state, handle, paths, lambda _v: None, [0]
+    )
+    return menu
+
+
+def _get_layout_descriptor(menu):
+    from dbus_fast.service import ServiceInterface
+
+    for descriptor in ServiceInterface._get_methods(menu):
+        if descriptor.name == "GetLayout":
+            return descriptor
+    raise AssertionError("GetLayout method not found on DBusMenu interface")
+
+
+def _get_layout_out_signature(menu):
+    return _get_layout_descriptor(menu).out_signature
+
+
+def _call_get_layout(menu, parent_id):
+    # dbus_fast's @method() wraps the handler so the bound attribute returns None;
+    # the real implementation lives on the descriptor's .fn.
+    return _get_layout_descriptor(menu).fn(menu, parent_id, -1, [])
+
+
+def test_get_layout_declares_two_out_args_not_one_struct():
+    # The com.canonical.dbusmenu spec declares GetLayout with TWO out-arguments:
+    #   revision: u, layout: (ia{sv}av)
+    # i.e. out-signature "u(ia{sv}av)". Wrapping both in a single top-level struct
+    # ("(u(ia{sv}av))") makes strict clients (libdbusmenu-gtk / waybar) reject the
+    # reply and render an empty menu. The body already returns [revision, layout].
+    menu = _make_menu()
+    assert _get_layout_out_signature(menu) == "u(ia{sv}av)"
+
+
+def test_get_layout_root_returns_revision_and_children():
+    menu = _make_menu()
+    revision, layout = _call_get_layout(menu, linux_tray._ROOT_ID)
+    assert isinstance(revision, int)
+    node_id, _props, children = layout
+    assert node_id == linux_tray._ROOT_ID
+    assert len(children) == 8  # the eight menu items under the root
+
+
+def test_get_layout_nonzero_parent_returns_matching_node():
+    # A non-zero parentId must return that node, not the root. The menu is flat,
+    # so the matched leaf has no children of its own.
+    menu = _make_menu()
+    _revision, layout = _call_get_layout(menu, linux_tray._ID_EXIT)
+    node_id, props, children = layout
+    assert node_id == linux_tray._ID_EXIT
+    assert children == []
+    assert props["label"].value == "Exit"
+
+
+def test_get_layout_unknown_parent_returns_empty_node():
+    menu = _make_menu()
+    unknown = 999
+    _revision, layout = _call_get_layout(menu, unknown)
+    node_id, props, children = layout
+    assert node_id == unknown
+    assert props == {}
+    assert children == []
+
+
 # --- D-Bus bring-up / teardown (integration, needs a session bus) ------------
 
 

@@ -266,7 +266,12 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
         @method()
         def GetLayout(
             self, parentId: "i", recursionDepth: "i", propertyNames: "as"  # noqa: N803,F821
-        ) -> "(u(ia{sv}av))":  # noqa: F821,N802
+        ) -> "u(ia{sv}av)":  # noqa: F821,N802
+            # Spec: GetLayout has TWO out-arguments — revision (u) and the layout
+            # node (ia{sv}av). Emitting them as one wrapping struct makes strict
+            # clients (libdbusmenu-gtk / waybar) reject the reply and draw an
+            # empty menu, so the out-signature stays unwrapped and the body
+            # returns the two values as a flat list.
             _root_id, children = _menu_layout(state.login_enabled, port)
             child_nodes = [
                 Variant(
@@ -275,7 +280,17 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
                 )
                 for child in children
             ]
-            layout = [_ROOT_ID, _props_to_variants(_ROOT_PROPS), child_nodes]
+            if parentId == _ROOT_ID:
+                layout = [_ROOT_ID, _props_to_variants(_ROOT_PROPS), child_nodes]
+            else:
+                # Flat menu: a non-root parent is one of the leaf children (no
+                # grandchildren). Return that node, or an empty node for an id
+                # the layout does not know.
+                match = next((c for c in children if c["id"] == parentId), None)
+                if match is None:
+                    layout = [parentId, {}, []]
+                else:
+                    layout = [parentId, _props_to_variants(match["properties"]), []]
             return [revision_ref[0], layout]
 
         @method()
