@@ -33,8 +33,9 @@ Two mechanisms, both stdlib-only, selected by `FUSED_RENDER_LINUX_TREE_KILL`
       analog), but depends on unprivileged user namespaces being enabled on the
       host. `unshare` is exec'd, not linked.
 
-This module is import-safe on non-Linux (prctl is only referenced inside the
-preexec_fn, which only runs when the backend is actually live on Linux).
+This module is import-safe on non-Linux (the libc handle backing prctl is only
+resolved on Linux — see _LIBC — and the preexec_fn only runs when the backend
+is actually live on Linux).
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -54,6 +56,15 @@ from fused_render.supervisor.paths import environment_block
 # prctl(2) option; PR_SET_PDEATHSIG delivers a signal to the caller when its
 # parent thread dies. 1 is stable ABI (linux/prctl.h), safe to hardcode.
 _PR_SET_PDEATHSIG = 1
+
+# libc handle resolved AT IMPORT, in the parent, precisely so the preexec_fn
+# never has to: ctypes.CDLL(None) dlopens post-fork otherwise, and dlopen takes
+# internal locks — in a threaded parent (the supervisor runs a tray thread and
+# open workers) the fork child can inherit one of those locks mid-held and
+# deadlock before exec. Only the async-signal-safe prctl/getppid/kill calls are
+# allowed between fork and exec. Linux-gated so the module stays import-safe
+# elsewhere (see module docstring).
+_LIBC = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
 
 _MECHANISM_ENV = "FUSED_RENDER_LINUX_TREE_KILL"
 _DEFAULT_MECHANISM = "pgroup"
@@ -86,9 +97,9 @@ def _pdeathsig_preexec(expected_ppid: int) -> None:
     child dies with the supervisor, then close the race where the supervisor
     already died in the fork/exec window — in which case PDEATHSIG (armed
     against the now-dead original parent) will never fire, so self-kill if our
-    parent has already changed."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    parent has already changed. Uses only the pre-resolved _LIBC handle plus
+    async-signal-safe syscalls — no dlopen/allocation between fork and exec."""
+    _LIBC.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
     if _parent_changed(expected_ppid, os.getppid()):
         os.kill(os.getpid(), signal.SIGKILL)
 
@@ -175,10 +186,11 @@ class Job:
                 # a grandchild inherits the group unless it setsids away.
                 start_new_session=True,
                 # PDEATHSIG requires the classic fork+exec path (preexec_fn
-                # forces it off posix_spawn). This is the supervisor spawning
-                # the server before any native libs (PROJ etc.) are loaded, so
-                # the fork-safety concern that pushes the server's own workers
-                # to posix_spawn does not apply here.
+                # forces it off posix_spawn). The preexec body stays fork-safe
+                # even in this threaded parent (tray thread, open workers):
+                # libc is pre-resolved at import (_LIBC — no post-fork dlopen,
+                # which takes locks another thread could hold mid-fork) and it
+                # otherwise makes only async-signal-safe calls.
                 preexec_fn=lambda: _pdeathsig_preexec(expected_ppid),
                 close_fds=True,
             )
