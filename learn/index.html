@@ -123,10 +123,9 @@
   .libdrop { margin:14px 0 10px; border:1px solid var(--border); border-radius:9px; background:#141410; padding:10px 14px; }
   .libdrop summary { cursor:pointer; font-size:13px; font-weight:600; color:var(--text); list-style-position:inside; }
   .libdrop summary:hover { color:var(--yellow); }
-  .libdrop .libgrid { display:flex; flex-direction:column; gap:7px; }
-  .libdrop .libgrid > div { font-size:12.5px; line-height:2; }
-  .libdrop .lg-h { display:inline-block; min-width:118px; color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
-  .libdrop code { font-size:11.5px; margin-right:2px; }
+  .libdrop td.lg-h { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; vertical-align:top; }
+  .libdrop code { font-size:11.5px; margin-right:2px; white-space:nowrap; }
+  .libdrop .lv { color:var(--mut); font-size:10.5px; margin:0 8px 0 1px; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
 
   .callout.beta { border-color:#3a3a4a; background:#16161f; }
   .callout b { color:var(--text); }
@@ -626,20 +625,10 @@
   <section class="page" data-slug="build" data-title="Building with Fused Render">
     <p class="crumb">Make something</p>
     <h1 class="title">Building with Fused Render</h1>
-    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Set up once, then it's one prompt.</p>
+    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
 
-    <h2>Set up once</h2>
-    <p class="sub"><b>1 · Claude Code.</b> The <code>claude</code> CLI must be installed on your machine — <a href="https://claude.com/claude-code" target="_blank" rel="noopener">get it here ↗</a> if the check below fails.</p>
-    <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
-    <p class="sub" style="margin-top:14px"><b>2 · The Fused Render skills.</b> A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time. Paste inside Claude Code:</p>
-    <div class="promptbox">
-      <button class="copybtn" data-copy="skillInstall">Copy</button>
-      <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
-/plugin install fused-render@fused-render</pre>
-    </div>
-    <p class="sub" style="margin-top:8px;font-size:12px;color:var(--mut)">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> shows as installed. See the <a href="?page=skills">Claude Code skills</a> page for what each skill does.</p>
-
-    <h2>Then just ask</h2>
+    <div class="callout"><span class="lab">Prerequisites</span>
+      <p style="margin:6px 0 0">This assumes <b>Claude Code</b> and the <b>Fused Render skills</b> are installed — the <a href="?page=skills">Claude Code skills</a> page has the one-line install and a live check of your machine.</p></div>
     <div class="heroprompt">
       <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
       <div class="hp-body">
@@ -723,18 +712,18 @@
     <div class="callout"><span class="lab">Good to know</span>
       <p style="margin:6px 0 0">Each <code>runPython</code> call runs <code>main()</code> in a fresh subprocess that's killed at <b>30&nbsp;seconds</b>. For a genuinely long job, write the result to a file from a separate script and have the page read the finished file.</p></div>
 
-    <details class="libdrop">
+    <details class="libdrop" id="libDrop">
       <summary>Supported Python libraries</summary>
-      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python, which ships the standard library plus this data stack — no <code>pip install</code> needed (or possible):</p>
-      <div class="libgrid">
-        <div><span class="lg-h">Data</span> <code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></div>
-        <div><span class="lg-h">Geospatial</span> <code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></div>
-        <div><span class="lg-h">Plots &amp; images</span> <code>matplotlib</code> <code>pillow</code></div>
-        <div><span class="lg-h">Documents</span> <code>pymupdf</code> <code>pikepdf</code> <code>fpdf2</code> <code>python-pptx</code></div>
-        <div><span class="lg-h">Network &amp; cloud</span> <code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></div>
-        <div><span class="lg-h">Logs</span> <code>drain3</code></div>
-      </div>
-      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages — imports outside this set will fail in the packaged app.</p>
+      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this data stack — no <code>pip install</code> needed (or possible):</p>
+      <table class="apitable" id="libTable">
+        <tr><td class="lg-h">Data</td><td><code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></td></tr>
+        <tr><td class="lg-h">Geospatial</td><td><code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></td></tr>
+        <tr><td class="lg-h">Plots &amp; images</td><td><code>matplotlib</code> <code>pillow</code></td></tr>
+        <tr><td class="lg-h">Documents</td><td><code>pymupdf</code> <code>pikepdf</code> <code>fpdf2</code> <code>python-pptx</code></td></tr>
+        <tr><td class="lg-h">Network &amp; cloud</td><td><code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></td></tr>
+        <tr><td class="lg-h">Logs</td><td><code>drain3</code></td></tr>
+      </table>
+      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages — imports outside this set will fail in the packaged app.<span id="libLive"></span></p>
     </details>
 
     <h2>Starter ideas</h2>
@@ -1219,7 +1208,7 @@ function render(slug, hash){
   buildPager(p);
   if (p.slug === "claude" || p.slug === "skills") checkClaude();
   if (p.slug === "templates") loadTemplates();
-  if (p.slug === "build") { checkClaude(); maybeHello(); }
+  if (p.slug === "build") maybeHello();
   if (p.slug === "home") initChooser();
   // scroll: to heading if hash, else top of content
   if (hash) {
@@ -1540,6 +1529,29 @@ async function checkClaude(){
     }
   } catch(err){ set("", "○", "Couldn't run the check ("+err.message+")."); }
 }
+
+/* live library-version table (runs once, when the dropdown is first opened in the app) */
+(function wireLibs(){
+  const drop = $("#libDrop"); if (!drop) return;
+  let done = false;
+  drop.addEventListener("toggle", async () => {
+    if (done || !drop.open || !hasFused) return;
+    done = true;
+    try {
+      const r = await fused.runPython("./check_libs.py", {});
+      if (!r || !r.libs) return;
+      if (r.python) $("#libPyV").textContent = r.python;
+      const rows = {};
+      r.libs.forEach(l => { (rows[l.group] = rows[l.group] || []).push(l); });
+      const esc = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
+      $("#libTable").innerHTML = Object.entries(rows).map(([g, ls]) =>
+        '<tr><td class="lg-h">'+esc(g)+'</td><td>'+ls.map(l =>
+          '<code>'+esc(l.name)+'</code><span class="lv">'+(l.version ? esc(l.version) : "—")+'</span>'
+        ).join(" ")+'</td></tr>').join("");
+      $("#libLive").textContent = " Versions read live from this app's bundled Python.";
+    } catch(_e){ /* keep the static list */ }
+  });
+})();
 
 /* URL-state slider */
 function drawLevel(v){
