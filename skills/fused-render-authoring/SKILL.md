@@ -65,6 +65,25 @@ Write `main()` against **stdlib plus the supported library set** below — the p
 
 Anything outside this set (e.g. torch, sklearn, xarray, plotly) may be missing — don't reach for it unless the user confirms it's installed in the Python that launched the server. If a needed import fails, prefer rewriting with the supported set over asking the user to install packages.
 
+Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
+
+```bash
+cat > /tmp/probe.py <<'EOF'
+def main(names: str = "pandas,numpy"):
+    from importlib import metadata
+    out = {}
+    for n in names.split(","):
+        try: out[n] = metadata.version(n)
+        except Exception: out[n] = None
+    return out
+EOF
+curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,geopandas,duckdb"}}'
+```
+
+A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.
+
 ## The HTML side: `window.fused` API
 
 The runtime is injected automatically when the explorer renders the page. Never add a script tag for it; just use the global.
