@@ -666,9 +666,16 @@
           u.onboundary = (e) => { started = true; if (opts.onBoundary) opts.onBoundary(e); };
           u.onend = () => {
             if (current !== token) return;
-            // A swallowed utterance can fire a bare end without ever starting
-            // — treat it like a non-start, not a finished sentence.
-            if (!started && retriesLeft > 0) return;
+            if (!started) {
+              // Bare end without ever starting = the synth swallowed it.
+              // Mid-retries the watchdog owns recovery; on the final attempt
+              // report an ERROR (counts toward the consecutive-error stop)
+              // instead of pretending the sentence was spoken.
+              if (retriesLeft > 0) return;
+              current = null; stopKeepalive();
+              if (opts.onError) opts.onError();
+              return;
+            }
             current = null; stopKeepalive();
             if (opts.onEnd) opts.onEnd();
           };
