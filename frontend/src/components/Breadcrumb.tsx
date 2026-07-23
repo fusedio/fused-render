@@ -1,7 +1,7 @@
 // Crumb bar + "+ Bookmark" / "Update bookmark" / split right/down buttons.
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
 import {
@@ -190,6 +190,24 @@ export function Breadcrumb({
   // Recents, for its sidebar row) so "My DB app" beats "index.html".
   renderedTitle?: string | null;
 }) {
+  const crumbsRef = useRef<HTMLDivElement>(null);
+
+  // Keep the tail of a long path in view on every path change (same as the
+  // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
+  // without this the current folder could sit scrolled off the right edge.
+  useEffect(() => {
+    const el = crumbsRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [fsPath]);
+
+  // Map a plain mouse wheel's vertical delta onto horizontal scroll so the
+  // scrollbar-less strip is still wheel-scrollable (touchpad horizontal pans
+  // already work via the native overflow-x).
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY === 0) return;
+    e.currentTarget.scrollLeft += e.deltaY;
+  };
+
   // Strictly below home only — home itself shows its full path, not a lone "~".
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
@@ -223,7 +241,7 @@ export function Breadcrumb({
     if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className="path-crumb last">
+        <span key={target} className="path-crumb last" title={part}>
           {part}
         </span>
       );
@@ -233,6 +251,7 @@ export function Breadcrumb({
           key={target}
           href="#"
           className="path-crumb"
+          title={part}
           onClick={(e) => {
             e.preventDefault();
             navigatePreservingMode(target);
@@ -246,7 +265,7 @@ export function Breadcrumb({
 
   return (
     <>
-      <div className="crumbs">
+      <div className="crumbs" ref={crumbsRef} onWheel={onWheel}>
         {pieces}
         <RevealButton fsPath={fsPath} />
       </div>

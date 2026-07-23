@@ -684,6 +684,21 @@ a.bookmark-name::after {
   font-size: 12px;
 }
 
+/* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
+   .panel-crumbs below). flex:1 1 auto makes the strip own the bar's free
+   width — the whitespace right of the last crumb is the click-to-edit target.
+   The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
+   wheel-scrollable strip carries no chrome; the tail is pinned into view from
+   JS on every path change. */
+#breadcrumb .crumbs {
+  flex: 1 1 auto;
+  scrollbar-width: none;
+}
+
+#breadcrumb .crumbs::-webkit-scrollbar {
+  display: none;
+}
+
 .path-crumb,
 .panel-crumb {
   color: var(--fg-muted);
@@ -691,6 +706,18 @@ a.bookmark-name::after {
   cursor: pointer;
   padding: 2px 1px;
   border-radius: 3px;
+}
+
+/* Truncate a single over-long folder name so it can't eat the whole strip
+   (main bar only — the panel pane keeps its crumbs untruncated). inline-block
+   is what lets text-overflow apply to these inline <a>/<span> crumbs; the full
+   name stays reachable via the title tooltip and horizontal scroll. */
+#breadcrumb .path-crumb {
+  display: inline-block;
+  vertical-align: bottom;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .path-crumb.last,
