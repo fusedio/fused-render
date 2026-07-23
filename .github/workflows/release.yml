@@ -20,10 +20,8 @@ on:
           - windows
 
 jobs:
-  # Resolves the release tag once and creates the (empty) GitHub Release that
-  # every OS job uploads its own artifacts into. Splitting this out lets
-  # macOS/Windows/(later) Linux build in parallel instead of Windows waiting
-  # on the DMG job just so a Release object exists to upload into.
+  # Creates the GitHub Release every OS build job uploads into, so the
+  # builds run in parallel instead of serializing behind the DMG job.
   prepare-release:
     runs-on: ubuntu-latest
     permissions:
@@ -33,47 +31,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # previous-tag lookup below needs every tag reachable, not just
-          # the one that triggered this run.
-          fetch-depth: 0
+          fetch-depth: 0 # previous-tag lookup needs all tags
 
       - name: Resolve release tag
         id: resolve
-        run: |
-          set -euo pipefail
-          echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
-
-      - name: Find previous tag
-        id: prev_tag
-        run: |
-          set -euo pipefail
-          # GitHub's own previous-tag auto-detection has proven unreliable
-          # here (past releases each listed the full PR history instead of
-          # just what changed since the prior release) — pin it explicitly.
-          # grep exits 1 (failing the pipeline under pipefail) when there's
-          # no other tag yet, e.g. on the very first release — that's a
-          # legitimate case, not an error, so tolerate it and leave PREV_TAG
-          # empty; --generate-notes falls back to its own auto-detection.
-          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${{ steps.resolve.outputs.tag }}$" | head -n1 || true)"
-          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.resolve.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, reusing it."
             exit 0
           fi
-          NOTES_ARGS=(--generate-notes)
-          if [ -n "${{ steps.prev_tag.outputs.tag }}" ]; then
-            NOTES_ARGS+=(--notes-start-tag "${{ steps.prev_tag.outputs.tag }}")
-          fi
+          # GitHub's own previous-tag auto-detection has proven unreliable
+          # here — pin it explicitly (empty on the very first release).
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
           gh release create "$TAG" --target "${{ github.sha }}" \
             --title "FusedRender $TAG" \
-            "${NOTES_ARGS[@]}"
+            --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
 
   build-sign-notarize-release:
     needs: prepare-release
@@ -97,11 +76,6 @@ jobs:
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
       - uses: actions/checkout@v4
-        with:
-          # release notes generation below needs every tag reachable, not
-          # just the one that triggered this run (default fetch-depth: 1
-          # only grabs the tagged commit itself)
-          fetch-depth: 0
 
       # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
       # macOS runners' default `python3` can resolve to an older CLT/system
@@ -204,10 +178,7 @@ jobs:
         run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
 
   build-windows-release:
-    # Runs off prepare-release (not build-sign-notarize-release) so the
-    # Windows and macOS builds run in parallel — both upload into the release
-    # prepare-release already created. See docs/PYTHON_SUPERVISOR_SPEC.md
-    # "Software updates".
+    # See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
     runs-on: windows-latest
@@ -224,10 +195,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Inno Setup was preinstalled on windows-2022 but dropped from
-      # windows-2025 (actions/runner-images#11644), so install it explicitly
-      # rather than assume the image ships it. build_windows_installer.ps1
-      # finds ISCC.exe under {pf(x86)}\Inno Setup 6, where choco installs it.
+      # Dropped from the windows-2025 runner image
+      # (actions/runner-images#11644); the build script finds ISCC.exe where
+      # choco installs it.
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y
@@ -259,8 +229,8 @@ jobs:
           uv run scripts/windows/generate_update_manifest.py \
             "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
           aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
-          # Fixed-name pointer the updater polls: no-cache so a release is never
-          # masked by a stale CDN copy (belt-and-braces with the invalidation).
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
           aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
             --cache-control no-cache
           aws cloudfront create-invalidation \
@@ -269,9 +239,8 @@ jobs:
           gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
 
   bump-homebrew:
-    # Was the DMG job's last step; split into its own job so a tap-push failure
-    # (which happens after the Release + DMG already published) can't fail
-    # that job.
+    # Separate job so a tap-push failure can't fail the DMG job after the
+    # Release already published.
     needs: build-sign-notarize-release
     runs-on: ubuntu-latest
     permissions: {} # uses the tap PAT only; no GITHUB_TOKEN scopes needed
@@ -279,15 +248,13 @@ jobs:
       - name: Bump homebrew-tap cask
         env:
           TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
-          # From the DMG that was actually built+hashed, not the git tag — keeps
-          # cask version/sha256 tied to one artifact.
+          # From the DMG that was actually built+hashed, not the git tag.
           VERSION: ${{ needs.build-sign-notarize-release.outputs.version }}
           DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
         run: |
           set -euo pipefail
           git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
-          # GNU sed on ubuntu (was BSD `sed -i ''` on the macOS runner).
           sed -i \
             -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
