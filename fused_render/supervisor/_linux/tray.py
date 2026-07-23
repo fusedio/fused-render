@@ -108,13 +108,13 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
     `toggle-state` tracks `login_enabled` so the host draws the live checkmark.
     """
     children = [
-        _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
-        _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
-        _item(_ID_SEP1, {"type": "separator", "visible": True}),
         _item(
             _ID_RUNNING,
             {"label": f"Running on port {port}", "enabled": False, "visible": True},
         ),
+        _item(_ID_SEP1, {"type": "separator", "visible": True}),
+        _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
+        _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
         _item(_ID_OPEN_LOGS, {"label": "Open logs", "enabled": True, "visible": True}),
         _item(
             _ID_LOGIN,

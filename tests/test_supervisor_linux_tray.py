@@ -116,6 +116,15 @@ def test_menu_layout_structure(login_enabled):
     assert len(separators) == 2
 
 
+def test_menu_layout_status_line_is_first():
+    # The greyed status line sits at the very top, set off by a separator.
+    _root_id, children = linux_tray._menu_layout(False, port=1777)
+    first, second = children[0], children[1]
+    assert first["properties"]["label"] == "Running on port 1777"
+    assert first["properties"]["enabled"] is False
+    assert second["properties"].get("type") == "separator"
+
+
 # --- root node children-display ----------------------------------------------
 
 
