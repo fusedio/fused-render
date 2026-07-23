@@ -1,10 +1,18 @@
-"""Desktop supervisor path layout — port of windows/supervisor/src/paths.rs
-(feat/windows-desktop-foundation, PR #162).
+"""Desktop supervisor path layout.
 
 Distinct from fused_render/paths.py (the generic dev/state helpers the server
-itself uses): this module is the Windows desktop supervisor's own view of
-where its state/cache/runtime/temp/logs live, and how it builds the child
-server process's environment block.
+itself uses): this module is the desktop supervisor's own view of where its
+state/cache/runtime/temp/logs live, and how it builds the child server
+process's environment block.
+
+Durable state/logs/temp standardize on the ~/.fused-render/desktop dotdir on
+both Linux and Windows — all user config in one known place, while the
+`desktop/` subtree keeps the supervisor's live state isolated from the dev/CLI
+files under ~/.fused-render (whole-file last-write-wins, so they must never
+share mounts.json et al). The disposable cache stays OS-native ($XDG_CACHE_HOME
+on Linux, %LOCALAPPDATA% on Windows) to stay out of backup scope; on Linux
+runtime stays on $XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe). macOS is
+deliberately out of scope — it is already released and needs a real migration.
 """
 from __future__ import annotations
 
@@ -78,32 +86,50 @@ class DesktopPaths:
     def discover(cls) -> "DesktopPaths":
         if sys.platform.startswith("linux"):
             return cls.discover_linux()
-        # LOCALAPPDATA (Windows). Other platforms have no desktop layout yet.
+        # Windows. Durable state/logs/temp live under the ~/.fused-render/desktop
+        # dotdir (one known place, shared layout with Linux); only the disposable
+        # cache stays OS-native under %LOCALAPPDATA%. LOCALAPPDATA missing is no
+        # longer fatal — it only steers cache, so fall back to a cache dir under
+        # the dotdir root rather than raising.
+        root = Path.home() / ".fused-render" / "desktop"
         local_app_data = os.environ.get("LOCALAPPDATA")
-        if not local_app_data:
-            raise RuntimeError("LOCALAPPDATA is not set")
-        return cls.under(Path(local_app_data) / "FusedRender" / "Desktop")
+        cache = (
+            Path(local_app_data) / "FusedRender" / "Desktop" / "cache"
+            if local_app_data
+            else root / "cache"
+        )
+        return cls(
+            root=root,
+            state=root / "state",
+            cache=cache,
+            runtime=root / "runtime",
+            temp=root / "temp",
+            logs=root / "logs",
+        )
 
     @classmethod
     def discover_linux(cls) -> "DesktopPaths":
-        """XDG base-directory layout. Unlike the flat Windows root, state and
-        cache live under different XDG bases: state under $XDG_DATA_HOME
-        (~/.local/share), cache under $XDG_CACHE_HOME (~/.cache), runtime under
-        $XDG_RUNTIME_DIR (see linux_runtime_dir). child_environment() is
+        """Dotdir layout: durable state/logs/temp live under
+        ~/.fused-render/desktop (one known place — the same dotdir dev/CLI use,
+        isolated from live state via the `desktop/` subtree). The disposable
+        cache stays OS-native under $XDG_CACHE_HOME (~/.cache) so its GBs of
+        uv/rclone/duckdb caches stay out of backup scope; runtime stays under
+        $XDG_RUNTIME_DIR (see linux_runtime_dir — tmpfs, 0700, socket-safe).
+        XDG_DATA_HOME no longer steers the root. child_environment() is
         contract-identical to Windows regardless — same FUSED_RENDER_* keys.
 
         Exposed as its own classmethod (not folded into discover) so the pure
         path computation is unit-testable on any platform, not only Linux.
         """
-        data_root = _xdg_home("XDG_DATA_HOME", ".local/share") / "fused-render" / "desktop"
+        root = Path.home() / ".fused-render" / "desktop"
         cache_root = _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "desktop"
         return cls(
-            root=data_root,
-            state=data_root / "state",
+            root=root,
+            state=root / "state",
             cache=cache_root,
             runtime=linux_runtime_dir(),
-            temp=cache_root / "temp",
-            logs=data_root / "logs",
+            temp=root / "temp",
+            logs=root / "logs",
         )
 
     @classmethod

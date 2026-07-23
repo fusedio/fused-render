@@ -72,7 +72,7 @@ cannot satisfy startup.
 | No-orphans tree-kill | Job Object | *not guaranteed* (deferred; see below) | cgroup / process group |
 | Tray | `pystray` (`supervisor/tray.py`) | `rumps` status item + pinned-view popover | `pystray` (shared) |
 | Autostart | HKCU `Run` key | not wired | XDG autostart `.desktop` |
-| Paths root | `%LOCALAPPDATA%\FusedRender\Desktop` | `~/Library/Application Support/fused-render` | XDG base dirs |
+| Paths root | `~/.fused-render/desktop` (cache under `%LOCALAPPDATA%\FusedRender\Desktop\cache`) | `~/Library/Application Support/fused-render` | `~/.fused-render/desktop` (cache under `$XDG_CACHE_HOME/fused-render/desktop`, runtime under `$XDG_RUNTIME_DIR`) |
 | `/view` URL codec | shared `_view_url_codec` | shared `_view_url_codec` | shared |
 | Token readiness / shutdown | shared `desktop_probe` + `/api/*` | shared `desktop_probe` + `/api/*` | shared |
 
