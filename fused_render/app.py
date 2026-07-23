@@ -63,10 +63,14 @@ def clone_url_path(raw_url: str) -> str:
     """Shell URL path for an OS-delivered `fused-render://` deep link (SPEC
     §26, D110): the /clone confirm page with the raw link as ?src=. Parsing
     and validation happen server-side (deeplink.py); this only ferries the
-    string. Module-level (not a closure) so it is testable without AppKit."""
-    from urllib.parse import quote
+    string. Module-level (not a closure) so it is testable without AppKit.
 
-    return "/clone?src=" + quote(raw_url, safe="")
+    Delegates to the shared `_view_url_codec.open_target_path` so all three
+    platforms (macOS here, the Windows/Linux supervisor) ferry a deep link
+    identically."""
+    from fused_render._view_url_codec import open_target_path
+
+    return open_target_path(raw_url)
 
 
 def openurls_target_path(raw_url: str) -> str:
@@ -79,13 +83,13 @@ def openurls_target_path(raw_url: str) -> str:
     anything else is a file open and must resolve the same way
     `application_openFiles_` does, via `view_url_path`. Module-level (not a
     closure) so it is testable without AppKit.
+
+    Delegates to the shared `_view_url_codec.open_target_path` — the single
+    implementation shared with the Windows/Linux supervisor.
     """
-    if raw_url.lower().startswith("fused-render:"):
-        return clone_url_path(raw_url)
+    from fused_render._view_url_codec import open_target_path
 
-    from urllib.parse import unquote, urlparse
-
-    return view_url_path(unquote(urlparse(raw_url).path))
+    return open_target_path(raw_url)
 
 
 def _is_process_alive(pid: int) -> bool:
