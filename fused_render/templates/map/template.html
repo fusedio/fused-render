@@ -212,6 +212,9 @@
   .geores .g1 { font-size: 13px; }
   .geores .g2 { font-size: 11.5px; color: var(--muted); }
   .geores.none { color: var(--faint); cursor: default; }
+  .geores.skel { cursor: default; }
+  .geores.skel .skel-bar { height: 10px; margin-bottom: 5px; }
+  .geores.skel .skel-bar.g2b { height: 8px; margin-bottom: 0; }
 
   /* style controls */
   .ctl { margin-top: 11px; }
@@ -270,6 +273,9 @@
   .cp-code .gutter { flex: none; text-align: right; padding: 12px 8px 12px 12px; color: var(--faint); font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre; user-select: none; border-right: 1px solid var(--border); background: var(--panel); position: sticky; left: 0; }
   .cp-code pre { margin: 0; }
   .cp-code code { font-family: var(--mono); font-size: 12px; line-height: 1.55; display: block; padding: 12px 14px; tab-size: 4; background: transparent; color: var(--text); }
+  /* code-viewer skeleton: reuses .cp-code's gutter+row layout, shown while fused.readFile resolves */
+  .cp-skel-lines { flex: 1; padding: 12px 14px; display: flex; flex-direction: column; gap: 8.6px; justify-content: center; }
+  .cp-skel-lines .skel-bar { height: 11px; }
   /* light highlight.js palette (replaces the dark vendor theme) */
   .hljs { background: transparent; color: var(--text); }
   .hljs-comment, .hljs-quote { color: #9ca3af; font-style: italic; }
@@ -310,14 +316,44 @@
   #toast .tclose { background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; }
   .hidden { display: none !important; }
   .mono { font-family: var(--mono); }
-  #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
+
+  /* ---- shared skeleton shimmer (boot placeholder, code viewer, geocode) - */
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .skel-bar {
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--panel-2) 25%, var(--panel-3) 50%, var(--panel-2) 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.25s ease-in-out infinite;
+  }
+
+  /* full-viewport map placeholder shown while maplibre/deck.gl load from CDN */
+  #boot-msg {
+    position: absolute; inset: 0; z-index: 30; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(100deg, var(--panel-3) 30%, var(--panel-2) 50%, var(--panel-3) 70%);
+    background-size: 200% 100%; animation: skel-shimmer 1.6s ease-in-out infinite;
+  }
+  #boot-msg .boot-tag {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    color: var(--faint); font-size: 12.5px; animation: boot-pulse 1.6s ease-in-out infinite;
+  }
+  #boot-msg .boot-tag svg { color: var(--muted); }
+  @keyframes boot-pulse { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+  #boot-msg.boot-error {
+    animation: none; background: var(--panel-2); color: var(--muted);
+    font-size: 13px; padding: 0 24px; text-align: center;
+  }
 </style>
 </head>
 <body>
 <div id="app">
   <main id="mapwrap">
     <div id="map"></div>
-    <div id="boot-msg">initializing…</div>
+    <div id="boot-msg">
+      <span class="boot-tag">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
+        Loading map…
+      </span>
+    </div>
 
     <button id="btn-panel" class="hidden" title="Show panel">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></svg>
@@ -433,8 +469,9 @@
 "use strict";
 (async function boot() {
 if (typeof fused === "undefined") {
-  document.getElementById("boot-msg").textContent =
-    "Open this inside fused-render (http://127.0.0.1:1777/view/<path-to-map_viewer.html>)";
+  const bm = document.getElementById("boot-msg");
+  bm.classList.add("boot-error");
+  bm.textContent = "Open this inside fused-render (http://127.0.0.1:1777/view/<path-to-map_viewer.html>)";
   return;
 }
 
@@ -1213,6 +1250,16 @@ function refreshCode() {
   if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(selectedFile());
 }
 
+// Shape-matched placeholder for the code viewer: a gutter of line numbers next
+// to shimmering bars of varying width, standing in for fused.readFile's result.
+const CP_SKEL_WIDTHS = [58, 82, 40, 90, 70, 35, 85, 62, 48, 78, 55, 88, 42, 66];
+function codeSkeleton() {
+  const gutter = CP_SKEL_WIDTHS.map((_, i) => i + 1).join("\n");
+  const lines = CP_SKEL_WIDTHS.map((w, i) =>
+    `<div class="skel-bar" style="width:${w}%;animation-delay:${(i * 0.045).toFixed(2)}s"></div>`).join("");
+  return `<div class="cp-code cp-skel"><div class="gutter">${gutter}</div><div class="cp-skel-lines">${lines}</div></div>`;
+}
+
 async function updateCodeViewer(path) {
   const body = qs("cp-body"), fnEl = qs("cp-fn"), langEl = qs("cp-lang");
   if (!path) { fnEl.textContent = "—"; langEl.textContent = ""; body.innerHTML = `<div class="cp-empty">Select a file on the left, then this shows its source.</div>`; return; }
@@ -1225,7 +1272,7 @@ async function updateCodeViewer(path) {
     return;
   }
   langEl.textContent = ext;
-  body.innerHTML = `<div class="cp-empty">Loading…</div>`;
+  body.innerHTML = codeSkeleton();
   try {
     const text = await fused.readFile(path);
     const lang = LANG_ALIAS[ext] || ext;
@@ -1295,7 +1342,11 @@ qs("geoinput").oninput = e => {
 };
 async function geocode(q) {
   const box = qs("georesults");
-  box.innerHTML = `<div class="geores none">Searching…</div>`;
+  // 3 result-shaped rows (title bar + subtitle bar) instead of a bare "Searching…" swap.
+  box.innerHTML = [0, 1, 2].map(i => `<div class="geores skel">
+    <div class="skel-bar" style="width:${64 - i * 9}%;animation-delay:${(i * 0.08).toFixed(2)}s"></div>
+    <div class="skel-bar g2b" style="width:${42 - i * 6}%;animation-delay:${(i * 0.08 + 0.05).toFixed(2)}s"></div>
+  </div>`).join("");
   try {
     const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`);
     const j = await r.json();
@@ -1375,7 +1426,7 @@ if (openFile) {
 
 })().catch(err => {
   const el = document.getElementById("boot-msg");
-  if (el) { el.classList.remove("hidden"); el.textContent = "Error: " + err.message; }
+  if (el) { el.classList.remove("hidden"); el.classList.add("boot-error"); el.textContent = "Error: " + err.message; }
   console.error(err);
 });
 </script>

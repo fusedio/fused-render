@@ -178,6 +178,26 @@
   table.raw tr:hover td { background: var(--hover); }
   .tableMeta { color: var(--muted); font-size: 11.5px; margin: 0 0 8px; }
 
+  /* ---- skeleton loading (chart / stat / table / file list placeholders) ---- */
+  .skel-line, .skel-bar {
+    background: linear-gradient(90deg, var(--grid) 25%, var(--baseline) 50%, var(--grid) 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite; border-radius: 4px;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; } to { background-position: -200% 0; }
+  }
+  .skel-line { display: inline-block; height: 10px; width: 60%; }
+  table.raw td .skel-line { height: 9px; }
+  .skel-chart { height: 100%; display: flex; flex-direction: column; }
+  .skel-chart .skel-plot {
+    flex: 1; min-height: 0; display: flex; align-items: flex-end; gap: 14px; padding: 4px 12px 10px;
+  }
+  .skel-chart .skel-bar { flex: 1; max-width: 64px; border-radius: 5px 5px 0 0; opacity: .75; }
+  .skel-chart .skel-axis { height: 1px; margin: 0 12px; background: var(--grid); }
+  .stat.skel .v.skel-line { height: 30px; width: 90px; }
+  .stat.skel .l.skel-line { height: 10px; width: 120px; margin-top: 8px; }
+  .frow2 .skel-line { width: 45%; }
+
   /* ---- sheet tabs ---- */
   #tabs {
     flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 10px;
@@ -978,6 +998,64 @@ function buildVLSpec(sh, chart, q, records) {
   return spec;
 }
 
+/* ================= loading skeletons ================= */
+/* Content-shaped placeholders shown in #chart while a query/import/rows call
+   is in flight, so the pane never sits blank with only the #status text as
+   feedback (see doRenderChart / renderTable / openAny). */
+function chartSkeleton() {
+  const el = $("chart");
+  const heights = [46, 78, 32, 64, 90, 52, 70];
+  el.innerHTML = `<div class="skel-chart">
+    <div class="skel-plot">${heights.map((h, i) =>
+      `<div class="skel-bar" style="height:${h}%;animation-delay:${(i * 90) % 500}ms"></div>`).join("")}</div>
+    <div class="skel-axis"></div>
+  </div>`;
+}
+function statSkeleton(n) {
+  const el = $("chart");
+  let tiles = "";
+  for (let i = 0; i < Math.max(1, n || 1); i++) {
+    tiles += `<div class="stat skel">
+      <div class="v skel-line" style="animation-delay:${i * 90}ms"></div>
+      <div class="l skel-line" style="animation-delay:${i * 90 + 60}ms"></div>
+    </div>`;
+  }
+  el.innerHTML = `<div id="statRow">${tiles}</div>`;
+}
+function tableSkeleton(columns) {
+  const el = $("chart");
+  el.innerHTML = "";
+  const tbl = document.createElement("table"); tbl.className = "raw";
+  const thead = document.createElement("thead"); const hr = document.createElement("tr");
+  for (const c of columns) { const th = document.createElement("th"); th.textContent = c; hr.appendChild(th); }
+  thead.appendChild(hr); tbl.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (let i = 0; i < 8; i++) {
+    const tr = document.createElement("tr");
+    columns.forEach((_, ci) => {
+      const td = document.createElement("td");
+      const bar = document.createElement("div"); bar.className = "skel-line";
+      bar.style.width = (38 + ((i * 7 + ci * 13) % 48)) + "%";
+      bar.style.animationDelay = ((i * 70) % 400) + "ms";
+      td.appendChild(bar);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  el.appendChild(tbl);
+}
+function flistSkeleton(list) {
+  list.innerHTML = "";
+  for (let i = 0; i < 6; i++) {
+    const el = document.createElement("div"); el.className = "frow2";
+    el.innerHTML = `<span class="ic"></span><span class="nm skel-line"></span>`;
+    el.querySelector(".skel-line").style.cssText =
+      `width:${45 + (i * 11) % 40}%;animation-delay:${(i * 70) % 400}ms`;
+    list.appendChild(el);
+  }
+}
+
 /* ================= render ================= */
 function renderAll() {
   renderShelves(); renderFilters(); renderChart();
@@ -1007,6 +1085,7 @@ async function doRenderChart() {
   try {
     if (chart === "table") { await renderTable(seq); return; }
     const q = buildQuerySpec(sh, chart);
+    if (chart === "stat") statSkeleton(q.measures.length); else chartSkeleton();
     setStatus("Querying…");
     const res = await pyRun( {
       action: "query", file: schema.file, spec: JSON.stringify(q),
@@ -1045,6 +1124,7 @@ function renderStats(q, rec) {
 
 async function renderTable(seq) {
   const sh = S();
+  tableSkeleton(schema.fields.map(f => f.name));
   setStatus("Loading rows…");
   const res = await pyRun( {
     action: "rows", file: schema.file, offset: 0, limit: 200,
@@ -1107,6 +1187,7 @@ function renderWbName() {
 }
 
 async function openAny(path) {
+  chartSkeleton();   // shimmer placeholder while import/open resolves — see loading skeletons above
   try {
     if (/\.(twb|twbx|tds|tdsx)$/i.test(path)) {
       setStatus("Importing Tableau file…");
@@ -1156,6 +1237,7 @@ async function filePicker() {
 }
 
 async function listInto(m, path) {
+  flistSkeleton(m.querySelector(".flist"));
   let res;
   try { res = await pyRun( { action: "listdir", file: path,
     src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }); }

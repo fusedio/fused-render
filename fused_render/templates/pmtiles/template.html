@@ -13,6 +13,33 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color: #e8eaed; background: #131417; font-size: 13px; }
   #map { position: absolute; inset: 0; }
+  /* Thin indeterminate bar for every load (initial + file switches). Old map
+     content stays up while this runs — no wipe, matches the panel below. */
+  #loadbar { position: absolute; left: 0; right: 0; top: 0; height: 2px;
+    overflow: hidden; background: transparent; z-index: 25; pointer-events: none; }
+  #loadbar::before { content: ""; display: block; height: 100%; width: 40%;
+    border-radius: 2px; background: linear-gradient(90deg, transparent, #2b5fd9, transparent);
+    transform: translateX(-100%); opacity: 0; }
+  #loadbar.active::before { opacity: 1; animation: loadbar-slide 1.1s ease-in-out infinite; }
+  @keyframes loadbar-slide { from { transform: translateX(-100%); } to { transform: translateX(350%); } }
+  /* Canvas-shaped skeleton for the very first load only (before any tiles have
+     ever been drawn) — a faint tile grid with a shimmer sweep over the map. */
+  #tileSkeleton { position: absolute; inset: 0; z-index: 1; pointer-events: none;
+    opacity: 0; transition: opacity .2s;
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.05) 0 1px, transparent 1px 96px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,.05) 0 1px, transparent 1px 96px),
+      linear-gradient(100deg, transparent 40%, rgba(255,255,255,.06) 50%, transparent 60%);
+    background-size: 96px 96px, 96px 96px, 220% 100%;
+    background-position: 0 0, 0 0, -120% 0; }
+  #tileSkeleton.active { opacity: 1; animation: tile-shimmer 1.6s ease-in-out infinite; }
+  @keyframes tile-shimmer { to { background-position: 0 0, 0 0, 120% 0; } }
+  /* Shimmering row placeholders for the file explorer while browse.py runs. */
+  .skel-bar { height: 10px; border-radius: 3px;
+    background: linear-gradient(90deg, #1b1d21 25%, #23262c 50%, #1b1d21 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite; }
+  .skel-ic { width: 14px; height: 14px; border-radius: 4px; flex: 0 0 auto; }
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
     border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
   #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -66,6 +93,8 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="tileSkeleton"></div>
+  <div id="loadbar"></div>
 
   <div class="panel" id="topbar">
     <button id="browse" class="ghost">📁</button>
@@ -94,7 +123,8 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const els = ['path','load','opacity','basemap','layersBtn','metaBtn','metaPanel','metaBody',
-  'layerPanel','layerBody','fitBtn','status','browse','explorer','crumbs','explorerList','showAll']
+  'layerPanel','layerBody','fitBtn','status','browse','explorer','crumbs','explorerList','showAll',
+  'loadbar','tileSkeleton']
   .reduce((o, k) => (o[k] = $(k), o), {});
 
 const P = {
@@ -268,8 +298,18 @@ map.on('mousemove', e => {
 // ---------------- load ----------------
 async function loadFile(){
   const file = P.file();
-  if (!file){ status('no file — use Browse or enter a .pmtiles path'); return; }
+  if (!file){
+    status('no file — use Browse or enter a .pmtiles path');
+    els.loadbar.classList.remove('active');
+    els.tileSkeleton.classList.remove('active');
+    return;
+  }
   status('Reading PMTiles header…');
+  els.loadbar.classList.add('active');
+  // Full canvas skeleton only for the very first load — later loads (switching
+  // files) keep the existing map up and rely on the loadbar alone, so nothing
+  // jumps/wipes on reload.
+  if (!loadedFile) els.tileSkeleton.classList.add('active');
   await styleReady();
   try {
     const p = new pmtiles.PMTiles(rawURL(file));
@@ -279,6 +319,8 @@ async function loadFile(){
     archive = p;
   } catch (e) {
     status('could not read PMTiles: ' + esc(e.message || e), true);
+    els.loadbar.classList.remove('active');
+    els.tileSkeleton.classList.remove('active');
     return;
   }
   loadedFile = file;
@@ -295,6 +337,8 @@ async function loadFile(){
   renderMeta(fileSize);
   renderLayerPanel();
   status('');
+  els.loadbar.classList.remove('active');
+  els.tileSkeleton.classList.remove('active');
 }
 
 // ---------------- controls ----------------
@@ -318,8 +362,16 @@ els.browse.onclick = () => {
 };
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : '0'); refreshExplorer(P.dir()); };
 async function refreshExplorer(dir){
+  // Row-shaped shimmer placeholders (icon + name + size, like the real rows
+  // below) while browse.py walks the directory — never leave the list blank.
+  els.explorerList.innerHTML = Array.from({length: 6}, (_, i) => `
+    <div class="row" style="cursor:default">
+      <span class="skel-bar skel-ic"></span>
+      <span class="skel-bar" style="flex:1;max-width:${72 - i * 9}%"></span>
+      <span class="skel-bar" style="width:32px;flex:0 0 auto"></span>
+    </div>`).join('');
   const r = await fused.runPython('./browse.py', { dir, exts: '.pmtiles', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
-  if (!r || r.error) return;
+  if (!r || r.error){ els.explorerList.innerHTML = '<div class="row" style="color:#6b7178">failed to load</div>'; return; }
   els.crumbs.innerHTML = r.crumbs.map(c => `<a data-p="${c.path}">${c.label}</a>`).join(' / ');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
   const entries = [...r.dirs, ...r.files];

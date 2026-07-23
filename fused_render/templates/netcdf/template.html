@@ -58,11 +58,43 @@
   #imgFallback { position: absolute; inset: 0; display: none; overflow: auto;
     background: #0c0d0f; z-index: 5; text-align: center; padding: 70px 20px 20px; }
   #imgFallback img { max-width: 96%; image-rendering: pixelated; border: 1px solid #2a2d33; }
+
+  /* ---- loading skeletons: shape-matched placeholders instead of bare text ---- */
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  /* Full-viewport stand-in for the map/raster pane, shown only while the very
+     first slice of a file is being resolved (before any content has ever
+     painted) — a faint graticule plus a shimmer sweep, echoing the eventual
+     map without pretending to know its bounds yet. */
+  #loadSkel { position: absolute; inset: 0; z-index: 6; display: none; overflow: hidden;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0 59px, #1c1f24 59px 60px),
+      repeating-linear-gradient(to right, transparent 0 59px, #1c1f24 59px 60px),
+      #121317; }
+  #loadSkel.show { display: block; }
+  #loadSkel::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 20%, rgba(138,180,255,.10) 45%,
+      rgba(138,180,255,.18) 50%, rgba(138,180,255,.10) 55%, transparent 80%);
+    background-size: 220% 100%; animation: skel-shimmer 1.6s ease-in-out infinite; }
+  /* Placeholder for the non-geographic image fallback: a page-shaped shimmer
+     block the same size/position as the eventual <img>, swapped for it once
+     the render lands (or errors). */
+  #fallbackSkel { display: none; width: min(90%, 900px); aspect-ratio: 4 / 3; margin: 0 auto;
+    border-radius: 6px; border: 1px solid #2a2d33;
+    background: linear-gradient(90deg, #17181b 25%, #23262c 50%, #17181b 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.3s ease-in-out infinite; }
+  #imgFallback.loading #fallbackSkel { display: block; }
+  #imgFallback.loading #fallbackImg { visibility: hidden; position: absolute; }
+  /* Status pill while a slice is loading: same chip, shimmering instead of flat. */
+  #status.loading { color: #cdd0d4; background-color: rgba(19,20,23,.9);
+    background-image: linear-gradient(100deg, transparent 20%, rgba(255,255,255,.08) 45%,
+      rgba(255,255,255,.16) 50%, rgba(255,255,255,.08) 55%, transparent 80%);
+    background-size: 220% 100%; animation: skel-shimmer 1.3s ease-in-out infinite; }
 </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="imgFallback"><img id="fallbackImg" /></div>
+  <div id="loadSkel"></div>
+  <div id="imgFallback"><div id="fallbackSkel"></div><img id="fallbackImg" /></div>
 
   <div class="panel" id="topbar">
     <button id="browse" class="ghost">📁</button>
@@ -111,7 +143,7 @@ const $ = id => document.getElementById(id);
 const els = ['path','load','var','idxRow','idxName','idxRange','idxLabel','cmap','opacity','basemap',
   'metaBtn','metaPanel','metaBody','metaClose','fitBtn','status','readout',
   'histCanvas','histStats','histMode','autoStretch','stretchBtn','stretchReset','clipReset','browse','explorer',
-  'crumbs','explorerList','showAll','imgFallback','fallbackImg']
+  'crumbs','explorerList','showAll','imgFallback','fallbackImg','loadSkel']
   .reduce((o, k) => (o[k] = $(k), o), {});
 
 // ---- format-specific bits (netcdf vs zarr differ ONLY here) ----
@@ -139,6 +171,9 @@ const fmt = (x, d) => (x === null || x === undefined || !isFinite(x)) ? '—'
   : Number(x).toFixed(d === undefined ? (Math.abs(x) >= 10 ? 1 : 3) : d);
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
 function status(msg, err){ els.status.textContent = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+function statusLoading(msg){ els.status.textContent = msg || ''; els.status.style.display = 'block'; els.status.className = 'loading'; }
+function showSkel(){ els.loadSkel.classList.add('show'); }
+function hideSkel(){ els.loadSkel.classList.remove('show'); }
 
 // ---------------- map ----------------
 const DARK = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -199,6 +234,9 @@ function fitToData(instant){
 
 function showImgFallback(){
   els.imgFallback.style.display = 'block';
+  els.imgFallback.classList.add('loading');
+  els.fallbackImg.onload = () => els.imgFallback.classList.remove('loading');
+  els.fallbackImg.onerror = () => els.imgFallback.classList.remove('loading');
   els.fallbackImg.src = dURL(`/img?${renderQuery()}&max_cells=800000&_t=${Date.now()}`);
   drawWholeHist();
 }
@@ -413,17 +451,19 @@ async function refreshExplorer(dir){
 let loadedSlice = null, loadedQuery = null;
 
 async function loadSlice(){
-  if (!P.file()){ status('no file — use Browse or enter a path'); return; }
+  if (!P.file()){ hideSkel(); status('no file — use Browse or enter a path'); return; }
   const sq = sliceQuery().toString();
-  status('Loading slice…');
+  const firstLoad = !meta; // nothing has ever painted yet — show the full-pane skeleton
+  if (firstLoad) showSkel();
+  statusLoading('Loading slice…');
   await styleReady();
   const d = await ensureDaemon();
-  if (!d || !d.port){ status('daemon failed to start', true); return; }
+  if (!d || !d.port){ hideSkel(); status('daemon failed to start', true); return; }
   let m;
   try {
     m = await (await fetch(dURL('/meta?' + sq))).json();
-  } catch (e) { status('daemon unreachable', true); return; }
-  if (m.error){ status(m.error, true); return; }
+  } catch (e) { hideSkel(); status('daemon unreachable', true); return; }
+  if (m.error){ hideSkel(); status(m.error, true); return; }
   const firstFile = !meta || meta.file !== m.file;
   meta = m;
   geographic = !!m.geographic;
@@ -440,6 +480,7 @@ async function loadSlice(){
     showImgFallback();
   }
   status('');
+  hideSkel();
   loadedSlice = sq;
   loadedQuery = renderQuery();
 }

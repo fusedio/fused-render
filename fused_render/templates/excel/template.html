@@ -281,6 +281,17 @@
   button.action.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   button.action.primary:hover { background: var(--accent-h); }
   #emptyState { padding: 60px; text-align: center; color: var(--faint); font-size: 13px; }
+  /* ---- loading skeletons: grid chrome (letters/row numbers) is real and known
+     up front — only the cell/row/list bodies shimmer while data is in flight. */
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .skel-bar {
+    display: inline-block; height: 9px; border-radius: 3px; vertical-align: middle;
+    background: linear-gradient(90deg, var(--grid) 25%, var(--border2) 50%, var(--grid) 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  td.cell .skel-bar { margin: 0 8px; max-width: calc(100% - 16px); }
+  .fm-opt.skel, .fitem.skel { cursor: default; pointer-events: none; }
+  .fm-opt.skel .skel-bar, .fitem.skel .skel-bar { height: 11px; }
 </style>
 </head>
 <body>
@@ -1051,13 +1062,22 @@ function condToQ(type, val) {
   if (!type || (type !== "contains" && val === "")) return "";
   return type === "contains" ? val : type + val;
 }
+// Shape-matched placeholder for the value checklist while distinct() is in
+// flight — a handful of shimmering rows where the checkbox options will land.
+function fmSkelHtml(n = 6) {
+  return `<div class="fm-list">${
+    Array.from({ length: n }, (_, i) =>
+      `<div class="fm-opt skel"><span class="skel-bar" style="width:13px;height:13px;border-radius:3px"></span><span class="skel-bar" style="width:${SKEL_WIDTHS[i % SKEL_WIDTHS.length]}%"></span></div>`
+    ).join("")
+  }</div>`;
+}
 let fmSeq = 0;
 async function openFilterMenu(c, anchor) {
   const sh = S();
   const seq = ++fmSeq;   // a later open supersedes a slow distinct response (bugbot)
   const m = fmEl();
   m.style.display = "block";
-  m.innerHTML = `<div class="fm-note">Loading values…</div>`;
+  m.innerHTML = fmSkelHtml();
   positionFilterMenu(m, anchor);
   let values, truncated = false;
   try {
@@ -1256,6 +1276,50 @@ function makeRowTr(r, cols, dIdx) {
     tr.appendChild(td);
   }
   return tr;
+}
+
+// ---- initial-load / file-switch skeleton -----------------------------------
+// Shape-matched placeholder for the interval between "user opened this file"
+// and "content is ready" (SPEC LR-5 comment above load()): the header letters
+// and row numbers are real (they don't depend on the data), only the cell
+// bodies shimmer. Replaced wholesale by renderGrid() once the sheet lands.
+const SKEL_WIDTHS = [55, 78, 40, 88, 62, 45, 70, 52, 92, 60, 35, 80];
+function renderSkeletonGrid() {
+  const wrap = $("gridWrap");
+  const cols = MIN_COLS, rows = 24;
+  const table = document.createElement("table");
+  const colgroup = document.createElement("colgroup");
+  const headCol = document.createElement("col"); headCol.style.width = "52px";
+  colgroup.appendChild(headCol);
+  for (let c = 0; c < cols; c++) { const col = document.createElement("col"); col.style.width = "90px"; colgroup.appendChild(col); }
+  table.appendChild(colgroup);
+  table.style.width = (52 + cols * 90) + "px";
+  const thead = document.createElement("thead");
+  const hr = document.createElement("tr");
+  hr.appendChild(Object.assign(document.createElement("th"), { className: "corner" }));
+  for (let c = 0; c < cols; c++) {
+    const th = document.createElement("th");
+    th.textContent = colName(c);
+    hr.appendChild(th);
+  }
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (let r = 0; r < rows; r++) {
+    const tr = document.createElement("tr");
+    const rh = document.createElement("th"); rh.className = "rowhead"; rh.textContent = String(r + 1);
+    tr.appendChild(rh);
+    for (let c = 0; c < cols; c++) {
+      const td = document.createElement("td"); td.className = "cell";
+      const w = SKEL_WIDTHS[(r * 5 + c * 3) % SKEL_WIDTHS.length];
+      td.innerHTML = `<span class="skel-bar" style="width:${w}%"></span>`;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.innerHTML = "";
+  wrap.appendChild(table);
 }
 
 function renderGrid() {
@@ -1848,6 +1912,7 @@ async function load() {
   }
   const seq = ++loadSeq;
   setStatus("Loading…");
+  renderSkeletonGrid();
   try {
     const res = await pyRun( { action: "load", file });
     if (seq !== loadSeq) return;
@@ -1864,6 +1929,9 @@ async function load() {
   } catch (err) {
     if (seq !== loadSeq) return;
     setStatus(`${err.type || "error"}: ${err.message}`, "err");
+    // Undo the skeleton wipe: fall back to whatever was genuinely on screen
+    // before this load — the previous sheet if one was open, else blank.
+    if (book) renderGrid(); else $("gridWrap").innerHTML = "";
   }
 }
 
@@ -2189,6 +2257,13 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", in
 
 // ---- folder browser helpers (used by Save as…) ----
 const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Shape-matched placeholder for the folder listing while listdir() is in
+// flight — a handful of shimmering rows where file/folder items will land.
+function flistSkelHtml(n = 6) {
+  return Array.from({ length: n }, (_, i) =>
+    `<div class="fitem skel"><span class="ic"><span class="skel-bar" style="width:12px"></span></span><span class="skel-bar" style="width:${SKEL_WIDTHS[i % SKEL_WIDTHS.length]}%"></span></div>`
+  ).join("");
+}
 function startDir() {
   const cf = currentFile().replace(/\\/g, "/");
   return cf ? cf.replace(/\/[^/]*$/, "") || "/" : "~";
@@ -2209,7 +2284,7 @@ async function saveAsDialog() {
   const cf = currentFile().replace(/\\/g, "/");
   const ext = ((cf.match(/\.(xlsx|xlsm|csv|parquet)$/i) || [".xlsx"])[0]).toLowerCase();
   const base = (cf.split("/").pop() || "workbook").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
-  openModal("Save workbook as", `<div id="crumbs"></div><div class="flist" id="flist">Loading…</div>
+  openModal("Save workbook as", `<div id="crumbs"></div><div class="flist" id="flist">${flistSkelHtml()}</div>
     <div class="dlgRow" style="align-items:center;margin-top:10px">
       <input type="text" id="saveAsName" /><span style="color:var(--faint);font-size:12px">${ext}</span>
       <button class="action primary" id="saveAsOk">Save</button>
@@ -2218,7 +2293,7 @@ async function saveAsDialog() {
   $("saveAsName").value = base;
   let dir = startDir();
   async function show(path) {
-    $("flist").textContent = "Loading…";
+    $("flist").innerHTML = flistSkelHtml();
     try {
       // src (origin only) lets the worker route a mount-backed dir via
       // /api/fs/list instead of a kernel scan that could drop the mount.

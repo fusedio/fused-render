@@ -252,6 +252,80 @@
   // still leaves a titled page rather than a blank one.
   nameEl.textContent = folderName;
 
+  // ---- loading skeleton ---------------------------------------------------
+  // reader.py can take a while (S3 mount stat/list, big canvas.toml) and the
+  // canvas would otherwise sit blank apart from the header until it resolves.
+  // Paint a shimmering placeholder — the same dot grid plus a scatter of
+  // node-card shapes — the instant the DOM is ready, and keep it animating
+  // (rAF) until real data replaces it right after the await below.
+  var skeletonRAF = null;
+  function shimmerFill(x, y, w, h, r, phase) {
+    if (reduceMotion) {
+      ctx.fillStyle = T.chipBg;
+    } else {
+      var travel = w * 2;
+      var gx = x - w + phase * travel;
+      var g = ctx.createLinearGradient(gx, y, gx + w, y);
+      g.addColorStop(0, T.chipBg);
+      g.addColorStop(0.5, T.line2);
+      g.addColorStop(1, T.chipBg);
+      ctx.fillStyle = g;
+    }
+    roundRectPath(x, y, w, h, r);
+    ctx.fill();
+  }
+  function drawSkeletonFrame(now) {
+    var w = view.clientWidth || 1, h = view.clientHeight || 1;
+    dpr = window.devicePixelRatio || 1;
+    view.width = Math.max(1, Math.round(w * dpr));
+    view.height = Math.max(1, Math.round(h * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = T.bg;
+    ctx.fillRect(0, 0, w, h);
+    // same dot grid the real canvas draws, in flat screen space (no camera yet)
+    var gap = 50, r = 4;
+    ctx.fillStyle = T.dot;
+    ctx.beginPath();
+    for (var gx = 0; gx <= w; gx += gap) {
+      for (var gy = 0; gy <= h; gy += gap) { ctx.moveTo(gx + r, gy); ctx.arc(gx, gy, r, 0, Math.PI * 2); }
+    }
+    ctx.fill();
+    var phase = reduceMotion ? 0 : ((now || 0) / 1200) % 1;
+    // a loose scatter of node-card placeholders, sized/positioned like real
+    // UDF cards (see the node draw pass below): shell + header immediately,
+    // shimmering bars standing in for the title/description text.
+    var cards = [
+      { fx: 0.10, fy: 0.20, w: 220, h: 108 },
+      { fx: 0.36, fy: 0.54, w: 240, h: 92 },
+      { fx: 0.60, fy: 0.16, w: 200, h: 118 },
+      { fx: 0.66, fy: 0.58, w: 210, h: 88 },
+    ];
+    cards.forEach(function (c) {
+      var cx = c.fx * w, cy = c.fy * h;
+      ctx.fillStyle = T.card;
+      roundRectPath(cx, cy, c.w, c.h, 10);
+      ctx.fill();
+      ctx.strokeStyle = T.line;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.save();
+      roundRectPath(cx, cy, c.w, c.h, 10);
+      ctx.clip();
+      ctx.fillStyle = T.header;
+      ctx.fillRect(cx, cy, c.w, HEADER_H - 1);
+      ctx.fillStyle = T.line;
+      ctx.fillRect(cx, cy + HEADER_H - 1, c.w, 1);
+      shimmerFill(cx + 12, cy + HEADER_H / 2 - 6, c.w * 0.45, 12, 3, phase);
+      shimmerFill(cx + 12, cy + HEADER_H + 16, c.w - 24, 10, 3, phase);
+      shimmerFill(cx + 12, cy + HEADER_H + 34, c.w * 0.6, 10, 3, phase);
+      ctx.restore();
+    });
+  }
+  (function skeletonLoop(now) {
+    drawSkeletonFrame(now);
+    if (!reduceMotion) skeletonRAF = requestAnimationFrame(skeletonLoop);
+  })(performance.now());
+
   // ---- html escape (panel content is user text) -------------------------
   function esc(s) {
     return String(s)
@@ -278,6 +352,7 @@
   // No try/catch: a reader rejection carries a `.traceback` and the runtime's
   // unhandledrejection overlay shows it (SPEC §28). Header is already painted.
   var data = await fused.runPython("./reader.py", { file: file, src: rawURL(file) });
+  if (skeletonRAF) { cancelAnimationFrame(skeletonRAF); skeletonRAF = null; }
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
   var folders = Array.isArray(data.folders) ? data.folders : [];

@@ -13,6 +13,29 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color: #e8eaed; background: #131417; font-size: 13px; }
   #map { position: absolute; inset: 0; }
+  /* Loading placeholder over the map while a parquet is read / hexagons are
+     built client-side. A faint triangular lattice (three repeating gradients
+     at 0/60/-60deg) hints at the H3 mosaic about to render, dimmed over the
+     already-visible basemap; a diagonal shimmer sweeps across it so the
+     viewport never just sits blank between "file chosen" and "hexes drawn". */
+  #mapSkeleton { position: absolute; inset: 0; z-index: 5; pointer-events: none;
+    opacity: 0; transition: opacity .2s ease; }
+  #mapSkeleton.active { opacity: 1; }
+  #mapSkeleton::before {
+    content: ""; position: absolute; inset: 0;
+    background-color: rgba(15,16,19,.55);
+    background-image:
+      repeating-linear-gradient(60deg, rgba(255,255,255,.06) 0 1px, transparent 1px 30px),
+      repeating-linear-gradient(-60deg, rgba(255,255,255,.06) 0 1px, transparent 1px 30px),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.06) 0 1px, transparent 1px 30px);
+  }
+  #mapSkeleton::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 35%, rgba(92,157,255,.24) 50%, transparent 65%);
+    background-size: 220% 100%;
+    animation: map-skel-shimmer 1.7s ease-in-out infinite;
+  }
+  @keyframes map-skel-shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
   .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
     border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
   #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -70,6 +93,7 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="mapSkeleton" aria-hidden="true"></div>
 
   <div class="panel" id="topbar">
     <button id="browse" class="ghost">📁</button>
@@ -111,7 +135,7 @@
 const $ = id => document.getElementById(id);
 const els = ['path','load','h3Col','colorBy','opacity','basemap','metaBtn','metaPanel','metaBody',
   'fitBtn','status','legend','mapTip','browse','explorer','crumbs','explorerList','showAll',
-  'histPanel','histMode','histCanvas','histStats','autoStretch','stretchBtn','stretchReset']
+  'histPanel','histMode','histCanvas','histStats','autoStretch','stretchBtn','stretchReset','mapSkeleton']
   .reduce((o, k) => (o[k] = $(k), o), {});
 
 const P = {
@@ -125,6 +149,8 @@ const P = {
 };
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
 function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+function showMapSkeleton(){ els.mapSkeleton.classList.add('active'); }
+function hideMapSkeleton(){ els.mapSkeleton.classList.remove('active'); }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 // ---------------- map ----------------
@@ -402,9 +428,10 @@ let loadedKey = null;
 
 async function loadFile(){
   const file = P.file();
-  if (!file){ status('no file — use Browse or enter a .parquet path'); return; }
+  if (!file){ status('no file — use Browse or enter a .parquet path'); hideMapSkeleton(); return; }
   const key = file + '|' + P.h3Col();
   if (key === loadedKey) return;
+  showMapSkeleton();
   status('Reading parquet…');
   await styleReady();
   const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
@@ -414,6 +441,7 @@ async function loadFile(){
       els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
         r.columns.map(c => `<option>${esc(c)}</option>`).join('');
     }
+    hideMapSkeleton();
     status((r && r.error) || 'read failed', true);
     return;
   }
@@ -423,6 +451,7 @@ async function loadFile(){
   gj = buildGeojson();
   syncControls();
   addLayers();
+  hideMapSkeleton();
   fitToData();
   renderMeta();
   refreshHist();

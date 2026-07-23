@@ -187,14 +187,81 @@
   /* ---- toast + boot ---- */
   #toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #22262c; color: #fff;
     padding: 10px 16px; border-radius: var(--radius); display: none; z-index: 60; box-shadow: var(--shadow-2); max-width: 80vw; }
-  #boot, #nofile { padding: 44px; color: var(--ink-3); }
+  #nofile { padding: 44px; color: var(--ink-3); }
   .kbd { font-family: ui-monospace, monospace; background: var(--hair-2); border-radius: 4px; padding: 1px 5px; font-size: 11px; color: var(--ink-2); margin-left: auto; }
   /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
+
+  /* ---- boot skeleton: mirrors the topbar/toc/page shell that mounts once the
+     .docx import + editor libs land, so the wait reads as "the doc is nearly
+     here" rather than a blank flash. ---- */
+  #boot { height: 100vh; overflow: hidden; }
+  .boot-skel { display: flex; flex-direction: column; height: 100%; }
+  .boot-skel-top { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); }
+  .boot-skel-spacer { flex: 1 1 auto; }
+  .boot-skel-body { flex: 1 1 auto; min-height: 0; display: flex; }
+  .boot-skel-toc { flex: 0 0 250px; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 16px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .boot-skel-scroll { flex: 1 1 auto; overflow: hidden; padding: 28px 20px; display: flex; justify-content: center; }
+  .boot-skel-page { width: 100%; max-width: 816px; background: #fff; border: 1px solid var(--hair);
+    border-radius: 3px; box-shadow: var(--shadow-1); padding: 72px 84px; display: flex; flex-direction: column; gap: 13px; }
+  .sk { display: block; border-radius: 4px;
+    background: linear-gradient(90deg, var(--hair-2) 25%, var(--canvas) 50%, var(--hair-2) 75%);
+    background-size: 200% 100%; animation: doc-skel-shimmer 1.3s ease-in-out infinite; }
+  @keyframes doc-skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .sk-logo { width: 22px; height: 22px; border-radius: 5px; }
+  .sk-title { width: 150px; height: 13px; }
+  .sk-btn { width: 30px; height: 24px; border-radius: var(--radius); }
+  .sk-btn.wide { width: 84px; }
+  .sk-toch { width: 64px; height: 9px; margin-bottom: 4px; }
+  .sk-tocrow { height: 11px; border-radius: 3px; }
+  .sk-tocrow.indent { margin-left: 16px; width: 70%; }
+  .sk-line { height: 13px; }
+  .sk-line.h1 { height: 24px; width: 55% !important; margin-bottom: 6px; }
+  .sk-line.h2 { height: 18px; width: 40% !important; margin-top: 8px; margin-bottom: 2px; }
+  .sk-vk { width: 44px; height: 14px; border-radius: 4px; }
+  .sk-vwhen { flex: 1 1 auto; height: 12px; }
+  .sk-vbtn { width: 54px; height: 22px; border-radius: 5px; }
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
 <body class="mode-view">
-  <div id="boot">Loading the editor…</div>
+  <div id="boot" aria-busy="true" aria-label="Loading document">
+    <div class="boot-skel">
+      <div class="boot-skel-top">
+        <span class="sk sk-logo"></span>
+        <span class="sk sk-title"></span>
+        <span class="boot-skel-spacer"></span>
+        <span class="sk sk-btn"></span>
+        <span class="sk sk-btn"></span>
+        <span class="sk sk-btn wide"></span>
+      </div>
+      <div class="boot-skel-body">
+        <div class="boot-skel-toc">
+          <span class="sk sk-toch"></span>
+          <span class="sk sk-tocrow" style="width:82%"></span>
+          <span class="sk sk-tocrow" style="width:64%"></span>
+          <span class="sk sk-tocrow indent" style="width:58%"></span>
+          <span class="sk sk-tocrow indent" style="width:44%"></span>
+          <span class="sk sk-tocrow" style="width:70%"></span>
+        </div>
+        <div class="boot-skel-scroll">
+          <div class="boot-skel-page">
+            <span class="sk sk-line h1"></span>
+            <span class="sk sk-line" style="width:96%"></span>
+            <span class="sk sk-line" style="width:91%"></span>
+            <span class="sk sk-line" style="width:98%"></span>
+            <span class="sk sk-line" style="width:72%"></span>
+            <span class="sk sk-line h2"></span>
+            <span class="sk sk-line" style="width:94%"></span>
+            <span class="sk sk-line" style="width:88%"></span>
+            <span class="sk sk-line" style="width:97%"></span>
+            <span class="sk sk-line" style="width:65%"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="nofile" class="hidden">No file selected.</div>
 
   <!-- top bar -->
@@ -1108,7 +1175,9 @@
     });
   }
   async function renderHistory(body) {
-    body.innerHTML = '<div class="empty-note">Loading…</div>';
+    body.innerHTML = Array.from({ length: 4 }, () =>
+      '<div class="ver-row"><span class="sk sk-vk"></span><span class="sk sk-vwhen"></span><span class="sk sk-vbtn"></span></div>'
+    ).join("");
     const data = await loadSidecar();
     const versions = data.docs.versions;
     if (!versions.length) { body.innerHTML = '<div class="empty-note">No saved versions yet. Save to create one.</div>'; return; }

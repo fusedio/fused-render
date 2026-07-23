@@ -233,6 +233,20 @@
   .welcome-card h1{margin:0 0 4px;font-size:22px}
   .welcome-card p{margin:0;color:var(--ink-2)}
 
+  /* loading skeleton — shown over the stage (and as filmstrip rows) while a
+     deck is being opened/parsed on the Python side; mirrors the eventual
+     slide + filmstrip shapes instead of leaving the editor blank. */
+  @keyframes skel-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+  .skel{background:linear-gradient(100deg,var(--hair-2) 30%,#fff 50%,var(--hair-2) 70%);
+    background-size:200% 100%;animation:skel-shimmer 1.3s ease-in-out infinite}
+  #stageSkeleton{position:absolute;inset:0;background:var(--canvas);display:flex;
+    align-items:center;justify-content:center;padding:28px;z-index:15}
+  .skel-slide{width:min(720px,84%);aspect-ratio:16/9;background:#fff;border-radius:4px;
+    box-shadow:var(--slide-shadow);padding:8% 9%;display:flex;flex-direction:column;
+    gap:14px;justify-content:center}
+  .skel-line{height:14px;border-radius:4px}
+  .skel-line.skel-title{height:26px;width:58%;margin-bottom:4px}
+
   /* modal + toast */
   #overlay{position:fixed;inset:0;background:rgba(32,33,36,.4);display:none;z-index:100;
     align-items:center;justify-content:center}
@@ -380,6 +394,14 @@
           </div>
         </div>
         <div id="welcome" class="hidden"></div>
+        <div id="stageSkeleton" class="hidden">
+          <div class="skel-slide">
+            <div class="skel-line skel skel-title"></div>
+            <div class="skel-line skel" style="width:78%"></div>
+            <div class="skel-line skel" style="width:62%"></div>
+            <div class="skel-line skel" style="width:45%"></div>
+          </div>
+        </div>
       </div>
 
       <!-- collapsible tools rail (arrange/align; room for table edits later) -->
@@ -1023,6 +1045,7 @@
 
   // ========================================================= load the bound file
   function load(p){
+    hideLoadingSkeleton();
     S.doc=p.doc; S.model=p.model; S.mtime=p.mtime; S.mediaDir=p.media_dir; S.title=p.title||null;
     S.cur=Math.min(Math.max(0,parseInt(fused.params.get("slide")||"0",10)),S.model.slides.length-1);
     S.selIds=[]; S.sel=null; S.undo.length=0; S.redo.length=0; refreshUndoBtns();
@@ -1045,8 +1068,18 @@
     renderFilm(); renderCanvas(); updateToolbar();
   }
 
+  // ---------------- loading skeleton (shown while opening/parsing the deck) ----------------
+  function showLoadingSkeleton(){
+    $("filmList").innerHTML=Array.from({length:5},(_,i)=>
+      `<div class="thumb-row"><div class="thumb-n">${i+1}</div>
+        <div class="thumb skel" style="width:140px"></div></div>`).join("");
+    $("stageSkeleton").classList.remove("hidden");
+  }
+  function hideLoadingSkeleton(){ $("stageSkeleton").classList.add("hidden"); }
+
   // ---------------- empty state (no _file, or open failed) ----------------
   function showEmpty(msg){
+    hideLoadingSkeleton();
     $("app").classList.add("home");
     const w=$("welcome"); w.classList.remove("hidden");
     w.innerHTML=`<div class="welcome-card"><h1>Slides Studio</h1><p>${esc(msg)}</p></div>`;
@@ -1217,6 +1250,7 @@
   wire(); initDrag();
   if(!FILE){ showEmpty("No file selected. Open this template on a .pptx file."); }
   else{
+    showLoadingSkeleton();
     try{ load(await py({action:"open", file:FILE})); }
     catch(e){ showEmpty("Could not open "+FILE+": "+(e.message||e)); }
   }

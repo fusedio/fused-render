@@ -38,6 +38,39 @@
      the pin layer sits over it in stage coordinates. */
   #stage { position: relative; flex: 1 1 auto; min-width: 0; }
   #page { width: 100%; height: 100%; border: none; display: block; }
+  /* Boot skeleton: covers the stage until the framed view's own load event
+     fires (stat() pick + the target template's first paint). Annotate frames
+     arbitrary file types (image/table/code/pdf/…), so the placeholder is a
+     single shimmering page-shaped rect rather than content-specific rows. */
+  #stageskel {
+    position: absolute; inset: 16px;
+    border-radius: 8px;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  #stageskel::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(100deg, #1b1d21 30%, #2a2d33 50%, #1b1d21 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  /* Sidebar boot skeleton: comment-card-shaped shimmer bars shown in #list
+     until the first render() call swaps in real cards (or the empty state). */
+  .skelcard { padding: 12px 16px; border-bottom: 1px solid #2a2d33; }
+  .skelbar {
+    height: 10px; border-radius: 4px;
+    background: linear-gradient(100deg, #24262b 30%, #33373f 50%, #24262b 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skelbar + .skelbar { margin-top: 8px; }
   #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
   .pin {
     position: absolute; pointer-events: auto;
@@ -159,6 +192,7 @@
   <div id="main">
     <div id="stage">
       <iframe id="page"></iframe>
+      <div id="stageskel"></div>
       <div id="hl"></div>
       <div id="ghost"></div>
       <div id="pins"></div>
@@ -169,7 +203,11 @@
     </div>
     <div id="side">
       <h1>Comments</h1>
-      <div id="list"></div>
+      <div id="list">
+        <div class="skelcard"><div class="skelbar" style="width:30%"></div><div class="skelbar" style="width:85%"></div><div class="skelbar" style="width:55%"></div></div>
+        <div class="skelcard"><div class="skelbar" style="width:22%"></div><div class="skelbar" style="width:70%"></div></div>
+        <div class="skelcard"><div class="skelbar" style="width:35%"></div><div class="skelbar" style="width:92%"></div><div class="skelbar" style="width:40%"></div></div>
+      </div>
       <div id="sidefoot">
         <button id="toclaude">Send to Claude</button>
       </div>
@@ -954,6 +992,10 @@
 
     // Wire the framed document once it loads: hover highlight + click-to-comment.
     frame.addEventListener("load", () => {
+      // Real content has landed — drop the boot skeleton (render(), below,
+      // repopulates #list with real cards or the empty state either way).
+      const stageskel = document.getElementById("stageskel");
+      if (stageskel) stageskel.remove();
       const doc = frame.contentDocument;
       if (!doc) return;
       // Highlight-API tint styles for selection anchors, injected into the

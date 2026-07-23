@@ -31,7 +31,25 @@
     background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
     padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
   #status.err { color: #ff7b72; display: block; }
+  #status.loading { animation: statusPulse 1.4s ease-in-out infinite; }
+  @keyframes statusPulse { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
   #status a { color: #8ab4ff; }
+  /* Slim indeterminate progress bar under the topbar — fires while a vector
+     file (or a GeoParquet conversion) is in flight. 2px so toggling it never
+     shifts layout; the map/basemap underneath stays visible the whole time. */
+  #loadbar { position: absolute; left: 10px; right: 10px; top: 54px; height: 2px;
+    overflow: hidden; z-index: 15; pointer-events: none; }
+  #loadbar::before { content: ""; display: block; height: 100%; width: 35%; border-radius: 2px;
+    background: linear-gradient(90deg, transparent, #2b5fd9, transparent);
+    transform: translateX(-120%); opacity: 0; }
+  #loadbar.active::before { opacity: 1; animation: loadbar-slide 1.1s ease-in-out infinite; }
+  @keyframes loadbar-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+  /* Shimmering skeleton bar reused by the explorer row list, and the info/
+     attribute-table side panels while their data hasn't landed yet. */
+  .sk-bar { display: inline-block; vertical-align: middle; border-radius: 3px;
+    background: linear-gradient(90deg, #1e2025 25%, #2a2d33 50%, #1e2025 75%);
+    background-size: 200% 100%; animation: vec-shimmer 1.2s ease-in-out infinite; }
+  @keyframes vec-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   #metaPanel { right: 10px; top: 58px; width: 360px; max-height: 62vh; overflow: auto; display: none; }
   #metaPanel h2, #tablePanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
     color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
@@ -86,6 +104,7 @@
     <button id="convertBtn" class="accent" title="Write a GeoParquet copy next to the source file (full file, all features)">⇢ GeoParquet</button>
   </div>
 
+  <div id="loadbar"></div>
   <div id="status"></div>
 
   <div class="panel" id="explorer">
@@ -104,7 +123,7 @@
 const $ = id => document.getElementById(id);
 const els = ['path','load','colorBy','opacity','basemap','tableBtn','metaBtn','metaPanel','metaBody',
   'metaClose','tablePanel','tableBody','tableClose','fitBtn','convertBtn','status','mapTip',
-  'browse','explorer','crumbs','explorerList','showAll']
+  'browse','explorer','crumbs','explorerList','showAll','loadbar']
   .reduce((o, k) => (o[k] = $(k), o), {});
 
 const P = {
@@ -114,7 +133,43 @@ const P = {
   showAll: () => fused.params.get('showall') === '1',
 };
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
-function status(msg, err){ els.status.innerHTML = msg || ''; els.status.style.display = msg ? 'block' : 'none'; els.status.className = err ? 'err' : ''; }
+// loading=true keeps the topbar's slim progress bar sliding and gives the
+// status pill a soft pulse; both switch off the instant a non-loading call
+// (success, error, or empty message) lands.
+function status(msg, err, loading){
+  els.status.innerHTML = msg || '';
+  els.status.style.display = msg ? 'block' : 'none';
+  els.status.className = err ? 'err' : (loading ? 'loading' : '');
+  els.loadbar.classList.toggle('active', !!loading);
+}
+function skeletonRows(n){
+  return Array.from({length: n}, (_, i) => {
+    const w = 45 + (i * 17) % 40;
+    return `<div class="row" style="cursor:default">
+      <span class="ic"><span class="sk-bar" style="width:14px;height:14px;border-radius:4px"></span></span>
+      <span class="nm"><span class="sk-bar" style="height:11px;width:${w}%"></span></span>
+      <span class="sz"><span class="sk-bar" style="height:9px;width:26px"></span></span>
+    </div>`;
+  }).join('');
+}
+function skeletonMeta(){
+  const labels = ['file', 'size (all sidecars)', 'features', 'geometry', 'CRS', 'fields'];
+  return '<table>' + labels.map((l, i) =>
+    `<tr><td>${l}</td><td><span class="sk-bar" style="height:10px;width:${60 + (i * 13) % 90}px"></span></td></tr>`).join('') +
+    '</table><h2 style="margin-top:10px">Schema</h2><table>' +
+    Array.from({length: 4}, () =>
+      `<tr><td><span class="sk-bar" style="height:10px;width:70px"></span></td>` +
+      `<td><span class="sk-bar" style="height:10px;width:46px"></span></td></tr>`).join('') +
+    '</table>';
+}
+function skeletonTable(){
+  const cols = 4, rows = 6;
+  const head = '<tr>' + Array.from({length: cols}, () =>
+    '<th><span class="sk-bar" style="height:9px;width:60px"></span></th>').join('') + '</tr>';
+  const body = Array.from({length: rows}, () => '<tr>' + Array.from({length: cols}, (_, c) =>
+    `<td><span class="sk-bar" style="height:9px;width:${35 + (c * 19) % 60}px"></span></td>`).join('') + '</tr>').join('');
+  return '<table>' + head + body + '</table>';
+}
 
 const CAT_COLORS = ['#5c9dff','#ff6b6b','#51cf66','#ffd43b','#cc5de8','#20c997','#ff922b','#94d82d',
                     '#f06595','#4dabf7','#e8590c','#40c057'];
@@ -275,7 +330,7 @@ els.fitBtn.onclick = () => fitToData(false);
 els.convertBtn.onclick = async () => {
   if (!P.file()) return;
   els.convertBtn.disabled = true;
-  status('Converting to GeoParquet…');
+  status('Converting to GeoParquet…', false, true);
   // key:null — convert_parquet.py writes GeoParquet; never cancel it mid-write (D114).
   const r = await fused.runPython('./convert_parquet.py', {file: P.file()}, { key: null })
     .catch(e => ({error: String(e.message || e)}));
@@ -323,8 +378,10 @@ els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ?
 const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
 async function refreshExplorer(dir){
   dir = dir || P.dir();
+  const prevCrumbs = els.crumbs.innerHTML, prevList = els.explorerList.innerHTML;
+  els.explorerList.innerHTML = skeletonRows(6);
   const r = await fused.runPython('./browse.py', { dir, exts: '.shp,.kml,.kmz,.gpx,.geojson,.gpkg,.fgb', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
-  if (!r || r.error) return;
+  if (!r || r.error){ els.crumbs.innerHTML = prevCrumbs; els.explorerList.innerHTML = prevList; return; }
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
@@ -345,7 +402,7 @@ let loadedFile = null;
 async function loadFile(){
   const file = P.file();
   if (!file){ status('no file — use Browse or enter a vector file path'); return; }
-  status('Reading vector file…');
+  status('Reading vector file…', false, true);
   await styleReady();
   const r = await fused.runPython('./vector_reader.py', {file})
     .catch(e => ({error: String(e.message || e)}));
@@ -376,6 +433,13 @@ function onParamsChanged(){
   }
 }
 fused.params.onChange(onParamsChanged);
+
+// info/attribute panels start hidden but may be opened before the first
+// vector_reader.py response lands — seed them with a content-shaped skeleton
+// instead of a blank body; renderMeta()/renderTable() overwrite this once
+// real data arrives.
+els.metaBody.innerHTML = skeletonMeta();
+els.tableBody.innerHTML = skeletonTable();
 
 loadFile();
 

@@ -70,6 +70,35 @@
   }
   #status.error { color: #ff6b6b; }
   #status a { color: #E5FF44; }
+  /* Initial-load placeholder: shimmering line bars shaped like a code buffer
+     (gutter + variable-width, variably-indented line) instead of bare text.
+     Swapped out wholesale by root.innerHTML = "" once load() lands (or by an
+     error/status message on the failure paths above). */
+  #skel-code {
+    height: 100%;
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .skel-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 13px;
+    padding: 0 16px;
+    margin-bottom: 6px;
+  }
+  .skel-gutter, .skel-bar {
+    border-radius: 3px;
+    background: linear-gradient(90deg, #1c1f24 25%, #2a2f36 50%, #1c1f24 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skel-gutter { flex: 0 0 14px; height: 9px; opacity: 0.5; }
+  .skel-bar { height: 9px; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
@@ -85,7 +114,18 @@
     <span id="status-text">Saved</span>
     <button id="save" disabled>Save</button>
   </div>
-  <div id="root"><div id="status">Loading…</div></div>
+  <div id="root"><div id="skel-code" aria-hidden="true">
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:28%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:52%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:38%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:64%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:46%; margin-left:40px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:70%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:20%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:58%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:33%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:15%"></span></div>
+  </div></div>
   <script>
     fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 

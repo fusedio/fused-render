@@ -139,6 +139,13 @@
     background-size: 200% 100%; animation: shimmer 1.2s infinite;
   }
   @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  /* generic shimmer skeleton utility, reused by lightbox + picker placeholders */
+  .sk { position: relative; overflow: hidden; background: var(--surface); }
+  .sk::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, var(--surface) 30%, var(--surface2) 50%, var(--surface) 70%);
+    background-size: 200% 100%; animation: shimmer 1.2s infinite;
+  }
   .tile.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
   .tile .badge {
     position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -189,6 +196,9 @@
   #navPrev { left: 0; justify-content: flex-start; padding-left: 14px; }
   #navNext { right: 0; justify-content: flex-end; padding-right: 14px; }
   #lbSpin { position: absolute; color: var(--muted); font-size: 13px; z-index: 4; }
+  #lbSkeleton { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 2; }
+  .lb-skel-img { width: min(72%, 640px); height: min(72%, 480px); border-radius: 8px; }
+  .cap-skel { display: inline-block; height: 11px; border-radius: 6px; vertical-align: middle; }
   #lbCaption {
     flex: 0 0 auto; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     padding: 10px 16px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line);
@@ -216,6 +226,9 @@
   .pk-crumbs .seg { cursor: pointer; }
   .pk-crumbs .seg:hover { color: var(--text); }
   .pk-list { flex: 1 1 auto; overflow-y: auto; padding: 4px 10px; min-height: 160px; }
+  .pk-skel-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px; }
+  .pk-skel-row .ic { width: 16px; height: 16px; border-radius: 4px; flex: 0 0 auto; }
+  .pk-skel-row .nm { height: 12px; border-radius: 6px; flex: 0 0 auto; }
   .pk-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
   .pk-item:hover { background: var(--surface); }
   .pk-item .badge2 { margin-left: auto; color: var(--muted); font-size: 12px; }
@@ -281,7 +294,8 @@
         <div class="nav" id="navPrev">‹</div>
         <img id="lbImg" alt="" draggable="false" />
         <div class="nav" id="navNext">›</div>
-        <div id="lbSpin" style="display:none">Loading…</div>
+        <div id="lbSkeleton" style="display:none"><div class="lb-skel-img sk"></div></div>
+        <div id="lbSpin" style="display:none"></div>
       </div>
       <div id="lbCaption"></div>
       <div id="info"><h3>Details</h3><div id="infoBody"></div></div>
@@ -442,7 +456,9 @@ async function loadPicker(path) {
   pkPath = path;
   q("pkInput").value = path;
   const list = q("pkList");
-  list.innerHTML = "Loading…";
+  list.innerHTML = [110, 150, 90, 130, 70].map((w) =>
+    '<div class="pk-skel-row"><div class="ic sk"></div><div class="nm sk" style="width:' + w + 'px"></div></div>'
+  ).join("");
   let res;
   try { res = await pyRun( { action: "folders", path, src: rawURL(path) }); }
   catch (e) { list.innerHTML = ""; const d = document.createElement("div"); d.className = "pk-item"; d.textContent = "Cannot open: " + (e.message || path); list.append(d); return; }
@@ -739,8 +755,9 @@ async function openLightbox(photo) {
   lbCurrentPath = photoPath;
   resetZoom(); fullLoaded = false;
   const myReq = ++lbReq;
-  q("lbSpin").style.display = "block"; q("lbSpin").textContent = "Loading…";
-  q("lbCaption").innerHTML = "";
+  q("lbSpin").style.display = "none"; q("lbSpin").textContent = "";
+  q("lbSkeleton").style.display = "flex";
+  captionSkeleton();
   if (isNativePhoto(photo)) {
     fullLoaded = true;
     q("lbImg").src = fused.rawUrl(photoPath);
@@ -750,11 +767,28 @@ async function openLightbox(photo) {
   }
   let out;
   try { out = await pyRun( { action: "display", path: photoPath, size: "fit" }); }
-  catch (e) { if (myReq === lbReq) q("lbSpin").textContent = "Cannot display: " + (e.message || ""); return; }
+  catch (e) {
+    if (myReq === lbReq) {
+      q("lbSkeleton").style.display = "none";
+      q("lbSpin").style.display = "block"; q("lbSpin").textContent = "Cannot display: " + (e.message || "");
+    }
+    return;
+  }
   if (myReq !== lbReq) return;
   q("lbImg").src = fused.rawUrl(out.cache);
   loadMeta(photoPath);
   preloadNeighbors(idx);
+}
+
+function captionSkeleton() {
+  const cap = q("lbCaption");
+  cap.innerHTML = "";
+  const widths = [90, 130, 70];
+  for (const w of widths) {
+    const b = document.createElement("span");
+    b.className = "cap-skel sk"; b.style.width = w + "px";
+    cap.append(b);
+  }
 }
 
 async function loadFull() {
@@ -909,8 +943,12 @@ stage.addEventListener("wheel", (e) => {
   const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
   setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), cx, cy, false);
 }, { passive: false });
-q("lbImg").onload = () => { q("lbSpin").style.display = "none"; };
-q("lbImg").onerror = () => { if (q("lbImg").src) q("lbSpin").textContent = "Cannot display"; };
+q("lbImg").onload = () => { q("lbSpin").style.display = "none"; q("lbSkeleton").style.display = "none"; };
+q("lbImg").onerror = () => {
+  if (!q("lbImg").src) return;
+  q("lbSkeleton").style.display = "none";
+  q("lbSpin").style.display = "block"; q("lbSpin").textContent = "Cannot display";
+};
 q("lbImg").addEventListener("dblclick", (e) => {
   const r = stage.getBoundingClientRect();
   const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;

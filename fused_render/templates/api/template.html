@@ -17,6 +17,28 @@
   #status { padding: 24px; color: #9aa0a6; }
   #status.error { color: #ff6b6b; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
+  /* Skeleton placeholder — shown from first paint until inspector.py resolves,
+     and again inside the response card while an execute() run is in flight.
+     Shape mirrors the real card/table layout built by render(). */
+  .skel {
+    display: block;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #1c1e23 25%, #262a31 50%, #1c1e23 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-line { height: 12px; margin: 10px 0; }
+  .skel-chip { height: 20px; width: 60px; border-radius: 10px; display: inline-block; }
+  .skel-badge { height: 18px; width: 44px; border-radius: 5px; display: inline-block; }
+  .skel-cell { height: 12px; border-radius: 3px; display: inline-block; }
+  .skel-input { height: 24px; border-radius: 6px; display: inline-block; }
+  .skel-btn { height: 26px; width: 84px; border-radius: 6px; display: inline-block; }
+  #skeleton table.params .skel-cell, #skeleton table.params .skel-input { width: 100%; }
+
   .docstring {
     color: #b8bcc2;
     white-space: pre-wrap;
@@ -125,7 +147,55 @@
 </style>
 </head>
 <body>
-  <div id="page"><div id="status">Inspecting…</div></div>
+  <div id="page">
+    <div id="skeleton" aria-hidden="true">
+      <div class="skel skel-line" style="width:210px;height:22px;margin:0 0 14px;"></div>
+      <div class="skel skel-line" style="width:94%;"></div>
+      <div class="skel skel-line" style="width:62%;"></div>
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <span class="skel skel-chip" style="width:52px;"></span>
+        <span class="skel skel-chip" style="width:70px;"></span>
+        <span class="skel skel-chip" style="width:44px;"></span>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <span class="skel skel-badge"></span>
+          <span class="skel skel-cell" style="width:130px;height:14px;"></span>
+        </div>
+        <div class="card-body">
+          <div class="skel skel-line" style="width:85%;margin:0 0 14px;"></div>
+          <table class="params">
+            <thead><tr>
+              <th style="width:25%"><span class="skel skel-cell" style="width:60px;"></span></th>
+              <th style="width:20%"><span class="skel skel-cell" style="width:40px;"></span></th>
+              <th><span class="skel skel-cell" style="width:40px;"></span></th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="skel skel-cell" style="width:70%;"></span></td>
+                <td><span class="skel skel-cell" style="width:60%;"></span></td>
+                <td><span class="skel skel-input"></span></td>
+              </tr>
+              <tr>
+                <td><span class="skel skel-cell" style="width:50%;"></span></td>
+                <td><span class="skel skel-cell" style="width:40%;"></span></td>
+                <td><span class="skel skel-input"></span></td>
+              </tr>
+              <tr>
+                <td><span class="skel skel-cell" style="width:60%;"></span></td>
+                <td><span class="skel skel-cell" style="width:35%;"></span></td>
+                <td><span class="skel skel-input"></span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="runbar">
+          <span class="skel skel-btn"></span>
+          <span class="skel skel-cell" style="width:70px;height:10px;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     const page = document.getElementById("page");
     const file = fused.params.get("_file");
@@ -287,6 +357,19 @@
       return { params };
     }
 
+    function renderResponseSkeleton() {
+      const wrap = document.getElementById("responsewrap");
+      if (!wrap) return;
+      wrap.innerHTML = `<div class="card" aria-hidden="true">
+        <div class="card-head"><span class="skel skel-badge"></span></div>
+        <div class="card-body">
+          <div class="skel skel-line" style="width:80%;"></div>
+          <div class="skel skel-line" style="width:55%;"></div>
+          <div class="skel skel-line" style="width:68%;"></div>
+        </div>
+      </div>`;
+    }
+
     function renderResponse(data) {
       const wrap = document.getElementById("responsewrap");
       let html = `<div class="card" id="response">`;
@@ -325,6 +408,7 @@
 
       btn.disabled = true;
       meta.textContent = "Running…";
+      renderResponseSkeleton();
       try {
         // Direct /api/run call (not fused.runPython): the response panel
         // needs the full wire shape — stdout and the structured error —

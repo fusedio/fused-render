@@ -27,10 +27,41 @@
   #status a {
     color: #E5FF44;
   }
+  .skeleton {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .skel-line {
+    height: 13px;
+    border-radius: 3px;
+    background: linear-gradient(
+      90deg,
+      rgba(154, 160, 166, 0.08) 25%,
+      rgba(154, 160, 166, 0.20) 37%,
+      rgba(154, 160, 166, 0.08) 63%
+    );
+    background-size: 400% 100%;
+    animation: skel-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+  }
 </style>
 </head>
 <body>
-  <div id="root">Loading…</div>
+  <div id="root"><div class="skeleton" aria-hidden="true">
+    <div class="skel-line" style="width: 92%"></div>
+    <div class="skel-line" style="width: 78%"></div>
+    <div class="skel-line" style="width: 85%"></div>
+    <div class="skel-line" style="width: 60%"></div>
+    <div class="skel-line" style="width: 95%"></div>
+    <div class="skel-line" style="width: 45%"></div>
+    <div class="skel-line" style="width: 88%"></div>
+    <div class="skel-line" style="width: 70%"></div>
+  </div></div>
   <script>
     const MAX_BYTES = 2 * 1024 * 1024;
 

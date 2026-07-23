@@ -40,6 +40,16 @@
   .err-panel { border-color: #5c2a2a; color: var(--bad); white-space: pre-wrap; word-break: break-word; }
   .hint { color: var(--dim); font-size: 11.5px; margin-top: 8px; }
 
+  /* ---- loading skeleton: shown while analyze() awaits the reader (can take
+     ~1 min on a first run that installs rasterio) — mirrors the shape of the
+     left panel + pyramid pane it will be replaced by, instead of leaving them
+     blank with only a topbar status line. */
+  .sk { position: relative; overflow: hidden; background: var(--panel); border: 1px solid var(--border); }
+  .sk::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, var(--panel) 30%, color-mix(in srgb, var(--text) 14%, var(--panel)) 50%, var(--panel) 70%);
+    background-size: 200% 100%; animation: sk-shimmer 1.2s ease-in-out infinite; }
+  @keyframes sk-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
   /* patch-in-context: dimmed full level around the sharp dashed patch */
   #crop-wrap { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 8px;
     border: 1.5px solid var(--c, var(--border)); background: #000;
@@ -82,6 +92,14 @@
     background: radial-gradient(ellipse 75% 60% at 50% 45%, #1c2230 0%, var(--bg) 78%); }
   #tab-pyr.dragging { cursor: grabbing; }
   #scene { position: absolute; inset: 0; perspective: 1500px; }
+  /* stack-shaped skeleton: a handful of shimmering cards, smallest (overview)
+     on top down to largest (full-res L0) at the bottom, echoing the real
+     stack's size falloff before any level data has arrived. */
+  #pyr-skel { position: absolute; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 7px; }
+  #pyr-skel.on { display: flex; }
+  #pyr-skel .sk-layer { border-radius: 5px; }
+  #pyr-skel .sk-cap { margin-top: 10px; color: var(--dim); font-size: 12px; }
   #stack { position: absolute; left: 50%; top: 50%; width: 0; height: 0;
     transform-style: preserve-3d; will-change: transform; }
   .layer { position: absolute; transform-style: preserve-3d; cursor: pointer;
@@ -210,6 +228,13 @@
       <div id="lvl-nav"></div>
       <div id="grid-cap"></div>
       <div id="scene"><div id="stack"></div></div>
+      <div id="pyr-skel">
+        <div class="sk-layer sk" style="width:104px;height:68px"></div>
+        <div class="sk-layer sk" style="width:142px;height:93px"></div>
+        <div class="sk-layer sk" style="width:180px;height:118px"></div>
+        <div class="sk-layer sk" style="width:222px;height:145px"></div>
+        <div class="sk-cap">reading resolution levels…</div>
+      </div>
       <button id="zoom-btn"></button>
       <button id="reset-btn">↩ back to pyramid (Esc)</button>
     </div>
@@ -265,7 +290,40 @@ function esc(s) { const d = document.createElement("span"); d.textContent = s ??
   return d.innerHTML.replaceAll('"', "&quot;").replaceAll("'", "&#39;"); }
 function showError(msg) { setStatus("error", true);
   $("left").innerHTML = `<div class="panel err-panel">${esc(msg)}</div>`;
-  $("stack").innerHTML = ""; $("scene-hint").textContent = ""; $("lvl-nav").innerHTML = ""; }
+  $("stack").innerHTML = ""; $("scene-hint").textContent = ""; $("lvl-nav").innerHTML = "";
+  $("pyr-skel").classList.remove("on"); }
+
+// content-shaped placeholders for the left panel + pyramid pane while
+// analyze() is in flight (first run can take ~1 min installing rasterio) —
+// same layout as renderLeft()'s real output (chips, byte bars smallest-to-
+// largest, a ground-patch square, the file-layout bar), just shimmering.
+function leftSkeletonHtml() {
+  const barPct = [18, 30, 46, 66, 92];   // ascending, like overviews → L0
+  return `
+    <div class="chips">
+      <span class="chip sk" style="width:160px;height:20px"></span>
+      <span class="chip sk" style="width:64px;height:20px"></span>
+      <span class="chip sk" style="width:118px;height:20px"></span>
+    </div>
+    <h2>Bytes on disk per level</h2>
+    ${barPct.map(w => `
+      <div class="sb">
+        <span class="lv sk" style="height:14px;border-radius:4px"></span>
+        <div class="track"><div class="sk" style="position:absolute;inset:0;width:${w}%;border:none;border-radius:5px 0 0 5px"></div></div>
+      </div>`).join("")}
+    <h2>Same ground patch</h2>
+    <div id="crop-flex"><div id="crop-wrap" class="sk"></div></div>
+    <h2>Where each level lives in the file</h2>
+    <div id="bar" class="sk"></div>
+    <div class="hint">reading resolution levels from the file…</div>`;
+}
+function showLoadingSkeleton() {
+  $("pyr-skel").classList.add("on");
+  $("scene-hint").textContent = ""; $("lvl-nav").innerHTML = ""; $("grid-cap").innerHTML = "";
+  $("stack").innerHTML = "";
+  document.querySelectorAll(".lbl").forEach(el => el.remove());
+  $("left").innerHTML = leftSkeletonHtml();
+}
 const COLORS = ["#4a9eff", "#5ac8d8", "#4caf7d", "#e6b34a", "#e88a4a", "#e66", "#b07ce8", "#e88ab0"];
 let R = null, sel = 0;
 let focused = -1;          // highlighted level, camera keeps its tilt
@@ -304,6 +362,7 @@ const groundKm = () => {
 async function analyze(file) {
   if (!file) { setStatus("no file — paste a path above", true); return; }
   setStatus("reading levels… (first run installs rasterio)");
+  showLoadingSkeleton();
   let res;
   try { res = await fused.runPython(READER, { file, src: rawURL(file) }); }
   catch (e) { showError("reader failed: " + (e.message || e)); return; }
@@ -359,6 +418,7 @@ document.querySelectorAll(".tab-btn").forEach(b => b.addEventListener("click", (
 /* ================= 3D pyramid ================= */
 
 function buildScene() {
+  $("pyr-skel").classList.remove("on");
   const right = $("right");
   const sw = right.clientWidth, sh = right.clientHeight;
   const n = R.levels.length;
@@ -767,7 +827,10 @@ function cogSectionHtml() {
     <div id="fix-cog" style="display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px">
       <div class="hint" style="margin:0 0 8px">Full rewrite to <b>${esc(cogOut().split("/").pop())}</b>
         with a proper COG layout — original untouched. The codec changes the size a lot:</div>
-      <div id="predict-out" class="hint" style="margin:0 0 8px">measuring real blocks…</div>
+      <div id="predict-out" class="hint" style="margin:0 0 8px">
+        <div class="sk" style="height:13px;width:68%;border-radius:4px;margin-bottom:6px"></div>
+        <div class="sk" style="height:13px;width:52%;border-radius:4px"></div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--dim)">
         codec <select id="fix-prof"></select>
         <button id="fix-run-cog">Create COG copy</button>
