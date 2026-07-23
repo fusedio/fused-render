@@ -1342,6 +1342,10 @@ function revealDoors(){
 
 function initChooser(){
   revealDoors();
+  // autoplay can silently fail while the home section is display:none (Learn
+  // opened directly on another page); nudge the demo video whenever home shows.
+  const v = document.querySelector('.page[data-slug="home"] .door-media video');
+  if (v && v.src && v.paused) v.play().catch(() => {});
   if (intentWired) return;
   intentWired = true;
   $$('[data-intent]').forEach(a =>
