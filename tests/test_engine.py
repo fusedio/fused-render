@@ -265,6 +265,51 @@ def test_error_maps_to_legacy_error_object(monkeypatch, tmp_path):
 def test_missing_file_is_legacy_error(monkeypatch, tmp_path):
     out = asyncio.run(engine.run_python(str(tmp_path / "nope.py"), {}))
     assert out["ok"] is False and out["error"]["type"] == "FileNotFoundError"
+    assert out["error"]["where"] is None
+
+
+def test_error_where_points_at_deepest_user_frame(monkeypatch, tmp_path):
+    # helper() is a second, deeper frame in the same user file — where should
+    # land on it (line 5), not on main()'s call site (line 2).
+    target = str(tmp_path / "t.py")
+    raw = (
+        "Traceback (most recent call last):\n"
+        '  File "<lambda_exec>", line 3, in <module>\n'
+        "    exec(compile(...))\n"
+        f'  File "{target}", line 2, in main\n'
+        "    return helper()\n"
+        f'  File "{target}", line 5, in helper\n'
+        "    return 1 / 0\n"
+        "ZeroDivisionError: division by zero\n"
+    )
+    out, _ = _adapt(monkeypatch, tmp_path, _FakeResult(error=raw))
+    assert out["error"]["where"] == {
+        "file": target,
+        "line": 5,
+        "func": "helper",
+        "source": "return 1 / 0",
+    }
+
+
+def test_error_where_handles_syntaxerror_shaped_frame(monkeypatch, tmp_path):
+    # A SyntaxError frame has no ", in <func>" suffix — where.func should be None.
+    target = str(tmp_path / "t.py")
+    raw = (
+        "Traceback (most recent call last):\n"
+        '  File "<lambda_exec>", line 3, in <module>\n'
+        "    exec(compile(...))\n"
+        f'  File "{target}", line 1\n'
+        "    def main(:\n"
+        "             ^\n"
+        "SyntaxError: invalid syntax\n"
+    )
+    out, _ = _adapt(monkeypatch, tmp_path, _FakeResult(error=raw))
+    assert out["error"]["where"] == {
+        "file": target,
+        "line": 1,
+        "func": None,
+        "source": "def main(:",
+    }
 
 
 # --- real-backend integration (runs only when `fused` is importable) ----------

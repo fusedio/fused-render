@@ -19,9 +19,12 @@ Code contract under this engine (the fused contract, plus a compat bridge):
     annotation-driven string coercion the built-in executor applies.
 
 The wire shape returned here is the built-in executor's
-``{ok, result, error: {type, message, traceback}, stdout}`` (plus additive
-``stderr``/``duration_ms`` keys), so runtime.js and every template consume one
-shape regardless of which engine ran the code.
+``{ok, result, error: {type, message, traceback, where}, stdout}`` (plus
+additive ``stderr``/``duration_ms`` keys), so runtime.js and every template
+consume one shape regardless of which engine ran the code. ``where`` (D132) is
+populated the same on both engines — the built-in executor reads it off a live
+exception, this one parses it out of the backend's already-cleaned traceback
+string.
 """
 import json
 import logging
@@ -295,11 +298,48 @@ def _clean_error(error_text: str, script_path: str) -> str:
 
 def _error_dict(err_type: str, message: str, tb: str = "") -> dict:
     # The built-in executor's wire shape, so all failures render uniformly.
+    # where=None (D132): none of these callers (missing file, unreadable, bad
+    # PEP 723 header, backend/engine-internal failure) ever reached the user's
+    # file.
     return {
         "ok": False,
-        "error": {"type": err_type, "message": message, "traceback": tb},
+        "error": {"type": err_type, "message": message, "traceback": tb, "where": None},
         "stdout": "",
     }
+
+
+def _user_location(cleaned: str, script_path: str) -> dict | None:
+    """The deepest frame in `script_path` from an already-cleaned traceback.
+
+    Text-based counterpart of ``_binding.user_location``: the fused engine only
+    has the backend's formatted string (execution ran in a subprocess), not a
+    live exception object. Works for a runtime frame and for a SyntaxError's
+    displayed block alike — build_code compiles the user's file as its own unit
+    under its real filename, so a SyntaxError's `File "<script_path>", line N`
+    block (no `, in <func>`) matches `_FRAME_LINE` the same way a normal frame
+    does. Keeps the LAST matching frame — the deepest one, matching the built-in
+    executor's "last wins" semantics. `source` is the line directly under the
+    frame header, when the traceback printed one (skipped for a bare caret/tilde
+    annotation line or no line at all).
+    """
+    location = None
+    lines = cleaned.splitlines()
+    for i, line in enumerate(lines):
+        m = _FRAME_LINE.match(line)
+        if not m or m.group("file") != script_path:
+            continue
+        source = None
+        if i + 1 < len(lines) and lines[i + 1].startswith("    "):
+            candidate = lines[i + 1].strip()
+            if candidate and set(candidate) - {"^", "~"}:
+                source = candidate
+        location = {
+            "file": script_path,
+            "line": int(m.group("line")),
+            "func": m.group("func"),
+            "source": source,
+        }
+    return location
 
 
 def _split_error(cleaned: str) -> tuple[str, str]:
@@ -362,7 +402,12 @@ async def run_python(path: str, params: dict) -> dict:
         err_type, message = _split_error(cleaned)
         return {
             "ok": False,
-            "error": {"type": err_type, "message": message, "traceback": cleaned},
+            "error": {
+                "type": err_type,
+                "message": message,
+                "traceback": cleaned,
+                "where": _user_location(cleaned, abs_path),
+            },
             "stdout": r.stdout,
             "stderr": r.stderr,
             "duration_ms": r.duration_ms,

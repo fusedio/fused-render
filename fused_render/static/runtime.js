@@ -397,6 +397,7 @@
           const err = new Error(data.error && data.error.message);
           err.type = data.error && data.error.type;
           err.traceback = data.error && data.error.traceback;
+          err.where = data.error && data.error.where; // {file, line, func, source} in the USER's script, or null
           err.stdout = data.stdout;
           throw err;
         }
@@ -632,6 +633,42 @@
     params: { get, getAll, set, onChange },
   };
 
+  // Copy `text` to the clipboard, flashing `btn`'s label on success. Tries the
+  // modern async API first, then falls back to a hidden-textarea + execCommand
+  // (which works inside the sandboxed same-origin iframe even without a
+  // clipboard-write permission grant, and on non-secure origins).
+  function copyToClipboard(text, btn) {
+    const flash = () => {
+      if (!btn) return;
+      const prev = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.textContent = prev;
+      }, 1200);
+    };
+    const legacy = () => {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (e) {
+        ok = false;
+      }
+      document.body.removeChild(ta);
+      if (ok) flash();
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash, legacy);
+    } else {
+      legacy();
+    }
+  }
+
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).
   function showOverlay(err) {
@@ -647,11 +684,83 @@
     const title = document.createElement("div");
     title.style.cssText = "font-size:16px;font-weight:bold;margin-bottom:12px;color:#ff6b6b;";
     title.textContent = `${err.type || "Error"}: ${err.message || ""}`;
-    const pre = document.createElement("pre");
-    pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
-    pre.textContent = err.traceback || "";
     overlay.appendChild(title);
-    overlay.appendChild(pre);
+
+    // Headline the failing line of the USER's script (err.where, set by the
+    // executor, D132) as the prominent culprit, so it's readable without
+    // scanning a stack — then keep the full traceback collapsed so it doesn't
+    // repeat the line the trimmed traceback now leads with. EXCEPT for a
+    // SyntaxError (family): its traceback is the `format_exception_only` caret
+    // block, whose `^` column marker points at the bad token and is NOT
+    // captured in `where` — so show that outright (no headline, it's a better
+    // pointer than we can build) rather than hide the caret.
+    const hasWhere = err.where && err.where.file;
+    const isSyntax = /^(SyntaxError|IndentationError|TabError)$/.test(err.type || "");
+    const headlined = hasWhere && !isSyntax;
+
+    // The complete debug message, independent of what's visible on screen —
+    // what the Copy button writes, so an AI/human always gets the whole thing.
+    const fullText = `${err.type || "Error"}: ${err.message || ""}\n\n${err.traceback || ""}`;
+
+    if (headlined) {
+      const loc = document.createElement("div");
+      loc.style.cssText = "margin-bottom:10px;color:#ffb3b3;";
+      const func = err.where.func ? `, in ${err.where.func}` : "";
+      loc.textContent = `${err.where.file}, line ${err.where.line}${func}`;
+      if (err.where.source) {
+        const src = document.createElement("div");
+        src.style.cssText = "opacity:0.8;padding-left:2ch;";
+        src.textContent = err.where.source;
+        loc.appendChild(src);
+      }
+      overlay.appendChild(loc);
+    }
+
+    // Controls: a Copy button (guaranteed way to copy the entire debug
+    // message) plus, when the traceback is collapsed, a toggle to reveal it.
+    const controls = document.createElement("div");
+    controls.style.cssText = "display:flex;gap:14px;align-items:center;margin-bottom:8px;";
+    const copyBtn = document.createElement("button");
+    copyBtn.textContent = "Copy error";
+    copyBtn.style.cssText =
+      "font:inherit;cursor:pointer;color:#ffdede;background:#3a1d1d;border:1px solid #c0392b;border-radius:5px;padding:3px 10px;";
+    copyBtn.addEventListener("click", () => copyToClipboard(fullText, copyBtn));
+    controls.appendChild(copyBtn);
+
+    const pre = document.createElement("pre");
+    pre.textContent = err.traceback || "";
+    const PRE_VISIBLE = "margin:0;white-space:pre-wrap;word-break:break-word;";
+    // sr-only: invisible on screen but STILL captured by select-all, so a
+    // whole-page copy includes the full traceback even while it's collapsed
+    // (verified: clip-rect survives select-all where display:none/<details>
+    // do not). It's one node — expanding just un-clips it — so a page copy is
+    // never doubled.
+    const PRE_SRONLY =
+      "position:absolute;width:1px;height:1px;padding:0;margin:0;overflow:hidden;clip:rect(0 0 0 0);white-space:pre;";
+
+    if (headlined) {
+      pre.style.cssText = PRE_SRONLY;
+      let shown = false;
+      const toggle = document.createElement("button");
+      toggle.textContent = "Show traceback";
+      toggle.style.cssText =
+        "font:inherit;cursor:pointer;color:#ffb3b3;background:none;border:none;padding:0;text-decoration:underline;";
+      toggle.addEventListener("click", () => {
+        shown = !shown;
+        pre.style.cssText = shown ? PRE_VISIBLE : PRE_SRONLY;
+        toggle.textContent = shown ? "Hide traceback" : "Show traceback";
+      });
+      controls.appendChild(toggle);
+      overlay.appendChild(controls);
+      overlay.appendChild(pre);
+    } else {
+      // No user-script location (harness error, timeout, missing file) or a
+      // SyntaxError whose caret block IS the pointer: show the traceback
+      // outright (visible + copyable).
+      pre.style.cssText = PRE_VISIBLE;
+      overlay.appendChild(controls);
+      overlay.appendChild(pre);
+    }
     document.body.appendChild(overlay);
   }
 
