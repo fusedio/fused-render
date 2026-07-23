@@ -196,10 +196,13 @@ export function Breadcrumb({
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
   // without this the current folder could sit scrolled off the right edge.
+  // Also re-pins when edit mode closes: the strip remounts fresh (scrollLeft
+  // 0) after the input swap, with fsPath unchanged; the effect no-ops while
+  // editing (ref is null).
   useEffect(() => {
     const el = crumbsRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
-  }, [fsPath]);
+  }, [fsPath, editing]);
 
   // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
   // Skip when focus is already in a text field so it never hijacks typing.
