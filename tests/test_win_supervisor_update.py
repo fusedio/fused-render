@@ -295,11 +295,13 @@ def test_sweep_skips_while_check_in_progress(monkeypatch, tmp_path):
     staged.write_bytes(b"x")
     update._check_lock.acquire()
     try:
-        update._sweep_stale_downloads()
-        assert staged.exists()  # a check holds the lock → staged file untouched
+        # a check holds the lock → staged file untouched, and False so the
+        # auto loop retries the sweep on a later tick instead of latching it
+        assert not update._sweep_stale_downloads()
+        assert staged.exists()
     finally:
         update._check_lock.release()
-    update._sweep_stale_downloads()
+    assert update._sweep_stale_downloads()
     assert not staged.exists()  # lock free → swept
 
 
