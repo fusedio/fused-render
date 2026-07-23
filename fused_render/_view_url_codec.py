@@ -64,13 +64,24 @@ def open_target_path(raw: str) -> str:
     - a `fused-render:` deep link (case-insensitive) -> the `/clone` confirm
       page with the raw link ferried verbatim as ?src= (deeplink.py parses and
       validates it server-side);
-    - a `file:` URI -> decoded to its filesystem path, then `view_url_path`;
+    - a LOCAL `file:` URI (empty authority or `localhost`, RFC 8089) ->
+      decoded to its filesystem path, then `view_url_path`;
+    - a `file:` URI naming a REMOTE host, or any other `scheme://` URL ->
+      raises OSError. There is no local filesystem path behind either, and
+      decoding/falling through used to open a garbage /view page; raising an
+      OSError makes `_safe_open` answer status 1 and the caller show the
+      "FusedRender could not open" dialog, exactly like a missing file;
     - anything else (a plain absolute path, a folder) -> `view_url_path`.
     """
     if raw.lower().startswith("fused-render:"):
         return "/clone?src=" + quote(raw, safe="")
     if raw.lower().startswith("file:"):
-        return view_url_path(unquote(urlsplit(raw).path))
+        split = urlsplit(raw)
+        if split.netloc.lower() not in ("", "localhost"):
+            raise OSError(f"cannot open file URL on a remote host: {raw}")
+        return view_url_path(unquote(split.path))
+    if _SCHEME_RE.match(raw):
+        raise OSError(f"cannot open URL (no local file behind this scheme): {raw}")
     return view_url_path(raw)
 
 

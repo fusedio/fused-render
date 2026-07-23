@@ -281,7 +281,15 @@ def main() -> None:
                 # from auto-opening the home tab on a fresh launch.
                 logger.info("launch deep link: ensuring app/server only, no tab")
                 continue
-            target = f"http://127.0.0.1:{port}" + openurls_target_path(raw)
+            try:
+                target = f"http://127.0.0.1:{port}" + openurls_target_path(raw)
+            except OSError as error:
+                # A host-bearing file:// URL or a foreign scheme:// — there is
+                # no local file behind it (see open_target_path). Surface the
+                # failure like the supervisor's _safe_open does (log + skip)
+                # instead of opening a garbage /view tab.
+                logger.error("cannot open delivered URL %s: %s", raw, error)
+                continue
             if state["ready"]:
                 logger.info("opening open-URLs target: %s", target)
                 webbrowser.open(target)

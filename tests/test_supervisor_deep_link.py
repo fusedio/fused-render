@@ -148,3 +148,49 @@ def test_clone_deep_link_still_routes_to_clone_after_launch_guard(opened):
     # The launch guard must not swallow the real clone deep link.
     core._open_command(4242, protocol.Open(DEEPLINK))
     assert opened == ["http://127.0.0.1:4242/clone?src=" + quote(DEEPLINK, safe="")]
+
+
+# ---- host-bearing / non-file URLs must fail loudly, not open garbage ---------
+# A file: URI naming a remote host, or any other scheme:// that is neither
+# fused-render nor file, has no local filesystem path — decoding/falling
+# through produced a garbage /view page. It must raise an OSError so
+# _safe_open answers status 1 (→ the "FusedRender could not open" dialog on
+# the forwarding side), exactly like a missing file does.
+
+
+class _LogPaths:
+    def __init__(self):
+        self.messages = []
+
+    def log(self, message):
+        self.messages.append(message)
+
+
+def test_open_command_http_url_raises_and_opens_nothing(opened):
+    with pytest.raises(OSError):
+        core._open_command(4242, protocol.Open("https://example.com/x"))
+    assert opened == []
+
+
+def test_open_command_remote_file_uri_raises_and_opens_nothing(opened):
+    with pytest.raises(OSError):
+        core._open_command(4242, protocol.Open("file://server/share/x.parquet"))
+    assert opened == []
+
+
+def test_safe_open_answers_failure_for_http_url(opened):
+    # Same surfacing as a missing file: _safe_open catches the OSError, logs,
+    # and returns False (→ pipe status 1 → rejection dialog client-side).
+    paths = _LogPaths()
+    assert core._safe_open(4242, protocol.Open("https://example.com/x"), paths) is False
+    assert opened == []
+    assert paths.messages
+
+
+def test_localhost_file_uri_still_opens(opened, tmp_path):
+    from fused_render._view_url_codec import view_url
+
+    f = tmp_path / "data.parquet"
+    f.write_text("x")
+    core._open_command(4242, protocol.Open("file://localhost" + quote(str(f))))
+    assert opened == [view_url(4242, str(f))]
