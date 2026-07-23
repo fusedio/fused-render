@@ -495,10 +495,19 @@
   .remote-eg .re-tag.inapp { color:#5fd35f; border-color:#2e5a2e; background:#132013; }
   .remote-eg .re-tag.cli { color:#8ab4ff; border-color:#3a3a4a; background:#16161f; }
 
+  .searchfab { display:none; position:fixed; right:18px; bottom:18px; z-index:40;
+       align-items:center; gap:6px; cursor:pointer; appearance:none; font:inherit;
+       font-size:12px; color:var(--mut); background:var(--panel); border:1px solid var(--border);
+       border-radius:999px; padding:8px 14px; }
+  .searchfab:hover { color:var(--text); }
+  @media (prefers-reduced-motion:no-preference){
+    .searchfab { transition:color .15s ease; }
+  }
   @media (max-width:1100px){
     .toc { display:none; }
     main { padding:50px 40px 90px; }
     .pagelist { display:flex; }
+    .searchfab { display:inline-flex; }
   }
   @media (max-width:960px){
     .cards { grid-template-columns:repeat(2,1fr); } .cards .feat { grid-column:span 2; }
@@ -518,6 +527,7 @@
   <div class="tlab">Learn</div>
   <div class="nav" id="nav"><!-- built by JS from the pages --></div>
 </nav>
+<button class="searchfab" id="searchFab" aria-label="Search">⌕ Search</button>
 
 <div class="smodal" id="smodal">
   <div class="sbox">
@@ -1257,6 +1267,7 @@ const modalEl = $("#smodal");
 function openModal(){ modalEl.classList.add("open"); qEl.focus(); }
 function closeModal(){ modalEl.classList.remove("open"); qEl.value = ""; closeSearch(); qEl.blur(); }
 $("#searchHint").addEventListener("click", openModal);
+$("#searchFab").addEventListener("click", openModal);
 modalEl.addEventListener("mousedown", e => { if (e.target === modalEl) closeModal(); });
 document.addEventListener("keydown", e => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -1294,7 +1305,12 @@ document.addEventListener("click", e => {
 });
 
 /* wire real product screenshots (rawUrl needs the abs path we detected) */
-$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => { el.closest(".figure")?.remove(); }); });
+$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => {
+  const box = el.closest(".figure, .door-media");
+  if (!box) return;
+  if (box.classList.contains("door-media")) box.style.display = "none";
+  else box.remove();
+}); });
 
 /* copy buttons — copy the target element's text */
 $$(".copybtn").forEach(btn => btn.addEventListener("click", async () => {
