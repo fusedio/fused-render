@@ -117,6 +117,33 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
 
 
+def test_child_environment_points_all_temp_vars_at_temp(monkeypatch, tmp_path):
+    # TEMP/TMP cover Windows-conventioned lookups, but POSIX tempfile consults
+    # TMPDIR first — without it the child's temp files land outside the
+    # supervisor-owned temp dir.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    p = paths_mod.DesktopPaths.discover_linux()
+    env = p.child_environment("i", "t", tmp_path / "tools")
+    assert env["TMPDIR"] == str(p.temp)
+    assert env["TEMP"] == str(p.temp)
+    assert env["TMP"] == str(p.temp)
+
+
+def test_dev_shell_iteration_flags_are_forced_off(monkeypatch, tmp_path):
+    # The packaged supervisor (and its children) must not inherit dev-shell
+    # iteration flags from the launching environment: FUSED_RENDER_BRANCH
+    # (branch-isolated state) and FUSED_RENDER_RCLONE_PERSIST (detached rcd
+    # that outlives the app) are both forced to the explicit empty opt-out.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")  # a dev shell leak
+    p = paths_mod.DesktopPaths.discover_linux()
+    for env in (p.self_environment(), p.child_environment("i", "t", tmp_path / "tools")):
+        assert env["FUSED_RENDER_BRANCH"] == ""
+        assert env["FUSED_RENDER_RCLONE_PERSIST"] == ""
+
+
 def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     # The DuckDB extension dir, the rclone binary, and the PATH prefix must all
     # live under the SAME tools_dir — the build scripts stage them together, so

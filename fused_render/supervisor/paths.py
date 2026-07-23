@@ -212,6 +212,10 @@ class DesktopPaths:
             ),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),
+            # POSIX tempfile consults TMPDIR first (TEMP/TMP are the Windows
+            # conventions) — set all three so the child's temp files land in
+            # the supervisor-owned temp dir on every platform.
+            "TMPDIR": str(self.temp),
         }
         current_path = os.environ.get("PATH") or ""
         env["PATH"] = f"{tools_dir}{os.pathsep}{current_path}" if current_path else str(tools_dir)
