@@ -100,10 +100,21 @@ def test_no_file_type_default_is_ever_set(env):
 def test_second_run_is_idempotent(env):
     integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
     env.tool_calls.clear()
-    env.desktop_file.unlink()  # prove an unchanged stamp skips ALL work
+    # Files intact and stamp unchanged: a second run must skip ALL work.
     integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
     assert env.tool_calls == []
-    assert not env.desktop_file.exists()  # not rewritten
+
+
+def test_reintegrates_when_desktop_file_deleted(env):
+    # A matching stamp is not proof the files are on disk. If the user (or
+    # another integrator) removed the installed .desktop, a later start must
+    # rewrite it rather than no-op forever on the stale stamp.
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    env.tool_calls.clear()
+    env.desktop_file.unlink()
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.desktop_file.exists()  # restored
+    assert env.tool_calls != []  # databases re-poked
 
 
 def test_reintegrates_when_version_changes(env, monkeypatch):
@@ -152,3 +163,38 @@ def test_icon_falls_back_to_theme_name_without_source(env, monkeypatch):
     desktop = env.desktop_file.read_text()
     assert "Icon=fused-render\n" in desktop
     assert not env.icon_file.exists()
+
+
+# ---- Desktop Entry Spec Exec= quoting (NOT shell/shlex quoting) --------------
+# freedesktop only recognizes double-quote quoting in Exec; shlex's single
+# quotes are rejected by some launchers. An argument with reserved characters
+# must be double-quoted, with `"` ` $ \ backslash-escaped and every backslash
+# then doubled by the general string-escape rule.
+
+
+def _exec_line(appimage: str) -> str:
+    entry = integration._desktop_entry(Path(appimage), "fused-render")
+    (line,) = [ln for ln in entry.splitlines() if ln.startswith("Exec=")]
+    return line
+
+
+def test_exec_plain_path_is_unquoted():
+    assert _exec_line("/opt/FusedRender.AppImage") == "Exec=/opt/FusedRender.AppImage %u"
+
+
+def test_exec_path_with_space_is_double_quoted():
+    assert _exec_line("/opt/Fused Render.AppImage") == 'Exec="/opt/Fused Render.AppImage" %u'
+
+
+def test_exec_path_with_double_quote_is_escaped():
+    # `"` -> quoting-layer `\"` -> string-layer doubles the backslash -> `\\"`.
+    assert _exec_line('/opt/Fu"sed.AppImage') == 'Exec="/opt/Fu\\\\"sed.AppImage" %u'
+
+
+def test_exec_path_with_dollar_is_escaped():
+    # `$` -> `\$` -> string layer -> `\\$` (the exact example the spec gives).
+    assert _exec_line("/opt/Fu$sed.AppImage") == 'Exec="/opt/Fu\\\\$sed.AppImage" %u'
+
+
+def test_exec_path_with_backslash_becomes_four_backslashes():
+    assert _exec_line("/opt/Fu\\sed.AppImage") == 'Exec="/opt/Fu\\\\\\\\sed.AppImage" %u'

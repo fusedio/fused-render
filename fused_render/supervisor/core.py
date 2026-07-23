@@ -386,6 +386,21 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
 def _open_command(port: int, command: protocol.Command) -> None:
     if isinstance(command, protocol.Open):
+        if command.path.lower().startswith("fused-render:"):
+            # Lazy import: deeplink pulls in fastapi, which the supervisor must
+            # not pay for on the common file-open path (only a fused-render:
+            # link ever reaches here). deeplink.is_launch_url is the STRICT,
+            # action-only `fused-render://launch` matcher (D128) — distinct from
+            # _view_url_codec.is_launch_url below, which matches any URL.
+            from fused_render import deeplink
+
+            if deeplink.is_launch_url(command.path):
+                # D128 launch: by this point in the primary the server is up
+                # (and a forwarded Open reaches here only after startup). The
+                # server-down banner just needs the app running — the page that
+                # linked here reconnects on its own, so open NO tab (matching
+                # macOS app.py and Windows winopen._open).
+                return
         if is_launch_url(command.path):
             # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
             # no file to stat — route through the shared helper (deep link ->

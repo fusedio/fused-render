@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -95,8 +94,17 @@ def integrate(
 
     stamp_file = paths.state / _STAMP_NAME
     stamp = _stamp(appimage, desktop_text, mime_text)
-    if _read_stamp(stamp_file) == stamp:
-        return  # AppImage, version, and association set all unchanged
+    # Skip only when the stamp matches AND every artifact it vouches for still
+    # exists: a matching stamp is not proof the files are on disk (manual
+    # cleanup, another integrator), and short-circuiting then would leave
+    # "Open with" and deep links broken until the path or version changed.
+    if (
+        _read_stamp(stamp_file) == stamp
+        and desktop_file.is_file()
+        and mime_file.is_file()
+        and (not icon_available or icon_file.is_file())
+    ):
+        return
 
     try:
         _write(desktop_file, desktop_text)
@@ -121,7 +129,7 @@ def integrate(
 
 
 def _desktop_entry(appimage: Path, icon_value: str) -> str:
-    exec_line = f"{shlex.quote(str(appimage))} %u"
+    exec_line = f"{startup._exec_quote(str(appimage))} %u"
     mimetype = ";".join(desktop_mime_types()) + ";"
     return _ENTRY_TEMPLATE.format(exec_line=exec_line, icon=icon_value, mimetype=mimetype)
 

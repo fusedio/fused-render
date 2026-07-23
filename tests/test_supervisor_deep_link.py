@@ -112,3 +112,33 @@ def test_plain_absolute_path_unchanged_by_absolute_command():
     # A plain absolute path must not be mangled by file:// handling.
     p = str(Path("/home/user/data.csv"))
     assert core._absolute_command(protocol.Open(p)) == protocol.Open(p)
+
+
+# ---- fused-render://launch (D128): ensure running, open NO tab ---------------
+# The server-down banner's "Start fused-render" control is the action-only
+# launch link. macOS (app.py) and Windows (winopen._open) ensure the app/server
+# is up and open no tab; the Linux supervisor must match — routing it to /clone
+# would open a spurious tab and surface an unsupported-link error.
+
+
+def test_launch_url_opens_no_tab(opened):
+    core._open_command(4242, protocol.Open("fused-render://launch"))
+    assert opened == []
+
+
+def test_opaque_launch_url_opens_no_tab(opened):
+    # `fused-render:launch` (no authority) — some carriers strip the empty host.
+    core._open_command(4242, protocol.Open("fused-render:launch"))
+    assert opened == []
+
+
+def test_launch_url_left_intact_by_absolute_command():
+    # A launch link is a URL, not a path — never cwd-joined.
+    launch = "fused-render://launch"
+    assert core._absolute_command(protocol.Open(launch)) == protocol.Open(launch)
+
+
+def test_clone_deep_link_still_routes_to_clone_after_launch_guard(opened):
+    # The launch guard must not swallow the real clone deep link.
+    core._open_command(4242, protocol.Open(DEEPLINK))
+    assert opened == ["http://127.0.0.1:4242/clone?src=" + quote(DEEPLINK, safe="")]
