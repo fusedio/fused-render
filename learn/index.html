@@ -120,6 +120,13 @@
   .envcheck.bad { border-color:#5a2e2e; background:#201313; color:#f0cccc; }
   .envcheck.bad .ec-ic { color:#ff6b6b; }
   .envcheck .ec-path { color:var(--mut); font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11px; }
+  .libdrop { margin:14px 0 10px; border:1px solid var(--border); border-radius:9px; background:#141410; padding:10px 14px; }
+  .libdrop summary { cursor:pointer; font-size:13px; font-weight:600; color:var(--text); list-style-position:inside; }
+  .libdrop summary:hover { color:var(--yellow); }
+  .libdrop .libgrid { display:flex; flex-direction:column; gap:7px; }
+  .libdrop .libgrid > div { font-size:12.5px; line-height:2; }
+  .libdrop .lg-h { display:inline-block; min-width:118px; color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+  .libdrop code { font-size:11.5px; margin-right:2px; }
 
   .callout.beta { border-color:#3a3a4a; background:#16161f; }
   .callout b { color:var(--text); }
@@ -619,8 +626,20 @@
   <section class="page" data-slug="build" data-title="Building with Fused Render">
     <p class="crumb">Make something</p>
     <h1 class="title">Building with Fused Render</h1>
-    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
+    <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Set up once, then it's one prompt.</p>
 
+    <h2>Set up once</h2>
+    <p class="sub"><b>1 · Claude Code.</b> The <code>claude</code> CLI must be installed on your machine — <a href="https://claude.com/claude-code" target="_blank" rel="noopener">get it here ↗</a> if the check below fails.</p>
+    <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
+    <p class="sub" style="margin-top:14px"><b>2 · The Fused Render skills.</b> A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time. Paste inside Claude Code:</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillInstall">Copy</button>
+      <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
+/plugin install fused-render@fused-render</pre>
+    </div>
+    <p class="sub" style="margin-top:8px;font-size:12px;color:var(--mut)">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> shows as installed. See the <a href="?page=skills">Claude Code skills</a> page for what each skill does.</p>
+
+    <h2>Then just ask</h2>
     <div class="heroprompt">
       <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
       <div class="hp-body">
@@ -629,16 +648,6 @@
       </div>
     </div>
     <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
-
-    <div class="callout"><span class="lab">Tip · Fused Render skills</span>
-      <p style="margin:6px 0 0">A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time:</p>
-      <div class="promptbox" style="margin-top:11px">
-        <button class="copybtn" data-copy="skillInstall">Copy</button>
-        <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
-/plugin install fused-render@fused-render</pre>
-      </div>
-      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">See the <a href="?page=skills">Claude Code skills</a> page for what each skill does. No Claude Code yet? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.</p>
-    </div>
 
     <h2>The mental model</h2>
     <p class="sub">A project is just a folder with two files. The HTML is what you see; the Python is the work. That's the whole structure:</p>
@@ -714,6 +723,20 @@
     <div class="callout"><span class="lab">Good to know</span>
       <p style="margin:6px 0 0">Each <code>runPython</code> call runs <code>main()</code> in a fresh subprocess that's killed at <b>30&nbsp;seconds</b>. For a genuinely long job, write the result to a file from a separate script and have the page read the finished file.</p></div>
 
+    <details class="libdrop">
+      <summary>Supported Python libraries</summary>
+      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python, which ships the standard library plus this data stack — no <code>pip install</code> needed (or possible):</p>
+      <div class="libgrid">
+        <div><span class="lg-h">Data</span> <code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></div>
+        <div><span class="lg-h">Geospatial</span> <code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></div>
+        <div><span class="lg-h">Plots &amp; images</span> <code>matplotlib</code> <code>pillow</code></div>
+        <div><span class="lg-h">Documents</span> <code>pymupdf</code> <code>pikepdf</code> <code>fpdf2</code> <code>python-pptx</code></div>
+        <div><span class="lg-h">Network &amp; cloud</span> <code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></div>
+        <div><span class="lg-h">Logs</span> <code>drain3</code></div>
+      </div>
+      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages — imports outside this set will fail in the packaged app.</p>
+    </details>
+
     <h2>Starter ideas</h2>
     <p class="sub">Copy any of these into Claude Code to see the shape of a project fast.</p>
     <div class="ideagrid">
@@ -734,7 +757,7 @@
     <p class="lede">Fused Render drives your locally installed <b>Claude Code</b> CLI, right inside the app. Ask it to build a project, explain a file, or edit a page — and with <b>feedback mode</b>, point at the part of a page you want changed.</p>
     <div class="callout"><span class="lab">Prerequisite</span>
       <p style="margin:6px 0 0 0">The Claude panel shells out to the <code>claude</code> command, so <b>Claude Code must be installed</b> on your machine and on your PATH.</p>
-      <div class="envcheck checking" id="claudeCheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
+      <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
     </div>
 
     <h2><span class="n">1</span>The basics</h2>
@@ -760,7 +783,8 @@
     <h1 class="title">Claude Code skills</h1>
     <p class="lede">Fused Render ships a set of Claude Code <b>skills</b> — packaged instructions that teach the <code>claude</code> CLI how this project works. Install them once and Claude authors views, drives the explorer, and registers templates fluently, without you spelling out the conventions each time.</p>
     <div class="callout"><span class="lab">Prerequisite</span>
-      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p></div>
+      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p>
+      <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div></div>
 
     <h2><span class="n">1</span>What you get</h2>
     <p class="sub">Three skills cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
@@ -1193,9 +1217,9 @@ function render(slug, hash){
   $$(".subnav").forEach(s => s.classList.toggle("show", s.dataset.for === p.slug));
   document.title = p.title + " — Fused Render Learn";
   buildPager(p);
-  if (p.slug === "claude") checkClaude();
+  if (p.slug === "claude" || p.slug === "skills") checkClaude();
   if (p.slug === "templates") loadTemplates();
-  if (p.slug === "build") maybeHello();
+  if (p.slug === "build") { checkClaude(); maybeHello(); }
   if (p.slug === "home") initChooser();
   // scroll: to heading if hash, else top of content
   if (hash) {
@@ -1494,16 +1518,16 @@ function condEval(){
   condEval();
 })();
 
-/* live claude-install check (runs once, when the Claude page opens) */
+/* live claude-install check (runs once; fills every .claude-envcheck on any page) */
 let claudeChecked = false;
 async function checkClaude(){
   if (claudeChecked) return;
   claudeChecked = true;
-  const el = $("#claudeCheck"); if (!el) return;
+  const els = $$(".claude-envcheck"); if (!els.length) return;
   // Escape via the browser's own text→HTML encoding (not a hand-rolled
   // replace-chain) for values that come from the local filesystem / subprocess.
   const escHtml = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
-  const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
+  const set = (cls, ic, html) => els.forEach(el => { el.className = "envcheck claude-envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; });
   if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
   try {
     const r = await fused.runPython("./check_env.py", {});
