@@ -108,6 +108,12 @@ export default function ServerStatusBanner() {
         The app that powers this page has stopped or was closed. Reopen the fused-render app, and
         this page will reconnect on its own.
       </div>
+      {/* fused-render://launch (D128): the OS starts the app, the server-boot
+          makes the next probe succeed, and this page reconnects on its own —
+          the link opens no tab and navigates nowhere. */}
+      <a className="server-status-launch" href="fused-render://launch">
+        Start fused-render
+      </a>
       <button type="button" className="server-status-retry" onClick={checkNow}>
         Check again
       </button>

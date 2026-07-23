@@ -1,7 +1,7 @@
 // Crumb bar + "+ Bookmark" / "Update bookmark" / split right/down buttons.
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
 import {
@@ -190,10 +190,65 @@ export function Breadcrumb({
   // Recents, for its sidebar row) so "My DB app" beats "index.html".
   renderedTitle?: string | null;
 }) {
+  const crumbsRef = useRef<HTMLDivElement>(null);
+  const [editing, setEditing] = useState(false);
+
+  // Keep the tail of a long path in view on every path change (same as the
+  // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
+  // without this the current folder could sit scrolled off the right edge.
+  // Also re-pins when edit mode closes: the strip remounts fresh (scrollLeft
+  // 0) after the input swap, with fsPath unchanged; the effect no-ops while
+  // editing (ref is null).
+  useEffect(() => {
+    const el = crumbsRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [fsPath, editing]);
+
+  // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
+  // Skip when focus is already in a text field so it never hijacks typing.
+  // NOTE: Chrome/Firefox route Ctrl/Cmd+L to their own address bar before the
+  // page sees it, so this only lands in app-mode/standalone windows (D: see
+  // plan). Registered document-level, cleaned up on unmount (Listing.tsx).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "l") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setEditing(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // Map a plain mouse wheel's vertical delta onto horizontal scroll so the
+  // scrollbar-less strip is still wheel-scrollable (touchpad horizontal pans
+  // already work via the native overflow-x).
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY === 0) return;
+    e.currentTarget.scrollLeft += e.deltaY;
+  };
+
   // Strictly below home only — home itself shows its full path, not a lone "~".
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
   const parts = rest.split("/").filter((s) => s.length > 0);
+
+  // Edit mode seeds the same "~"-contracted path the crumbs display; Enter
+  // expands a leading "~" back to the real home before navigating.
+  const displayPath = underHome ? "~" + rest : fsPath;
+  const submitEdit = (raw: string) => {
+    let path = raw.trim();
+    if (home !== undefined) {
+      if (path === "~") path = home;
+      else if (path.startsWith("~/")) path = home + path.slice(1);
+    }
+    if (path.length > 1) path = path.replace(/\/+$/, ""); // drop trailing slash, keep lone "/"
+    setEditing(false);
+    // No isDir hint — a typed path's kind is unknown; the destination view's
+    // stat/error handling covers a bad path (see plan: no pre-validation).
+    if (path) navigate(path);
+  };
   const pieces: React.ReactNode[] = [
     <a
       key="root"
@@ -217,13 +272,21 @@ export function Breadcrumb({
     else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
+    // GNOME path-bar compression (nautilus-pathbar.c): a crumb may flex-shrink
+    // (ellipsizing under space pressure, .shrink in shell.css) only when its
+    // name is longer than 1.5x its min-width floor — 7ch for ancestors, 4x
+    // that for the current dir so the tail compresses last. Shorter names
+    // never shrink; the floors guarantee real overflow, so the strip scrolls
+    // once everything is compressed.
+    const shrink = part.length > (isLast ? 28 : 7) * 1.5;
+    const cls = "path-crumb" + (isLast ? " last" : "") + (shrink ? " shrink" : "");
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
     if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className="path-crumb last">
+        <span key={target} className={cls} title={part}>
           {part}
         </span>
       );
@@ -232,7 +295,8 @@ export function Breadcrumb({
         <a
           key={target}
           href="#"
-          className="path-crumb"
+          className={cls}
+          title={part}
           onClick={(e) => {
             e.preventDefault();
             navigatePreservingMode(target);
@@ -246,10 +310,39 @@ export function Breadcrumb({
 
   return (
     <>
-      <div className="crumbs">
-        {pieces}
-        <RevealButton fsPath={fsPath} />
-      </div>
+      {editing ? (
+        <input
+          className="crumb-edit"
+          defaultValue={displayPath}
+          spellCheck={false}
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitEdit(e.currentTarget.value);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false); // discard, no navigation
+            }
+          }}
+          onBlur={() => setEditing(false)} // a stray click cancels rather than commits
+        />
+      ) : (
+        // A click on the strip itself (whitespace right of the crumbs), not on
+        // a crumb or the reveal button, switches to the editable path.
+        <div
+          className="crumbs"
+          ref={crumbsRef}
+          onWheel={onWheel}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditing(true);
+          }}
+        >
+          {pieces}
+          <RevealButton fsPath={fsPath} />
+        </div>
+      )}
       <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
     </>
   );

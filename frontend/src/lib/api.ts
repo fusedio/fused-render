@@ -268,10 +268,13 @@ export function rawUrl(fsPath: string): string {
 // Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
 // is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
 // dependency on the bookmark data layer. `exists` is false only until the file
-// is first written — the shell's one-time localStorage-import gate.
+// is first written — the shell's one-time localStorage-import gate. `missing`
+// is a side-channel, recomputed fresh on every GET: bookmark ids whose target
+// is confirmed gone from disk — display-only, never written back through PUT.
 export interface BookmarksResult {
   exists: boolean;
   bookmarks: unknown[];
+  missing: string[];
 }
 
 export function getBookmarks(): Promise<BookmarksResult> {
@@ -425,6 +428,11 @@ export interface Deployment {
   // Reopening the modal reloads it, same as include/exclude. Optional — records
   // written before this feature omit it (read as "0s").
   cache_max_age?: string;
+  // Whether this mount's token is a user-chosen name (a deliberately guessable
+  // public URL) vs the default crypto-random opaque one — so the modal shows
+  // "custom name" vs "unguessable" without re-deriving it from the token string.
+  // Optional — records written before this feature omit it (read as false).
+  named?: boolean;
   updated_at: string;
 }
 
@@ -521,6 +529,10 @@ export function deployPage(
   exclude: string[],
   cacheMaxAge: string,
   forceNew?: boolean,
+  // A chosen link name for a FRESH `share create` (see deploy.py's
+  // deploy_page) — omit for the default auto-generated opaque token. Ignored
+  // server-side on a redeploy that reuses an existing token (repoint/recreate).
+  token?: string,
 ): Promise<Deployment> {
   return postJson<Deployment>("/api/deploy", {
     page: fsPath,
@@ -529,6 +541,7 @@ export function deployPage(
     exclude,
     cache_max_age: cacheMaxAge,
     force_new: forceNew ?? false,
+    ...(token ? { token } : {}),
   });
 }
 
