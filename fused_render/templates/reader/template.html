@@ -777,14 +777,13 @@
   // An <li>'s own lead text, excluding any nested lists (those recurse as their
   // own item blocks — otherwise the parent would swallow the whole subtree).
   function liLeadText(li) {
+    // Only the LI's own text + inline children. Nested BLOCK children (loose
+    // lists: <li><p>…</p></li>) are emitted by the recursive walk — including
+    // them here read the same prose twice.
     let s = "";
     for (const n of li.childNodes) {
       if (n.nodeType === 3) s += n.nodeValue;
-      else if (n.nodeType === 1) {
-        const tag = n.tagName;
-        if (tag === "UL" || tag === "OL" || tag === "MENU") continue;
-        s += n.textContent;
-      }
+      else if (n.nodeType === 1 && !BLOCKISH.has(n.tagName)) s += n.textContent;
     }
     return s;
   }
@@ -860,14 +859,16 @@
         done = true;
         try { resolve(walkDoc(frame.contentDocument)); } catch (e) { resolve([]); }
       };
+      // Belt-and-suspenders for a load that never fires; cancelled once load
+      // arrives so it can't race waitSettle and resolve a partial DOM.
+      const noLoad = setTimeout(finish, 12000);
       frame.addEventListener("load", async () => {
+        clearTimeout(noLoad);
         const doc = frame.contentDocument;
         if (!doc) { finish(); return; }
         await waitSettle(doc, 8000);
         finish();
       }, { once: true });
-      // Belt-and-suspenders: if load never fires, extract whatever is there.
-      setTimeout(finish, 12000);
       frame.src =
         view.mode === "_render"
           ? "/render?path=" + encodeURIComponent(file)
@@ -1064,12 +1065,19 @@
     pos = np; sent = 0; return true;
   }
 
-  // One toast per session — the fallback fires per sentence otherwise.
+  // Fires once: drop the dead voice for THIS session (URL param stays, so the
+  // preference is retried next load) — otherwise every following sentence
+  // re-suffers the full watchdog delay before falling back again.
   let voiceFallbackToasted = false;
+  let deadVoiceURI = null;
   function noteVoiceFallback() {
     if (voiceFallbackToasted) return;
     voiceFallbackToasted = true;
     const name = curVoice ? curVoice.name : "Selected voice";
+    deadVoiceURI = curVoice ? curVoice.voiceURI : null;
+    curVoice = null;
+    setVoiceLabel("System voice");
+    renderVoiceOptions();
     toast(name + " isn't responding — using the system voice");
   }
 
@@ -1548,7 +1556,9 @@
     }
     const uri = fused.params.get("voice") || "";
     if (uri && (!curVoice || curVoice.voiceURI !== uri)) {
-      const match = voices.find((vc) => vc.voiceURI === uri);
+      // Never re-adopt a voice the watchdog declared dead this session — the
+      // param stays in the URL, and every pos write replays this handler.
+      const match = voices.find((vc) => vc.voiceURI === uri && vc.voiceURI !== deadVoiceURI);
       if (match) {
         curVoice = match;
         setVoiceLabel(match.name);
