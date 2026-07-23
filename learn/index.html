@@ -8,7 +8,7 @@
     --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
     --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
     --yellow:#E5FF44; --code-bg:#0f0f10;
-    --rail:260px;
+    --toc:200px;
   }
   * { box-sizing:border-box; }
   body { margin:0; padding:0; background:var(--bg); color:var(--text);
@@ -17,49 +17,63 @@
   a { color:var(--dim); }
   a:hover { color:var(--text); }
 
-  /* ---------- sidebar ---------- */
-  .rail { position:fixed; top:0; left:0; bottom:0; width:var(--rail); overflow-y:auto;
-          background:#101011; border-right:1px solid var(--border); padding:22px 16px 40px; z-index:20; }
-  .brand { display:flex; align-items:baseline; gap:8px; margin:0 6px 18px; }
-  .brand .dot { width:9px; height:9px; border-radius:2px; background:var(--yellow); align-self:center; }
-  .brand h1 { font-size:15px; margin:0; letter-spacing:-.2px; }
-  .brand span { font-size:11px; color:var(--mut); }
-
-  /* search */
-  .search { position:relative; margin:0 4px 18px; }
-  .search input { width:100%; background:var(--panel2); border:1px solid var(--border); color:var(--text);
-       border-radius:9px; padding:9px 11px 9px 30px; font:13px/1 inherit; }
-  .search input:focus { outline:none; border-color:var(--yellow); }
-  .search .mag { position:absolute; left:10px; top:9px; color:var(--mut); font-size:13px; pointer-events:none; }
-  .search .kbd { position:absolute; right:9px; top:8px; font-size:10px; color:var(--mut); border:1px solid var(--border);
-       border-radius:4px; padding:1px 5px; pointer-events:none; }
-  .results { position:absolute; top:38px; left:0; right:0; background:var(--panel); border:1px solid var(--border);
-       border-radius:10px; padding:5px; max-height:340px; overflow-y:auto; z-index:30; display:none;
-       box-shadow:0 12px 30px rgba(0,0,0,.5); }
-  .results.open { display:block; }
-  .results .r { display:block; padding:7px 9px; border-radius:7px; text-decoration:none; cursor:pointer; }
-  .results .r:hover, .results .r.sel { background:var(--panel2); }
-  .results .r .rt { display:block; font-size:12.5px; color:var(--text); }
-  .results .r .rp { display:block; font-size:10.5px; color:var(--mut); margin-top:1px; }
-  .results .r mark { background:transparent; color:var(--yellow); }
-  .results .none { padding:10px; font-size:12px; color:var(--mut); text-align:center; }
-
-  /* nav */
-  .nav a.top { display:block; padding:8px 11px; margin:2px 0; border-radius:8px; border:1px solid transparent;
-       font-size:13px; color:var(--dim); text-decoration:none; }
-  .nav a.top:hover { color:var(--text); background:var(--panel); }
-  .nav a.top.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
-  .nav a.top .beta { font-size:9px; color:var(--yellow); border:1px solid #4a4a2a; border-radius:4px;
-       padding:1px 4px; margin-left:6px; vertical-align:1px; }
-  .subnav { margin:1px 0 6px 6px; padding-left:10px; border-left:1px solid var(--border); display:none; }
+  /* ---------- right-side index rail ---------- */
+  .toc { position:fixed; top:0; right:0; bottom:0; width:var(--toc); z-index:20;
+         padding:46px 22px 40px 0; overflow-y:auto; }
+  .toc .searchhint { display:inline-flex; align-items:center; gap:6px; cursor:pointer; appearance:none;
+       background:none; border:0; padding:0; margin:0 0 20px; font:inherit;
+       font-size:12px; color:var(--mut); }
+  .toc .searchhint:hover { color:var(--text); }
+  .toc .searchhint .kbd { font-size:10px; color:var(--mut); border:1px solid var(--border);
+       border-radius:4px; padding:1px 5px; }
+  .toc .tlab { font-size:10px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       opacity:.7; margin:0 0 8px; font-weight:700; }
+  .toc a.top { display:block; padding:3px 0 3px 14px; position:relative; font-size:12.5px;
+       color:var(--mut); text-decoration:none; }
+  .toc a.top:hover { color:var(--text); }
+  .toc a.top.cur { color:var(--text); }
+  .toc a.top.cur::before { content:""; position:absolute; left:0; top:50%; transform:translateY(-50%);
+       width:6px; height:2px; border-radius:1px; background:var(--yellow); }
+  .toc a.top .beta { font-size:8.5px; color:var(--yellow); opacity:.8; margin-left:5px; vertical-align:1px; }
+  .subnav { margin:1px 0 5px; display:none; }
   .subnav.show { display:block; }
-  .subnav a { display:block; padding:4px 10px; font-size:11.5px; color:var(--mut); text-decoration:none; border-radius:6px; }
-  .subnav a:hover, .subnav a.active { color:var(--text); }
+  .subnav a { display:block; padding:2px 0 2px 26px; font-size:11px; color:var(--mut); opacity:.75;
+       text-decoration:none; }
+  .subnav a:hover, .subnav a.active { color:var(--text); opacity:1; }
   .subnav a.active { color:var(--yellow); }
 
+  /* ---------- search modal ---------- */
+  .smodal { position:fixed; inset:0; z-index:60; display:none;
+       background:rgba(0,0,0,.55); backdrop-filter:blur(2px);
+       align-items:flex-start; justify-content:center; padding:12vh 20px 0; }
+  .smodal.open { display:flex; }
+  .smodal .sbox { width:100%; max-width:560px; background:var(--panel); border:1px solid var(--border);
+       border-radius:14px; overflow:hidden; box-shadow:0 24px 60px rgba(0,0,0,.6); }
+  .smodal .sinput { position:relative; }
+  .smodal .sinput .mag { position:absolute; left:16px; top:15px; color:var(--mut); font-size:15px; pointer-events:none; }
+  .smodal .sinput input { width:100%; background:transparent; border:0; border-bottom:1px solid var(--border);
+       color:var(--text); padding:15px 52px 15px 40px; font:14px/1.3 inherit; }
+  .smodal .sinput input:focus { outline:none; }
+  .smodal .sinput .kbd { position:absolute; right:14px; top:14px; font-size:10px; color:var(--mut);
+       border:1px solid var(--border); border-radius:4px; padding:2px 6px; pointer-events:none; }
+  .results { padding:5px; max-height:min(380px, 55vh); overflow-y:auto; display:none; }
+  .results.open { display:block; }
+  .results .r { display:block; padding:8px 11px; border-radius:7px; text-decoration:none; cursor:pointer; }
+  .results .r:hover, .results .r.sel { background:var(--panel2); }
+  .results .r .rt { display:block; font-size:13px; color:var(--text); }
+  .results .r .rp { display:block; font-size:10.5px; color:var(--mut); margin-top:1px; }
+  .results .r mark { background:transparent; color:var(--yellow); }
+  .results .none { padding:12px; font-size:12px; color:var(--mut); text-align:center; }
+
   /* ---------- content ---------- */
-  main { margin-left:var(--rail); padding:50px 40px 90px; }
-  .wrap { max-width:860px; margin:0 auto; }
+  main { padding:50px calc(var(--toc) + 30px) 90px 40px; }
+  .wrap { max-width:800px; margin:0 auto; }
+
+  /* fallback page list, shown only when the rail is hidden */
+  .pagelist { display:none; flex-wrap:wrap; gap:6px 16px; margin:0 0 26px; font-size:12.5px; }
+  .pagelist a { color:var(--mut); text-decoration:none; }
+  .pagelist a:hover { color:var(--text); }
+  .pagelist a.cur { color:var(--yellow); }
   .page { display:none; }
   .page.active { display:block; }
   .crumb { font-size:11px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut); margin:0 0 8px; font-weight:700; }
@@ -291,24 +305,113 @@
   .modecard p { margin:0 0 12px; font-size:13px; color:var(--dim); }
   .modecard .mc-go { margin-top:auto; font-size:12.5px; color:var(--yellow); font-weight:600; }
 
-  /* first-visit onboarding chooser */
-  .chooser { border:1px solid #4a4a2a; background:linear-gradient(180deg,#1e1e17,#1a1a1a);
-       border-radius:14px; padding:17px 19px 15px; margin:22px 0 6px; animation:chFade .45s ease both; }
-  .chooser .ch-q { font-size:14px; font-weight:600; color:var(--text); margin:0 0 12px;
-       display:flex; align-items:center; gap:8px; }
-  .chooser .ch-q .spark { color:var(--yellow); }
-  .ch-opts { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; }
-  .ch-opt { display:flex; flex-direction:column; gap:3px; text-decoration:none; color:var(--text);
-       background:var(--panel); border:1px solid var(--border); border-radius:11px; padding:14px 15px;
-       transition:border-color .12s, transform .12s; }
-  .ch-opt:hover { border-color:var(--yellow); transform:translateY(-1px); }
-  .ch-opt .ch-ic { font-size:22px; }
-  .ch-opt b { font-size:13.5px; }
-  .ch-opt .ch-sub { font-size:11.5px; color:var(--mut); line-height:1.35; }
-  .ch-skip { appearance:none; background:none; border:0; color:var(--mut); font:inherit; font-size:12px;
-       cursor:pointer; margin:11px 0 0; padding:2px 0; text-decoration:underline; text-underline-offset:2px; }
-  .ch-skip:hover { color:var(--dim); }
-  @keyframes chFade { from{opacity:0; transform:translateY(-6px)} to{opacity:1; transform:none} }
+  /* two-door landing fork (open data · build an app) — flat variant A: "hairline split".
+     No card chrome: content sits on the page background, columns separated by a
+     single 1px vertical rule with generous breathing room. */
+  .doors { display:grid; grid-template-columns:1fr 1fr; gap:0; margin:26px 0 8px; align-items:start;
+       position:relative; }
+  /* ambient light — one cool radial at top centre, one faint warm radial behind the
+     left (screenshot) stream. Opacities kept tiny so nothing reads as a "background". */
+  .doors::before { content:""; position:absolute; inset:-70px -50px -40px; pointer-events:none; z-index:-1;
+       background:
+         radial-gradient(640px 340px at 50% -10%, rgba(229,255,68,.045), transparent 62%),
+         radial-gradient(520px 320px at 16% 34%, rgba(255,140,60,.035), transparent 60%); }
+  .door { display:flex; flex-direction:column; background:transparent; border:0;
+       border-radius:0; padding:0 40px 0 0; position:relative; }
+  /* living hairline divider: a gradient thread with a slow, quiet vertical drift */
+  .door + .door { padding:0 0 0 40px; }
+  .door + .door::before { content:""; position:absolute; left:-0.5px; top:0; bottom:0; width:1px;
+       background:linear-gradient(180deg,
+         transparent 0%, rgba(255,255,255,.10) 28%, rgba(229,255,68,.32) 50%,
+         rgba(255,255,255,.10) 72%, transparent 100%);
+       background-size:100% 260%; background-position:50% 0%;
+       animation:doorThread 6.5s ease-in-out infinite alternate; }
+  @keyframes doorThread { from { background-position:50% 0%; } to { background-position:50% 100%; } }
+  .door h3 { margin:0 0 12px; font-size:17px; font-weight:600; letter-spacing:-.01em;
+       color:rgba(255,255,255,.87); transition:color .3s ease; }
+  .door:hover h3 { color:#fff; }
+
+  /* entrance choreography — router adds .doors-in the first time Home shows */
+  @keyframes doorRise { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .doors-in .door > * { animation:doorRise .5s cubic-bezier(.16,1,.3,1) both; }
+  .doors-in .door:nth-child(1) > *:nth-child(1) { animation-delay:.03s; }
+  .doors-in .door:nth-child(1) > *:nth-child(2) { animation-delay:.10s; }
+  .doors-in .door:nth-child(1) > *:nth-child(3) { animation-delay:.17s; }
+  .doors-in .door:nth-child(1) > *:nth-child(4) { animation-delay:.24s; }
+  .doors-in .door:nth-child(1) > *:nth-child(5) { animation-delay:.31s; }
+  .doors-in .door:nth-child(1) > *:nth-child(6) { animation-delay:.38s; }
+  .doors-in .door:nth-child(2) > *:nth-child(1) { animation-delay:.15s; }
+  .doors-in .door:nth-child(2) > *:nth-child(2) { animation-delay:.22s; }
+  .doors-in .door:nth-child(2) > *:nth-child(3) { animation-delay:.29s; }
+  .doors-in .door:nth-child(2) > *:nth-child(4) { animation-delay:.36s; }
+  .doors-in .door:nth-child(2) > *:nth-child(5) { animation-delay:.43s; }
+  .doors-in .door:nth-child(2) > *:nth-child(6) { animation-delay:.50s; }
+  .doors-in .door + .door::before { animation:doorRise .6s cubic-bezier(.16,1,.3,1) .25s both,
+       doorThread 6.5s ease-in-out .85s infinite alternate; }
+  .door p { margin:0 0 12px; font-size:13px; color:var(--dim); }
+  .door p b { color:var(--text); font-weight:600; }
+  /* hover depth: media gently lifts and picks up a soft ambient glow tuned per stream
+     (warm orange for the screenshot side, faint yellow for the live π side) */
+  .door-media, .door .frame { transition:transform .3s cubic-bezier(.16,1,.3,1), box-shadow .3s ease; }
+  .door-media { border:1px solid var(--border); border-radius:11px; overflow:hidden; margin:0 0 12px;
+       background:var(--panel2); }
+  .door:hover .door-media { transform:translateY(-2px);
+       box-shadow:0 14px 38px rgba(0,0,0,.35), 0 4px 22px rgba(255,140,60,.12); }
+  .door-media video { display:block; width:100%; height:auto; }
+  .door .frame { margin:0 0 12px; }
+  .door:hover .frame { transform:translateY(-2px);
+       box-shadow:0 14px 38px rgba(0,0,0,.35), 0 4px 22px rgba(229,255,68,.10); }
+  .door-promptlab { font-size:10.5px; text-transform:uppercase; letter-spacing:.6px; color:var(--yellow);
+       font-weight:700; margin:4px 0 7px; }
+  .door .promptbox pre { background:transparent; border:1px solid rgba(255,255,255,.12); }
+  .door-cta { margin-top:28px; display:flex; flex-direction:column; gap:8px;
+       align-items:flex-start; }
+  .door-go { text-decoration:none; color:var(--yellow); background:transparent; border:0;
+       border-radius:0; padding:2px 0; font:600 14px/1.4 inherit; text-align:left;
+       position:relative; display:inline-flex; align-items:baseline; gap:6px; }
+  /* underline sweeps in from the left */
+  .door-go::after { content:""; position:absolute; left:0; right:0; bottom:-1px; height:1px;
+       background:var(--yellow); transform:scaleX(0); transform-origin:left center;
+       transition:transform .3s cubic-bezier(.16,1,.3,1); }
+  .door-go:hover { color:var(--yellow); }
+  .door-go:hover::after, .door:hover .door-go::after { transform:scaleX(1); }
+  /* magnetic arrow */
+  .door-go .arr { display:inline-block; transition:transform .3s cubic-bezier(.16,1,.3,1); }
+  .door-go:hover .arr { transform:translateX(4px); }
+  .door:hover .door-go .arr { transform:translateX(3px); }
+  .door:hover .door-go:hover .arr { transform:translateX(4px); }
+  .door-sub { font-size:12px; color:var(--mut); text-decoration:none; text-align:left; }
+  .door-sub:hover { color:var(--text); }
+  /* quiet "opens out of the box" strip — metadata, not a feature grid */
+  .door-formats { margin:20px 0 4px; }
+  .door-formats .df-label { font-size:11px; text-transform:uppercase; letter-spacing:.12em;
+       color:var(--mut); font-weight:600; margin:0 0 10px; }
+  .door-formats .df-tags { display:flex; flex-wrap:wrap; align-items:baseline; row-gap:7px;
+       font:12px/1.5 "SF Mono",ui-monospace,Menlo,monospace; color:rgba(255,255,255,.55); }
+  .door-formats .df-tags span { transition:color .2s ease; }
+  .door-formats .df-tags span:hover { color:#fff; }
+  .door-formats .df-tags span + span::before { content:"·"; color:rgba(255,255,255,.22);
+       margin:0 9px; }
+  .door-formats .df-more { color:var(--mut); text-decoration:none;
+       font:12px/1.5 "SF Mono",ui-monospace,Menlo,monospace; }
+  .door-formats .df-more::before { content:"·"; color:rgba(255,255,255,.22); margin:0 9px; }
+  .door-formats .df-more:hover { color:var(--text); }
+  @media (max-width:900px){
+    .doors { grid-template-columns:1fr; }
+    .door { padding:0; }
+    .door + .door { padding:28px 0 0; margin-top:24px;
+         border-top:1px solid rgba(255,255,255,.08); }
+    .door + .door::before { display:none; }
+  }
+  /* motion off = all door animation off; hovers stay colour-only */
+  @media (prefers-reduced-motion: reduce){
+    .door + .door::before, .doors-in .door + .door::before { animation:none;
+         background:rgba(255,255,255,.08); }
+    .doors-in .door > * { animation:none; }
+    .door-media, .door .frame, .door-go::after, .door-go .arr { transition:none; }
+    .door:hover .door-media, .door:hover .frame { transform:none; }
+    .door-go:hover .arr, .door:hover .door-go .arr { transform:none; }
+  }
 
   .navtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin:0 0 8px; }
   .navtile { display:flex; align-items:flex-start; gap:12px; text-decoration:none; color:var(--text);
@@ -392,112 +495,115 @@
   .remote-eg .re-tag.inapp { color:#5fd35f; border-color:#2e5a2e; background:#132013; }
   .remote-eg .re-tag.cli { color:#8ab4ff; border-color:#3a3a4a; background:#16161f; }
 
-  .menuBtn { display:none; }
+  .searchfab { display:none; position:fixed; right:18px; bottom:18px; z-index:40;
+       align-items:center; gap:6px; cursor:pointer; appearance:none; font:inherit;
+       font-size:12px; color:var(--mut); background:var(--panel); border:1px solid var(--border);
+       border-radius:999px; padding:8px 14px; }
+  .searchfab:hover { color:var(--text); }
+  @media (prefers-reduced-motion:no-preference){
+    .searchfab { transition:color .15s ease; }
+  }
+  @media (max-width:1100px){
+    .toc { display:none; }
+    main { padding:50px 40px 90px; }
+    .pagelist { display:flex; }
+    .searchfab { display:inline-flex; }
+  }
   @media (max-width:960px){
     .cards { grid-template-columns:repeat(2,1fr); } .cards .feat { grid-column:span 2; }
     .steps { grid-template-columns:1fr; }
   }
   @media (max-width:760px){
-    .rail { transform:translateX(-100%); transition:transform .2s; }
-    .rail.open { transform:none; }
-    main { margin-left:0; padding:64px 18px 80px; }
+    main { padding:40px 18px 80px; }
     .grid2 { grid-template-columns:1fr; }
-    .navtiles, .ideagrid, .ch-opts { grid-template-columns:1fr; }
+    .navtiles, .ideagrid, .doors { grid-template-columns:1fr; }
     .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
-    .menuBtn { display:flex; position:fixed; top:12px; left:12px; z-index:25; width:38px; height:38px;
-       align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border);
-       border-radius:9px; color:var(--text); cursor:pointer; font-size:16px; }
   }
 </style>
 </head>
 <body>
-<button class="menuBtn" id="menuBtn">☰</button>
-<nav class="rail" id="rail">
-  <div class="brand"><span class="dot"></span><h1>Fused Render</h1><span>Learn</span></div>
-  <div class="search">
-    <span class="mag">⌕</span>
-    <input id="q" type="text" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
-    <span class="kbd">/</span>
-    <div class="results" id="results"></div>
-  </div>
+<nav class="toc" id="toc">
+  <button class="searchhint" id="searchHint">⌕ Search <span class="kbd">⌘K</span></button>
+  <div class="tlab">Learn</div>
   <div class="nav" id="nav"><!-- built by JS from the pages --></div>
 </nav>
+<button class="searchfab" id="searchFab" aria-label="Search">⌕ Search</button>
+
+<div class="smodal" id="smodal">
+  <div class="sbox">
+    <div class="sinput">
+      <span class="mag">⌕</span>
+      <input id="q" type="text" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
+      <span class="kbd">esc</span>
+    </div>
+    <div class="results" id="results"></div>
+  </div>
+</div>
 
 <main>
 <div class="wrap">
+  <div class="pagelist" id="pagelist"><!-- built by JS; visible only when the rail is hidden --></div>
 
   <!-- ============================ HOME (landing / value) ============================ -->
   <section class="page" data-slug="home" data-title="Home">
     <p class="crumb">Fused Render</p>
-    <h1 class="title">Turn folders on your machine into live apps</h1>
-    <p class="lede">Fused Render runs on <b>your computer</b>. Point it at a folder and any HTML file becomes a live app — with a <span class="y mono">fused</span> bridge that lets the page run the <b>Python sitting right next to it</b>. No server, no build step, no upload. Your files, your machine.</p>
+    <h1 class="title">Your files, turned into live apps.</h1>
+    <p class="lede">Fused Render runs on <b>your machine</b> — no accounts, no cloud, no setup. Open the data you already have as interactive views, or build tiny apps with one HTML file and one Python file.</p>
 
-    <div class="hero-cta">
-      <a class="cta primary" href="?page=build">Build your own app →</a>
-      <a class="cta" href="?page=templates">Open your data →</a>
-    </div>
-
-    <div class="chooser" id="chooser" hidden>
-      <div class="ch-q"><span class="spark">✦</span> New here? What do you want to do first?</div>
-      <div class="ch-opts">
-        <a class="ch-opt" href="?page=build" data-intent="build">
-          <span class="ch-ic">🛠️</span>
-          <b>Build an app from scratch</b>
-          <span class="ch-sub">Describe a tool, get a live page backed by Python</span>
-        </a>
-        <a class="ch-opt" href="?page=templates" data-intent="templates">
-          <span class="ch-ic">📂</span>
-          <b>Open data I already have</b>
-          <span class="ch-sub">Render a file you have through a template</span>
-        </a>
-        <a class="ch-opt" href="?page=showcase" data-intent="showcase">
-          <span class="ch-ic">✨</span>
-          <b>Just show me what's possible</b>
-          <span class="ch-sub">Browse finished projects you can clone</span>
-        </a>
+    <div class="doors">
+      <!-- CARD A — open a file you already have -->
+      <div class="door">
+        <h3>Open a file you already have</h3>
+        <div class="door-media">
+          <video data-shot="assets/open_with_right_click.mp4" muted loop autoplay playsinline></video>
+        </div>
+        <p>Right-click any CSV, Parquet, PDF, GeoTIFF and more → <b>Open with Fused Render</b>. It opens as an interactive view — nothing to write, nothing uploaded.</p>
+        <div class="door-formats">
+          <div class="df-label">Opens out of the box</div>
+          <div class="df-tags">
+            <span>.csv</span><span>.parquet</span><span>.xlsx</span><span>.json</span><span>.geojson</span><span>.shp</span><span>.gpkg</span><span>.tif</span><span>.nc</span><span>.zarr</span><span>.pdf</span><span>.md</span><a class="df-more" href="?page=templates">+ more</a>
+          </div>
+        </div>
+        <div class="door-cta">
+          <a class="door-go" href="?page=using" data-intent="templates">See how opening files works <span class="arr">→</span></a>
+          <a class="door-sub" href="?page=templates">Browse file templates</a>
+        </div>
       </div>
-      <button class="ch-skip" id="chSkip">I'll explore on my own</button>
-    </div>
 
-    <h2>See it run</h2>
-    <p class="sub">This isn't a video. Drag the slider — a <b>Python file on this machine</b> throws darts and estimates <b>π</b> from how many land inside the circle. That round trip, HTML asking Python for an answer, is what every Fused Render app is built on.</p>
-    <div class="frame short" id="demoFrame">
-      <div class="framebar">
-        <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
-        <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
+      <!-- CARD B — build a tiny app (live π demo, same mount mechanism as before) -->
+      <div class="door">
+        <h3>Build a tiny app</h3>
+        <div class="frame short" id="demoFrame">
+          <div class="framebar">
+            <span class="cap"><b>pi.html</b> — a slider, a canvas, and a few lines of Python</span>
+            <a id="demoOpen" target="_blank" rel="noopener">Show code ↗</a>
+          </div>
+          <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
+          <div class="ph r16 miss">
+            <span class="tagn">live embed · fallback</span>
+            <div class="ic">🎯</div>
+            <div class="lab">Live preview loads inside Fused Render</div>
+            <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
+          </div>
+        </div>
+        <p>One HTML file + one Python file = a live tool. Drag the slider — that's <b>Python running on your machine</b> right now.</p>
+        <div class="door-promptlab">✦ Faster with Claude Code</div>
+        <div class="promptbox">
+          <button class="copybtn" data-copy="homePrompt">Copy</button>
+          <pre id="homePrompt">Create a Fused Render app that shows my CPU and memory usage as live gauges.</pre>
+        </div>
+        <div class="door-cta">
+          <a class="door-go" href="?page=build" data-intent="build">Build your first app <span class="arr">→</span></a>
+        </div>
       </div>
-      <iframe id="demoIf" title="Estimate π, embedded live"></iframe>
-      <div class="ph r16 miss">
-        <span class="tagn">live embed · fallback</span>
-        <div class="ic">🎯</div>
-        <div class="lab">Live preview loads inside Fused Render</div>
-        <div class="hint">This embeds the bundled <code>pi.html</code> demo. Open this page in the app to see it run.</div>
-      </div>
     </div>
 
-    <h2>Two ways to use it</h2>
-    <p class="sub">Fused Render does two distinct things. Start with either — nothing locks you in, so you can move between them whenever you want.</p>
-    <div class="grid2">
-      <a class="modecard" href="?page=build">
-        <div class="mc-ic">🛠️</div>
-        <h3>Build an app</h3>
-        <p>Describe what you want and get a live tool: a dashboard, a control panel, an interactive chart — front-end in HTML, logic in Python. Great with Claude Code.</p>
-        <span class="mc-go">Building with Fused Render →</span>
-      </a>
-      <a class="modecard" href="?page=templates">
-        <div class="mc-ic">📂</div>
-        <h3>Open your data</h3>
-        <p>Right-click a file — a Parquet, a GeoTIFF, a CSV — and it renders through a template as an interactive view. No app to write, nothing to download.</p>
-        <span class="mc-go">Templates →</span>
-      </a>
-    </div>
-
-    <h2>Everything else</h2>
+    <h2>Once you're rolling</h2>
     <div class="navtiles">
-      <a class="navtile" href="?page=using"><span class="nt-ic">🧭</span><div><h4>Using the app</h4><p>Bookmarks, split view, and getting around the explorer.</p></div></a>
-      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount remote data</h4><p>Browse S3, GCS, or Google Drive like a local folder.</p></div></a>
-      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Publish a project so anyone can open it in a browser.</p></div></a>
-      <a class="navtile" href="?page=showcase"><span class="nt-ic">✨</span><div><h4>Showcase</h4><p>Working projects you can clone and pick apart.</p></div></a>
+      <a class="navtile" href="?page=using"><span class="nt-ic">📌</span><div><h4>Bookmarks &amp; split view</h4><p>Pin the pages you use daily, side by side.</p></div></a>
+      <a class="navtile" href="?page=templates"><span class="nt-ic">🧩</span><div><h4>Custom templates</h4><p>Teach it to open your file types, your way.</p></div></a>
+      <a class="navtile" href="?page=mount"><span class="nt-ic">🔌</span><div><h4>Mount S3 &amp; remote buckets</h4><p>Browse remote data like a local folder.</p></div></a>
+      <a class="navtile" href="?page=deploy"><span class="nt-ic">🚀</span><div><h4>Deploy <span class="y" style="font-size:11px">· Beta</span></h4><p>Share a page as a public link.</p></div></a>
     </div>
 
     <h2>What people build</h2>
@@ -1040,6 +1146,16 @@ PAGES.forEach(p => {
   navEl.appendChild(sub);
 });
 
+/* narrow-viewport fallback: a flat inline page list at the top of the content
+   column (only visible when the right rail is hidden via media query) */
+const plEl = $("#pagelist");
+PAGES.forEach(p => {
+  const a = document.createElement("a");
+  a.href = "?page=" + p.slug; a.dataset.slug = p.slug; a.textContent = p.title;
+  a.addEventListener("click", e => { e.preventDefault(); goto(p.slug); });
+  plEl.appendChild(a);
+});
+
 // Neutralize any in-content links that point at a hidden page (so they don't
 // dead-end); turn them into plain text.
 const HIDDEN = new Set($$(".page[data-hidden]").map(pg => pg.dataset.slug));
@@ -1073,6 +1189,7 @@ function render(slug, hash){
   const p = PAGES.find(x => x.slug === slug) || PAGES[0];
   PAGES.forEach(x => x.el.classList.toggle("active", x === p));
   $$("#nav a.top").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
+  $$("#pagelist a").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
   $$(".subnav").forEach(s => s.classList.toggle("show", s.dataset.for === p.slug));
   document.title = p.title + " — Fused Render Learn";
   buildPager(p);
@@ -1141,27 +1258,45 @@ function drawResults(q){
 }
 function pickResult(i){
   const r = curRes[i]; if (!r) return;
-  qEl.value = ""; closeSearch(); goto(r.page, r.id);
+  qEl.value = ""; closeModal(); goto(r.page, r.id);
 }
 function closeSearch(){ resEl.classList.remove("open"); resEl.innerHTML = ""; curRes = []; selIdx = -1; }
+
+/* the search UI lives in a centered modal, opened by ⌘K / Ctrl+K or the rail hint */
+const modalEl = $("#smodal");
+function openModal(){ modalEl.classList.add("open"); qEl.focus(); }
+function closeModal(){ modalEl.classList.remove("open"); qEl.value = ""; closeSearch(); qEl.blur(); }
+$("#searchHint").addEventListener("click", openModal);
+$("#searchFab").addEventListener("click", openModal);
+modalEl.addEventListener("mousedown", e => { if (e.target === modalEl) closeModal(); });
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    modalEl.classList.contains("open") ? closeModal() : openModal();
+  } else if (e.key === "Escape" && modalEl.classList.contains("open")) {
+    e.preventDefault(); closeModal();
+  }
+});
+
 qEl.addEventListener("input", runSearch);
 qEl.addEventListener("keydown", e => {
   if (!curRes.length) return;
   if (e.key === "ArrowDown") { e.preventDefault(); selIdx = (selIdx+1)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
   else if (e.key === "ArrowUp") { e.preventDefault(); selIdx = (selIdx-1+curRes.length)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
   else if (e.key === "Enter") { e.preventDefault(); pickResult(selIdx); }
-  else if (e.key === "Escape") { qEl.value=""; closeSearch(); qEl.blur(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeModal(); }
 });
-document.addEventListener("click", e => { if (!e.target.closest(".search")) closeSearch(); });
-// "/" focuses search
+// "/" also opens the search modal (kept from the sidebar version)
 document.addEventListener("keydown", e => {
-  if (e.key === "/" && document.activeElement !== qEl) { e.preventDefault(); qEl.focus(); }
+  if (e.key === "/" && document.activeElement !== qEl && !modalEl.classList.contains("open")) {
+    e.preventDefault(); openModal();
+  }
 });
 
 /* in-content links like <a href="?page=x"> should route without reload */
 document.addEventListener("click", e => {
   const a = e.target.closest('a[href^="?page="]');
-  if (!a || a.closest("#nav") || a.closest("#pager")) return;
+  if (!a || a.closest("#nav") || a.closest("#pager") || a.closest("#pagelist")) return;
   e.preventDefault();
   // Split the hash off before parsing the query, else "?page=x#sec" parses the
   // slug as "x#sec" and matches no page.
@@ -1169,11 +1304,13 @@ document.addEventListener("click", e => {
   goto(new URLSearchParams(qs).get("page"), hash || null);
 });
 
-/* mobile menu */
-$("#menuBtn").addEventListener("click", () => $("#rail").classList.toggle("open"));
-
 /* wire real product screenshots (rawUrl needs the abs path we detected) */
-$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => { el.closest(".figure")?.remove(); }); });
+$$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => {
+  const box = el.closest(".figure, .door-media");
+  if (!box) return;
+  if (box.classList.contains("door-media")) box.style.display = "none";
+  else box.remove();
+}); });
 
 /* copy buttons — copy the target element's text */
 $$(".copybtn").forEach(btn => btn.addEventListener("click", async () => {
@@ -1250,24 +1387,34 @@ $("#nameInput").addEventListener("keydown", e => { if (e.key === "Enter") hello(
 let helloPrimed = false;
 function maybeHello(){ if (helloPrimed) return; helloPrimed = true; hello(); }
 
-/* ---- first-visit onboarding chooser (Layer 1 prototype) ----
-   Shows one lightweight question on the first visit to Home, routing the user
-   toward Build / Templates / Showcase. Non-invasive (no personal data), stored
-   only in localStorage, and never a gate — every path stays available below. */
-const chooserEl = $("#chooser");
-let chooserWired = false;
-function readIntent(){ try { return localStorage.getItem("fused.learn.intent"); } catch(e){ return null; } }
+/* ---- record which door the user chose on Home ----
+   The two landing cards carry data-intent; clicking a primary CTA stores the
+   choice in localStorage. Non-invasive (no personal data) and never a gate —
+   every path stays available. */
+let intentWired = false;
 function setIntent(v){ try { localStorage.setItem("fused.learn.intent", v); } catch(e){} }
+
+/* entrance choreography for the two home doors — runs once per page load,
+   the first time Home is shown. Pure class toggle; CSS does the rest and
+   prefers-reduced-motion disables it entirely. */
+let doorsRevealed = false;
+function revealDoors(){
+  if (doorsRevealed) return;
+  doorsRevealed = true;
+  const d = document.querySelector('.page[data-slug="home"] .doors');
+  if (d) requestAnimationFrame(() => d.classList.add("doors-in"));
+}
+
 function initChooser(){
-  if (!chooserEl) return;
-  chooserEl.hidden = !!readIntent();          // hide once a choice (or skip) is stored
-  if (chooserWired) return;
-  chooserWired = true;
-  // Options keep their ?page= hrefs, so the global router handles navigation;
-  // we only record which path was chosen.
-  chooserEl.querySelectorAll(".ch-opt").forEach(a =>
+  revealDoors();
+  // autoplay can silently fail while the home section is display:none (Learn
+  // opened directly on another page); nudge the demo video whenever home shows.
+  const v = document.querySelector('.page[data-slug="home"] .door-media video');
+  if (v && v.src && v.paused) v.play().catch(() => {});
+  if (intentWired) return;
+  intentWired = true;
+  $$('[data-intent]').forEach(a =>
     a.addEventListener("click", () => setIntent(a.dataset.intent)));
-  $("#chSkip").addEventListener("click", () => { setIntent("skip"); chooserEl.hidden = true; });
 }
 
 /* live templates list (runs once, when the Templates page opens) */
