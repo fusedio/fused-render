@@ -86,12 +86,12 @@ fused-render [--start-dir DIR] [--port N] [--no-browser]
 All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status. Every response carries `Cache-Control: no-cache` (middleware) — app code changes between restarts and user files change on disk; stale cached shell/runtime JS produced half-old UIs during development. The two mutating/executing POSTs (`/api/run`, `/api/fs/write`) require an `X-Fused: 1` header (missing/wrong → 403); it forces a CORS preflight so a foreign page can't fire them blind. Not auth — D3 stands (see DECISIONS.md D36).
 
 ### `GET /` and `GET /view/{path:path}` → shell.html
-Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/vasu/data` means fs path `/Users/vasu/data` (strip `/view/`, prepend `/`).
+Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/you/data` means fs path `/Users/you/data` (strip `/view/`, prepend `/`).
 
 ### `GET /api/fs/stat?path=<abs>`
 ```json
 {
-  "path": "/Users/vasu/data/trips.parquet",
+  "path": "/Users/you/data/trips.parquet",
   "name": "trips.parquet",
   "is_dir": false,
   "size": 123456,
@@ -116,7 +116,7 @@ A `_`-prefixed name appearing in a registry list is valid only for the known sen
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
 {
-  "path": "/Users/vasu/data",
+  "path": "/Users/you/data",
   "entries": [
     {"name": "sub", "is_dir": true,  "size": null,   "mtime": 1751500000.0},
     {"name": "trips.parquet", "is_dir": false, "size": 123456, "mtime": 1751600000.0}
@@ -140,7 +140,7 @@ Returns `text/html`. Used as iframe src by the shell for both user HTML and temp
 ### `POST /api/run`  *(requires `X-Fused: 1`)*
 Request:
 ```json
-{"py": "./sine.py", "html": "/Users/vasu/views/sine.html", "params": {"freq": "2.4"}}
+{"py": "./sine.py", "html": "/Users/you/views/sine.html", "params": {"freq": "2.4"}}
 ```
 - `py` relative → resolved against `dirname(html)`; absolute → used as-is. (`html` may be null only if `py` is absolute.)
 - Response is the executor result verbatim (HTTP 200 even for user-code errors — the `ok` field carries success):
@@ -200,7 +200,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 ## 6. Shell (`frontend/` → `static/shell-dist/`)
 
 SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/lib/` is non-React and ported ~verbatim from the vanilla shell (router/api/format/bookmarks/layout-codec — same contracts as before); components consume it. Dependency direction is one-way as before: `App → views/Sidebar/Breadcrumb → lib/*`; the router never imports UI (it dispatches a `fused:navigate` event; `lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `views/Panel.tsx` (`panelUrl`), and `Sidebar.tsx` may import `views/Tabs.tsx` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
-- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
+- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/you", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
 - `/view/<path>` → `stat` it:
   - a target with a non-empty `stat.templates` → preview view — **including a directory** (every directory resolves at least the universal `/` key → `["_listing"]`, SPEC PT-13/D81; the built-in listing is the `_listing` sentinel mode)
   - **dir** with an empty `templates` (a `null` binding disabled it) → listing view — the shell's safety net (a folder must always render something)
