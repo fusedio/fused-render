@@ -464,6 +464,112 @@ def test_run_disconnects_bus_when_bringup_fails_after_connect(monkeypatch):
     assert connection.disconnected is True  # ...and cleaned up before re-raising
 
 
+# --- watcher restart re-registration (bus-free) -------------------------------
+#
+# SNI registration is with the CURRENT StatusNotifierWatcher owner; when the
+# host (waybar, the panel) restarts, the watcher name gets a new owner that has
+# never heard of us — without re-registering, the tray icon is gone forever
+# while run()'s loop spins happily. The bus glue subscribes to
+# org.freedesktop.DBus NameOwnerChanged and re-calls
+# RegisterStatusNotifierItem when the watcher name gains a new owner.
+
+
+def test_should_reregister_only_on_watcher_gaining_an_owner():
+    watcher = linux_tray._WATCHER_NAME
+    assert linux_tray._should_reregister(watcher, ":1.99") is True  # new owner
+    assert linux_tray._should_reregister(watcher, "") is False  # watcher vanished
+    assert linux_tray._should_reregister("org.example.Other", ":1.99") is False
+
+
+class _RecordingConnection:
+    """Fake dbus-fast connection for the registration/subscription helpers:
+    records RegisterStatusNotifierItem calls and captured NameOwnerChanged
+    handlers instead of talking to a bus."""
+
+    def __init__(self):
+        self.registered = []
+        self.handlers = []
+        self.fail_introspect = False
+
+    async def introspect(self, name, path):
+        if self.fail_introspect:
+            raise RuntimeError("introspect failed")
+        return f"introspection:{name}"
+
+    def get_proxy_object(self, name, path, introspection):
+        connection = self
+
+        class _Object:
+            def get_interface(self, interface_name):
+                if interface_name == linux_tray._WATCHER_NAME:
+                    class _Watcher:
+                        async def call_register_status_notifier_item(self, item_path):
+                            connection.registered.append(item_path)
+
+                    return _Watcher()
+
+                class _DBus:
+                    def on_name_owner_changed(self, handler):
+                        connection.handlers.append(handler)
+
+                return _DBus()
+
+        return _Object()
+
+
+def test_register_with_watcher_calls_register():
+    import asyncio
+
+    connection = _RecordingConnection()
+    asyncio.run(linux_tray._register_with_watcher(connection))
+    assert connection.registered == [linux_tray._SNI_PATH]
+
+
+def test_watcher_restart_triggers_reregistration():
+    import asyncio
+
+    connection = _RecordingConnection()
+    paths = _Paths()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            linux_tray._subscribe_watcher_restarts(connection, loop, paths)
+        )
+        assert len(connection.handlers) == 1  # subscribed to NameOwnerChanged
+        handler = connection.handlers[0]
+
+        # A restarted host: the watcher name gains a NEW owner → re-register.
+        handler(linux_tray._WATCHER_NAME, ":1.5", ":1.99")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert connection.registered == [linux_tray._SNI_PATH]
+
+        # The watcher merely vanishing (empty new owner) must NOT re-register.
+        handler(linux_tray._WATCHER_NAME, ":1.99", "")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert connection.registered == [linux_tray._SNI_PATH]
+    finally:
+        loop.close()
+
+
+def test_watcher_reregistration_failure_is_logged_not_raised():
+    import asyncio
+
+    connection = _RecordingConnection()
+    paths = _Paths()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            linux_tray._subscribe_watcher_restarts(connection, loop, paths)
+        )
+        connection.fail_introspect = True  # the new watcher is flaky
+        connection.handlers[0](linux_tray._WATCHER_NAME, "", ":1.7")
+        loop.run_until_complete(asyncio.sleep(0))
+        assert connection.registered == []
+        assert paths.messages  # failure logged, loop keeps running
+    finally:
+        loop.close()
+
+
 # --- D-Bus bring-up / teardown (integration, needs a session bus) ------------
 
 

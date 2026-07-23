@@ -371,6 +371,55 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
     return StatusNotifierItem(), DBusMenu()
 
 
+def _should_reregister(name: str, new_owner: str) -> bool:
+    """Whether a NameOwnerChanged signal means the StatusNotifierWatcher just
+    (re)appeared under a new owner. Registration is with the watcher's CURRENT
+    owner, so a restarted host (waybar, the panel) has never heard of us — the
+    icon would be gone forever without re-registering. An empty new_owner is
+    the watcher vanishing; nothing to register with, and the eventual gain
+    fires its own signal."""
+    return name == _WATCHER_NAME and bool(new_owner)
+
+
+async def _register_with_watcher(connection) -> None:
+    """Introspect the current StatusNotifierWatcher owner and register our SNI
+    with it. Raises when no watcher owns the name (stock GNOME) — initial
+    bring-up lets that propagate to tray.start()'s retry loop."""
+    introspection = await connection.introspect(_WATCHER_NAME, _WATCHER_PATH)
+    watcher = connection.get_proxy_object(
+        _WATCHER_NAME, _WATCHER_PATH, introspection
+    ).get_interface(_WATCHER_NAME)
+    await watcher.call_register_status_notifier_item(_SNI_PATH)
+
+
+async def _subscribe_watcher_restarts(connection, loop, paths: DesktopPaths) -> None:
+    """Subscribe to org.freedesktop.DBus NameOwnerChanged and re-register with
+    the StatusNotifierWatcher whenever its name gains a new owner (host
+    restart). Failures are logged and ignored — the host announcing itself
+    again fires another signal, and the exported services themselves are
+    untouched either way."""
+    introspection = await connection.introspect(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus"
+    )
+    dbus_iface = connection.get_proxy_object(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus", introspection
+    ).get_interface("org.freedesktop.DBus")
+
+    async def _reregister():
+        try:
+            await _register_with_watcher(connection)
+        except Exception as error:  # noqa: BLE001 - logged; never tears down the loop
+            paths.log(f"tray: re-register with restarted watcher failed: {error}")
+
+    def _on_name_owner_changed(name, old_owner, new_owner):
+        # Called on the loop thread by dbus-fast's message handling, so the
+        # task can be scheduled directly.
+        if _should_reregister(name, new_owner):
+            loop.create_task(_reregister())
+
+    dbus_iface.on_name_owner_changed(_on_name_owner_changed)
+
+
 def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> None:
     """Export the SNI + dbusmenu services on a fresh asyncio loop bound to this
     (tray daemon) thread, register with the StatusNotifierWatcher, then run the
@@ -415,12 +464,12 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
             connection.export(_SNI_PATH, sni)
             connection.export(_MENU_PATH, menu)
             await connection.request_name(f"org.kde.StatusNotifierItem-{os.getpid()}-1")
-            introspection = await connection.introspect(_WATCHER_NAME, _WATCHER_PATH)
-            watcher = connection.get_proxy_object(
-                _WATCHER_NAME, _WATCHER_PATH, introspection
-            ).get_interface(_WATCHER_NAME)
             # Raises if no StatusNotifier host is running → out to the retry loop.
-            await watcher.call_register_status_notifier_item(_SNI_PATH)
+            await _register_with_watcher(connection)
+            # Registration binds to the watcher's CURRENT owner; a restarted
+            # host needs a fresh RegisterStatusNotifierItem or the icon is
+            # gone forever. Watch for the name changing owners.
+            await _subscribe_watcher_restarts(connection, loop, paths)
         except BaseException:
             try:
                 connection.disconnect()
