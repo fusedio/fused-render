@@ -382,6 +382,20 @@
   .door:hover .door-go:hover .arr { transform:translateX(4px); }
   .door-sub { font-size:12px; color:var(--mut); text-decoration:none; text-align:left; }
   .door-sub:hover { color:var(--text); }
+  /* quiet "opens out of the box" strip — metadata, not a feature grid */
+  .door-formats { margin:20px 0 4px; }
+  .door-formats .df-label { font-size:11px; text-transform:uppercase; letter-spacing:.12em;
+       color:var(--mut); font-weight:600; margin:0 0 10px; }
+  .door-formats .df-tags { display:flex; flex-wrap:wrap; align-items:baseline; row-gap:7px;
+       font:12px/1.5 "SF Mono",ui-monospace,Menlo,monospace; color:rgba(255,255,255,.55); }
+  .door-formats .df-tags span { transition:color .2s ease; }
+  .door-formats .df-tags span:hover { color:#fff; }
+  .door-formats .df-tags span + span::before { content:"·"; color:rgba(255,255,255,.22);
+       margin:0 9px; }
+  .door-formats .df-more { color:var(--mut); text-decoration:none;
+       font:12px/1.5 "SF Mono",ui-monospace,Menlo,monospace; }
+  .door-formats .df-more::before { content:"·"; color:rgba(255,255,255,.22); margin:0 9px; }
+  .door-formats .df-more:hover { color:var(--text); }
   @media (max-width:900px){
     .doors { grid-template-columns:1fr; }
     .door { padding:0; }
@@ -534,6 +548,12 @@
           <video data-shot="assets/open_with_right_click.mp4" muted loop autoplay playsinline></video>
         </div>
         <p>Right-click any CSV, Parquet, PDF, GeoTIFF and more → <b>Open with Fused Render</b>. It opens as an interactive view — nothing to write, nothing uploaded.</p>
+        <div class="door-formats">
+          <div class="df-label">Opens out of the box</div>
+          <div class="df-tags">
+            <span>.csv</span><span>.parquet</span><span>.xlsx</span><span>.json</span><span>.geojson</span><span>.shp</span><span>.gpkg</span><span>.tif</span><span>.nc</span><span>.zarr</span><span>.pdf</span><span>.md</span><a class="df-more" href="?page=templates">+ more</a>
+          </div>
+        </div>
         <div class="door-cta">
           <a class="door-go" href="?page=using" data-intent="templates">See how opening files works <span class="arr">→</span></a>
           <a class="door-sub" href="?page=templates">Browse file templates</a>
