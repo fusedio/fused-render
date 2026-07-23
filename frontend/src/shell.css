@@ -1980,7 +1980,8 @@ body.embed .open-as-app-chip:hover {
   line-height: 1.5;
 }
 
-.server-status-retry {
+.server-status-retry,
+.server-status-launch {
   margin-top: 8px;
   padding: 3px 10px;
   font-size: 12px;
@@ -1991,8 +1992,18 @@ body.embed .open-as-app-chip:hover {
   cursor: pointer;
 }
 
-.server-status-retry:hover {
+.server-status-retry:hover,
+.server-status-launch:hover {
   border-color: var(--fg-muted);
+}
+
+/* The "Start fused-render" fused-render://launch link (D128): an anchor
+   dressed as the sibling button; inline-block so padding/margin apply. */
+.server-status-launch {
+  display: inline-block;
+  margin-right: 8px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .server-status-reconnected {
