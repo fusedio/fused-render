@@ -1,7 +1,7 @@
 # fused-render — Requirements Specification
 
-**Status:** Draft v0.1
-**Scope:** Fully local system. Never deployed to cloud. Single user, single machine.
+**Status:** Living specification, maintained alongside the shipped product.
+**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the separately-installed `fused` CLI (§19, §27); see Non-Goals.
 
 ---
 
@@ -74,7 +74,7 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 - **FS-7** **DONE (M14):** in-folder filename search over a streamed recursive walk — see §22.
 - **FS-8** "Open raw" escape hatch for any file: streams bytes with correct MIME type (used for download and by templates for images/video/pdf).
 
-### Sidebar & Bookmarks (M2 — next)
+### Sidebar & Bookmarks (M2)
 
 Left sidebar in the shell, always visible:
 
@@ -183,7 +183,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.4 Return value serialization
 
-**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — is a structured "return type not serializable" error; the user converts himself (e.g. `df.to_dict("records")`).
+**DECIDED (v1): JSON only.** `main` must return JSON-native values (dict / list / str / num / bool / None). Anything else — including DataFrames and bytes — is a structured "return type not serializable" error; the user converts it themselves (e.g. `df.to_dict("records")`).
 
 Deferred to later milestones (needed for data templates):
 
@@ -338,11 +338,13 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 ## 12b. Milestones
 
-- **M1 — Base layer (current focus):** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry (dispatch: template > html > fallback) + **parquet, image, text templates**. No security, no WS, no caching.
+*Historical build order, kept for context — not an exhaustive or current status list; later milestones (M10–M12, M15, M17–M18) ship as their own numbered sections (§18–§27), and the numbered requirement sections above are authoritative.*
+
+- **M1 — Base layer:** server + shell, whole-disk browsing, raw streaming, live-rendered HTML in plain iframe, `runPython` → `main()` subprocess execution, params ↔ URL sync (strings, replaceState), server-side template registry + **parquet, image, text templates**. No security, no WS, no caching.
 - **M2 — Sidebar & bookmarks:** SHIPPED.
 - **M3 — DMG distribution:** menu-bar app + bundled CPython + build script (§12).
-- **M4 — Live editing:** autosave + SSE change feed + auto-reloading views (§13).
-- **M5 — Layout mode:** split-pane grid of embed views, layout + merged params in one bookmarkable URL (§14).
+- **M4 — Live editing:** autosave + live change feed (WebSocket, D74) + auto-reloading views (§13).
+- **M5 — Layout mode:** split-pane grid of embed views, layout + pane-local params in one bookmarkable URL (§14, D72).
 - **M6 — Tab mode:** tabbed set of embed views on the §14 URL model; bookmark folders open as tab layouts (§15).
 - **M7 — Custom templates:** user template folders in `~/.fused-render/templates/` + `registry.json` extension bindings, overriding built-ins (§16).
 - **M8 — Template modes:** 1:n extension→template mapping — folder-per-template built-ins (renamed to public names), ordered mode lists (first = default), registry `list|string|null` grammar (the `"..."` splice shipped here was later removed, D94), `_mode` shell param + icon-only mode switcher, stat `templates` array replacing `template`, html folded in as the hardcoded `["_render", "code"]` sentinel list (§7, §16 / PT-6..PT-12, CT-10..CT-11).
@@ -354,7 +356,7 @@ Distribute as a DMG containing a menu-bar app; all UI stays in the browser.
 
 ## 13. Live Editing — Autosave & Auto-Reload (M4)
 
-Goal: a live-preview loop. Edit a file (in our editor or externally) → it saves itself → every open view of it reacts. Combined with embed mode (D39) this gives "source in one tab, rendered output in another, updates as you type".
+Goal: a live-preview loop. Edit a file (in the built-in editor or externally) → it saves itself → every open view of it reacts. Combined with embed mode (D39) this gives "source in one tab, rendered output in another, updates as you type".
 
 ### 13.1 Autosave (code editor)
 
@@ -513,7 +515,7 @@ Goal: users replace or add preview templates using the **exact same mechanism** 
 ## 17. Annotation — An Ordinary View Template (M9, superseded)
 
 Annotation shipped first as an app feature — an orthogonal `_annotate=1` overlay
-injected into every view (AN-1…AN-23, M9) — and was then **rebuilt as an
+injected into every view (M9) — and was then **rebuilt as an
 ordinary view template**, the same pattern as `templates/claude/`:
 `templates/annotate/` is a self-contained template.html, bound in registry.json
 as a trailing mode on annotatable extensions, swappable/shadowable like any
@@ -527,7 +529,7 @@ view they were made on so anchors never cross-resolve between views.
 Rationale: annotation is a review layer, not app chrome — as a template it
 needs no shell code, no server injection, and users can replace or extend it
 by dropping a folder into `~/.fused-render/annotate/`. The `_annotate` render
-param, the header toggle (AN-2/AN-3), the injected `static/annotate.js`, and
+param, the header toggle, the injected `static/annotate.js`, and
 the code template's selection adapter are gone.
 
 **Containment invariant:** every line of annotation logic lives inside
@@ -1112,7 +1114,7 @@ never imports server).
   Deploy-button toggle plus a link to the Fused account tab, where the list
   now renders beside the environments table.
 
-### 20.6 Tabs (D125)
+### 20.5 Tabs (D125)
 
 - **PF-9** The page is split into two tabs, active tab in the URL
   (`?tab=account`, default clean-URL tab is **Render preferences** —
@@ -1124,7 +1126,7 @@ never imports server).
   with nothing pointing at it. This is also where the sidebar footer's
   signed-in dot now points — see AC-1.
 
-### 20.5 Template registry view
+### 20.6 Template registry view
 
 - **PF-7** `GET /api/templates/registry` returns the merged
   extension→templates bindings from both registries (SPEC §16): one row per
@@ -1141,7 +1143,7 @@ never imports server).
 
   **Superseded (2026-07-09, owner call):** the read-only registry section was
   removed from the Preferences page when the full Template Management view
-  shipped (§22, `/view/_templates`) — a single home for bindings rather than a
+  shipped (§23, `/view/_templates`) — a single home for bindings rather than a
   glance in one place and an editor in another. The **`GET /api/templates/registry`
   endpoint stays** (unchanged contract, TV-4); it is now consumed by the
   Templates view instead of Preferences.
@@ -1194,7 +1196,7 @@ subtree, and whose truncation is always visible. The searcher is the shell
 and per-keystroke re-ranking must not pay a network round trip); the server's
 job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
 
-### 21.1 Walk order & pruning (server)
+### 22.1 Walk order & pruning (server)
 
 - **SR-1** `GET /api/fs/walk` traverses **breadth-first** (`_walk_bfs`): every
   depth-N entry is emitted before any depth-N+1 entry; within one parent, dirs
@@ -1254,7 +1256,7 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
   pathological trees (mounted volumes, cache farms). The response carries
   `truncated` so the UI can be honest about it (SR-10).
 
-### 21.2 Streaming wire format
+### 22.2 Streaming wire format
 
 - **SR-6** `?stream=1` returns `application/x-ndjson`: zero or more
   `{"entries": [...]}` batch lines (`WALK_BATCH_SIZE` = 500 per line), then
@@ -1271,7 +1273,7 @@ job is to deliver the corpus fast, shallow-first, and pruned of machine noise.
          done + one giant JSON                  ▶ "N matches · M scanned…"
   ```
 
-### 21.3 Shell search behavior
+### 22.3 Shell search behavior
 
 - **SR-7** The listing's search (`?q=`, URL-synced like sort) fetches **one
   hidden-inclusive dataset** (`hidden=1` always) and filters dot-entries at
