@@ -302,13 +302,16 @@
         const err = data.error || {};
         const where = err.where;
         const tracebackHtml = `<pre class="traceback">${escapeHtml(err.traceback || err.message || "run failed")}</pre>`;
-        // err.where (D128) headlines the failing line of the user's script as
-        // the prominent culprit; the full traceback tucks behind a collapsed
-        // toggle so it doesn't repeat the line the trimmed traceback leads with.
-        // No where (harness error, timeout, missing file) → show the traceback
-        // outright, since it's the only content.
+        // err.where (D128) headlines the failing line as the prominent culprit;
+        // the full traceback tucks behind a collapsed toggle so it doesn't
+        // repeat the line the trimmed traceback leads with. EXCEPT a SyntaxError
+        // (family): its traceback is the caret block, whose `^` column marker
+        // isn't captured in `where` — show that outright (no headline) so the
+        // caret stays visible. No where (harness error, timeout, missing file) →
+        // also outright, since the traceback is the only content.
+        const isSyntax = /^(SyntaxError|IndentationError|TabError)$/.test(err.type || "");
         let body;
-        if (where && where.file) {
+        if (where && where.file && !isSyntax) {
           const locHtml = `<div class="errloc">${escapeHtml(where.file)}, line ${escapeHtml(where.line)}${where.func ? `, in ${escapeHtml(where.func)}` : ""}${where.source ? `<div class="errsrc">${escapeHtml(where.source)}</div>` : ""}</div>`;
           body = `${locHtml}<details><summary>Traceback</summary>${tracebackHtml}</details>`;
         } else {

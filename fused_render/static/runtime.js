@@ -651,9 +651,19 @@
     overlay.appendChild(title);
     // Headline the failing line of the USER's script (err.where, set by the
     // executor, D128) as the prominent culprit, so it's readable without
-    // scanning a stack.
+    // scanning a stack — then tuck the full traceback behind a collapsed
+    // toggle so it doesn't repeat the line the trimmed traceback now leads
+    // with. EXCEPT for a SyntaxError (family): its traceback is the
+    // `format_exception_only` caret block, whose `^` column marker points at
+    // the bad token and is NOT captured in `where` — so show that outright
+    // (no headline, it's a better pointer than we can build) rather than hide
+    // the caret behind the toggle.
     const hasWhere = err.where && err.where.file;
-    if (hasWhere) {
+    const isSyntax = /^(SyntaxError|IndentationError|TabError)$/.test(err.type || "");
+    const pre = document.createElement("pre");
+    pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
+    pre.textContent = err.traceback || "";
+    if (hasWhere && !isSyntax) {
       const loc = document.createElement("div");
       loc.style.cssText = "margin-bottom:12px;color:#ffb3b3;";
       const func = err.where.func ? `, in ${err.where.func}` : "";
@@ -665,14 +675,6 @@
         loc.appendChild(src);
       }
       overlay.appendChild(loc);
-    }
-    const pre = document.createElement("pre");
-    pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
-    pre.textContent = err.traceback || "";
-    if (hasWhere) {
-      // The headline already names the culprit; tuck the full traceback behind
-      // a collapsed toggle (D128) so it's one click away without repeating the
-      // failing line the trimmed traceback now leads with.
       const details = document.createElement("details");
       const summary = document.createElement("summary");
       summary.textContent = "Traceback";
@@ -681,8 +683,9 @@
       details.appendChild(pre);
       overlay.appendChild(details);
     } else {
-      // No user-script location (harness error, timeout, missing file): the
-      // traceback/message is the only content, so show it outright.
+      // No user-script location (harness error, timeout, missing file) or a
+      // SyntaxError whose caret block IS the pointer: show the traceback
+      // outright, since it's the only / best content.
       overlay.appendChild(pre);
     }
     document.body.appendChild(overlay);
