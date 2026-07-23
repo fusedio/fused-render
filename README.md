@@ -9,7 +9,7 @@ Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
 for the full design.
 
-https://github.com/user-attachments/assets/abc2149a-40be-4333-a3d0-0b2489f58c5d
+<video src="https://github.com/user-attachments/assets/abc2149a-40be-4333-a3d0-0b2489f58c5d" controls muted playsinline width="100%"></video>
 
 Right-click a file in Explorer → **Open with** → fused-render, and it opens in
 your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
