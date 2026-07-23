@@ -627,10 +627,10 @@
     <h1 class="title">Building with Fused Render</h1>
     <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
 
-    <div class="callout"><span class="lab">Prerequisites — two things</span>
+    <div class="callout"><span class="lab">Prerequisites: two things</span>
       <ul style="margin:8px 0 0;padding-left:20px;font-size:12.5px;line-height:1.9">
-        <li>The <b>Claude Code</b> CLI installed on your machine — <a href="https://claude.com/claude-code" target="_blank" rel="noopener">get it here ↗</a></li>
-        <li>The <b>fused-render skills</b> installed in Claude Code — one-line install on the <a href="?page=skills">Claude Code skills</a> page, with a live check of your machine</li>
+        <li>The <b>Claude Code</b> CLI installed on your machine (<a href="https://claude.com/claude-code" target="_blank" rel="noopener">get it here ↗</a>)</li>
+        <li>The <b>fused-render skills</b> installed in Claude Code: one-line install on the <a href="?page=skills">Claude Code skills</a> page, with a live check of your machine</li>
       </ul></div>
     <div class="heroprompt">
       <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
@@ -717,7 +717,7 @@
 
     <details class="libdrop" id="libDrop">
       <summary>Supported Python libraries</summary>
-      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this data stack — no <code>pip install</code> needed (or possible):</p>
+      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this data stack. No <code>pip install</code> needed (or possible):</p>
       <table class="apitable" id="libTable">
         <tr><td class="lg-h">Data</td><td><code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></td></tr>
         <tr><td class="lg-h">Geospatial</td><td><code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></td></tr>
@@ -726,7 +726,7 @@
         <tr><td class="lg-h">Network &amp; cloud</td><td><code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></td></tr>
         <tr><td class="lg-h">Logs</td><td><code>drain3</code></td></tr>
       </table>
-      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages — imports outside this set will fail in the packaged app.<span id="libLive"></span></p>
+      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages: imports outside this set will fail in the packaged app.<span id="libLive"></span></p>
     </details>
 
     <h2>Starter ideas</h2>
@@ -786,10 +786,10 @@
     <div class="promptbox" style="margin-top:8px">
       <button class="copybtn" data-copy="skillsInstall">Copy</button>
       <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
-    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session — including when Claude Code is driven from inside the app's Claude panel.</p>
+    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session, including when Claude Code is driven from inside the app's Claude panel.</p>
 
     <h2><span class="n">2</span>What you get</h2>
-    <p class="sub">The plugin installs three skills that cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
+    <p class="sub">The plugin installs three skills that cover the whole surface. You never name them: Claude reads their descriptions and picks the right one for what you ask.</p>
     <div class="card" style="margin-bottom:10px">
       <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-usage</code></h4>
       <p style="margin:0;font-size:12.5px">Running and using a project — start the local server, browse the filesystem, and open views or files by URL (embed vs full-shell modes).</p></div>
