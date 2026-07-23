@@ -6,7 +6,20 @@ build-backend = "hatchling.build"
 name = "fused-render"
 dynamic = ["version"]
 description = "Local file explorer with Python-powered renderable HTML previews"
+readme = "README.md"
+# license: intentionally unset pending the public-launch licensing decision —
+# add it (plus the matching classifier and a LICENSE file) before any PyPI
+# publish.
 requires-python = ">=3.10"
+keywords = ["file-explorer", "preview", "data-viz", "duckdb", "geospatial", "html"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
@@ -99,7 +112,7 @@ app = [
 ]
 # Optional execution engine (D69): when installed, /api/run runs code through
 # the fused local compute backend; absent, the built-in executor runs. Pinned
-# to the same wheel `openfused_server` serves hosted pages from, so local and
+# to the same wheel the managed Fused service serves hosted pages from, so local and
 # hosted execution stay on one build. The engine needs 3.11+; on 3.10 the
 # marker skips it and the built-in executor runs.
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
@@ -127,6 +140,11 @@ linux-desktop = [
     'dbus-fast ; sys_platform == "linux"',
     'pillow ; sys_platform == "linux"',
 ]
+
+[project.urls]
+Homepage = "https://github.com/fusedio/fused-render"
+Repository = "https://github.com/fusedio/fused-render"
+Releases = "https://github.com/fusedio/fused-render/releases"
 
 [project.scripts]
 fused-render = "fused_render.cli:main"

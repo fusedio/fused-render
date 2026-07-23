@@ -28,7 +28,7 @@ off-box can reach it directly. Beyond that:
   first-party template.
 - **`POST /api/run` executes your Python with no sandboxing** — a fresh OS
   subprocess per call (D5), same user and privileges as the server process
-  itself, 30s timeout. The timeout and per-call process are for crash
+  itself, 60s timeout. The timeout and per-call process are for crash
   containment and avoiding stale state, not for security isolation.
 - **No output sanitization anywhere in the render path.** The `markdown`
   template renders parsed Markdown as raw `innerHTML` by design ("local trust

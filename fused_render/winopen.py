@@ -518,6 +518,17 @@ def _open(path: str | None, requested_port: int | None) -> None:
     if path and path.lower().startswith("fused-render:"):
         # Deep link (SPEC §26, D110): the URL-protocol registration hands the
         # whole fused-render:// URL over as %1 — not a filesystem path.
+        # Lazy import: deeplink pulls in fastapi, which this launcher must not
+        # pay for on the common double-click path (no deep link involved).
+        from fused_render.deeplink import is_launch_url
+
+        if is_launch_url(path):
+            # fused-render://launch (D128): ensure the server is running and
+            # stop — the page that linked here (D126 banner) reconnects on
+            # its own, so opening a tab would just duplicate it.
+            port = _ensure_server(requested_port)
+            logger.info("launch deep link: server ready on port %s, no tab opened", port)
+            return
         url = _clone_url(_ensure_server(requested_port), path)
     else:
         if path and not os.path.exists(path):

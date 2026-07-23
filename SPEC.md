@@ -82,7 +82,7 @@ Left sidebar in the shell, always visible:
 - **SB-2** **Bookmarks section** below Home. A bookmark captures *whatever the right side currently shows* — directory listing or any preview — as the **exact current URL verbatim** (`/view/…?freq=2.4&_file=…`). Clicking a bookmark is a plain browser redirect (`location.href = url`); the sidebar never interprets bookmark contents, so bookmarks survive future param/dispatch changes.
 - **SB-3** Capture UI: a bookmark button in the shell header area, one click, no prompt. Default name = basename of the viewed path (file or dir name).
 - **SB-4** Bookmarks are renamable inline (edit affordance on hover → input → Enter/blur commits) and deletable. No confirm on delete (re-bookmarking is one click).
-- **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated.
+- **SB-5** **DECIDED: persistence = server-side file** `~/.fused-render/bookmarks.json` (D75; superseded the original localStorage store). JSON array `{id, name, url, created_at}` (+ folders, D44); `id = crypto.randomUUID()`. Served by `GET /api/bookmarks` → `{exists, bookmarks, missing}` and `PUT /api/bookmarks` (whole-tree, atomic, last-write-wins); server code lives in `fused_render/shell/`. Frontend reads a synchronous in-memory cache hydrated at boot; mutations await the PUT (no optimistic update); a 30 s poll re-reads the server so another tab's edits converge (D77, eventual ≤30 s, still last-write-wins). **(D104):** the one-time legacy localStorage import has been removed — every pre-D75 install has long since migrated. **(D127):** `missing` is a bookmark-id side-channel — ids whose target is confirmed gone from disk, recomputed fresh on every GET (bounded, concurrent, mount-safe, fail-open) and never persisted/round-tripped through PUT. The sidebar keeps a flagged row's name at its normal color and shows a warning glyph + hover-card note (owner call: the icon alone carries the flag); nothing is auto-removed. The bookmark poll also fires immediately on window focus (in-flight guarded), not just every 30s. Contrast with Recents (§29, D115), which stays hidden-when-missing by deliberate owner choice.
 - **SB-6** Duplicate URLs allowed; **names are globally unique, case-insensitive** (D97 — names become `<name>.bookmark` filenames): a colliding create/rename auto-suffixes `-1`, `-2`, ... instead of rejecting, existing duplicates migrate once on GET (oldest by `created_at` keeps its name). Folder names are a separate namespace. List ordered by creation time. *(drag reorder, active-bookmark highlight: polish, later)*
 - **SB-7** **DECIDED: bookmark create/update is mirrored into the target file's `.html.json` sidecar** (D83) as `bookmarkHistory` — the same per-file sidecar the `claude` chat template owns via `claudeSessions` (§7). `POST /api/bookmarks/history` upserts an entry by bookmark `id`; the frontend calls it fire-and-forget right after `addBookmark`/`updateBookmarkUrl` commit. A bookmark targeting a layout/tab sentinel or a path no longer on disk records nothing. **Delete never touches the sidecar** — history is permanent, independent of the bookmark's current lifetime.
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
@@ -382,7 +382,7 @@ The reload logic lives **entirely in the injected runtime** — the shell needs 
 - **LR-2** `POST /api/run` response gains a `resolved_py` field — the absolute resolved path of the executed file — so the runtime learns dependency paths authoritatively instead of re-implementing the server's relative-path resolution. Recorded for failed runs too (a broken py that gets fixed must still trigger reload).
 - **LR-3** On any change event: debounce **300 ms** (coalesce bursts), then `location.reload()` on the iframe itself. Full reload is the honest re-execution — the runtime cannot replay what the page did with a python result. State survives because view state lives in URL params (D8/D20/D25).
 - **LR-4** When the watch set grows (a new py runs), the runtime closes and reopens its watch `WebSocket` with the full set. Resubscribe is debounced so a page firing several `runPython` calls on load reconnects once. Unlike `EventSource`, a WebSocket does not auto-reconnect — the runtime retries a dropped socket after 1 s.
-- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
+- **LR-5** Opt-out: `fused.autoReload(false)` disables watching/reloading for that page. The `code` template calls it — the editor must not reload out from under the cursor (its own autosave changes the mtime; external changes are the conflict lock's job). The `claude` template calls it too — Claude's own edit to the watched `_file` would otherwise reload the chat mid-stream, killing the poll loop and orphaning the run (a sibling `_render` pane still live-refreshes; only the chat frame opts out). To make the opt-out race-free, the runtime starts watching on `DOMContentLoaded`, after inline page scripts have run.
 - **LR-6** Deletion (`mtime: null`) reloads too — the resulting 404/error view is the truthful state.
 - **LR-7** Reload works identically for standalone `/render?path=…` pages (runtime is the same code).
 
@@ -728,7 +728,12 @@ the product gains network access.
   install panel; no hosted env configured → guidance (`fused env create` /
   `fused cloud setup`, naming the envs file); else the form — env picker,
   current-deployment card (status chip, URL with copy/open), a **"Will
-  publish" preview** (DP-2a), Deploy/Redeploy, and Revoke. The modal is scoped
+  publish" preview** (DP-2a), a collapsible **Link** section (DP-9a), a
+  collapsible **Caching** section (DP-17), an owner-only collapsible **Recent
+  errors** diagnostics section (the deployed mount's captured failures via
+  `fused share errors`; rendered for an undeployed page too, but **disabled**
+  with a hint, so the chrome is consistent rather than popping in on first
+  deploy), Deploy/Redeploy, and Revoke. The modal is scoped
   to the current page; the **env-wide** deployment list (DP-13) lives on the
   Fused account tab's Deployments section (AC-11, moved from Preferences
   when the account surface landed), not in the modal.
@@ -855,11 +860,44 @@ the product gains network access.
 - **DP-8** Each deploy re-exports the page (§18) into a fresh temp directory
   and hands that bundle to the CLI; the bundle is deleted afterwards. An export
   error blocks the deploy (400, all problems at once — nothing is uploaded).
-- **DP-9** Deploys are **public share links** (`share create --public`, no
-  `--token`): an opaque, unguessable capability URL. Rationale: authed mounts
-  cannot serve a hosted page's browser asset GETs yet (fused repo,
-  spec/serve/fused-render.md § Limitations); gate pickers become an option when
-  that lands.
+- **DP-9** Deploys are **public share links** (`share create --public`): an
+  opaque, unguessable capability URL by default. Rationale for staying public
+  (not authed): authed mounts cannot serve a hosted page's browser asset GETs
+  yet (fused repo, spec/serve/fused-render.md § Limitations); gate pickers
+  become an option when that lands.
+- **DP-9a** The token is choosable through a **collapsible "Link" section**
+  (like Caching, DP-17) whose one-line summary shows the current setting
+  (`unguessable` / `custom: <name>`). It has two body modes:
+  - **Picking** — a **random-vs-named radio**: **Unguessable link** (default)
+    keeps the crypto-random opaque token; **Custom name** reveals a name input
+    whose value rides through to `deploy_page`'s `custom_token`, appended as
+    `--token <name>` on that `share create --public` call (the fused CLI's own
+    allowed combination — a public mount with a chosen name is a **deliberately
+    guessable** URL, never produced by an omitted field, only an explicit
+    choice, so it is a two-way toggle rather than a "blank = random" field).
+    Shown when the next Deploy would mint a FRESH mount (no deployment yet, a
+    different env, or the recorded mount absent from `share list`), and in the
+    Change-link flow below. Client-side the name is checked against the CLI's
+    own token shape (`^[a-z0-9][a-z0-9_-]*$`); a malformed name (red error) and
+    a missing one (Custom name chosen, field empty — a quiet prompt) both
+    disable Deploy. An already-taken name is a `share create` rejection the CLI
+    itself reports (surfaced verbatim, DP-15).
+  - **Read-only summary** — once the mount's liveness is CONFIRMED
+    (active/revoked) on the same env, the picker is replaced by a summary of the
+    current link (custom name vs unguessable, read from the record's `named`
+    provenance) plus a **Change link** action. A plain redeploy keeps the token
+    (`repoint`/`recreate --same-token` take no `--token`, DP-10), so changing
+    the URL needs `force_new`: Change link re-reveals the picker and the next
+    Deploy takes the `force_new` path (mint a new token, best-effort revoke the
+    old — DP-10). An *unconfirmed* same-env status (env unreachable at open)
+    shows the picker, not the summary, since the next click may still fall
+    through to a fresh create.
+  The record persists a **`named`** boolean (whether the token is a chosen name
+  vs the opaque default), set at the fresh create that minted it and carried
+  forward unchanged on every token-reuse redeploy — the summary reads it rather
+  than re-deriving named-ness from the token string. The always-public,
+  **no-auth** posture (which the guessable/unguessable choice does not itself
+  state) is a note kept directly beneath the Link section, always visible.
 - **DP-10** Redeploy keeps the URL. Same-env pointer + mount active per
   `share list` → `share repoint <token>` (stable URL); revoked tombstone →
   `share recreate --same-token` then repoint (a failed repoint best-effort
@@ -880,13 +918,23 @@ the product gains network access.
 - **DP-15** Version dependency, surfaced not hidden: whether a *bundle* deploy
   succeeds on a given backend is the installed fused CLI's contract, not ours —
   the fused repo's spec/serve/fused-render.md publishes bundles via
-  `share create` on AWS envs and lists the managed backend's inline-upload
-  bundle classification as a follow-up. fused-render passes the CLI's own
-  error through verbatim rather than second-guessing the installed version.
+  `share create` on AWS envs and classifies them for inline upload
+  (`kind="html"`) on the managed backend, both as of fused 2.9.3.post6 (the
+  wheel this package pins as of that decision; the pin has since advanced —
+  see the `[fused]` extra in pyproject.toml); a control plane running an
+  older fused rejects the upload server-side. fused-render passes the CLI's
+  own error through verbatim rather than second-guessing the installed
+  version.
 - **DP-17** The modal carries a **caching control**: a checkbox ("Cache page
-  results") plus a duration select (1m/5m/15m/1h/6h/1d presets, default **1h**,
-  plus the current value verbatim when it isn't one of them — e.g. set by a
-  direct `share create --cache-max-age` outside this dialog), seeded on open
+  results") plus a duration select (1m/5m/15m/1h/6h/1d/7d/14d presets, default
+  **1h**, plus the current value verbatim when it isn't one of them — e.g. set by a
+  direct `share create --cache-max-age` outside this dialog). 30 days is the true
+  ceiling (the `results/` cache-bucket lifecycle GC backstop both backends fix at
+  30 days — `RESULTS_CACHE_LIFECYCLE_DAYS` for a managed environment,
+  `openfused-gc-results` for self-hosted AWS; a managed environment's
+  `_build_cache_settings` rejects anything beyond it), but 30d itself is
+  deliberately not offered as a preset — it would leave no margin against that
+  backstop, whereas 14d keeps a comfortable half-window of slack. Seeded on open
   from the stored deployment record like `include`/`exclude` (DP-2c) and
   re-sent as `cache_max_age` on every Deploy — there is no "leave it as it
   was". It reaches the two backends **differently**, because they model
@@ -896,7 +944,7 @@ the product gains network access.
   `repoint`/redeploy can change it too); for a managed `fused` environment the
   manifest field is not read at all — only the explicit `--cache-max-age` flag
   is, as the mount's own `cache_settings` (a control-plane concept independent
-  of the bundle, `application` repo spec `021` §3.1, amended). `deploy_page`
+  of the bundle, defined by the managed Fused service, amended). `deploy_page`
   now sends `--cache-max-age` on every path — `create`, `repoint`, and the
   follow-up `repoint` after a revoked-token `recreate --same-token` — so a
   redeploy on either backend applies whatever the dialog's checkbox/duration
