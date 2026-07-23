@@ -4,9 +4,80 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (created at the current commit if it doesn't exist yet)"
+        required: true
+      platforms:
+        description: "Which OS builds to run"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
 
 jobs:
+  # Resolves the release tag once and creates the (empty) GitHub Release that
+  # every OS job uploads its own artifacts into. Splitting this out lets
+  # macOS/Windows/(later) Linux build in parallel instead of Windows waiting
+  # on the DMG job just so a Release object exists to upload into.
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # previous-tag lookup below needs every tag reachable, not just
+          # the one that triggered this run.
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Find previous tag
+        id: prev_tag
+        run: |
+          set -euo pipefail
+          # GitHub's own previous-tag auto-detection has proven unreliable
+          # here (past releases each listed the full PR history instead of
+          # just what changed since the prior release) — pin it explicitly.
+          # grep exits 1 (failing the pipeline under pipefail) when there's
+          # no other tag yet, e.g. on the very first release — that's a
+          # legitimate case, not an error, so tolerate it and leave PREV_TAG
+          # empty; --generate-notes falls back to its own auto-detection.
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${{ steps.resolve.outputs.tag }}$" | head -n1 || true)"
+          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.resolve.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, reusing it."
+            exit 0
+          fi
+          NOTES_ARGS=(--generate-notes)
+          if [ -n "${{ steps.prev_tag.outputs.tag }}" ]; then
+            NOTES_ARGS+=(--notes-start-tag "${{ steps.prev_tag.outputs.tag }}")
+          fi
+          gh release create "$TAG" --target "${{ github.sha }}" \
+            --title "FusedRender $TAG" \
+            "${NOTES_ARGS[@]}"
+
   build-sign-notarize-release:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
     runs-on: macos-14
     outputs:
       version: ${{ steps.artifacts.outputs.version }}
@@ -15,6 +86,7 @@ jobs:
       contents: write # needed to attach the DMG to a GitHub Release
       id-token: write # needed to assume the AWS role via OIDC
     env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
       AWS_DEFAULT_REGION: us-west-2
@@ -126,46 +198,24 @@ jobs:
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
 
-      - name: Find previous tag
-        id: prev_tag
-        run: |
-          set -euo pipefail
-          # GitHub's own previous-tag auto-detection has proven unreliable
-          # here (past releases each listed the full PR history instead of
-          # just what changed since the prior release) — pin it explicitly.
-          # grep exits 1 (failing the pipeline under pipefail) when there's
-          # no other tag yet, e.g. on the very first release — that's a
-          # legitimate case, not an error, so tolerate it and leave PREV_TAG
-          # empty; the release action falls back to its own auto-detection.
-          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
-          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.DMG_PATH }}
-            ${{ env.WHL_PATH }}
-          name: FusedRender ${{ github.ref_name }}
-          # body is prepended before the auto-generated notes (GH Releases
-          # API behavior), so this ends up as the first section.
-          body: |
-            ## Downloads
-            - [DMG](${{ env.DMG_URL }})
-            - [Wheel](${{ env.WHL_URL }})
-          generate_release_notes: true
-          previous_tag: ${{ steps.prev_tag.outputs.tag }}
+      - name: Upload DMG + wheel to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
 
   build-windows-release:
-    # Runs after the DMG job so the GitHub Release already exists — this job
-    # only appends the Windows installer to it (no second release-create to
-    # race). See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
-    needs: build-sign-notarize-release
+    # Runs off prepare-release (not build-sign-notarize-release) so the
+    # Windows and macOS builds run in parallel — both upload into the release
+    # prepare-release already created. See docs/PYTHON_SUPERVISOR_SPEC.md
+    # "Software updates".
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
     runs-on: windows-latest
     permissions:
       contents: write # attach the installer to the GitHub Release
       id-token: write # assume the AWS role via OIDC
     env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
       AWS_DEFAULT_REGION: us-west-2
       S3_BUCKET: fused-render
       CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
@@ -216,12 +266,12 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
-          gh release upload "$GITHUB_REF_NAME" "$INSTALLER" --clobber
+          gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
 
   bump-homebrew:
     # Was the DMG job's last step; split into its own job so a tap-push failure
-    # (which happens after the Release + DMG already published) can't fail that
-    # job and, through `needs`, block build-windows-release from publishing.
+    # (which happens after the Release + DMG already published) can't fail
+    # that job.
     needs: build-sign-notarize-release
     runs-on: ubuntu-latest
     permissions: {} # uses the tap PAT only; no GITHUB_TOKEN scopes needed
