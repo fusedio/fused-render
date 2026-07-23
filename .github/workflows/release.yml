@@ -72,7 +72,6 @@ jobs:
       S3_BUCKET: fused-render
       # CloudFront distribution fronting the fused-render bucket
       # (application/terraform/main, aws_cloudfront_distribution.fused_render).
-      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
       - uses: actions/checkout@v4
@@ -151,17 +150,12 @@ jobs:
             sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
           fi
           DMG_PATH="$(ls dist/*.dmg)"
-          DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
           WHL_PATH="$(ls dist/*.whl)"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
-          echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
           # Exposed as job outputs for the split-out bump-homebrew job.
           echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
-          echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
-          # Served via CloudFront (public bucket behind the CDN).
-          echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
-          echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
+          echo "dmg_sha256=$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
