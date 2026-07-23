@@ -17,6 +17,7 @@ from fused_render.deeplink import (
     DeeplinkError,
     clone_or_pull,
     github_url_from,
+    is_launch_url,
     parse_github_url,
 )
 from fused_render.server import create_app
@@ -73,6 +74,45 @@ def test_parse_accepts_percent_encoded_deeplink():
 def test_parse_rejects_unknown_deeplink_action():
     with pytest.raises(DeeplinkError, match="expected fused-render://open"):
         parse_github_url("fused-render://frobnicate?git=" + TREE_URL)
+
+
+def test_unknown_deeplink_error_names_both_actions():
+    with pytest.raises(DeeplinkError, match="fused-render://launch"):
+        parse_github_url("fused-render://frobnicate?git=" + TREE_URL)
+
+
+# ---- launch action (D128) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "fused-render://launch",
+        "fused-render://launch/",
+        "fused-render:launch",  # some carriers strip the empty authority
+        "FUSED-RENDER://LAUNCH",
+        "  fused-render://launch  ",
+    ],
+)
+def test_is_launch_url_accepts(src):
+    assert is_launch_url(src) is True
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "",
+        None,
+        "fused-render://launch?x=1",  # launch is payload-free by definition
+        "fused-render://launch/extra",
+        "fused-render://launchpad",
+        "fused-render://open?git=" + TREE_URL,
+        DEEPLINK,
+        "https://github.com/o/r",
+    ],
+)
+def test_is_launch_url_rejects(src):
+    assert is_launch_url(src) is False
 
 
 def test_github_url_from_passthrough():
