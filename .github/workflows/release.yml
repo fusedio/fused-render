@@ -70,8 +70,10 @@ jobs:
       NOTARY_PROFILE: ci-notary
       AWS_DEFAULT_REGION: us-west-2
       S3_BUCKET: fused-render
-      # CloudFront distribution fronting the fused-render bucket
-      # (application/terraform/main, aws_cloudfront_distribution.fused_render).
+      # CloudFront distribution fronting the fused-render bucket (provisioned in
+      # Fused's infrastructure config). Flip to render.fused.io once its alias +
+      # cert have applied — release-note and latest.json links pick it up here.
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
       - uses: actions/checkout@v4
@@ -150,21 +152,54 @@ jobs:
             sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
           fi
           DMG_PATH="$(ls dist/*.dmg)"
+          DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
           WHL_PATH="$(ls dist/*.whl)"
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
+          # Consumed by the download-page step; served via CloudFront.
+          echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
+          echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
           # Exposed as job outputs for the split-out bump-homebrew job.
           echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
-          echo "dmg_sha256=$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
+
+      - name: Publish download page + version manifest
+        # The download page is cosmetic; the DMG/wheel (uploaded above) are the
+        # real artifacts. continue-on-error keeps ANY failure in this step —
+        # version derivation, write_manifest.py, or the S3 uploads — from
+        # skipping the CloudFront invalidation and GitHub Release/homebrew steps
+        # that follow.
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Same version derivation as the homebrew step below: from the DMG
+          # that was actually built, not the git tag.
+          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
+          export VERSION
+          python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
+          # These root keys need the IAM grant provisioned in Fused's
+          # infrastructure (index.html + latest.json). Until that applies, warn
+          # instead of erroring — though continue-on-error above is the real
+          # guarantee the release proceeds regardless.
+          if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
+               --content-type "application/json" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300"; then
+            echo "download page + latest.json published"
+          else
+            echo "::warning::download page/manifest upload failed (root-key IAM grant not applied yet?) — release artifacts are unaffected"
+          fi
 
       - name: Invalidate CloudFront
         run: |
           set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" \
+            "/index.html" "/latest.json" "/"
 
       - name: Upload DMG + wheel to GitHub Release
         env:

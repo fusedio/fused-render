@@ -251,10 +251,21 @@ def main() -> None:
     # openurls_target_path tells the two apart (mirrors the scheme check in
     # winopen.py's _open()).
     def application_openURLs_(self, _app, urls):
+        from fused_render.deeplink import is_launch_url
+
         raws = [str(u.absoluteString()) for u in urls]
         logger.info("deep-link open-URLs event: %s", raws)
         state["docs"] = True  # a deep-link launch shouldn't also open the home tab
         for raw in raws:
+            if is_launch_url(raw):
+                # fused-render://launch (D128): the OS launching/foregrounding
+                # this app IS the whole action — the server boot is already in
+                # flight and the page that linked here reconnects on its own
+                # (D126 banner), so no tab is opened now and nothing is queued
+                # to open later. state["docs"] above also keeps the bootstrap
+                # from auto-opening the home tab on a fresh launch.
+                logger.info("launch deep link: ensuring app/server only, no tab")
+                continue
             target = f"http://127.0.0.1:{port}" + openurls_target_path(raw)
             if state["ready"]:
                 logger.info("opening open-URLs target: %s", target)

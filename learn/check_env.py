@@ -24,7 +24,7 @@ def main():
         return env
 
     def find_claude():
-        shell = os.environ.get("SHELL", "/bin/zsh")
+        shell = os.environ.get("SHELL") or "/bin/bash"
         env = clean_env()
 
         # 1) Ask the user's login shell where `claude` is (picks up npm /

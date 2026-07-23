@@ -261,6 +261,23 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // resolving and will drive the correct final view (a file <Preview>) a beat
 // later, so we show the neutral loading body and let stat commit the real view.
 // Absent/false (the committed post-stat render), errors show normally.
+// Keyboard selection (the arrow-key row highlight) survives this component's
+// per-folder remount. Opening a folder first paints App's pre-stat scaffold
+// with a PROVISIONAL Listing, then swaps it for the resolved one when stat
+// lands ~1s later — a remount that would otherwise wipe an in-progress arrow
+// selection mid-keystroke (press Down during the open → the highlight vanishes).
+// Like fs-clipboard, the state lives just outside the remount boundary. A single
+// entry keyed by fsPath is enough (only one Listing is mounted at a time): it
+// bridges the scaffold→resolved swap and restores the highlight if you browse
+// back to the same folder.
+let lastSelection: { fsPath: string; path: string | null } | null = null;
+function recallSelection(fsPath: string): string | null {
+  return lastSelection && lastSelection.fsPath === fsPath ? lastSelection.path : null;
+}
+function rememberSelection(fsPath: string, path: string | null): void {
+  lastSelection = { fsPath, path };
+}
+
 export default function Listing({
   fsPath,
   provisional = false,
@@ -325,7 +342,12 @@ export default function Listing({
   // row scrolls into view, resets on every query change.
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   // Path of the keyboard-selected row (arrow-key navigation); null = none.
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // Seeded from the cross-remount store so a selection made in the pre-stat
+  // provisional Listing survives the swap to the resolved one (see
+  // recallSelection / lastSelection above).
+  const [selectedPath, setSelectedPath] = useState<string | null>(() =>
+    recallSelection(fsPath)
+  );
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -353,6 +375,13 @@ export default function Listing({
   const navRowsRef = useRef<string[]>([]);
   const selectedPathRef = useRef<string | null>(null);
   selectedPathRef.current = selectedPath;
+  // Mirror the selection into the cross-remount store so it's already there
+  // when the resolved Listing mounts (the provisional one has no unmount step
+  // that would clear it). Keyed by fsPath, so a real nav to another folder
+  // starts fresh.
+  useEffect(() => {
+    rememberSelection(fsPath, selectedPath);
+  }, [fsPath, selectedPath]);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (see rowCtxByPath
   // below, which assigns this each render).
@@ -818,6 +847,18 @@ export default function Listing({
   );
   navRowsRef.current = navRows;
 
+  // Whether navRows reflects a LOADED listing (not a transient empty while the
+  // fetch is in flight). Only the non-search listing can be mid-load with rows
+  // still empty AND a selection already set — that's the folder-open case: the
+  // resolved Listing mounts with a selection restored from the pre-stat
+  // provisional one, but its own /api/fs/list is briefly loading. Search keeps
+  // its prior behavior (results stream in). Used by the reconcile effect so a
+  // real, still-valid selection is never cleared as "vanished" during a reload.
+  // "Settled" = not mid-fetch: an ok listing OR a terminal error (rows are
+  // then genuinely empty, so the reconcile below should clear/reclamp a stale
+  // selection). Only the transient `loading` status suppresses reconcile.
+  const listingLoaded = searching ? true : state.status !== "loading";
+
   // Keep the keyboard selection scrolled into view as it moves.
   useEffect(() => {
     if (!selectedPath) return;
@@ -875,13 +916,20 @@ export default function Listing({
       lastSelIndexRef.current = i; // selection still valid; remember its slot
       return;
     }
+    // Selection isn't in the current rows. While the listing is still LOADING
+    // (rows transiently empty during a fetch — notably the pre-stat provisional
+    // Listing being swapped for the resolved one right after a folder opens),
+    // don't treat it as vanished: keep it and rerun once rows arrive. Clearing
+    // here is what dropped an arrow-key selection made just after opening a
+    // folder, even with the selection carried across the remount.
+    if (!listingLoaded) return;
     if (rows.length === 0) {
       setSelectedPath(null);
       return;
     }
     const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
     setSelectedPath(rows[clamped]);
-  }, [navRows, selectedPath]);
+  }, [navRows, selectedPath, listingLoaded]);
 
   // --- file operations ------------------------------------------------------
 

@@ -283,3 +283,91 @@ def test_rio_open_remote_uses_internal_overviews(fs, tmp_path):
         # a decimated read through overview_level works over the opener
     with ts._rio_open(remote_only, rem, overview_level=0) as ds2:
         assert ds2.width == 512  # first internal overview (1024/2)
+
+
+# --------------------------------------------------------------------------
+# native /tile engine — a MOUNT-backed file's HEADER must be parsed over HTTP,
+# never open()+mmap of the kernel NFS path. That mmap used to run in open_file
+# unconditionally (before the reader upgrade) and its readahead page-fault on a
+# big tif dropped the whole mount (measured: a 4.6s header open dropped
+# source.coop). Fix = _remote_header_bytes + parse_header(data=) +
+# header_meta(file_size=). open_file itself is nested in _serve(); these cover
+# its module-level building blocks (integration verified against the live
+# daemon: /meta on a cold 127MB mount tif, zero kernel touches).
+# --------------------------------------------------------------------------
+
+def _tc():
+    """Import the native TIFF core with its sibling dir on sys.path (its
+    module-level `import _raster_common` needs the geotiff dir, exactly as the
+    daemon arranges it)."""
+    import os
+    import sys
+    d = os.path.dirname(ts.__file__)
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    import _tiff_core
+    return _tiff_core
+
+
+def test_remote_header_bytes_reads_prefix_over_http(fs):
+    blob = bytes((i * 11) % 256 for i in range(5000))
+    s = fs(blob=blob)
+    got = ts._remote_header_bytes(s.src, "/x.tif", len(blob), want=1000)
+    assert got == blob[:1000]
+    assert s.raw_paths and all("x.tif" in p for p in s.raw_paths)
+
+
+def test_remote_header_bytes_whole_when_want_none(fs):
+    blob = bytes(range(200))
+    s = fs(blob=blob)
+    assert ts._remote_header_bytes(s.src, "/x.tif", len(blob)) == blob
+
+
+def test_remote_header_bytes_want_is_clamped_to_size(fs):
+    blob = bytes(range(50))
+    s = fs(blob=blob)
+    # want larger than the file -> read the whole file, not an over-long range
+    assert ts._remote_header_bytes(s.src, "/x.tif", len(blob), want=10_000) == blob
+
+
+def test_remote_header_bytes_none_without_size(fs):
+    s = fs(blob=b"abc")
+    assert ts._remote_header_bytes(s.src, "/x.tif", None) is None
+    assert ts._remote_header_bytes(s.src, "/x.tif", 0) is None
+
+
+def test_remote_header_bytes_none_when_unreachable():
+    src = "http://127.0.0.1:1/api/fs/raw?path=%2Fx.tif"
+    assert ts._remote_header_bytes(src, "/x.tif", 123) is None
+
+
+def test_parse_header_from_bytes_never_opens_path(tmp_path):
+    # The mount-safe path: parse the header from HTTP-read bytes. Build a tif,
+    # keep its bytes, DELETE the file so any accidental kernel open fails loudly,
+    # then parse from data=. header_meta with a known size must not getsize the
+    # (absent) path either.
+    pytest.importorskip("rasterio")
+    tc = _tc()
+    build = str(tmp_path / "b.tif")
+    _make_tif(build, with_overviews=True)
+    blob = open(build, "rb").read()
+    os.remove(build)
+    gone = str(tmp_path / "gone" / "x.tif")  # never on disk
+    assert not os.path.exists(gone)
+    buf, en, t0, next_off = tc.parse_header(gone, data=blob)
+    assert buf[:2] in (b"II", b"MM")
+    meta = tc.header_meta(gone, buf, en, t0, next_off, file_size=len(blob))
+    assert meta["file_size"] == len(blob)
+    assert meta["width"] == 1024 and meta["height"] == 1024
+
+
+def test_parse_header_local_still_mmaps(tmp_path):
+    # data=None keeps the unchanged fast local path: mmap + getsize.
+    pytest.importorskip("rasterio")
+    tc = _tc()
+    p = str(tmp_path / "local.tif")
+    _make_tif(p, with_overviews=False)
+    buf, en, t0, next_off = tc.parse_header(p)
+    meta = tc.header_meta(p, buf, en, t0, next_off)
+    assert meta["file_size"] == os.path.getsize(p)
+    assert meta["width"] == 1024

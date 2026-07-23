@@ -215,3 +215,42 @@ def is_file(path) -> bool:
     if mounts.is_mount_backed(path):
         return mount_is_file(path)
     return local_is_file(path)
+
+
+# ------------------------------------------------------- generic existence probe
+
+# rc_stat_for outcomes that count as "present" for a GENERIC (file-OR-directory)
+# existence check. "indeterminate" fails OPEN, same contract as _MOUNT_FILE_OK
+# above — an rcd hiccup must not report a bookmark's target as gone.
+_MOUNT_EXISTS_OK = ("exists", "indeterminate")
+
+
+def mount_exists(path) -> bool:
+    """os.path.exists for a KNOWN mount-backed path (file OR directory —
+    unlike is_file/mount_is_file, which are files-only), answered by the rcd rc
+    API (mounts.rc_stat_for) and NEVER a kernel stat — same wedge hazard as
+    mount_is_file. Fails OPEN on an indeterminate probe. For callers that have
+    already established the path is mount-backed."""
+    return mounts.rc_stat_for(path) in _MOUNT_EXISTS_OK
+
+
+def local_exists(path) -> bool:
+    """os.path.exists for a LOCAL (non-mount-backed) path. Mirrors local_is_file:
+    a plain kernel stat is safe and cheap here — the mount-wedging GETATTR
+    concern only applies under a managed mount."""
+    try:
+        return os.path.exists(path)
+    except OSError:
+        return False
+
+
+def exists(path) -> bool:
+    """Mount-safe os.path.exists (file OR directory): dispatches on
+    is_mount_backed, then answers a mount-backed path through the rc API (never
+    the kernel) and a local path through the kernel. Fails OPEN on an
+    indeterminate mount probe. Mirrors is_file's single gate+dispatch — for a
+    caller (like bookmarks, which can target a directory listing) that needs
+    plain existence rather than the files-only contract is_file enforces."""
+    if mounts.is_mount_backed(path):
+        return mount_exists(path)
+    return local_exists(path)
