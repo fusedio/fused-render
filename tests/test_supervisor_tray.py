@@ -4,8 +4,6 @@ import sys
 import time
 import types
 
-import pytest
-
 from fused_render.supervisor import tray
 
 
@@ -34,7 +32,10 @@ def test_run_dispatches_by_platform(monkeypatch):
 
 
 def test_tray_retry_loop_honors_stop(monkeypatch):
-    pytest.importorskip("pystray")
+    # No pystray import: _run is monkeypatched below (the real backend is never
+    # entered) and stop() only iterates the empty icon list, so this runs on any
+    # platform — including the linux-desktop CI job, which installs dbus-fast
+    # (not pystray) yet is meant to exercise this retry-loop stop contract.
     # Bugbot: stop() during the retry backoff was a no-op (no icon yet) and
     # the next retry showed a tray icon after shutdown had already started.
     calls = []
