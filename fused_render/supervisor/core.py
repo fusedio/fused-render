@@ -21,7 +21,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from fused_render import desktop_probe
-from fused_render._view_url_codec import view_url
+from fused_render._view_url_codec import clone_url, is_deep_link, view_url
 from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.supervisor import _backend, protocol, tray
 from fused_render.supervisor.paths import DesktopPaths
@@ -385,7 +385,15 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
 def _open_command(port: int, command: protocol.Command) -> None:
     if isinstance(command, protocol.Open):
-        url = _view_url(port, Path(command.path))
+        # A `fused-render://` payload is an OS-delivered deep link, not a path:
+        # route it to the server's /clone confirm page instead of a /view URL
+        # (SPEC §26, D110). Same mapping as macOS (app.py) and Windows
+        # (winopen.py), shared via _view_url_codec so the OSes cannot drift.
+        # Inert on Windows unless such an arg actually arrives.
+        if is_deep_link(command.path):
+            url = clone_url(port, command.path)
+        else:
+            url = _view_url(port, Path(command.path))
     elif isinstance(command, protocol.OpenHome):
         url = f"http://127.0.0.1:{port}/"
     else:
@@ -411,7 +419,13 @@ def _launch_token() -> str:
 
 
 def _absolute_command(command: protocol.Command) -> protocol.Command:
-    if isinstance(command, protocol.Open) and not Path(command.path).is_absolute():
+    # A deep link is not a path — never cwd-join it (that would corrupt the
+    # URL); it is routed to /clone in _open_command instead.
+    if (
+        isinstance(command, protocol.Open)
+        and not is_deep_link(command.path)
+        and not Path(command.path).is_absolute()
+    ):
         return protocol.Open(str(Path.cwd() / command.path))
     return command
 

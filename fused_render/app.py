@@ -63,10 +63,13 @@ def clone_url_path(raw_url: str) -> str:
     """Shell URL path for an OS-delivered `fused-render://` deep link (SPEC
     §26, D110): the /clone confirm page with the raw link as ?src=. Parsing
     and validation happen server-side (deeplink.py); this only ferries the
-    string. Module-level (not a closure) so it is testable without AppKit."""
-    from urllib.parse import quote
+    string. Module-level (not a closure) so it is testable without AppKit.
 
-    return "/clone?src=" + quote(raw_url, safe="")
+    Delegates to the shared `_view_url_codec` (now shared with the Linux
+    supervisor's core.py) so both OSes map a deep link identically."""
+    from fused_render._view_url_codec import clone_url_path as _shared
+
+    return _shared(raw_url)
 
 
 def openurls_target_path(raw_url: str) -> str:

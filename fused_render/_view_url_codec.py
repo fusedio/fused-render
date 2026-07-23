@@ -38,3 +38,31 @@ def view_url(port: int, fs_path: str | None) -> str:
     if not fs_path:
         return f"http://127.0.0.1:{port}/"
     return f"http://127.0.0.1:{port}" + view_url_path(fs_path)
+
+
+# ---- fused-render:// deep links (SPEC §26, D110) ----------------------------
+# The single body shared by every OS entry point (macOS app.py,
+# Windows winopen.py, and the Linux supervisor core.py) so the OSes cannot
+# drift on how an OS-delivered deep link maps to the server's /clone page.
+# Parsing/validation is entirely server-side (deeplink.py); this only ferries
+# the raw link string as ?src=.
+
+_DEEP_LINK_SCHEME = "fused-render:"
+
+
+def is_deep_link(target: str) -> bool:
+    """True when a forwarded target is a `fused-render://` deep link rather than
+    a filesystem path (case-insensitive, matching app.py's macOS check)."""
+    return target.lower().startswith(_DEEP_LINK_SCHEME)
+
+
+def clone_url_path(raw_url: str) -> str:
+    """/clone confirm-page URL path (no host/port) for a raw deep link."""
+    from urllib.parse import quote
+
+    return "/clone?src=" + quote(raw_url, safe="")
+
+
+def clone_url(port: int, raw_url: str) -> str:
+    """Full local /clone confirm-page URL for a raw deep link."""
+    return f"http://127.0.0.1:{port}" + clone_url_path(raw_url)
