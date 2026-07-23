@@ -366,6 +366,16 @@ def main() -> None:
         if state["server"] is not None:
             state["server"].should_exit = True
         _remove_pidfile()
+        # macOS has no supervisor tree-kill (server runs in-process here), so a
+        # non-persisted rcd would otherwise reparent to launchd and survive
+        # quit. SIGTERM it (rcd unmounts cleanly). Best-effort + gated on NOT
+        # FUSED_RENDER_RCLONE_PERSIST internally; never lets a reap block quit.
+        try:
+            from fused_render.shell.mounts import stop_local_rcd
+
+            stop_local_rcd()
+        except Exception:
+            logger.warning("rcd teardown on quit failed", exc_info=True)
         rumps.quit_application()
 
     status_app = FusedRenderStatusApp()
