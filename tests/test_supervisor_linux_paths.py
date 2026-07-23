@@ -49,27 +49,30 @@ def test_environment_block_strips_identity_vars_and_applies_overrides(monkeypatc
     assert env["OVERRIDE"] == "1"
 
 
-# -- path layout: state/logs/temp under the ~/.fused-render/desktop dotdir --
+# -- path layout: state IS the flat ~/.fused-render dotdir (shared with CLI) --
 
 def _clear_xdg(monkeypatch):
     for var in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_state_logs_temp_live_under_the_dotdir(monkeypatch, tmp_path):
-    # Durable state standardizes on ~/.fused-render/desktop (one known place);
-    # cache stays OS-native under XDG_CACHE_HOME (disposable, out of backup
-    # scope) and runtime stays on XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
+def test_state_is_the_flat_dotdir_shared_with_cli(monkeypatch, tmp_path):
+    # Durable state IS ~/.fused-render itself — byte-for-byte the dir the
+    # dev/CLI and the released macOS app use (shell/storage.home_dir() with no
+    # FUSED_RENDER_HOME), so mounts land at ~/.fused-render/mounts and all user
+    # config lives in one known place. Cache stays OS-native under
+    # XDG_CACHE_HOME (disposable, out of backup scope) and runtime stays on
+    # XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
-    root = tmp_path / ".fused-render" / "desktop"
+    root = tmp_path / ".fused-render"
     assert p.root == root
-    assert p.state == root / "state"
+    assert p.state == root
     assert p.logs == root / "logs"
     assert p.temp == root / "temp"
-    assert p.cache == tmp_path / "cache" / "fused-render" / "desktop"
+    assert p.cache == tmp_path / "cache" / "fused-render"
     assert p.runtime == tmp_path / "run" / "fused-render"
 
 
@@ -79,9 +82,9 @@ def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     p = paths_mod.DesktopPaths.discover_linux()
-    root = tmp_path / ".fused-render" / "desktop"
+    root = tmp_path / ".fused-render"
     assert p.root == root
-    assert p.state == root / "state"
+    assert p.state == root
     assert p.logs == root / "logs"
 
 
@@ -89,13 +92,13 @@ def test_cache_and_runtime_fallbacks_when_xdg_unset(monkeypatch, tmp_path):
     _clear_xdg(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     p = paths_mod.DesktopPaths.discover_linux()
-    root = tmp_path / ".fused-render" / "desktop"
+    root = tmp_path / ".fused-render"
     assert p.root == root
-    assert p.state == root / "state"
+    assert p.state == root
     # Cache stays OS-native; XDG_CACHE_HOME unset falls back to ~/.cache.
-    assert p.cache == tmp_path / ".cache" / "fused-render" / "desktop"
+    assert p.cache == tmp_path / ".cache" / "fused-render"
     # Runtime with XDG_RUNTIME_DIR unset falls back under the cache dir, 0700.
-    assert p.runtime == tmp_path / ".cache" / "fused-render" / "desktop" / "runtime"
+    assert p.runtime == tmp_path / ".cache" / "fused-render" / "runtime"
 
 
 def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):

@@ -36,7 +36,7 @@ AppImage).
 | Tray | Native **StatusNotifierItem over D-Bus** (`dbus-fast`); works on any StatusNotifier host — waybar, KDE, AppIndicator-GNOME. No X11/XEmbed, so it renders on Wayland. Absence on a session with no StatusNotifier host (stock GNOME w/o extension) is an accepted degraded mode (gate (c)). |
 | Start at login | `~/.config/autostart/fused-render.desktop` (`$XDG_CONFIG_HOME` honored). |
 | Dialogs / shell-open | `_linux/ui.py`: first available of `zenity` → `kdialog` → bundled tkinter; `xdg-open` for open_path/open_uri/open_url (same pattern as `server.py`'s reveal-in-file-manager). |
-| Paths | Durable state/logs/temp under the dotdir `~/.fused-render/desktop` (one known place; the `desktop/` subtree isolates supervisor state from the dev/CLI files under `~/.fused-render`). Disposable cache stays OS-native at `$XDG_CACHE_HOME/fused-render/desktop` (fallback `~/.cache`), runtime at `$XDG_RUNTIME_DIR/fused-render` (fallback: a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
+| Paths | Durable state IS the flat dotdir `~/.fused-render` — the same dir the dev/CLI and macOS app use, shared by design (all user config in one known place; mounts at `~/.fused-render/mounts`); `logs/` and `temp/` are subdirs of it. Disposable cache stays OS-native at `$XDG_CACHE_HOME/fused-render` (fallback `~/.cache`), runtime at `$XDG_RUNTIME_DIR/fused-render` (fallback: a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
 | Installer / upgrade | Replace the `.AppImage` file; old instance shuts down via the same `--shutdown-for-upgrade` command over the socket. |
 
 The `.desktop` `Exec` uses `%u` (a **single** URL/file field code), not `%F`, to
