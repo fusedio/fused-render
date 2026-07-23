@@ -1032,6 +1032,9 @@
     setHL("reader-word", s.start + ci, s.start + ci + len, b.el.firstChild);
   }
   function updateCursorUI(scroll) {
+    // Paused navigation (jump/step) can move past the lazy render cap —
+    // materialize the block before painting, or the cursor chrome vanishes.
+    ensureRendered(pos);
     if (curEl) curEl.classList.remove("current");
     const b = blocks[pos];
     if (b && b.el) {
@@ -1380,7 +1383,10 @@
   }
   function resolveVoice() {
     if (!voices.length) { curVoice = null; return; }
-    const wanted = fused.params.get("voice");
+    // voiceschanged re-runs this — never re-bind a voice the watchdog
+    // declared dead this session (same guard as the params.onChange sync).
+    const wanted0 = fused.params.get("voice");
+    const wanted = wanted0 === deadVoiceURI ? null : wanted0;
     curVoice =
       (wanted && voices.find((v) => v.voiceURI === wanted)) ||
       voices.find((v) => v.default) ||
