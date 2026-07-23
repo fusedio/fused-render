@@ -28,6 +28,12 @@ _JSON = os.path.join(_HERE, "file_associations.json")
 # (parquet, geojson, …) without guessing — and mis-guessing — a canonical type.
 _MIME_PREFIX = "application/x-fused-render-"
 
+# The freedesktop MIME "type" that registers an app as the handler for a URL
+# scheme. Listing it in the .desktop MimeType= makes the OS route
+# `fused-render://` deep links to the AppImage (SPEC §26, D110). Not a file
+# association, so it stays out of the winopen-derived table and the drift test.
+_SCHEME_HANDLER_MIME = "x-scheme-handler/fused-render"
+
 
 @dataclass(frozen=True)
 class Association:
@@ -101,7 +107,11 @@ def main() -> None:
         print(f"wrote {_JSON}")
     elif args.command == "mime-types":
         # Trailing ';' is required by the desktop-entry spec for MimeType lists.
-        print(";".join(a.mime for a in associations()) + ";")
+        # The scheme handler is appended so the same MimeType= line registers
+        # both the file "Open with" types and the fused-render:// deep-link
+        # handler.
+        mimes = [a.mime for a in associations()] + [_SCHEME_HANDLER_MIME]
+        print(";".join(mimes) + ";")
     elif args.command == "mime-xml":
         with open(args.output, "w", encoding="utf-8") as handle:
             handle.write(_mime_xml(associations()))

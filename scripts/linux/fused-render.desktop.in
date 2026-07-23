@@ -2,7 +2,7 @@
 Type=Application
 Name=FusedRender
 Comment=FusedRender desktop
-Exec=AppRun %f
+Exec=AppRun %u
 Icon=fused-render
 Categories=Development;Science;
 Terminal=false
