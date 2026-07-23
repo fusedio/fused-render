@@ -590,9 +590,18 @@ def _copytruncate_rcd_log() -> None:
 def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
     # Record the log path alongside port/pid so tooling (and a human tailing
     # the daemon) can find it without reconstructing home_dir() (INCIDENT).
+    # spawner_pid records WHO spawned the daemon: rcd is shared per-home, so a
+    # later process reusing it (e.g. the macOS app alongside a CLI server) must
+    # be able to tell on quit whether the daemon is its own to stop — see
+    # stop_local_rcd's ownership gate.
     storage.write_json(
         _rcd_state_path(),
-        {"port": port, "pid": pid, "log": log_path or _rcd_log_path()},
+        {
+            "port": port,
+            "pid": pid,
+            "log": log_path or _rcd_log_path(),
+            "spawner_pid": os.getpid(),
+        },
     )
     # Also record in the central registry so a future run can reap this daemon
     # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
@@ -911,10 +920,28 @@ def stop_local_rcd() -> None:
     detached daemon is meant to outlive the process, so we leave it running.
     Reuses _kill_current_rcd's safety gates (only ever signals a pid PROVEN to
     be our rclone rcd) and swallows every error — a reap failure must never
-    block app quit."""
+    block app quit.
+
+    Ownership gate: rcd is shared per-home, so the daemon on record may have
+    been spawned by ANOTHER process that is still using it (e.g. the app
+    quitting while a CLI `fused-render` server keeps serving mounts). When
+    rcd.json records a spawner_pid that is not us and that pid is still alive,
+    leave the daemon alone — it is the spawner's to reap. A missing
+    spawner_pid (an rcd.json written before the field existed) preserves the
+    old behavior and kills."""
     if _rclone_should_persist():
         return
     with _rcd_lock:
+        entry = storage.read_json(_rcd_state_path())
+        if isinstance(entry, dict):
+            spawner_pid = entry.get("spawner_pid") or 0
+            if spawner_pid and spawner_pid != os.getpid() and _pid_alive(spawner_pid):
+                logger.info(
+                    "stop_local_rcd: rcd was spawned by pid %s which is still "
+                    "alive; leaving the shared daemon to its owner",
+                    spawner_pid,
+                )
+                return
         try:
             _kill_current_rcd()
         except Exception:
