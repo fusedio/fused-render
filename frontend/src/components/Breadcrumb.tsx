@@ -272,13 +272,21 @@ export function Breadcrumb({
     else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
+    // GNOME path-bar compression (nautilus-pathbar.c): a crumb may flex-shrink
+    // (ellipsizing under space pressure, .shrink in shell.css) only when its
+    // name is longer than 1.5x its min-width floor — 7ch for ancestors, 4x
+    // that for the current dir so the tail compresses last. Shorter names
+    // never shrink; the floors guarantee real overflow, so the strip scrolls
+    // once everything is compressed.
+    const shrink = part.length > (isLast ? 28 : 7) * 1.5;
+    const cls = "path-crumb" + (isLast ? " last" : "") + (shrink ? " shrink" : "");
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
     if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className="path-crumb last" title={part}>
+        <span key={target} className={cls} title={part}>
           {part}
         </span>
       );
@@ -287,7 +295,7 @@ export function Breadcrumb({
         <a
           key={target}
           href="#"
-          className="path-crumb"
+          className={cls}
           title={part}
           onClick={(e) => {
             e.preventDefault();

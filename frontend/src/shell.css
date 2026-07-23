@@ -729,20 +729,29 @@ a.bookmark-name::after {
   border-radius: 3px;
 }
 
-/* Truncate a single over-long folder name so it can't eat the whole strip
-   (main bar only — the panel pane keeps its crumbs untruncated). inline-block
-   is what lets text-overflow apply to these inline <a>/<span> crumbs; the full
-   name stays reachable via the title tooltip and horizontal scroll.
-   flex-shrink 0 is load-bearing: overflow:hidden zeroes a flex item's
-   automatic minimum size, so shrinkable crumbs would all squeeze to slivers
-   and the strip would never overflow — i.e. never scroll. */
+/* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
+   keeps its crumbs untruncated). Crumbs never shrink by default; ones marked
+   .shrink (names longer than 1.5x their floor, Breadcrumb.tsx) may compress
+   under space pressure down to a min-width floor, ellipsizing as they go.
+   The floors are load-bearing twice over: overflow:hidden zeroes a flex
+   item's automatic minimum size (without a floor everything squeezes to
+   slivers), and flex can't shrink below min-width, so once every .shrink
+   crumb hits its floor the strip genuinely overflows and scrolling takes
+   over. The current dir's 4x floor makes the tail compress last; full names
+   stay reachable via the title tooltip. */
 #breadcrumb .path-crumb {
-  display: inline-block;
-  vertical-align: bottom;
   flex: 0 0 auto;
-  max-width: 16em;
+}
+
+#breadcrumb .path-crumb.shrink {
+  flex-shrink: 1;
+  min-width: 7ch;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+#breadcrumb .path-crumb.last.shrink {
+  min-width: 28ch;
 }
 
 .path-crumb.last,
