@@ -116,6 +116,17 @@ def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     assert env["PATH"].split(os.pathsep)[0] == str(tools)
 
 
+def test_desktop_template_uses_url_field_code():
+    # %u (URLs + files), not %f (files only): the DE hands `fused-render://`
+    # deep links to Exec via the field code, so scheme handling needs %u. File
+    # managers still pass plain paths through it. The MimeType placeholder that
+    # the build substitutes must remain.
+    desktop = (_SCRIPTS / "linux" / "fused-render.desktop.in").read_text()
+    assert "Exec=AppRun %u" in desktop
+    assert "%f" not in desktop
+    assert "MimeType=@MIMETYPE@" in desktop
+
+
 def test_linux_build_stages_tools_in_python_bin():
     # On Linux tools_dir resolves to $PYTHON_ROOT/bin (python-build-standalone
     # puts python3 there), so the build script MUST stage the DuckDB extensions,
