@@ -650,8 +650,10 @@
     title.textContent = `${err.type || "Error"}: ${err.message || ""}`;
     overlay.appendChild(title);
     // Headline the failing line of the USER's script (err.where, set by the
-    // executor, D128) so the culprit is readable without scanning the stack.
-    if (err.where && err.where.file) {
+    // executor, D128) as the prominent culprit, so it's readable without
+    // scanning a stack.
+    const hasWhere = err.where && err.where.file;
+    if (hasWhere) {
       const loc = document.createElement("div");
       loc.style.cssText = "margin-bottom:12px;color:#ffb3b3;";
       const func = err.where.func ? `, in ${err.where.func}` : "";
@@ -667,7 +669,22 @@
     const pre = document.createElement("pre");
     pre.style.cssText = "margin:0;white-space:pre-wrap;word-break:break-word;";
     pre.textContent = err.traceback || "";
-    overlay.appendChild(pre);
+    if (hasWhere) {
+      // The headline already names the culprit; tuck the full traceback behind
+      // a collapsed toggle (D128) so it's one click away without repeating the
+      // failing line the trimmed traceback now leads with.
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Traceback";
+      summary.style.cssText = "cursor:pointer;color:#ffb3b3;opacity:0.85;margin-bottom:8px;";
+      details.appendChild(summary);
+      details.appendChild(pre);
+      overlay.appendChild(details);
+    } else {
+      // No user-script location (harness error, timeout, missing file): the
+      // traceback/message is the only content, so show it outright.
+      overlay.appendChild(pre);
+    }
     document.body.appendChild(overlay);
   }
 
