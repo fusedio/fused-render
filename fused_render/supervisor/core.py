@@ -94,6 +94,7 @@ def run(initial: protocol.Command) -> None:
 
     paths = DesktopPaths.discover()
     paths.create()
+    _spawn_desktop_integration(paths)
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
@@ -416,6 +417,25 @@ def _open_browser(url: str) -> None:
 
 def _launch_token() -> str:
     return secrets.token_hex(32)  # 32 bytes == 256 bits, 64 hex chars
+
+
+def _spawn_desktop_integration(paths: DesktopPaths) -> None:
+    """Kick off best-effort user-level desktop self-integration on a daemon
+    thread (Linux only; a no-op backend hook elsewhere). It shells out to
+    update-mime-database / update-desktop-database, which must never delay the
+    server/tray coming up — and it must never break startup, so any failure is
+    swallowed inside the backend (log-and-continue) with a final guard here."""
+    integrate = getattr(_backend, "integrate", None)
+    if integrate is None:
+        return
+
+    def worker():
+        try:
+            integrate(paths)
+        except Exception as error:  # noqa: BLE001 - integration is never fatal to startup
+            paths.log(f"desktop integration failed: {error}")
+
+    threading.Thread(target=worker, daemon=True, name="fused-render-integrate").start()
 
 
 def _absolute_command(command: protocol.Command) -> protocol.Command:

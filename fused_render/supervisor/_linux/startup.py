@@ -41,14 +41,30 @@ def _desktop_file() -> Path:
     return _autostart_dir() / _DESKTOP_FILE_NAME
 
 
+def appimage_path() -> Path | None:
+    """The AppImage this process runs from, or None when unpackaged.
+
+    `$APPIMAGE` set and pointing at an existing file (the AppImage runtime
+    exports it for the launched process and its children); otherwise None — a
+    dev `python -m …` run, or a stale/missing `$APPIMAGE`. Shared with
+    integration.py, which self-integrates ONLY from a real AppImage and treats
+    None as a silent no-op (never a raise), so this deliberately reports the
+    missing-file case as None rather than raising."""
+    appimage = os.environ.get("APPIMAGE")
+    if not appimage:
+        return None
+    path = Path(appimage)
+    return path if path.is_file() else None
+
+
 def _launcher_path() -> Path:
     """The runnable AppImage/launcher to name in Exec. Raises if it can't be
     resolved to an existing file, so callers never write a broken entry."""
     appimage = os.environ.get("APPIMAGE")
     if appimage:
-        path = Path(appimage)
-        if not path.is_file():
-            raise FileNotFoundError(f"$APPIMAGE points at a missing file: {path}")
+        path = appimage_path()
+        if path is None:
+            raise FileNotFoundError(f"$APPIMAGE points at a missing file: {appimage}")
         return path
     # Dev / unpackaged fallback: whatever launched us — but only if the desktop
     # session could actually exec it. Under `python -m fused_render.supervisor`

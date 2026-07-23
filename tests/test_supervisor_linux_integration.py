@@ -1,0 +1,154 @@
+"""User-level desktop self-integration (SPEC gate (d), Task A). Headless: XDG
+dirs are redirected to tmp_path, $APPIMAGE is a fake file, and the update-*
+tools are subprocess-stubbed — no desktop session required (the pattern the
+other Linux supervisor tests use)."""
+import json
+from pathlib import Path
+
+import pytest
+
+from fused_render.supervisor import paths as paths_mod
+from fused_render.supervisor._linux import integration
+
+
+@pytest.fixture
+def env(monkeypatch, tmp_path):
+    """Redirect XDG dirs into tmp_path and return a helper bundle."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.delenv("APPDIR", raising=False)
+    monkeypatch.delenv("APPIMAGE", raising=False)
+
+    paths = paths_mod.DesktopPaths.discover_linux()
+    paths.create()
+
+    tool_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        integration.subprocess, "run",
+        lambda argv, **kw: tool_calls.append(argv) or _completed(),
+    )
+    monkeypatch.setattr(integration.shutil, "which", lambda tool: "/usr/bin/" + tool)
+
+    data_home = tmp_path / "data"
+    appimage = tmp_path / "FusedRender.AppImage"
+    appimage.write_text("#!/bin/sh\n")
+    icon_src = tmp_path / "icon-src.png"
+    icon_src.write_bytes(b"\x89PNG\r\n")
+
+    class Bundle:
+        pass
+
+    b = Bundle()
+    b.paths = paths
+    b.data_home = data_home
+    b.appimage = appimage
+    b.icon_src = icon_src
+    b.tool_calls = tool_calls
+    b.desktop_file = data_home / "applications" / "fused-render.desktop"
+    b.mime_file = data_home / "mime" / "packages" / "fused-render.xml"
+    b.icon_file = data_home / "icons" / "hicolor" / "256x256" / "apps" / "fused-render.png"
+    b.stamp_file = paths.state / "desktop-integration.json"
+    return b
+
+
+class _completed:
+    returncode = 0
+
+
+def test_no_appimage_is_a_silent_no_op(env, monkeypatch):
+    # No $APPIMAGE and no injected appimage: a dev run must write nothing.
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    integration.integrate(env.paths)
+    assert not env.desktop_file.exists()
+    assert not env.mime_file.exists()
+    assert env.tool_calls == []
+
+
+def test_first_install_writes_files_and_pokes_databases(env):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+
+    # .desktop entry: absolute quoted AppImage Exec with the URL field code.
+    desktop = env.desktop_file.read_text()
+    assert f"Exec={env.appimage} %u" in desktop
+    assert "MimeType=" in desktop and desktop.rstrip().endswith("x-scheme-handler/fused-render;")
+    assert f"Icon={env.icon_file}" in desktop
+
+    # Custom-types MIME package, and the icon copied in.
+    assert env.mime_file.read_text().startswith("<?xml")
+    assert env.icon_file.read_bytes() == env.icon_src.read_bytes()
+
+    # Databases refreshed; the scheme (only) is defaulted to us.
+    tools = [c[0] for c in env.tool_calls]
+    assert tools == ["update-mime-database", "update-desktop-database", "xdg-mime"]
+    xdg = next(c for c in env.tool_calls if c[0] == "xdg-mime")
+    assert xdg == ["xdg-mime", "default", "fused-render.desktop", "x-scheme-handler/fused-render"]
+
+    assert env.stamp_file.exists()
+
+
+def test_no_file_type_default_is_ever_set(env):
+    # macOS "Alternate rank" parity: never steal the user's file defaults — the
+    # ONLY xdg-mime default is the deep-link scheme handler.
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    defaults = [c for c in env.tool_calls if c[0] == "xdg-mime" and "default" in c]
+    assert len(defaults) == 1
+    assert defaults[0][-1] == "x-scheme-handler/fused-render"
+
+
+def test_second_run_is_idempotent(env):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    env.tool_calls.clear()
+    env.desktop_file.unlink()  # prove an unchanged stamp skips ALL work
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.tool_calls == []
+    assert not env.desktop_file.exists()  # not rewritten
+
+
+def test_reintegrates_when_version_changes(env, monkeypatch):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    env.tool_calls.clear()
+    monkeypatch.setattr(integration, "__version__", "999.999.999")
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.tool_calls != []  # re-ran
+    assert json.loads(env.stamp_file.read_text())["version"] == "999.999.999"
+
+
+def test_reintegrates_when_appimage_moves(env, tmp_path):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    env.tool_calls.clear()
+    moved = tmp_path / "moved" / "FusedRender.AppImage"
+    moved.parent.mkdir()
+    moved.write_text("#!/bin/sh\n")
+    integration.integrate(env.paths, appimage=moved, icon_source=env.icon_src)
+    assert env.tool_calls != []
+    assert f"Exec={moved} %u" in env.desktop_file.read_text()
+    assert json.loads(env.stamp_file.read_text())["appimage"] == str(moved)
+
+
+def test_missing_update_tools_do_not_break_install(env, monkeypatch):
+    # A minimal desktop with no update-mime-database etc.: files must still be
+    # written and the run must succeed (log-and-continue).
+    monkeypatch.setattr(integration.shutil, "which", lambda tool: None)
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.desktop_file.exists()
+    assert env.mime_file.exists()
+    assert env.stamp_file.exists()
+    assert env.tool_calls == []  # nothing was actually exec'd
+
+
+def test_appimage_env_resolution(env, monkeypatch):
+    # With no injected appimage, it resolves from $APPIMAGE via startup helper.
+    monkeypatch.setenv("APPIMAGE", str(env.appimage))
+    integration.integrate(env.paths, icon_source=env.icon_src)
+    assert env.desktop_file.exists()
+
+
+def test_icon_falls_back_to_theme_name_without_source(env, monkeypatch):
+    # No icon source resolvable ($APPDIR unset): the entry still writes, with
+    # the theme icon name rather than an absolute path.
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=Path("/nope.png"))
+    desktop = env.desktop_file.read_text()
+    assert "Icon=fused-render\n" in desktop
+    assert not env.icon_file.exists()
