@@ -1,7 +1,7 @@
 # fused-render — Requirements Specification
 
 **Status:** Living specification, maintained alongside the shipped product.
-**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the separately-installed `fused` CLI (§19, §27); see Non-Goals.
+**Scope:** A fully local, single-user, single-machine app — it runs no cloud service of its own. Publishing a page to a hosted URL delegates to the `fused` CLI (bundled in the macOS app, a pip extra otherwise — §19, §27); see Non-Goals.
 
 ---
 
@@ -24,8 +24,9 @@ The differentiating feature is the **renderable HTML** system: HTML files can ca
 ### Non-Goals
 
 - Cloud or remote deployment, multi-user access, authentication/user accounts.
-  (Unchanged by §19/§27: deploying delegates to the separately-installed fused
-  CLI, and the §27 "Fused account" surface manages the *fused CLI's own*
+  (Unchanged by §19/§27: deploying delegates to the fused CLI — bundled in the
+  packaged macOS app, a pip extra for source/pip installs — and the §27 "Fused
+  account" surface manages the *fused CLI's own*
   credentials for those deploys — fused-render itself still has no accounts,
   no tokens, and no server-side users.)
 - File editing (v1 is read/preview oriented; editing is a possible v2).
@@ -704,7 +705,7 @@ nothing. Full detail: `docs/EXPORT.md`.
 Goal: close the gap between §18's bundle and a working URL, from the shell. The
 local-only invariant (§1) is unchanged in kind: fused-render still binds
 127.0.0.1, hosts nothing, and mints no URLs — **deploying is an explicit user
-action that delegates to the separately-installed `fused` CLI** (`fused share`,
+action that delegates to the `fused` CLI** (bundled in the packaged app, a pip extra otherwise; `fused share`,
 the fused repo's one URL-minting operation — its spec/serve/share-links.md and
 spec/serve/fused-render.md; the same shell-out pattern the flow app uses for
 project deploys). The server orchestrates the child process; nothing else in
