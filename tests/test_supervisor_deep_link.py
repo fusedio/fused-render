@@ -192,5 +192,11 @@ def test_localhost_file_uri_still_opens(opened, tmp_path):
 
     f = tmp_path / "data.parquet"
     f.write_text("x")
-    core._open_command(4242, protocol.Open("file://localhost" + quote(str(f))))
+    # Build the localhost URI portably: f.as_uri() yields file:///tmp/.../data.parquet
+    # on POSIX and file:///C:/... on Windows, so grafting "localhost" onto the netloc
+    # gives file://localhost/tmp/... resp. file://localhost/C:/... — both with the
+    # leading slash the netloc parse needs. (Naively concatenating str(f) would make
+    # the Windows drive path part of the netloc.)
+    uri = "file://localhost" + f.as_uri()[len("file://"):]
+    core._open_command(4242, protocol.Open(uri))
     assert opened == [view_url(4242, str(f))]
