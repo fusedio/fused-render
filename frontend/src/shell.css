@@ -699,6 +699,27 @@ a.bookmark-name::after {
   display: none;
 }
 
+/* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
+   monospace as the crumbs, fills the strip, and takes the bar's own
+   background so it reads as the bar turning editable rather than a popped-in
+   widget; a quiet border picks up the accent on focus. */
+#breadcrumb .crumb-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+#breadcrumb .crumb-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .path-crumb,
 .panel-crumb {
   color: var(--fg-muted);

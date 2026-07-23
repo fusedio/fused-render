@@ -191,6 +191,7 @@ export function Breadcrumb({
   renderedTitle?: string | null;
 }) {
   const crumbsRef = useRef<HTMLDivElement>(null);
+  const [editing, setEditing] = useState(false);
 
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
@@ -199,6 +200,23 @@ export function Breadcrumb({
     const el = crumbsRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
   }, [fsPath]);
+
+  // Ctrl/Cmd+L jumps into the editable path (like a browser's location bar).
+  // Skip when focus is already in a text field so it never hijacks typing.
+  // NOTE: Chrome/Firefox route Ctrl/Cmd+L to their own address bar before the
+  // page sees it, so this only lands in app-mode/standalone windows (D: see
+  // plan). Registered document-level, cleaned up on unmount (Listing.tsx).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "l") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      setEditing(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Map a plain mouse wheel's vertical delta onto horizontal scroll so the
   // scrollbar-less strip is still wheel-scrollable (touchpad horizontal pans
@@ -212,6 +230,22 @@ export function Breadcrumb({
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
   const parts = rest.split("/").filter((s) => s.length > 0);
+
+  // Edit mode seeds the same "~"-contracted path the crumbs display; Enter
+  // expands a leading "~" back to the real home before navigating.
+  const displayPath = underHome ? "~" + rest : fsPath;
+  const submitEdit = (raw: string) => {
+    let path = raw.trim();
+    if (home !== undefined) {
+      if (path === "~") path = home;
+      else if (path.startsWith("~/")) path = home + path.slice(1);
+    }
+    if (path.length > 1) path = path.replace(/\/+$/, ""); // drop trailing slash, keep lone "/"
+    setEditing(false);
+    // No isDir hint — a typed path's kind is unknown; the destination view's
+    // stat/error handling covers a bad path (see plan: no pre-validation).
+    if (path) navigate(path);
+  };
   const pieces: React.ReactNode[] = [
     <a
       key="root"
@@ -265,10 +299,39 @@ export function Breadcrumb({
 
   return (
     <>
-      <div className="crumbs" ref={crumbsRef} onWheel={onWheel}>
-        {pieces}
-        <RevealButton fsPath={fsPath} />
-      </div>
+      {editing ? (
+        <input
+          className="crumb-edit"
+          defaultValue={displayPath}
+          spellCheck={false}
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submitEdit(e.currentTarget.value);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setEditing(false); // discard, no navigation
+            }
+          }}
+          onBlur={() => setEditing(false)} // a stray click cancels rather than commits
+        />
+      ) : (
+        // A click on the strip itself (whitespace right of the crumbs), not on
+        // a crumb or the reveal button, switches to the editable path.
+        <div
+          className="crumbs"
+          ref={crumbsRef}
+          onWheel={onWheel}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditing(true);
+          }}
+        >
+          {pieces}
+          <RevealButton fsPath={fsPath} />
+        </div>
+      )}
       <CrumbActions name={renderedTitle || basename(fsPath)} onSplit={(dir) => enterPanel(fsPath, dir)} />
     </>
   );
