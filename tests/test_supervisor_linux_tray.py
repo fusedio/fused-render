@@ -259,6 +259,138 @@ def test_get_layout_unknown_parent_returns_empty_node():
     assert children == []
 
 
+# --- dbusmenu EventGroup / AboutToShowGroup (v3 batched methods) -------------
+#
+# libdbusmenu clients set group_events=TRUE when the server advertises
+# Version >= 3 and then deliver EVERY click via EventGroup (never the singular
+# Event) and every show hook via AboutToShowGroup. Without these two methods the
+# menu items are inert (each real click dies with UnknownMethod).
+
+
+def _make_menu_ctx(port=1777, login_enabled=False):
+    """Like `_make_menu` but exposes the stub state/handle/set_enabled recorder
+    and revision_ref so dispatch side effects can be asserted bus-free."""
+    pytest.importorskip("dbus_fast")
+    handle = _stub_handle()
+    state = tray._State(login_enabled=login_enabled)
+    paths = _Paths()
+    calls = []
+    revision_ref = [0]
+    _sni, menu = linux_tray._make_interfaces(
+        port, state, handle, paths, calls.append, revision_ref
+    )
+    return menu, state, handle, paths, calls, revision_ref
+
+
+def _descriptor(menu, name):
+    from dbus_fast.service import ServiceInterface
+
+    for descriptor in ServiceInterface._get_methods(menu):
+        if descriptor.name == name:
+            return descriptor
+    raise AssertionError(f"{name} method not found on DBusMenu interface")
+
+
+def _clicked(item_id):
+    from dbus_fast import Variant
+
+    # One (id:i, eventId:s, data:v, timestamp:u) tuple, a "clicked" event.
+    return [item_id, "clicked", Variant("s", ""), 0]
+
+
+def _event(item_id, event_id):
+    from dbus_fast import Variant
+
+    return [item_id, event_id, Variant("s", ""), 0]
+
+
+def test_event_group_declares_group_signature():
+    menu = _make_menu()
+    descriptor = _descriptor(menu, "EventGroup")
+    assert descriptor.in_signature == "a(isvu)"
+    assert descriptor.out_signature == "ai"
+
+
+def test_about_to_show_group_declares_signature():
+    menu = _make_menu()
+    descriptor = _descriptor(menu, "AboutToShowGroup")
+    assert descriptor.in_signature == "ai"
+    assert descriptor.out_signature == "aiai"
+
+
+def test_event_group_dispatches_clicked_action():
+    # A batched "clicked" for a plain action id enqueues that TrayAction, exactly
+    # as the singular Event would.
+    menu, _state, handle, _paths, _calls, _rev = _make_menu_ctx()
+    id_errors = _descriptor(menu, "EventGroup").fn(menu, [_clicked(linux_tray._ID_EXIT)])
+    assert handle.actions.get_nowait() is tray.TrayAction.EXIT
+    assert id_errors == []
+
+
+def test_event_group_login_toggle_flips_and_emits_layout_updated():
+    # The login id flips state inline (via set_enabled) and bumps the revision +
+    # emits LayoutUpdated, mirroring the singular Event's login handling.
+    menu, state, _handle, _paths, calls, revision_ref = _make_menu_ctx(login_enabled=False)
+    _descriptor(menu, "EventGroup").fn(menu, [_clicked(linux_tray._ID_LOGIN)])
+    assert calls == [True]
+    assert state.login_enabled is True
+    assert revision_ref[0] == 1  # bumped for the LayoutUpdated emission
+
+
+def test_event_group_returns_empty_for_all_known_ids():
+    menu, _state, handle, _paths, _calls, _rev = _make_menu_ctx()
+    id_errors = _descriptor(menu, "EventGroup").fn(
+        menu, [_clicked(linux_tray._ID_OPEN), _clicked(linux_tray._ID_OPEN_FILE)]
+    )
+    assert id_errors == []
+    # Both known clicks dispatched.
+    assert handle.actions.get_nowait() is tray.TrayAction.OPEN
+    assert handle.actions.get_nowait() is tray.TrayAction.OPEN_FILE
+
+
+def test_event_group_reports_unknown_ids():
+    menu, _state, handle, _paths, _calls, _rev = _make_menu_ctx()
+    unknown = 999
+    id_errors = _descriptor(menu, "EventGroup").fn(
+        menu, [_clicked(linux_tray._ID_OPEN), _clicked(unknown)]
+    )
+    assert id_errors == [unknown]
+    # The known id still dispatched; the unknown one was skipped, not dispatched.
+    assert handle.actions.get_nowait() is tray.TrayAction.OPEN
+    assert handle.actions.empty()
+
+
+def test_event_group_ignores_non_clicked_events():
+    # hovered/opened/closed must not activate an item.
+    menu, state, handle, _paths, calls, _rev = _make_menu_ctx()
+    id_errors = _descriptor(menu, "EventGroup").fn(
+        menu, [_event(linux_tray._ID_EXIT, "hovered"), _event(linux_tray._ID_LOGIN, "hovered")]
+    )
+    assert id_errors == []  # both ids are known
+    assert handle.actions.empty()  # no action queued for a hover
+    assert calls == []  # no login write for a hover
+    assert state.login_enabled is False
+
+
+def test_about_to_show_group_known_ids_returns_two_empty_arrays():
+    menu = _make_menu()
+    updates_needed, id_errors = _descriptor(menu, "AboutToShowGroup").fn(
+        menu, [linux_tray._ROOT_ID, linux_tray._ID_EXIT]
+    )
+    assert updates_needed == []
+    assert id_errors == []
+
+
+def test_about_to_show_group_reports_unknown_ids():
+    menu = _make_menu()
+    unknown = 999
+    updates_needed, id_errors = _descriptor(menu, "AboutToShowGroup").fn(
+        menu, [linux_tray._ROOT_ID, unknown]
+    )
+    assert updates_needed == []
+    assert id_errors == [unknown]
+
+
 # --- D-Bus bring-up / teardown (integration, needs a session bus) ------------
 
 
