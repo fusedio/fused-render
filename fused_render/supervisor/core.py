@@ -19,6 +19,7 @@ import time
 import urllib.request
 from enum import Enum, auto
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from fused_render import desktop_probe
 from fused_render._view_url_codec import clone_url, is_deep_link, view_url
@@ -438,15 +439,33 @@ def _spawn_desktop_integration(paths: DesktopPaths) -> None:
     threading.Thread(target=worker, daemon=True, name="fused-render-integrate").start()
 
 
+_FILE_URI_SCHEME = "file:"
+
+
+def _normalize_target(target: str) -> str:
+    """Decode a `file:` URI to a filesystem path, mirroring app.py's macOS
+    openURLs handling (`unquote(urlparse(...).path)`). GIO-based launchers
+    (Nautilus/GNOME, etc.) hand the `.desktop` `%u` field a `file:///path`
+    URI, not a plain path, so the empty-authority form and percent-encoded
+    bytes (spaces, UTF-8) must be decoded here or _view_url would see the
+    literal "file:" string and raise FileNotFoundError. A plain path is
+    returned unchanged; a `fused-render:` deep link is never routed here
+    (callers guard with is_deep_link first — it stays a URL for /clone)."""
+    if target.lower().startswith(_FILE_URI_SCHEME):
+        return unquote(urlparse(target).path)
+    return target
+
+
 def _absolute_command(command: protocol.Command) -> protocol.Command:
     # A deep link is not a path — never cwd-join it (that would corrupt the
     # URL); it is routed to /clone in _open_command instead.
-    if (
-        isinstance(command, protocol.Open)
-        and not is_deep_link(command.path)
-        and not Path(command.path).is_absolute()
-    ):
-        return protocol.Open(str(Path.cwd() / command.path))
+    if not isinstance(command, protocol.Open) or is_deep_link(command.path):
+        return command
+    path = _normalize_target(command.path)
+    if not Path(path).is_absolute():
+        return protocol.Open(str(Path.cwd() / path))
+    if path != command.path:
+        return protocol.Open(path)
     return command
 
 

@@ -66,3 +66,40 @@ def test_clone_url_path_shared_with_app():
     from fused_render.app import clone_url_path as app_fn
 
     assert app_fn(DEEPLINK) == shared(DEEPLINK) == "/clone?src=" + quote(DEEPLINK, safe="")
+
+
+# ---- file:// URI normalization (GIO launchers pass %u as file:///path) -------
+# Nautilus/GNOME and other GIO-based launchers hand the .desktop `%u` field a
+# `file:///…` URI, not a plain path. core must decode it to a filesystem path
+# (mirroring app.py's macOS handling) before the absolute/cwd-join reasoning,
+# or _view_url raises FileNotFoundError on the literal "file:" string.
+
+
+def test_file_uri_with_encoded_space_decoded_to_view_url(opened, tmp_path):
+    from fused_render._view_url_codec import view_url
+
+    f = tmp_path / "my report.parquet"  # space forces percent-encoding
+    f.write_text("x")
+    uri = "file://" + quote(str(f))  # e.g. file:///tmp/.../my%20report.parquet
+    assert "%20" in uri
+
+    cmd = core._absolute_command(protocol.Open(uri))
+    assert isinstance(cmd, protocol.Open)
+    assert cmd.path == str(f)  # decoded, absolute filesystem path
+
+    core._open_command(4242, cmd)
+    assert opened == [view_url(4242, str(f))]
+
+
+def test_file_uri_with_utf8_decoded(tmp_path):
+    f = tmp_path / "café.csv"
+    f.write_text("x")
+    uri = "file://" + quote(str(f))
+    cmd = core._absolute_command(protocol.Open(uri))
+    assert cmd == protocol.Open(str(f))
+
+
+def test_plain_absolute_path_unchanged_by_normalize():
+    # A plain absolute path must not be mangled by file:// handling.
+    p = str(Path("/home/user/data.csv"))
+    assert core._absolute_command(protocol.Open(p)) == protocol.Open(p)
