@@ -43,6 +43,7 @@ import os
 import signal
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 # The child env-block contract (strip interpreter-identity vars, merge
@@ -56,6 +57,12 @@ _PR_SET_PDEATHSIG = 1
 
 _MECHANISM_ENV = "FUSED_RENDER_LINUX_TREE_KILL"
 _DEFAULT_MECHANISM = "pgroup"
+
+# How long close() gives the SIGTERM'd group to exit before escalating to
+# SIGKILL. rclone unmounts its FUSE mounts cleanly on SIGTERM; an immediate
+# SIGKILL strands any mount rcd was serving as a wedged FUSE endpoint, so
+# deliberate teardown always offers the graceful path first.
+_TERM_GRACE_S = 5.0
 
 
 def _mechanism() -> str:
@@ -190,8 +197,27 @@ class Job:
             self._pgid = popen.pid
         return self._process
 
+    def _group_alive(self) -> bool:
+        """Probe whether any member of the group is still around (signal 0
+        delivers nothing). ProcessLookupError means the group is empty; any
+        other failure (PermissionError on an unexpected uid change, ...) is
+        treated as alive so close() still escalates rather than assuming."""
+        try:
+            os.killpg(self._pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return True
+
     def close(self) -> None:
-        """Tree-kill: SIGKILL the whole process group, then reap. Idempotent.
+        """Tree-kill, gracefully first: SIGTERM the whole process group, wait a
+        bounded grace (_TERM_GRACE_S) for it to exit, then SIGKILL whatever is
+        left, then reap. Idempotent.
+
+        SIGTERM-first matters because the group contains rclone's rcd: it
+        unmounts its FUSE mounts cleanly on SIGTERM, whereas an immediate
+        SIGKILL strands every mount as a wedged FUSE endpoint.
 
         For the "namespace" mechanism, killing the group kills the `unshare`
         keeper, which `--kill-child` turns into a SIGKILL of pid 1 of the pid
@@ -202,9 +228,28 @@ class Job:
         self._closed = True
         if self._pgid is not None:
             try:
-                os.killpg(self._pgid, signal.SIGKILL)
+                os.killpg(self._pgid, signal.SIGTERM)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
+            else:
+                deadline = time.monotonic() + _TERM_GRACE_S
+                while time.monotonic() < deadline:
+                    if self._process is not None:
+                        # Reap the direct child so its zombie doesn't keep the
+                        # group looking alive to the probe below.
+                        try:
+                            self._process._popen.wait(timeout=0.05)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    if not self._group_alive():
+                        break
+                    time.sleep(0.05)
+            if self._group_alive():
+                # Backstop: whatever ignored (or outlived) the SIGTERM.
+                try:
+                    os.killpg(self._pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
         if self._process is not None:
             try:
                 self._process._popen.wait(timeout=5)

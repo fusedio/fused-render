@@ -29,6 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 if sys.platform.startswith("linux"):
+    from fused_render.supervisor._linux import tree
     from fused_render.supervisor._linux.tree import Job
 
 _DEADLINE_S = 10.0
@@ -145,6 +146,94 @@ def _paths(tmp_path: Path):
         tmp_path / "ready",
         tmp_path / "stop",
     )
+
+
+# --- close() kill sequence (unit, no real processes) -------------------------
+#
+# rclone unmounts its FUSE mounts cleanly on SIGTERM; an immediate SIGKILL of
+# the group wedges any mount rcd was serving. close() must therefore SIGTERM
+# the group first, give it a bounded grace to exit, and only then SIGKILL as
+# the backstop.
+
+
+class _ExitedPopen:
+    """Fake Popen for a child that exits as soon as it is signalled."""
+
+    pid = 4242
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def _fake_job(monkeypatch, killpg):
+    monkeypatch.setattr(tree.os, "killpg", killpg)
+    job = Job()
+    job._process = tree.SupervisedProcess(_ExitedPopen())
+    job._pgid = 4242
+    return job
+
+
+def test_close_sigterms_before_sigkill_and_skips_kill_when_group_exits(monkeypatch):
+    signals = []
+    terms_sent = []
+
+    def killpg(pgid, sig):
+        assert pgid == 4242
+        if sig == 0:
+            # Probe: the group is gone once SIGTERM has been delivered.
+            if terms_sent:
+                raise ProcessLookupError
+            return
+        signals.append(sig)
+        if sig == signal.SIGTERM:
+            terms_sent.append(True)
+
+    job = _fake_job(monkeypatch, killpg)
+    job.close()
+    assert signals == [signal.SIGTERM]  # graceful exit → no SIGKILL backstop
+
+
+def test_close_escalates_to_sigkill_when_group_ignores_sigterm(monkeypatch):
+    monkeypatch.setattr(tree, "_TERM_GRACE_S", 0.2)
+    signals = []
+
+    def killpg(pgid, sig):
+        if sig == 0:
+            return  # group stubbornly alive
+        signals.append(sig)
+
+    job = _fake_job(monkeypatch, killpg)
+    start = time.monotonic()
+    job.close()
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert time.monotonic() - start >= 0.2  # the grace was actually waited out
+
+
+def test_close_handles_already_dead_group(monkeypatch):
+    # ProcessLookupError semantics preserved: a group that is already gone is a
+    # clean no-op — no crash, no SIGKILL of a recycled pgid.
+    signals = []
+
+    def killpg(pgid, sig):
+        raise ProcessLookupError
+
+    job = _fake_job(monkeypatch, killpg)
+    job.close()  # must not raise
+    assert signals == []
+
+
+def test_close_is_idempotent(monkeypatch):
+    signals = []
+
+    def killpg(pgid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+        signals.append(sig)
+
+    job = _fake_job(monkeypatch, killpg)
+    job.close()
+    job.close()
+    assert signals == [signal.SIGTERM]
 
 
 @pytest.mark.parametrize("mechanism", _mechanisms())
