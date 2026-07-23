@@ -9,7 +9,13 @@ from urllib.parse import quote
 
 import pytest
 
-from fused_render.supervisor import core, protocol
+try:
+    from fused_render.supervisor import core, protocol
+except Exception:  # noqa: BLE001 - no supervisor backend on this OS (e.g. darwin)
+    core = None
+    protocol = None
+
+pytestmark = pytest.mark.skipif(core is None, reason="no supervisor backend on this OS")
 
 DEEPLINK = "fused-render://open?git=https://github.com/fusedio/udfs/tree/main/public"
 
