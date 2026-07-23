@@ -177,6 +177,11 @@ class DesktopPaths:
             # root, never nested under a branch subfolder — _branch.py treats
             # an explicitly-set empty FUSED_RENDER_BRANCH as "no isolation".
             "FUSED_RENDER_BRANCH": "",
+            # Same rationale: RCLONE_PERSIST is a dev-shell iteration flag
+            # (dev.sh sets it so rcd outlives watchfiles restarts). The
+            # packaged app must never inherit it — a persisted, detached rcd
+            # would outlive the app and dodge teardown.
+            "FUSED_RENDER_RCLONE_PERSIST": "",
         }
 
     def child_environment(
@@ -191,6 +196,11 @@ class DesktopPaths:
             "FUSED_RENDER_TEMP_DIR": str(self.temp),
             "FUSED_RENDER_LOG_DIR": str(self.logs),
             "FUSED_RENDER_BRANCH": "",
+            # Explicit production opt-out, mirroring self_environment: the
+            # supervisor's children must not inherit dev-shell iteration flags
+            # (dev.sh doesn't go through this method, so its own flag keeps
+            # working).
+            "FUSED_RENDER_RCLONE_PERSIST": "",
             "FUSED_RENDER_DESKTOP_INSTANCE_ID": instance_id,
             "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN": token,
             "OPENFUSED_ENVS_FILE": str(openfused / "envs.json"),
