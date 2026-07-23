@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
+import time
 
 import pytest
 
@@ -151,7 +153,8 @@ def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.
     monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")  # pre-launch re-verify passes
     monkeypatch.setattr(update, "_prompt_install", lambda version: prompts.append(version) or decision)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
-    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path), raising=False)
+    monkeypatch.setattr(update, "_launch_installer", lambda path: started.append(path) or object())
+    monkeypatch.setattr(update, "_watch_setup", lambda *a: None)
     return started, prompts, alerts
 
 
@@ -266,7 +269,7 @@ def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
     def boom(path):
         raise OSError("no shell association")
 
-    monkeypatch.setattr(update.os, "startfile", boom, raising=False)
+    monkeypatch.setattr(update, "_launch_installer", boom)
     # announce_errors=False (the background path) — a post-accept failure must
     # still alert, since the user clicked Install.
     update._offer_install(paths, {"version": "0.4.0", "sha256": sha256}, announce_errors=False)
@@ -281,12 +284,33 @@ def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
     started, alerts = [], []
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
-    monkeypatch.setattr(update.os, "startfile", lambda path: started.append(path), raising=False)
+    monkeypatch.setattr(update, "_launch_installer", lambda path: started.append(path) or object())
+    monkeypatch.setattr(update, "_watch_setup", lambda *a: None)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
     # manifest sha256 is for different bytes → the pre-launch re-verify fails.
     update._offer_install(paths, {"version": "0.4.0", "sha256": hashlib.sha256(b"original").hexdigest()},
                           announce_errors=False)
     assert not started and not os.path.exists(staged) and alerts  # refused + user told
+
+
+def test_setup_cancel_unlatches_and_discards(monkeypatch, paths):
+    fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
+    os.close(fd)
+    exited = threading.Event()
+    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
+    monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")
+    monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
+    monkeypatch.setattr(update, "_launch_installer", lambda path: object())
+    monkeypatch.setattr(update, "_wait_for_exit", lambda handle: exited.wait())
+    update._offer_install(paths, {"version": "0.4.0", "sha256": "ok"}, announce_errors=False)
+    assert update._install_launched  # wizard up → latched
+    exited.set()  # wizard cancelled: setup exits while the app is still alive
+    for _ in range(100):
+        if not update._install_launched:
+            break
+        time.sleep(0.05)
+    # unlatched so a later check can offer the update again, staged file gone
+    assert not update._install_launched and not os.path.exists(staged)
 
 
 def test_sweep_skips_while_check_in_progress(monkeypatch, tmp_path):

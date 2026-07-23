@@ -174,7 +174,7 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
         # before launch so we never run bytes that were swapped after verify.
         if _sha256_file(installer) != manifest["sha256"]:
             raise ValueError("staged installer changed after verification")
-        os.startfile(installer)
+        setup = _launch_installer(installer)
     except (OSError, ValueError) as error:
         paths.log(f"update launch failed: {error}")
         _discard(installer)
@@ -182,9 +182,52 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
         # so a failure here must not look like a silent no-op.
         _alert("The update could not be started.", _MB_ICONERROR)
         return
-    # Launched: the app is about to be replaced. Latch so no later check can
-    # download again and launch a second setup during the wizard window.
+    # Latch so no later check downloads again and launches a second setup
+    # while the wizard is up; _watch_setup unlatches if the wizard exits
+    # without installing.
     _install_launched = True
+    _watch_setup(paths, setup, installer)
+
+
+def _launch_installer(installer: str):
+    """ShellExecuteEx rather than os.startfile: the same UAC-aware launch,
+    but it returns a process handle so _watch_setup can see the wizard exit.
+    win32 imports are deferred so the module still imports on non-Windows CI."""
+    import pywintypes
+    from win32com.shell import shell, shellcon
+
+    try:
+        info = shell.ShellExecuteEx(
+            fMask=shellcon.SEE_MASK_NOCLOSEPROCESS, lpFile=installer, nShow=1
+        )
+    except pywintypes.error as error:
+        raise OSError(str(error)) from error
+    return info.get("hProcess")
+
+
+def _watch_setup(paths: DesktopPaths, setup, installer: str) -> None:
+    """Unlatch when the wizard exits without installing (cancelled, or setup
+    failed), so later checks can offer the update again and the staged file
+    doesn't linger in %TEMP%. A completed install never gets here: its
+    --shutdown-for-upgrade stops this process before setup exits."""
+    if setup is None:  # no handle to watch — keep the latch, as before
+        return
+
+    def watch():
+        global _install_launched
+        _wait_for_exit(setup)
+        with _check_lock:
+            _install_launched = False
+        _discard(installer)
+        paths.log("update setup exited without installing")
+
+    threading.Thread(target=watch, daemon=True, name="fused-render-update-watch").start()
+
+
+def _wait_for_exit(handle) -> None:
+    import win32event
+
+    win32event.WaitForSingleObject(handle, win32event.INFINITE)
 
 
 def _fetch_manifest() -> dict:
