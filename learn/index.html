@@ -8,7 +8,7 @@
     --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
     --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
     --yellow:#E5FF44; --code-bg:#0f0f10;
-    --rail:260px;
+    --toc:200px;
   }
   * { box-sizing:border-box; }
   body { margin:0; padding:0; background:var(--bg); color:var(--text);
@@ -17,49 +17,63 @@
   a { color:var(--dim); }
   a:hover { color:var(--text); }
 
-  /* ---------- sidebar ---------- */
-  .rail { position:fixed; top:0; left:0; bottom:0; width:var(--rail); overflow-y:auto;
-          background:#101011; border-right:1px solid var(--border); padding:22px 16px 40px; z-index:20; }
-  .brand { display:flex; align-items:baseline; gap:8px; margin:0 6px 18px; }
-  .brand .dot { width:9px; height:9px; border-radius:2px; background:var(--yellow); align-self:center; }
-  .brand h1 { font-size:15px; margin:0; letter-spacing:-.2px; }
-  .brand span { font-size:11px; color:var(--mut); }
-
-  /* search */
-  .search { position:relative; margin:0 4px 18px; }
-  .search input { width:100%; background:var(--panel2); border:1px solid var(--border); color:var(--text);
-       border-radius:9px; padding:9px 11px 9px 30px; font:13px/1 inherit; }
-  .search input:focus { outline:none; border-color:var(--yellow); }
-  .search .mag { position:absolute; left:10px; top:9px; color:var(--mut); font-size:13px; pointer-events:none; }
-  .search .kbd { position:absolute; right:9px; top:8px; font-size:10px; color:var(--mut); border:1px solid var(--border);
-       border-radius:4px; padding:1px 5px; pointer-events:none; }
-  .results { position:absolute; top:38px; left:0; right:0; background:var(--panel); border:1px solid var(--border);
-       border-radius:10px; padding:5px; max-height:340px; overflow-y:auto; z-index:30; display:none;
-       box-shadow:0 12px 30px rgba(0,0,0,.5); }
-  .results.open { display:block; }
-  .results .r { display:block; padding:7px 9px; border-radius:7px; text-decoration:none; cursor:pointer; }
-  .results .r:hover, .results .r.sel { background:var(--panel2); }
-  .results .r .rt { display:block; font-size:12.5px; color:var(--text); }
-  .results .r .rp { display:block; font-size:10.5px; color:var(--mut); margin-top:1px; }
-  .results .r mark { background:transparent; color:var(--yellow); }
-  .results .none { padding:10px; font-size:12px; color:var(--mut); text-align:center; }
-
-  /* nav */
-  .nav a.top { display:block; padding:8px 11px; margin:2px 0; border-radius:8px; border:1px solid transparent;
-       font-size:13px; color:var(--dim); text-decoration:none; }
-  .nav a.top:hover { color:var(--text); background:var(--panel); }
-  .nav a.top.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
-  .nav a.top .beta { font-size:9px; color:var(--yellow); border:1px solid #4a4a2a; border-radius:4px;
-       padding:1px 4px; margin-left:6px; vertical-align:1px; }
-  .subnav { margin:1px 0 6px 6px; padding-left:10px; border-left:1px solid var(--border); display:none; }
+  /* ---------- right-side index rail ---------- */
+  .toc { position:fixed; top:0; right:0; bottom:0; width:var(--toc); z-index:20;
+         padding:46px 22px 40px 0; overflow-y:auto; }
+  .toc .searchhint { display:inline-flex; align-items:center; gap:6px; cursor:pointer; appearance:none;
+       background:none; border:0; padding:0; margin:0 0 20px; font:inherit;
+       font-size:12px; color:var(--mut); }
+  .toc .searchhint:hover { color:var(--text); }
+  .toc .searchhint .kbd { font-size:10px; color:var(--mut); border:1px solid var(--border);
+       border-radius:4px; padding:1px 5px; }
+  .toc .tlab { font-size:10px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       opacity:.7; margin:0 0 8px; font-weight:700; }
+  .toc a.top { display:block; padding:3px 0 3px 14px; position:relative; font-size:12.5px;
+       color:var(--mut); text-decoration:none; }
+  .toc a.top:hover { color:var(--text); }
+  .toc a.top.cur { color:var(--text); }
+  .toc a.top.cur::before { content:""; position:absolute; left:0; top:50%; transform:translateY(-50%);
+       width:6px; height:2px; border-radius:1px; background:var(--yellow); }
+  .toc a.top .beta { font-size:8.5px; color:var(--yellow); opacity:.8; margin-left:5px; vertical-align:1px; }
+  .subnav { margin:1px 0 5px; display:none; }
   .subnav.show { display:block; }
-  .subnav a { display:block; padding:4px 10px; font-size:11.5px; color:var(--mut); text-decoration:none; border-radius:6px; }
-  .subnav a:hover, .subnav a.active { color:var(--text); }
+  .subnav a { display:block; padding:2px 0 2px 26px; font-size:11px; color:var(--mut); opacity:.75;
+       text-decoration:none; }
+  .subnav a:hover, .subnav a.active { color:var(--text); opacity:1; }
   .subnav a.active { color:var(--yellow); }
 
+  /* ---------- search modal ---------- */
+  .smodal { position:fixed; inset:0; z-index:60; display:none;
+       background:rgba(0,0,0,.55); backdrop-filter:blur(2px);
+       align-items:flex-start; justify-content:center; padding:12vh 20px 0; }
+  .smodal.open { display:flex; }
+  .smodal .sbox { width:100%; max-width:560px; background:var(--panel); border:1px solid var(--border);
+       border-radius:14px; overflow:hidden; box-shadow:0 24px 60px rgba(0,0,0,.6); }
+  .smodal .sinput { position:relative; }
+  .smodal .sinput .mag { position:absolute; left:16px; top:15px; color:var(--mut); font-size:15px; pointer-events:none; }
+  .smodal .sinput input { width:100%; background:transparent; border:0; border-bottom:1px solid var(--border);
+       color:var(--text); padding:15px 52px 15px 40px; font:14px/1.3 inherit; }
+  .smodal .sinput input:focus { outline:none; }
+  .smodal .sinput .kbd { position:absolute; right:14px; top:14px; font-size:10px; color:var(--mut);
+       border:1px solid var(--border); border-radius:4px; padding:2px 6px; pointer-events:none; }
+  .results { padding:5px; max-height:min(380px, 55vh); overflow-y:auto; display:none; }
+  .results.open { display:block; }
+  .results .r { display:block; padding:8px 11px; border-radius:7px; text-decoration:none; cursor:pointer; }
+  .results .r:hover, .results .r.sel { background:var(--panel2); }
+  .results .r .rt { display:block; font-size:13px; color:var(--text); }
+  .results .r .rp { display:block; font-size:10.5px; color:var(--mut); margin-top:1px; }
+  .results .r mark { background:transparent; color:var(--yellow); }
+  .results .none { padding:12px; font-size:12px; color:var(--mut); text-align:center; }
+
   /* ---------- content ---------- */
-  main { margin-left:var(--rail); padding:50px 40px 90px; }
-  .wrap { max-width:860px; margin:0 auto; }
+  main { padding:50px calc(var(--toc) + 30px) 90px 40px; }
+  .wrap { max-width:800px; margin:0 auto; }
+
+  /* fallback page list, shown only when the rail is hidden */
+  .pagelist { display:none; flex-wrap:wrap; gap:6px 16px; margin:0 0 26px; font-size:12.5px; }
+  .pagelist a { color:var(--mut); text-decoration:none; }
+  .pagelist a:hover { color:var(--text); }
+  .pagelist a.cur { color:var(--yellow); }
   .page { display:none; }
   .page.active { display:block; }
   .crumb { font-size:11px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut); margin:0 0 8px; font-weight:700; }
@@ -393,39 +407,44 @@
   .remote-eg .re-tag.inapp { color:#5fd35f; border-color:#2e5a2e; background:#132013; }
   .remote-eg .re-tag.cli { color:#8ab4ff; border-color:#3a3a4a; background:#16161f; }
 
-  .menuBtn { display:none; }
+  @media (max-width:1100px){
+    .toc { display:none; }
+    main { padding:50px 40px 90px; }
+    .pagelist { display:flex; }
+  }
   @media (max-width:960px){
     .cards { grid-template-columns:repeat(2,1fr); } .cards .feat { grid-column:span 2; }
     .steps { grid-template-columns:1fr; }
   }
   @media (max-width:760px){
-    .rail { transform:translateX(-100%); transition:transform .2s; }
-    .rail.open { transform:none; }
-    main { margin-left:0; padding:64px 18px 80px; }
+    main { padding:40px 18px 80px; }
     .grid2 { grid-template-columns:1fr; }
     .navtiles, .ideagrid, .doors { grid-template-columns:1fr; }
     .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
-    .menuBtn { display:flex; position:fixed; top:12px; left:12px; z-index:25; width:38px; height:38px;
-       align-items:center; justify-content:center; background:var(--panel); border:1px solid var(--border);
-       border-radius:9px; color:var(--text); cursor:pointer; font-size:16px; }
   }
 </style>
 </head>
 <body>
-<button class="menuBtn" id="menuBtn">☰</button>
-<nav class="rail" id="rail">
-  <div class="brand"><span class="dot"></span><h1>Fused Render</h1><span>Learn</span></div>
-  <div class="search">
-    <span class="mag">⌕</span>
-    <input id="q" type="text" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
-    <span class="kbd">/</span>
-    <div class="results" id="results"></div>
-  </div>
+<nav class="toc" id="toc">
+  <button class="searchhint" id="searchHint">⌕ Search <span class="kbd">⌘K</span></button>
+  <div class="tlab">Learn</div>
   <div class="nav" id="nav"><!-- built by JS from the pages --></div>
 </nav>
 
+<div class="smodal" id="smodal">
+  <div class="sbox">
+    <div class="sinput">
+      <span class="mag">⌕</span>
+      <input id="q" type="text" placeholder="Search the docs…" autocomplete="off" spellcheck="false">
+      <span class="kbd">esc</span>
+    </div>
+    <div class="results" id="results"></div>
+  </div>
+</div>
+
 <main>
 <div class="wrap">
+  <div class="pagelist" id="pagelist"><!-- built by JS; visible only when the rail is hidden --></div>
 
   <!-- ============================ HOME (landing / value) ============================ -->
   <section class="page" data-slug="home" data-title="Home">
@@ -994,6 +1013,16 @@ PAGES.forEach(p => {
   navEl.appendChild(sub);
 });
 
+/* narrow-viewport fallback: a flat inline page list at the top of the content
+   column (only visible when the right rail is hidden via media query) */
+const plEl = $("#pagelist");
+PAGES.forEach(p => {
+  const a = document.createElement("a");
+  a.href = "?page=" + p.slug; a.dataset.slug = p.slug; a.textContent = p.title;
+  a.addEventListener("click", e => { e.preventDefault(); goto(p.slug); });
+  plEl.appendChild(a);
+});
+
 // Neutralize any in-content links that point at a hidden page (so they don't
 // dead-end); turn them into plain text.
 const HIDDEN = new Set($$(".page[data-hidden]").map(pg => pg.dataset.slug));
@@ -1027,6 +1056,7 @@ function render(slug, hash){
   const p = PAGES.find(x => x.slug === slug) || PAGES[0];
   PAGES.forEach(x => x.el.classList.toggle("active", x === p));
   $$("#nav a.top").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
+  $$("#pagelist a").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
   $$(".subnav").forEach(s => s.classList.toggle("show", s.dataset.for === p.slug));
   document.title = p.title + " — Fused Render Learn";
   buildPager(p);
@@ -1095,36 +1125,50 @@ function drawResults(q){
 }
 function pickResult(i){
   const r = curRes[i]; if (!r) return;
-  qEl.value = ""; closeSearch(); goto(r.page, r.id);
+  qEl.value = ""; closeModal(); goto(r.page, r.id);
 }
 function closeSearch(){ resEl.classList.remove("open"); resEl.innerHTML = ""; curRes = []; selIdx = -1; }
+
+/* the search UI lives in a centered modal, opened by ⌘K / Ctrl+K or the rail hint */
+const modalEl = $("#smodal");
+function openModal(){ modalEl.classList.add("open"); qEl.focus(); }
+function closeModal(){ modalEl.classList.remove("open"); qEl.value = ""; closeSearch(); qEl.blur(); }
+$("#searchHint").addEventListener("click", openModal);
+modalEl.addEventListener("mousedown", e => { if (e.target === modalEl) closeModal(); });
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    modalEl.classList.contains("open") ? closeModal() : openModal();
+  } else if (e.key === "Escape" && modalEl.classList.contains("open")) {
+    e.preventDefault(); closeModal();
+  }
+});
+
 qEl.addEventListener("input", runSearch);
 qEl.addEventListener("keydown", e => {
   if (!curRes.length) return;
   if (e.key === "ArrowDown") { e.preventDefault(); selIdx = (selIdx+1)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
   else if (e.key === "ArrowUp") { e.preventDefault(); selIdx = (selIdx-1+curRes.length)%curRes.length; drawResults(qEl.value.trim().toLowerCase()); }
   else if (e.key === "Enter") { e.preventDefault(); pickResult(selIdx); }
-  else if (e.key === "Escape") { qEl.value=""; closeSearch(); qEl.blur(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeModal(); }
 });
-document.addEventListener("click", e => { if (!e.target.closest(".search")) closeSearch(); });
-// "/" focuses search
+// "/" also opens the search modal (kept from the sidebar version)
 document.addEventListener("keydown", e => {
-  if (e.key === "/" && document.activeElement !== qEl) { e.preventDefault(); qEl.focus(); }
+  if (e.key === "/" && document.activeElement !== qEl && !modalEl.classList.contains("open")) {
+    e.preventDefault(); openModal();
+  }
 });
 
 /* in-content links like <a href="?page=x"> should route without reload */
 document.addEventListener("click", e => {
   const a = e.target.closest('a[href^="?page="]');
-  if (!a || a.closest("#nav") || a.closest("#pager")) return;
+  if (!a || a.closest("#nav") || a.closest("#pager") || a.closest("#pagelist")) return;
   e.preventDefault();
   // Split the hash off before parsing the query, else "?page=x#sec" parses the
   // slug as "x#sec" and matches no page.
   const [qs, hash] = a.getAttribute("href").slice(1).split("#");
   goto(new URLSearchParams(qs).get("page"), hash || null);
 });
-
-/* mobile menu */
-$("#menuBtn").addEventListener("click", () => $("#rail").classList.toggle("open"));
 
 /* wire real product screenshots (rawUrl needs the abs path we detected) */
 $$("img[data-shot], video[data-shot]").forEach(el => { el.src = imgSrc(el.dataset.shot); el.addEventListener("error", () => { el.closest(".figure")?.remove(); }); });
