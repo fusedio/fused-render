@@ -18,7 +18,7 @@ from fused_render.supervisor.paths import DesktopPaths
 
 try:
     os.environ.update(DesktopPaths.discover().self_environment())
-except Exception:  # noqa: BLE001 - e.g. RuntimeError if LOCALAPPDATA is unset
+except Exception:  # noqa: BLE001 - discovery must never block startup
     pass  # fall through with whatever env we were launched with
 
 import sys  # noqa: E402

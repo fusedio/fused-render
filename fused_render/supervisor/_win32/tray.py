@@ -64,10 +64,10 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         icon.update_menu()
 
     menu = pystray.Menu(
+        pystray.MenuItem(f"Running on port {port}", None, enabled=False),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open FusedRender", on_open, default=True),
         pystray.MenuItem("Open file...", on_open_file),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(f"Running on port {port}", None, enabled=False),
         pystray.MenuItem("Open logs", on_open_logs),
         pystray.MenuItem("Default apps...", on_default_apps),
         pystray.MenuItem(

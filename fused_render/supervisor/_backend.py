@@ -21,6 +21,11 @@ Re-exported surface (each backend must provide all of it):
                    open_url, open_default_apps
   SPAWN_ERRORS   — extra exception types `Job.spawn` may raise, beyond the
                    stdlib OSError/RuntimeError/TimeoutError the run loop handles
+
+Optional hooks (a backend may omit them; core probes with getattr):
+  integrate      — best-effort user-level desktop self-integration at startup
+                   (Linux only: .desktop / MIME / icon + deep-link handler;
+                   Windows registers via its installer, so it has none)
 """
 from __future__ import annotations
 
@@ -39,6 +44,7 @@ if sys.platform == "win32":
     SPAWN_ERRORS: tuple[type[BaseException], ...] = (pywintypes.error,)
 elif sys.platform.startswith("linux"):
     from fused_render.supervisor._linux import instance, startup, ui
+    from fused_render.supervisor._linux.integration import integrate
     from fused_render.supervisor._linux.tree import Job
 
     # The Linux keeper spawns via stdlib primitives (subprocess / os), which

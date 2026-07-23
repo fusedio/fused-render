@@ -14,11 +14,35 @@ here degrades cleanly to "the setting didn't change", never a corrupt entry.
 from __future__ import annotations
 
 import os
-import shlex
 import sys
 from pathlib import Path
 
 _DESKTOP_FILE_NAME = "fused-render.desktop"
+
+# freedesktop Desktop Entry Spec reserved characters for the Exec key. An
+# argument containing any of these must be enclosed in DOUBLE quotes — the spec
+# does NOT recognize shell-style single-quote (shlex) quoting, so `shlex.quote`
+# produces Exec lines many launchers reject.
+_EXEC_RESERVED = set(" \t\n\"'\\><~|&;$*?#()`")
+
+
+def _exec_quote(path: str) -> str:
+    """Quote a path for a `.desktop` `Exec=` field per the freedesktop Desktop
+    Entry Spec (NOT shell/`shlex` quoting).
+
+    Returns the path unquoted when it holds no reserved character; otherwise
+    double-quotes it. Two escaping layers compose: the quoting layer prefixes a
+    backslash to `"`, `` ` ``, `$` and `\\` inside the quotes, then the general
+    string-escape layer doubles every backslash. So a literal backslash becomes
+    four backslashes and a literal `$` becomes `\\$` in the file — exactly the
+    examples the spec calls out."""
+    if not any(c in _EXEC_RESERVED for c in path):
+        return path
+    quoted = path
+    for ch in ("\\", '"', "`", "$"):  # quoting layer (backslash first)
+        quoted = quoted.replace(ch, "\\" + ch)
+    quoted = quoted.replace("\\", "\\\\")  # string layer: double all backslashes
+    return '"' + quoted + '"'
 
 _ENTRY_TEMPLATE = """\
 [Desktop Entry]
@@ -41,14 +65,30 @@ def _desktop_file() -> Path:
     return _autostart_dir() / _DESKTOP_FILE_NAME
 
 
+def appimage_path() -> Path | None:
+    """The AppImage this process runs from, or None when unpackaged.
+
+    `$APPIMAGE` set and pointing at an existing file (the AppImage runtime
+    exports it for the launched process and its children); otherwise None — a
+    dev `python -m …` run, or a stale/missing `$APPIMAGE`. Shared with
+    integration.py, which self-integrates ONLY from a real AppImage and treats
+    None as a silent no-op (never a raise), so this deliberately reports the
+    missing-file case as None rather than raising."""
+    appimage = os.environ.get("APPIMAGE")
+    if not appimage:
+        return None
+    path = Path(appimage)
+    return path if path.is_file() else None
+
+
 def _launcher_path() -> Path:
     """The runnable AppImage/launcher to name in Exec. Raises if it can't be
     resolved to an existing file, so callers never write a broken entry."""
     appimage = os.environ.get("APPIMAGE")
     if appimage:
-        path = Path(appimage)
-        if not path.is_file():
-            raise FileNotFoundError(f"$APPIMAGE points at a missing file: {path}")
+        path = appimage_path()
+        if path is None:
+            raise FileNotFoundError(f"$APPIMAGE points at a missing file: {appimage}")
         return path
     # Dev / unpackaged fallback: whatever launched us — but only if the desktop
     # session could actually exec it. Under `python -m fused_render.supervisor`
@@ -82,6 +122,6 @@ def set_enabled(value: bool) -> None:
         return
 
     launcher = _launcher_path()  # raises before any write if unresolvable
-    exec_line = f"{shlex.quote(str(launcher))} --startup"
+    exec_line = f"{_exec_quote(str(launcher))} --startup"
     desktop.parent.mkdir(parents=True, exist_ok=True)
     desktop.write_text(_ENTRY_TEMPLATE.format(exec_line=exec_line), encoding="utf-8")

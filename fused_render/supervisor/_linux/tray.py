@@ -108,13 +108,13 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
     `toggle-state` tracks `login_enabled` so the host draws the live checkmark.
     """
     children = [
-        _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
-        _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
-        _item(_ID_SEP1, {"type": "separator", "visible": True}),
         _item(
             _ID_RUNNING,
             {"label": f"Running on port {port}", "enabled": False, "visible": True},
         ),
+        _item(_ID_SEP1, {"type": "separator", "visible": True}),
+        _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
+        _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
         _item(_ID_OPEN_LOGS, {"label": "Open logs", "enabled": True, "visible": True}),
         _item(
             _ID_LOGIN,
@@ -266,7 +266,12 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
         @method()
         def GetLayout(
             self, parentId: "i", recursionDepth: "i", propertyNames: "as"  # noqa: N803,F821
-        ) -> "(u(ia{sv}av))":  # noqa: F821,N802
+        ) -> "u(ia{sv}av)":  # noqa: F821,N802
+            # Spec: GetLayout has TWO out-arguments — revision (u) and the layout
+            # node (ia{sv}av). Emitting them as one wrapping struct makes strict
+            # clients (libdbusmenu-gtk / waybar) reject the reply and draw an
+            # empty menu, so the out-signature stays unwrapped and the body
+            # returns the two values as a flat list.
             _root_id, children = _menu_layout(state.login_enabled, port)
             child_nodes = [
                 Variant(
@@ -275,7 +280,17 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
                 )
                 for child in children
             ]
-            layout = [_ROOT_ID, _props_to_variants(_ROOT_PROPS), child_nodes]
+            if parentId == _ROOT_ID:
+                layout = [_ROOT_ID, _props_to_variants(_ROOT_PROPS), child_nodes]
+            else:
+                # Flat menu: a non-root parent is one of the leaf children (no
+                # grandchildren). Return that node, or an empty node for an id
+                # the layout does not know.
+                match = next((c for c in children if c["id"] == parentId), None)
+                if match is None:
+                    layout = [parentId, {}, []]
+                else:
+                    layout = [parentId, _props_to_variants(match["properties"]), []]
             return [revision_ref[0], layout]
 
         @method()
@@ -297,20 +312,57 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
                     return _props_to_variants(child["properties"])[name]
             return Variant("s", "")
 
-        @method()
-        def Event(
-            self, id: "i", eventId: "s", data: "v", timestamp: "u"  # noqa: A002,N803,F821
-        ):  # noqa: N802
-            if eventId != "clicked":
+        def _apply_event(self, item_id, event_id):
+            # Shared body for the singular Event and the batched EventGroup: only
+            # a "clicked" activates the item; a login click also bumps the
+            # revision and emits LayoutUpdated so the host redraws the checkmark.
+            if event_id != "clicked":
                 return
-            _dispatch_event(id, state, handle, paths, set_enabled)
-            if id == _ID_LOGIN:
+            _dispatch_event(item_id, state, handle, paths, set_enabled)
+            if item_id == _ID_LOGIN:
                 revision_ref[0] += 1
                 self.LayoutUpdated(revision_ref[0], _ROOT_ID)
 
         @method()
+        def Event(
+            self, id: "i", eventId: "s", data: "v", timestamp: "u"  # noqa: A002,N803,F821
+        ):  # noqa: N802
+            self._apply_event(id, eventId)
+
+        @method()
+        def EventGroup(
+            self, events: "a(isvu)"  # noqa: N803,F821
+        ) -> "ai":  # noqa: N802
+            # libdbusmenu delivers ALL clicks here (never the singular Event)
+            # once the server advertises Version >= 3. Each (id, eventId, data,
+            # timestamp) is applied exactly as Event would (data is a Variant and
+            # is ignored, same as Event). Ids not in the menu are collected and
+            # returned as idErrors; [] means every id was valid.
+            _root_id, children = _menu_layout(state.login_enabled, port)
+            known = {_root_id, *(child["id"] for child in children)}
+            id_errors = []
+            for item_id, event_id, _data, _timestamp in events:
+                if item_id not in known:
+                    id_errors.append(item_id)
+                    continue
+                self._apply_event(item_id, event_id)
+            return id_errors
+
+        @method()
         def AboutToShow(self, id: "i") -> "b":  # noqa: A002,N802,F821
             return False
+
+        @method()
+        def AboutToShowGroup(
+            self, ids: "ai"  # noqa: N803,F821
+        ) -> "aiai":  # noqa: N802
+            # Batched counterpart to AboutToShow, used by Version >= 3 clients.
+            # First array: ids whose layout needs updating before showing (none
+            # for us, matching AboutToShow's False). Second array: unknown ids.
+            _root_id, children = _menu_layout(state.login_enabled, port)
+            known = {_root_id, *(child["id"] for child in children)}
+            id_errors = [item_id for item_id in ids if item_id not in known]
+            return [[], id_errors]
 
         @signal()
         def LayoutUpdated(self, revision: "u", parent: "i") -> "ui":  # noqa: N802,F821

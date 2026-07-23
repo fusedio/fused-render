@@ -1,10 +1,19 @@
-"""Desktop supervisor path layout — port of windows/supervisor/src/paths.rs
-(feat/windows-desktop-foundation, PR #162).
+"""Desktop supervisor path layout.
 
 Distinct from fused_render/paths.py (the generic dev/state helpers the server
-itself uses): this module is the Windows desktop supervisor's own view of
-where its state/cache/runtime/temp/logs live, and how it builds the child
-server process's environment block.
+itself uses): this module is the desktop supervisor's own view of where its
+state/cache/runtime/temp/logs live, and how it builds the child server
+process's environment block.
+
+Durable state IS the flat ~/.fused-render dotdir on both Linux and Windows —
+byte-for-byte the same dir the dev/CLI and the released macOS app use
+(shell/storage.home_dir() with no FUSED_RENDER_HOME set), so mounts land at
+~/.fused-render/mounts and all user config lives in one known place. Sharing
+with the dev/CLI is the product intent, not an accident: the desktop app and
+the CLI operate on the same mounts.json, prefs, and templates. logs/ and temp/
+are subdirs of that root. The disposable cache stays OS-native
+($XDG_CACHE_HOME on Linux, %LOCALAPPDATA% on Windows) to stay out of backup
+scope; on Linux runtime stays on $XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
 """
 from __future__ import annotations
 
@@ -62,7 +71,7 @@ def linux_runtime_dir() -> Path:
     xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
     if xdg_runtime and os.path.isabs(xdg_runtime):
         return Path(xdg_runtime) / "fused-render"
-    return _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "desktop" / "runtime"
+    return _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "runtime"
 
 
 @dataclass(frozen=True)
@@ -78,39 +87,62 @@ class DesktopPaths:
     def discover(cls) -> "DesktopPaths":
         if sys.platform.startswith("linux"):
             return cls.discover_linux()
-        # LOCALAPPDATA (Windows). Other platforms have no desktop layout yet.
+        # Windows. Durable state IS the flat ~/.fused-render dotdir (one known
+        # place, shared with the dev/CLI by design — same layout as Linux and
+        # macOS); logs/temp/runtime are subdirs of it. Only the disposable
+        # cache stays OS-native under %LOCALAPPDATA%. LOCALAPPDATA missing is
+        # not fatal — it only steers cache, so fall back to a cache dir under
+        # the dotdir root rather than raising.
+        root = Path.home() / ".fused-render"
         local_app_data = os.environ.get("LOCALAPPDATA")
-        if not local_app_data:
-            raise RuntimeError("LOCALAPPDATA is not set")
-        return cls.under(Path(local_app_data) / "FusedRender" / "Desktop")
+        cache = (
+            Path(local_app_data) / "FusedRender" / "cache"
+            if local_app_data
+            else root / "cache"
+        )
+        return cls(
+            root=root,
+            state=root,
+            cache=cache,
+            runtime=root / "runtime",
+            temp=root / "temp",
+            logs=root / "logs",
+        )
 
     @classmethod
     def discover_linux(cls) -> "DesktopPaths":
-        """XDG base-directory layout. Unlike the flat Windows root, state and
-        cache live under different XDG bases: state under $XDG_DATA_HOME
-        (~/.local/share), cache under $XDG_CACHE_HOME (~/.cache), runtime under
-        $XDG_RUNTIME_DIR (see linux_runtime_dir). child_environment() is
+        """Flat dotdir layout: durable state IS ~/.fused-render — the exact dir
+        the dev/CLI and the released macOS app use (shell/storage.home_dir()
+        with no FUSED_RENDER_HOME), shared with them by design so mounts land
+        at ~/.fused-render/mounts and all user config lives in one known
+        place. logs/ and temp/ are subdirs of that root. The disposable cache
+        stays OS-native under $XDG_CACHE_HOME (~/.cache) so its GBs of
+        uv/rclone/duckdb caches stay out of backup scope; runtime stays under
+        $XDG_RUNTIME_DIR (see linux_runtime_dir — tmpfs, 0700, socket-safe).
+        XDG_DATA_HOME no longer steers the root. child_environment() is
         contract-identical to Windows regardless — same FUSED_RENDER_* keys.
 
         Exposed as its own classmethod (not folded into discover) so the pure
         path computation is unit-testable on any platform, not only Linux.
         """
-        data_root = _xdg_home("XDG_DATA_HOME", ".local/share") / "fused-render" / "desktop"
-        cache_root = _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render" / "desktop"
+        root = Path.home() / ".fused-render"
+        cache_root = _xdg_home("XDG_CACHE_HOME", ".cache") / "fused-render"
         return cls(
-            root=data_root,
-            state=data_root / "state",
+            root=root,
+            state=root,
             cache=cache_root,
             runtime=linux_runtime_dir(),
-            temp=cache_root / "temp",
-            logs=data_root / "logs",
+            temp=root / "temp",
+            logs=root / "logs",
         )
 
     @classmethod
     def under(cls, root: Path) -> "DesktopPaths":
+        """Everything under one root (state IS the root, matching discover);
+        handy for tests and sandboxed layouts."""
         return cls(
             root=root,
-            state=root / "state",
+            state=root,
             cache=root / "cache",
             runtime=root / "runtime",
             temp=root / "temp",

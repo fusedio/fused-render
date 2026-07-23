@@ -49,45 +49,60 @@ def test_environment_block_strips_identity_vars_and_applies_overrides(monkeypatc
     assert env["OVERRIDE"] == "1"
 
 
-# -- XDG path layout -------------------------------------------------------
+# -- path layout: state IS the flat ~/.fused-render dotdir (shared with CLI) --
 
 def _clear_xdg(monkeypatch):
     for var in ("XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME"):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_xdg_paths_when_all_set(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+def test_state_is_the_flat_dotdir_shared_with_cli(monkeypatch, tmp_path):
+    # Durable state IS ~/.fused-render itself — byte-for-byte the dir the
+    # dev/CLI and the released macOS app use (shell/storage.home_dir() with no
+    # FUSED_RENDER_HOME), so mounts land at ~/.fused-render/mounts and all user
+    # config lives in one known place. Cache stays OS-native under
+    # XDG_CACHE_HOME (disposable, out of backup scope) and runtime stays on
+    # XDG_RUNTIME_DIR (tmpfs, 0700, socket-safe).
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
-    assert p.state == tmp_path / "data" / "fused-render" / "desktop" / "state"
-    assert p.cache == tmp_path / "cache" / "fused-render" / "desktop"
+    root = tmp_path / ".fused-render"
+    assert p.root == root
+    assert p.state == root
+    assert p.logs == root / "logs"
+    assert p.temp == root / "temp"
+    assert p.cache == tmp_path / "cache" / "fused-render"
     assert p.runtime == tmp_path / "run" / "fused-render"
-    assert p.logs == tmp_path / "data" / "fused-render" / "desktop" / "logs"
-    assert p.temp == p.cache / "temp"
 
 
-def test_xdg_fallbacks_when_unset(monkeypatch, tmp_path):
+def test_xdg_data_home_no_longer_affects_the_root(monkeypatch, tmp_path):
+    # The move off ~/.local/share means XDG_DATA_HOME must NOT steer the state
+    # root anymore — it only ever governed the old XDG-data layout.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    p = paths_mod.DesktopPaths.discover_linux()
+    root = tmp_path / ".fused-render"
+    assert p.root == root
+    assert p.state == root
+    assert p.logs == root / "logs"
+
+
+def test_cache_and_runtime_fallbacks_when_xdg_unset(monkeypatch, tmp_path):
     _clear_xdg(monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     p = paths_mod.DesktopPaths.discover_linux()
-    assert p.state == tmp_path / ".local" / "share" / "fused-render" / "desktop" / "state"
-    assert p.cache == tmp_path / ".cache" / "fused-render" / "desktop"
+    root = tmp_path / ".fused-render"
+    assert p.root == root
+    assert p.state == root
+    # Cache stays OS-native; XDG_CACHE_HOME unset falls back to ~/.cache.
+    assert p.cache == tmp_path / ".cache" / "fused-render"
     # Runtime with XDG_RUNTIME_DIR unset falls back under the cache dir, 0700.
-    assert p.runtime == tmp_path / ".cache" / "fused-render" / "desktop" / "runtime"
-
-
-def test_relative_xdg_value_is_ignored(monkeypatch, tmp_path):
-    _clear_xdg(monkeypatch)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", "relative/not/absolute")
-    p = paths_mod.DesktopPaths.discover_linux()
-    assert p.state == tmp_path / ".local" / "share" / "fused-render" / "desktop" / "state"
+    assert p.runtime == tmp_path / ".cache" / "fused-render" / "runtime"
 
 
 def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     p = paths_mod.DesktopPaths.discover_linux()
@@ -106,7 +121,7 @@ def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     # The DuckDB extension dir, the rclone binary, and the PATH prefix must all
     # live under the SAME tools_dir — the build scripts stage them together, so
     # a split would point the child at a path the payload never populated.
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     tools = tmp_path / "tools"
@@ -114,6 +129,17 @@ def test_payload_tools_share_one_dir(monkeypatch, tmp_path):
     assert env["FUSED_RENDER_DUCKDB_EXTENSION_DIR"] == str(tools / "duckdb_extensions")
     assert env["FUSED_RENDER_RCLONE_BIN"] == str(tools / "rclone")
     assert env["PATH"].split(os.pathsep)[0] == str(tools)
+
+
+def test_desktop_template_uses_url_field_code():
+    # %u (URLs + files), not %f (files only): the DE hands `fused-render://`
+    # deep links to Exec via the field code, so scheme handling needs %u. File
+    # managers still pass plain paths through it. The MimeType placeholder that
+    # the build substitutes must remain.
+    desktop = (_SCRIPTS / "linux" / "fused-render.desktop.in").read_text()
+    assert "Exec=AppRun %u" in desktop
+    assert "%f" not in desktop
+    assert "MimeType=@MIMETYPE@" in desktop
 
 
 def test_linux_build_stages_tools_in_python_bin():

@@ -94,6 +94,7 @@ def run(initial: protocol.Command) -> None:
 
     paths = DesktopPaths.discover()
     paths.create()
+    _spawn_desktop_integration(paths)
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
@@ -385,10 +386,27 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
 def _open_command(port: int, command: protocol.Command) -> None:
     if isinstance(command, protocol.Open):
+        if command.path.lower().startswith("fused-render:"):
+            # Lazy import: deeplink pulls in fastapi, which the supervisor must
+            # not pay for on the common file-open path (only a fused-render:
+            # link ever reaches here). deeplink.is_launch_url is the STRICT,
+            # action-only `fused-render://launch` matcher (D128) — distinct from
+            # _view_url_codec.is_launch_url below, which matches any URL.
+            from fused_render import deeplink
+
+            if deeplink.is_launch_url(command.path):
+                # D128 launch: by this point in the primary the server is up
+                # (and a forwarded Open reaches here only after startup). The
+                # server-down banner just needs the app running — the page that
+                # linked here reconnects on its own, so open NO tab (matching
+                # macOS app.py and Windows winopen._open).
+                return
         if is_launch_url(command.path):
             # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
             # no file to stat — route through the shared helper (deep link ->
-            # /clone?src=, file: -> /view).
+            # /clone?src=, file: -> /view). The file: decode here supersedes the
+            # branch's old _normalize_target: open_target_path (deeplink.py's
+            # sibling in _view_url_codec) decodes the URI to a filesystem path.
             url = open_target_url(port, command.path)
         else:
             url = _view_url(port, Path(command.path))
@@ -416,10 +434,31 @@ def _launch_token() -> str:
     return secrets.token_hex(32)  # 32 bytes == 256 bits, 64 hex chars
 
 
+def _spawn_desktop_integration(paths: DesktopPaths) -> None:
+    """Kick off best-effort user-level desktop self-integration on a daemon
+    thread (Linux only; a no-op backend hook elsewhere). It shells out to
+    update-mime-database / update-desktop-database, which must never delay the
+    server/tray coming up — and it must never break startup, so any failure is
+    swallowed inside the backend (log-and-continue) with a final guard here."""
+    integrate = getattr(_backend, "integrate", None)
+    if integrate is None:
+        return
+
+    def worker():
+        try:
+            integrate(paths)
+        except Exception as error:  # noqa: BLE001 - integration is never fatal to startup
+            paths.log(f"desktop integration failed: {error}")
+
+    threading.Thread(target=worker, daemon=True, name="fused-render-integrate").start()
+
+
 def _absolute_command(command: protocol.Command) -> protocol.Command:
     # A URL payload (a `fused-render:` deep link, a `file:`/scheme:// URI) is
     # not a filesystem path — prepending cwd would mangle it. Only resolve a
-    # genuine relative path.
+    # genuine relative path. (A `file:` URI is left intact here and decoded
+    # later by open_target_url in _open_command, superseding the branch's old
+    # _normalize_target file:// handling.)
     if (
         isinstance(command, protocol.Open)
         and not is_launch_url(command.path)
