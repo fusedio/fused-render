@@ -1596,7 +1596,15 @@
     const views = (stat.templates || []).filter((t) => !META.has(t.mode) && t.mode !== OWN_NAME);
     const saved = fused.params.get("view");
     const activeView = views.find((v) => v.mode === saved) || views[0] || null;
-    if (activeView) window._readerActiveView = activeView.mode;
+    if (activeView) {
+      window._readerActiveView = activeView.mode;
+      // Normalize a missing/invalid saved view into the URL — otherwise every
+      // later pos/rate/voice write re-runs onChange, sees the stale param
+      // disagree with the active view, and reloads the page mid-playback.
+      if (saved !== activeView.mode) {
+        try { fused.params.set("view", activeView.mode); } catch (e) {}
+      }
+    }
 
     // view picker (only meaningful when >1 candidate)
     if (views.length > 1) {
