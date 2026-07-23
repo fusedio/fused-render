@@ -80,6 +80,106 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
 }
 
+# Canonical freedesktop shared-mime-info type per extension token, where one
+# reliably exists in the shared MIME database. Consumed by BOTH desktop
+# packagers (via scripts/file_associations.py) and the Linux runtime
+# self-integration (supervisor/_linux/integration.py), which prefer the
+# standard type over a custom `application/x-fused-render-<token>` glob — the
+# Linux mirror of macOS "Alternate rank" (setup_py2app.py): never mint a new
+# global type identity for an extension the shared database already names, and
+# never steal the user's default handler for it.
+#
+# Deliberately conservative. An extension whose canonical type we are not sure
+# is in the shared-mime-info database is LEFT OUT and falls back to the custom
+# glob type, which always works. A wrong standard type is worse than the custom
+# fallback: the desktop resolves a file to whatever type the database's globs
+# assign, so naming a type the database won't assign drops the association
+# entirely. That is why formats like parquet/pmtiles/fgb/laz, the whole 3D
+# model family, and `.ts` (shared-mime-info calls it an MPEG transport stream,
+# not TypeScript) are omitted here on purpose.
+_STANDARD_MIME_FOR_TOKEN = {
+    # code / config / shell / markup
+    "py": "text/x-python",
+    "js": "text/javascript",
+    "mjs": "text/javascript",
+    "css": "text/css",
+    "html": "text/html",
+    "htm": "text/html",
+    "sh": "application/x-shellscript",
+    "csh": "application/x-csh",
+    "plist": "application/x-plist",
+    "yaml": "application/yaml",
+    "yml": "application/yaml",
+    "toml": "application/toml",
+    "tex": "text/x-tex",
+    # structured / tabular data
+    "json": "application/json",
+    "csv": "text/csv",
+    "tsv": "text/tab-separated-values",
+    "geojson": "application/geo+json",
+    "nc": "application/x-netcdf",
+    "cdf": "application/x-netcdf",
+    # documents / prose
+    "md": "text/markdown",
+    "markdown": "text/markdown",
+    "txt": "text/plain",
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    # images
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "bmp": "image/bmp",
+    "svg": "image/svg+xml",
+    "webp": "image/webp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+    "avif": "image/avif",
+    "heic": "image/heif",
+    "heif": "image/heif",
+    "dng": "image/x-adobe-dng",
+    # audio
+    "mp3": "audio/mpeg",
+    "wav": "audio/x-wav",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    # video
+    "mp4": "video/mp4",
+    "mov": "video/quicktime",
+    "webm": "video/webm",
+    # archives
+    "zip": "application/zip",
+    "tar": "application/x-tar",
+    "gz": "application/gzip",
+    "bz2": "application/x-bzip2",
+    "xz": "application/x-xz",
+    "zst": "application/zstd",
+    "tgz": "application/x-compressed-tar",
+    "tbz2": "application/x-bzip-compressed-tar",
+    "txz": "application/x-xz-compressed-tar",
+    "jar": "application/x-java-archive",
+    # geospatial
+    "gpx": "application/gpx+xml",
+    "kml": "application/vnd.google-earth.kml+xml",
+    "kmz": "application/vnd.google-earth.kmz",
+    # databases
+    "sqlite": "application/vnd.sqlite3",
+    "sqlite3": "application/vnd.sqlite3",
+    "db": "application/vnd.sqlite3",
+}
+
+
+def standard_mime_for_token(token: str) -> str | None:
+    """The canonical shared-mime-info type for an extension token (the part
+    after the final dot, e.g. "py"), or None when no reliable standard type
+    exists — in which case the custom `application/x-fused-render-<token>` glob
+    type is used instead. Single source of truth for the standard-MIME tiering."""
+    return _STANDARD_MIME_FOR_TOKEN.get(token.lower())
+
+
 _LOCALAPPDATA = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
 _APP_SUPPORT_BASE = os.path.join(_LOCALAPPDATA, "fused-render")
 APP_SUPPORT_DIR = branch_dir(_APP_SUPPORT_BASE)

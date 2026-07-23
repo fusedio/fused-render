@@ -2,459 +2,573 @@
   "associations": [
     {
       "extension": ".avif",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/avif"
     },
     {
       "extension": ".bmp",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/bmp"
     },
     {
       "extension": ".bz2",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-bzip2"
     },
     {
       "extension": ".cdf",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": "application/x-netcdf"
     },
     {
       "extension": ".cfg",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".cjs",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".conf",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".csh",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/x-csh"
     },
     {
       "extension": ".css",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "text/css"
     },
     {
       "extension": ".csv",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": "text/csv"
     },
     {
       "extension": ".cts",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".db",
-      "icon": "db"
+      "icon": "db",
+      "standard_mime": "application/vnd.sqlite3"
     },
     {
       "extension": ".ddb",
-      "icon": "db"
+      "icon": "db",
+      "standard_mime": null
     },
     {
       "extension": ".dng",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/x-adobe-dng"
     },
     {
       "extension": ".docx",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     },
     {
       "extension": ".duckdb",
-      "icon": "db"
+      "icon": "db",
+      "standard_mime": null
     },
     {
       "extension": ".egg",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": null
     },
     {
       "extension": ".fgb",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".fish",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".flac",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "audio/flac"
     },
     {
       "extension": ".geojson",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "application/geo+json"
     },
     {
       "extension": ".gif",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/gif"
     },
     {
       "extension": ".glb",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".gltf",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".gpkg",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".gpx",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "application/gpx+xml"
     },
     {
       "extension": ".gz",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/gzip"
     },
     {
       "extension": ".hcl",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".heic",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/heif"
     },
     {
       "extension": ".heif",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/heif"
     },
     {
       "extension": ".htm",
-      "icon": "html"
+      "icon": "html",
+      "standard_mime": "text/html"
     },
     {
       "extension": ".html",
-      "icon": "html"
+      "icon": "html",
+      "standard_mime": "text/html"
     },
     {
       "extension": ".hyper",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": null
     },
     {
       "extension": ".ini",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".jar",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-java-archive"
     },
     {
       "extension": ".jpeg",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/jpeg"
     },
     {
       "extension": ".jpg",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/jpeg"
     },
     {
       "extension": ".js",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "text/javascript"
     },
     {
       "extension": ".json",
-      "icon": "json"
+      "icon": "json",
+      "standard_mime": "application/json"
     },
     {
       "extension": ".jsonl",
-      "icon": "json"
+      "icon": "json",
+      "standard_mime": null
     },
     {
       "extension": ".jsx",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".kml",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "application/vnd.google-earth.kml+xml"
     },
     {
       "extension": ".kmz",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "application/vnd.google-earth.kmz"
     },
     {
       "extension": ".ksplat",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".las",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".latex",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": null
     },
     {
       "extension": ".laz",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".log",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": null
     },
     {
       "extension": ".ltx",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": null
     },
     {
       "extension": ".m4a",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": null
     },
     {
       "extension": ".m4v",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": null
     },
     {
       "extension": ".markdown",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "text/markdown"
     },
     {
       "extension": ".md",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "text/markdown"
     },
     {
       "extension": ".mjs",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "text/javascript"
     },
     {
       "extension": ".mov",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "video/quicktime"
     },
     {
       "extension": ".mp3",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "audio/mpeg"
     },
     {
       "extension": ".mp4",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "video/mp4"
     },
     {
       "extension": ".mts",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".nc",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": "application/x-netcdf"
     },
     {
       "extension": ".nc4",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": null
     },
     {
       "extension": ".ndjson",
-      "icon": "json"
+      "icon": "json",
+      "standard_mime": null
     },
     {
       "extension": ".obj",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".ogg",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "audio/ogg"
     },
     {
       "extension": ".parquet",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": null
     },
     {
       "extension": ".pdf",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "application/pdf"
     },
     {
       "extension": ".plist",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/x-plist"
     },
     {
       "extension": ".ply",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".pmtiles",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".png",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/png"
     },
     {
       "extension": ".pptx",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     },
     {
       "extension": ".ps1",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".py",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "text/x-python"
     },
     {
       "extension": ".sh",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/x-shellscript"
     },
     {
       "extension": ".shp",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": null
     },
     {
       "extension": ".splat",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".sqlite",
-      "icon": "db"
+      "icon": "db",
+      "standard_mime": "application/vnd.sqlite3"
     },
     {
       "extension": ".sqlite3",
-      "icon": "db"
+      "icon": "db",
+      "standard_mime": "application/vnd.sqlite3"
     },
     {
       "extension": ".stl",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".svg",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/svg+xml"
     },
     {
       "extension": ".tar",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-tar"
     },
     {
       "extension": ".tbz2",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-bzip-compressed-tar"
     },
     {
       "extension": ".tds",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".tdsx",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": null
     },
     {
       "extension": ".tex",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "text/x-tex"
     },
     {
       "extension": ".tf",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".tgz",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-compressed-tar"
     },
     {
       "extension": ".tif",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "image/tiff"
     },
     {
       "extension": ".tiff",
-      "icon": "geo"
+      "icon": "geo",
+      "standard_mime": "image/tiff"
     },
     {
       "extension": ".toml",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/toml"
     },
     {
       "extension": ".ts",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".tsv",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": "text/tab-separated-values"
     },
     {
       "extension": ".tsx",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".twb",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".twbx",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": null
     },
     {
       "extension": ".txt",
-      "icon": "doc"
+      "icon": "doc",
+      "standard_mime": "text/plain"
     },
     {
       "extension": ".txz",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-xz-compressed-tar"
     },
     {
       "extension": ".usd",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".usda",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".usdc",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".usdz",
-      "icon": "model"
+      "icon": "model",
+      "standard_mime": null
     },
     {
       "extension": ".vim",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".wav",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "audio/x-wav"
     },
     {
       "extension": ".webm",
-      "icon": "media"
+      "icon": "media",
+      "standard_mime": "video/webm"
     },
     {
       "extension": ".webp",
-      "icon": "image"
+      "icon": "image",
+      "standard_mime": "image/webp"
     },
     {
       "extension": ".whl",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": null
     },
     {
       "extension": ".xlsm",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": null
     },
     {
       "extension": ".xlsx",
-      "icon": "data"
+      "icon": "data",
+      "standard_mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     },
     {
       "extension": ".xz",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/x-xz"
     },
     {
       "extension": ".yaml",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/yaml"
     },
     {
       "extension": ".yml",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": "application/yaml"
     },
     {
       "extension": ".zip",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/zip"
     },
     {
       "extension": ".zsh",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".zsh-theme",
-      "icon": "code"
+      "icon": "code",
+      "standard_mime": null
     },
     {
       "extension": ".zst",
-      "icon": "archive"
+      "icon": "archive",
+      "standard_mime": "application/zstd"
     }
   ]
 }
