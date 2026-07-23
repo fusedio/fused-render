@@ -155,6 +155,7 @@
            background:var(--panel); margin:0 0 16px; }
   .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
   .frame.short iframe { height:380px; }
+  #demoFrame iframe { height:310px; }
   .frame.tall iframe { height:540px; }
   .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
               padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
@@ -593,11 +594,6 @@
           </div>
         </div>
         <p>One HTML file + one Python file = a live tool. Drag the slider — that's <b>Python running on your machine</b> right now.</p>
-        <div class="door-promptlab">✦ Faster with Claude Code</div>
-        <div class="promptbox">
-          <button class="copybtn" data-copy="homePrompt">Copy</button>
-          <pre id="homePrompt">Create a Fused Render app that shows my CPU and memory usage as live gauges.</pre>
-        </div>
         <div class="door-cta">
           <a class="door-go" href="?page=build" data-intent="build">Build your first app <span class="arr">→</span></a>
         </div>
