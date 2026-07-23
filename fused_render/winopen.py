@@ -138,7 +138,7 @@ _STANDARD_MIME_FOR_TOKEN = {
     "tif": "image/tiff",
     "tiff": "image/tiff",
     "avif": "image/avif",
-    "heic": "image/heif",
+    "heic": "image/heic",
     "heif": "image/heif",
     "dng": "image/x-adobe-dng",
     # audio

@@ -54,6 +54,21 @@ def test_standard_mime_tiering():
     assert parquet.effective_mime == "application/x-fused-render-parquet"
 
 
+def test_heic_and_heif_are_distinct_standard_types():
+    # shared-mime-info registers .heic as its own type (image/heic), distinct
+    # from image/heif — mapping .heic to image/heif would attach the handler to
+    # the wrong registered type.
+    fa = _load_module()
+    from fused_render.winopen import standard_mime_for_token
+
+    assert standard_mime_for_token("heic") == "image/heic"
+    assert standard_mime_for_token("heif") == "image/heif"
+
+    by_ext = {a.extension: a for a in fa.associations()}
+    assert by_ext[".heic"].standard_mime == "image/heic"
+    assert by_ext[".heif"].standard_mime == "image/heif"
+
+
 def test_mime_types_dedupes_and_appends_scheme_handler():
     fa = _load_module()
     types = fa.mime_types(fa.associations())
