@@ -39,13 +39,29 @@ AppImage).
 | Paths | XDG: state `$XDG_DATA_HOME/fused-render/desktop`, cache `$XDG_CACHE_HOME/fused-render/desktop`, runtime `$XDG_RUNTIME_DIR/fused-render`, with documented fallbacks (`~/.local/share`, `~/.cache`, and a `0700` dir under cache when `XDG_RUNTIME_DIR` is unset). |
 | Installer / upgrade | Replace the `.AppImage` file; old instance shuts down via the same `--shutdown-for-upgrade` command over the socket. |
 
-The `.desktop` `Exec` uses `%f` (a **single** file field code), not `%F`, to
+The `.desktop` `Exec` uses `%u` (a **single** URL/file field code), not `%F`, to
 match the Windows registry command's `%1` and keep `protocol.parse_args`
-identical across platforms (it accepts exactly one path argument). A multi-file
-"Open with" therefore launches one instance per file; the second and later
-instances forward their open to the primary over the socket and exit, exactly
-as a second manual launch does — the desktop environment coalesces, the
-supervisor never sees more than one path per process.
+identical across platforms (it accepts exactly one argument). `%u` rather than
+`%f` because the same entry must receive both plain file paths (from a file
+manager's "Open with") **and** `fused-render://` deep-link URLs (from the
+`x-scheme-handler/fused-render` registration, §26/D110) — `%f` is files-only and
+would never carry a URL. A multi-file "Open with" therefore launches one
+instance per file; the second and later instances forward their open to the
+primary over the socket and exit, exactly as a second manual launch does — the
+desktop environment coalesces, the supervisor never sees more than one argument
+per process. A deep link routes to the server's `/clone?src=…` confirm page
+instead of a `/view` URL; the same shared mapping (`_view_url_codec`) macOS and
+Windows use, so an OS-delivered link resolves identically everywhere.
+
+The associations themselves register out of the box, with no third-party
+AppImage integrator: at first supervisor start the app self-integrates its
+`.desktop`, MIME package, and icon into the user's `$XDG_DATA_HOME` (D130).
+Following the macOS "Alternate rank" tiering (D129), an extension with a
+standard shared-mime-info type registers under that type and a custom
+`application/x-fused-render-<token>` glob type is minted only for orphan
+extensions the shared database doesn't name; no `xdg-mime default` is set for any
+file type (only for the deep-link scheme), so the user's chosen default apps are
+never stolen.
 
 ## Acceptance gates (go / no-go)
 
@@ -59,7 +75,9 @@ supervisor never sees more than one path per process.
   GNOME with an AppIndicator extension — and its *absence* on a session with no
   StatusNotifier host (stock GNOME) still leaves the app fully usable — browser
   reachable and a second launch forwards (opens home) instead of double-serving.
-- **(d) Open-with** association works after user-level AppImage integration.
+- **(d) Open-with** association works out of the box (the app self-integrates its
+  `.desktop`/MIME/icon at first supervisor start, D130), and `fused-render://`
+  deep links route to `/clone` (D110). No third-party AppImage integrator needed.
 - **(e) Upgrade** = replace the file while running; the old instance shuts down
   via `--shutdown-for-upgrade`.
 - **(f) Runs on the two oldest supported targets** — Ubuntu 22.04 + Debian 12 —
@@ -72,7 +90,7 @@ supervisor never sees more than one path per process.
 | (a) no-orphans | `tests/test_supervisor_linux_tree.py` in CI (Linux runner) + manual `kill -9` walk on a VM |
 | (b) port clash | unit + manual |
 | (c) tray / degraded mode | **manual** — headless CI cannot see a tray; KDE + stock-GNOME VMs |
-| (d) open-with | **manual** — needs a desktop session + AppImage integration |
+| (d) open-with / deep links | self-integration + MIME tiering + deep-link routing are unit-tested in CI (headless); the actual DE association + a `fused-render://` click are **manual** — need a desktop session |
 | (e) upgrade | **manual** — replace-file-while-running walk |
 | (f) 22.04 / Debian 12 | AppImage build smoke in CI + **manual** VM walk |
 
@@ -144,8 +162,14 @@ measures both mechanisms wherever userns is available.
   processes under each mechanism the host supports.
 - **(b)–(f):** pending the manual VM walk (see the "Which gates run where"
   table). The AppImage build + its import/`_child.py`/rclone smoke tests run in
-  the CI job (a slice of (f)); tray/dialogs/open-with/upgrade are the manual
-  desktop-session checklist.
+  the CI job (a slice of (f)); tray/dialogs/upgrade are the manual
+  desktop-session checklist. For **(d)** the logic below the DE boundary is now
+  CI-tested headlessly — the standard-MIME tiering + XML/MimeType generation
+  (`tests/test_file_associations.py`, `tests/test_mime_package.py`), the
+  self-integration file-writing + idempotence + tool invocation
+  (`tests/test_supervisor_linux_integration.py`), and the deep-link routing
+  (`tests/test_supervisor_deep_link.py`) — so only the DE actually honoring the
+  association and a real `fused-render://` click remain for the VM walk.
 
 _The manual VM sign-off (KDE + stock-GNOME, Ubuntu 22.04 + Debian 12) is
 recorded here at release time._
