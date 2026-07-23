@@ -11,13 +11,15 @@ convention in tests/test_supervisor_linux_instance.py.
 """
 import queue
 import threading
+from pathlib import Path
 
 import pytest
 
 try:
-    from fused_render.supervisor import core
+    from fused_render.supervisor import core, protocol
 except Exception:  # noqa: BLE001 - no supervisor backend on this OS (e.g. darwin)
     core = None
+    protocol = None
 
 pytestmark = pytest.mark.skipif(core is None, reason="no supervisor backend on this OS")
 
@@ -57,3 +59,63 @@ def test_spawn_call_never_blocks_the_loop_thread():
 
     release.set()
     assert ran.get(timeout=5) is True
+
+
+# ---- deep-link / file routing through _open_command + _absolute_command ------
+
+
+def test_open_command_routes_deep_link_to_clone(monkeypatch):
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    core._open_command(9000, protocol.Open("fused-render://open?git=https://github.com/o/r"))
+    assert opened == [
+        "http://127.0.0.1:9000/clone?src="
+        "fused-render%3A%2F%2Fopen%3Fgit%3Dhttps%3A%2F%2Fgithub.com%2Fo%2Fr"
+    ]
+
+
+def test_open_command_routes_file_uri_to_view(monkeypatch, tmp_path):
+    f = tmp_path / "a.parquet"
+    f.write_text("x")
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    core._open_command(9000, protocol.Open(f"file://{f}"))
+    assert opened == [f"http://127.0.0.1:9000" + _view_path(str(f))]
+
+
+def test_open_command_routes_plain_file_to_view(monkeypatch, tmp_path):
+    f = tmp_path / "report.parquet"
+    f.write_text("x")
+    opened = []
+    monkeypatch.setattr(core, "_open_browser", opened.append)
+    core._open_command(9000, protocol.Open(str(f)))
+    assert opened == [f"http://127.0.0.1:9000" + _view_path(str(f))]
+
+
+def test_open_command_missing_file_still_errors(monkeypatch):
+    monkeypatch.setattr(core, "_open_browser", lambda url: None)
+    with pytest.raises(FileNotFoundError):
+        core._open_command(9000, protocol.Open("/nope/does/not/exist.parquet"))
+
+
+def test_absolute_command_leaves_urls_untouched():
+    for raw in (
+        "fused-render://open?git=https://github.com/o/r",
+        "file:///home/u/a.parquet",
+        "https://example.com/x",
+    ):
+        cmd = protocol.Open(raw)
+        assert core._absolute_command(cmd) is cmd or core._absolute_command(cmd) == cmd
+        assert core._absolute_command(cmd).path == raw
+
+
+def test_absolute_command_resolves_relative_plain_path():
+    cmd = protocol.Open("some/rel/path.parquet")
+    resolved = core._absolute_command(cmd)
+    assert resolved.path == str(Path.cwd() / "some/rel/path.parquet")
+
+
+def _view_path(fs_path: str) -> str:
+    from fused_render._view_url_codec import view_url_path
+
+    return view_url_path(fs_path)

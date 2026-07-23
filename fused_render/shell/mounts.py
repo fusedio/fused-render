@@ -10,11 +10,18 @@ rclone's own config; this module stores none.
 Mount lifecycle goes through `rclone rcd`, rclone's remote-control daemon,
 over its local HTTP API (mount/mount, mount/unmount, mount/listmounts) —
 one cross-platform mount API instead of per-OS umount commands. The daemon
-is spawned detached with its {port, pid} recorded in home_dir()/rcd.json
-and reused across server runs (the spawn-or-reuse pattern of the tile-server
-daemons, templates/geotiff/tile_server.py). Mounts therefore deliberately
-SURVIVE server restarts; a fresh server adopts them via mount/listmounts
-instead of orphaning them. Unmount is an explicit user action.
+is spawned with its {port, pid} recorded in home_dir()/rcd.json and reused
+across server runs (the spawn-or-reuse pattern of the tile-server daemons,
+templates/geotiff/tile_server.py). Unmount is an explicit user action.
+
+Whether the daemon (and its mounts) survives the server dying depends on
+FUSED_RENDER_RCLONE_PERSIST (see _rclone_should_persist). In DEV (dev.sh sets
+it) rcd is spawned detached (setsid) so it deliberately SURVIVES the frequent
+watchfiles restarts — a fresh server re-adopts the live mounts via
+mount/listmounts instead of re-mounting + re-warming the VFS cache. In
+PRODUCTION (unset) rcd is a normal child that dies with the server, so quitting
+the app tears the mounts down cleanly; the next launch finds the dead pid in
+rcd.json stale and respawns.
 
 Store: home_dir()/mounts.json, whole-file last-write-wins like
 shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
@@ -763,6 +770,18 @@ def rclone_bin() -> str | None:
     return shutil.which("rclone")
 
 
+# Whether a freshly spawned rcd should DETACH into its own session (setsid) and
+# so outlive this server, or run as a normal child that dies with it.
+#
+# Detaching is a DEV-ITERATION convenience: dev.sh restarts the server on every
+# .py edit (watchfiles), and keeping rcd alive across those restarts skips the
+# re-mount + VFS-cache re-warm each time. In PRODUCTION we want a clean teardown
+# — quitting the app should kill rcd (and thus unmount) — so detaching is OFF by
+# default and only turned on by scripts/dev.sh via FUSED_RENDER_RCLONE_PERSIST.
+def _rclone_should_persist() -> bool:
+    return os.environ.get("FUSED_RENDER_RCLONE_PERSIST") not in (None, "", "0")
+
+
 # Spawn-or-reuse must be serialized: the startup automount thread and a user
 # mount request can race between "no live daemon" and Popen, each starting
 # its own rcd and clobbering rcd.json (the loser's daemon is orphaned).
@@ -815,7 +834,12 @@ def _ensure_rcd_locked() -> int:
          f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,  # outlives this server on purpose
+        # Dev (FUSED_RENDER_RCLONE_PERSIST set): setsid into its own session so
+        # the daemon outlives watchfiles server restarts. Production (unset):
+        # stay a normal child so app teardown reaps it (on Linux via the
+        # server's process-group killpg; on Windows it stays in the supervisor's
+        # Job either way; on macOS app.py SIGTERMs it explicitly on quit).
+        start_new_session=_rclone_should_persist(),
     )
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -873,6 +897,28 @@ def _kill_current_rcd() -> None:
                 return  # daemon gone
             time.sleep(0.1)
     raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+
+
+def stop_local_rcd() -> None:
+    """Best-effort teardown of the rcd we spawned, for the app's quit path.
+
+    Only needed where nothing else reaps rcd on quit — notably macOS, which has
+    no supervisor tree-kill (the server runs in-process; app.py, a rumps app).
+    On Linux/Windows the process-group killpg / Job Object already collect a
+    non-detached rcd, so this is redundant there but harmless.
+
+    Gated on NOT persisting: when FUSED_RENDER_RCLONE_PERSIST is set (dev) the
+    detached daemon is meant to outlive the process, so we leave it running.
+    Reuses _kill_current_rcd's safety gates (only ever signals a pid PROVEN to
+    be our rclone rcd) and swallows every error — a reap failure must never
+    block app quit."""
+    if _rclone_should_persist():
+        return
+    with _rcd_lock:
+        try:
+            _kill_current_rcd()
+        except Exception:
+            logger.warning("stop_local_rcd: rcd teardown failed", exc_info=True)
 
 
 def restart_rcd() -> None:

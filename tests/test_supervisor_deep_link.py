@@ -62,17 +62,27 @@ def test_open_command_missing_file_still_raises(opened, tmp_path):
 
 def test_clone_url_path_shared_with_app():
     # app.py's macOS mapping and the shared codec must agree byte-for-byte.
-    from fused_render._view_url_codec import clone_url_path as shared
+    # The shared body is now open_target_path (which supersedes the branch's
+    # clone_url_path); app.clone_url_path delegates to it.
+    from fused_render._view_url_codec import open_target_path as shared
     from fused_render.app import clone_url_path as app_fn
 
     assert app_fn(DEEPLINK) == shared(DEEPLINK) == "/clone?src=" + quote(DEEPLINK, safe="")
 
 
-# ---- file:// URI normalization (GIO launchers pass %u as file:///path) -------
+# ---- file:// URI decode (GIO launchers pass %u as file:///path) --------------
 # Nautilus/GNOME and other GIO-based launchers hand the .desktop `%u` field a
-# `file:///…` URI, not a plain path. core must decode it to a filesystem path
-# (mirroring app.py's macOS handling) before the absolute/cwd-join reasoning,
-# or _view_url raises FileNotFoundError on the literal "file:" string.
+# `file:///…` URI, not a plain path. It must decode to a filesystem path
+# (mirroring app.py's macOS handling): _absolute_command leaves the file: URI
+# intact (it is a launch URL, not a path to cwd-join), and _open_command routes
+# it through open_target_url which decodes it to a /view URL. This supersedes
+# the branch's old _normalize_target, which decoded at _absolute_command time.
+
+
+def test_file_uri_left_intact_by_absolute_command():
+    # A file: URI is a launch URL — never cwd-joined; decode happens later.
+    uri = "file:///tmp/data.parquet"
+    assert core._absolute_command(protocol.Open(uri)) == protocol.Open(uri)
 
 
 def test_file_uri_with_encoded_space_decoded_to_view_url(opened, tmp_path):
@@ -84,22 +94,21 @@ def test_file_uri_with_encoded_space_decoded_to_view_url(opened, tmp_path):
     assert "%20" in uri
 
     cmd = core._absolute_command(protocol.Open(uri))
-    assert isinstance(cmd, protocol.Open)
-    assert cmd.path == str(f)  # decoded, absolute filesystem path
-
     core._open_command(4242, cmd)
-    assert opened == [view_url(4242, str(f))]
+    assert opened == [view_url(4242, str(f))]  # decoded to the file's /view URL
 
 
-def test_file_uri_with_utf8_decoded(tmp_path):
+def test_file_uri_with_utf8_decoded(opened, tmp_path):
+    from fused_render._view_url_codec import view_url
+
     f = tmp_path / "café.csv"
     f.write_text("x")
     uri = "file://" + quote(str(f))
-    cmd = core._absolute_command(protocol.Open(uri))
-    assert cmd == protocol.Open(str(f))
+    core._open_command(4242, core._absolute_command(protocol.Open(uri)))
+    assert opened == [view_url(4242, str(f))]
 
 
-def test_plain_absolute_path_unchanged_by_normalize():
+def test_plain_absolute_path_unchanged_by_absolute_command():
     # A plain absolute path must not be mangled by file:// handling.
     p = str(Path("/home/user/data.csv"))
     assert core._absolute_command(protocol.Open(p)) == protocol.Open(p)

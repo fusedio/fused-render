@@ -65,11 +65,12 @@ def clone_url_path(raw_url: str) -> str:
     and validation happen server-side (deeplink.py); this only ferries the
     string. Module-level (not a closure) so it is testable without AppKit.
 
-    Delegates to the shared `_view_url_codec` (now shared with the Linux
-    supervisor's core.py) so both OSes map a deep link identically."""
-    from fused_render._view_url_codec import clone_url_path as _shared
+    Delegates to the shared `_view_url_codec.open_target_path` so all three
+    platforms (macOS here, the Windows/Linux supervisor) ferry a deep link
+    identically."""
+    from fused_render._view_url_codec import open_target_path
 
-    return _shared(raw_url)
+    return open_target_path(raw_url)
 
 
 def openurls_target_path(raw_url: str) -> str:
@@ -82,13 +83,13 @@ def openurls_target_path(raw_url: str) -> str:
     anything else is a file open and must resolve the same way
     `application_openFiles_` does, via `view_url_path`. Module-level (not a
     closure) so it is testable without AppKit.
+
+    Delegates to the shared `_view_url_codec.open_target_path` — the single
+    implementation shared with the Windows/Linux supervisor.
     """
-    if raw_url.lower().startswith("fused-render:"):
-        return clone_url_path(raw_url)
+    from fused_render._view_url_codec import open_target_path
 
-    from urllib.parse import unquote, urlparse
-
-    return view_url_path(unquote(urlparse(raw_url).path))
+    return open_target_path(raw_url)
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -380,6 +381,16 @@ def main() -> None:
         if state["server"] is not None:
             state["server"].should_exit = True
         _remove_pidfile()
+        # macOS has no supervisor tree-kill (server runs in-process here), so a
+        # non-persisted rcd would otherwise reparent to launchd and survive
+        # quit. SIGTERM it (rcd unmounts cleanly). Best-effort + gated on NOT
+        # FUSED_RENDER_RCLONE_PERSIST internally; never lets a reap block quit.
+        try:
+            from fused_render.shell.mounts import stop_local_rcd
+
+            stop_local_rcd()
+        except Exception:
+            logger.warning("rcd teardown on quit failed", exc_info=True)
         rumps.quit_application()
 
     status_app = FusedRenderStatusApp()

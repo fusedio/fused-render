@@ -136,6 +136,7 @@ def test_root_props_advertise_submenu():
 
 
 def test_root_props_encode_to_string_variant():
+    pytest.importorskip("dbus_fast")  # _props_to_variants imports Variant lazily
     variants = linux_tray._props_to_variants(linux_tray._ROOT_PROPS)
     variant = variants["children-display"]
     assert variant.signature == "s"

@@ -3,7 +3,9 @@ in sync with the shipping runtime's own registry + icon map. If a template or
 icon-variant change drifts the two apart, fail here rather than shipping a stale
 "Open with" association set in either packaging pipeline."""
 import importlib.util
+import io
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -29,6 +31,40 @@ def test_committed_json_matches_winopen():
         "scripts/file_associations.json is stale; run "
         "`python scripts/file_associations.py regenerate`"
     )
+
+
+def _mime_types_output(fa) -> str:
+    buf = io.StringIO()
+    argv = sys.argv
+    sys.argv = ["file_associations.py", "mime-types"]
+    try:
+        with redirect_stdout(buf):
+            fa.main()
+    finally:
+        sys.argv = argv
+    return buf.getvalue().strip()
+
+
+def test_mime_types_includes_scheme_handler():
+    # The .desktop MimeType= must register the app as the handler for
+    # fused-render:// (x-scheme-handler/fused-render), alongside the file types,
+    # so the OS routes deep links to the AppImage.
+    fa = _load_module()
+    out = _mime_types_output(fa)
+    assert "x-scheme-handler/fused-render;" in out
+    assert out.endswith(";")
+
+
+def test_mime_types_still_lists_file_types():
+    # The output lists the effective type per association (standard_mime
+    # tiering): a standard type where one exists (.py -> text/x-python) and the
+    # custom glob type for an orphan extension (.parquet). The custom glob type
+    # for an extension that HAS a standard type is never emitted.
+    fa = _load_module()
+    out = _mime_types_output(fa)
+    assert "text/x-python;" in out
+    assert "application/x-fused-render-parquet;" in out
+    assert "application/x-fused-render-py;" not in out
 
 
 def test_mime_and_glob_derivations():

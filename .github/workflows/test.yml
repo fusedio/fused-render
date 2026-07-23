@@ -219,9 +219,11 @@ jobs:
           PYSTRAY_BACKEND: dummy
         run: >
           python -m pytest -q
+          tests/test_supervisor_core.py
           tests/test_supervisor_linux_tree.py
           tests/test_supervisor_linux_instance.py
           tests/test_supervisor_linux_paths.py
+          tests/test_supervisor_linux_tray.py
           tests/test_supervisor_tray.py
           tests/test_file_associations.py
           tests/test_mounts_rclone_bin.py

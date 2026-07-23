@@ -32,8 +32,10 @@ _JSON = os.path.join(_HERE, "file_associations.json")
 # extension the shared database already names.
 _MIME_PREFIX = "application/x-fused-render-"
 
-# Deep-link scheme handler, appended to the desktop MimeType= list so the DE
-# execs FusedRender for `fused-render://` URLs (Task B).
+# The freedesktop MIME "type" that registers an app as the handler for a URL
+# scheme. Appended to the .desktop MimeType= list so the OS routes
+# `fused-render://` deep links to the AppImage (SPEC §26, D110). Not a file
+# association, so it stays out of the winopen-derived table and the drift test.
 _SCHEME_HANDLER = "x-scheme-handler/fused-render"
 
 
@@ -144,6 +146,8 @@ def main() -> None:
         print(f"wrote {_JSON}")
     elif args.command == "mime-types":
         # Trailing ';' is required by the desktop-entry spec for MimeType lists.
+        # mime_types() applies the standard_mime tiering (effective type per
+        # association) and appends the deep-link scheme handler.
         print(";".join(mime_types(associations())) + ";")
     elif args.command == "mime-xml":
         with open(args.output, "w", encoding="utf-8") as handle:

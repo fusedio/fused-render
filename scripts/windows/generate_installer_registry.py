@@ -27,6 +27,15 @@ def main() -> None:
         f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: ""; ValueData: "Open with FusedRender"; Flags: uninsdeletekey',
         f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico"; Flags: uninsdeletevalue uninsdeletekeyifempty',
         f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        # fused-render:// URL Protocol class (SPEC §26, D110): the empty-string
+        # "URL Protocol" value is what marks the key as a scheme handler; the
+        # shell\open\command reuses the same EXE + "%1" convention as the file
+        # handlers, so a deep link is delivered as a single arg the supervisor
+        # routes to /clone.
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render"; ValueType: string; ValueName: ""; ValueData: "URL:FusedRender Protocol"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico,0"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
     ]
     for assoc in associations():
         extension = assoc.extension

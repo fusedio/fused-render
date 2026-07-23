@@ -10,8 +10,9 @@ sentinel, which reads it server-side and redirects to the view it describes.
 Pure path classification only (no filesystem/OS calls), so this module and
 its tests run identically on Windows, macOS, and Linux.
 """
+import re
 from pathlib import PureWindowsPath
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 
 def _is_drive_path(fs_path: str) -> bool:
@@ -40,29 +41,39 @@ def view_url(port: int, fs_path: str | None) -> str:
     return f"http://127.0.0.1:{port}" + view_url_path(fs_path)
 
 
-# ---- fused-render:// deep links (SPEC §26, D110) ----------------------------
-# The single body shared by every OS entry point (macOS app.py,
-# Windows winopen.py, and the Linux supervisor core.py) so the OSes cannot
-# drift on how an OS-delivered deep link maps to the server's /clone page.
-# Parsing/validation is entirely server-side (deeplink.py); this only ferries
-# the raw link string as ?src=.
-
-_DEEP_LINK_SCHEME = "fused-render:"
+# A launch argument is a URL (not a filesystem path) when it is a
+# `fused-render:` deep link, a `file:` URI, or any `<scheme>://…`. A Windows
+# drive path ('C:\\…') is deliberately NOT a URL: it has no '://' and neither
+# the fused-render nor file scheme, so it round-trips through view_url_path.
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
-def is_deep_link(target: str) -> bool:
-    """True when a forwarded target is a `fused-render://` deep link rather than
-    a filesystem path (case-insensitive, matching app.py's macOS check)."""
-    return target.lower().startswith(_DEEP_LINK_SCHEME)
+def is_launch_url(raw: str) -> bool:
+    """True when a raw launch argument is an OS-delivered URL rather than a
+    filesystem path — the cue to skip existence checks and cwd resolution."""
+    low = raw.lower()
+    if low.startswith(("fused-render:", "file:")):
+        return True
+    return bool(_SCHEME_RE.match(raw))
 
 
-def clone_url_path(raw_url: str) -> str:
-    """/clone confirm-page URL path (no host/port) for a raw deep link."""
-    from urllib.parse import quote
+def open_target_path(raw: str) -> str:
+    """Shell URL path for a raw launch argument, shared by every platform's
+    entry point (macOS app.py, the Windows/Linux supervisor).
 
-    return "/clone?src=" + quote(raw_url, safe="")
+    - a `fused-render:` deep link (case-insensitive) -> the `/clone` confirm
+      page with the raw link ferried verbatim as ?src= (deeplink.py parses and
+      validates it server-side);
+    - a `file:` URI -> decoded to its filesystem path, then `view_url_path`;
+    - anything else (a plain absolute path, a folder) -> `view_url_path`.
+    """
+    if raw.lower().startswith("fused-render:"):
+        return "/clone?src=" + quote(raw, safe="")
+    if raw.lower().startswith("file:"):
+        return view_url_path(unquote(urlsplit(raw).path))
+    return view_url_path(raw)
 
 
-def clone_url(port: int, raw_url: str) -> str:
-    """Full local /clone confirm-page URL for a raw deep link."""
-    return f"http://127.0.0.1:{port}" + clone_url_path(raw_url)
+def open_target_url(port: int, raw: str) -> str:
+    """Full local URL form of `open_target_path` (host/port prefixed)."""
+    return f"http://127.0.0.1:{port}" + open_target_path(raw)
