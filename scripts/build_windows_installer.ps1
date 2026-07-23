@@ -105,9 +105,13 @@ if ($initPy -notmatch '(?m)^__version__\s*=\s*"([^"]+)"') {
     throw "project version not found"
 }
 $Version = $Matches[1]
-$Branch = (& git -C $RepoRoot branch --show-current).Trim()
+$Branch = "$(& git -C $RepoRoot branch --show-current)".Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "could not resolve the Git branch"
+}
+if (-not $Branch) {
+    # detached HEAD (a tag checkout in release CI)
+    $Branch = "$(& git -C $RepoRoot rev-parse --short HEAD)".Trim()
 }
 Write-Host "Building FusedRender $Version from $Branch"
 
