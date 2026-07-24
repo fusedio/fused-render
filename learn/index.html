@@ -120,6 +120,12 @@
   .envcheck.bad { border-color:#5a2e2e; background:#201313; color:#f0cccc; }
   .envcheck.bad .ec-ic { color:#ff6b6b; }
   .envcheck .ec-path { color:var(--mut); font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11px; }
+  .libdrop { margin:14px 0 10px; border:1px solid var(--border); border-radius:9px; background:#141410; padding:10px 14px; }
+  .libdrop summary { cursor:pointer; font-size:13px; font-weight:600; color:var(--text); list-style-position:inside; }
+  .libdrop summary:hover { color:var(--yellow); }
+  .libdrop td.lg-h { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; vertical-align:top; }
+  .libdrop code { font-size:11.5px; margin-right:2px; white-space:nowrap; }
+  .libdrop .lv { color:var(--mut); font-size:10.5px; margin:0 8px 0 1px; font-family:"SF Mono",ui-monospace,Menlo,monospace; }
 
   .callout.beta { border-color:#3a3a4a; background:#16161f; }
   .callout b { color:var(--text); }
@@ -149,6 +155,7 @@
            background:var(--panel); margin:0 0 16px; }
   .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
   .frame.short iframe { height:380px; }
+  #demoFrame iframe { height:310px; }
   .frame.tall iframe { height:540px; }
   .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
               padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
@@ -587,11 +594,6 @@
           </div>
         </div>
         <p>One HTML file + one Python file = a live tool. Drag the slider — that's <b>Python running on your machine</b> right now.</p>
-        <div class="door-promptlab">✦ Faster with Claude Code</div>
-        <div class="promptbox">
-          <button class="copybtn" data-copy="homePrompt">Copy</button>
-          <pre id="homePrompt">Create a Fused Render app that shows my CPU and memory usage as live gauges.</pre>
-        </div>
         <div class="door-cta">
           <a class="door-go" href="?page=build" data-intent="build">Build your first app <span class="arr">→</span></a>
         </div>
@@ -621,6 +623,11 @@
     <h1 class="title">Building with Fused Render</h1>
     <p class="lede">A project is just a <b>folder</b> with a page and a Python file. The fastest way to make one is to ask <b>Claude Code</b> — it already knows the Fused Render layout. Here's the prompt.</p>
 
+    <div class="callout"><span class="lab">Prerequisites: two things</span>
+      <ul style="margin:8px 0 0;padding-left:20px;font-size:12.5px;line-height:1.9">
+        <li>The <b>Claude Code</b> CLI installed on your machine (<a href="https://claude.com/claude-code" target="_blank" rel="noopener">get it here ↗</a>)</li>
+        <li>The <b>fused-render skills</b> installed in Claude Code: one-line install on the <a href="?page=skills">Claude Code skills</a> page, with a live check of your machine</li>
+      </ul></div>
     <div class="heroprompt">
       <div class="hp-head"><span class="spark">✦</span> Paste this into Claude Code</div>
       <div class="hp-body">
@@ -629,16 +636,6 @@
       </div>
     </div>
     <p class="sub">Swap in your own idea after <em>“…that”</em>: <em>a treemap of my Downloads folder</em>, <em>a searchable table from a CSV I pick</em>, <em>a world clock for three time zones</em>. No need to mention HTML or Python — Claude fills that in.</p>
-
-    <div class="callout"><span class="lab">Tip · Fused Render skills</span>
-      <p style="margin:6px 0 0">A one-line install teaches Claude Code the Fused Render layout and the <code>fused</code> bridge, so you don't have to spell out the conventions each time:</p>
-      <div class="promptbox" style="margin-top:11px">
-        <button class="copybtn" data-copy="skillInstall">Copy</button>
-        <pre id="skillInstall">/plugin marketplace add fusedio/fused-render
-/plugin install fused-render@fused-render</pre>
-      </div>
-      <p style="margin:9px 0 0;font-size:12px;color:var(--mut)">See the <a href="?page=skills">Claude Code skills</a> page for what each skill does. No Claude Code yet? <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Get it here ↗</a>.</p>
-    </div>
 
     <h2>The mental model</h2>
     <p class="sub">A project is just a folder with two files. The HTML is what you see; the Python is the work. That's the whole structure:</p>
@@ -714,6 +711,20 @@
     <div class="callout"><span class="lab">Good to know</span>
       <p style="margin:6px 0 0">Each <code>runPython</code> call runs <code>main()</code> in a fresh subprocess that's killed at <b>30&nbsp;seconds</b>. For a genuinely long job, write the result to a file from a separate script and have the page read the finished file.</p></div>
 
+    <details class="libdrop" id="libDrop">
+      <summary>Supported Python libraries</summary>
+      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this data stack. No <code>pip install</code> needed (or possible):</p>
+      <table class="apitable" id="libTable">
+        <tr><td class="lg-h">Data</td><td><code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></td></tr>
+        <tr><td class="lg-h">Geospatial</td><td><code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></td></tr>
+        <tr><td class="lg-h">Plots &amp; images</td><td><code>matplotlib</code> <code>pillow</code></td></tr>
+        <tr><td class="lg-h">Documents</td><td><code>pymupdf</code> <code>pikepdf</code> <code>fpdf2</code> <code>python-pptx</code></td></tr>
+        <tr><td class="lg-h">Network &amp; cloud</td><td><code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></td></tr>
+        <tr><td class="lg-h">Logs</td><td><code>drain3</code></td></tr>
+      </table>
+      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages: imports outside this set will fail in the packaged app.<span id="libLive"></span></p>
+    </details>
+
     <h2>Starter ideas</h2>
     <p class="sub">Copy any of these into Claude Code to see the shape of a project fast.</p>
     <div class="ideagrid">
@@ -734,7 +745,7 @@
     <p class="lede">Fused Render drives your locally installed <b>Claude Code</b> CLI, right inside the app. Ask it to build a project, explain a file, or edit a page — and with <b>feedback mode</b>, point at the part of a page you want changed.</p>
     <div class="callout"><span class="lab">Prerequisite</span>
       <p style="margin:6px 0 0 0">The Claude panel shells out to the <code>claude</code> command, so <b>Claude Code must be installed</b> on your machine and on your PATH.</p>
-      <div class="envcheck checking" id="claudeCheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
+      <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div>
     </div>
 
     <h2><span class="n">1</span>The basics</h2>
@@ -760,10 +771,21 @@
     <h1 class="title">Claude Code skills</h1>
     <p class="lede">Fused Render ships a set of Claude Code <b>skills</b> — packaged instructions that teach the <code>claude</code> CLI how this project works. Install them once and Claude authors views, drives the explorer, and registers templates fluently, without you spelling out the conventions each time.</p>
     <div class="callout"><span class="lab">Prerequisite</span>
-      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p></div>
+      <p style="margin:6px 0 0 0">Skills are a feature of <b>Claude Code</b>, so the <code>claude</code> CLI must be installed on your machine and on your PATH. The skills add fused-render know-how on top; they don't replace Claude Code itself.</p>
+      <div class="envcheck checking claude-envcheck"><span class="ec-ic"><span class="spin"></span></span><span class="ec-tx">Checking your machine for the <code>claude</code> command…</span></div></div>
 
-    <h2><span class="n">1</span>What you get</h2>
-    <p class="sub">Three skills cover the whole surface. You never name them — Claude reads their descriptions and picks the right one for what you ask.</p>
+    <h2><span class="n">1</span>Install the plugin</h2>
+    <p class="sub">The skills are distributed as a Claude Code <b>plugin</b> from this repo's marketplace. From inside Claude Code, add the marketplace, then install the plugin:</p>
+    <div class="promptbox">
+      <button class="copybtn" data-copy="skillsMkt">Copy</button>
+      <pre id="skillsMkt">/plugin marketplace add fusedio/fused-render</pre></div>
+    <div class="promptbox" style="margin-top:8px">
+      <button class="copybtn" data-copy="skillsInstall">Copy</button>
+      <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
+    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session, including when Claude Code is driven from inside the app's Claude panel.</p>
+
+    <h2><span class="n">2</span>What you get</h2>
+    <p class="sub">The plugin installs three skills that cover the whole surface. You never name them: Claude reads their descriptions and picks the right one for what you ask.</p>
     <div class="card" style="margin-bottom:10px">
       <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-usage</code></h4>
       <p style="margin:0;font-size:12.5px">Running and using a project — start the local server, browse the filesystem, and open views or files by URL (embed vs full-shell modes).</p></div>
@@ -774,20 +796,8 @@
       <h4 style="margin:0 0 6px;font-size:13.5px"><code>fused-render-custom-templates</code></h4>
       <p style="margin:0;font-size:12.5px">Registering your own preview template for a file extension under <code>~/.fused-render/templates/</code> — so opening that file type renders <em>your</em> page (or offers it as a switchable mode). Pairs with the <a href="?page=templates">Templates</a> concepts page.</p></div>
 
-    <h2><span class="n">2</span>Install the plugin</h2>
-    <p class="sub">The skills are distributed as a Claude Code <b>plugin</b> from this repo's marketplace. From inside Claude Code, add the marketplace, then install the plugin:</p>
-    <div class="promptbox">
-      <button class="copybtn" data-copy="skillsMkt">Copy</button>
-      <pre id="skillsMkt">/plugin marketplace add fusedio/fused-render</pre></div>
-    <div class="promptbox" style="margin-top:8px">
-      <button class="copybtn" data-copy="skillsInstall">Copy</button>
-      <pre id="skillsInstall">/plugin install fused-render@fused-render</pre></div>
-    <p class="sub">Run <code>/plugin</code> afterwards to confirm <b>fused-render</b> is installed. The skills then load automatically in any session — including when Claude Code is driven from inside the app's Claude panel.</p>
-    <div class="callout"><span class="lab">Working inside the repo?</span>
-      <p style="margin:6px 0 0 0">If you're developing fused-render itself, the skills are already present as <code>./skills/</code> in the checkout — no install needed. Maintainer-only skills (dev-env setup, cutting a release) live separately under <code>.claude/skills/</code> and never ship in the plugin.</p></div>
-
     <h2><span class="n">3</span>Just ask</h2>
-    <p class="sub">With the plugin installed you describe the outcome in plain language; Claude loads the matching skill and follows its conventions. No need to mention HTML, Python, or the <code>fused</code> API.</p>
+    <p class="sub">You describe the outcome in plain language; Claude loads the matching skill and follows its conventions. No need to mention HTML, Python, or the <code>fused</code> API.</p>
     <div class="promptbox">
       <button class="copybtn" data-copy="skillsAsk">Copy</button>
       <pre id="skillsAsk">Build me a Fused Render view that reads the CSV I'm looking at, with a slider to filter rows by value, and keep the filter in the URL.</pre></div>
@@ -1193,7 +1203,7 @@ function render(slug, hash){
   $$(".subnav").forEach(s => s.classList.toggle("show", s.dataset.for === p.slug));
   document.title = p.title + " — Fused Render Learn";
   buildPager(p);
-  if (p.slug === "claude") checkClaude();
+  if (p.slug === "claude" || p.slug === "skills") checkClaude();
   if (p.slug === "templates") loadTemplates();
   if (p.slug === "build") maybeHello();
   if (p.slug === "home") initChooser();
@@ -1494,16 +1504,16 @@ function condEval(){
   condEval();
 })();
 
-/* live claude-install check (runs once, when the Claude page opens) */
+/* live claude-install check (runs once; fills every .claude-envcheck on any page) */
 let claudeChecked = false;
 async function checkClaude(){
   if (claudeChecked) return;
   claudeChecked = true;
-  const el = $("#claudeCheck"); if (!el) return;
+  const els = $$(".claude-envcheck"); if (!els.length) return;
   // Escape via the browser's own text→HTML encoding (not a hand-rolled
   // replace-chain) for values that come from the local filesystem / subprocess.
   const escHtml = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
-  const set = (cls, ic, html) => { el.className = "envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; };
+  const set = (cls, ic, html) => els.forEach(el => { el.className = "envcheck claude-envcheck "+cls; el.innerHTML = '<span class="ec-ic">'+ic+'</span><span class="ec-tx">'+html+'</span>'; });
   if (!hasFused) { set("", "○", "Open this page inside Fused Render to auto-check for the <code>claude</code> command."); return; }
   try {
     const r = await fused.runPython("./check_env.py", {});
@@ -1516,6 +1526,29 @@ async function checkClaude(){
     }
   } catch(err){ set("", "○", "Couldn't run the check ("+err.message+")."); }
 }
+
+/* live library-version table (runs once, when the dropdown is first opened in the app) */
+(function wireLibs(){
+  const drop = $("#libDrop"); if (!drop) return;
+  let done = false;
+  drop.addEventListener("toggle", async () => {
+    if (done || !drop.open || !hasFused) return;
+    done = true;
+    try {
+      const r = await fused.runPython("./check_libs.py", {});
+      if (!r || !r.libs) return;
+      if (r.python) $("#libPyV").textContent = r.python;
+      const rows = {};
+      r.libs.forEach(l => { (rows[l.group] = rows[l.group] || []).push(l); });
+      const esc = (s) => { const d = document.createElement("div"); d.textContent = String(s); return d.innerHTML; };
+      $("#libTable").innerHTML = Object.entries(rows).map(([g, ls]) =>
+        '<tr><td class="lg-h">'+esc(g)+'</td><td>'+ls.map(l =>
+          '<code>'+esc(l.name)+'</code><span class="lv">'+(l.version ? esc(l.version) : "—")+'</span>'
+        ).join(" ")+'</td></tr>').join("");
+      $("#libLive").textContent = " Versions read live from this app's bundled Python.";
+    } catch(_e){ /* keep the static list */ }
+  });
+})();
 
 /* URL-state slider */
 function drawLevel(v){

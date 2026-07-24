@@ -23,7 +23,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from fused_render import __version__
-from fused_render.win_supervisor.paths import DesktopPaths
+from fused_render.supervisor.paths import DesktopPaths
 
 _MANIFEST_URL = "https://d2ic19jpchjovp.cloudfront.net/fused-render-windows/latest.json"
 _PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")

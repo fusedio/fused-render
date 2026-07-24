@@ -27,20 +27,16 @@ import win32file
 import win32job
 import win32process
 
+# The stripped interpreter-identity vars are platform-neutral and single-sourced
+# in supervisor.paths; import the tuple rather than keep a second copy in sync.
+from fused_render.supervisor.paths import STRIPPED_ENV_VARS
+
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
 _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
 
 CREATE_NO_WINDOW = 0x08000000
 FILE_APPEND_DATA = 0x0004
-
-_STRIPPED_ENV_VARS = (
-    "PYTHONHOME",
-    "PYTHONPATH",
-    "PYTHONSTARTUP",
-    "PYTHONUSERBASE",
-    "PYTHONINSPECT",
-)
 
 
 def quote_argument(argument: str) -> str:
@@ -81,7 +77,7 @@ def environment_block(overrides: dict[str, str] | None) -> dict[str, str]:
     values: dict[str, tuple[str, str]] = {
         name.upper(): (name, value) for name, value in os.environ.items()
     }
-    for name in _STRIPPED_ENV_VARS:
+    for name in STRIPPED_ENV_VARS:
         values.pop(name, None)
     for name, value in (overrides or {}).items():
         values[name.upper()] = (name, value)

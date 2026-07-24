@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FusedRender
+Comment=FusedRender desktop
+Exec=AppRun %u
+Icon=fused-render
+Categories=Development;Science;
+Terminal=false
+MimeType=@MIMETYPE@

@@ -1,10 +1,14 @@
-"""Supervisor main run loop — port of windows/supervisor/src/supervisor.rs
-(feat/windows-desktop-foundation, PR #162).
+"""Platform-neutral supervisor run loop.
+
+Owns the lifecycle every desktop backend shares — single-instance election,
+the supervised server process, the tray, forwarded opens, graceful shutdown
+and teardown — and reaches all genuinely OS-specific behavior only through
+`supervisor._backend` (job / instance / startup / ui). The Windows pieces this
+was first ported from live in `supervisor/_win32/`; a new OS is a new backend,
+not a new copy of this loop.
 """
 from __future__ import annotations
 
-import ctypes
-import json
 import os
 import queue
 import secrets
@@ -12,22 +16,24 @@ import socket
 import sys
 import threading
 import time
-import urllib.error
 import urllib.request
 from enum import Enum, auto
 from pathlib import Path
 
-import pythoncom
-import pywintypes
-import win32con
-import win32gui
+from fused_render import desktop_probe
+from fused_render._view_url_codec import is_launch_url, open_target_url, view_url
+from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
+from fused_render.supervisor import _backend, protocol, tray
+from fused_render.supervisor.paths import DesktopPaths
 
-from fused_render._view_url_codec import view_url
-from fused_render.win_supervisor import instance, protocol, startup, tray, update
-from fused_render.win_supervisor.job import Job
-from fused_render.win_supervisor.paths import DesktopPaths
+# The single live backend (win32 today). Every platform-specific call in this
+# module goes through these names; see supervisor/_backend.py for the contract.
+Job = _backend.Job
+instance = _backend.instance
+startup = _backend.startup
+ui = _backend.ui
+update = getattr(_backend, "update", None)  # optional hook (Windows only)
 
-_INSTANCE_ID = "desktop-v1"
 _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
 _STOP_PIPE_TIMEOUT_S = 10.0
@@ -57,13 +63,25 @@ def run(initial: protocol.Command) -> None:
     if isinstance(inst, instance.SecondaryInstance):
         try:
             inst.send(initial, 75.0)
-        except instance.CommandRejected:
-            # A healthy primary rejected the specific command. Swallow it only
-            # for an Open (the app started, just not that file); anything else
-            # — crucially ShutdownForUpgrade — must re-raise so the installer
-            # sees the non-zero exit and knows teardown never happened.
+        except (instance.CommandRejected, UnicodeEncodeError):
+            # CommandRejected: a healthy primary answered and rejected the
+            # specific command. UnicodeEncodeError: a non-UTF-8 (surrogateescape)
+            # argv path cannot be encoded into the UTF-16-LE wire frame at all
+            # (raised inside protocol.encode, past SecondaryInstance.send's
+            # OSError guard) — a healthy primary IS running, only this path is
+            # unusable. Both mean the app is up; only this command failed.
+            # Only an Open is safe to swallow this way (e.g. a bad/missing
+            # forwarded path — the app did start, just not that file): report
+            # it accurately instead of the generic "could not start" dialog.
+            # Anything else (crucially ShutdownForUpgrade) must re-raise —
+            # the installer's upgrade/uninstall step execs us with
+            # --shutdown-for-upgrade and requires a non-zero exit code on
+            # failure to know teardown didn't actually happen; swallowing a
+            # rejection there would report a clean shutdown that never
+            # occurred and let the installer proceed over a still-running
+            # supervisor.
             if isinstance(initial, protocol.Open):
-                _report_open_rejected(initial.path)
+                ui.report_open_rejected(initial.path)
                 return
             raise
         if isinstance(initial, protocol.ShutdownForUpgrade):
@@ -77,6 +95,7 @@ def run(initial: protocol.Command) -> None:
 
     paths = DesktopPaths.discover()
     paths.create()
+    _spawn_desktop_integration(paths)
     token = _launch_token()
     job, process, port = _start_ready_server(paths, token)
 
@@ -93,7 +112,8 @@ def run(initial: protocol.Command) -> None:
         login_enabled = False
 
     tray_handle = tray.start(port, login_enabled, paths)
-    update.start_auto_checks(paths)
+    if update is not None:
+        update.start_auto_checks(paths)
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
     pipe_thread = inst.serve(pipe_requests, paths.log)
 
@@ -143,9 +163,9 @@ def _event_loop(
             elif action is tray.TrayAction.OPEN_FILE:
                 _spawn_file_dialog(port, paths)
             elif action is tray.TrayAction.OPEN_LOGS:
-                _safe_call(paths, lambda: _open_path(paths.logs))
+                _spawn_call(paths, lambda: ui.open_path(paths.logs))
             elif action is tray.TrayAction.DEFAULT_APPS:
-                _safe_call(paths, lambda: _open_uri("ms-settings:defaultapps"))
+                _spawn_call(paths, ui.open_default_apps)
             elif action is tray.TrayAction.CHECK_UPDATES:
                 _spawn_update_check(paths)
             elif action is tray.TrayAction.EXIT:
@@ -297,27 +317,38 @@ def _spawn_update_check(paths: DesktopPaths) -> None:
     ).start()
 
 
+def _spawn_call(paths: DesktopPaths, action) -> None:
+    """Run a tray action (Open logs, Default apps, ...) on a dedicated thread
+    (same idiom as `_spawn_open`). These land on the loop thread that services
+    tray actions AND pipe_requests, so they must not block it: on Linux
+    `ui.open_path` -> `_xdg_open` waits up to `_XDG_OPEN_WAIT_S` on the child, so
+    a slow/foreground `xdg-open` would otherwise stall the loop — and a
+    concurrent ShutdownForUpgrade must still be answered inside the pipe
+    server's 20s window, or the upgrade fails even though the app is running
+    fine (the same reasoning as `_spawn_exit_confirm`). `_safe_call` keeps an
+    `OSError` from the action from unwinding this daemon worker."""
+
+    def worker():
+        _safe_call(paths, action)
+
+    threading.Thread(
+        target=worker, daemon=True, name="fused-render-tray-action"
+    ).start()
+
+
 def _spawn_file_dialog(port: int, paths: DesktopPaths) -> None:
-    """Open-file common dialog on a dedicated thread: GetOpenFileNameW pumps
-    its own messages but needs its own thread and an STA COM apartment for
-    shell extensions. The lock drops a second click while one dialog is
-    already open."""
+    """Open-file dialog on a dedicated thread (bugbot #2): the supervisor's
+    main loop has no message pump, but the backend's file dialog pumps its own
+    internally — it just must not run on a thread another blocking call owns.
+    The thread + lock idiom lives here (platform-neutral); the actual native
+    dialog is `ui.pick_file()`. The lock drops a second click while one dialog
+    is already open rather than stacking dialogs."""
     if not _dialog_lock.acquire(blocking=False):
         return
 
     def worker():
-        path = None
         try:
-            pythoncom.CoInitialize()
-            try:
-                path, _filter_index, _flags = win32gui.GetOpenFileNameW(
-                    Filter="All files\0*.*\0\0",
-                    Flags=win32con.OFN_FILEMUSTEXIST | win32con.OFN_PATHMUSTEXIST,
-                )
-            finally:
-                pythoncom.CoUninitialize()
-        except pywintypes.error:
-            path = None
+            path = ui.pick_file()
         finally:
             _dialog_lock.release()
         if path:
@@ -337,48 +368,39 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
 
     def worker():
         try:
-            results.put(_confirm_exit())
+            results.put(ui.confirm_exit())
         finally:
             _exit_dialog_lock.release()
 
     threading.Thread(target=worker, daemon=True, name="fused-render-exit-confirm").start()
 
 
-def _confirm_exit() -> bool:
-    MB_YESNO = 0x4
-    MB_ICONQUESTION = 0x20
-    IDYES = 6
-    result = ctypes.windll.user32.MessageBoxW(
-        0,
-        "Stop FusedRender and all running render processes?",
-        "Exit FusedRender",
-        MB_YESNO | MB_ICONQUESTION,
-    )
-    return result == IDYES
-
-
-def _report_open_rejected(path: str) -> None:
-    # The primary already logged the underlying reason (paths.log via its
-    # own _safe_open) — this is just accurate user-facing feedback for a
-    # forwarded open that failed, not a launch failure.
-    MB_OK = 0x0
-    MB_ICONWARNING = 0x30
-    ctypes.windll.user32.MessageBoxW(
-        0, f"FusedRender could not open:\n\n{path}", "FusedRender", MB_OK | MB_ICONWARNING
-    )
-
-
-def _open_path(path: Path) -> None:
-    os.startfile(str(path))  # noqa: S606 - local admin-installed path, not user input
-
-
-def _open_uri(uri: str) -> None:
-    os.startfile(uri)
-
-
 def _open_command(port: int, command: protocol.Command) -> None:
     if isinstance(command, protocol.Open):
-        url = _view_url(port, Path(command.path))
+        if command.path.lower().startswith("fused-render:"):
+            # Lazy import: deeplink pulls in fastapi, which the supervisor must
+            # not pay for on the common file-open path (only a fused-render:
+            # link ever reaches here). deeplink.is_launch_url is the STRICT,
+            # action-only `fused-render://launch` matcher (D128) — distinct from
+            # _view_url_codec.is_launch_url below, which matches any URL.
+            from fused_render import deeplink
+
+            if deeplink.is_launch_url(command.path):
+                # D128 launch: by this point in the primary the server is up
+                # (and a forwarded Open reaches here only after startup). The
+                # server-down banner just needs the app running — the page that
+                # linked here reconnects on its own, so open NO tab (matching
+                # macOS app.py and Windows winopen._open).
+                return
+        if is_launch_url(command.path):
+            # A `fused-render:` deep link or a `file:`/scheme:// URL: there is
+            # no file to stat — route through the shared helper (deep link ->
+            # /clone?src=, file: -> /view). The file: decode here supersedes the
+            # branch's old _normalize_target: open_target_path (deeplink.py's
+            # sibling in _view_url_codec) decodes the URI to a filesystem path.
+            url = open_target_url(port, command.path)
+        else:
+            url = _view_url(port, Path(command.path))
     elif isinstance(command, protocol.OpenHome):
         url = f"http://127.0.0.1:{port}/"
     else:
@@ -396,15 +418,43 @@ def _view_url(port: int, path: Path) -> str:
 def _open_browser(url: str) -> None:
     if "FUSED_RENDER_SUPERVISOR_NO_BROWSER" in os.environ:
         return
-    os.startfile(url)
+    ui.open_url(url)
 
 
 def _launch_token() -> str:
     return secrets.token_hex(32)  # 32 bytes == 256 bits, 64 hex chars
 
 
+def _spawn_desktop_integration(paths: DesktopPaths) -> None:
+    """Kick off best-effort user-level desktop self-integration on a daemon
+    thread (Linux only; a no-op backend hook elsewhere). It shells out to
+    update-mime-database / update-desktop-database, which must never delay the
+    server/tray coming up — and it must never break startup, so any failure is
+    swallowed inside the backend (log-and-continue) with a final guard here."""
+    integrate = getattr(_backend, "integrate", None)
+    if integrate is None:
+        return
+
+    def worker():
+        try:
+            integrate(paths)
+        except Exception as error:  # noqa: BLE001 - integration is never fatal to startup
+            paths.log(f"desktop integration failed: {error}")
+
+    threading.Thread(target=worker, daemon=True, name="fused-render-integrate").start()
+
+
 def _absolute_command(command: protocol.Command) -> protocol.Command:
-    if isinstance(command, protocol.Open) and not Path(command.path).is_absolute():
+    # A URL payload (a `fused-render:` deep link, a `file:`/scheme:// URI) is
+    # not a filesystem path — prepending cwd would mangle it. Only resolve a
+    # genuine relative path. (A `file:` URI is left intact here and decoded
+    # later by open_target_url in _open_command, superseding the branch's old
+    # _normalize_target file:// handling.)
+    if (
+        isinstance(command, protocol.Open)
+        and not is_launch_url(command.path)
+        and not Path(command.path).is_absolute()
+    ):
         return protocol.Open(str(Path.cwd() / command.path))
     return command
 
@@ -433,31 +483,15 @@ def _start_server(job: Job, paths: DesktopPaths, port: int, token: str):
     )
 
 
-def _matching_server(port: int, token: str) -> bool:
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}/api/config",
-        headers={"X-Fused-Desktop-Token": token},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=0.5) as resp:
-            if resp.status != 200:
-                return False
-            payload = json.loads(resp.read())
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        return False
-    instance_info = payload.get("desktop_instance") or {}
-    return instance_info.get("id") == _INSTANCE_ID and instance_info.get("token") == token
-
-
 def _wait_until_ready(process, port: int, token: str, timeout_s: float) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
+    def _fail_fast_if_child_died() -> None:
         if process.wait(0):
             raise RuntimeError("Python server failed during startup")
-        if _matching_server(port, token):
-            return
-        time.sleep(0.1)
-    raise TimeoutError("Python server did not become ready")
+
+    if not desktop_probe.wait_until_ready(
+        port, token, timeout_s, instance_id=_INSTANCE_ID, on_poll=_fail_fast_if_child_died
+    ):
+        raise TimeoutError("Python server did not become ready")
 
 
 def _start_ready_server(paths: DesktopPaths, token: str):
@@ -473,7 +507,7 @@ def _start_ready_server(paths: DesktopPaths, token: str):
             process = _start_server(job, paths, port, token)
             _wait_until_ready(process, port, token, _READY_TIMEOUT_S)
             return job, process, port
-        except (OSError, RuntimeError, TimeoutError, pywintypes.error) as error:
+        except (OSError, RuntimeError, TimeoutError, *_backend.SPAWN_ERRORS) as error:
             job.close()
             if process is not None:
                 process.wait(5000)

@@ -1,5 +1,5 @@
 """A broken supervisor import (e.g. pywin32 DLL load failure after a bad
-upgrade) happens at fused_render.win_supervisor.__main__ module level, before
+upgrade) happens at fused_render.supervisor.__main__ module level, before
 main() exists — it must show a MessageBox and exit 1 instead of dying
 silently under pythonw. Needs a fresh interpreter: the failure is a module
 load-time effect, and MessageBoxW must be stubbed before the module runs."""
@@ -16,13 +16,13 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="ctypes.windll i
 def test_broken_supervisor_import_shows_messagebox_and_exits_1():
     code = (
         "import ctypes, sys\n"
-        # None in sys.modules makes `import fused_render.win_supervisor.protocol`
+        # None in sys.modules makes `import fused_render.supervisor.protocol`
         # raise ImportError — the same failure shape as a broken pywin32 DLL.
-        "sys.modules['fused_render.win_supervisor.protocol'] = None\n"
+        "sys.modules['fused_render.supervisor.protocol'] = None\n"
         "calls = []\n"
         "ctypes.windll.user32.MessageBoxW = lambda *a: calls.append(a) or 1\n"
         "try:\n"
-        "    import fused_render.win_supervisor.__main__\n"
+        "    import fused_render.supervisor.__main__\n"
         "except SystemExit as e:\n"
         "    ok = e.code == 1 and len(calls) == 1 and 'could not start' in calls[0][1]\n"
         "    print(ok)\n"

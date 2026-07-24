@@ -19,7 +19,7 @@ import win32pipe
 import win32security
 import winerror
 
-from fused_render.win_supervisor import protocol
+from fused_render.supervisor import protocol
 
 _PIPE_BUFFER_SIZE = 65_548
 _SYNCHRONIZE = 0x0010_0000

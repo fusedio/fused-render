@@ -187,7 +187,9 @@ jobs:
           if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
                --content-type "application/json" --cache-control "max-age=300" \
              && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
-               --content-type "text/html; charset=utf-8" --cache-control "max-age=300"; then
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
+               --content-type "image/png" --cache-control "max-age=86400"; then
             echo "download page + latest.json published"
           else
             echo "::warning::download page/manifest upload failed (root-key IAM grant not applied yet?) — release artifacts are unaffected"
@@ -199,7 +201,7 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" \
-            "/index.html" "/latest.json" "/"
+            "/index.html" "/latest.json" "/og-image.png" "/"
 
       - name: Upload DMG + wheel to GitHub Release
         env:

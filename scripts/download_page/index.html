@@ -3,13 +3,39 @@
      (render.fused.io). Published to s3://fused-render/index.html by
      .github/workflows/release.yml on every release, alongside latest.json
      (written by write_manifest.py), which this page reads to fill in the
-     current version and artifact links. Self-contained: no external assets,
-     the only network call is the same-origin /latest.json fetch. -->
+     current version and artifact links, and og-image.png (the social-preview
+     card referenced by the Open Graph/Twitter tags below). The page renders
+     self-contained: no external assets, the only network call at load is the
+     same-origin /latest.json fetch — og-image.png is fetched only by social
+     crawlers building link previews, never by the page itself. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fused Render — download</title>
+<meta name="description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python. Download for macOS, Windows, and Linux.">
+<meta name="theme-color" content="#141414">
+<link rel="canonical" href="https://render.fused.io/">
+
+<!-- Social preview (Open Graph + Twitter Card). Absolute URLs use the public
+     render.fused.io home (see the page comment above); og-image.png is
+     published to s3://fused-render/og-image.png next to this page by
+     release.yml. Keep these in sync with <title>/description if they change. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Fused Render">
+<meta property="og:title" content="Fused Render">
+<meta property="og:description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python.">
+<meta property="og:url" content="https://render.fused.io/">
+<meta property="og:image" content="https://render.fused.io/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Fused Render — a local file explorer with Python-powered interactive HTML views">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Fused Render">
+<meta name="twitter:description" content="A local file explorer with Python-powered interactive HTML views — browse any directory in the browser, preview your data, and author pages that call local Python.">
+<meta name="twitter:image" content="https://render.fused.io/og-image.png">
+<meta name="twitter:image:alt" content="Fused Render — a local file explorer with Python-powered interactive HTML views">
 <style>
   /* Dark-only, matching the Fused Render app (its learn/ surface + app icon:
      the #E5FF44 sparkle on near-black). A light theme washed the page out and

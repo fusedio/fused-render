@@ -16,7 +16,7 @@ pytest.importorskip("cryptography")
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from fused_render.win_supervisor import update
+from fused_render.supervisor._win32 import update
 
 
 class _Response:

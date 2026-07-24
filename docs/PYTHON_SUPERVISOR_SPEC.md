@@ -1,8 +1,15 @@
 # Python supervisor — experiment spec
 
-Status: experiment. Goal is to decide whether the Windows desktop supervisor can
-be pure Python (removing the Rust toolchain) without losing the guarantees the
-Rust version already ships.
+Status: **landed (PR #222); superseded by [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md).**
+The experiment concluded — the pure-Python supervisor shipped — and the code has
+since been restructured into the platform-neutral `fused_render/supervisor/`
+package with a per-OS backend seam. This document is kept for historical context
+(the why, and the Rust behavioral contract it was built against); the current
+architecture and platform matrix live in `DESKTOP_SUPERVISOR.md`.
+
+Original goal: decide whether the Windows desktop supervisor can be pure Python
+(removing the Rust toolchain) without losing the guarantees the Rust version
+already ships.
 
 The **behavioral contract** is the working Rust supervisor — the Windows desktop
 supervisor implementation and its architecture doc, tracked separately and not
@@ -21,9 +28,9 @@ crash), we keep Rust.
 
 - A **thin native launcher** `FusedRender.exe` remains the single Start-Menu /
   Explorer target and AppUserModelID owner. It only execs
-  `pythonw.exe -m fused_render.win_supervisor <args>` — no logic. (A few lines
+  `pythonw.exe -m fused_render.supervisor <args>` — no logic. (A few lines
   of Rust/C, or a generated stub. This is the ONLY native piece left.)
-- `fused_render/win_supervisor.py` (new) is the surviving process. It owns:
+- `fused_render/supervisor/` (new package) is the surviving process. It owns:
   job object, tray, single-instance, IPC, startup toggle, and spawns the server
   as a Job-assigned child (mirroring the Rust child launch: `pythonw -I -m
   fused_render.cli serve --no-browser --port <p>`).
@@ -110,7 +117,7 @@ installer. The homegrown path is ~150 lines reusing idioms already in
 `supervisor.py` (off-thread `MessageBoxW` per `_confirm_exit`, the `_spawn_*`
 worker-thread pattern) plus one daemon timer thread.
 
-1. **Client flow** (`fused_render/win_supervisor/update.py`). Two entry points,
+1. **Client flow** (`fused_render/supervisor/_win32/update.py`). Two entry points,
    one shared `_check_lock` (one check at a time, whichever fires):
    - **Automatic** — `start_auto_checks(paths)`, called once from
      `supervisor.run()` after the tray starts, spawns a daemon thread that

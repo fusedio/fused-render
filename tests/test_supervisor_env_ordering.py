@@ -1,5 +1,5 @@
-"""fused_render.win_supervisor.__main__ must apply the desktop env (branch
-opt-out, state/cache dirs) before its own `protocol`/`supervisor` import
+"""fused_render.supervisor.__main__ must apply the desktop env (branch
+opt-out, state/cache dirs) before its own `protocol`/`core` import
 statement runs, or an inherited FUSED_RENDER_BRANCH can latch into
 fused_render._branch's process-lifetime cache before it's overridden.
 Needs a fresh interpreter, since module-import ordering is a load-time
@@ -18,7 +18,7 @@ pytest.importorskip("pystray")
 def test_desktop_env_applied_before_supervisor_imports():
     code = (
         "import os\n"
-        "import fused_render.win_supervisor.__main__\n"
+        "import fused_render.supervisor.__main__\n"
         "from fused_render import _branch\n"
         "print(os.environ['FUSED_RENDER_BRANCH'] == '' and _branch.branch_ref() == '')\n"
     )
