@@ -42,6 +42,21 @@ def confirm_exit() -> bool:
     return result == _IDYES
 
 
+def confirm_uninstall() -> bool:
+    """Yes/No confirmation for the tray Uninstall action. True iff the user
+    confirmed. Part of the uniform `ui` surface core.py depends on (like
+    open_default_apps); the Windows tray builds no Uninstall item — Windows
+    uninstalls through the installer — so this is never reached at runtime."""
+    result = ctypes.windll.user32.MessageBoxW(
+        0,
+        "Remove FusedRender's desktop integration and quit?\n\n"
+        "This does not delete your data or the app file.",
+        "Uninstall FusedRender",
+        _MB_YESNO | _MB_ICONQUESTION,
+    )
+    return result == _IDYES
+
+
 def report_open_rejected(path: str) -> None:
     """Warn that a forwarded open failed. The primary already logged the
     underlying reason; this is just accurate user-facing feedback, not a
