@@ -2095,3 +2095,162 @@ lists the last files opened in the app, each carrying the params it last had.
   DOES notify (hrefs/click targets must stay fresh per RC-3) but re-renders
   the row's attributes in place — zero movement — and a refresh that changes
   nothing visible triggers no re-render at all.
+
+## 30. Call Log — What API Calls a Page Made (D134)
+
+Goal: a page's API calls stop being invisible. Every call a rendered page makes
+through the injected runtime is recorded — with its duration, result size,
+output and any traceback — so "why is this page slow", "what did my app just
+do", and "did it error when the user opened it" have answers that survive a
+reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
+
+- **CL-1** **What is a call.** Every request `static/runtime.js` issues on a
+  page's behalf: `runPython` (`POST /api/run`), `writeFile`
+  (`POST /api/fs/write`), `stat` (`GET /api/fs/stat`), `readFile`
+  (`GET /api/fs/raw`). NOT in the log: requests the shell makes for itself
+  (they carry no attribution, CL-3), a page's own `fetch()` to a third party,
+  the sci templates' loopback tile daemons (outside the server by design,
+  D122), and `rawUrl()` used as an element `src` — a synchronous URL string
+  has nowhere to carry a header, and adding a query param would change every
+  raw URL (cache keys, and the hosted runtime's bundle-key resolution). The
+  log is honest about what it sees; it does not claim to be complete.
+- **CL-2** **The record** (`calls.py`, `version: 1`) is the serve plane's
+  error record (the `fused` repo's `spec/serve/error-reporting.md` §1)
+  **widened to successes** — same field names, units, and caps, additive under
+  `version` — so a page's local numbers and its deployed ones are comparable
+  and render in one viewer. Adds `outcome`, `result_bytes`/`result_kind`/
+  `result_rows`, `server_ms`/`run_ms`, `page`/`target_file`/`first_party`,
+  `route`, `engine`, `call_id`. Caps verbatim from that spec: `error` ≤ 16 KiB,
+  `stdout_tail`/`stderr_tail` ≤ 4 KiB each, `params` ≤ 2 KiB serialized, whole
+  record ≤ ~32 KiB. Truncation is **marked** in the record (`truncated`,
+  `params_truncated`), never silently grown, and text is capped at the **tail**
+  — the end of a traceback is the exception. Never stored: file contents (a
+  write records its byte count only), request headers.
+- **CL-3** **Attribution is by header, exclusion by construction.**
+  `runtime.js` sends `X-Fused-Page` (the page's own path), `X-Fused-Target`
+  (`_file`, when the page is a template) and `X-Fused-Call` (a per-call id) on
+  every call it issues. `X-Fused-Page` is the whole test for "is this an app
+  call": the shell's own `/api/fs/list`, the conditions probe, and any other
+  caller carry none and are therefore never logged — no endpoint blocklist to
+  drift. Like `X-Fused` these force a CORS preflight; this is attribution, not
+  auth (D3/D36 unchanged).
+- **CL-4** **One write point.** The record is created by the ASGI middleware on
+  the way in (`request.state.fused_call`), **enriched in place** by route
+  handlers (`/api/run` adds the resolved `.py`, params, engine, output tails
+  and traceback; `/api/fs/write` adds bytes and the conflict/readonly
+  outcome), and written by the middleware on the way out — the single
+  `calls.record()` call. A handler that enriches nothing still yields a valid
+  thin record, so a new endpoint is logged by default. Because
+  `@app.exception_handler(Exception)` runs in `ServerErrorMiddleware`
+  (**outside** user middleware), a 500 is recorded from the middleware's
+  `except` branch. `server_ms` is time-to-response-**object**, not
+  time-to-last-byte (a `FileResponse`/mount proxy has not streamed yet) — the
+  same property the SV-3 access line already has; `result_bytes` for a
+  streamed route comes from `Content-Length`.
+- **CL-5** **Superseded calls are counted, never averaged.** `runPython`'s
+  latest-wins cancellation (RH-9/D114) means one slider drag issues dozens of
+  calls of which one completes. Records carry `outcome`
+  (`ok | error | conflict | readonly | superseded | aborted | disconnected`),
+  and every latency statistic — `p50`/`p95`/`max`, per bucket and per target —
+  **excludes** the stale outcomes while still counting them separately.
+  Thrown-away work is a signal worth seeing (it is the "my page is hammering
+  Python" tell); folding it into percentiles would report a dozen slow calls
+  for what the user experienced as one request.
+- **CL-6** **`page-error` records: the record for when NO call happened.** A
+  page whose JS throws before it reaches `runPython` is, in the log, identical
+  to a page nobody opened — so `runtime.js` reports uncaught errors and
+  non-runPython unhandled rejections to `POST /api/calls/event`
+  (`kind: "page-error"`, carrying message/source/line/col/stack), capped per
+  page load. This is the one writer that is not the middleware, deliberately:
+  a page error is not an HTTP call, it is what happened instead of one. A
+  runPython failure the page did not catch is NOT re-reported here — the
+  server already recorded it against the `/api/run` call, with the real
+  traceback.
+- **CL-7** **Store.** `~/.fused-render/calls/<date>-<pid>.calls.jsonl` —
+  append-only JSONL under the branch-aware shell home, one file per day per
+  process (per-pid for the same reason `logs.py` is: two live servers must not
+  interleave lines, and the reader globs the day anyway). Not the `<file>.json`
+  sidecar (§21, D82–D84): every writer there does a whole-file
+  read-merge-write, which at call volume is O(n²) plus a lost-update race —
+  the sidecar is right for low-frequency history, wrong for a firehose. Not
+  the app log (`logs.py`): that file is disposable by design (D68) and
+  unparseable. `.calls.jsonl` is a compound registry key, so the store opens
+  in the `calls` view by default and `.jsonl`'s `duckdb` binding still queries
+  it with no new code.
+- **CL-8** **Fail-open is normative.** Logging must never fail — or
+  meaningfully delay — the thing it observes. `record()` only does a
+  `put_nowait` onto a bounded queue; a background writer thread does the
+  append, so nothing on the request path touches the filesystem. An unwritable
+  directory, a full queue, an unserializable value, or a rate-cap hit **drops
+  the record and counts the drop** (surfaced as `dropped`); none may alter the
+  response. The writer thread swallows write errors and keeps draining — a
+  dead writer would silently stop logging while callers kept queueing.
+- **CL-9** **Three independent bounds**, because a diagnostics store that fills
+  the disk would be a worse bug than the one it exists to find: per-record caps
+  (CL-2), a **per-page token bucket** (600/min, burst 200 — a runaway render
+  loop drops its excess and cannot silence other pages), and **retention by
+  both age and size** (default 14 days, matching the serve plane's `errors/`
+  lifecycle rule, plus a 200 MB directory cap trimmed oldest-first). Retention
+  runs on the writer thread, never a request. D68 chose the temp dir for the
+  app log precisely because "nothing prunes the directory"; this store is
+  durable instead, so the pruning is code.
+- **CL-10** **Reading the log never appends to it.** The `calls` reader is
+  excluded from capture, matched by **shape** (`<...>/calls/reader.py`) rather
+  than one absolute path, since the same reader legitimately runs from the
+  package, the staged core copy the executor resolves (`core_templates.py`),
+  or a user's fork. Without this the view's own polling feeds itself: each
+  poll's reader calls appear in the next poll's results, inflating the counts
+  it reports and making the viewer the busiest "target" in every rollup. The
+  `/api/calls*` routes are likewise never logged.
+- **CL-11** **The view is an ordinary template** —
+  `fused_render/templates/calls/` (`template.html` + `reader.py` +
+  `condition.py` + `icon.svg`), containment per HV-1/D78: no shell code, and a
+  user can fork it into `~/.fused-render/templates/calls/`. Bound as a
+  **conditional peer** (CT-12) on `.html`/`.htm`/`.py` — never a default — with
+  `condition.py` gating on "this file has records", so a page nobody has run
+  grows no dead mode and the mode joins the switcher in the background the
+  moment it does. The gate reads a bounded tail of the newest files with an
+  early exit (never a full scan).
+- **CL-12** **The reader pre-aggregates; the template draws.** Ops mirror
+  `log_studio/reader.py`: `overview`, `page` (cursor-paged), `series`
+  (bucketed points), `targets` (per-entrypoint rollup), `detail`, `config`.
+  Bucketing and percentiles happen server-side — the template sees one point
+  per bucket, never 100k records. `calls/reader.py` is on
+  `INPROCESS_HELPERS` (D72): it is first-party, never imports or executes user
+  code, and its reads are bounded, so following polls a local file read rather
+  than a ~700 ms subprocess spawn. Charts are hand-rolled `<canvas>` with no
+  dependency (the `log_studio` precedent, ARCHITECTURE §10): call volume
+  stacked by outcome, duration as p50/p95 over a per-call scatter (a mean
+  hides the one cold run that made the page look broken), response size, and
+  the per-target table. Every filter lives in the URL (PR-1).
+- **CL-13** **A cursor, not a wall-clock guess.** `query` accepts a
+  `call_id` cursor and returns the newest id with every page, so a caller —
+  usually an agent verifying a page it just wrote — asks for "everything since
+  I last looked" instead of guessing how long the human took to open it.
+- **CL-14** **CLI.** `fused-render calls [--page P] [--since 1h] [--failed]
+  [--entrypoint E] [--since-cursor ID] [--json] [--verbose] [--follow]` reads
+  the store directly off disk (no server needed). **Digest by default**: the
+  outcome tally, the per-target rollup, then failures in full and page errors
+  named separately — dumping hundreds of raw records would burn the context of
+  the agent that is the main consumer of this surface. `--follow` blocks until
+  new records appear, so "open the page and I'll check" is one round trip
+  rather than two.
+- **CL-15** **Preferences** (§20) carries capture on/off (default **on** — a
+  diagnostic you must enable before the thing you wanted to diagnose is
+  worthless), the param redaction mode (`full` default / `keys` / `off`), and
+  the retention window; `FUSED_RENDER_CALLS=0` is the process-level off switch
+  and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides retention. Params are
+  recorded by default as the same named trade-off the serve spec makes — they
+  are the inputs the author's own code already received, usually the whole
+  repro, and already visible in the URL — with `keys` one click away for a
+  page that passes a secret.
+- **CL-16** **Template readers are apps too.** Previewing a parquet really does
+  make the `duckdb` template call Python, so those calls are real records
+  attributed to the template's own `template.html`. Correct, but "my app's
+  calls" then needs a deliberate filter: records carry `target_file` (for a
+  template, the identity that matters) and `first_party` (the page lives under
+  the packaged, staged-core, or user template dir), and the view's Scope
+  control defaults to the file being viewed.
+- **CL-17** Not a security or audit log. D3 stands — this is a local
+  single-user diagnostic, not an attestation, and nothing may be built on it
+  as if it were tamper-evident.

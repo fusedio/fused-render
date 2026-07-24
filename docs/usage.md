@@ -60,6 +60,9 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   logs**). It's disposable — it rotates so it can't grow without bound, and
   living in temp means the OS reclaims it; set `FUSED_RENDER_LOG_DIR` to keep
   logs somewhere persistent instead.
+- **Call log** — whether the app records the API calls your pages make, how
+  much of each run's parameters it keeps, and how long records are kept. See
+  [Call log](#call-log) below.
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your own overrides), read-only.
 
@@ -70,3 +73,55 @@ in the README) exports and publishes a page for you. For scripting, the running
 server also exposes a programmatic export (`POST /api/export`) that packs a page
 and its `runPython`/`rawUrl` dependencies into a portable bundle a hosting layer
 can serve — see [EXPORT.md](EXPORT.md) for the bundle format and rules.
+
+## Call log
+
+The app records every API call your pages make — each `fused.runPython`,
+`readFile`, `stat` and `writeFile` — with its duration, result size, the
+`print()` output, and any traceback. It answers the questions a page can't
+otherwise: which of your `.py` files is slow, whether a run errored while you
+weren't looking, and whether the page is quietly re-running Python far more
+often than you thought.
+
+**Where to see it.** Open a page (or a `.py`) that has recorded calls and pick
+the **Calls** mode from the view switcher — charts of call volume, duration
+(p50/p95 over the individual calls), and response size, a per-target table, and
+the recent calls with each one's full record a click away. The mode only appears
+for files that actually have records, so it never clutters a file you haven't
+run.
+
+**From a terminal:**
+
+```
+fused-render calls                          # the last hour, digested
+fused-render calls --page ~/views/sine.html # one page
+fused-render calls --failed --since 24h     # only what broke
+fused-render calls --json                   # machine-readable
+fused-render calls --follow                 # wait for the next calls, then print
+```
+
+The digest is a per-target rollup plus any failures in full — including **page
+errors**, the page's own JavaScript failing, which is what you have when a page
+made *no* calls at all. `--since-cursor <id>` (the `cursor` printed at the end)
+returns only what is new since a previous run, which is handy in a loop or for
+an agent checking its own work.
+
+**Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
+per day per server process. Records are capped (a long traceback or a big
+parameter is truncated, and marked as such), rate-limited per page, and pruned
+after 14 days or once the directory passes 200 MB — whichever comes first. The
+files are ordinary JSONL, so `tail`, `jq`, and the built-in `duckdb` view all
+work on them.
+
+**A note on parameters.** A run's parameters are recorded by default: they are
+usually the whole reproduction, and they are already visible in the URL. If a
+page passes something sensitive as a parameter, switch **Preferences → Call log
+→ Parameters** to *names only* (or off). `FUSED_RENDER_CALLS=0` turns capture
+off entirely for a run, and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides the
+retention window.
+
+**What it does not see:** requests a page makes with its own `fetch()` to a
+third party, the map templates' tile daemons (they serve the browser directly),
+and `fused.rawUrl()` used as an `<img>`/`<embed>` source — a plain URL has
+nowhere to carry the attribution header. It is a diagnostic for your own pages,
+not an audit trail.

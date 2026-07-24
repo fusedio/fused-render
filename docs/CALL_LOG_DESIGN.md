@@ -1,7 +1,17 @@
 # Call Log — observability for a fused-render app
 
-**Status:** design proposal, not implemented. Owner review wanted on the five
-open decisions in §6.
+**Status: phase 1 implemented** (D134, SPEC §30) — `fused_render/calls.py`,
+`fused_render/templates/calls/`, the middleware write point, the runtime's
+attribution headers and `window.onerror` hook, the `fused-render calls` CLI,
+Preferences controls, `tests/test_calls.py`. This file stays the design record:
+the rationale, the alternatives that were rejected, and the phases still open.
+
+The five §6 decisions were resolved as recommended, with two changes of scope:
+the CLI moved **into** phase 1 (it is the agent's only read surface, §9.2) and
+`page-error` records were added to it (§9.2a — the runtime had no
+`window.onerror` hook, so the most informative record was uncapturable).
+Deviations from the design as written are marked **[shipped]** inline below.
+Phases 2 and 3 are not started.
 
 > **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
 > see what the call was, and its stdout/stderr/error/result size. Give me graphs
@@ -430,7 +440,15 @@ Add two conveniences:
 
 ---
 
-## 6. Open decisions (owner input wanted)
+## 6. Decisions (resolved — all shipped as recommended unless noted)
+
+> **[shipped]** Resolved as recommended below, except where marked. 6.1 is
+> **deferred with phase 2** (nothing consumes a summary yet — the header chip
+> and the history section are the consumers, and both are phase 2). 6.3 is
+> **not yet needed**: `/api/fs/raw` is logged plainly for now, since only
+> `readFile` is attributed (an element `src` cannot carry a header), which
+> turned out to cap the volume on its own. Revisit if a ranged reader proves
+> otherwise.
 
 **6.1 Where does the per-page summary live?** The header chip (§5.4) and the
 history section (§5.3) both want "142 calls, p95 1.2s" without scanning the
@@ -444,7 +462,12 @@ recommendation: **(b)**, with the sidecar left alone. Sidecar writes on a
 firehose is the thing §4.1 rejected, and a debounced version of it is the same
 bug with a longer fuse.
 
-**6.2 Is client-side reconciliation worth it?** The `X-Fused-Call` +
+**6.2 Is client-side reconciliation worth it?** **[shipped: deferred to phase
+2, as recommended.]** The server infers `disconnected` from
+`asyncio.CancelledError` in the middleware; `X-Fused-Call` is already sent, so
+adding reconciliation later is additive.
+
+*Original text:* The `X-Fused-Call` +
 `/api/calls/outcome` round trip (§4.3) is what makes `superseded` and
 `client_ms` exact. Without it the server infers `disconnected` from a closed
 socket, which catches most supersessions but conflates them with a closed tab
@@ -464,7 +487,12 @@ defaulting to **full** (matching the serve spec's named trade-off and D3's
 local-single-user posture), with `keys-only` one click away in Preferences and
 documented in `docs/usage.md` next to the log location.
 
-**6.5 Does the builtin executor gain `duration_ms`/`stderr`?** Today only the
+**6.5 Does the builtin executor gain `duration_ms`/`stderr`?** **[shipped in
+phase 1, as recommended.]** `run_python` now times the call, and the subprocess
+path attaches a `proc.stderr` tail — `_child.py` captures only stdout (to keep
+its result protocol clean), so a warning printed by a run was otherwise lost.
+
+*Original text:* Today only the
 fused engine returns them (`engine.py:384`); the builtin path returns
 `{ok, result, stdout}` (`executor.py:137`). The middleware can time the request
 either way, so this is not blocking — but without it, `stderr_tail` is
@@ -476,7 +504,7 @@ additive change to `_child.py`'s envelope and independently useful.
 
 ## 7. Phasing
 
-### Phase 1 — the log and the viewer (the whole ask, locally)
+### Phase 1 — the log and the viewer (the whole ask, locally) — **DONE**
 
 | File | Change |
 |---|---|
@@ -496,13 +524,13 @@ additive change to `_child.py`'s envelope and independently useful.
 Deliberately **not** in phase 1: shell UI, the header chip, deployed apps,
 tile daemons.
 
-### Phase 2 — make it ambient
+### Phase 2 — make it ambient (not started)
 
 Header chip (§5.4); the history-view Calls section (§5.3); client-side
 reconciliation (§6.2); brush-to-filter
 between chart and table.
 
-### Phase 3 — deployed apps (the `fused` repo)
+### Phase 3 — deployed apps (the `fused` repo) (not started)
 
 The serve plane already captures **failures** into
 `errors/<env>/<token>/<rev-ts>-<err_id>.json` with a 14-day lifecycle, exposed
@@ -687,6 +715,27 @@ the difference between "I wrote the files, try it" and "verified: three calls,
 80 rows, 40 ms — and your slider is throwing away 37 runs per drag."
 
 ---
+
+## 9.4 What implementation changed about the design
+
+Three things only building it revealed:
+
+- **Built-in templates run from a staged copy**, not the package dir
+  (`core_templates.py` stages them into `~/.fused-render/.core-templates/`).
+  Both the self-read guard (§10 below) and `first_party` (§4.6) had to match
+  all three locations — packaged, staged, and a user fork. Pinning the package
+  path silently missed the copy that actually runs.
+- **The viewer observes itself.** The `calls` view reads the log through
+  `runPython`, which is an attributed app call — so the reader appeared as the
+  busiest target in every page's rollup, and with Follow on, each poll's reads
+  showed up in the next poll's results: a feedback loop that inflates the
+  counts it reports forever. Reading the log now never appends to it (CL-10),
+  matched by shape rather than by path for the reason above.
+- **`fused.params.get()` returns `undefined`, not `null`**, for an absent key.
+  A `!== null` guard therefore clobbers defaults with `undefined` —
+  `Number(undefined) || 0` silently turned the default time window into "All",
+  and the filter box rendered the literal string "undefined". Worth knowing for
+  any template that reads params with a default.
 
 ## 10. Other uses this unlocks
 

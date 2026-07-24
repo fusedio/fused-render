@@ -207,6 +207,44 @@ Path encoding: the fs path rides in the URL after the prefix with its **leading 
 
 Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
 
+## Verifying your work: the call log
+
+The overlay and the browser console only exist while someone is looking at the
+page. Every API call a page makes is also **recorded** — so after the page has
+been opened you can check what actually happened, from a terminal, without a
+browser:
+
+```
+fused-render calls --page /abs/path/to/page.html --since 15m
+fused-render calls --failed --since 1h        # only what broke
+fused-render calls --json                     # digest as JSON
+fused-render calls --follow --page <page>      # block until the next calls land
+```
+
+Read the digest, not the raw records — it is a per-target rollup (count, p50,
+p95, errors) plus any failures in full, with each failure's traceback and the
+exact params that produced it.
+
+**You cannot render the page yourself** — nothing executes its JavaScript from
+a terminal. So the loop is: write the files → test the `.py` directly if you
+want (`fused.runPython`'s target is just a `main()`) → ask the user to open the
+page → read the log. `--follow` makes that one round trip instead of two.
+
+What the record count tells you, before you read anything else:
+
+| What you see | What it means |
+|---|---|
+| calls, all `ok` | It works. Report the timings. |
+| **zero records** | The page never called Python — its **JS** failed first. Look for a `page error` in the output: that is `window.onerror`, with the message and line number. |
+| one `error` | Python raised. The traceback and params are in the record. |
+| far more calls than interactions | A render loop — usually an `onChange` handler that calls `params.set` without a guard, so each write re-triggers itself. |
+| a high `stale` count | The page is issuing calls it throws away (superseded by the next one). Normal for a slider drag; suspicious otherwise. |
+
+The same data is in the **Calls** view mode on any page that has records
+(charts + the per-target table), and the raw store is JSONL under
+`~/.fused-render/calls/` if you want to `jq` it. Parameters are recorded by
+default, so treat the log as containing whatever your page passes around.
+
 ## Long-running work and the 60 s timeout
 
 Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
@@ -231,3 +269,4 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
 - `writeFile` without `expectedMtime` on an *existing* file → silently clobbers whatever is on disk now. Fine for new files; for edits, arm the lock and handle `.type === "conflict"`.
 - Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
+- Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.
