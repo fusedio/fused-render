@@ -111,6 +111,10 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     port = args.port if args.port is not None else DEFAULT_PORT
     _check_port_free(port)
+    # Publish the real bound origin so runPython children (e.g. the zarr_aoi
+    # tile daemon) read store bytes from THIS port, not the branch default.
+    from fused_render.server import set_server_origin_env
+    set_server_origin_env(port, host=_HOST)
 
     url = f"http://{_HOST}:{port}/"
     branch_note = f" (branch {branch_ref()})" if branch_ref() else ""
