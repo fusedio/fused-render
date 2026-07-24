@@ -248,7 +248,8 @@ $LearnListing = & (Join-Path $PythonRoot "rclone.exe") lsf -R ":archive:$LearnZi
 if ($LASTEXITCODE -ne 0) {
     throw "bundled rclone cannot read learn.zip via :archive:"
 }
-if ($LearnListing -notmatch 'assets/') {
+if (-not ($LearnListing -match 'assets/')) {
+    # -match on the line array filters; -not(non-empty) is the membership test.
     throw "learn.zip nested entries are not forward-slash separated (assets/ missing)"
 }
 Invoke-Native $Uv @(
