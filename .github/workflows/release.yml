@@ -256,9 +256,16 @@ jobs:
           # Version from the built artifact, not the tag — same rule as the DMG.
           VERSION="$(basename "$INSTALLER" | sed -E 's/^FusedRenderPy-(.*)-setup\.exe$/\1/')"
           BASE_URL="https://${CDN_DOMAIN}/${WINDOWS_PREFIX}"
+          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
+          # Exposed as job outputs for the publish-download-page job, right
+          # after the one command that makes installer_url actually true —
+          # not after the update-manifest/CloudFront/release steps below,
+          # which are unrelated to whether this URL is live (an unrelated
+          # failure there must not withhold an otherwise-good link).
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
           uv run scripts/windows/generate_update_manifest.py \
             "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
-          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
           # no-cache: the updater polls this fixed name; a stale CDN copy
           # would mask a release.
           aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
@@ -267,9 +274,6 @@ jobs:
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
           gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
-          # Exposed as job outputs for the publish-download-page job.
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
 
   build-linux-release:
     needs: prepare-release
@@ -327,15 +331,19 @@ jobs:
           VERSION="$(basename "$APPIMAGE" | sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/')"
           echo "Publishing FusedRender $VERSION Linux AppImage"
           aws s3 cp "$APPIMAGE" "s3://${S3_BUCKET}/${LINUX_PREFIX}/$(basename "$APPIMAGE")"
+          # Exposed as job outputs for the publish-download-page job, right
+          # after the one command that makes appimage_url actually true —
+          # not after the CloudFront/release steps below, which are
+          # unrelated to whether this URL is live (an unrelated failure
+          # there must not withhold an otherwise-good link).
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "appimage_url=https://${CDN_DOMAIN}/${LINUX_PREFIX}/$(basename "$APPIMAGE")" >> "$GITHUB_OUTPUT"
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${LINUX_PREFIX}/*"
           # No latest.json manifest: Linux has no auto-updater yet — the
           # supervisor _linux backend exposes no `update` module (unlike _win32).
           gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
-          # Exposed as job outputs for the publish-download-page job.
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "appimage_url=https://${CDN_DOMAIN}/${LINUX_PREFIX}/$(basename "$APPIMAGE")" >> "$GITHUB_OUTPUT"
 
   publish-download-page:
     # Runs once, after all three OS builds, so the manifest can carry every
@@ -390,10 +398,23 @@ jobs:
           LINUX_URL: ${{ needs.build-linux-release.outputs.appimage_url }}
         run: |
           set -euo pipefail
-          # Best-effort: a first-ever publish (or a not-yet-applied IAM grant,
-          # see below) leaves no existing manifest — write_manifest.py treats
-          # a missing/unreadable file the same as "no existing manifest".
-          aws s3 cp "s3://${S3_BUCKET}/latest.json" "$RUNNER_TEMP/existing-latest.json" || true
+          # Only a genuine "no object yet" (404 - first-ever publish) is safe
+          # to treat as an empty merge base. Any other failure here (a
+          # not-yet-applied IAM grant, a network blip, ...) must NOT fall
+          # through to an empty base — that would silently republish a
+          # manifest missing every platform this run didn't touch, exactly
+          # what the merge exists to prevent. So a non-404 failure hard-exits
+          # instead: continue-on-error on this step keeps the release green,
+          # but nothing gets uploaded and the live (good) page is untouched.
+          if aws s3 cp "s3://${S3_BUCKET}/latest.json" "$RUNNER_TEMP/existing-latest.json" 2>"$RUNNER_TEMP/s3-get.err"; then
+            :
+          elif grep -q "(404)" "$RUNNER_TEMP/s3-get.err"; then
+            echo "no existing latest.json yet (first publish) — starting from an empty manifest"
+          else
+            cat "$RUNNER_TEMP/s3-get.err" >&2
+            echo "::error::failed to fetch the live latest.json for merging (not a 404) — refusing to publish a manifest that could blank out other platforms' links"
+            exit 1
+          fi
           EXISTING_MANIFEST_PATH="$RUNNER_TEMP/existing-latest.json" \
             python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
           cat "$RUNNER_TEMP/latest.json"
