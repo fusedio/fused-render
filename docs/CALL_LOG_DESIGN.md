@@ -1,0 +1,602 @@
+# Call Log — observability for a fused-render app
+
+**Status:** design proposal, not implemented. Owner review wanted on the five
+open decisions in §6.
+
+> **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
+> see what the call was, and its stdout/stderr/error/result size. Give me graphs
+> of response time, call count over time, response size."
+
+An app here is the ordinary fused-render unit: an `.html` page plus its sibling
+`.py` data files. Its "API calls" are the `window.fused.*` calls the page makes
+through the injected runtime — overwhelmingly `runPython`, plus the file IO
+helpers. Today those calls are invisible: a `runPython` failure paints the red
+overlay (D17) and the page's `print()` lands in the browser console prefixed
+`[python]`, and that is the whole story. Nothing accumulates, nothing is
+queryable, nothing is comparable across runs. "Is this page slow, or is this
+one `.py` slow, and was it always?" has no answer.
+
+This document proposes the missing layer: **one durable, bounded, structured
+record per call, written by the server, read back by an ordinary view
+template.**
+
+---
+
+## 1. Why this is cheap here (the seams already exist)
+
+Nearly every piece of this feature has a precedent in the tree already. The
+work is mostly joining things that exist, not inventing a subsystem.
+
+| Piece needed | Already in the tree |
+|---|---|
+| A single chokepoint every app call flows through | `static/runtime.js` — `runPython`/`rawUrl`/`stat`/`readFile`/`writeFile` are the whole app-facing API (SPEC RH-*). One file, five functions. |
+| Per-request timing + status | `server.py` `no_cache_and_log` middleware already logs `<method> <path> -> <status> (<ms>)` per request (SV-3, D68), skipping the static mounts. |
+| Rich per-run detail | `/api/run` (`server.py:3729`) already has `stdout`, `error{type,message,traceback}`, `resolved_py`, `params`; the fused engine additionally returns `stderr` + `duration_ms` (`engine.py:384`). |
+| A structured record contract for exactly this data | The fused repo's `spec/serve/error-reporting.md` record: `version`, `occurred_at`, `entrypoint`, `kind`, `duration_ms`, `params`, `stdout_tail`, `stderr_tail`, `error`, `truncated` — with named caps and a fail-open rule. **Shipped**, on both serve backends. |
+| A viewer for a high-volume time-series log | `templates/log_studio/` — 1.9k-line template + 817-line reader: level facets, query filter, time-bounded paging, a canvas **histogram over time**, pattern mining, detail pane, context expansion. Bound to `.log` today. |
+| A per-file history surface | `templates/history/` (D96, SPEC §24) — renders the `<file>.json` sidecar per-key with an inline schema validator, unknown keys tolerated (HV-5), rows deep-link back into the target view (HV-7). |
+| A way to show a mode only when it is relevant | `condition.py` gates (CT-12) — a template folder's gate marks the mode `conditional`, the shell resolves it in the background via `/api/fs/conditions` and joins it to the switcher only on a true verdict. |
+| Fast, warm, first-party readers | `INPROCESS_HELPERS` (`executor.py:66`, D72) — trusted first-party readers run in the server process instead of paying ~700 ms subprocess spawn per call. |
+| Durable, atomic user-data storage | `shell/storage.py` — `home_dir()` (`FUSED_RENDER_HOME`, branch-aware) + atomic `read_json`/`write_json`, the base every shell resource sits on. |
+| An owner-only diagnostics viewer in the shell | `components/DeploymentErrors.tsx` + `/api/deploy/errors` — newest-first list, click a row to fetch the full record, copyable CLI equivalent. The exact UI shape this feature wants. |
+
+The one genuinely new thing is a **write path with volume**. Every existing
+persisted store in the repo (bookmarks, recents, prefs, the sidecar) is a
+whole-file read-merge-write of a small JSON document. A call log is
+append-only and can produce hundreds of records during one slider drag. That
+difference drives most of §4.
+
+---
+
+## 2. What counts as a call
+
+Not everything is worth a record. The taxonomy, with the value of logging each:
+
+| `route` | Runtime entry | Log it? | Why |
+|---|---|---|---|
+| `POST /api/run` | `fused.runPython` | **yes, full detail** | The interesting one: params in, duration, result size, stdout, stderr, traceback. This *is* the feature. |
+| `POST /api/fs/write` | `fused.writeFile` | **yes** | Mutating, low volume, and "what did my app overwrite" is a real question. Log path + bytes + conflict outcome, never content. |
+| `GET /api/fs/stat` | `fused.stat` | yes, thin | Cheap, but a page that stats in a loop is a real bug and only a log shows it. |
+| `GET /api/fs/raw` | `fused.readFile`, `fused.rawUrl` | yes, thin | High volume (every `<img>`, every ranged read). Log status/bytes/range — and see the sampling note in §6.3. |
+| `GET /api/fs/list`, `/walk`, `/conditions` | shell, not the app | no | Shell chrome, not the app's own calls. Attribution (§4.3) excludes them naturally. |
+| tile-daemon GETs (`geotiff`, `map`, `zarr_aoi`, `pyramid`) | template `fetch` direct to a loopback daemon | **not in v1** | They bypass the server entirely by design (D122 — that is the point of the daemons). Logging them means teaching each daemon to report, or proxying them. Real value ("why is panning slow"), real cost. §9.6. |
+| a page's own bare `fetch()` to a third party | — | no | Out of scope; the runtime never sees it. Note it in the docs so the log isn't mistaken for complete. |
+| deployed (`_run` / `_asset` routes) | hosted runtime | **phase 3** | Requires serve-plane work in the `fused` repo. §7.3. |
+
+**The one that will surprise people.** `runPython` has default latest-wins
+cancellation (D114/RH-9, `runtime.js:347`): a new call for the same `.py`
+aborts the prior in-flight one, and the superseded promise **never settles**.
+So a slider scrub of 40 ticks issues 40 calls of which 1 completes. An honest
+call log must mark superseded/aborted calls as such, or every chart lies —
+"40 calls, p95 3.2s" when the user made one meaningful request. This is the
+single most important field in the record and it is only knowable *because*
+this codebase works this way:
+
+- Client side: `runtime.js` knows `_supersededByKey` exactly.
+- Server side: the socket closes; the endpoint can detect disconnect.
+
+Recommendation: record `outcome: "ok" | "error" | "superseded" | "aborted" |
+"disconnected"`, and have every chart default to `outcome in (ok, error)` with
+superseded calls shown as a separate, dimmer series. The dropped work is worth
+seeing — it is exactly the "my page is hammering Python" signal — but it must
+never be summed into latency percentiles.
+
+---
+
+## 3. The record
+
+Deliberately **the serve plane's error record, widened to successes**. Same
+field names, same units, same caps, additive `version`. That is not tidiness
+for its own sake: it means the local log and a deployed app's records render in
+the same viewer with one formatter, and a page debugged locally produces
+comparable numbers when deployed.
+
+```jsonc
+{
+  "version": 1,
+  "call_id": "01JX...",          // sortable id; the join key for detail lookups
+  "occurred_at": "2026-07-24T18:42:07.921Z",
+  "page": "/Users/you/views/sine.html",   // the APP — see attribution, §4.3
+  "route": "/api/run",
+  "http_method": "POST",
+  "status": 200,
+
+  "entrypoint": "/Users/you/views/sine.py",  // resolved_py for /api/run; the target path otherwise
+  "entrypoint_name": "sine.py",              // display convenience
+  "engine": "builtin",                       // builtin | fused  (prefs, SPEC §20)
+
+  "outcome": "ok",               // ok | error | superseded | aborted | disconnected
+  "server_ms": 812,              // measured at the server, both engines
+  "client_ms": 838,              // optional, from runtime.js — includes queueing/parse
+  "queued_ms": null,             // reserved: threadpool wait, if we ever measure it
+
+  "params": {"freq": "2.4"},     // capped 2 KiB; params_truncated on cut
+  "result_bytes": 14203,         // serialized size of the JSON response body
+  "result_kind": "list",         // list | dict | str | number | bool | null | base64
+  "result_rows": 80,             // len() when list, or result.rows/total_rows when present
+  "stdout_tail": "...",          // capped 4 KiB, TAIL not head
+  "stderr_tail": "...",          // capped 4 KiB (fused engine only today — see §6.5)
+  "error": null,                 // {type, message, traceback} — traceback capped 16 KiB
+  "err_id": null,                // set on a 500, joins the existing unhandled-error log line
+
+  "truncated": false
+}
+```
+
+Bounds copied verbatim from `error-reporting.md` §1.2: `error` ≤ 16 KiB,
+`stdout_tail`/`stderr_tail` ≤ 4 KiB each, `params` ≤ 2 KiB serialized, whole
+record ≤ ~32 KiB, truncation marked in the record and never grown.
+
+**Never stored:** file contents (only `result_bytes` for a raw read), the
+`X-Fused` header or any request headers, anything from a `writeFile` body
+beyond its byte count.
+
+**`params` are stored** — capped — and that is a deliberate, named trade-off
+inherited from the serve spec: params are the inputs the author's own code
+already received and are usually the whole repro. Locally this is a
+single-user tool on the user's own machine (D3), so the exposure is the same as
+the params already sitting in the URL bar. §6.4 offers a redaction knob anyway,
+because a page whose param is an API key exists.
+
+---
+
+## 4. Storage and the write path
+
+### 4.1 Where it lives
+
+`~/.fused-render/calls/YYYY-MM-DD.jsonl` — one JSON object per line, append
+only, daily files, under the branch-aware `storage.home_dir()`.
+
+Why not the alternatives:
+
+- **Not the sidecar** (`<page>.html.json`, D82–D84). Tempting — it is
+  per-page, it travels with the file, `history/` already renders it. But every
+  writer there does a whole-file read-merge-write (`annotate.py:_load_sidecar`
+  → `_save_sidecar`). At call volume that is O(n²) rewrites and a lost-update
+  race between concurrent runs. The sidecar is right for *low-frequency*
+  history (sessions, comments, bookmarks); it is the wrong shape for a firehose.
+- **Not the app log** (`logs.py`, temp, per-pid rotating text). That file is
+  disposable by design (D68 chose temp precisely because nothing prunes it) and
+  it is unparseable prose. A call log must survive a reboot to graph
+  "last week vs this week."
+- **Not SQLite.** It would query beautifully and it is stdlib. But it adds a
+  concurrency story (two `fused-render` instances on different ports, the
+  supervisor, WAL files) to a repo whose entire persistence posture is
+  "atomic whole-file writes, last write wins, single local user." JSONL keeps
+  that posture and stays greppable by an agent with no tooling. Revisit only if
+  §9.2 (cross-app rollups over months) becomes the primary use.
+
+JSONL also buys two things free: `.jsonl` is already bound to the `duckdb`
+template in the registry, so `SELECT ... FROM calls` works today with zero new
+code; and `duckdb` reads a directory glob, so "all of last week" is one query.
+
+**Retention is explicit, mirroring the serve plane's 14-day lifecycle rule:**
+on startup and once a day, delete `calls/*.jsonl` older than
+`FUSED_RENDER_CALLS_RETENTION_DAYS` (default 14) and, as a hard backstop, trim
+the oldest files while the directory exceeds a size cap (default 200 MB). D68's
+"nothing prunes the directory" objection is answered by code, not by choosing
+temp storage.
+
+### 4.2 Who writes
+
+`fused_render/calls.py` — a new module, an `APIRouter` for its own read
+endpoints, `record(...)` for the write. It must **not** import `server.py`
+(`server` imports it; same acyclic rule as `shell/bookmarks.py` and
+`deploy.py`, and it duplicates the local `X-Fused` guard the same way).
+
+Writes go through a single **background writer thread** with a bounded queue
+(`queue.Queue(maxsize=...)`):
+
+- The request path does `queue.put_nowait(record)` and returns. A full queue
+  **drops the record and counts the drop** — never blocks a run, never raises.
+  This is the `fail-open` rule from `error-reporting.md` restated: logging must
+  never fail, or meaningfully delay, the thing it observes.
+- The writer opens the day's file in append mode and `write()`s one line per
+  record, flushing on a small batch or a short timer. Append-of-a-single-line
+  is atomic enough for a single writer; two concurrent server processes each
+  hold their own fd, so a per-pid suffix (`YYYY-MM-DD-<pid>.jsonl`) removes the
+  interleaving question entirely — the same reasoning `logs.py:log_path()`
+  already applies, and the reader globs the day anyway.
+- A **rate cap** per page (say 600 records/min, tunable) drops the excess and
+  emits one summary record noting the drop, so a runaway render loop cannot
+  fill the disk. Size caps × rate caps × retention bound the footprint
+  structurally.
+
+### 4.3 Attribution — which app made the call
+
+This is the one real design problem. The middleware sees the route but not the
+app.
+
+`runPython` already sends the calling page (`html` in the body, read from the
+iframe's own `path` query param at `runtime.js:378`). The IO helpers do not —
+`stat`/`readFile`/`writeFile` send only the target path.
+
+**Proposal:** `runtime.js` adds one header to every call it issues:
+
+```
+X-Fused-Page: <the iframe's own `path` query param>
+```
+
+One line at each of the five call sites (or one shared `_fetch` wrapper —
+worth the small refactor: it is also where `client_ms` and the
+`X-Fused-Call` correlation id go). Consequences, all good:
+
+- The server learns the app for free, in the middleware, for every route.
+- Shell-issued calls (`Listing`'s `/api/fs/list`, the conditions probe) carry
+  no header and are therefore excluded from the app log by construction —
+  exactly the filter §2 wanted.
+- `X-Fused-Page` is a custom header, so like `X-Fused` it forces a CORS
+  preflight; it changes no security posture (D3/D36 stand — this is not auth).
+- In panel/tab mode each pane's iframe has its own `path`, so per-pane
+  attribution is automatic.
+
+The client also mints `X-Fused-Call: <call_id>` so the client-side outcome
+(superseded, aborted, `client_ms`) can be **reconciled** onto the server's
+record instead of producing a second, duplicate one. That needs a tiny
+`POST /api/calls/outcome` batch endpoint (fire-and-forget, coalesced,
+`navigator.sendBeacon` on `pagehide` — `runtime.js:311` already hooks
+`pagehide`). If that reconciliation is judged not worth the complexity, the
+server can infer `disconnected` from the closed socket and lose only the
+ok-but-superseded distinction; see §6.2.
+
+### 4.4 What each site contributes
+
+| Site | Adds |
+|---|---|
+| `server.py` middleware (`no_cache_and_log`) | The base record for every `X-Fused-Page`-bearing request: route, method, status, `server_ms`, `page`. One `calls.record()` call beside the existing `logger.info`. |
+| `server.py` `/api/run` | Enriches its record: `entrypoint` (`resolved_py`), `params`, `engine`, `outcome`, `stdout_tail`, `stderr_tail`, `error`, `result_bytes`/`result_kind`/`result_rows`. Sets a request-scoped record the middleware then flushes, so there is exactly one record per request. |
+| `server.py` `/api/fs/write` | `bytes_written`, conflict/readonly outcome. |
+| `executor.py` (builtin path) | Should start returning `duration_ms` and a `stderr` tail so the two engines produce comparable records (§6.5). Small, independently useful change. |
+| `runtime.js` | `X-Fused-Page`, `X-Fused-Call`, `client_ms`, terminal client outcome. |
+
+---
+
+## 5. Reading it back
+
+### 5.1 The primary surface: a `calls` view template
+
+`fused_render/templates/calls/` — `template.html` + `reader.py` +
+`condition.py` + `icon.svg`. Built as a **template, not shell code**, following
+the containment posture the repo has held since D78/HV-1: all the logic lives
+in the template, the shell learns nothing, and a user can fork it into
+`~/.fused-render/templates/calls/` and change every chart.
+
+Registry bindings (`templates/registry.json`):
+
+- append `"calls"` to `".html"` and `".py"` — so a page and a data file each
+  offer their own call history as a mode;
+- bind the store itself: `".calls.jsonl": ["calls", "log_studio", "code"]`, so
+  opening a raw log file lands in the same viewer.
+
+`condition.py` (CT-12) gates the mode on **"this file appears in the log"** —
+a cheap tail-scan of today's file with an early exit. A page nobody has run
+does not grow a dead mode; the moment it has calls, the mode joins the switcher
+in the background without a reload. This is precisely what CT-12 was built for.
+
+`reader.py` follows `log_studio/reader.py`'s op shape — one helper, several
+ops, everything paged and time-bounded so no op ever loads the whole log:
+
+| op | Returns |
+|---|---|
+| `overview` | file span, total records, per-outcome counts, distinct entrypoints, first/last timestamp |
+| `page` | a page of records, newest-first, filtered by `page`/`entrypoint`/`route`/`outcome`/time window/text query |
+| `series` | **pre-bucketed** series for the charts: `{bucket_ms, points: [{t, count_ok, count_err, count_superseded, p50, p95, max, bytes_sum}]}`. Bucketing server-side is the whole reason the charts stay fast — the template never sees 100k records. |
+| `targets` | the per-`.py` rollup: count, p50/p95/max, error rate, bytes, last-seen — the "which call is slow" table |
+| `detail` | one full record by `call_id` |
+| `tail` | records after a cursor, for live-follow |
+
+Put `calls/reader.py` on the **`INPROCESS_HELPERS` allowlist** (D72). It
+qualifies exactly as the existing members do — first-party, trusted, bounded
+reads, never imports or executes user code — and it removes the ~700 ms
+subprocess spawn from every poll, which is what makes live-tail viable at all.
+
+### 5.2 The charts
+
+Hand-rolled `<canvas>`, no dependency, no build step — the `log_studio`
+histogram (`template.html:919`) is the working precedent and the style
+constraint (ARCHITECTURE §10: template JS has no dependencies).
+
+Four charts answer the four questions actually asked:
+
+1. **Calls over time** — stacked bars per bucket: ok / error / superseded.
+   Reveals render loops and error bursts. Brushing a range filters the table.
+2. **Duration over time** — p50 and p95 lines with a faint per-call scatter
+   behind them. The scatter matters: an average hides the one 12-second cold
+   run that made the user think the page was broken.
+3. **Response size over time** — `result_bytes`, plus a `result_rows` axis when
+   present. Catches "my reader stopped paging and now returns 400k rows."
+4. **Per-target table** — sortable: count, p50, p95, error rate, total bytes.
+   The single highest-value view, and the one a human reads first.
+
+Plus a **live tail** strip: newest calls streaming in as the page next to it
+re-runs, each row expandable to the full record (stdout, stderr, traceback,
+params) — the `DeploymentErrors.tsx` interaction, applied locally.
+
+### 5.3 Second surface: the history view already knows how to do this
+
+`history/` (D96) is the per-file "everything this file has accumulated" view.
+Give it a **Calls** section: an inline schema entry, a sparkline plus
+"142 calls, 3 errors, p95 1.2s, last run 4 minutes ago", and a row that
+deep-links into `_mode=calls`. It must not read the JSONL directly (that would
+duplicate the reader); it reads a small precomputed summary — see §6.1 for
+where that summary lives, which is the one place these two designs interact.
+
+### 5.4 Third surface (small, high value): a header chip
+
+The preview header already carries mode icons and the Deploy affordance. A
+small chip — `⚡ 142 · p95 1.2s`, red when the last call errored — is the
+cheapest possible "your app is being watched" signal, and clicking it opens the
+`calls` mode. Shell code, so phase 2, after the template earns its keep.
+
+### 5.5 For agents and the terminal
+
+The store is JSONL under a stable path. That is already an agent-legible
+interface — `tail`, `grep`, `jq`, or the `duckdb` template with no new code.
+Add two conveniences:
+
+- `GET /api/calls/config` → `{dir, today, enabled, retention_days}` so a page
+  or an agent can find the store without hardcoding the path.
+- `fused-render calls [--page P] [--since 1h] [--failed] [--json]` — a CLI
+  subcommand printing the same rollup the template shows. This is the surface
+  a coding agent will actually reach for, and it costs ~80 lines on top of the
+  reader.
+
+---
+
+## 6. Open decisions (owner input wanted)
+
+**6.1 Where does the per-page summary live?** The header chip (§5.4) and the
+history section (§5.3) both want "142 calls, p95 1.2s" without scanning the
+log. Options: (a) compute it on demand in the reader — simple, but a scan per
+render; (b) maintain `~/.fused-render/calls/summary.json`, a small
+page→counters map updated by the writer thread — fast, one more file to keep
+consistent; (c) write the summary into the page's **sidecar** under a
+`callsSummary` key — puts it exactly where `history/` already looks and travels
+with the file, at the cost of a sidecar read-merge-write on a timer. My
+recommendation: **(b)**, with the sidecar left alone. Sidecar writes on a
+firehose is the thing §4.1 rejected, and a debounced version of it is the same
+bug with a longer fuse.
+
+**6.2 Is client-side reconciliation worth it?** The `X-Fused-Call` +
+`/api/calls/outcome` round trip (§4.3) is what makes `superseded` and
+`client_ms` exact. Without it the server infers `disconnected` from a closed
+socket, which catches most supersessions but conflates them with a closed tab
+and loses client-perceived latency. Recommendation: **ship without it in phase
+1** (server-only records, `outcome: disconnected`), add it in phase 2 once the
+charts prove which distinction people actually miss.
+
+**6.3 Do thin routes get sampled?** `/api/fs/raw` under a ranged reader can be
+thousands of requests for one preview. Options: log all (honest, noisy,
+retention burns fast), sample 1-in-N above a per-page rate, or **coalesce** —
+one record per (page, path) per second carrying `count`, `bytes_sum`,
+`status_set`. Recommendation: **coalesce**. It keeps the "my page read this
+file 4000 times" signal, which is the actual bug, without 4000 rows.
+
+**6.4 Params: full, keys-only, or off?** Recommendation: a three-way pref
+defaulting to **full** (matching the serve spec's named trade-off and D3's
+local-single-user posture), with `keys-only` one click away in Preferences and
+documented in `docs/usage.md` next to the log location.
+
+**6.5 Does the builtin executor gain `duration_ms`/`stderr`?** Today only the
+fused engine returns them (`engine.py:384`); the builtin path returns
+`{ok, result, stdout}` (`executor.py:137`). The middleware can time the request
+either way, so this is not blocking — but without it, `stderr_tail` is
+mysteriously empty for the default engine, and a user comparing engines sees a
+gap that looks like a bug. Recommendation: **do it in phase 1**; it is a small
+additive change to `_child.py`'s envelope and independently useful.
+
+---
+
+## 7. Phasing
+
+### Phase 1 — the log and the viewer (the whole ask, locally)
+
+| File | Change |
+|---|---|
+| `fused_render/calls.py` | **new.** Record shape, caps, background writer thread, retention sweep, rate cap, `record()`, `GET /api/calls/config`. |
+| `fused_render/server.py` | Include the router; one `calls.record()` in the middleware; enrich in `/api/run` and `/api/fs/write`. |
+| `fused_render/static/runtime.js` | Shared `_fetch` wrapper adding `X-Fused-Page`. |
+| `fused_render/executor.py`, `_child.py` | Return `duration_ms` + `stderr` tail (§6.5). |
+| `fused_render/templates/calls/` | **new.** `template.html` (charts, tail, table, detail), `reader.py` (the ops in §5.1), `condition.py` (CT-12 gate), `icon.svg`. |
+| `fused_render/templates/registry.json` | `calls` appended to `.html`/`.py`; `.calls.jsonl` key. |
+| `fused_render/executor.py` | `calls/reader.py` onto `INPROCESS_HELPERS`. |
+| `fused_render/shell/prefs.py` | `calls_enabled` (default on), `calls_params` (`full`/`keys`/`off`), retention days; surfaced on the Preferences page. |
+| `tests/test_calls.py` | **new.** Record caps and truncation markers; fail-open on an unwritable dir and on a full queue; retention sweep; attribution present/absent; reader ops paging + bucketing; the `condition.py` gate. |
+| `SPEC.md` §30, `DECISIONS.md` D134 | The spec section (CL-1..CL-n) and the decision row with rationale. |
+| `docs/usage.md`, `skills/fused-render-authoring/SKILL.md` | Where the log lives, how to read it, the params-redaction knob. Authoring skill gains "how to check what your page is doing." |
+
+Deliberately **not** in phase 1: shell UI, the header chip, deployed apps,
+tile daemons.
+
+### Phase 2 — make it ambient
+
+Header chip (§5.4); the history-view Calls section (§5.3); client-side
+reconciliation (§6.2); the `fused-render calls` CLI (§5.5); brush-to-filter
+between chart and table.
+
+### Phase 3 — deployed apps (the `fused` repo)
+
+The serve plane already captures **failures** into
+`errors/<env>/<token>/<rev-ts>-<err_id>.json` with a 14-day lifecycle, exposed
+by `fused share errors` and rendered by `DeploymentErrors.tsx`. Widening that
+to *all* calls is the same idea at a very different volume, so it is its own
+design, not an afterthought:
+
+- Per-call records for anonymous internet traffic cannot be unbounded — the
+  existing 30-per-5-min rate cap exists because a caller controls the request
+  rate and the owner pays for the storage. The answer is almost certainly
+  **aggregate-by-default**: pre-bucketed counters per (mount, entrypoint,
+  minute) — count, error count, duration histogram buckets, byte totals — plus
+  full records for failures (already built) and for a **sampled** slice of
+  successes.
+- `share calls TOKEN [--since] [--json]` mirrors `share errors`, and
+  `/api/deploy/calls` + a `DeploymentCalls.tsx` mirror the existing pair.
+- The payoff is the one thing local logging cannot give: **the same charts for
+  the deployed page, over real traffic**, in the same viewer, because the
+  record shape was kept identical (§3).
+
+This phase should not gate phases 1–2. Local-first is the right order — it is
+where authoring happens, and it is entirely within this repo.
+
+---
+
+## 8. What it enables — for human users
+
+- **"Why is my page slow?"** becomes a table read instead of a guess. The
+  per-target rollup names the `.py`, the p95 vs p50 gap says whether it is
+  always slow or occasionally awful, and the scatter shows the cold-start
+  outlier that a mean would hide.
+- **Regression detection without a benchmark.** The duration chart spans days.
+  Edit a reader, re-run, and the step change is visible on the same axes as
+  last week — no harness, no baseline file.
+- **Catching the render loop.** A page that re-runs on every `onChange`
+  without a diff guard produces an unmistakable dense bar in the calls chart.
+  This class of bug is currently invisible: it works, it is just quietly
+  running Python 40 times a second.
+- **Seeing the cost of a slider.** The superseded series makes the D114
+  cancellation visible — how much work a scrub throws away, and whether
+  `opts.key` needs tuning.
+- **The error you missed.** A `runPython` failure the page caught itself
+  (author-handled rejection) shows nothing today, by design (`runtime.js:658`).
+  In the log it is a row with the full traceback. Errors swallowed by a
+  `.catch(() => {})` stop being invisible.
+- **Result-size surprises.** "My table view got sluggish" resolves to
+  "your reader stopped honouring `limit` and now returns 8 MB" in one glance
+  at the size chart.
+- **A real bug report.** "Zip me that file" (D68's whole thesis) gets much
+  better: not just a traceback, but the sequence of calls, params, and timings
+  that produced it.
+- **Deployed vs local, compared.** Phase 3, but the reason the record shape is
+  shared: the same page's numbers side by side.
+
+## 9. What it enables — for AI agents
+
+This is where the leverage is, and it is worth being concrete about *why*.
+An agent authoring a fused-render page today has a blind spot exactly where a
+human would use their eyes: it writes the `.html` and the `.py`, and then has
+no idea what happened when the page ran. It cannot see the browser console, it
+cannot see the overlay, and a page that renders blank looks identical to a page
+that works. The call log closes that loop with a file it can read.
+
+- **A verification loop that actually verifies.** Write the page → ask the user
+  to open it (or open it via the deep link) → read the last N records. "Three
+  calls, all ok, 80 rows, 40 ms" is *proof it works*. "One call,
+  `KeyError: 'freq'`, traceback here" is a fix with a line number. Today the
+  agent's only honest report is "I wrote the files; try it."
+- **Error-driven iteration without the human relaying.** The traceback,
+  stdout, the exact params, and the engine are all in the record. The user
+  stops being a copy-paste conduit for their own console.
+- **Self-benchmarking.** An agent optimizing a reader can read p95 before and
+  after from the same store, on real invocations, rather than reasoning about
+  which version *ought* to be faster.
+- **Finding the bug class it can't see.** The stat-in-a-loop, the missing diff
+  guard, the un-cancelled poll — these are structural mistakes that agents make
+  routinely and that produce *working* pages. The log names them.
+- **A grep-able, tool-free interface.** JSONL at a stable path means no MCP
+  tool, no API client, no schema negotiation: `tail -5`, `jq`, or the `duckdb`
+  template. The `fused-render calls --failed --json` subcommand (§5.5) is a
+  one-line health check an agent can run unprompted.
+- **Working inside the app.** The `claude/` chat template already runs
+  Claude Code with cwd set to the target file's directory
+  (`templates/claude/agent.py`). Point its system prompt at the call log and the
+  in-app agent can answer "why did that just fail?" about the very page it is
+  sitting next to — with the record, not with speculation.
+- **Honest handoffs.** "I couldn't reproduce it" becomes "the log shows zero
+  calls to that `.py` — the page never invoked it," which is a different and
+  much more useful sentence.
+
+The general shape: **the log turns authoring from open-loop code generation
+into a closed loop with an observable.** That is worth more to an agent than to
+a human, because a human already has a browser.
+
+---
+
+## 10. Other uses this unlocks
+
+Ordered by value-per-unit-of-work, from the same store.
+
+**10.1 A `.py` performance profile, for free.** The per-target rollup is
+already a profile at call granularity. Add nothing and a user can see which of
+their data files carry the page. Add optional in-reader spans later
+(`fused.mark("query")`) and it becomes a flame-ish breakdown — but the 80% is
+free.
+
+**10.2 Cache and memoization, decided by data.** `PY-9` guarantees a fresh
+execution every call, and `engine.py` explicitly disables result caching. The
+call log is the evidence base for revisiting that per-page: "this `.py` was
+called 400 times with 6 distinct param sets, p95 900 ms" is a cache hit rate
+of 98.5% waiting to happen. Log first, then decide — and the log also measures
+whether the cache helped.
+
+**10.3 Regression gates for template authors.** The built-in templates are
+themselves pages that call readers. A recorded run of the template suite
+becomes a latency baseline; a PR that makes `duckdb/reader.py` 3× slower shows
+up as a number. Cheap CI value from a feature built for users.
+
+**10.4 Replay and repro.** Every record holds the entrypoint plus the exact
+params. "Re-run this call" is a button on the detail pane, and
+`fused-render calls replay <call_id>` is a repro command that fits in a bug
+report. Since params are already the whole input contract, this is nearly free
+once the log exists.
+
+**10.5 A session transcript for the history view.** `history/` (D96) already
+tells the story of a file: who chatted about it, what was commented, what
+params it last had. "And here is every time it ran" completes that narrative,
+and the deep-link plumbing (HV-7) exists.
+
+**10.6 Tile-daemon visibility.** The sci templates' loopback daemons
+(`geotiff`, `map`, `zarr_aoi`, `pyramid`) serve the interaction users most
+often call slow — panning a map. They are outside the log by construction
+(D122). Teaching them to append to the same store (they already own a state
+file and a token) would make "why is panning slow" answerable with the same
+charts. Meaningful work, high payoff, naturally a follow-up.
+
+**10.7 Mount-aware diagnostics.** Records carry the entrypoint path, and
+`shell/mounts.py` knows which paths are mount-backed with a cold/warm prefetch
+state. Joining them answers the most common confusing slowness in the product:
+"this call took 14 s because it was a cold read over a remote mount," not
+"your code is slow." A `mount`/`cold` flag on the record is a small addition
+with a large explanatory payoff.
+
+**10.8 Export/deploy readiness.** `export.py` statically scans a page for
+literal `runPython`/`rawUrl` calls and fails loudly on a computed target it
+cannot see (`docs/EXPORT.md`). The call log is the *dynamic* truth: the set of
+targets actually invoked. Diffing the two turns a class of deploy-time
+surprise ("hosted page 404s on a file the scan missed") into a pre-deploy
+warning in the Deploy modal — a genuinely novel use, and one only possible
+because both halves live in this repo.
+
+**10.9 Usage-shaped answers about your own tools.** Across pages, the log says
+which views you actually open and run — the honest input to "which of my 40
+views matter," and a better Recents than recency alone.
+
+**10.10 A worked example of the platform.** The `calls` template is a
+fused-render app that reads a data file, charts it, and filters by URL params.
+It ships as the reference implementation for the pattern it documents.
+
+---
+
+## 11. Non-goals and risks
+
+- **Not a security or audit log.** D3 stands: this is a local single-user tool
+  with no auth layer. The call log is a diagnostic, not an attestation, and
+  nothing should be built on it as if it were tamper-evident.
+- **Not complete.** It sees calls the runtime makes to this server. Not a
+  page's own `fetch()` to a third party, not the tile daemons (§10.6), not
+  anything a `.py` does internally.
+- **The privacy surface is real, and small.** Params can carry secrets. The
+  store is under the user's home dir, on their machine, alongside their
+  bookmarks — but it is now a file that persists what used to only be in a URL.
+  §6.4's knob plus a line in `docs/usage.md` is the honest treatment.
+- **Disk.** Answered structurally by three independent bounds (per-record
+  caps, per-page rate cap, retention + size sweep). A logging feature that
+  fills the disk would be a worse bug than the one it was built to find; each
+  bound must be tested, not asserted.
+- **Overhead must be unmeasurable.** A `put_nowait` onto a bounded queue plus
+  a background append. Fail-open everywhere: an unwritable directory, a full
+  queue, a serialization failure — each drops the record and never touches the
+  response. Worth an explicit test that a broken log directory leaves
+  `/api/run` behaving byte-identically.
+- **Chart honesty.** Superseded calls excluded from percentiles by default
+  (§2), tails not heads on truncation, and no smoothing that hides an outlier.
+  A dishonest observability feature is worse than none, because people trust it.
