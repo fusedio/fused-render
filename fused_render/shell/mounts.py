@@ -3468,6 +3468,20 @@ def attach_mount(m: dict) -> str | None:
         # serve (whose read_only matches the vfsOpt.ReadOnly here).
         if sys.platform == "darwin":
             params["mountOpt"] = _nfs_mount_opt(m)
+        # win32 only: force WinFsp DISK mode (NetworkMode off). rclone defaults
+        # Windows mounts to network-redirector mode, which does NOT create a
+        # volume mount point — so Python's os.path.ismount (backed by
+        # GetVolumePathName) never sees the mount. Every win32 detection path
+        # here leans on ismount: the _await_ismount verify below would fail a
+        # SUCCESSFUL mount, and a retry could then mistake the live mount's
+        # contents for a non-empty leaf (or the force-unmount poll / mount_state
+        # would call a live mount dead). Disk mode makes a real volume mount
+        # point that ismount detects. Like the darwin mountOpt, NetworkMode is a
+        # transport option, NOT a vfs option, so it does not affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve.
+        elif sys.platform == "win32":
+            params["mountOpt"] = {"NetworkMode": False}
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)

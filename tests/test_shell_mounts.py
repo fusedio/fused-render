@@ -355,6 +355,30 @@ def test_mount_raises_nfs_timeout_on_macos(home, rcd):
     assert any(o.startswith("timeo=") for o in body["mountOpt"]["ExtraOptions"])
 
 
+def test_mount_win32_uses_disk_mode_mountopt(home, rcd, monkeypatch):
+    # rclone defaults Windows mounts to NETWORK mode, which creates no volume
+    # mount point — os.path.ismount (GetVolumePathName) then never sees a live
+    # mount, breaking every win32 detection path. attach must force disk mode
+    # (NetworkMode off) so a real volume mount point exists.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "mount"
+    assert body["mountOpt"] == {"NetworkMode": False}
+
+
+def test_mount_linux_passes_no_mountopt(home, rcd, monkeypatch):
+    # Linux FUSE needs neither the darwin NFS tuning nor the win32 disk-mode flag.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "mount"
+    assert "mountOpt" not in body
+
+
 def test_mount_surfaces_rc_error(home, rcd):
     rcd.responses["mount/mount"] = (500, {"error": "mount helper failed"})
     c = mounts_mod.add_mount("data", "remote:bucket")
