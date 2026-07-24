@@ -156,6 +156,38 @@ def test_appimage_env_resolution(env, monkeypatch):
     assert env.desktop_file.exists()
 
 
+def test_integrate_refreshes_autostart_best_effort(env, monkeypatch):
+    # integrate() must self-heal the autostart entry on every packaged start
+    # (so a stale Exec= path is healed even when the desktop-integration stamp
+    # is up to date) — see startup.refresh_autostart.
+    calls = []
+    monkeypatch.setattr(integration.startup, "refresh_autostart", lambda: calls.append(True))
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert calls == [True]
+
+
+def test_integrate_refreshes_autostart_before_stamp_short_circuit(env, monkeypatch):
+    # A stale autostart path must be healed even when the desktop-integration
+    # stamp itself is up to date (the second, idempotent run): refresh_autostart
+    # runs before integrate()'s stamp short-circuit return.
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    calls = []
+    monkeypatch.setattr(integration.startup, "refresh_autostart", lambda: calls.append(True))
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert calls == [True]  # ran despite the stamp being current
+
+
+def test_integrate_swallows_refresh_autostart_failure(env, monkeypatch):
+    # Best-effort: a raise from refresh_autostart must be logged and must not
+    # propagate out of integrate() (log-and-continue discipline).
+    def boom():
+        raise OSError("autostart heal failed")
+
+    monkeypatch.setattr(integration.startup, "refresh_autostart", boom)
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.desktop_file.exists()  # the rest of integrate() still ran
+
+
 def test_icon_falls_back_to_theme_name_without_source(env, monkeypatch):
     # No icon source resolvable ($APPDIR unset): the entry still writes, with
     # the theme icon name rather than an absolute path.

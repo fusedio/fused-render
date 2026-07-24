@@ -76,6 +76,15 @@ def integrate(
     if appimage is None:
         return  # dev / unpackaged: silent no-op
 
+    # Self-heal the autostart Exec= after an AppImage move — before the stamp
+    # short-circuit below, so a stale autostart path is healed even when the
+    # desktop-integration stamp itself is up to date. Best-effort: a heal
+    # failure must never stop integration (log-and-continue).
+    try:
+        startup.refresh_autostart()
+    except Exception as error:  # noqa: BLE001 - autostart heal is never fatal
+        paths.log(f"desktop integration: autostart refresh failed: {error}")
+
     data_home = _xdg_home("XDG_DATA_HOME", ".local/share")
     desktop_file = data_home / "applications" / _DESKTOP_NAME
     mime_file = data_home / "mime" / "packages" / _MIME_PACKAGE_NAME
