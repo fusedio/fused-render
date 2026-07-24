@@ -20,13 +20,13 @@ def test_extensions_are_single_suffix_and_clean():
 
 
 def test_view_url_no_path():
-    assert winopen._view_url(1777, None) == "http://127.0.0.1:1777/"
+    # winopen re-exports the shared codec (fused_render._view_url_codec) —
+    # full encoding-rule coverage lives in tests/test_view_url_codec.py.
+    assert winopen.view_url(1777, None) == "http://127.0.0.1:1777/"
 
 
-def test_view_url_encodes_drive_path(monkeypatch):
-    # stub abspath so the encoding is exercised the same on POSIX CI as on Windows
-    monkeypatch.setattr(winopen.os.path, "abspath", lambda p: p)
-    assert winopen._view_url(1777, r"C:\data\sales.csv") == (
+def test_view_url_encodes_drive_path():
+    assert winopen.view_url(1777, r"C:\data\sales.csv") == (
         "http://127.0.0.1:1777/view/C%3A/data/sales.csv"
     )
 
@@ -53,3 +53,28 @@ def test_ensure_server_spawns_when_alone(monkeypatch):
     monkeypatch.setattr(winopen, "pick_port", lambda *a, **k: 1778)
     monkeypatch.setattr(winopen, "_spawn", lambda port: port)
     assert winopen._ensure_server(None) == 1778
+
+
+def test_open_launch_deeplink_ensures_server_and_opens_no_tab(monkeypatch, tmp_path):
+    # fused-render://launch (D128): server is ensured, browser stays closed —
+    # the down-banner page that linked here reconnects on its own.
+    monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(winopen, "setup_logging", lambda: None)
+    ensured = []
+    monkeypatch.setattr(winopen, "_ensure_server", lambda port: ensured.append(port) or 1777)
+    monkeypatch.setattr(
+        winopen.webbrowser, "open", lambda url: pytest.fail(f"opened a tab: {url}")
+    )
+    winopen._open("fused-render://launch", None)
+    assert ensured == [None]
+
+
+def test_open_clone_deeplink_still_opens_confirm_page(monkeypatch, tmp_path):
+    monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(winopen, "setup_logging", lambda: None)
+    monkeypatch.setattr(winopen, "_ensure_server", lambda port: 1777)
+    opened = []
+    monkeypatch.setattr(winopen.webbrowser, "open", lambda url: opened.append(url))
+    winopen._open("fused-render://open?git=https://github.com/o/r", None)
+    assert len(opened) == 1
+    assert opened[0].startswith("http://127.0.0.1:1777/clone?src=")

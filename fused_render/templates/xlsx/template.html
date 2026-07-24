@@ -74,6 +74,20 @@
   #status.error {
     color: #ff6b6b;
   }
+  /* Loading skeleton: mimics the paged table shape (header + row bars) while
+     a page/sheet is in flight, instead of a blank "Loading…" wipe. */
+  .skel-bar {
+    display: inline-block;
+    height: 0.9em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #1d1f24 25%, #2a2d33 50%, #1d1f24 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
@@ -121,6 +135,24 @@
         .join("");
     }
 
+    // Skeleton table shape for the in-flight state: header + shimmering row
+    // bars. Real column count/names aren't known until reader.py responds, so
+    // this uses a generic grid sized to mirror the eventual paged table.
+    const SKEL_COLS = 6;
+    const SKEL_ROWS = 8;
+    const SKEL_WIDTHS = [88, 62, 78, 48, 84, 68, 56, 80];
+    function renderSkeleton() {
+      const head = `<tr>${Array.from({ length: SKEL_COLS })
+        .map(() => `<th><span class="skel-bar" style="width:40%"></span></th>`)
+        .join("")}</tr>`;
+      const body = Array.from({ length: SKEL_ROWS })
+        .map((_, r) => `<tr>${Array.from({ length: SKEL_COLS })
+          .map((__, c) => `<td><span class="skel-bar" style="width:${SKEL_WIDTHS[(r + c) % SKEL_WIDTHS.length]}%"></span></td>`)
+          .join("")}</tr>`)
+        .join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
     function render(data, offset) {
       renderSheetSelector(data.sheets, data.sheet);
       const total = data.total_rows;
@@ -149,7 +181,7 @@
       const file = fused.params.get("_file");
       const offset = currentOffset();
       const sheet = fused.params.get("sheet") || "";
-      wrap.innerHTML = `<div id="status">Loading…</div>`;
+      renderSkeleton();
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;

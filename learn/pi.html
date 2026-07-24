@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Estimate π</title>
+<style>
+  :root { color-scheme: dark; --yellow:#E5FF44; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:20px; background:#131417; color:#e8eaed;
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  #controls { display:flex; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap; }
+  #controls label { color:#9aa0a6; font-size:13px; }
+  #count { width:230px; accent-color:var(--yellow); }
+  #countVal { font-variant-numeric:tabular-nums; min-width:4.5em; color:#e8eaed; font-weight:600; }
+  .est { margin-left:auto; font-size:13px; color:#9aa0a6; }
+  .est b { color:var(--yellow); font-variant-numeric:tabular-nums; font-size:16px; }
+  #wrap { display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
+  #board { border:1px solid #2a2d33; border-radius:10px; background:#0f0f10; }
+  .side { font-size:12.5px; color:#77777c; max-width:220px; }
+  .side .row { display:flex; justify-content:space-between; margin:6px 0; }
+  .side .row b { color:#e8eaed; font-variant-numeric:tabular-nums; }
+  .side .row .y { color:var(--yellow); }
+  .side p { margin:14px 0 0; line-height:1.5; }
+</style>
+</head>
+<body>
+  <div id="controls">
+    <label for="count">darts</label>
+    <input id="count" type="range" min="10" max="1000" step="10" value="200" />
+    <span id="countVal"></span>
+    <span class="est">π ≈ <b id="piVal">—</b></span>
+  </div>
+  <div id="wrap">
+    <canvas id="board" width="440" height="440"></canvas>
+    <div class="side">
+      <div class="row"><span>darts thrown</span><b id="sN">—</b></div>
+      <div class="row"><span>inside circle</span><b id="sIn">—</b></div>
+      <div class="row"><span>estimate 4·inside/n</span><b class="y" id="sPi">—</b></div>
+      <div class="row"><span>true π</span><b>3.14159</b></div>
+      <div class="row"><span>computed in</span><b id="sMs">—</b></div>
+      <p>Each dart is a random point. The share landing inside the quarter-circle is π/4 — so more darts sharpen the estimate. All thrown by the Python file next to this page.</p>
+    </div>
+  </div>
+
+<script>
+  const S = 440, PAD = 4;
+  const slider = document.getElementById("count");
+  const board = document.getElementById("board");
+  const ctx = board.getContext("2d");
+
+  function currentN(){
+    const raw = fused.params.get("n");
+    return raw !== undefined ? parseInt(raw, 10) : 200;
+  }
+
+  function draw(data){
+    ctx.fillStyle = "#0f0f10"; ctx.fillRect(0, 0, S, S);
+    const W = S - PAD * 2;
+    // quarter circle guide (origin at bottom-left)
+    ctx.strokeStyle = "#3a3d44"; ctx.lineWidth = 1;
+    ctx.strokeRect(PAD, PAD, W, W);
+    ctx.beginPath();
+    ctx.arc(PAD, S - PAD, W, -Math.PI / 2, 0);
+    ctx.strokeStyle = "rgba(229,255,68,.6)"; ctx.lineWidth = 1.5; ctx.stroke();
+    // darts
+    for (let i = 0; i < data.points.length; i++){
+      const [x, y, hit] = data.points[i];
+      const px = PAD + x * W;
+      const py = S - PAD - y * W;        // y up
+      ctx.fillStyle = hit ? "#E5FF44" : "#4a4d54";
+      ctx.fillRect(px - 1, py - 1, 2, 2);
+    }
+  }
+
+  async function render(){
+    const n = currentN();
+    slider.value = String(n);
+    document.getElementById("countVal").textContent = n.toLocaleString();
+    // Stale-request cancellation (keyed by the .py path) keeps fast scrubbing snappy.
+    const data = await fused.runPython("./pi.py", { n: String(n) });
+    draw(data);
+    document.getElementById("piVal").textContent = data.pi.toFixed(4);
+    document.getElementById("sN").textContent = data.n.toLocaleString();
+    document.getElementById("sIn").textContent = data.inside.toLocaleString();
+    document.getElementById("sPi").textContent = data.pi.toFixed(4);
+    document.getElementById("sMs").textContent = data.ms + " ms";
+  }
+
+  slider.addEventListener("input", () => fused.params.set("n", slider.value));
+  fused.params.onChange(render);
+  render();
+</script>
+</body>
+</html>

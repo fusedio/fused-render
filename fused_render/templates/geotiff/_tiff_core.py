@@ -125,14 +125,24 @@ _PHOTOMETRIC = {0: "min-is-white", 1: "min-is-black", 2: "RGB", 3: "palette",
                 4: "mask", 5: "CMYK", 6: "YCbCr"}
 
 
-def parse_header(path):
+def parse_header(path, data=None):
     """Read the file + parse the first IFD. Works for ANY compression —
-    header metadata is available even when pixels can't be decoded purely."""
+    header metadata is available even when pixels can't be decoded purely.
+
+    `data` (bytes) short-circuits the file open: a mount-safe caller passes the
+    header bytes it read over HTTP so the parser never open()+mmaps a file on
+    the kernel NFS mount (the mmap readahead page-fault on a big tif stalls the
+    NFS client and drops the whole mount). bytes and mmap are both buffer-like,
+    so the struct parsing below is identical. With data=None the local fast path
+    mmaps the file as before."""
     import mmap
-    with open(path, "rb") as f:
-        # mmap, not read(): header + tile decode only touch the pages they
-        # use, so a 300MB COG opens as fast as a 3MB one
-        buf = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    if data is not None:
+        buf = data
+    else:
+        with open(path, "rb") as f:
+            # mmap, not read(): header + tile decode only touch the pages they
+            # use, so a 300MB COG opens as fast as a 3MB one
+            buf = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
     if buf[:2] == b"II":
         en = "<"
     elif buf[:2] == b"MM":
@@ -162,8 +172,14 @@ def _gdal_metadata(t):
     return items
 
 
-def header_meta(path, buf, en, t, next_off):
-    """gdalinfo-style header metadata from parsed tags (no pixel decode)."""
+def header_meta(path, buf, en, t, next_off, file_size=None):
+    """gdalinfo-style header metadata from parsed tags (no pixel decode).
+
+    `file_size` (when known — e.g. the mount-safe caller already has it from
+    /api/fs/stat) is used verbatim; otherwise os.path.getsize(path) kernel-stats
+    the file. On a mount-backed file that kernel stat over NFS can stall many
+    seconds (measured: a 14s getsize on a cold source.coop tif) and is itself a
+    mount-wedge risk, so remote callers pass the size to avoid touching it."""
     import os
     W = _v1(t, 256); H = _v1(t, 257)
     spp = _v1(t, 277, 1)
@@ -183,7 +199,7 @@ def header_meta(path, buf, en, t, next_off):
         "width": int(W) if W else None, "height": int(H) if H else None,
         "count": int(spp), "dtype": f"{kind}{bits}",
         "nodata": _nodata(t),
-        "file_size": os.path.getsize(path),
+        "file_size": file_size if file_size is not None else os.path.getsize(path),
         "tiff": {
             "compression": _COMPRESSION.get(comp, f"code {comp}"),
             "layout": layout,

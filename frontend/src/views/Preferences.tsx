@@ -1,20 +1,25 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Three sections, each a thin client
-// over an existing backend, in this order:
-//   Logs             — where this process logs (GET /api/prefs) + reveal
-//   Execution engine — the persisted /api/run engine pref (PUT /api/prefs);
-//                      applies to the next run, no restart. Locked while
-//                      FUSED_RENDER_ENGINE forces the process.
-//   Deployments      — an opt-in toggle for the preview-header Deploy button
-//                      (PUT /api/prefs deploy_enabled); the per-env share
-//                      list moved to the Fused account page (SPEC AC-11)
+// from the sidebar's bottom-left gear. Two tabs (D125):
+//   Render preferences — Logs, Execution engine, Deploy to Fused account
+//     (the opt-in Deploy-button toggle), Tour. Always present; the default
+//     (clean URL).
+//   Fused account       — the account/sign-in/environments panel (formerly
+//     its own `/view/_account` page, folded in once it stopped being a
+//     separate sidebar entry). Shown only once Deploy is enabled — that's
+//     the only reason this app cares about a Fused account.
+// The active tab lives in the URL (`?tab=account`), same pattern as
+// Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
 import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/api";
 import type { Prefs } from "../lib/api";
 import { navigateUrl } from "../lib/router";
+import { notifyPrefsChanged } from "../lib/prefs";
 import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { AccountPanel } from "./Account";
+
+type PrefsTab = "render" | "account";
 
 function TourSection() {
   return (
@@ -151,6 +156,10 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
     setError(null);
     try {
       onChange(await putDeployEnabled(!enabled));
+      // The sidebar's signed-in dot (useDeployEnabled) is mounted alongside
+      // this page, not remounted by navigation — without this it would only
+      // pick up the flip on the next focus/visibility return.
+      notifyPrefsChanged();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -172,24 +181,28 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
-function DeploymentsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+function DeploymentsSection({
+  prefs,
+  onChange,
+  onOpenAccount,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+  onOpenAccount: () => void;
+}) {
   return (
     <section className="prefs-section">
-      <h2>Deployments</h2>
+      <h2>Deploy to Fused account</h2>
       <DeployToggle prefs={prefs} onChange={onChange} />
-      <p className="deploy-muted">
-        The per-environment share list (every deployed mount, with Revoke) lives on the{" "}
-        <a
-          href="/view/_account"
-          onClick={(e) => {
-            e.preventDefault();
-            navigateUrl("/view/_account");
-          }}
-        >
-          Fused account page
-        </a>{" "}
-        beside your environments.
-      </p>
+      {prefs.deploy.enabled && (
+        <p className="deploy-muted">
+          The per-environment share list (every deployed mount, with Revoke) lives on the{" "}
+          <button type="button" className="link-button" onClick={onOpenAccount}>
+            Fused account tab
+          </button>{" "}
+          beside your environments.
+        </p>
+      )}
     </section>
   );
 }
@@ -208,16 +221,61 @@ export default function Preferences() {
     };
   }, []);
 
+  // Requested tab lives in the URL (`?tab=account`) — bookmarkable, and how
+  // the Deploy modal and the old `/view/_account` redirect (App.tsx) land
+  // here directly on the account tab. Falls back to "render" whenever the
+  // account tab wouldn't be offered (Deploy not enabled) rather than showing
+  // a tab with no button pointing at it.
+  const requestedTab: PrefsTab =
+    new URLSearchParams(location.search).get("tab") === "account" ? "account" : "render";
+  const tab: PrefsTab = requestedTab === "account" && prefs?.deploy.enabled ? "account" : "render";
+  const setTab = (next: PrefsTab) => {
+    const params = new URLSearchParams(location.search);
+    if (next === "render") params.delete("tab");
+    else params.set("tab", next);
+    const search = params.toString();
+    navigateUrl(location.pathname + (search ? "?" + search : ""));
+  };
+
   return (
     <div className="prefs-page">
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <div className="deploy-muted">Loading…</div>}
       {prefs && (
         <>
-          <LogsSection prefs={prefs} />
-          <EngineSection prefs={prefs} onChange={setPrefs} />
-          <DeploymentsSection prefs={prefs} onChange={setPrefs} />
-          <TourSection />
+          <div className="prefs-tabs">
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "render" ? " active" : "")}
+              onClick={() => setTab("render")}
+            >
+              Render preferences
+            </button>
+            {prefs.deploy.enabled && (
+              <button
+                type="button"
+                className={"prefs-tab" + (tab === "account" ? " active" : "")}
+                onClick={() => setTab("account")}
+              >
+                Fused account
+              </button>
+            )}
+          </div>
+          <div className="prefs-tabpanel">
+            {tab === "render" && (
+              <>
+                <LogsSection prefs={prefs} />
+                <EngineSection prefs={prefs} onChange={setPrefs} />
+                <DeploymentsSection
+                  prefs={prefs}
+                  onChange={setPrefs}
+                  onOpenAccount={() => setTab("account")}
+                />
+                <TourSection />
+              </>
+            )}
+            {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
+          </div>
         </>
       )}
     </div>

@@ -19,15 +19,24 @@ import os
 import shutil
 import time
 import uuid
-from urllib.parse import quote
 
+from fused_render._view_url_codec import _is_drive_path, view_url_path
 from fused_render.shell import storage
 
-# Seed examples ship inside the wheel at fused_render/examples_seed/, packaged
-# by the same mechanism as fused_render/templates/ (pyproject packages =
-# ["fused_render"] — every committed file under the package ships).
-PACKAGE_SEED_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples_seed"
+# Seed examples live at the repo root (examples_seed/) and are force-included
+# into the wheel at fused_render/examples_seed/ (pyproject
+# [tool.hatch.build.targets.wheel.force-include]). Installed wheels find them
+# inside the package; editable/dev installs (where force-include does not
+# materialize files) fall back to the repo-root copy. Probe a real seed file,
+# not just the dir: git can leave an empty fused_render/examples_seed/ behind
+# after the move, and an empty dir must not shadow the repo-root copy.
+_PKG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_IN_PACKAGE = os.path.join(_PKG_DIR, "examples_seed")
+_REPO_ROOT = os.path.join(os.path.dirname(_PKG_DIR), "examples_seed")
+PACKAGE_SEED_DIR = (
+    _IN_PACKAGE
+    if os.path.isfile(os.path.join(_IN_PACKAGE, "sine", "sine.html"))
+    else _REPO_ROOT
 )
 
 # The example pages the starter bookmarks point at; any of them existing is
@@ -53,23 +62,13 @@ def fused_dir() -> str:
     )
 
 
-def _view_url(abs_path: str) -> str:
-    """Build a /view/ URL for an absolute fs path, encoding each segment exactly
-    as the frontend's urlForFsPath (lib/router.ts): drop the leading slash(es),
-    split on '/', URL-encode each non-empty segment (encodeURIComponent parity —
-    quote already keeps A-Za-z0-9_.-~, so add !*'() to match), join with '/'."""
-    rest = abs_path.lstrip("/")
-    segs = [quote(seg, safe="!*'()") for seg in rest.split("/") if seg]
-    return "/view/" + "/".join(segs)
-
-
 # --- Panel `_layout` codec (mirror of frontend/src/lib/layout-codec.ts) -------
 # The Sine demo bookmark opens panel mode split into two panes of the SAME page
 # — left in the default render mode, right in `code` mode — exactly the URL the
 # app itself produces when you open sine/sine.html, click Split right, then set
 # the right pane to code mode. The panel URL is NOT the /view/ codec above: the
 # layout codec keeps `/ ? & =` literal and escapes only its own delimiters, so
-# it must be replicated here rather than reusing _view_url.
+# it must be replicated here rather than reusing view_url_path.
 
 
 def _enc_path(s: str) -> str:
@@ -115,8 +114,9 @@ def _sine_panel_url(abs_path: str) -> str:
     where L = the page in default render mode and R = the same page with
     `_mode=code`. `,` is the row (side-by-side) separator; the whole layout is
     parenthesized and emitted last, per the D51 grammar in buildSentinelUrl()."""
-    left = _encode_pane_segment(abs_path, "")
-    right = _encode_pane_segment(abs_path, "?_mode=code")
+    norm = abs_path.replace("\\", "/") if _is_drive_path(abs_path) else abs_path
+    left = _encode_pane_segment(norm, "")
+    right = _encode_pane_segment(norm, "?_mode=code")
     codec = left + "," + right
     return "/view/_panel?_layout=(" + _url_safe_layout(codec) + ")"
 
@@ -198,11 +198,11 @@ def _seed_bookmarks(fdir: str) -> None:
         return
     now = int(time.time() * 1000)  # ms, matching the frontend's Date.now()
     starters = (
-        ("Tutorial", _TUTORIAL_HTML, _view_url),
-        ("Showcase", _SHOWCASE_HTML, _view_url),
+        ("Tutorial", _TUTORIAL_HTML, view_url_path),
+        ("Showcase", _SHOWCASE_HTML, view_url_path),
         # Split view: rendered sine page beside its source (code mode).
         ("Sine demo", _SINE_HTML, _sine_panel_url),
-        ("How it works", _EXPLAINER_HTML, _view_url),
+        ("How it works", _EXPLAINER_HTML, view_url_path),
     )
     bookmarks = [
         {
@@ -250,5 +250,5 @@ def ensure_fused_dir_and_landing() -> tuple[str, str | None]:
     if seeded:
         showcase = os.path.join(fdir, _SHOWCASE_HTML)
         if os.path.isfile(showcase):
-            landing = _view_url(showcase)
+            landing = view_url_path(showcase)
     return fdir, landing

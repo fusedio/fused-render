@@ -200,6 +200,21 @@
   .ctx-item:hover { background: #2a2d33; }
   #status { padding: 24px; color: #9aa0a6; }
   #status.error { color: #ff6b6b; white-space: pre-wrap; }
+  /* Loading skeleton: a header + shimmering row bars mirroring the real table
+     shape, shown for the first paint and (after a short grace period) for a
+     genuinely slow reload — see load(). Sweeps via a background-position
+     animation on the file's own border/panel tones, no external assets. */
+  .skel-bar {
+    display: block; height: 0.9em; border-radius: 3px;
+    background: linear-gradient(90deg, #1b1d21 25%, #2a2d33 50%, #1b1d21 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skel-bar.skel-head { height: 0.8em; opacity: 0.7; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
@@ -454,6 +469,29 @@
       if (tr) tr.classList.add("row-active");
     }
 
+    // Loading skeleton HTML: a header row + a handful of shimmering row bars,
+    // shaped like the real grid. colCount comes from the previous load's state
+    // when known (page/filter/sort/table changes keep the old shape around);
+    // before anything has ever landed there's no column count yet, so fall
+    // back to a generic guess. withActionCol mirrors the real rowact column
+    // when we know the table is editable.
+    const SKEL_ROWS = 10;
+    const SKEL_WIDTHS = [88, 55, 72, 40, 65, 50, 80, 46];
+
+    function skeletonHtml(colCount, withActionCol) {
+      const n = colCount > 0 ? colCount : 5;
+      const actHead = withActionCol ? `<th class="rowact"></th>` : "";
+      const actCell = withActionCol ? `<td class="rowact"></td>` : "";
+      const head = `<tr>${Array.from({ length: n }, () =>
+        `<th><span class="skel-bar skel-head" style="width:60%"></span></th>`).join("")}${actHead}</tr>`;
+      const body = Array.from({ length: SKEL_ROWS }, (_, r) =>
+        `<tr>${Array.from({ length: n }, (_, c) =>
+          `<td><span class="skel-bar" style="width:${SKEL_WIDTHS[(r + c) % SKEL_WIDTHS.length]}%"></span></td>`
+        ).join("")}${actCell}</tr>`
+      ).join("");
+      return `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
     function renderTableSelector() {
       const tables = state.tables || [];
       if (tables.length <= 1) { tableSel.hidden = true; return; }
@@ -639,20 +677,27 @@
       const offset = currentOffset();
       const table = fused.params.get("table") || "";
       // A re-load of the same table (page/filter/sort change) keeps the
-      // current grid on screen instead of wiping to "Loading…": a local
+      // current grid on screen instead of wiping to a skeleton: a local
       // SQLite page answers in well under a repaint-worth of time, so the
       // wipe → rows sequence reads as flicker (same treatment as the duckdb
-      // grid). A genuinely slow load swaps the wipe back in after 250ms;
-      // first loads and table switches keep it — and so does dirty staging:
-      // discard and the post-save reload call load() with edits still in
-      // memory, and keeping the old grid would leave their edited styling
-      // on screen until the fetch lands.
+      // grid). A genuinely slow load swaps the skeleton back in after 250ms;
+      // first loads and table switches show it immediately — and so does
+      // dirty staging: discard and the post-save reload call load() with
+      // edits still in memory, and keeping the old grid would leave their
+      // edited styling on screen until the fetch lands.
       const keepGrid = !isDirty() && lastGridKey === file + "\n" + table
         && wrap.querySelector("tbody tr[data-id]");
+      // Shape the skeleton from the previous state when we have one (same
+      // column count, same editable/rowact column) so page/filter/sort/table
+      // changes swap to a placeholder that already looks like the real grid;
+      // before any load has ever landed there's no state yet, so skeletonHtml
+      // falls back to a generic column count.
+      const skelCols = state && state.columns ? state.columns.length : 0;
+      const skelAct = !!(state && state.editable);
       let slowTimer = null;
-      if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
+      if (!keepGrid) wrap.innerHTML = skeletonHtml(skelCols, skelAct);
       else slowTimer = setTimeout(() => {
-        if (seq === loadSeq) wrap.innerHTML = `<div id="status">Loading…</div>`;
+        if (seq === loadSeq) wrap.innerHTML = skeletonHtml(skelCols, skelAct);
       }, 250);
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;

@@ -394,6 +394,170 @@ def test_deploy_creates_public_share_and_stores_pointer(tmp_path, monkeypatch):
     assert h.pointer()["token"] == "abc123"
 
 
+def test_deploy_passes_custom_token_to_create(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "create": {
+                "token": "my-name",
+                "url": "https://serve.example/my-name",
+                "status": "active",
+            }
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "my-name"
+    # A user-chosen name is recorded as `named` so the modal shows "custom name".
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
+
+    (call,) = h.calls()
+    assert call["argv"][0] == "share" and call["argv"][1] == "create"
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_default_token_is_not_named(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    # No name chosen -> the opaque default -> named is False.
+    assert resp.json()["named"] is False
+
+
+def test_named_flag_carried_forward_on_repoint(tmp_path, monkeypatch):
+    # A named mount stays "named" across a token-reuse redeploy: repoint keeps
+    # the token, so its provenance must not silently flip to unguessable.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+    assert h.pointer()["named"] is True
+
+    h.set_scenario(
+        {
+            "list": [{"token": "my-name", "status": "active"}],
+            "repoint": {"token": "my-name", "url": "https://serve.example/my-name"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["named"] is True
+    assert h.pointer()["named"] is True
+
+
+def test_force_new_to_unguessable_clears_named(tmp_path, monkeypatch):
+    # "Change link" from a custom name back to the unguessable default: force_new
+    # mints a fresh opaque token, and the record's `named` must follow it to
+    # False (not inherit the superseded mount's True).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "my-name"},
+        headers=FUSED,
+    )
+
+    h.set_scenario(
+        {
+            "create": {"token": "xyz789", "url": "https://serve.example/xyz789", "status": "active"},
+            "revoke": {"token": "my-name", "status": "revoked"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "force_new": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "xyz789"
+    assert resp.json()["named"] is False
+    assert h.pointer()["named"] is False
+
+
+def test_deploy_trims_token_before_the_cli(tmp_path, monkeypatch):
+    # Surrounding whitespace must be stripped at the API boundary, not forwarded
+    # to `share create --token` (where it disagrees with the client's TOKEN_RE
+    # and the CLI's own token rules).
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "my-name", "url": "https://serve.example/my-name", "status": "active"}}
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "  my-name  "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--token", "my-name"]
+
+
+def test_deploy_rejects_blank_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "   "},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "token" in resp.json()["error"]
+    assert h.calls() == []
+
+
+def test_deploy_rejects_non_string_token(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": 123},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert h.calls() == []
+
+
+def test_deploy_custom_token_ignored_on_repoint(tmp_path, monkeypatch):
+    # A redeploy of an already-active mount repoints the EXISTING token — the
+    # fused CLI's `share repoint` takes no --token argument at all, so a token
+    # supplied on a redeploy must never reach that call.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "url": "https://serve.example/abc123"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "ignored-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][1] == "repoint"
+    assert "--token" not in repoint_call["argv"]
+    assert "ignored-name" not in repoint_call["argv"]
+
+
 def test_deploy_bundles_included_file_and_persists_selection(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     (tmp_path / "data.csv").write_text("a,b\n1,2\n", encoding="utf-8")
@@ -460,11 +624,11 @@ def test_deploy_rejects_invalid_cache_max_age(tmp_path, monkeypatch):
     assert h.calls() == []  # rejected before any CLI shellout
 
 
-def test_repoint_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
-    # A managed Fused mount's cache_settings are fixed at `create` (021 §3.1) —
-    # `repoint` carries no cache fields at all, so a redeploy requesting a
-    # DIFFERENT duration must not claim it took effect: the record has to keep
-    # reporting the value that's actually live.
+def test_repoint_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
+    # 021 §3.1, amended: a managed Fused mount's cache_settings is changeable in
+    # place via repoint, not just fixed at create — a redeploy requesting a
+    # DIFFERENT duration on the same token now actually takes effect, and the
+    # record reports the value that's actually live.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -487,16 +651,17 @@ def test_repoint_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeyp
         headers=FUSED,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["cache_max_age"] == "5m"
-    assert h.pointer()["cache_max_age"] == "5m"
+    assert resp.json()["cache_max_age"] == "1h"
+    assert h.pointer()["cache_max_age"] == "1h"
     repoint_call = h.calls()[-1]
     assert repoint_call["argv"][1] == "repoint"
-    assert "--cache-max-age" not in repoint_call["argv"]
+    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
-def test_recreate_revive_on_fused_backend_keeps_previous_cache_max_age(tmp_path, monkeypatch):
-    # Same guarantee on the revoked-tombstone revive path (recreate --same-token
-    # + repoint): neither call can change cache_settings on a managed env.
+def test_recreate_revive_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
+    # Same on the revoked-tombstone revive path (recreate --same-token + repoint):
+    # the follow-up repoint now carries --cache-max-age too, so reviving with a
+    # different duration actually changes it, same as the plain-repoint case above.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -520,15 +685,17 @@ def test_recreate_revive_on_fused_backend_keeps_previous_cache_max_age(tmp_path,
         headers=FUSED,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["cache_max_age"] == "5m"
+    assert resp.json()["cache_max_age"] == "1h"
     verbs_and_flags = [(c["argv"][1], "--cache-max-age" in c["argv"]) for c in h.calls()[-2:]]
-    assert verbs_and_flags == [("recreate", False), ("repoint", False)]
+    assert verbs_and_flags == [("recreate", False), ("repoint", True)]
 
 
 def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
-    # AWS is unaffected by the fused-backend carve-out above: build_html_artifact
-    # re-reads the bundle's own manifest on every repoint, so a redeploy's request
-    # really does take effect there.
+    # AWS applies a redeploy's cache_max_age two ways: build_html_artifact re-reads
+    # the bundle's own manifest on every repoint, AND deploy_page now also passes
+    # --cache-max-age explicitly on the repoint call (same as the managed backend) —
+    # a no-op-equivalent restatement of the same value there, but it means a
+    # redeploy's request really does take effect either way.
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario({"create": {"token": "abc123", "status": "active"}})
     h.client.post(
@@ -550,12 +717,15 @@ def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypa
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["cache_max_age"] == "1h"
+    repoint_call = h.calls()[-1]
+    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
 
 
 def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, monkeypatch):
-    # The only way to actually change caching on a managed Fused mount: skip token
-    # reuse and mint a brand-new mount via `create`, then take the OLD mount down so
-    # the page isn't left serving at two URLs the pointer can't both track.
+    # force_new skips token reuse and mints a brand-new mount via `create`, then
+    # takes the OLD mount down so the page isn't left serving at two URLs the
+    # pointer can't both track — used when the user wants a fresh URL outright,
+    # not merely to change caching (repoint can do that in place now).
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(
         {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
@@ -770,6 +940,35 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     # The fresh-create fallback also carries the explicit CLI flag (not just the
     # export manifest), same as the first-deploy path.
     assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
+
+
+def test_redeploy_absent_mount_honors_a_custom_token(tmp_path, monkeypatch):
+    # The "absent" branch (a distinct create call site from the very-first-deploy
+    # one) must also thread a chosen link name through to `share create`.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    h.set_scenario(
+        {
+            "list": [],
+            "create": {
+                "token": "chosen-name",
+                "url": "https://serve.example/chosen-name",
+                "status": "active",
+            },
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "token": "chosen-name"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "chosen-name"
+    assert h.calls()[-1]["argv"][-2:] == ["--token", "chosen-name"]
 
 
 def test_fresh_create_with_new_token_never_keeps_the_old_url(tmp_path, monkeypatch):
@@ -1185,3 +1384,107 @@ def test_shares_cli_failure_is_400(tmp_path, monkeypatch):
     h.set_scenario({})
     resp = h.client.get("/api/deploy/shares", params={"env": "cloud"})
     assert resp.status_code == 400
+
+
+# -- errors (`fused share errors`) --------------------------------------------
+
+
+def test_errors_list_passes_filters_and_returns_summaries(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "errors": [
+                {
+                    "err_id": "e1",
+                    "occurred_at": "2026-07-17T12:00:00Z",
+                    "token": "tok",
+                    "entrypoint": "sine",
+                    "kind": "user-code",
+                    "error": "ZeroDivisionError: division by zero",
+                    "truncated": False,
+                }
+            ]
+        }
+    )
+    resp = h.client.get(
+        "/api/deploy/errors",
+        params={
+            "env": "cloud",
+            "token": "tok",
+            "limit": 5,
+            "since": "2h",
+            "kind": "user-code",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token"] == "tok"
+    assert [e["err_id"] for e in body["errors"]] == ["e1"]
+    # The filters travel through to the CLI verbatim (it parses the sugar).
+    (call,) = h.calls()
+    assert call["argv"][:2] == ["share", "errors"]
+    # The mount token is passed after `--` so a '-'-leading token can't be
+    # mis-parsed as an option (see test_errors_dashed_token_is_not_parsed).
+    assert call["argv"][-2:] == ["--", "tok"]
+    assert call["env"] == "cloud"
+    assert call["argv"][call["argv"].index("--limit") + 1] == "5"
+    assert call["argv"][call["argv"].index("--since") + 1] == "2h"
+    assert call["argv"][call["argv"].index("--kind") + 1] == "user-code"
+
+
+def test_error_detail_returns_full_record(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    record = {
+        "version": 1,
+        "err_id": "e1",
+        "occurred_at": "2026-07-17T12:00:00Z",
+        "env": "prod",
+        "token": "tok",
+        "kind": "user-code",
+        "error": "Traceback (most recent call last): ...",
+        "stdout_tail": "hi",
+        "truncated": False,
+    }
+    h.set_scenario({"errors": record})
+    resp = h.client.get(
+        "/api/deploy/error", params={"env": "cloud", "token": "tok", "err_id": "e1"}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["record"]["error"].startswith("Traceback")
+    # A single-record fetch passes TOKEN ERR_ID (after `--`) and no list filters.
+    (call,) = h.calls()
+    assert call["argv"] == ["share", "errors", "--", "tok", "e1"]
+
+
+def test_errors_dashed_token_is_not_parsed_as_option(tmp_path, monkeypatch):
+    # A token beginning with '-' (e.g. "--env") must be passed as a positional,
+    # never parsed by click as a flag that would flip the per-mount list into an
+    # env-wide sweep. The `--` separator guarantees the token stays positional.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"errors": []})
+    resp = h.client.get("/api/deploy/errors", params={"env": "cloud", "token": "--env"})
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    assert call["argv"][-2:] == ["--", "--env"]
+
+
+def test_error_detail_requires_err_id(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.get("/api/deploy/error", params={"env": "cloud", "token": "tok"})
+    assert resp.status_code == 422  # err_id is a required query param
+
+
+def test_errors_old_cli_gives_upgrade_hint(tmp_path, monkeypatch):
+    # A fused CLI predating `share errors` fails with click's "No such command";
+    # the server translates that into an actionable upgrade hint.
+    h = _harness(tmp_path, monkeypatch)
+
+    def _boom(env_name, args, timeout=60.0):
+        raise deploy_mod.DeployError(
+            "fused share errors failed: Error: No such command 'errors'."
+        )
+
+    monkeypatch.setattr(deploy_mod, "_run_share", _boom)
+    with pytest.raises(deploy_mod.DeployError) as ei:
+        deploy_mod.list_errors("cloud", "tok")
+    assert "too old" in str(ei.value)

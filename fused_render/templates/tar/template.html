@@ -126,6 +126,33 @@
   }
   .status-message { padding: 24px 16px; color: var(--fg-muted); }
   .status-message.error { color: var(--error); }
+
+  /* Skeleton placeholders: listing rows while the archive is read, and a
+     single pane while a member's own preview is loading. Shimmer sweeps the
+     same bg/bg-alt tones the real UI already uses. */
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-bar, .skel-icon {
+    display: inline-block;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, #2a2d34 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    border-radius: 3px;
+    vertical-align: middle;
+  }
+  .skel-bar { height: 0.85em; }
+  .skel-icon { width: 14px; height: 14px; border-radius: 4px; flex: 0 0 auto; }
+  tr.skel-row { cursor: default; }
+  tr.skel-row:hover { background: transparent; }
+  .preview-skel-wrap { height: 100%; padding: 12px 16px; box-sizing: border-box; }
+  .preview-skel {
+    width: 100%; height: 100%; border-radius: 8px;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, #2a2d34 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
 </style>
 </head>
 <body>
@@ -134,7 +161,7 @@
     <div class="actions" id="actions"></div>
   </div>
   <div id="notice"></div>
-  <div id="body"><div class="status-message">Loading…</div></div>
+  <div id="body"></div>
 
   <script>
     const FILE_ICON = "\u{1F4C4}";  // 📄
@@ -269,6 +296,25 @@
       actionsEl.appendChild(all);
     }
 
+    // Shimmering placeholder rows shaped like the real listing table (icon +
+    // name bar, size bar, mtime bar) so the header/columns don't jump into
+    // place once the archive's entries land.
+    function renderSkeletonListing() {
+      const widths = [
+        [55, 30, 45], [70, 25, 55], [45, 35, 40],
+        [65, 20, 50], [50, 40, 60], [75, 28, 35],
+      ];
+      const head = `<thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>`;
+      const rows = widths.map(([nameW, sizeW, mtimeW]) => (
+        `<tr class="skel-row">` +
+        `<td class="name"><span class="skel-icon"></span><span class="skel-bar" style="width:${nameW}%"></span></td>` +
+        `<td class="size"><span class="skel-bar" style="width:${sizeW}%"></span></td>` +
+        `<td class="mtime"><span class="skel-bar" style="width:${mtimeW}%"></span></td>` +
+        `</tr>`
+      )).join("");
+      bodyEl.innerHTML = `<table class="listing-table">${head}<tbody>${rows}</tbody></table>`;
+    }
+
     function th(label, key) {
       const sorted = sortKey === key;
       const arrow = sorted ? (sortOrder === "asc" ? " ▲" : " ▼") : "";
@@ -326,7 +372,7 @@
       clearNotice();
       renderCrumbs();
       renderActions();
-      bodyEl.innerHTML = `<div class="status-message">Loading preview…</div>`;
+      bodyEl.innerHTML = `<div class="preview-skel-wrap"><div class="preview-skel"></div></div>`;
       const file = fused.params.get("_file");
       try {
         const res = await fused.runPython("./reader.py", { file, action: "preview", entry }, { key: null });
@@ -389,6 +435,7 @@
         bodyEl.innerHTML = `<div class="status-message error">No file selected (missing _file param).</div>`;
         return;
       }
+      renderSkeletonListing();
       try {
         const data = await fused.runPython("./reader.py", { file, action: "list" }, { key: null });
         ENTRIES = data.entries || [];

@@ -85,15 +85,35 @@
     border-top-color: #8ab4ff; border-radius: 50%; animation: sp .8s linear infinite;
     vertical-align: -2px; }
   @keyframes sp { to { transform: rotate(360deg); } }
+
+  /* Loading skeleton for a file in flight: shimmering stand-ins shaped like
+     the topbar chips + export card that appear once the parse lands, plus a
+     slim indeterminate bar across the very top of the viewport (the map
+     itself renders its own basemap immediately, so the bar is the only cue
+     that vector data is still on its way). */
+  .skel-chip, .sk-line { background: linear-gradient(90deg, #1b1d21 25%, #2f333a 50%, #1b1d21 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite; border-radius: 999px; }
+  .skel-chip { display: inline-block; height: 19px; vertical-align: middle; }
+  .sk-line { display: block; border-radius: 4px; margin-bottom: 8px; }
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  #loadbar { position: absolute; top: 0; left: 0; right: 0; height: 2px; overflow: hidden;
+    background: transparent; z-index: 12; pointer-events: none; }
+  #loadbar::before { content: ""; display: block; height: 100%; width: 35%; border-radius: 2px;
+    background: linear-gradient(90deg, transparent, #4fc3f7, transparent); transform: translateX(-120%); }
+  #loadbar.active::before { animation: loadbar-slide 1.1s ease-in-out infinite; }
+  @keyframes loadbar-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="loadbar"></div>
 
 <div id="topbar" class="panel">
   <span class="title">Geometry editor</span>
   <span class="chip" id="fileChip" style="display:none"></span>
   <span class="chip" id="statChip" style="display:none"></span>
+  <span class="skel-chip" id="fileChipSkel" style="display:none;width:130px"></span>
+  <span class="skel-chip" id="statChipSkel" style="display:none;width:190px"></span>
   <span id="dirty"></span>
   <span class="sep"></span>
   <button id="mEdit" class="on" title="Select features, drag vertices">Edit</button>
@@ -108,6 +128,15 @@
 </div>
 
 <div id="sidePanel">
+  <div class="card" id="sideSkel" style="display:none">
+    <h2>Export GeoParquet</h2>
+    <div class="sk-line" style="height:26px"></div>
+    <div style="display:flex;gap:10px;margin-bottom:10px">
+      <div class="sk-line" style="height:13px;width:105px;margin-bottom:0"></div>
+      <div class="sk-line" style="height:13px;width:85px;margin-bottom:0"></div>
+    </div>
+    <div class="sk-line" style="height:28px;margin-bottom:0"></div>
+  </div>
   <div class="card" id="exportCard" style="display:none">
     <h2>Export GeoParquet</h2>
     <input type="text" id="outPath" spellcheck="false">
@@ -552,20 +581,33 @@ function renderSelCard() {
 const py = params => fused.runPython("./geometry_io.py", params, { key: null });
 const errMsg = e => (e && e.message) ? e.message : String(e);
 
+function showLoadSkeleton(on) {
+  $("loadbar").classList.toggle("active", on);
+  $("fileChipSkel").style.display = on ? "inline-block" : "none";
+  $("statChipSkel").style.display = on ? "inline-block" : "none";
+  $("sideSkel").style.display = on ? "block" : "none";
+}
+
 async function loadFile(path) {
-  toast('<span class="spin"></span>&nbsp; loading ' + esc(path.split("/").pop()) + "&hellip;", 60000);
+  // Skeleton stands in for the topbar chips + export card that appear once
+  // the parse lands; the "open a file" prompt is misleading once a path is
+  // already known to be loading, so it stays hidden until/unless load fails.
+  $("empty").style.display = "none";
+  $("emptyErr").style.display = "none";
+  showLoadSkeleton(true);
   try {
     const r = await py({ action: "load", path });
     META = r.meta; FC = r.fc;
     reindex();
     sel = -1; undoStack = []; redoStack = []; editCount = 0; drag = null;
     setMode("edit");
+    showLoadSkeleton(false);
     refreshAll(); syncButtons(); renderLayerUI();
     const [w, s, e, n] = META.bounds;
     map.fitBounds([[w, s], [e, n]], { padding: 70, duration: 800, maxZoom: 17 });
     toast(`Loaded ${META.count} feature${META.count > 1 ? "s" : ""}`);
   } catch (err) {
-    toast("", 1);
+    showLoadSkeleton(false);
     const ee = $("emptyErr");
     $("empty").style.display = "flex";
     ee.style.display = "block";

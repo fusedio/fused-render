@@ -34,7 +34,8 @@ body {
   height: 100vh;
 }
 
-/* Sidebar */
+/* Sidebar — the 232px basis is only the pre-hydration default; the component
+   overrides flex-basis/width inline from persisted state (drag to resize). */
 #sidebar {
   flex: 0 0 232px;
   width: 232px;
@@ -43,6 +44,109 @@ body {
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+}
+
+/* Drag handle riding the sidebar's right border. Fixed-positioned (the
+   component sets `left` inline) so the sidebar's own overflow-y scroll can't
+   clip or move it; a 6px hit area around the 1px border line. */
+.sidebar-resize-handle {
+  position: fixed;
+  top: 0;
+  width: 6px;
+  height: 100vh;
+  cursor: col-resize;
+  /* Touch input: without this the browser claims the drag as a pan/scroll
+     and fires pointercancel mid-resize, despite pointer capture. */
+  touch-action: none;
+  z-index: 10;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.resizing {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* While a drag is captured, keep the cursor stable and text unselected
+   everywhere the pointer sweeps. */
+body:has(.sidebar-resize-handle.resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapse chevron in the brand row, pushed to the right edge. */
+.sidebar-collapse-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Collapsed sidebar = a slim full-height strip that expands it back.
+   overflow: visible (not the expanded state's auto) so the bubble can
+   protrude past the strip into the content area. */
+#sidebar.sidebar-collapsed {
+  flex: 0 0 10px;
+  width: 10px;
+  overflow: visible;
+  /* The bubble overhangs #content; lift the whole strip above it so a
+     stacking context inside #content can't paint over the bubble. */
+  position: relative;
+  z-index: 10;
+}
+
+.sidebar-expand-strip {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sidebar-expand-strip:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Circular expand bubble, vertically centered, half overlapping the strip's
+   right edge (classic collapsed-panel pill). Purely visual — the strip is
+   the button; hover/focus styling keys off the strip's state. */
+.sidebar-expand-bubble {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  color: var(--fg-muted);
+  /* Protrudes over #content — stay above its content. */
+  z-index: 10;
+}
+
+.sidebar-expand-strip:hover .sidebar-expand-bubble {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--fg);
+}
+
+.sidebar-expand-strip:focus-visible {
+  outline: none;
+}
+
+.sidebar-expand-strip:focus-visible .sidebar-expand-bubble {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
 }
 
 /* Phones: give the whole width to the rendered view */
@@ -67,6 +171,17 @@ body {
   color: var(--accent);
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+}
+
+/* Title truncates when the sidebar is dragged narrow (min 180px) so the
+   brand row never overflows; logo, version and collapse button keep their
+   size and the version stays visible beside the ellipsis. */
+.sidebar-brand .brand-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Package version after the name — smaller and muted grey. */
@@ -74,6 +189,7 @@ body {
   font-size: 10.5px;
   font-weight: 500;
   color: var(--fg-muted);
+  flex-shrink: 0;
 }
 
 .sidebar-section {
@@ -210,6 +326,23 @@ body {
 
 .bookmark-row.active .bookmark-glyph {
   color: var(--accent);
+}
+
+/* Missing-file flag (target confirmed gone from disk, server GET-time check):
+   the name keeps its normal color; a small warning glyph sits between the
+   name and the (hover-only) action buttons — always visible, unlike the
+   actions, so a broken bookmark reads at a glance without hovering. */
+.bookmark-missing-badge {
+  flex: 0 0 auto;
+  color: var(--error);
+  font-size: 11px;
+  cursor: help;
+  /* a.bookmark-name::after stretches over the whole row (see below); without
+     its own stacking context this badge would sit under that overlay and
+     never receive the hover/title it needs — same reason .bookmark-glyph
+     carries position+z-index. */
+  position: relative;
+  z-index: 1;
 }
 
 .bookmark-row.dragging {
@@ -368,6 +501,11 @@ a.bookmark-name::after {
 #bookmark-tooltip .tip-none {
   color: var(--fg-muted);
   font-style: italic;
+  margin-top: 6px;
+}
+
+#bookmark-tooltip .tip-missing {
+  color: var(--error);
   margin-top: 6px;
 }
 
@@ -546,6 +684,42 @@ a.bookmark-name::after {
   font-size: 12px;
 }
 
+/* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
+   .panel-crumbs below). flex:1 1 auto makes the strip own the bar's free
+   width — the whitespace right of the last crumb is the click-to-edit target.
+   The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
+   wheel-scrollable strip carries no chrome; the tail is pinned into view from
+   JS on every path change. */
+#breadcrumb .crumbs {
+  flex: 1 1 auto;
+  scrollbar-width: none;
+}
+
+#breadcrumb .crumbs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Click-to-edit / Ctrl+L path field: swaps in for the crumb row. Same
+   monospace as the crumbs, fills the strip, and takes the bar's own
+   background so it reads as the bar turning editable rather than a popped-in
+   widget; a quiet border picks up the accent on focus. */
+#breadcrumb .crumb-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+
+#breadcrumb .crumb-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .path-crumb,
 .panel-crumb {
   color: var(--fg-muted);
@@ -553,6 +727,31 @@ a.bookmark-name::after {
   cursor: pointer;
   padding: 2px 1px;
   border-radius: 3px;
+}
+
+/* GNOME-style compress-then-scroll truncation, main bar only (the panel pane
+   keeps its crumbs untruncated). Crumbs never shrink by default; ones marked
+   .shrink (names longer than 1.5x their floor, Breadcrumb.tsx) may compress
+   under space pressure down to a min-width floor, ellipsizing as they go.
+   The floors are load-bearing twice over: overflow:hidden zeroes a flex
+   item's automatic minimum size (without a floor everything squeezes to
+   slivers), and flex can't shrink below min-width, so once every .shrink
+   crumb hits its floor the strip genuinely overflows and scrolling takes
+   over. The current dir's 4x floor makes the tail compress last; full names
+   stay reachable via the title tooltip. */
+#breadcrumb .path-crumb {
+  flex: 0 0 auto;
+}
+
+#breadcrumb .path-crumb.shrink {
+  flex-shrink: 1;
+  min-width: 7ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#breadcrumb .path-crumb.last.shrink {
+  min-width: 28ch;
 }
 
 .path-crumb.last,
@@ -876,7 +1075,8 @@ table.listing-table .icon {
 
 /* Per-filetype icons (components/FileIcons.tsx): monochrome inline SVGs tinted
    by a muted, desaturated per-category colour that sits calmly on the dark
-   shell — folder brightest, generic file dimmest, never the accent yellow. The
+   shell — folder brightest, generic file dimmest. Only html leans toward the
+   accent yellow: those files launch as apps, so they get to stand out. The
    SVG is a block so it has no inline-baseline gap; the parent .icon span lives
    in a flex row (td.name / .sidebar-item) that vertically centres it. */
 .file-icon {
@@ -888,7 +1088,7 @@ table.listing-table .icon {
 .file-icon--code    { color: #7fb2a6; }
 .file-icon--data    { color: #a898cb; }
 .file-icon--json    { color: #c3a96b; }
-.file-icon--html    { color: #cd9d75; }
+.file-icon--html    { color: #c9d95e; } /* launchable app — leans toward --accent */
 .file-icon--image   { color: #cd93b6; }
 .file-icon--doc     { color: #9aa0a6; }
 .file-icon--media   { color: #d0939b; }
@@ -919,6 +1119,23 @@ table.listing-table td.mtime {
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
+  /* Pin the height to the tallest state (28px mode-switcher button + 10px×2
+     padding + 1px border) so the header can't grow when the loading spinner is
+     replaced by the real switcher on stat resolve — otherwise the name and the
+     whole body below shift down on every navigation. */
+  min-height: 49px;
+}
+
+/* Groups the name with whatever renders right after it (e.g. the directory
+   listing's "Open as app" button, D81's `_listing` header) — min-width:0 so
+   the group (and h1's own ellipsis) can still shrink to make room for
+   .preview-actions on narrow windows. */
+.preview-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .preview-header h1 {
@@ -928,6 +1145,28 @@ table.listing-table td.mtime {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Rendered right after the directory name (D81's `_listing` header) — shown
+   only when the folder holds exactly one HTML file. Same accent tint the old
+   per-row "App" chip used, so the launchable-app language carries over to
+   its replacement. */
+.open-as-app-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid rgba(229, 255, 68, 0.35);
+  border-radius: 6px;
+  background: rgba(229, 255, 68, 0.08);
+  color: #c9d95e;
+  cursor: pointer;
+}
+
+.open-as-app-btn:hover {
+  background: rgba(229, 255, 68, 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .preview-actions {
@@ -992,6 +1231,18 @@ table.listing-table td.mtime {
   background: var(--accent);
   color: #10131a;
   border-color: var(--accent);
+}
+
+/* Loading placeholder in the header actions slot (App.tsx LoadingScaffold):
+   a borderless box the size of one .mode-switcher-btn so the header holds the
+   switcher's height while stat is in flight — no growth/shift when the real
+   switcher lands. */
+.preview-actions .mode-switcher-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
 }
 
 /* Template-mode icon: monochrome SVG tinted via mask-image + currentColor
@@ -1190,6 +1441,40 @@ body.embed .preview-browse-chip {
 
 body.embed .preview-browse-chip:hover {
   color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* Embed counterpart of .open-as-app-btn (embed hides .preview-header, so the
+   header button can't reach it) — opposite corner from .preview-browse-chip
+   so a directory carrying both can show both at once. Same accent tint as
+   the header button / the old per-row "App" chip. */
+.open-as-app-chip {
+  display: none;
+}
+
+body.embed .open-as-app-chip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid rgba(229, 255, 68, 0.45);
+  border-radius: 8px;
+  /* Opaque (unlike .open-as-app-btn's translucent tint) — this one is pinned
+     OVER the listing's search input, and a see-through fill let its
+     placeholder text bleed through underneath. */
+  background: var(--bg-alt);
+  color: #c9d95e;
+  cursor: pointer;
+}
+
+body.embed .open-as-app-chip:hover {
+  color: var(--accent);
   border-color: var(--accent);
 }
 
@@ -1675,6 +1960,118 @@ body.embed .preview-browse-chip:hover {
   color: var(--fg);
 }
 
+/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
+.listing-toast-action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
+.listing-toast-action:hover {
+  border-color: var(--fg-muted);
+}
+
+/* Global toast host (ToastHost): a fixed, bottom-centre stack over any view.
+   Neutralises .listing-toast's own absolute positioning so entries stack —
+   newest at the bottom (column-reverse), nearest the user's eye. */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast-host .listing-toast {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  pointer-events: auto;
+}
+
+/* ---- Server-status banner (bottom-right, backend health) ----------------- */
+/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+   -reconnected variant auto-dismisses. Sits above the listing toast (1000). */
+.server-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1100;
+  max-width: 360px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  animation: server-status-in 0.15s ease-out;
+}
+
+@keyframes server-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.server-status-title {
+  font-weight: 600;
+  color: var(--error);
+  margin-bottom: 4px;
+}
+
+.server-status-body {
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.server-status-retry,
+.server-status-launch {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.server-status-retry:hover,
+.server-status-launch:hover {
+  border-color: var(--fg-muted);
+}
+
+/* The "Start fused-render" fused-render://launch link (D128): an anchor
+   dressed as the sibling button; inline-block so padding/margin apply. */
+.server-status-launch {
+  display: inline-block;
+  margin-right: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.server-status-reconnected {
+  border-color: var(--success);
+  color: var(--fg);
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;
@@ -1924,6 +2321,53 @@ select.field-control:has(option[value=""]:checked) {
 
 .deploy-muted {
   color: var(--fg-muted);
+}
+
+/* Inline hint under the "Link name" input when it fails the token-shape check
+   — a plain color swap, not the bordered .deploy-error card (too heavy for an
+   inline field hint that appears/disappears on every keystroke). */
+.deploy-token-hint.err {
+  color: var(--error);
+}
+
+/* The random-vs-named link picker: a borderless fieldset (the enclosing
+   .deploy-files card already frames it) with a small caption and two stacked
+   radio rows. */
+.deploy-token-modes {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-token-modes > legend {
+  padding: 0;
+  color: var(--fg-muted);
+}
+
+.deploy-token-mode {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.deploy-token-mode input {
+  /* Keep the control aligned with the first text line of a wrapping label. */
+  margin: 0;
+  position: relative;
+  top: 2px;
+  flex: 0 0 auto;
+}
+
+/* The public/no-auth note that sits directly under the Link section — snug it
+   up against that card (overriding the body's 12px gap) so it reads as the
+   section's footnote, not a section of its own. */
+.deploy-about {
+  margin-top: -6px;
+  font-size: 12px;
 }
 
 /* Error card (also rendered by components/ErrorBanner.tsx as .error-banner):
@@ -2287,6 +2731,181 @@ select.field-control:has(option[value=""]:checked) {
   cursor: default;
 }
 
+/* Recent-errors panel (DeploymentErrors) — the owner-only view of a deployed
+   mount's captured failures. Used both in the Deploy modal (below the current
+   card) and expanded under a row on the account Deployments list. */
+.deploy-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.deploy-errors-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.deploy-errors-title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* When expanded under a shares-table row, the panel fills the row and drops the
+   double border (the table cell already has a top border). */
+.deploy-errors-row > td {
+  padding: 0 8px 8px;
+}
+
+.deploy-errors-row .deploy-errors {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+/* Nested under the Deploy modal's collapse toggle (DeployModal.tsx), not a
+   shares-table row: drop the border/radius/padding entirely so the outer
+   .deploy-files box reads as the only border, matching FileSelection's body
+   instead of nesting a second boxed panel inside it. */
+.deploy-files > .deploy-errors {
+  border: none;
+  border-radius: 0;
+  padding: 4px 12px 12px;
+}
+
+.deploy-err-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.deploy-err-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+.deploy-err-row:hover {
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.deploy-err-time {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.deploy-err-kind {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+
+/* user-code is the author's own traceback (actionable); invoke-failure is a
+   platform fault (no detail); bad-result is a contract mistake. */
+.deploy-err-kind.kind-user-code {
+  color: #e0a33e;
+  border-color: #e0a33e;
+}
+
+.deploy-err-kind.kind-invoke-failure {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.deploy-err-entry {
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.deploy-err-msg {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.deploy-err-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 6px 10px;
+}
+
+.deploy-err-cmd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.deploy-err-cmd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.deploy-err-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.deploy-err-field-label {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 2px;
+}
+
+.deploy-err-pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.deploy-err-note {
+  font-size: 11px;
+}
+
 /* Inline text-link button (e.g. the setup panel's "Edit name") — no button
    chrome, accent underline on hover. Scoped under .prefs-section to override
    the generic `.prefs-section button` box styling. */
@@ -2576,18 +3195,18 @@ select.field-control:has(option[value=""]:checked) {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Templates, Preferences, and the tour trigger as three equal columns,
-   each a centered icon over a small muted label. Deliberately understated
-   (D80) — the label just disambiguates the icons. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
   border-top: 1px solid var(--border);
   flex: 0 0 auto;
-  /* Four entries no longer fit one row of the ~220px sidebar without
-     truncating every label — a 2×2 grid keeps the labels readable. */
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 4px;
 }
 
@@ -2699,12 +3318,57 @@ select.field-control:has(option[value=""]:checked) {
 
 .prefs-page {
   padding: 18px 22px 32px;
-  max-width: 760px;
   display: flex;
   flex-direction: column;
   gap: 24px;
+  /* Full-width scroll container so the scrollbar sits at the window edge, not
+     inset at the 760px content boundary. The content column is capped by the
+     child rule below (previously max-width lived here, which made the narrow
+     760px box itself the scroller — a mid-page scrollbar). */
   overflow-y: auto;
   font-size: 13px;
+}
+
+/* Cap the settings/mounts content column while the scroller stays full-width.
+   Left-aligned (no auto margin), matching the previous look. */
+.prefs-page > * {
+  max-width: 760px;
+  width: 100%;
+}
+
+/* Render preferences / Fused account tabs (D125) — same look as the
+   Templates page's bindings/library tabs. */
+.prefs-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-tab:hover {
+  color: var(--fg);
+}
+
+.prefs-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
 }
 
 .prefs-section {
@@ -2774,10 +3438,107 @@ select.field-control:has(option[value=""]:checked) {
   flex-wrap: wrap;
 }
 
-/* rclone-not-found callout — a full-bordered card (no side stripe). */
+/* Paste-a-link fast path above the manual fields: a full-width input that
+   parses an S3/GCS URL and auto-fills Name/Remote/Path below. */
+.mount-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mount-paste :where(input, select) {
+  width: 100%;
+}
+
+.mount-paste-hint {
+  margin: 0;
+  font-size: 0.8em;
+}
+
+.mount-paste-hint.warn {
+  color: var(--warning);
+}
+
+/* Page header — title + one-line intro on the left, global actions on the
+   right. Wraps on a narrow pane so the action drops below the title. */
+.mounts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mounts-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.mounts-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  max-width: 54ch;
+}
+
+.mounts-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Refresh glyph in the Restart button — sized independently of the label. */
+.mounts-restart-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Callout card — the rclone-not-found notice and the recovery prompt share
+   one chassis; `.warn` tints it for the "needs a restart" case. */
+.mount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.mount-callout.warn {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg-alt));
+}
+
 .mount-callout-title {
-  font-weight: 700;
-  margin-bottom: 4px;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Normal block flow (NOT flex) so the not-found callout's inline text + <code>
+   chips + link wrap as one paragraph; flex-column would stack each inline
+   child on its own line. The recovery callout's multiple <p> lines get their
+   own spacing via the adjacent-sibling margin below. */
+.mount-callout-body {
+  color: var(--fg-muted);
+  font-size: 0.9em;
+  line-height: 1.5;
+}
+
+.mount-callout-body p {
+  margin: 0;
+}
+
+.mount-callout-body p + p {
+  margin-top: 3px;
+}
+
+.mount-callout-body code {
+  white-space: nowrap;
 }
 
 /* Mount cards — one bordered card per mounted/available mount. */
@@ -2795,12 +3556,66 @@ select.field-control:has(option[value=""]:checked) {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-alt);
+  transition: border-color 0.12s ease;
+}
+
+.mount-card:not(.mount-card--skeleton):hover {
+  border-color: var(--fg-muted);
+}
+
+/* Loading placeholder rows shown while getMounts() is in flight — a shimmer
+   sweep over an empty card, so the list area reserves its space instead of
+   the page jumping when data lands. */
+.mount-card--skeleton {
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mount-card--skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.04),
+    transparent
+  );
+  animation: mount-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes mount-shimmer {
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .mount-card-main {
   display: flex;
   align-items: center;
   gap: 12px;
+  /* Wrap on a narrow pane: the name block (flex:1) keeps the first row and the
+     action buttons drop to a second row rather than crushing the name. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+/* The name/remote block is the flexible column; never let it shrink to zero
+   (which would collapse the ellipsised remote spec to nothing). */
+.mount-card-main > .mount-card-info {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* Keep the action buttons together and pushed to the row's end; on wrap they
+   ride to the next line as a group. */
+.mount-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
 }
 
 .mount-card button {
@@ -2917,6 +3732,36 @@ select.field-control:has(option[value=""]:checked) {
 }
 .mount-link:hover {
   color: var(--fg);
+}
+
+/* Compact layout for narrow panes: tighten page padding, shrink the title, and
+   let the header action span the full width (so it doesn't get squeezed next to
+   a wrapping title). The mount-card / header flex-wrap rules handle the
+   in-between widths; this is the small-end polish. */
+@media (max-width: 560px) {
+  .prefs-page {
+    padding: 14px 14px 24px;
+    gap: 18px;
+  }
+
+  .mounts-title {
+    font-size: 16px;
+  }
+
+  .mounts-actions {
+    width: 100%;
+  }
+
+  .mounts-actions .mounts-restart {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* On a broken mount the Open/Reconnect + delete row wraps below the name;
+     stretch it full-width so the buttons aren't cramped against the edge. */
+  .mount-card-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .prefs-radio {

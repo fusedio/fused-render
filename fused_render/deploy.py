@@ -37,10 +37,13 @@ child process, exactly the pattern the flow app uses for project deploys
     and the share list endpoint joins mounts back to local pages via the
     pointer store.
 
-Deploys are **public share links** (opaque, unguessable capability tokens —
-`share create --public` with no --token): per spec/serve/fused-render.md,
-authed mounts can't serve a hosted page's asset GETs yet, so public is the one
-posture that works fully today.
+Deploys are **public share links** (`share create --public`): per
+spec/serve/fused-render.md, authed mounts can't serve a hosted page's asset
+GETs yet, so public is the one posture that works fully today. The token
+itself defaults to an opaque, unguessable one (no --token), but the Deploy
+dialog's "Link name" field lets the user pass an explicit --token instead —
+a deliberately public, guessable URL (fused's own gate: --public + a chosen
+--token is allowed, unlike --public + an auth gate).
 
 No import of server.py (server imports this router — keep it acyclic); the
 X-Fused guard is duplicated locally like shell/bookmarks.py does.
@@ -137,7 +140,7 @@ def _now_iso() -> str:
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post7-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl"
 )
 # The wheel's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
@@ -395,17 +398,12 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 cache_max_age: str, fallback: dict | None) -> dict:
-    # `cache_max_age` here must be the setting actually now in effect on the live
-    # mount — NOT necessarily what the caller requested. On a managed Fused env, a
-    # repoint/recreate-revive reuses the existing mount's `cache_settings` verbatim
-    # (fixed at first `create`, `application` repo spec 021 §3.1); the CLI already
-    # withholds `--cache-max-age` on those calls (see deploy_page) precisely because
-    # sending it would either be ignored or (on `repoint`) rejected outright. The
-    # caller (deploy_page) resolves the effective value before calling this, so a
-    # reused-token redeploy that requested a different duration still shows the
-    # duration that is really running — the deployment card must never claim a
-    # setting the mount doesn't have.
+                 cache_max_age: str, named: bool, fallback: dict | None) -> dict:
+    # `cache_max_age` here is simply what the caller requested this deploy — every
+    # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
+    # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
+    # cache_settings is changeable in place via repoint, not just fixed at first
+    # create), so the record's stored value and the live mount agree on every path.
     token = raw.get("token") or raw.get("id") or (fallback or {}).get("token")
     if not isinstance(token, str) or not token:
         raise DeployError("the fused CLI did not return a mount token")
@@ -437,6 +435,13 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
         # "preserve on omit" for this — every deploy is an explicit, full statement).
         "cache_max_age": cache_max_age,
+        # Whether this mount's token is a user-chosen name (a deliberately
+        # guessable public URL) vs the default crypto-random opaque one. Set at
+        # the fresh-create that minted the token and carried forward unchanged
+        # on every token-reuse redeploy (repoint/recreate keep the token, so
+        # they keep its provenance) — the modal shows "custom name" vs
+        # "unguessable" from this without re-deriving it from the token string.
+        "named": named,
         "updated_at": _now_iso(),
     }
 
@@ -492,6 +497,7 @@ def deploy_page(
     exclude: list[str] | None = None,
     cache_max_age: str = "0s",
     force_new: bool = False,
+    custom_token: str | None = None,
 ) -> dict:
     """Export `page` to a temp bundle and publish it on `env_name`; returns the
     stored deployment record (token, URL when the backend returned one).
@@ -503,31 +509,28 @@ def deploy_page(
     `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
     dialog's caching choice: how long a page's result may be served from cache
     instead of re-executed. It rides the export bundle's own manifest
-    (`export.export_page`) AND is passed explicitly as `share create
-    --cache-max-age` — the two backends read it from different places (`fused`
-    repo's spec/serve/fused-render.md § Caching): an AWS environment's
-    `build_html_artifact` reads the manifest field (so either source works,
-    including on a later `repoint`); a managed Fused environment reads it only
-    on `create`, as its own mount-level `cache_settings` field (`application`
-    repo spec `021` §3.1), wholly independent of the bundle. On a managed
-    environment `cache_settings` is fixed for the life of a token — `repoint`
-    carries no cache fields at all (the control plane rejects one), and a
-    revoked-token revive (`recreate --same-token`) preserves the existing
-    setting verbatim — so a redeploy that reuses the token can request a
-    different `cache_max_age` all it wants, it never takes effect. This
-    function does not pretend otherwise: on that reuse path the stored record
-    keeps reporting the setting that is actually live, not the one requested
-    (see `_record_from`). `force_new=True` is the only way to actually change
-    it on a managed environment: it **replaces** the deployment — mints a fresh
-    `share create` (a new token, new URL) with the requested `cache_max_age`,
-    repoints this page's pointer to it, then **best-effort revokes the old
-    mount** so the page is never left with two live URLs. The revoke is
-    deliberately last (after the new mount is live) so a create failure never
-    takes the page down, and best-effort (a revoke failure doesn't fail the
-    deploy — the new URL is live and correct; the superseded mount lingers and
-    is revocable from the Fused account page's deployments list). Because the
-    pointer now tracks the new mount, the modal's Revoke button targets the new
-    URL, as expected — there is no orphaned URL the user must chase separately.
+    (`export.export_page`) AND is passed explicitly as `--cache-max-age` on
+    every `share create`/`repoint` call — the two backends read it from
+    different places (`fused` repo's spec/serve/fused-render.md § Caching): an
+    AWS environment's `build_html_artifact` reads the manifest field (so either
+    source works, including on a later `repoint`); a managed Fused environment
+    reads it only from the explicit flag, as its own mount-level
+    `cache_settings` field (`application` repo spec `021` §3.1), wholly
+    independent of the bundle. `cache_settings` is no longer pinned for the
+    life of a token — `repoint` (and a revoked-token revive's follow-up
+    `repoint`) now carries `--cache-max-age` too, so a redeploy that reuses the
+    token applies whatever `cache_max_age` this call requested, same as a fresh
+    `create`. `force_new=True` still replaces the deployment outright — mints a
+    fresh `share create` (a new token, new URL) with the requested
+    `cache_max_age`, repoints this page's pointer to it, then **best-effort
+    revokes the old mount** so the page is never left with two live URLs. The
+    revoke is deliberately last (after the new mount is live) so a create
+    failure never takes the page down, and best-effort (a revoke failure
+    doesn't fail the deploy — the new URL is live and correct; the superseded
+    mount lingers and is revocable from the Fused account page's deployments
+    list). Because the pointer now tracks the new mount, the modal's Revoke
+    button targets the new URL, as expected — there is no orphaned URL the user
+    must chase separately.
 
     First deploy (or a pointer on a different env, or `force_new=True`):
     `share create --public` — a fresh opaque capability URL. Otherwise, redeploy
@@ -535,6 +538,17 @@ def deploy_page(
     revoked tombstone -> `share recreate --same-token` then repoint (same URL
     comes back); token absent from `share list` entirely -> fresh create
     (nothing left to revive).
+
+    `custom_token`, when given, rides along as `share create`'s `--token` on
+    every branch above that actually mints a FRESH mount (first deploy, a
+    different env, or an absent mount) — it picks the URL's token instead of
+    the default crypto-random opaque one (a deliberately public, guessable
+    link — `fused`'s own `share create --public --token` gate, spec/serve/
+    share-links.md §2). It is ignored on the two branches that redeploy an
+    EXISTING mount (`repoint`, `recreate --same-token`): neither takes a token
+    argument, because both keep the mount's original token, named or not —
+    there is nothing to apply a new choice to. An already-taken or malformed
+    name surfaces as the fused CLI's own error (via `_run_share`/DeployError).
     """
     include = include or []
     exclude = exclude or []
@@ -591,35 +605,36 @@ def deploy_page(
             if force_new and pointer and pointer.get("env") == env_name
             else None
         )
-        # What the mount will ACTUALLY be caching after this call — defaults to
-        # the requested value (true for AWS always, and for fused on any branch
-        # that runs `create`); overridden below on a fused-backend token-reuse
-        # branch, where the request never reaches the control plane.
-        effective_cache_max_age = cache_max_age
-
+        # Token provenance for the stored record: a fresh create's is set by
+        # whether a name was chosen this call; a token-reuse redeploy inherits
+        # the existing record's (repoint/recreate keep the token, so its
+        # named-ness is unchanged). Old records predating this field read as
+        # False (unguessable) — the token can't be reclassified retroactively.
+        named = bool(same_env.get("named")) if same_env else False
         if not token:
-            raw = _run_share(
-                env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-            )
+            named = bool(custom_token)
+            create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+            if custom_token:
+                create_args += ["--token", custom_token]
+            raw = _run_share(env_name, create_args)
         else:
             live = _classify_mount(_list_mounts(env_name), token)
-            # A repoint/recreate-revive (the "active"/"revoked" branches just
-            # below) reuses the mount's own cache_settings on a managed Fused env
-            # (spec 021 §3.1) — the request never reaches the control plane on
-            # those two calls (see docstring), so the record must keep reporting
-            # whatever was already live, not this request. The "absent" branch
-            # below is a genuine fresh `create`, so it's excluded here — the
-            # requested value really does take effect there. AWS is unaffected
-            # either way: build_html_artifact re-reads the bundle's own manifest
-            # on every repoint, so the request DOES take effect there too.
-            if backend == "fused" and live in ("active", "revoked"):
-                effective_cache_max_age = (same_env or {}).get("cache_max_age", "0s")
+            # `--cache-max-age` on every branch below: AWS re-reads the bundle's own
+            # manifest on every repoint anyway (so this is a no-op-equivalent
+            # restatement of the same value), and on a managed Fused env `repoint`
+            # now updates the mount's own `cache_settings` in place too
+            # (`application` repo spec 021 §3.1, amended) — no fresh mount required
+            # to change caching on a redeploy that reuses the token.
             if live == "active":
-                raw = _run_share(env_name, ["repoint", token, bundle])
+                raw = _run_share(
+                    env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                )
             elif live == "revoked":
                 _run_share(env_name, ["recreate", token, "--same-token"])
                 try:
-                    raw = _run_share(env_name, ["repoint", token, bundle])
+                    raw = _run_share(
+                        env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                    )
                 except DeployError as repoint_err:
                     # The revive (recreate) succeeded but the republish
                     # (repoint) failed — so the mount is live again with its
@@ -649,14 +664,16 @@ def deploy_page(
                     )
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
-                raw = _run_share(
-                    env_name, ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-                )
+                named = bool(custom_token)  # a fresh create, like the first-deploy path
+                create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+                if custom_token:
+                    create_args += ["--token", custom_token]
+                raw = _run_share(env_name, create_args)
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=effective_cache_max_age, fallback=same_env,
+            cache_max_age=cache_max_age, named=named, fallback=same_env,
         )
         set_deployment(page, record)
         # force_new replace: the new mount is live and the pointer now tracks it,
@@ -841,6 +858,101 @@ def list_shares(env_name: str) -> dict:
     return {"env": env_name, "mounts": out}
 
 
+# -- error viewing (`fused share errors`; the fused repo's error-reporting) ----
+
+
+def _errors_args(
+    token: str,
+    err_id: str | None,
+    *,
+    limit: int,
+    since: str | None,
+    until: str | None,
+    kind: str | None,
+    entrypoint: str | None,
+) -> list[str]:
+    args = ["errors"]
+    if err_id:
+        # A single-record fetch (`errors TOKEN ERR_ID`) takes no list filters.
+        # `--` terminates option parsing so a browser-supplied token/err_id that
+        # begins with '-' can never be mis-parsed as a flag (e.g. token "--env"
+        # silently flipping the per-mount list into an env-wide sweep).
+        args += ["--", token, err_id]
+        return args
+    args += ["--limit", str(limit)]
+    if since:
+        args += ["--since", since]
+    if until:
+        args += ["--until", until]
+    if kind:
+        args += ["--kind", kind]
+    if entrypoint:
+        args += ["--entrypoint", entrypoint]
+    # `--` before the positional token: see the err_id branch above.
+    args += ["--", token]
+    return args
+
+
+def _run_errors(env_name: str, args: list[str]):
+    try:
+        return _run_share(env_name, args, timeout=LIST_TIMEOUT)
+    except DeployError as e:
+        # A fused CLI predating `share errors` exits with click's "No such
+        # command 'errors'" — translate that to an upgrade hint the user can act
+        # on, rather than surfacing a raw argument-parser error.
+        msg = str(e).lower()
+        if "no such command" in msg and "errors" in msg:
+            raise DeployError(
+                "this fused CLI is too old to read deployed errors — upgrade it "
+                '(pip install -U "fused-render[fused]") so `fused share errors` exists.'
+            ) from None
+        raise
+
+
+def list_errors(
+    env_name: str,
+    token: str,
+    *,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+) -> dict:
+    """Recent captured failures for one deployed mount, newest first
+    (`fused share errors TOKEN`). Each item is a summary (id, time, entrypoint,
+    kind, first error line); fetch the full record with `get_error`. This is the
+    owner-only diagnostic channel — the deployed page's viewers never see it."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token,
+            None,
+            limit=limit,
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        ),
+    )
+    errors = [e for e in parsed if isinstance(e, dict)] if isinstance(parsed, list) else []
+    return {"env": env_name, "token": token, "errors": errors}
+
+
+def get_error(env_name: str, token: str, err_id: str) -> dict:
+    """One full error record by mount + id (`fused share errors TOKEN ERR_ID`) —
+    the traceback, output tails, and params behind a deployed opaque 500."""
+    parsed = _run_errors(
+        env_name,
+        _errors_args(
+            token, err_id, limit=1, since=None, until=None, kind=None, entrypoint=None
+        ),
+    )
+    if not isinstance(parsed, dict):
+        raise DeployError("the fused CLI did not return an error record")
+    return {"env": env_name, "token": token, "record": parsed}
+
+
 # -- routes --------------------------------------------------------------------
 
 
@@ -889,6 +1001,44 @@ def api_deploy_shares(env: str):
         return _error(str(e))
 
 
+# Read-only diagnostics (no X-Fused guard, like /status and /shares): the owner's
+# recent captured failures for a deployed mount, read through `fused share errors`.
+@router.get("/api/deploy/errors")
+def api_deploy_errors(
+    env: str,
+    token: str,
+    limit: int = 20,
+    since: str | None = None,
+    until: str | None = None,
+    kind: str | None = None,
+    entrypoint: str | None = None,
+):
+    if not env or not token:
+        return _error("'env' and 'token' are required")
+    try:
+        return list_errors(
+            env,
+            token,
+            limit=max(1, min(limit, 100)),
+            since=since,
+            until=until,
+            kind=kind,
+            entrypoint=entrypoint,
+        )
+    except DeployError as e:
+        return _error(str(e))
+
+
+@router.get("/api/deploy/error")
+def api_deploy_error(env: str, token: str, err_id: str):
+    if not env or not token or not err_id:
+        return _error("'env', 'token', and 'err_id' are required")
+    try:
+        return get_error(env, token, err_id)
+    except DeployError as e:
+        return _error(str(e))
+
+
 @router.post("/api/deploy")
 def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
@@ -912,9 +1062,29 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     force_new = body.get("force_new", False)
     if not isinstance(force_new, bool):
         return _error("'force_new' must be a boolean")
+    # Optional chosen link name (a fresh-create-only knob — deploy_page ignores
+    # it on a redeploy path that reuses an existing token). Format/uniqueness
+    # aren't re-validated here: the fused CLI's own --token validation and
+    # "already taken" check are the authority, and DeployError passes that
+    # message through verbatim, same as every other CLI-side rejection.
+    custom_token = body.get("token")
+    if custom_token is not None:
+        if not isinstance(custom_token, str) or not custom_token.strip():
+            return _error("'token' must be a non-empty string")
+        # Normalize at the boundary: forward the trimmed value, never the raw
+        # one — otherwise "my-link " passes the non-empty check but reaches
+        # `share create --token` with surrounding whitespace, which disagrees
+        # with the client's TOKEN_RE and the CLI's own token rules.
+        custom_token = custom_token.strip()
     try:
         return deploy_page(
-            page, env_name, include, exclude, cache_max_age=cache_max_age, force_new=force_new
+            page,
+            env_name,
+            include,
+            exclude,
+            cache_max_age=cache_max_age,
+            force_new=force_new,
+            custom_token=custom_token,
         )
     except ExportError as e:
         return _error(str(e))

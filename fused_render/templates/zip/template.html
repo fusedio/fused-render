@@ -126,6 +126,36 @@
   }
   .status-message { padding: 24px 16px; color: var(--fg-muted); }
   .status-message.error { color: var(--error); }
+
+  /* Skeleton loading state: mirrors the real listing table (header + rows) so
+     the pane never goes blank/bare-text while reader.py enumerates the
+     archive. Bars sweep via background-position, no external assets. */
+  .skel-bar {
+    display: inline-block;
+    height: 0.85em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  .skel-icon { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  tr.skel-row { cursor: default; }
+  tr.skel-row:hover { background: transparent; }
+  /* Full-pane placeholder while a member's own preview loads (openPreview) —
+     stands in for whatever eventually lands: iframe, image, metadata card. */
+  .preview-skel {
+    width: 100%;
+    height: 100%;
+    min-height: 240px;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.4s ease-in-out infinite;
+  }
 </style>
 </head>
 <body>
@@ -134,7 +164,19 @@
     <div class="actions" id="actions"></div>
   </div>
   <div id="notice"></div>
-  <div id="body"><div class="status-message">Loading…</div></div>
+  <div id="body">
+    <table class="listing-table skel-table">
+      <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
+      <tbody>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:170px"></span></td><td class="size"><span class="skel-bar" style="width:50px"></span></td><td class="mtime"><span class="skel-bar" style="width:96px"></span></td></tr>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:120px"></span></td><td class="size"><span class="skel-bar" style="width:38px"></span></td><td class="mtime"><span class="skel-bar" style="width:88px"></span></td></tr>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:190px"></span></td><td class="size"><span class="skel-bar" style="width:46px"></span></td><td class="mtime"><span class="skel-bar" style="width:100px"></span></td></tr>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:140px"></span></td><td class="size"><span class="skel-bar" style="width:34px"></span></td><td class="mtime"><span class="skel-bar" style="width:90px"></span></td></tr>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:160px"></span></td><td class="size"><span class="skel-bar" style="width:42px"></span></td><td class="mtime"><span class="skel-bar" style="width:94px"></span></td></tr>
+        <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:110px"></span></td><td class="size"><span class="skel-bar" style="width:48px"></span></td><td class="mtime"><span class="skel-bar" style="width:86px"></span></td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <script>
     const FILE_ICON = "\u{1F4C4}";  // 📄
@@ -326,7 +368,7 @@
       clearNotice();
       renderCrumbs();
       renderActions();
-      bodyEl.innerHTML = `<div class="status-message">Loading preview…</div>`;
+      bodyEl.innerHTML = `<div class="preview-skel"></div>`;
       const file = fused.params.get("_file");
       try {
         const res = await fused.runPython("./reader.py", { file, action: "preview", entry }, { key: null });

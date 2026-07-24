@@ -97,7 +97,9 @@ def _run_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
     from fused_render.server import create_app
+    from fused_render.windows_process import install_no_window_policy
 
+    install_no_window_policy()
     log_file = setup_logging()
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
     # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
@@ -123,7 +125,9 @@ def _run_serve(args: argparse.Namespace) -> None:
         open_url = url.rstrip("/") + landing if landing else url
         threading.Timer(1.0, lambda: webbrowser.open(open_url)).start()
 
-    uvicorn.run(app, host=_HOST, port=port)
+    server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port))
+    app.state.uvicorn_server = server
+    server.run()
 
 
 def main() -> None:

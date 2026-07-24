@@ -34,7 +34,9 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import Body, FastAPI, Header, Request, WebSocket, WebSocketDisconnect
+import httpx
+
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -44,6 +46,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render import __version__
 from fused_render.account import router as account_router
@@ -155,6 +158,21 @@ S3_LIST_MAX_ENTRIES = 1_000
 # API storm. The walk truncates early and the existing `truncated` flag tells
 # the client search was bounded.
 WALK_MAX_ENTRIES_REMOTE = 2_000
+# Depth cap for a mount-backed walk, enforced INSIDE _walk_bfs so the generator
+# stops DESCENDING (stops enqueuing deeper dirs), not just the consumer. The
+# entry-count cap alone doesn't bound a deep, LOW-fan-out tree (e.g. NAIP
+# state/year/quad/tile): each level is one more remote LIST round-trip, and a
+# handful of children per level never trips the entry cap while the walk marches
+# arbitrarily deep. Kept generous enough for a real search (a few levels below a
+# bucket prefix) but finite so a search-as-you-type over a mount root can't kick
+# off an unbounded remote enumeration. Root is depth 0. Module-level so tests
+# can shrink it.
+WALK_MAX_DEPTH_REMOTE = 6
+# Depth cap for a LOCAL walk. Local listings are cheap kernel calls, so this is a
+# generous runaway guard (a symlink-free but pathologically deep tree) rather
+# than a budget — a normal project never approaches it. Module-level so tests can
+# shrink it.
+WALK_MAX_DEPTH_LOCAL = 40
 # Per-directory hard timeout for the rc listing of a mount-backed dir during a
 # walk (see _walk_bfs). Shorter than the interactive fs/list timeout: a walk
 # fans out across many directories, so a single slow/huge one is skipped (the
@@ -409,72 +427,6 @@ def _list_response(path, entries, truncated, cursor):
             "truncated": truncated, "cursor": cursor}
 
 
-def _accumulate_direct_pages(path, cursor, max_entries, *,
-                             page_timeout=None, overall_timeout=None):
-    """Accumulate raw direct-listing entries (Name/Size/IsDir/ModTime dicts, the
-    shared rc/direct shape) for a mount-backed dir on an anonymous S3 or GCS
-    remote, up to `max_entries`. The one page-accumulation loop shared by
-    /api/fs/list and the walk; the backend (S3 ListObjectsV2 vs GCS
-    objects.list) is picked per-path by shell_mounts.direct_list_page.
-
-    Each page requests only min(1000, remaining) keys, so the accumulation never
-    overshoots `max_entries` (a whole extra 1000-key page could otherwise push a
-    LIST_MAX_ENTRIES=10k cap to 10,999) while the returned continuation token
-    still resumes cleanly. `overall_timeout` bounds total wall time across pages
-    (page count is otherwise unbounded); on exhaustion the loop stops mid-listing
-    and returns the last token, a valid resume point.
-
-    Returns (raw_entries, next_token). next_token is non-None exactly when more
-    entries remain (cap hit, budget hit with more pending, or the listing was
-    truncated) — i.e. the listing is partial. Raises shell_mounts.DirectListError
-    only when the FIRST page fails (nothing fetched, so the rc fallback is worth
-    trying); a failure after at least one page returns what was accumulated with
-    the failed page's continuation token as the resume point — on a slow bucket
-    the per-page timeout shrinks toward the budget's deadline and the last
-    page routinely times out, and discarding thousands of fetched entries to
-    re-list via rc (which can't paginate at all) would turn a partial success
-    into a guaranteed 503."""
-    from fused_render.shell import mounts as shell_mounts
-
-    entries: list = []
-    token = cursor or None
-    deadline = None if overall_timeout is None else time.monotonic() + overall_timeout
-    while True:
-        remaining = max_entries - len(entries)
-        if remaining <= 0:
-            break
-        t = page_timeout
-        # The first page always runs with the full page timeout (the progress
-        # guarantee — even a zero budget returns one page). Later pages shrink
-        # to the budget's remainder, and stop before it reaches zero: a
-        # non-positive timeout would hit urlopen as a ValueError, not a
-        # DirectListError (Bugbot), and token is already a valid resume point.
-        if deadline is not None and entries:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                break
-            t = left if t is None else min(t, left)
-        try:
-            page, next_token = shell_mounts.direct_list_page(
-                path, max_keys=min(1000, remaining), continuation=token, timeout=t)
-        except shell_mounts.DirectListError:
-            if not entries:
-                raise
-            logger.warning("direct-listing page for %r failed mid-listing; "
-                           "returning %d accumulated entries as partial",
-                           path, len(entries))
-            return entries, token
-        token = next_token
-        entries.extend(page)
-        if token is None:
-            break
-        # Budget checked AFTER a page so the loop always makes progress; the
-        # token from the last fetched page is a valid resume point.
-        if deadline is not None and time.monotonic() >= deadline:
-            break
-    return entries, token
-
-
 def _list_direct(path, cursor):
     """Accumulate direct-listing pages (S3 ListObjectsV2 / GCS objects.list) for
     a mount-backed dir on an anonymous S3 or GCS remote into sorted /api/fs/list
@@ -482,15 +434,24 @@ def _list_direct(path, cursor):
     deliberately small per-request cap, since this route is resumable (Load more
     pages in the rest). Returns (entries, next_token); a non-None token means the
     listing is partial and resumable. Raises shell_mounts.DirectListError on any
-    page failure so the caller can fall back to the rc route."""
-    raw, token = _accumulate_direct_pages(
-        path, cursor, S3_LIST_MAX_ENTRIES,
-        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S)
+    page failure so the caller can fall back to the rc route.
+
+    The direct→rc ladder itself lives in pathops.list_mount_dir (single-sourced
+    with the fs/walk); here we drive its DIRECT route only (allow_rc_fallback
+    False) so api_fs_list keeps its own rc handling — the warning and the
+    cursor-specific 503 are HTTP response shaping. This route is reached only
+    after the caller has confirmed direct_list_capable(path)."""
+    from fused_render.shell import pathops
+
+    listing = pathops.list_mount_dir(
+        path, cursor=cursor, max_entries=S3_LIST_MAX_ENTRIES,
+        overall_timeout=S3_LIST_OVERALL_TIMEOUT_S, allow_rc_fallback=False)
     # Sorted over what was fetched, not the whole directory — a truncated
     # listing is honestly partial (see the endpoint's sort caveat). Skip any
     # entry missing a Name (a malformed page must not 500 the request).
-    entries = _sort_entries([_mount_list_item(de) for de in raw if de.get("Name")])
-    return entries, token
+    entries = _sort_entries(
+        [_mount_list_item(de) for de in listing.entries if de.get("Name")])
+    return entries, listing.token
 
 
 # Yielded by _walk_bfs when a directory's listing was cut short (direct S3/GCS
@@ -504,7 +465,7 @@ def _list_direct(path, cursor):
 _WALK_TRUNCATED = object()
 
 
-def _walk_bfs(path, include_hidden):
+def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
     """Level-order walk of `path` yielding /api/fs/walk entry dicts.
 
     Breadth-first via a FIFO of pending directories: every entry at depth N is
@@ -524,8 +485,17 @@ def _walk_bfs(path, include_hidden):
     starts a nested repo with its own rules. Verdicts come from one streaming
     check-ignore co-process per repo (_IgnoreOracle), capped at
     WALK_MAX_ORACLES concurrently, all closed when the walk ends.
+
+    `max_entries`/`max_depth` bound the walk from INSIDE the generator, not just
+    the consumer: once `max_entries` entry dicts have been yielded the walk stops
+    (a low-fan-out subtree can't keep the consumer's cap from ever biting), and a
+    directory at `max_depth` is listed but its subdirs are never enqueued (a deep
+    chain can't march on forever below a mount root). Either bound, when it fires,
+    also emits a `_WALK_TRUNCATED` sentinel so the endpoint flags partial
+    coverage. `None` means unbounded on that axis.
     """
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import pathops
 
     oracles = {}  # repo root -> _IgnoreOracle, insertion order = LRU
 
@@ -545,9 +515,11 @@ def _walk_bfs(path, include_hidden):
         # I/O on the mount we're deliberately routing around.
         top = None if shell_mounts.is_mount_backed(path) else _repo_toplevel(path)
         top_rel = "" if top is None else os.path.relpath(path, top).replace(os.sep, "/")
-        queue = deque([(path, "", top, "" if top_rel == "." else top_rel)])
+        # 5th tuple element is depth (root = 0), used only for the max_depth cap.
+        queue = deque([(path, "", top, "" if top_rel == "." else top_rel, 0)])
+        emitted = 0  # entry dicts yielded so far (for the max_entries cap)
         while queue:
-            current, rel_base, repo, repo_rel_base = queue.popleft()
+            current, rel_base, repo, repo_rel_base, depth = queue.popleft()
             # Mount-backed dir: list it via the rcd rc API, off the kernel mount
             # (see rc_list_dir / the mur-sst incident). A dir that times out or
             # can't be listed is skipped and the walk moves on, rather than
@@ -555,36 +527,34 @@ def _walk_bfs(path, include_hidden):
             mount_backed = shell_mounts.is_mount_backed(current)
             if mount_backed:
                 is_root = current == path
-                listed = None
                 dir_cut = False  # this dir's listing stopped short (1.3)
-                # Anonymous S3/GCS dir: page the store's own listing API (fast,
-                # non-timeout-prone) up to the remote walk cap instead of the rc
-                # listing rclone can't paginate. On any failure, fall back to rc
-                # for THIS dir (same skip-on-failure semantics as below).
-                if shell_mounts.direct_list_capable(current):
-                    try:
-                        listed, direct_token = _accumulate_direct_pages(
-                            current, None, WALK_MAX_ENTRIES_REMOTE,
-                            page_timeout=WALK_RC_LIST_TIMEOUT_S,
-                            overall_timeout=WALK_RC_LIST_TIMEOUT_S)
-                        if direct_token is not None:
-                            dir_cut = True  # more keys remained unlisted
-                    except shell_mounts.DirectListError:
-                        listed = None  # fall back to the rc path for this dir
-                if listed is None:
-                    try:
-                        listed = shell_mounts.rc_list_dir(
-                            current, timeout=WALK_RC_LIST_TIMEOUT_S)
-                    except shell_mounts.RcListError:
-                        # The ROOT listing failing is fatal — surface it with the
-                        # same status codes fs/list uses (see api_fs_walk, which
-                        # pulls the first item eagerly to catch this). A non-root
-                        # dir keeps skip-and-continue, but marks the walk
-                        # truncated so the client knows coverage is partial.
-                        if is_root:
-                            raise
-                        yield _WALK_TRUNCATED
-                        continue
+                # Mount-backed dir: the direct→rc ladder (anonymous S3/GCS page
+                # the store's own listing API up to the remote walk cap; else, or
+                # on a direct page failure, the rc listing rclone can't paginate),
+                # single-sourced in pathops.list_mount_dir.
+                try:
+                    listing = pathops.list_mount_dir(
+                        current, max_entries=WALK_MAX_ENTRIES_REMOTE,
+                        page_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        overall_timeout=WALK_RC_LIST_TIMEOUT_S,
+                        rc_timeout=WALK_RC_LIST_TIMEOUT_S)
+                except shell_mounts.RcListError:
+                    # rc route rejected the listing (a file / missing / broken —
+                    # RcListTimeout and RcListUnavailable subclass RcListError).
+                    # The ROOT listing failing is fatal — surface it with the same
+                    # status codes fs/list uses (see api_fs_walk, which pulls the
+                    # first item eagerly to catch this). A non-root dir keeps
+                    # skip-and-continue, but marks the walk truncated so the
+                    # client knows coverage is partial.
+                    if is_root:
+                        raise
+                    yield _WALK_TRUNCATED
+                    continue
+                listed = listing.entries
+                if listing.direct:
+                    if listing.token is not None:
+                        dir_cut = True  # more keys remained unlisted
+                else:
                     # rclone can't paginate, so a huge dir comes back whole: cap
                     # it at the per-dir remote budget and flag the cut.
                     if len(listed) > WALK_MAX_ENTRIES_REMOTE:
@@ -642,6 +612,12 @@ def _walk_bfs(path, include_hidden):
                     files = [c for c in files if prefix + c.name not in ignored]
             dirs.sort(key=lambda e: e.name)
             files.sort(key=lambda e: e.name)
+            # Don't enqueue this dir's subdirs once we've hit the depth cap: a
+            # dir AT max_depth is still listed (its entries are yielded below),
+            # but the walk stops descending past it. Flagged so we emit one
+            # truncation sentinel per capped parent (not one per child).
+            can_descend = max_depth is None or depth < max_depth
+            depth_capped = False
             for child, is_dir in [(d, True) for d in dirs] + [(f, False) for f in files]:
                 try:
                     st = child.stat()
@@ -654,18 +630,32 @@ def _walk_bfs(path, include_hidden):
                     "size": None if is_dir else st.st_size,
                     "mtime": st.st_mtime,
                 }
+                # Entry-count cap enforced HERE, inside the generator, so the walk
+                # actually terminates early instead of the consumer draining a
+                # huge (or unbounded) tree. Flag partial coverage and stop.
+                emitted += 1
+                if max_entries is not None and emitted >= max_entries:
+                    yield _WALK_TRUNCATED
+                    return
                 if is_dir:
                     try:
                         is_link = child.is_symlink()
                     except OSError:
                         is_link = True  # can't tell — safer not to descend
                     if not is_link and not child.name.lower().endswith(WALK_LEAF_DIR_SUFFIXES):
+                        if not can_descend:
+                            depth_capped = True
+                            continue  # at the depth cap — don't enqueue deeper
                         repo_rel = (
                             (repo_rel_base + "/" + child.name if repo_rel_base else child.name)
                             if repo is not None
                             else ""
                         )
-                        queue.append((os.path.join(current, child.name), rel, repo, repo_rel))
+                        queue.append(
+                            (os.path.join(current, child.name), rel, repo, repo_rel, depth + 1)
+                        )
+            if depth_capped:
+                yield _WALK_TRUNCATED  # subtree(s) left unwalked at the depth cap
     finally:
         for oracle in oracles.values():
             oracle.close()
@@ -673,6 +663,59 @@ def _walk_bfs(path, include_hidden):
 
 def _error(message: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": message}, status_code=status)
+
+
+# /api/fs/conditions evaluates template condition.py gates, which over a remote
+# mount costs ~6.8s and was recomputed on every call. A small check-on-read TTL
+# cache lets re-navigation to the same directory reuse the verdict. Only success
+# payloads (plain dicts) are cached; error/404 responses are JSONResponse and are
+# never stored. No background eviction — a stale entry is overwritten on the next
+# miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
+_CONDITIONS_TTL_S = 60.0
+_CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+
+
+# /api/fs/stat on a MOUNT path goes _mount_safe_stat -> _mount_probe ->
+# rc_list_dir(parent), a full cold LIST of the parent prefix over rclone/S3
+# (~1.6s) just to describe one child; opening a folder fires it, and
+# re-navigating to a sibling repaid it uncached. A short check-on-read TTL cache
+# (same shape as _CONDITIONS_CACHE) serves a recent stat instead. Only
+# MOUNT-backed success payloads are cached — see api_fs_stat for the scope
+# rationale and mutation-invalidation contract. Separate TTL from conditions so
+# each can be tuned/monkeypatched on its own; kept a module attribute so tests
+# can override it.
+_STAT_TTL_S = 60.0
+_STAT_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+# Monotonic invalidation counter for the TOCTOU guard in api_fs_stat. Every
+# _invalidate_stat_cache bump happens-before the post-compute check in a stat
+# that reads the generation first, so any mutation that completes while a slow
+# _fs_stat is in flight is observed and blocks that stale result from refilling
+# the cache. A single global counter is deliberately conservative: a concurrent
+# mutation to ANY path just skips caching this one in-flight stat (rare and
+# harmless) rather than requiring per-path bookkeeping.
+_STAT_CACHE_GEN = 0
+
+
+def _invalidate_stat_cache(*paths: object) -> None:
+    # Drop cached /api/fs/stat entries for paths a mutation just touched, plus
+    # their parent directories (creating/deleting a child moves the parent's
+    # mtime on many backends). The editor re-stats a path right after
+    # write/rename/copy/mkdir to re-arm its optimistic lock, so a stale hit here
+    # would be a real clobber bug — invalidation is the correctness backbone of
+    # this cache, not an optimization. Popping a key that was never cached (or a
+    # non-string/None body field) is a harmless no-op, so callers can pass raw
+    # body values and invalidate unconditionally without inspecting the result.
+    #
+    # Bump the generation UNCONDITIONALLY (even for a no-op pop): a stat for a
+    # not-yet-cached path may be mid-flight, and the bump is what tells its
+    # post-compute check that a mutation raced it so it must not cache a
+    # pre-mutation payload. See api_fs_stat for the guard.
+    global _STAT_CACHE_GEN
+    _STAT_CACHE_GEN += 1
+    for p in paths:
+        if isinstance(p, str) and p:
+            _STAT_CACHE.pop(p, None)
+            _STAT_CACHE.pop(os.path.dirname(p), None)
 
 
 def _mount_list_error_response(path, exc):
@@ -772,8 +815,20 @@ def _has_non_mode_param(search: str) -> bool:
     return any(k != "_mode" for k, _ in parse_qsl(search, keep_blank_values=True))
 
 
+def _is_file_mount_safe(path: str) -> bool:
+    """os.path.isfile, but NEVER a kernel stat on a mount-backed path — a cold
+    os.path.isfile there is the GETATTR that lists the whole parent prefix and
+    wedges the mount (the /api/session + /api/recents open-flow wedge). Mount
+    paths answered via rc_kind_for; only a confirmed "file" passes (a "dir" is
+    not a file, matching os.path.isfile), while an "indeterminate" rc probe
+    fails OPEN so a transient rcd hiccup never 404s a file the user just
+    opened."""
+    from fused_render.shell import pathops
+    return pathops.is_file(path)
+
+
 def _session_get(path: str):
-    if not os.path.isfile(path):
+    if not _is_file_mount_safe(path):
         return _error(f"no such file: {path}", status=404)
     last = _read_sidecar(path).get("lastSession")
     return {"lastSession": last if isinstance(last, dict) else None}
@@ -787,7 +842,7 @@ def _session_put(body: dict, x_fused: str | None):
     search = body.get("search")
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
-    if not os.path.isfile(path):
+    if not _is_file_mount_safe(path):
         return _error(f"no such file: {path}", status=404)
     if not isinstance(search, str):
         return _error("'search' must be a string")
@@ -892,8 +947,36 @@ def _condition_file(template_path: str):
 # roughly one slow probe; direct-capable mounts probe in ~1s and rarely reach it.
 GATE_PROBE_BUDGET_S = 5.0
 
+# One bounded direct-listing page fed to the gate seed (fix #3/#4). All zarr
+# group-root markers are immediate children of the store dir, so a COMPLETE
+# (untruncated) page of the dir's children answers all three marker isfile
+# probes with zero extra network calls; 1000 keys comfortably covers a store
+# root's immediate children in one unsigned request.
+_GATE_LIST_MAX_KEYS = 1000
 
-def _mount_gate_builtins(target_path: str):
+
+class _GateSeed:
+    """What `_conditions_payload` already knows about the target dir, threaded
+    into the gate shim so it answers isdir/isfile locally instead of reprobing.
+
+    - `kinds`: exact path -> "dir"|"file"|"missing" (a verdict already taken by
+      the endpoint's rc is_dir probe; consulted before any rc call).
+    - `dir_path`: the normalized (rstrip("/")) dir the listing describes.
+    - `file_children`: set of immediate FILE basenames from a COMPLETE listing,
+      or None when no complete listing is available.
+    - `listing_complete`: True only when the listing was NOT truncated, so an
+      absent marker is provably absent (a truncated listing can't prove that).
+    """
+
+    def __init__(self, kinds=None, dir_path=None, file_children=None,
+                 listing_complete=False):
+        self.kinds = kinds or {}
+        self.dir_path = dir_path
+        self.file_children = file_children
+        self.listing_complete = listing_complete
+
+
+def _mount_gate_builtins(target_path: str, seed=None):
     """Custom `__builtins__` for a condition gate whose target is MOUNT-backed,
     so the gate's own filesystem primitives route through the rclone rc API
     instead of the kernel NFS mount.
@@ -942,6 +1025,22 @@ def _mount_gate_builtins(target_path: str):
     def _isfile(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isfile(p)
+        # A listing of the dir answers marker isfile with no network call
+        # (fix #3/#4). PRESENCE in the page is conclusive even if the page was
+        # TRUNCATED (the marker demonstrably exists); ABSENCE is only provable
+        # from a COMPLETE (untruncated) page. So a truncated page that captured
+        # the marker still short-circuits True, and only a truncated-and-absent
+        # marker falls through to the rc probe below. real_os.path is the real
+        # (captured) os.path.
+        if (seed is not None and seed.file_children is not None
+                and real_os.path.dirname(p) == seed.dir_path):
+            if real_os.path.basename(p) in seed.file_children:
+                return True
+            if seed.listing_complete:
+                return False
+        # Else a verdict the endpoint already took for this exact path (fix #2).
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] == "file"
         left = _probe_budget()
         if left <= 0:
             return False  # budget spent -> fail closed
@@ -950,6 +1049,8 @@ def _mount_gate_builtins(target_path: str):
     def _isdir(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.isdir(p)
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] == "dir"  # no reprobe of the target (fix #2)
         left = _probe_budget()
         if left <= 0:
             return False
@@ -958,6 +1059,8 @@ def _mount_gate_builtins(target_path: str):
     def _exists(p):
         if not mounts.is_mount_backed(p):
             return real_os.path.exists(p)
+        if seed is not None and p in seed.kinds:
+            return seed.kinds[p] in ("file", "dir")
         left = _probe_budget()
         if left <= 0:
             return False
@@ -1044,7 +1147,7 @@ def _mount_gate_builtins(target_path: str):
     return b
 
 
-def _run_condition(condition_file: str, target_path: str):
+def _run_condition(condition_file: str, target_path: str, seed=None):
     """Load+exec a `condition.py` and call `main(target_path)`. Returns
     (allowed: bool, error: str|None).
 
@@ -1074,7 +1177,7 @@ def _run_condition(condition_file: str, target_path: str):
         # time so the mount routing is monkeypatchable in tests.
         from fused_render.shell.mounts import is_mount_backed
         if is_mount_backed(target_path):
-            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path)
+            mod.__dict__["__builtins__"] = _mount_gate_builtins(target_path, seed)
         spec.loader.exec_module(mod)
         fn = getattr(mod, "main", None)
         if not callable(fn):
@@ -1102,7 +1205,7 @@ def _mark_conditions(entries: list):
             entry["conditional"] = True
 
 
-def _evaluate_conditions(gated: list, target_path: str):
+def _evaluate_conditions(gated: list, target_path: str, seed=None):
     """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
     returns {key: (allowed: bool, error: str|None)}.
 
@@ -1115,7 +1218,7 @@ def _evaluate_conditions(gated: list, target_path: str):
 
     def _serial():
         for k, cf in gated:
-            results[k] = _run_condition(cf, target_path)
+            results[k] = _run_condition(cf, target_path, seed)
 
     if len(gated) == 1:
         _serial()
@@ -1131,7 +1234,7 @@ def _evaluate_conditions(gated: list, target_path: str):
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                futures = {pool.submit(_run_condition, cf, target_path, seed): k for k, cf in gated}
                 for fut, k in futures.items():
                     results[k] = fut.result()
         except BaseException:
@@ -1151,8 +1254,14 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
-    from fused_render.shell.mounts import is_mount_backed, rc_kind_for
+    from fused_render.shell.mounts import (
+        direct_list_capable,
+        direct_list_page,
+        is_mount_backed,
+        rc_kind_for,
+    )
 
+    seed = None
     if is_mount_backed(path):
         # A mount is_dir probe off the kernel (a kernel os.stat here is a
         # GETATTR that can force an S3 re-list and wedge the mount). "missing" is
@@ -1167,6 +1276,16 @@ def _conditions_payload(path: str):
         if kind == "missing":
             return _error(f"no such file or directory: {path}", status=404)
         is_dir = kind != "file"
+        # Feed a DEFINITIVE verdict to the gate shim so the gate answers its own
+        # isdir(path) with no rc call instead of reprobing this exact path
+        # (fix #2). An "indeterminate" kind (rcd blip / budget exhausted) is NOT
+        # seeded: seeding it would make the gate's isdir return False without a
+        # probe and pin a spurious all-False verdict (and the TTL cache would
+        # hold it). Leaving seed=None lets the gate do its OWN probe, which may
+        # recover, and otherwise fail closed on its own budget — the posture the
+        # is_dir comment above describes.
+        if kind in ("dir", "file"):
+            seed = _GateSeed(kinds={path: kind})
     else:
         try:
             st = os.stat(path)
@@ -1182,7 +1301,26 @@ def _conditions_payload(path: str):
             if cf is not None:
                 gated.append((entry["mode"], cf))
 
-    results = _evaluate_conditions(gated, path)
+    # Only now that we know a gate will actually consume it is the bounded
+    # listing worth its network cost. For a direct-list-capable mount (anonymous
+    # S3/GCS), one unsigned listing of the dir's immediate children answers all
+    # three marker isfile probes locally (fix #3/#4) — the markers are always
+    # immediate children, so a COMPLETE page proves each present/absent without
+    # a per-marker rc probe. Fail-open: any error leaves the seed marker-less and
+    # the gate falls back to today's per-marker probes (logged, not silent).
+    if gated and seed is not None and is_dir and direct_list_capable(path):
+        try:
+            listing, next_token = direct_list_page(
+                path, max_keys=_GATE_LIST_MAX_KEYS, timeout=GATE_PROBE_BUDGET_S)
+            seed.file_children = {
+                e["Name"] for e in listing if not e.get("IsDir")}
+            seed.listing_complete = next_token is None
+        except Exception:
+            logger.debug("gate seed listing failed for %s; falling back to "
+                         "per-marker probes", path, exc_info=True)
+        seed.dir_path = path.rstrip("/")
+
+    results = _evaluate_conditions(gated, path, seed)
     conditions, error = {}, None
     for mode, _cf in gated:
         allowed, err = results[mode]
@@ -1638,6 +1776,116 @@ def _proxy_raw(upstream: str, request: Request):
     return StreamingResponse(body(), status_code=r.status, headers=out)
 
 
+async def _proxy_raw_pooled(client: httpx.AsyncClient, upstream: str,
+                            request: Request, extra_headers: dict | None = None):
+    """Opt-in pooled proxy of a store's *signed* URL (TASK F). Same forwarded
+    header set (_PROXY_HEADERS) and status pass-through (206/416/404) as
+    _proxy_raw, but streams through a shared keep-alive httpx pool so a burst of
+    range reads reuses sockets to the store instead of paying urllib's fresh
+    TLS handshake + redirect round trip per block. Returns None only when the
+    store is unreachable at the connection level — the caller then falls back to
+    the 307 so the read still completes. Async (awaited on the event loop): the
+    pool is the point, and to_thread'ing a sync client would defeat it.
+
+    `extra_headers` (e.g. an Authorization: Bearer for the private-GCS bearer
+    tier) is merged onto the OUTBOUND request after the Range header — it never
+    appears on the response, so a token there is never echoed to the client."""
+    r = await _pooled_send(client, upstream, request, extra_headers)
+    if r is None:
+        return None
+    return await _pooled_response(r, request)
+
+
+async def _pooled_send(client: httpx.AsyncClient, upstream: str,
+                       request: Request, extra_headers: dict | None = None):
+    """Send one pooled, streamed request to `upstream` (mirroring the request's
+    method + Range, plus `extra_headers`) and return the OPEN httpx response, or
+    None on a connection-level error. The caller must either build a response
+    from it (_pooled_response, which closes it) or aclose it — so a peek-then-
+    retry path (bearer 401/403) can inspect the status and drop the response."""
+    headers = {}
+    rng = request.headers.get("range")
+    if rng:
+        headers["Range"] = rng
+    if extra_headers:
+        headers.update(extra_headers)
+    req = client.build_request(request.method, upstream, headers=headers)
+    try:
+        return await client.send(req, stream=True)
+    except httpx.HTTPError:
+        return None
+
+
+async def _pooled_response(r, request: Request):
+    """Build the client-facing response from an open httpx response `r`,
+    forwarding only _PROXY_HEADERS and passing the status through. Closes `r`
+    (immediately for HEAD, after streaming for GET)."""
+    out = {k: v for k, v in r.headers.items() if k.lower() in _PROXY_HEADERS}
+    if request.method == "HEAD":
+        await r.aclose()
+        return Response(status_code=r.status_code, headers=out)
+
+    async def body():
+        try:
+            async for chunk in r.aiter_bytes(256 * 1024):
+                yield chunk
+        finally:
+            await r.aclose()
+
+    return StreamingResponse(body(), status_code=r.status_code, headers=out)
+
+
+def _bearer_status_passes(status: int) -> bool:
+    """Whether a bearer-proxy upstream status is a client-facing answer. 2xx/3xx
+    (success/redirect) and the meaningful store answers 404 (absent) and 416
+    (unsatisfiable range) pass through; everything else (401, 403, 429, 5xx) is
+    NOT a client-facing answer in bearer mode — there is no 307 URL for the
+    client to retry against, and on main these reads went via the rclone serve
+    whose pacer retries transient errors — so the caller falls through to the
+    serve instead of leaking the error status (finding 9)."""
+    return 200 <= status < 400 or status in (404, 416)
+
+
+async def _proxy_raw_bearer(request: Request, path: str):
+    """Proxy a cold private-GCS read through the pooled client with the bearer
+    Authorization header attached out-of-band (the token must never reach the
+    client in a URL/redirect).
+
+    On a 401 (stale/rotated token) invalidate the cached credential, re-resolve,
+    and retry ONCE. A 403 is an IAM denial WITH a valid token, so it does NOT
+    invalidate — churning the credential per denied read would evict the live
+    token out from under concurrent legitimate reads (mirrors _gcs_get_direct's
+    401-only policy) — it simply falls through to the serve. Any non-pass-through
+    status (a second 401, 403, 429, 5xx) also falls through by returning None
+    (never an error status to the client), so the read still completes via the
+    serve. The open upstream response is always closed before a retry or a
+    fall-through."""
+    from fused_render.shell import mounts as shell_mounts
+
+    for attempt in (1, 2):
+        bearer = await asyncio.to_thread(shell_mounts.bearer_upstream_for, path)
+        if bearer is None:
+            return None
+        # Only now (a real bearer remote) is the pooled client needed — reaching
+        # for it before the bearer check would break the non-bearer fall-through.
+        client = request.app.state.pooled_client
+        url, extra_headers = bearer
+        r = await _pooled_send(client, url, request, extra_headers)
+        if r is None:
+            return None
+        if _bearer_status_passes(r.status_code):
+            return await _pooled_response(r, request)
+        await r.aclose()
+        # 401 on the first attempt: token went stale/rotated -> re-resolve and
+        # retry once. 403 (IAM denial), transient 429/5xx, and a second 401 all
+        # fall through to the serve WITHOUT invalidating.
+        if attempt == 1 and r.status_code == 401:
+            await asyncio.to_thread(shell_mounts.invalidate_gcs_token, path)
+            continue
+        return None
+    return None
+
+
 def _stat_or_none(path: str) -> os.stat_result | None:
     """stat() for /api/fs/raw's 404 gate: None for missing paths and
     non-regular files alike (a directory has no raw bytes to serve)."""
@@ -1686,9 +1934,18 @@ def _mount_safe_stat(path: str) -> os.stat_result:
     FileNotFoundError exactly like the kernel os.stat it replaces, so callers'
     existing OSError->404 handling holds — and it NEVER falls back to that kernel
     GETATTR, which is the call that killed the mount."""
-    from fused_render.shell.mounts import is_mount_backed, rc_stat_result
+    from fused_render.shell.mounts import (
+        is_mount_backed, is_mounts_root, rc_stat_result)
 
-    if is_mount_backed(path):
+    # The mounts CONTAINER itself is a LOCAL directory the shell created to host
+    # each mountpoint as a subdir; it is is_mount_backed (kept off the kernel
+    # like any remote path) but sits under NO single mount record, so
+    # rc_stat_result finds nothing to stat and reports it indeterminate — which
+    # _fs_stat then turns into a spurious 503 "mount is slow or unresponsive".
+    # A kernel os.stat on the container reads that local dir and never traverses
+    # into a mountpoint, so it is safe — matching _mount_probe's is_mounts_root
+    # shortcut for the listing/mutation paths.
+    if is_mount_backed(path) and not is_mounts_root(path):
         return rc_stat_result(path)
     return os.stat(path)
 
@@ -1887,6 +2144,12 @@ def _fs_write(body: dict, x_fused: str | None):
 
 _LOCAL_POLL_S = 0.2   # local files: cheap os.stat, snappy reload
 _MOUNT_POLL_S = 5.0   # mount-backed files: rc stat, far less remote pressure
+# Mount-backed paths on a remote that is NOT direct_list_capable (e.g.
+# source.coop's custom S3 endpoint, not recognized as plain AWS S3): change
+# detection there costs a full rc_list_dir of the prefix, not a bounded unsigned
+# page. Poll such paths far less often to cut standing remote pressure, and skip
+# listing a mount ROOT entirely (see _mount_signal) — fs/events P1 #4.
+_MOUNT_SLOW_POLL_S = 60.0
 _STAT_TIMEOUT_S = 4.0  # a stat outliving this reports "unchanged" for this tick
 
 # Sentinel distinct from every real mtime signal (float, RFC3339 str, or None
@@ -1927,7 +2190,28 @@ class _WatchEntry:
 
         self.path = path
         self.is_mount = shell_mounts.is_mount_backed(path)
-        self.interval = _MOUNT_POLL_S if self.is_mount else _LOCAL_POLL_S
+        # These flags fix the poll interval and change-detection strategy once,
+        # at creation. direct_list_capable can do REMOTE I/O (a memoized
+        # config/get rc call the first time a remote is classified), so
+        # _WatchRegistry.subscribe constructs each entry OFF the event loop. It
+        # resolves NO credentials — the classification is a pure config-shape
+        # check (finding 12).
+        if self.is_mount:
+            # direct_list_capable: the remote can be enumerated by a cheap,
+            # bounded page — unsigned (anonymous S3/GCS) or credentialed (signed
+            # S3 / bearer GCS). When it CAN'T, a directory child-change signal
+            # would require a full rc_list_dir of the prefix — the standing
+            # enumeration we avoid (see _mount_signal).
+            self._direct_capable = shell_mounts.direct_list_capable(path)
+            # A mount ROOT lists the remote's top prefix (or the whole bucket):
+            # never poll-list it on a non-direct remote.
+            self._is_mount_root = shell_mounts.is_mount_root(path)
+            self.interval = (_MOUNT_POLL_S if self._direct_capable
+                             else _MOUNT_SLOW_POLL_S)
+        else:
+            self._direct_capable = False
+            self._is_mount_root = False
+            self.interval = _LOCAL_POLL_S
         self.subscribers: set = set()  # asyncio.Queue per socket
         self.last = _UNCHANGED  # primed by the first successful read
         self._inflight = None   # in-progress stat task; guards against pile-up
@@ -1954,10 +2238,22 @@ class _WatchEntry:
         synthetic S3/GCS dirs, so create/delete/rename of children never moves
         it — the mount-dir auto-refresh (Listing LS-1) was silently dead. So for
         a directory the signal is a hash of a BOUNDED shallow listing instead:
-        one direct_list_page (anonymous S3/GCS) or a short-timeout rc_list_dir.
+        one direct_list_page (direct-listable S3/GCS) or a short-timeout
+        rc_list_dir.
+
+        direct_list_capable is a PURE config-shape check (finding 12): it's true
+        for a credentialed-SHAPED S3/GCS remote whose creds haven't been resolved.
+        When they don't resolve (cloud-auth libs absent, ambient creds expired)
+        direct_list_page raises DirectListError. On a non-root dir we fall back to
+        rc_list_dir — the recovery the fs/list handler and the
+        s3/gcs_direct_capable docstrings promise — flowing into the shared error
+        ladder below. Two carve-outs keep _UNCHANGED with NO rc fallback: a mount
+        ROOT (an rc listing of its whole prefix is the standing background
+        enumeration refused above) and an ANONYMOUS remote (no creds to fail on;
+        byte-identical to pre-finding-12 behavior).
 
         A FILE reaches the ModTime path differently by branch:
-          - direct-listable (anonymous S3/GCS): direct_list_capable is a pure
+          - direct-listable (S3/GCS): direct_list_capable is a pure
             path/config check that can't tell a file from a directory, and
             direct_list_page on a file KEY returns an EMPTY page (the file's own
             key != the "<key>/" listing prefix). An empty page is
@@ -1970,10 +2266,39 @@ class _WatchEntry:
         Any failure/timeout -> _UNCHANGED (never an error storm)."""
         from fused_render.shell import mounts as shell_mounts
 
+        # A mount ROOT lists the remote's top prefix — or the whole bucket for a
+        # bucket-root mount — which on a world-scale remote is enormous. When the
+        # remote is NOT direct_list_capable (e.g. source.coop's custom S3
+        # endpoint, not recognized as plain AWS S3), the only way to hash its
+        # listing is an rc_list_dir of that entire prefix. Running that on every
+        # tick for the life of an open pane is a standing background enumeration
+        # (fs/events P1 #4), so we refuse it: change detection for such a root is
+        # best-effort (no live child-change events). Direct-capable roots keep
+        # their bounded single unsigned page below; non-root paths (which the
+        # widened _MOUNT_SLOW_POLL_S interval already de-pressurizes) are
+        # unaffected. self._direct_capable is the init-time classification; the
+        # branch below re-derives it live so tests can stub the backend check.
+        if self._is_mount_root and not self._direct_capable:
+            return _UNCHANGED
+
         try:
             if shell_mounts.direct_list_capable(self.path):
-                page, _ = shell_mounts.direct_list_page(
-                    self.path, max_keys=1000, timeout=4)
+                try:
+                    page, _ = shell_mounts.direct_list_page(
+                        self.path, max_keys=1000, timeout=4)
+                except shell_mounts.DirectListError:
+                    # A credentialed-SHAPED remote is "capable" by config shape
+                    # alone (finding 12); when its creds don't resolve the direct
+                    # pager fails. Fall back to rc_list_dir (flowing into the
+                    # error ladder below) — EXCEPT a mount ROOT, whose rc listing
+                    # is the standing enumeration refused above, and an ANONYMOUS
+                    # remote, which has no creds to fail on and stays _UNCHANGED
+                    # with no rc fallback (byte-identical to prior behavior).
+                    if (self._is_mount_root
+                            or shell_mounts.direct_list_anonymous(self.path)):
+                        return _UNCHANGED
+                    listed = shell_mounts.rc_list_dir(self.path, timeout=4)
+                    return _hash_listing(listed)
                 if not page:
                     # Empty: a file (its key isn't under the "<key>/" prefix) or
                     # an empty dir. Use the rc ModTime — moves for a file's
@@ -1990,7 +2315,7 @@ class _WatchEntry:
             m = shell_mounts.rc_mtime_for(self.path)
             return _UNCHANGED if m is None else m
         except Exception:
-            return _UNCHANGED  # DirectListError, etc.
+            return _UNCHANGED  # any other backend failure -> unchanged
 
     async def _read(self):
         """One tick's read with a hard timeout and in-flight de-duplication.
@@ -2045,12 +2370,22 @@ class _WatchRegistry:
     def __init__(self):
         self._entries: dict = {}
 
-    def subscribe(self, path: str, queue):
+    async def subscribe(self, path: str, queue):
         entry = self._entries.get(path)
         if entry is None:
-            entry = _WatchEntry(path)
-            self._entries[path] = entry
-            entry.task = asyncio.create_task(entry.run())
+            # _WatchEntry construction does remote I/O (direct_list_capable now
+            # consults the credential resolvers — google-auth refresh / ADC
+            # metadata / botocore chain), so build it OFF the event loop. This
+            # runs on the async /api/fs/events handler's loop; a bare call would
+            # block it. Re-check after the await in case a concurrent subscribe
+            # created the entry while we were building (only ours starts a task).
+            entry = await asyncio.to_thread(_WatchEntry, path)
+            existing = self._entries.get(path)
+            if existing is not None:
+                entry = existing
+            else:
+                self._entries[path] = entry
+                entry.task = asyncio.create_task(entry.run())
         entry.subscribers.add(queue)
         return entry
 
@@ -2472,6 +2807,27 @@ def create_app(start_dir: str) -> FastAPI:
 
     app = FastAPI(title="fused-render")
 
+    # Shared keep-alive HTTP pool for the opt-in pooled /api/fs/raw proxy
+    # (TASK F). The pyramid/geotiff workers range-read a store's signed URL one
+    # ~64KB block at a time; a per-block urllib GET (and, before this, a 307
+    # they re-followed per block) pays a fresh TLS handshake every read — serial,
+    # multi-second cold. One AsyncClient with a connection pool lets those range
+    # reads reuse sockets to the store. Created at startup, closed at shutdown,
+    # stashed on app.state so api_fs_raw can await through it.
+    @app.on_event("startup")
+    async def _open_pooled_client():
+        app.state.pooled_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0),
+            limits=httpx.Limits(max_keepalive_connections=32,
+                                max_connections=64),
+        )
+
+    @app.on_event("shutdown")
+    async def _close_pooled_client():
+        client = getattr(app.state, "pooled_client", None)
+        if client is not None:
+            await client.aclose()
+
     @app.exception_handler(Exception)
     async def unhandled_exception(request, exc):
         # A bare "Internal Server Error" with an empty body is undebuggable on
@@ -2587,6 +2943,18 @@ def create_app(start_dir: str) -> FastAPI:
 
     app.include_router(shell_mounts.router)
     shell_mounts.startup()
+    # Background mount-health monitor (shell/mounts.py): polls every mount on a
+    # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect
+    # episode, and records an event log the Mounts panel polls. Started AFTER
+    # startup() so the automount thread owns the initial attach — the monitor
+    # only acts on a later healthy->disconnected transition.
+    shell_mounts.start_health_monitor()
+
+    # Mount-health telemetry the Mounts panel polls: current per-mount state
+    # plus the auto-reconnect event log. A read — no X-Fused guard.
+    @app.get("/api/mounts/health")
+    def api_mounts_health():
+        return shell_mounts.health_snapshot()
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
@@ -2622,8 +2990,12 @@ def create_app(start_dir: str) -> FastAPI:
         return _session_put(body, x_fused)
 
     @app.get("/api/config")
-    def api_config():
-        return {
+    def api_config(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        config = {
             "start_dir": start_dir,
             "home": os.path.expanduser("~"),
             # The Fused workspace dir (~/Documents/Fused, D81) — the sidebar's
@@ -2643,14 +3015,74 @@ def create_app(start_dir: str) -> FastAPI:
             # fs/events incident. Templates stay mount-agnostic; the skip lives
             # in runtime internals, keyed off this server-provided prefix.
             "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
+            # Whether the builtin learn mount record exists (D123) — the
+            # sidebar's Learn entry only renders when this is true, so it's
+            # never a dead link (BUGBOT: an unpackaged run with no
+            # FUSED_RENDER_LEARN_ZIP, or the brief window before the
+            # background automount thread upserts the record on a packaged
+            # run, would otherwise show a link to a path that doesn't exist).
+            "learn_mount_ready": shell_mounts.learn_mount_ready(),
         }
+        if instance := desktop_instance():
+            config["desktop_instance"] = {"id": instance[0]}
+            if token == instance[1]:
+                config["desktop_instance"]["token"] = instance[1]
+        return config
+
+    @app.post("/api/desktop/shutdown")
+    def api_desktop_shutdown(
+        token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
+    ):
+        from fused_render.paths import desktop_instance
+
+        instance = desktop_instance()
+        if instance is None:
+            raise HTTPException(status_code=404, detail="desktop supervisor is not active")
+        if token != instance[1]:
+            raise HTTPException(status_code=403, detail="invalid desktop supervisor token")
+        uvicorn_server = getattr(app.state, "uvicorn_server", None)
+        if uvicorn_server is None:
+            raise HTTPException(status_code=503, detail="server shutdown is not ready")
+        uvicorn_server.should_exit = True
+        return {"ok": True}
 
     # GET /api/templates/registry moved to templates_api.py (extended §2.2
     # shape) and registered via templates_router above.
 
     @app.get("/api/fs/stat")
     def api_fs_stat(path: str):
-        return _fs_stat(path)
+        # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
+        # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
+        # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
+        # a cheap kernel call, and a local file can be mutated out-of-band (git,
+        # another editor) with no hook for us to invalidate — caching those
+        # would risk handing back a stale mtime the editor's optimistic lock
+        # trusts, for no latency win. Mount paths are mutated only through this
+        # server's fs/write|rename|copy|delete|mkdir handlers, which call
+        # _invalidate_stat_cache, so their only staleness is the same bounded
+        # external-change window the conditions cache already accepts. Only
+        # success payloads (plain dicts) are stored; _fs_stat's 404/503 branches
+        # return _error -> JSONResponse and are always recomputed.
+        from fused_render.shell.mounts import is_mount_backed
+
+        cached = _STAT_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _STAT_TTL_S:
+            return cached[1]
+        # Snapshot the invalidation generation BEFORE the (slow) stat. _fs_stat
+        # releases the GIL on its cold mount LIST, so a concurrent mutation can
+        # complete _invalidate_stat_cache — popping this key AND bumping the
+        # generation — while we're in flight. Caching unconditionally here would
+        # write our now-stale payload back, undoing that invalidation and
+        # handing the editor's post-write optimistic-lock re-stat pre-mutation
+        # metadata (a real clobber bug). So only cache if the generation is
+        # UNCHANGED: the bump happens-before this check for any invalidation
+        # that finished before our write, closing the TOCTOU window. If it
+        # moved, return the fresh result WITHOUT caching it.
+        gen = _STAT_CACHE_GEN
+        result = _fs_stat(path)
+        if isinstance(result, dict) and is_mount_backed(path) and _STAT_CACHE_GEN == gen:
+            _STAT_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/conditions")
     def api_fs_conditions(path: str):
@@ -2665,7 +3097,18 @@ def create_app(start_dir: str) -> FastAPI:
         # (Preview.tsx `useConditions`) and renders every unconditional
         # template while the verdict is still `null` — the gated ones just show
         # a spinner until it lands. So no change on the render path is needed.
-        return _conditions_payload(path)
+        #
+        # Re-navigating to the same directory would otherwise re-pay the full
+        # gate-evaluation cost, so a short check-on-read TTL cache serves a
+        # recent verdict. Only success payloads (plain dicts) are cached; error
+        # responses (_error -> JSONResponse) are always recomputed.
+        cached = _CONDITIONS_CACHE.get(path)
+        if cached is not None and time.monotonic() - cached[0] < _CONDITIONS_TTL_S:
+            return cached[1]
+        result = _conditions_payload(path)
+        if isinstance(result, dict):
+            _CONDITIONS_CACHE[path] = (time.monotonic(), result)
+        return result
 
     @app.get("/api/fs/list")
     def api_fs_list(path: str, cursor: str | None = None):
@@ -2812,8 +3255,16 @@ def create_app(start_dir: str) -> FastAPI:
         # deterministic tiebreak (same order for all three list routes).
         return _list_response(path, _sort_entries(entries), truncated, None)
 
+    # Poll request.is_disconnected() once every this many walked entries. The
+    # explorer search fires a fresh /api/fs/walk on each keystroke and abandons
+    # the previous one; without this the superseded walk would keep enumerating
+    # (over a mount, keep issuing remote LISTs) until it hit a cap. Checked
+    # between entries only — a single blocking directory listing can't be
+    # interrupted mid-call (same best-effort caveat as WALK_FLUSH_INTERVAL_S).
+    WALK_DISCONNECT_CHECK_EVERY = 64
+
     @app.get("/api/fs/walk")
-    def api_fs_walk(path: str, hidden: str = "0", stream: str = "0"):
+    async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: str = "0"):
         # Recursive listing of a directory subtree, for the explorer search
         # (flat, ranked client-side). Walks BREADTH-FIRST so shallow entries —
         # the ones a search almost always targets — are all emitted before any
@@ -2826,6 +3277,14 @@ def create_app(start_dir: str) -> FastAPI:
         # follows symlinks, and skips unreadable entries silently (matches
         # /api/fs/list). `rel` is posix-relative to `path`.
         #
+        # The walk is bounded on three axes so a search-as-you-type over a big
+        # (esp. mount) root can't kick off an unbounded enumeration: entry count
+        # and DEPTH (both enforced inside _walk_bfs — see its caps), and the HTTP
+        # request lifetime (if the client abandons this keystroke we stop pulling
+        # from the walk; see WALK_DISCONNECT_CHECK_EVERY). The blocking walk runs
+        # in a threadpool (iterate_in_threadpool) so this async route can poll for
+        # disconnect without stalling the event loop.
+        #
         # `hidden=1` (explicit intent: the user typed a dot-leading query)
         # includes dot-files and descends into dot-dirs. WALK_IGNORE_DIRS and
         # gitignore pruning apply regardless — those trees are noise, not
@@ -2836,9 +3295,8 @@ def create_app(start_dir: str) -> FastAPI:
         # lines (WALK_BATCH_SIZE each) followed by exactly one terminal
         # `{"done": true, "truncated": bool, "total": n}` line. The client
         # scores batches as they arrive, so first results paint while the walk
-        # is still running. Closing the connection cancels the walk (Starlette
-        # closes the generator on disconnect). Without `stream=1` the response
-        # is the original single-JSON shape, unchanged for old clients.
+        # is still running. Without `stream=1` the response is the original
+        # single-JSON shape, unchanged for old clients.
         include_hidden = hidden == "1"
         # Under a mount, os.path.isdir is itself a kernel GETATTR on the mount
         # we route around; _walk_bfs lists mount dirs via the rc API and simply
@@ -2846,22 +3304,28 @@ def create_app(start_dir: str) -> FastAPI:
         under_mount = shell_mounts.is_mount_backed(path)
         if not under_mount and not os.path.isdir(path):
             return _error(f"not a directory: {path}", status=400)
-        walker = _walk_bfs(path, include_hidden)
         # Remote-mount clamp: under a mount mountpoint every directory is a
-        # remote LIST round-trip, so the cap drops to WALK_MAX_ENTRIES_REMOTE
-        # (see the constant's comment).
+        # remote LIST round-trip, so both caps drop to their _REMOTE values (see
+        # the constants' comments). The caps are enforced INSIDE _walk_bfs so the
+        # walk terminates early instead of the consumer draining a huge tree.
         max_entries = WALK_MAX_ENTRIES_REMOTE if under_mount else WALK_MAX_ENTRIES
+        max_depth = WALK_MAX_DEPTH_REMOTE if under_mount else WALK_MAX_DEPTH_LOCAL
+        walker = _walk_bfs(path, include_hidden, max_entries=max_entries, max_depth=max_depth)
 
         # Force the ROOT listing eagerly (the first next() runs it) so a dead
         # mount / down rcd / timed-out or not-a-directory root fails with
         # fs/list's status codes instead of streaming a 200-empty body. Only the
         # ROOT raises out of _walk_bfs; deeper per-dir failures skip-and-continue
-        # (feeding the truncated flag via the _WALK_TRUNCATED sentinel).
+        # (feeding the truncated flag via the _WALK_TRUNCATED sentinel). Run in a
+        # threadpool: the root listing is blocking (a remote LIST under a mount).
+        def _pull_first():
+            try:
+                return next(walker), True
+            except StopIteration:
+                return None, False
+
         try:
-            first = next(walker)
-            have_first = True
-        except StopIteration:
-            first, have_first = None, False
+            first, have_first = await run_in_threadpool(_pull_first)
         except shell_mounts.RcListError as e:
             return _mount_list_error_response(path, e)
 
@@ -2873,7 +3337,11 @@ def create_app(start_dir: str) -> FastAPI:
         if stream != "1":
             entries = []
             truncated = False
-            for entry in _items():
+            seen = 0
+            async for entry in iterate_in_threadpool(_items()):
+                seen += 1
+                if seen % WALK_DISCONNECT_CHECK_EVERY == 0 and await request.is_disconnected():
+                    break  # client abandoned this keystroke — stop the walk
                 if entry is _WALK_TRUNCATED:
                     truncated = True  # a dir was cut / skipped (partial coverage)
                     continue
@@ -2883,12 +3351,16 @@ def create_app(start_dir: str) -> FastAPI:
                     break
             return {"path": path, "entries": entries, "truncated": truncated}
 
-        def ndjson():
+        async def ndjson():
             batch = []
             total = 0
             truncated = False
+            seen = 0
             last_flush = time.monotonic()
-            for entry in _items():
+            async for entry in iterate_in_threadpool(_items()):
+                seen += 1
+                if seen % WALK_DISCONNECT_CHECK_EVERY == 0 and await request.is_disconnected():
+                    return  # client abandoned this keystroke — stop the walk
                 if entry is _WALK_TRUNCATED:
                     truncated = True
                     continue
@@ -2909,7 +3381,8 @@ def create_app(start_dir: str) -> FastAPI:
         return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
-    async def api_fs_raw(path: str, request: Request, base: str | None = None):
+    async def api_fs_raw(path: str, request: Request, base: str | None = None,
+                         pooled: str | None = None):
         # Page-relative resolution (SPEC RH-1): a *relative* `path` is resolved against
         # the directory of `base` — the page's own absolute path, sent by the runtime's
         # fused.rawUrl(), the same contract /api/run uses via `html` (see the resolve at
@@ -3002,15 +3475,56 @@ def create_app(start_dir: str) -> FastAPI:
                 direct = await asyncio.to_thread(
                     shell_mounts.upstream_url_for, path)
                 if direct:
+                    # OPT-IN pooled proxy (TASK F): the pyramid/geotiff workers
+                    # read this file with a plain per-block urllib GET and would
+                    # otherwise re-follow the 307 to the store on EVERY ~64KB
+                    # block — a fresh TLS handshake + redirect round trip per
+                    # read, serial, multi-second cold. When they set &pooled=1
+                    # we stream the same signed URL back through a shared
+                    # keep-alive httpx pool (sockets reused across range reads).
+                    # duckdb/parquet never set the flag, so they still get the
+                    # 307 and their own pooled parallel connections — no
+                    # regression. A pooled fetch that can't reach the store
+                    # returns None and falls through to the 307.
+                    if pooled:
+                        resp = await _proxy_raw_pooled(
+                            request.app.state.pooled_client, direct, request)
+                        if resp is not None:
+                            return resp
                     return RedirectResponse(direct, status_code=307)
+                # No 307-able URL: a token-only private GCS remote can't hand
+                # the client a signed link (the bearer token must never appear
+                # in a URL), so proxy the bytes through the pooled client with
+                # the Authorization header attached out-of-band — regardless of
+                # the &pooled flag, there is nothing to redirect to. A stale
+                # token (401/403) self-heals via one re-resolve + retry inside
+                # _proxy_raw_bearer; a still-denied or unreachable read returns
+                # None and falls through to the serve.
+                resp = await _proxy_raw_bearer(request, path)
+                if resp is not None:
+                    return resp
             # Not redirected (browser, warm read, or no direct URL): proxy the
-            # bytes. Guard non-files here — the cold redirect path above is the
-            # never-listed-object hot path and stays stat-free, but a directory
-            # proxied through rclone serve comes back as a 200 HTML listing, so
-            # stat before serving (warm getattr is cheap; a directory 404s).
-            st = await asyncio.to_thread(_stat_or_none, path)
-            if st is None:
-                return _error(f"no such file: {path}", status=404)
+            # bytes. Guard non-files here — a directory proxied through rclone
+            # serve comes back as a 200 HTML listing, so resolve shape before
+            # serving. But NOT with a kernel os.stat on a mount-backed path: this
+            # branch is reached once the prefetch has landed (is_done) or for a
+            # browser read, and a cold GETATTR on a never-listed object forces
+            # rclone to enumerate the whole parent prefix (~28s on a 44k-entry
+            # dir), past the NFS deadman -> the mount is dropped. Answer
+            # existence/shape through the rcd (_mount_probe) like the HEAD branch
+            # above; only a local path stats the kernel.
+            if shell_mounts.is_mount_backed(path):
+                try:
+                    pr = await asyncio.to_thread(_mount_probe, path)
+                except (shell_mounts.RcListUnavailable,
+                        shell_mounts.RcListTimeout) as e:
+                    return _mount_list_error_response(os.path.dirname(path), e)
+                if not pr.exists or pr.is_dir:
+                    return _error(f"no such file: {path}", status=404)
+            else:
+                st = await asyncio.to_thread(_stat_or_none, path)
+                if st is None:
+                    return _error(f"no such file: {path}", status=404)
             resp = await asyncio.to_thread(_proxy_raw, upstream, request)
             if resp is not None:
                 return resp  # upstream unreachable -> plain file read below
@@ -3051,7 +3565,7 @@ def create_app(start_dir: str) -> FastAPI:
         paths = ws.query_params.getlist("path")
 
         queue: asyncio.Queue = asyncio.Queue()
-        entries = [_WATCH_REGISTRY.subscribe(p, queue) for p in paths]
+        entries = [await _WATCH_REGISTRY.subscribe(p, queue) for p in paths]
 
         async def pump():
             # Forward change messages; a 15s idle gap emits a keepalive (WF-3).
@@ -3107,25 +3621,49 @@ def create_app(start_dir: str) -> FastAPI:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return JSONResponse({"ok": True})
 
+    # Every mutation endpoint invalidates the /api/fs/stat cache for the paths it
+    # touches (and their parents, via _invalidate_stat_cache) so the editor's
+    # immediate post-mutation stat re-reads fresh metadata. Invalidation runs
+    # unconditionally after the handler — a no-op on error/409 costs nothing, and
+    # doing it here (not inside each _fs_* helper's many return branches) keeps
+    # the contract in one obvious place per route.
+    #
+    # RESIDUAL: a RECURSIVE delete / overwriting rename of a directory does not
+    # walk the (now-gone) subtree to evict individually-cached child stats. Those
+    # entries simply age out within _STAT_TTL_S — the same bounded staleness the
+    # cache accepts for out-of-band changes — and the editor navigates top-down,
+    # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
     def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_write(body, x_fused)
+        result = _fs_write(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/mkdir")
     def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_mkdir(body, x_fused)
+        result = _fs_mkdir(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/delete")
     def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_delete(body, x_fused)
+        result = _fs_delete(body, x_fused)
+        _invalidate_stat_cache(body.get("path"))
+        return result
 
     @app.post("/api/fs/rename")
     def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_rename(body, x_fused)
+        result = _fs_rename(body, x_fused)
+        # A move changes both ends: src disappears, dst appears.
+        _invalidate_stat_cache(body.get("src"), body.get("dst"))
+        return result
 
     @app.post("/api/fs/copy")
     def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        return _fs_copy(body, x_fused)
+        result = _fs_copy(body, x_fused)
+        # A copy only writes dst; src is untouched, so its cached stat stays valid.
+        _invalidate_stat_cache(body.get("dst"))
+        return result
 
     @app.get("/render")
     def render(path: str):

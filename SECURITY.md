@@ -28,7 +28,7 @@ off-box can reach it directly. Beyond that:
   first-party template.
 - **`POST /api/run` executes your Python with no sandboxing** — a fresh OS
   subprocess per call (D5), same user and privileges as the server process
-  itself, 30s timeout. The timeout and per-call process are for crash
+  itself, 60s timeout. The timeout and per-call process are for crash
   containment and avoiding stale state, not for security isolation.
 - **No output sanitization anywhere in the render path.** The `markdown`
   template renders parsed Markdown as raw `innerHTML` by design ("local trust
@@ -92,7 +92,8 @@ environment.
 
 ## Fused account / hosted deploy
 
-Signing in (`/view/_account`, D111/D112) shells out to the external `fused`
+Signing in (Preferences' Fused account tab, `/view/_prefs?tab=account` —
+D111/D112, D125) shells out to the external `fused`
 CLI (`fused cloud login`) rather than implementing OAuth in-process.
 fused-render never reads or writes a credential itself — the JWT and any
 data-plane keys live entirely in the CLI's own credential file and OS

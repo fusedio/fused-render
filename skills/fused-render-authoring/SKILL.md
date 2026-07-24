@@ -22,7 +22,7 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    └─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
 ```
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the entire API. Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table below). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -50,7 +50,39 @@ Rules that matter (each has a reason):
 - **Relative paths in your code resolve next to the .py file** (the working directory is set there). `open("./data.csv")` next to your script just works.
 - **Each call is a fresh subprocess.** Edits to the .py apply on the next call — but so does full import cost (pandas ≈ 1 s per call). No state survives between calls; don't cache in globals.
 - **`print()` output goes to the browser console** (prefixed `[python]`) — use it freely for debugging; it cannot corrupt the result.
-- **Calls time out at 30 s** and errors return `{type, message, traceback}` to the page. The environment is whatever Python launched the server — assume stdlib plus whatever the user installed there.
+- **Calls time out at 60 s** and errors return `{type, message, traceback}` to the page.
+
+### Available Python libraries
+
+Write `main()` against **stdlib plus the supported library set** below — the packaged app bundles exactly these (its users cannot pip install), and dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in `pyproject.toml`, plus core deps):
+
+- **Data:** numpy, pandas, polars, pyarrow, duckdb, scipy, openpyxl, msgpack
+- **Geospatial:** shapely, geopandas, rasterio, zarr
+- **Plots & images:** matplotlib, pillow
+- **Documents:** pymupdf, pikepdf, fpdf2, python-pptx
+- **Network & cloud:** requests, httpx, botocore, google-auth
+- **Logs:** drain3
+
+Anything outside this set (e.g. torch, sklearn, xarray, plotly) may be missing — don't reach for it unless the user confirms it's installed in the Python that launched the server. If a needed import fails, prefer rewriting with the supported set over asking the user to install packages.
+
+Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
+
+```bash
+cat > /tmp/probe.py <<'EOF'
+def main(names: str = "pandas,numpy"):
+    from importlib import metadata
+    out = {}
+    for n in names.split(","):
+        try: out[n] = metadata.version(n)
+        except Exception: out[n] = None
+    return out
+EOF
+curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,geopandas,duckdb"}}'
+```
+
+A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.
 
 ## The HTML side: `window.fused` API
 
@@ -65,9 +97,11 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `fused.params.onChange(cb)` | `cb(allParams)` after every applied `set`. Returns an unsubscribe function. |
 | `fused.params.get("_file")` | Read-only: the target file a **preview template** was opened for. Keys starting `_` are reserved — `set()` on them throws. |
 | `await fused.readFile(path)` | File contents as **text** (UTF-8). Rejects with an `Error` on failure. Use when a view just needs the bytes as a string — no reader `.py` required. |
-| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, templates}` (`templates` is the ordered mode-list array, usually irrelevant to page code). Use for size guards before reading big files, and to capture `mtime` before editing. |
-| `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. Omit it to write unconditionally — also how you create a new file. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
+| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, writable, remote, templates}` (`templates` is the ordered mode-list array, usually irrelevant to page code; `writable` is false for read-only files — check it before offering an edit UI; `remote` is true for files on a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). Use for size guards before reading big files, and to capture `mtime` before editing. |
+| `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. A read-only file rejects with `.type === "readonly"` (check `stat().writable` first to avoid it). Omit `expectedMtime` to write unconditionally — also how you create a new file. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
+| `fused.env` | String `"local"` (this local server) vs `"hosted"` (the exported/hosted runtime). Branch on it only if a view must behave differently when exported. |
+| `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
 
 Notes:
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
@@ -88,6 +122,7 @@ try {
   mtime = fresh.mtime;                   // 3. re-arm for the next save
 } catch (err) {
   if (err.type === "conflict") { /* offer reload vs overwrite (writeFile without expectedMtime) */ }
+  else if (err.type === "readonly") { /* file isn't writable — disable the save UI */ }
   else throw err;
 }
 ```
@@ -148,7 +183,7 @@ const page = await fused.runPython("./my_reader.py", { file, offset: fused.param
 
 A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
 
-Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live one folder per template under `fused_render/templates/<name>/` and follow this pattern (see `templates/table/template.html` + `templates/table/reader.py` for a worked example); each extension maps to an **ordered list of mode names** (first = default) in the built-in registry `fused_render/templates/registry.json`. **User-owned** templates that override, reorder, or extend that list live under `~/.fused-render/` and are bound via `registry.json` — layout, the mode-list/registry grammar, and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
+Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live one folder per template under `fused_render/templates/<name>/` and follow this pattern (see `templates/csv/template.html` + `templates/csv/reader.py` for a worked example); each extension maps to an **ordered list of mode names** (first = default) in the built-in registry `fused_render/templates/registry.json`. **User-owned** templates that override, reorder, or extend that list live under `~/.fused-render/` and are bound via `registry.json` — layout, the mode-list/registry grammar, and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
 
 ## Testing in the browser: URL paths & modes
 
@@ -172,12 +207,12 @@ Path encoding: the fs path rides in the URL after the prefix with its **leading 
 
 Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
 
-## Long-running work and the 30 s timeout
+## Long-running work and the 60 s timeout
 
-Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 30 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
+Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
 
 - **Precompute and cache to disk.** Do the expensive work once, write the result next to the script (`.json`/`.parquet`), and have `main()` return the cached bytes when they're fresh (compare mtimes) — recompute only when the input changed. Reading a cached file is near-instant.
-- **Chunk / paginate.** Slice the work so each call stays well under 30 s, pass an `offset`/`page` param, and accumulate results in JS across several `runPython` calls. This also keeps the UI responsive.
+- **Chunk / paginate.** Slice the work so each call stays well under 60 s, pass an `offset`/`page` param, and accumulate results in JS across several `runPython` calls. This also keeps the UI responsive.
 - **Move the heavy job out of band.** For a genuinely long build, run it as a separate process/script that writes an output file, and have the view just `fused.readFile`/`runPython` the finished result.
 - **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
 
@@ -190,6 +225,7 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
 - Missing annotation on a numeric param → `main` receives `"50"` (string) and comparisons silently misbehave.
 - Expecting module state to persist between `runPython` calls → each call is a fresh process.
+- Importing a library outside the supported set (torch, sklearn, xarray, plotly, ...) → `ModuleNotFoundError` in the packaged app; stick to the "Available Python libraries" list above.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
 - Heavy import + slider wired without debounce → one full subprocess per tick; debounce inputs ~150 ms when `main` is slow.
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.

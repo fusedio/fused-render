@@ -1,0 +1,58 @@
+import sys
+from pathlib import Path
+
+# The extension set + per-extension icon variant come from the shared
+# association table (scripts/file_associations.json), not an inline copy, so the
+# Windows installer and the Linux AppImage register the identical set. The table
+# is derived from fused_render.winopen and drift-guarded by
+# tests/test_file_associations.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from file_associations import associations  # noqa: E402
+
+# FusedRenderPy: the experiment/python-supervisor build's own exe name and
+# ProgID prefix, distinct from the shipping "FusedRender" product so this
+# test install never collides with a real install's registry entries.
+_EXE_NAME = "FusedRenderPy.exe"
+_PROGID_PREFIX = "FusedRenderPy.Desktop"
+_CONTEXT_MENU_KEY = "FusedRenderPyDesktop"
+
+
+def main() -> None:
+    output = Path(sys.argv[1])
+    command = f'""{{app}}\\payload\\{_EXE_NAME}"" ""%1""'
+    lines = [
+        f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "FusedRender"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico,0"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: ""; ValueData: "Open with FusedRender"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}"; ValueType: string; ValueName: "Icon"; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\*\\shell\\{_CONTEXT_MENU_KEY}\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        # fused-render:// URL Protocol class (SPEC §26, D110): the empty-string
+        # "URL Protocol" value is what marks the key as a scheme handler; the
+        # shell\open\command reuses the same EXE + "%1" convention as the file
+        # handlers, so a deep link is delivered as a single arg the supervisor
+        # routes to /clone.
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render"; ValueType: string; ValueName: ""; ValueData: "URL:FusedRender Protocol"; Flags: uninsdeletekey',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{{app}}\\payload\\assets\\icons\\fused-render.ico,0"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+        f'Root: HKCU; Subkey: "Software\\Classes\\fused-render\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+    ]
+    for assoc in associations():
+        extension = assoc.extension
+        prog_id = f"{_PROGID_PREFIX}.{assoc.token}"
+        icon = assoc.icon
+        type_name = assoc.type_name
+        lines.extend(
+            [
+                f'Root: HKCU; Subkey: "Software\\Classes\\{prog_id}"; ValueType: string; ValueName: ""; ValueData: "{type_name}"; Flags: uninsdeletekey',
+                f'Root: HKCU; Subkey: "Software\\Classes\\{prog_id}\\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{{app}}\\payload\\assets\\icons\\{icon}.ico,0"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+                f'Root: HKCU; Subkey: "Software\\Classes\\{prog_id}\\shell\\open\\command"; ValueType: string; ValueName: ""; ValueData: "{command}"; Flags: uninsdeletevalue uninsdeletekeyifempty',
+                f'Root: HKCU; Subkey: "Software\\Classes\\{extension}\\OpenWithProgids"; ValueType: string; ValueName: "{prog_id}"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty',
+                f'Root: HKCU; Subkey: "Software\\Classes\\Applications\\{_EXE_NAME}\\SupportedTypes"; ValueType: string; ValueName: "{extension}"; ValueData: ""; Flags: uninsdeletevalue uninsdeletekeyifempty',
+            ]
+        )
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

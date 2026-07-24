@@ -4,10 +4,14 @@ server-side bookmark store at ~/.fused-render/bookmarks.json.
 FUSED_RENDER_HOME is redirected to a tmp dir so no test touches the real home.
 """
 import json
+import time
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.shell import bookmarks as bookmarks_mod
+from fused_render.shell import mounts as mounts_mod
 
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
@@ -24,7 +28,7 @@ def test_get_reports_not_exists_when_absent(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     resp = client.get("/api/bookmarks")
     assert resp.status_code == 200
-    assert resp.json() == {"exists": False, "bookmarks": []}
+    assert resp.json() == {"exists": False, "bookmarks": [], "missing": []}
 
 
 def test_put_then_get_roundtrips(tmp_path, monkeypatch):
@@ -48,7 +52,8 @@ def test_put_then_get_roundtrips(tmp_path, monkeypatch):
     assert saved == tree
 
     get = client.get("/api/bookmarks")
-    assert get.json() == {"exists": True, "bookmarks": tree}
+    # Neither "/x" nor "/y" exists on disk -> both flagged missing.
+    assert get.json() == {"exists": True, "bookmarks": tree, "missing": ["1", "3"]}
 
 
 def test_empty_list_still_reports_exists(tmp_path, monkeypatch):
@@ -56,14 +61,14 @@ def test_empty_list_still_reports_exists(tmp_path, monkeypatch):
     # an empty file is still a valid, present tree.
     client, _ = _client(tmp_path, monkeypatch)
     assert client.put("/api/bookmarks", json=[], headers=FUSED).status_code == 200
-    assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": []}
+    assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": [], "missing": []}
 
 
 def test_corrupt_file_reports_not_exists(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True)
     (home / "bookmarks.json").write_text("{ not json", encoding="utf-8")
-    assert client.get("/api/bookmarks").json() == {"exists": False, "bookmarks": []}
+    assert client.get("/api/bookmarks").json() == {"exists": False, "bookmarks": [], "missing": []}
 
 
 def test_put_without_fused_header_is_rejected(tmp_path, monkeypatch):
@@ -371,7 +376,11 @@ def test_nested_folder_roundtrips_put_then_get(tmp_path, monkeypatch):
     tree = [_folder("f", "F", [_folder("sub", "sub", [_bm("x", "deep", 1)]),
                                _bm("1", "top", 2)])]
     assert client.put("/api/bookmarks", json=tree, headers=FUSED).status_code == 200
-    assert client.get("/api/bookmarks").json() == {"exists": True, "bookmarks": tree}
+    # Neither dummy target exists on disk -> both flagged missing, deepest-first
+    # (tree order): the nested folder's child, then the top-level bookmark.
+    assert client.get("/api/bookmarks").json() == {
+        "exists": True, "bookmarks": tree, "missing": ["x", "1"],
+    }
 
 
 def test_migration_dedupes_across_nested_depth(tmp_path, monkeypatch):
@@ -398,3 +407,178 @@ def test_migration_leaves_unique_tree_unwritten(tmp_path, monkeypatch):
     raw = (home / "bookmarks.json").read_text(encoding="utf-8")
     assert client.get("/api/bookmarks").json()["exists"] is True
     assert (home / "bookmarks.json").read_text(encoding="utf-8") == raw
+
+
+# --- missing-file flag (GET-time, never persisted) ----------------------------
+
+
+def _view_url(path, search=""):
+    # Encode each segment like the frontend's urlForFsPath (lib/router.ts) —
+    # mirrors test_shell_recents.py's helper of the same name.
+    encoded = "/".join(quote(s, safe="") for s in str(path).lstrip("/").split("/"))
+    return "/view/" + encoded + search
+
+
+def _make_file(tmp_path, name="a.parquet"):
+    f = tmp_path / name
+    f.write_text("x", encoding="utf-8")
+    return f
+
+
+def test_missing_flags_deleted_target_without_pruning_it(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    keep = _make_file(tmp_path, "keep.csv")
+    gone = _make_file(tmp_path, "gone.csv")
+    tree = [_bm("keep", "keep", 1), _bm("gone", "gone", 2)]
+    tree[0]["url"] = _view_url(keep)
+    tree[1]["url"] = _view_url(gone)
+    _write_tree(home, tree)
+    gone.unlink()
+
+    got = client.get("/api/bookmarks").json()
+    assert got["missing"] == ["gone"]
+    # Never pruned from the tree or from disk — same posture as recents (the
+    # file may come back).
+    assert [b["id"] for b in got["bookmarks"]] == ["keep", "gone"]
+    saved = json.loads((home / "bookmarks.json").read_text(encoding="utf-8"))
+    assert [b["id"] for b in saved] == ["keep", "gone"]
+    # No per-item field added — "missing" is a side-channel, not a tree mutation.
+    assert "missing" not in saved[0] and "exists" not in saved[0]
+
+
+def test_missing_clears_once_target_recreated(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    f = _make_file(tmp_path, "reborn.csv")
+    _write_tree(home, [{**_bm("1", "a", 1), "url": _view_url(f)}])
+    f.unlink()
+    assert client.get("/api/bookmarks").json()["missing"] == ["1"]
+    _make_file(tmp_path, "reborn.csv")
+    assert client.get("/api/bookmarks").json()["missing"] == []
+
+
+def test_missing_recurses_into_nested_folders(tmp_path, monkeypatch):
+    # D121: a missing bookmark several folders deep is still found.
+    client, home = _client(tmp_path, monkeypatch)
+    keep = _make_file(tmp_path, "keep.csv")
+    inner = _folder("inner", "inner", [{**_bm("gone", "gone", 1), "url": "/view/never-existed"}])
+    outer = _folder("f", "F", [inner, {**_bm("keep", "keep", 2), "url": _view_url(keep)}])
+    _write_tree(home, [outer])
+    assert client.get("/api/bookmarks").json()["missing"] == ["gone"]
+
+
+def test_missing_never_flags_folders_or_sentinel_urls(tmp_path, monkeypatch):
+    # A folder has no url at all; a layout/tab sentinel resolves to no fs
+    # target — neither names a real path to confirm gone, so neither is ever
+    # flagged, even though nothing on disk backs them.
+    client, home = _client(tmp_path, monkeypatch)
+    sentinel = {**_bm("panel", "panel", 1), "url": "/view/_panel?_layout=(a,b)"}
+    outer = _folder("f", "F", [sentinel])
+    _write_tree(home, [outer])
+    assert client.get("/api/bookmarks").json()["missing"] == []
+
+
+def test_missing_never_flags_any_underscore_sentinel_route(tmp_path, monkeypatch):
+    # Regression (Bugbot finding on PR #253): every shell sentinel route is
+    # genuinely bookmarkable via StaticBreadcrumb — not just _panel/_tab — and
+    # _account bookmarks must keep working per D125. Narrowly checking against
+    # a `("_panel", "_tab")` allowlist let the rest decode to fake paths like
+    # "/_prefs" and get falsely flagged missing; the fix treats ANY `_`-prefixed
+    # top-level segment as a sentinel (mirrors recents._decoded_fs_path).
+    client, home = _client(tmp_path, monkeypatch)
+    tree = [
+        {**_bm("prefs", "prefs", 1), "url": "/view/_prefs"},
+        {**_bm("templates", "templates", 2), "url": "/view/_templates"},
+        {**_bm("mounts", "mounts", 3), "url": "/view/_mounts"},
+        {**_bm("account", "account", 4), "url": "/view/_prefs?tab=account"},
+        {**_bm("bookmark", "bookmark", 5), "url": "/view/_bookmark?file=%2Ftmp%2Fx.bookmark"},
+    ]
+    _write_tree(home, tree)
+    assert client.get("/api/bookmarks").json()["missing"] == []
+
+
+def test_missing_check_is_bounded_when_hung(tmp_path, monkeypatch):
+    # A stale bookmark sitting on a slow/hung mount must never stall the
+    # sidebar's poll. Fail open: a check that outlives the budget is NOT
+    # flagged, and the endpoint stays well under the hang duration.
+    client, home = _client(tmp_path, monkeypatch)
+    urls = [_view_url(_make_file(tmp_path, f"hang{i}.parquet")) for i in range(3)]
+    _write_tree(home, [_bm(str(i), str(i), i) | {"url": u} for i, u in enumerate(urls)])
+
+    def _hang(path):
+        time.sleep(10)
+        return True  # would flag missing if it ever completed within budget
+
+    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _hang)
+
+    start = time.monotonic()
+    resp = client.get("/api/bookmarks")
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert elapsed < 3.0, f"GET /api/bookmarks took {elapsed:.1f}s — not bounded"
+    assert resp.json()["missing"] == []  # fail open: nothing confirmed gone
+
+
+def test_missing_checks_run_concurrently_not_serially(tmp_path, monkeypatch):
+    # N bookmarks each with a ~0.5s existence check must complete in ~one
+    # sleep (concurrent fan-out), not N sleeps (serial).
+    client, home = _client(tmp_path, monkeypatch)
+    tree = [_bm(str(i), str(i), i) | {"url": _view_url(tmp_path / f"slow{i}.parquet")}
+            for i in range(5)]
+    _write_tree(home, tree)
+
+    def _slow(path):
+        time.sleep(0.5)
+        return False
+
+    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _slow)
+
+    start = time.monotonic()
+    resp = client.get("/api/bookmarks")
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert set(resp.json()["missing"]) == {"0", "1", "2", "3", "4"}
+    # Serial would be ~2.5s+; a generous 2.0s ceiling still discriminates
+    # cleanly while leaving headroom against scheduling noise under load.
+    assert elapsed < 2.0, f"GET took {elapsed:.1f}s — checks not concurrent"
+
+
+def test_missing_mount_backed_paths_route_through_rc_not_os_path(tmp_path, monkeypatch):
+    # Mount safety: a mount-backed bookmark target must be checked via the
+    # rclone rc API (rc_stat_for), NEVER a kernel os.path.exists — a raw
+    # GETATTR on a hung NFS mount is the exact call that wedges it. Unlike
+    # recents (files-only), a directory target is also legitimately "present".
+    client, home = _client(tmp_path, monkeypatch)
+    live = tmp_path / "live_mount.parquet"
+    a_dir = tmp_path / "dir_mount"
+    indet = tmp_path / "indet_mount.parquet"
+    gone = tmp_path / "gone_mount.parquet"
+    tree = [_bm(name, name, i) | {"url": _view_url(p)}
+            for i, (name, p) in enumerate(
+                [("live", live), ("dir", a_dir), ("indet", indet), ("gone", gone)])]
+    _write_tree(home, tree)
+
+    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
+
+    def _no_os_path_exists(path):
+        raise AssertionError("os.path.exists called on a mount-backed path")
+
+    monkeypatch.setattr(bookmarks_mod.pathops.os.path, "exists", _no_os_path_exists)
+
+    def _stat(path, **kw):
+        if path.endswith("live_mount.parquet"):
+            return "exists"
+        if path.endswith("dir_mount"):
+            return "exists"  # a directory listing is a valid bookmark target
+        if path.endswith("gone_mount.parquet"):
+            return "missing"  # healthy rcd, item null -> trustworthy negative
+        return "indeterminate"  # rcd down / timeout / error
+
+    monkeypatch.setattr(mounts_mod, "rc_stat_for", _stat)
+
+    resp = client.get("/api/bookmarks")
+    assert resp.status_code == 200
+    # confirmed-missing only; file, dir, and indeterminate all stay unflagged
+    # (fail open on indeterminate).
+    assert resp.json()["missing"] == ["gone"]

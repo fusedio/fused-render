@@ -1,0 +1,9 @@
+#!/bin/sh
+# AppImage entrypoint. Exec the bundled, isolated CPython as the desktop
+# supervisor — the Linux analog of the Windows launcher stub that execs
+# `pythonw -I -m fused_render.supervisor`. `-I` isolates the interpreter (no
+# user site, no PYTHON* env leakage) while still loading the bundled
+# site-packages where fused_render lives. All child-process env (paths, rclone
+# bin, DuckDB extension dir) is set by the supervisor itself, not here.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/python/bin/python3" -I -m fused_render.supervisor "$@"

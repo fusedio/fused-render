@@ -76,10 +76,48 @@
   }
   #status.error { color: #ff6b6b; }
   #status a { color: #E5FF44; }
+  .skel-bar {
+    height: 14px;
+    margin: 0 0 14px;
+    border-radius: 4px;
+    background: linear-gradient(100deg, #1b1d21 30%, #26292f 50%, #1b1d21 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.3s ease-in-out infinite;
+  }
+  .skel-h1 { height: 28px; width: 52%; margin-bottom: 24px; }
+  .skel-h2 { height: 20px; width: 38%; margin-top: 10px; margin-bottom: 18px; }
+  .skel-code {
+    height: 70px;
+    margin: 4px 0 20px;
+    border-radius: 6px;
+    border: 1px solid #2a2d33;
+    background: linear-gradient(100deg, #1b1d21 30%, #26292f 50%, #1b1d21 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.3s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
-  <div id="doc"><div id="status">Loading…</div></div>
+  <div id="doc">
+    <div id="skel" aria-hidden="true">
+      <div class="skel-bar skel-h1"></div>
+      <div class="skel-bar" style="width:94%"></div>
+      <div class="skel-bar" style="width:82%"></div>
+      <div class="skel-bar" style="width:88%"></div>
+      <div class="skel-bar skel-h2"></div>
+      <div class="skel-bar" style="width:76%"></div>
+      <div class="skel-bar" style="width:91%"></div>
+      <div class="skel-bar" style="width:65%"></div>
+      <div class="skel-code"></div>
+      <div class="skel-bar" style="width:60%; margin-left:24px"></div>
+      <div class="skel-bar" style="width:70%; margin-left:24px"></div>
+      <div class="skel-bar" style="width:85%"></div>
+    </div>
+  </div>
   <script>
     const MAX_BYTES = 2 * 1024 * 1024;
 

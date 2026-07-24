@@ -327,18 +327,18 @@ def test_get_completed_false_filters_completed_true_shows(tmp_path, monkeypatch)
 
 def test_get_mount_backed_paths_route_through_rc_not_isfile(tmp_path, monkeypatch):
     # Mount safety: a mount-backed recents path must be checked via the rclone
-    # rc API (rc_stat_for), NEVER a kernel os.path.isfile — a raw GETATTR on a
-    # hung NFS mount is the exact call that wedges it. The tri-state result
-    # governs filtering: only a healthy-rcd-confirmed "missing" filters an
-    # entry; "exists" keeps it, and "indeterminate" (rcd down / timeout / error)
-    # keeps it too (fail open).
+    # rc API (rc_kind_for), NEVER a kernel os.path.isfile — a raw GETATTR on a
+    # hung NFS mount is the exact call that wedges it. The four-state result
+    # governs filtering, files-only (D22): a confirmed "file" keeps the entry;
+    # "missing" AND "dir" both filter it (recents record files, not dirs); only
+    # an "indeterminate" (rcd down / timeout / error) keeps it (fail open).
     client, _ = _client(tmp_path, monkeypatch)
     live = _make_file(tmp_path, "live_mount.parquet")
+    adir = _make_file(tmp_path, "dir_mount.parquet")
     indet = _make_file(tmp_path, "indet_mount.parquet")
     gone = _make_file(tmp_path, "gone_mount.parquet")
-    client.post("/api/recents/open", json={"url": _view_url(live)}, headers=FUSED)
-    client.post("/api/recents/open", json={"url": _view_url(indet)}, headers=FUSED)
-    client.post("/api/recents/open", json={"url": _view_url(gone)}, headers=FUSED)
+    for f in (live, adir, indet, gone):
+        client.post("/api/recents/open", json={"url": _view_url(f)}, headers=FUSED)
 
     monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
 
@@ -347,20 +347,43 @@ def test_get_mount_backed_paths_route_through_rc_not_isfile(tmp_path, monkeypatc
 
     monkeypatch.setattr(recents_mod.os.path, "isfile", _no_isfile)
 
-    def _stat(path):
+    def _kind(path, **kw):
         if path.endswith("live_mount.parquet"):
-            return "exists"
+            return "file"
+        if path.endswith("dir_mount.parquet"):
+            return "dir"  # a dir is not a file -> filtered (files-only contract)
         if path.endswith("gone_mount.parquet"):
             return "missing"  # healthy rcd, item null -> trustworthy negative
         return "indeterminate"  # rcd down / timeout / error
 
-    monkeypatch.setattr(mounts_mod, "rc_stat_for", _stat)
+    monkeypatch.setattr(mounts_mod, "rc_kind_for", _kind)
 
     resp = client.get("/api/recents")
     assert resp.status_code == 200
     got = {e["url"] for e in resp.json()["entries"]}
-    # exists + indeterminate kept; only the confirmed-missing entry filtered.
+    # file + indeterminate kept; confirmed-missing AND confirmed-dir filtered.
     assert got == {_view_url(live), _view_url(indet)}
+
+
+def test_open_rejects_mount_backed_directory(tmp_path, monkeypatch):
+    # POST /api/recents/open resolves the just-opened target through
+    # _file_path_from_url, which is files-only. A mount-backed DIRECTORY url must
+    # not be recorded (rc_kind_for "dir"), mirroring the local os.path.isfile
+    # gate — and never via a kernel probe that would wedge the mount.
+    client, _ = _client(tmp_path, monkeypatch)
+    d = _make_file(tmp_path, "a_directory")
+    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
+
+    def _no_isfile(path):
+        raise AssertionError("os.path.isfile called on a mount-backed path")
+
+    monkeypatch.setattr(recents_mod.os.path, "isfile", _no_isfile)
+    monkeypatch.setattr(mounts_mod, "rc_kind_for", lambda path, **kw: "dir")
+
+    resp = client.post("/api/recents/open", json={"url": _view_url(d)}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"recorded": False}  # a dir is not a recordable file
+    assert client.get("/api/recents").json()["entries"] == []
 
 
 def test_corrupt_file_reads_as_defaults(tmp_path, monkeypatch):

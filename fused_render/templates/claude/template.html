@@ -309,6 +309,34 @@
     color: var(--dim);
     text-align: center;
   }
+
+  /* ── skeleton loading placeholders (chat history restore, session list) ── */
+  .skel-bar {
+    height: 11px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-turn { margin: 0 0 14px; }
+  .skel-turn-user .skel-bar { width: 34%; }
+  .skel-turn-assistant { display: flex; gap: 8px; }
+  .skel-turn-assistant .skel-dot-a {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0; margin-top: 3px;
+  }
+  .skel-turn-assistant .skel-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+  .skel-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+  .skel-row .skel-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0;
+  }
+  .skel-row .skel-bar.title { flex: 1; }
+  .skel-row .skel-bar.sub { width: 42px; flex-shrink: 0; }
 </style>
 </head>
 <body class="home">
@@ -365,6 +393,12 @@
   </div>
 
 <script>
+// A chat must never reload out from under a live conversation: the runtime
+// watches _file (LR-1), so Claude's own edit to the target file would reload
+// THIS frame mid-stream — killing the poll loop mid-sentence and orphaning the
+// run (a sibling _render pane still live-refreshes; only the chat opts out).
+fused.autoReload(false);
+
 const log = document.getElementById("log");
 const box = document.getElementById("box");
 const sessionEl = document.getElementById("session");
@@ -431,6 +465,7 @@ showSession();
 document.getElementById("back").onclick = () => {
   if (sending) return;  // mid-turn back would orphan the streaming run's UI
   fused.params.set("session_id", "");
+  fused.params.set("run", "");  // a failed re-attach must not chase us home
   showSession();
   log.innerHTML = "";
   document.body.classList.add("home");
@@ -697,6 +732,13 @@ function makeTyper(bodyEl) {
 
   function tick() {
     raf = null;
+    if (shown > target.length) {
+      // Target got rewritten shorter (authoritative final text): without this
+      // clamp `remaining` goes negative, nothing ever redraws, and the frozen
+      // frame keeps stale mid-word text forever.
+      shown = target.length;
+      bodyEl.innerHTML = renderMd(target);
+    }
     const remaining = target.length - shown;
     if (remaining > 0) {
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
@@ -731,27 +773,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // UI and corrupting the transcript. `sending` gates both submit handlers.
 let sending = false;
 
-async function sendMessage(message) {
-  if (sending) return;
-  sending = true;
-  addUser(message);
+// Stream one run into the log: working line + typewriter, polling until done.
+// The `run` URL param marks the run as in-flight for the page's whole life —
+// if this frame dies mid-loop (mode switch, reload), the subprocess keeps
+// going and the next boot re-attaches via resumeRun. Cleared only when a
+// poll reports the run finished.
+async function pollLoop(run_id) {
   const w = addWorking();
   let reply = null;
   let typer = null;
   try {
-    const { run_id, error } = await fused.runPython("./agent.py", {
-      action: "start",
-      file: FILE,
-      message,
-      session_id: fused.params.get("session_id") || "",
-      model: fused.params.get("model") || DEFAULT_MODEL,
-      effort: fused.params.get("effort") || DEFAULT_EFFORT,
-      // key:null — all agent.py calls opt out of default per-file cancellation
-      // (D114): start/poll/history/sessions share this file, and superseding an
-      // awaited poll would leave it pending and hang the streaming loop.
-    }, { key: null });
-    if (error) throw new Error(error);
-
     while (true) {
       const data = await fused.runPython("./agent.py", { action: "poll", run_id }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
@@ -767,6 +798,7 @@ async function sendMessage(message) {
         if (!data.done) typer.update(data.text);
       }
       if (data.done) {
+        fused.params.set("run", "");
         w.stop(); w.el.remove();
         if (data.error) {
           if (typer) typer.abort();
@@ -783,16 +815,108 @@ async function sendMessage(message) {
     }
   } catch (err) {
     // Mirror the data.error cleanup: kill the rAF loop and drop the partial
-    // bubble so a failed run never leaves a half-streamed reply behind.
+    // bubble so a failed run never leaves a half-streamed reply behind. The
+    // `run` param is deliberately NOT cleared: a poll that died with the page
+    // being torn down should still re-attach on the next boot.
     if (typer) typer.abort();
     if (reply) reply.remove();
     addError(err.message);
   } finally {
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
+  }
+}
+
+async function sendMessage(message) {
+  if (sending) return;
+  sending = true;
+  addUser(message);
+  try {
+    const { run_id, error } = await fused.runPython("./agent.py", {
+      action: "start",
+      file: FILE,
+      message,
+      session_id: fused.params.get("session_id") || "",
+      model: fused.params.get("model") || DEFAULT_MODEL,
+      effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      // key:null — all agent.py calls opt out of default per-file cancellation
+      // (D114): start/poll/history/sessions share this file, and superseding an
+      // awaited poll would leave it pending and hang the streaming loop.
+    }, { key: null });
+    if (error) throw new Error(error);
+    fused.params.set("run", run_id);
+    await pollLoop(run_id);
+  } catch (err) {
+    addError(err.message);
+  } finally {
     sending = false;
   }
   log.scrollTop = log.scrollHeight;
   box.focus();
+}
+
+// Re-attach to a run that was streaming when this page last unloaded (mode
+// switch / reload): only the poll loop died with the frame — the detached
+// claude subprocess kept working. Boot lands here when the `run` param is
+// still set; the poll replays the WHOLE turn's text, so any partial rows the
+// history restore already rendered for this turn are trimmed first.
+async function resumeRun(run_id) {
+  if (sending) return;
+  sending = true;
+  try {
+    const probe = await fused.runPython("./agent.py", { action: "poll", run_id }, { key: null });
+    if (probe.error === "unknown run_id") {
+      // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach to
+      fused.params.set("run", "");
+      return;
+    }
+    const users = log.querySelectorAll(".user");
+    const lastUser = users[users.length - 1];
+    const matches = !!lastUser && lastUser.textContent === probe.message;
+    if (probe.done) {
+      // Run finished with no frame attached. The transcript owns finished
+      // turns, so only repair what it can provably be missing: its tail
+      // flushes a beat after the result row, so a just-finished turn may lack
+      // its last assistant rows — when the restored log still ends at this
+      // run's user line, re-render the turn from the authoritative poll text.
+      // When history has clearly moved past this run (a stale bookmarked
+      // `run` param on a session that kept going), touch nothing — appending
+      // here is what duplicated old turns.
+      fused.params.set("run", "");
+      if (probe.error) {
+        if (matches || !users.length) addError(probe.error);
+        return;
+      }
+      if (matches) {
+        while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      } else if (!users.length && probe.message) {
+        // frame died before the transcript had any rows AND the run finished
+        // while away: rebuild the whole turn
+        addUser(probe.message);
+        if (probe.text) addAssistant("").lastChild.innerHTML = renderMd(probe.text);
+      }
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+    if (matches) {
+      // In flight and this turn's user line is on screen: keep it, drop the
+      // partial assistant rows — pollLoop re-streams the whole turn. (Known
+      // ambiguity: an OLDER turn with the exact same words, when this run's
+      // user row hadn't reached the transcript yet — a sub-second overlap —
+      // gets its reply trimmed from view; a reload restores it from the
+      // transcript.)
+      while (lastUser.nextElementSibling) lastUser.nextElementSibling.remove();
+    } else if (probe.message) {
+      // frame died before the transcript had any rows: restore the user turn
+      addUser(probe.message);
+    }
+    await pollLoop(run_id);
+  } catch (err) {
+    console.warn("run re-attach failed:", err.message);
+  } finally {
+    sending = false;
+    box.focus();
+  }
 }
 
 document.getElementById("inputbox").onsubmit = (e) => {
@@ -830,21 +954,41 @@ function ago(ts) {
   return Math.floor(s / 86400) + "d ago";
 }
 
+// Content-shaped placeholder for a restoring transcript: a short user bar
+// followed by a wider multi-line assistant block, so the chat pane never
+// flashes fully blank while the history fetch is in flight.
+function renderLogSkeleton() {
+  log.innerHTML = "";
+  const user = document.createElement("div");
+  user.className = "turn skel-turn skel-turn-user";
+  user.innerHTML = '<div class="skel-bar"></div>';
+  const assistant = document.createElement("div");
+  assistant.className = "turn skel-turn skel-turn-assistant";
+  assistant.innerHTML =
+    '<span class="skel-dot-a"></span><span class="skel-lines">' +
+    '<span class="skel-bar" style="width:88%"></span>' +
+    '<span class="skel-bar" style="width:72%"></span>' +
+    '<span class="skel-bar" style="width:50%"></span></span>';
+  log.append(user, assistant);
+}
+
 async function loadHistory(session_id) {
   // Reuse the `sending` gate: a message sent during the await below would be
   // appended first and the older history turns dumped after it, scrambling the
   // transcript order. Blocking sends for the load keeps turns in order.
   if (sending) return;
   sending = true;
-  log.innerHTML = "";  // replace the visible conversation, don't append to it
+  renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id }, { key: null });
+    log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
       if (t.role === "user") addUser(t.text);
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
     log.scrollTop = log.scrollHeight;
   } catch (err) {
+    log.innerHTML = "";  // drop the skeleton, mirror the original blank fallback
     console.warn("history restore failed:", err.message);
   } finally {
     sending = false;
@@ -870,17 +1014,36 @@ function addChatRow(list, s) {
   list.appendChild(row);
 }
 
+// Content-shaped placeholder for the session list: a few chat-row-sized bars
+// (dot + title + timestamp) so "Sessions for this file" never sits over a
+// flash of empty space while the fetch is in flight.
+function renderRecentSkeleton(list) {
+  list.innerHTML = "";
+  [72, 58, 44].forEach((pct) => {
+    const row = document.createElement("div");
+    row.className = "skel-row";
+    row.innerHTML =
+      '<span class="skel-dot"></span>' +
+      '<span class="skel-bar title" style="max-width:' + pct + '%"></span>' +
+      '<span class="skel-bar sub"></span>';
+    list.appendChild(row);
+  });
+}
+
 async function loadRecent() {
   const list = document.getElementById("recentlist");
+  renderRecentSkeleton(list);
   try {
     const { sessions, error } = await fused.runPython("./agent.py", { action: "sessions", file: FILE }, { key: null });
     if (error) throw new Error(error);
+    list.innerHTML = "";  // drop the skeleton now that we know the real state
     if (!sessions.length) {
       document.getElementById("recent").style.display = "none";
       return;
     }
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
+    list.innerHTML = "";  // drop the skeleton, mirror the original blank fallback
     console.warn("session list failed:", err.message);
   }
 }
@@ -893,11 +1056,15 @@ async function loadRecent() {
   clearTopClaudeComments();
   renderAttachments();  // chips show in whichever view boots (home or chat)
   const session_id = fused.params.get("session_id");
-  if (session_id) {
+  const run_id = fused.params.get("run");
+  if (session_id || run_id) {
     // Resuming a chat with a comment handoff: enter chat, where the chips show
-    // above the input and fold into the session's next message.
+    // above the input and fold into the session's next message. A bare `run`
+    // param (frame died before the first poll saw the session id) still means
+    // an in-flight conversation — enter chat and re-attach.
     enterChat();
-    await loadHistory(session_id);
+    if (session_id) await loadHistory(session_id);
+    if (run_id) await resumeRun(run_id);
   } else {
     homebox.focus();  // chips (if any) show on the home page under the card
     await loadRecent();

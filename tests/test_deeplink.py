@@ -17,13 +17,14 @@ from fused_render.deeplink import (
     DeeplinkError,
     clone_or_pull,
     github_url_from,
+    is_launch_url,
     parse_github_url,
 )
 from fused_render.server import create_app
 
 FUSED = {"X-Fused": "1"}
 
-TREE_URL = "https://github.com/fusedlabs/sandbox/tree/main/Max/how_it_works"
+TREE_URL = "https://github.com/octocat/sandbox/tree/main/examples/how_it_works"
 DEEPLINK = "fused-render://open?git=" + TREE_URL
 
 
@@ -33,16 +34,16 @@ DEEPLINK = "fused-render://open?git=" + TREE_URL
 def test_parse_tree_url_with_subpath():
     spec = parse_github_url(TREE_URL)
     assert spec == {
-        "owner": "fusedlabs",
+        "owner": "octocat",
         "repo": "sandbox",
         "ref": "main",
-        "subpath": "Max/how_it_works",
+        "subpath": "examples/how_it_works",
         "name": "how_it_works",
     }
 
 
 def test_parse_repo_root_url():
-    spec = parse_github_url("https://github.com/fusedlabs/sandbox")
+    spec = parse_github_url("https://github.com/octocat/sandbox")
     assert spec["ref"] is None
     assert spec["subpath"] == ""
     assert spec["name"] == "sandbox"
@@ -67,12 +68,51 @@ def test_parse_accepts_percent_encoded_deeplink():
     from urllib.parse import quote
 
     raw = "fused-render://open?git=" + quote(TREE_URL, safe="")
-    assert parse_github_url(raw)["subpath"] == "Max/how_it_works"
+    assert parse_github_url(raw)["subpath"] == "examples/how_it_works"
 
 
 def test_parse_rejects_unknown_deeplink_action():
     with pytest.raises(DeeplinkError, match="expected fused-render://open"):
         parse_github_url("fused-render://frobnicate?git=" + TREE_URL)
+
+
+def test_unknown_deeplink_error_names_both_actions():
+    with pytest.raises(DeeplinkError, match="fused-render://launch"):
+        parse_github_url("fused-render://frobnicate?git=" + TREE_URL)
+
+
+# ---- launch action (D128) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "fused-render://launch",
+        "fused-render://launch/",
+        "fused-render:launch",  # some carriers strip the empty authority
+        "FUSED-RENDER://LAUNCH",
+        "  fused-render://launch  ",
+    ],
+)
+def test_is_launch_url_accepts(src):
+    assert is_launch_url(src) is True
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "",
+        None,
+        "fused-render://launch?x=1",  # launch is payload-free by definition
+        "fused-render://launch/extra",
+        "fused-render://launchpad",
+        "fused-render://open?git=" + TREE_URL,
+        DEEPLINK,
+        "https://github.com/o/r",
+    ],
+)
+def test_is_launch_url_rejects(src):
+    assert is_launch_url(src) is False
 
 
 def test_github_url_from_passthrough():
@@ -132,15 +172,15 @@ def test_openurls_target_path_routes_bookmark_file_to_view():
     # application:openURLs: selector as a file:// URL, not openFiles:.
     from fused_render.app import openurls_target_path, view_url_path
 
-    raw = "file:///Users/vasu/Desktop/My%20Note.bookmark"
-    assert openurls_target_path(raw) == view_url_path("/Users/vasu/Desktop/My Note.bookmark")
+    raw = "file:///tmp/My%20Note.bookmark"
+    assert openurls_target_path(raw) == view_url_path("/tmp/My Note.bookmark")
 
 
 def test_openurls_target_path_routes_plain_file_to_view():
     from fused_render.app import openurls_target_path, view_url_path
 
-    raw = "file:///Users/vasu/Desktop/notes.txt"
-    assert openurls_target_path(raw) == view_url_path("/Users/vasu/Desktop/notes.txt")
+    raw = "file:///tmp/notes.txt"
+    assert openurls_target_path(raw) == view_url_path("/tmp/notes.txt")
 
 
 # ---- clone / pull ------------------------------------------------------------
@@ -155,10 +195,10 @@ def _git(*args, cwd=None):
 
 @pytest.fixture
 def source_repo(tmp_path):
-    """A local repo shaped like the sandbox example: Max/how_it_works/index.html
+    """A local repo shaped like the sandbox example: examples/how_it_works/index.html
     plus an unrelated top-level dir the sparse checkout must NOT materialize."""
     src = tmp_path / "srcrepo"
-    sub = src / "Max" / "how_it_works"
+    sub = src / "examples" / "how_it_works"
     sub.mkdir(parents=True)
     (sub / "index.html").write_text("<h1>hi</h1>")
     other = src / "unrelated"
@@ -185,7 +225,7 @@ def test_clone_subdir_opens_index(env, source_repo):
     dest = env / "how_it_works"
     assert result["dest"] == str(dest)
     assert result["updated"] is False
-    assert (dest / "Max" / "how_it_works" / "index.html").is_file()
+    assert (dest / "examples" / "how_it_works" / "index.html").is_file()
     # sparse checkout: the unrelated tree must not be materialized
     assert not (dest / "unrelated").exists()
     assert result["view"].startswith("/view/")
@@ -193,9 +233,9 @@ def test_clone_subdir_opens_index(env, source_repo):
 
 
 def test_clone_dir_without_index_opens_folder(env, source_repo):
-    (source_repo / "Max" / "how_it_works" / "index.html").unlink()
+    (source_repo / "examples" / "how_it_works" / "index.html").unlink()
     # keep the dir non-empty: git tracks files, an empty dir would vanish
-    (source_repo / "Max" / "how_it_works" / "readme.md").write_text("no index")
+    (source_repo / "examples" / "how_it_works" / "readme.md").write_text("no index")
     _git("add", "-A", cwd=source_repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "rm", cwd=source_repo)
     result = clone_or_pull(parse_github_url(TREE_URL))
@@ -205,12 +245,12 @@ def test_clone_dir_without_index_opens_folder(env, source_repo):
 def test_reclick_pulls_updates(env, source_repo):
     spec = parse_github_url(TREE_URL)
     clone_or_pull(spec)
-    (source_repo / "Max" / "how_it_works" / "new.txt").write_text("v2")
+    (source_repo / "examples" / "how_it_works" / "new.txt").write_text("v2")
     _git("add", "-A", cwd=source_repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "v2", cwd=source_repo)
     result = clone_or_pull(spec)
     assert result["updated"] is True
-    assert (env / "how_it_works" / "Max" / "how_it_works" / "new.txt").is_file()
+    assert (env / "how_it_works" / "examples" / "how_it_works" / "new.txt").is_file()
 
 
 def test_view_url_path_normalizes_windows_drive_paths():
@@ -233,10 +273,10 @@ def _rev(source_repo, ref="HEAD"):
 
 def test_tag_ref_clones_detached_and_updates(env, source_repo):
     _git("tag", "v1", cwd=source_repo)
-    spec = parse_github_url("https://github.com/fusedlabs/sandbox/tree/v1/Max/how_it_works")
+    spec = parse_github_url("https://github.com/octocat/sandbox/tree/v1/examples/how_it_works")
     result = clone_or_pull(spec)
     assert result["updated"] is False
-    assert (env / "how_it_works" / "Max" / "how_it_works" / "index.html").is_file()
+    assert (env / "how_it_works" / "examples" / "how_it_works" / "index.html").is_file()
     # re-click on a detached (tag) checkout must not try to pull
     result = clone_or_pull(spec)
     assert result["updated"] is True
@@ -244,7 +284,7 @@ def test_tag_ref_clones_detached_and_updates(env, source_repo):
 
 def test_commit_sha_ref_clones(env, source_repo):
     sha = _rev(source_repo)
-    spec = parse_github_url(f"https://github.com/fusedlabs/sandbox/tree/{sha}/Max/how_it_works")
+    spec = parse_github_url(f"https://github.com/octocat/sandbox/tree/{sha}/examples/how_it_works")
     result = clone_or_pull(spec)
     assert result["view"].endswith("/index.html")
     # re-click: fetch + re-checkout of the same SHA is a no-op, not a failure
@@ -252,12 +292,12 @@ def test_commit_sha_ref_clones(env, source_repo):
 
 
 def test_subpath_segment_with_leading_dash_is_not_an_option(env, source_repo):
-    dash = source_repo / "Max" / "-dash"
+    dash = source_repo / "examples" / "-dash"
     dash.mkdir()
     (dash / "index.html").write_text("dash")
     _git("add", "-A", cwd=source_repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "dash", cwd=source_repo)
-    spec = parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Max/-dash")
+    spec = parse_github_url("https://github.com/octocat/sandbox/tree/main/examples/-dash")
     result = clone_or_pull(spec)
     assert result["view"].endswith("/index.html")
 
@@ -265,26 +305,26 @@ def test_subpath_segment_with_leading_dash_is_not_an_option(env, source_repo):
 def test_update_switches_to_link_ref(env, source_repo):
     clone_or_pull(parse_github_url(TREE_URL))
     _git("checkout", "-q", "-b", "feature", cwd=source_repo)
-    (source_repo / "Max" / "how_it_works" / "feature.txt").write_text("f")
+    (source_repo / "examples" / "how_it_works" / "feature.txt").write_text("f")
     _git("add", "-A", cwd=source_repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "feat", cwd=source_repo)
     _git("checkout", "-q", "main", cwd=source_repo)
     result = clone_or_pull(
-        parse_github_url("https://github.com/fusedlabs/sandbox/tree/feature/Max/how_it_works")
+        parse_github_url("https://github.com/octocat/sandbox/tree/feature/examples/how_it_works")
     )
     assert result["updated"] is True
-    assert (env / "how_it_works" / "Max" / "how_it_works" / "feature.txt").is_file()
+    assert (env / "how_it_works" / "examples" / "how_it_works" / "feature.txt").is_file()
 
 
 def test_root_link_after_tag_link_returns_to_default_branch(env, source_repo):
     _git("tag", "v1", cwd=source_repo)
     # tag link without subpath -> dest name is the repo, detached HEAD
-    clone_or_pull(parse_github_url("https://github.com/fusedlabs/sandbox/tree/v1"))
+    clone_or_pull(parse_github_url("https://github.com/octocat/sandbox/tree/v1"))
     (source_repo / "later.txt").write_text("post-tag")
     _git("add", "-A", cwd=source_repo)
     _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "later", cwd=source_repo)
     # ref-less root link must land on the default branch tip, not stay detached
-    result = clone_or_pull(parse_github_url("https://github.com/fusedlabs/sandbox"))
+    result = clone_or_pull(parse_github_url("https://github.com/octocat/sandbox"))
     assert result["updated"] is True
     assert (env / "sandbox" / "later.txt").is_file()
 
@@ -298,12 +338,12 @@ def test_update_widens_sparse_cone_for_new_subpath(env, source_repo):
     clone_or_pull(parse_github_url(TREE_URL))
     # same repo + same basename, different subdir -> same dest; cone must widen
     result = clone_or_pull(
-        parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Other/how_it_works")
+        parse_github_url("https://github.com/octocat/sandbox/tree/main/Other/how_it_works")
     )
     assert result["target"].endswith(os.path.join("Other", "how_it_works"))
     assert (env / "how_it_works" / "Other" / "how_it_works" / "other.txt").is_file()
     # the first link's path stays materialized (add, not a replacing set)
-    assert (env / "how_it_works" / "Max" / "how_it_works" / "index.html").is_file()
+    assert (env / "how_it_works" / "examples" / "how_it_works" / "index.html").is_file()
 
 
 def test_failed_update_leaves_existing_clone_untouched(env, source_repo):
@@ -312,11 +352,11 @@ def test_failed_update_leaves_existing_clone_untouched(env, source_repo):
     head_before = _rev(dest)
     # same repo + same basename, but the subdir doesn't exist at the ref:
     # must fail BEFORE mutating the clone (no ref switch, no cone widening)
-    bad = parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/Nope/how_it_works")
+    bad = parse_github_url("https://github.com/octocat/sandbox/tree/main/Nope/how_it_works")
     with pytest.raises(DeeplinkError, match="does not exist"):
         clone_or_pull(bad)
     assert _rev(dest) == head_before
-    assert (dest / "Max" / "how_it_works" / "index.html").is_file()
+    assert (dest / "examples" / "how_it_works" / "index.html").is_file()
     sparse = subprocess.run(
         ["git", "sparse-checkout", "list"], cwd=dest, check=True,
         stdout=subprocess.PIPE, text=True,
@@ -328,7 +368,7 @@ def test_update_with_nonexistent_ref_fails_cleanly(env, source_repo):
     clone_or_pull(parse_github_url(TREE_URL))
     dest = env / "how_it_works"
     head_before = _rev(dest)
-    bad = parse_github_url("https://github.com/fusedlabs/sandbox/tree/nope/Max/how_it_works")
+    bad = parse_github_url("https://github.com/octocat/sandbox/tree/nope/examples/how_it_works")
     with pytest.raises(DeeplinkError, match="does not exist"):
         clone_or_pull(bad)
     assert _rev(dest) == head_before
@@ -348,7 +388,7 @@ def test_repo_slug_matches_https_and_ssh_forms():
 
 def test_https_auth_failure_falls_back_to_ssh(env, monkeypatch):
     spec = parse_github_url(TREE_URL)
-    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/octocat/sandbox.git")
     attempts = []
 
     def fake_clone(spec_, remote, dest):
@@ -358,21 +398,21 @@ def test_https_auth_failure_falls_back_to_ssh(env, monkeypatch):
                 "git clone failed:\nfatal: could not read Username for "
                 "'https://github.com': Device not configured"
             )
-        os.makedirs(os.path.join(dest, "Max", "how_it_works"))
-        open(os.path.join(dest, "Max", "how_it_works", "index.html"), "w").close()
+        os.makedirs(os.path.join(dest, "examples", "how_it_works"))
+        open(os.path.join(dest, "examples", "how_it_works", "index.html"), "w").close()
 
     monkeypatch.setattr(deeplink, "_clone_into", fake_clone)
     result = clone_or_pull(spec)
     assert attempts == [
-        "https://github.com/fusedlabs/sandbox.git",
-        "git@github.com:fusedlabs/sandbox.git",
+        "https://github.com/octocat/sandbox.git",
+        "git@github.com:octocat/sandbox.git",
     ]
     assert result["view"].endswith("/index.html")
 
 
 def test_https_and_ssh_both_failing_reports_both(env, monkeypatch):
     spec = parse_github_url(TREE_URL)
-    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/fusedlabs/sandbox.git")
+    monkeypatch.setattr(deeplink, "_remote_url", lambda s: "https://github.com/octocat/sandbox.git")
 
     def fake_clone(spec_, remote, dest):
         if remote.startswith("https://"):
@@ -416,7 +456,7 @@ def test_existing_clone_of_other_remote_refused(env, tmp_path):
 
 
 def test_missing_subpath_cleans_up_dest(env):
-    spec = parse_github_url("https://github.com/fusedlabs/sandbox/tree/main/no/such/dir")
+    spec = parse_github_url("https://github.com/octocat/sandbox/tree/main/no/such/dir")
     with pytest.raises(DeeplinkError, match="does not exist"):
         clone_or_pull(spec)
     # a failed first clone must be retryable: nothing left behind
@@ -447,7 +487,7 @@ def test_api_clone_info(tmp_path, monkeypatch):
     resp = _client(tmp_path).get("/api/clone/info", params={"src": DEEPLINK})
     assert resp.status_code == 200
     data = resp.json()
-    assert data["owner"] == "fusedlabs"
+    assert data["owner"] == "octocat"
     assert data["dest"] == str(fdir / "how_it_works")
     assert data["exists"] is False
     assert data["updatable"] is False

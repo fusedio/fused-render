@@ -38,12 +38,46 @@
   }
   #status.error { color: #ff6b6b; }
   #status.hidden { display: none; }
+  #skeleton {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background: #111418;
+    overflow: hidden;
+  }
+  #skeleton.hidden { display: none; }
+  #skeleton .sk-floor {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 55%;
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0 38px, #1a1f26 38px 39px),
+      repeating-linear-gradient(90deg, transparent 0 38px, #1a1f26 38px 39px);
+    -webkit-mask-image: linear-gradient(180deg, transparent, #000 42%);
+    mask-image: linear-gradient(180deg, transparent, #000 42%);
+  }
+  #skeleton .sk-shape {
+    position: absolute;
+    left: 50%; top: 46%;
+    width: min(38%, 220px);
+    height: min(30%, 160px);
+    transform: translate(-50%, -50%);
+    border-radius: 12px;
+    background: linear-gradient(110deg, #171b21 25%, #262c35 50%, #171b21 75%);
+    background-size: 220% 100%;
+    animation: glb-shimmer 1.7s ease-in-out infinite;
+  }
+  @keyframes glb-shimmer {
+    0% { background-position: 220% 0; }
+    100% { background-position: -220% 0; }
+  }
 </style>
 </head>
 <body>
   <div id="bar"></div>
   <canvas id="c"></canvas>
-  <div id="status">Loading…</div>
+  <div id="skeleton"><div class="sk-floor"></div><div class="sk-shape"></div></div>
+  <div id="status" class="hidden"></div>
   <script type="module">
     // Read-only 3D viewer for a single .glb/.gltf, rendered with vendored
     // Three.js (no CDN — same offline rule as pdf/geotiff/zarr). Scene defaults
@@ -54,10 +88,12 @@
     const file = fused.params.get("_file") || "";
     const bar = document.getElementById("bar");
     const statusEl = document.getElementById("status");
+    const skeleton = document.getElementById("skeleton");
     const canvas = document.getElementById("c");
     bar.textContent = file.split("/").pop() || "3D model";
 
     function fail(message) {
+      skeleton.className = "hidden";
       statusEl.className = "error";
       statusEl.textContent = message; // textContent — err.message is untrusted
     }
@@ -150,6 +186,7 @@
         loader.parse(buf, "", (gltf) => {
           scene.add(gltf.scene);
           frame(gltf.scene);
+          skeleton.className = "hidden";
           statusEl.className = "hidden";
         }, (err) => fail(`Failed to load model: ${String(err && err.message ? err.message : err)}`));
       } catch (err) {

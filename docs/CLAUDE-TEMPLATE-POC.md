@@ -2,7 +2,7 @@
 
 **Status:** POC, 2026-07-08. Not a locked design; every choice below was made
 for implementation simplicity and is expected to be revisited.
-Origin: adapted from Sina's `ClaudeChat` sandbox POC (detached `claude -p`
+Origin: adapted from an internal chat sandbox POC (detached `claude -p`
 subprocess + stream-json log + poll loop).
 
 ## What it is
@@ -15,7 +15,7 @@ landing + terminal-style chat) that talks to the local Claude Code CLI
 
 ```
 fused_render/templates/claude/
-├── template.html   # chat UI; adapted from the ClaudeChat sandbox POC
+├── template.html   # chat UI; adapted from the internal chat sandbox POC
 ├── agent.py        # runPython backend: start/poll/sessions/history/cancel; stdlib only
 └── icon.svg        # monochrome asterisk for the mode switcher
 ```
@@ -98,7 +98,13 @@ fused_render/templates/claude/
 2. **Polling over push.** 400 ms `runPython` polls = one fresh Python
    subprocess per poll. Wasteful but fits the executor contract with zero
    server changes. A real version wants a server-side run manager +
-   WebSocket (see D74 precedent).
+   WebSocket (see D74 precedent). The detached-run design does buy one
+   thing for free: the in-flight run id rides the URL as the `run` param,
+   so a frame that dies mid-stream (mode switch, reload) re-attaches on the
+   next boot — poll replays the whole turn's text (partial history rows for
+   that turn are trimmed first; `poll` returns the run's `message` so the
+   user turn renders even when the transcript had no rows yet). A stale
+   `run` param (bookmark, pruned tmp) is cleared silently.
 3. **Sidecar is claimed, not reserved.** `<file>.json` may already exist as
    a user's own data file — agent.py tolerates non-conforming JSON (treats
    as empty) but a *save would clobber it*. No namespacing (`.fused-ai.json`
@@ -145,3 +151,6 @@ Claude edits `sample.html` → M4 auto-reload already live-refreshes the
 `_render` view. A panel layout with `_render` on the left and `claude` mode
 on the right (`/view/_panel?_layout=(…sample.html,…sample.html?_mode=claude)`)
 is a working "live preview + AI pair-editing" surface with zero new code.
+The chat frame itself calls `fused.autoReload(false)` (LR-5): the runtime
+watches `_file`, so without the opt-out Claude's own edit reloaded the chat
+mid-stream — freezing the reply mid-sentence and orphaning the run.

@@ -58,9 +58,10 @@ fused-render/
 │       ├── text/               # template.html + icon.svg
 │       ├── shared/             # first-party ESM shared by sci templates (/template-shared mount) — no template.html, never a template name
 │       └── vendor/             # vendored JS libs (/template-assets mount) — no template.html, never a template name
-└── examples/
-    ├── sine.py
-    └── sine.html
+└── examples_seed/           # repo-root seed set, force-included into wheel
+    └── sine/
+        ├── sine.py
+        └── sine.html
 ```
 
 Shell = React 18 + Vite + TypeScript (D52/D53; strict tsc gated in the build). Build with `cd frontend && npm run build` — output is NOT committed (D54): dev machines need node, wheels/DMG build it via the hatch hook (scripts/hatch_build.py). Templates, examples and `runtime.js` stay plain ES2020 JS with no build step and no JS dependencies — the rendering primitive is framework-free by design.
@@ -85,12 +86,12 @@ fused-render [--start-dir DIR] [--port N] [--no-browser]
 All paths in query strings are **absolute filesystem paths**. Server never scopes/rejects by location (v1 has no security layer — deliberate, see SPEC §9). Errors return `{"error": "<message>"}` with 4xx status. Every response carries `Cache-Control: no-cache` (middleware) — app code changes between restarts and user files change on disk; stale cached shell/runtime JS produced half-old UIs during development. The two mutating/executing POSTs (`/api/run`, `/api/fs/write`) require an `X-Fused: 1` header (missing/wrong → 403); it forces a CORS preflight so a foreign page can't fire them blind. Not auth — D3 stands (see DECISIONS.md D36).
 
 ### `GET /` and `GET /view/{path:path}` → shell.html
-Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/vasu/data` means fs path `/Users/vasu/data` (strip `/view/`, prepend `/`).
+Same static shell for both; shell JS reads `location.pathname` to route. `/view/Users/you/data` means fs path `/Users/you/data` (strip `/view/`, prepend `/`).
 
 ### `GET /api/fs/stat?path=<abs>`
 ```json
 {
-  "path": "/Users/vasu/data/trips.parquet",
+  "path": "/Users/you/data/trips.parquet",
   "name": "trips.parquet",
   "is_dir": false,
   "size": 123456,
@@ -115,7 +116,7 @@ A `_`-prefixed name appearing in a registry list is valid only for the known sen
 ### `GET /api/fs/list?path=<abs dir>`
 ```json
 {
-  "path": "/Users/vasu/data",
+  "path": "/Users/you/data",
   "entries": [
     {"name": "sub", "is_dir": true,  "size": null,   "mtime": 1751500000.0},
     {"name": "trips.parquet", "is_dir": false, "size": 123456, "mtime": 1751600000.0}
@@ -139,7 +140,7 @@ Returns `text/html`. Used as iframe src by the shell for both user HTML and temp
 ### `POST /api/run`  *(requires `X-Fused: 1`)*
 Request:
 ```json
-{"py": "./sine.py", "html": "/Users/vasu/views/sine.html", "params": {"freq": "2.4"}}
+{"py": "./sine.py", "html": "/Users/you/views/sine.html", "params": {"freq": "2.4"}}
 ```
 - `py` relative → resolved against `dirname(html)`; absolute → used as-is. (`html` may be null only if `py` is absolute.)
 - Response is the executor result verbatim (HTTP 200 even for user-code errors — the `ok` field carries success):
@@ -199,7 +200,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 ## 6. Shell (`frontend/` → `static/shell-dist/`)
 
 SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/lib/` is non-React and ported ~verbatim from the vanilla shell (router/api/format/bookmarks/layout-codec — same contracts as before); components consume it. Dependency direction is one-way as before: `App → views/Sidebar/Breadcrumb → lib/*`; the router never imports UI (it dispatches a `fused:navigate` event; `lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `views/Panel.tsx` (`panelUrl`), and `Sidebar.tsx` may import `views/Tabs.tsx` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
-- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/vasu", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
+- `/` → redirect (replaceState) to `/view/<start-dir>` (start dir from `GET /api/config` → `{"start_dir": "/Users/you", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
 - `/view/<path>` → `stat` it:
   - a target with a non-empty `stat.templates` → preview view — **including a directory** (every directory resolves at least the universal `/` key → `["_listing"]`, SPEC PT-13/D81; the built-in listing is the `_listing` sentinel mode)
   - **dir** with an empty `templates` (a `null` binding disabled it) → listing view — the shell's safety net (a folder must always render something)
@@ -226,7 +227,8 @@ Layout: `#app` becomes two-column flex — fixed sidebar (~220px, `--bg-alt`, ri
 
 - **Home entry:** icon + "Home"; click → `navigate(config.home)`. `/api/config` response gains `"home": os.path.expanduser("~")`.
 - **Bookmark capture:** "+ Bookmark" button right-aligned in the breadcrumb bar (present on every view); shows accent "starred" state when the current URL is already bookmarked. On click: `{id: crypto.randomUUID(), name: renderedTitle || basename(currentFsPath), url: location.pathname + location.search, created_at: Date.now()}` appended to store; sidebar re-renders. `renderedTitle` is the previewed page's own `<title>` when known (StatView, threaded through `Breadcrumb`) — preferred over the file's basename so a page's authored title wins.
-- **Store (D75):** server-side `~/.fused-render/bookmarks.json`, JSON array (tree). Backend in `fused_render/shell/` — `storage.py` (home dir via `home_dir()`/`FUSED_RENDER_HOME`, atomic `read_json`/`write_json`) + `bookmarks.py` (`APIRouter`: `GET /api/bookmarks` → `{exists, bookmarks}`; `PUT` whole-tree, atomic, last-write-wins, `X-Fused` guard). Frontend `bookmarks.ts` keeps an in-memory cache (`loadBookmarks()`/`allBookmarks()` sync off it), hydrated once at boot by `hydrateBookmarks()`; each mutation clones → `await`s the PUT → advances the cache (no optimism/rollback — cache never holds unpersisted state). The one-time legacy `localStorage["fused.bookmarks"]` import (D75) has been removed (D104) — every pre-D75 install has long since migrated. A 30 s `setInterval` in `main.tsx` calls `refreshBookmarks()` (a `GET` through the same serial queue, re-rendering only on a real diff) so another tab's/window's edits converge (D77 — eventual ≤30 s, last-write-wins on simultaneous writes). Hydration, every mutation, and the poll all run through one `enqueue` chain, so no read/write ever interleaves (closes the hydration/mutation race Bugbot flagged). `shell/` is the seam for future shell-state backends, kept out of `server.py`'s fs/render internals (and acyclic — it never imports `server`).
+- **Store (D75):** server-side `~/.fused-render/bookmarks.json`, JSON array (tree). Backend in `fused_render/shell/` — `storage.py` (home dir via `home_dir()`/`FUSED_RENDER_HOME`, atomic `read_json`/`write_json`) + `bookmarks.py` (`APIRouter`: `GET /api/bookmarks` → `{exists, bookmarks, missing}`; `PUT` whole-tree, atomic, last-write-wins, `X-Fused` guard). Frontend `bookmarks.ts` keeps an in-memory cache (`loadBookmarks()`/`allBookmarks()` sync off it), hydrated once at boot by `hydrateBookmarks()`; each mutation clones → `await`s the PUT → advances the cache (no optimism/rollback — cache never holds unpersisted state). The one-time legacy `localStorage["fused.bookmarks"]` import (D75) has been removed (D104) — every pre-D75 install has long since migrated. A 30 s `setInterval` in `main.tsx` calls `refreshBookmarks()` (a `GET` through the same serial queue, re-rendering only on a real diff) so another tab's/window's edits converge (D77 — eventual ≤30 s, last-write-wins on simultaneous writes). Hydration, every mutation, and the poll all run through one `enqueue` chain, so no read/write ever interleaves (closes the hydration/mutation race Bugbot flagged). `shell/` is the seam for future shell-state backends, kept out of `server.py`'s fs/render internals (and acyclic — it never imports `server`).
+- **Missing-file flag (D127):** `GET /api/bookmarks`'s `missing` field is bookmark ids whose target is confirmed gone from disk — a display-only side-channel, recomputed fresh on every GET and never written into `bookmarks.json` or round-tripped through `PUT`. `bookmarks.py` flattens the tree (`_flatten_bookmarks`, arbitrary folder depth) and fans the existence checks out concurrently on a dedicated `ThreadPoolExecutor` under one wall-clock budget (`_MISSING_CHECK_BUDGET_S`), mirroring `recents.py`'s `CHECK_BUDGET_S`/`_CHECK_POOL` — a check that outlives the budget is NOT flagged (fail open). Existence is checked via `pathops.exists` (new alongside the existing `is_file` trio), mount-safe (routes a mount-backed path through `mounts.rc_stat_for`, never a kernel stat) and, unlike Recents' files-only contract, also accepts a directory (a bookmark may target a listing). Frontend `bookmarks.ts` tracks the ids in a separate `missingIds` set (never merged into the persisted tree), exposed via `isBookmarkMissing(id)`; `Sidebar.tsx` adds a warning glyph (own stacking context so the row's stretched-link overlay doesn't swallow its hover/title) and a hover-card note — the row's name keeps its normal color, on owner request. `main.tsx` also refreshes `missingIds` immediately on window `focus` (in-flight guarded, mirroring `ServerStatusBanner`'s probe, D126), in addition to the existing 30s poll. Recents (§29, D115) is unchanged — it stays hidden-when-missing by deliberate owner choice, so this flag is Bookmarks-only.
 - **Bookmark row:** name ellipsized, rendered as a real `<a href="<url>">` (verbatim URL per D20; href kept for middle-click/copy-link). Plain click is intercepted: it **arms** the bookmark for update tracking and routes in-shell via `navigateUrl(url)` (pushState that preserves the query string, unlike `navigate()`). Hover shows a floating card beside the sidebar: decoded target path + saved params as a key/value grid ("no params" when none); card hides during rename/delete. Hover also reveals ✎ rename (inline `<input>`, Enter/blur commits, Escape cancels) and ✕ delete (no confirm). Active bookmark (url == current URL) is highlighted.
 - Order: creation time. Duplicates allowed.
 - **Bookmark updating (D38):** the armed bookmark `{id, url}` lives in sessionStorage `fused.armedBookmark` (survives refresh, not new tabs). `breadcrumb.js` renders a hidden "Update bookmark" button left of "+ Bookmark"; `syncUpdateButton()` shows it iff armed, same pathname, and `location.search` differs from the armed url's search. Clicking it overwrites the bookmark's url with the current one and re-arms against it. A pathname change disarms permanently; deleting the armed bookmark disarms. Param changes are observed by `main.js` wrapping `history.replaceState` (the iframe runtime writes params through the parent's replaceState, which fires no native event) to dispatch a `fused:urlchange` window event; sidebar delete also dispatches it instead of importing breadcrumb (one-way deps, D28).
@@ -304,8 +306,8 @@ visual language); the section is hidden while empty.
 
 ## 8. Examples
 
-- `examples/sine.py` — `main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only).
-- `examples/sine.html` — range slider bound to `freq` param, SVG polyline chart (hand-rolled, no deps), wiring pattern:
+- `examples_seed/sine/sine.py` — `main(n: int = 80, freq: float = 1.0)` → `{"points": [[x, y], …]}` (math.sin, stdlib only).
+- `examples_seed/sine/sine.html` — range slider bound to `freq` param, SVG polyline chart (hand-rolled, no deps), wiring pattern:
   slider input → `fused.params.set('freq', value)`; `fused.params.onChange(draw)`; initial `draw()` reads param-or-default. Demonstrates: URL sync, refresh restores state, runPython round-trip, python print → browser console.
 
 ---
@@ -319,8 +321,8 @@ Automatable (curl / CLI):
    - `/api/fs/list?path=/tmp`-equivalent → entries
    - `/api/fs/stat` on a `.parquet` → `templates[0]` is `{"mode": "table", …}` pointing at templates/table/template.html
    - `/api/fs/raw` on a text file → bytes + MIME
-   - `/render?path=<examples/sine.html>` → contains `runtime.js` script tag
-   - `POST /api/run` `{py: <abs examples/sine.py>, params: {freq: "2"}}` → `ok: true`, points array
+   - `/render?path=<examples_seed/sine/sine.html>` → contains `runtime.js` script tag
+   - `POST /api/run` `{py: <abs examples_seed/sine/sine.py>, params: {freq: "2"}}` → `ok: true`, points array
    - `POST /api/run` with missing main / raising main / non-JSON return → `ok: false`, structured error
    - executor timeout: `main` sleeping past a short timeout → TimeoutError dict
 3. Parquet reader: generate small parquet via pyarrow in a temp dir, `POST /api/run` the reader with offset/limit → correct slice + total.

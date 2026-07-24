@@ -1,9 +1,12 @@
-// Fused account page — the `/view/_account` sentinel route, entered from the
-// sidebar footer (SPEC §27, AC-1). The in-app home of the
-// one-time `fused cloud login` the Deploy surface needs, plus sign-out — no
-// more copying CLI commands into a terminal. Everything real happens
-// server-side (fused_render/account.py drives the fused CLI; credentials
-// live in the CLI's own store, never in this app).
+// Fused account panel — the "Fused account" tab on the `/view/_prefs`
+// Preferences page (SPEC §27, AC-1; folded in by D125), shown only once
+// Deploy is enabled. The in-app home of the one-time `fused cloud login` the
+// Deploy surface needs, plus sign-out — no more copying CLI commands into a
+// terminal. Everything real happens server-side (fused_render/account.py
+// drives the fused CLI; credentials live in the CLI's own store, never in
+// this app). The old standalone `/view/_account` route now just redirects
+// here (App.tsx) so existing bookmarks and the Deploy modal's "Set up hosted
+// environment" link keep working.
 //
 // States, in checking order (mirrors DeployModal's):
 //   1. loading      — status fetch in flight
@@ -294,7 +297,7 @@ function SetupPanel({
   );
 }
 
-export default function Account() {
+export function AccountPanel() {
   const [status, setStatus] = useState<AccountStatus | null>(null);
   // The deep check (`fused cloud orgs`) can take seconds — the page renders
   // from the fast presence-only status first, then fills the probe in.
@@ -762,5 +765,5 @@ export default function Account() {
     );
   };
 
-  return <div className="prefs-page">{body()}</div>;
+  return <>{body()}</>;
 }

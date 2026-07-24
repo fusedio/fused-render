@@ -41,6 +41,14 @@ FRONTEND="$REPO_ROOT/frontend"
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
+# Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
+# watchfiles server restarts that fire on every .py edit — without this the
+# daemon dies with the server (production teardown) and each restart pays the
+# re-mount + cache re-warm cost. Production leaves this unset. Respect an
+# already-set value so the caller can override (including to "0" to force the
+# production dies-with-server behavior).
+export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
+
 # Isolate each branch/worktree onto its own port + state dir. Without this every
 # dev.sh run (main checkout and every worktree) defaults to the baseline port
 # 1777 and clobbers the same ~/.fused-render state, so a server left running in

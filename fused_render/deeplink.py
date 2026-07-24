@@ -28,10 +28,12 @@ import posixpath
 import re
 import shutil
 import subprocess
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import FileResponse, JSONResponse
+
+from fused_render._view_url_codec import view_url_path as _view_url_path
 
 from fused_render.shell.seed import fused_dir
 
@@ -43,6 +45,16 @@ router = APIRouter()
 # today; future payload kinds (a hosted page, a single file, …) become new
 # params on the same action instead of new grammar (owner call, D110).
 _OPEN_PREFIXES = ("fused-render://open?git=", "fused-render://open/?git=")
+
+# The launch action (D128) is payload-free by definition: any query or extra
+# path makes the link NOT a launch link (strictness keeps the grammar clean —
+# a future launch payload would be a query param on this same action, and
+# silently ignoring one today would freeze "ignored" into the contract).
+# `fused-render:launch` (no slashes) is included because some carriers strip
+# the empty authority from an opaque scheme URL.
+_LAUNCH_FORMS = frozenset(
+    {"fused-render://launch", "fused-render://launch/", "fused-render:launch"}
+)
 
 _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 
@@ -72,6 +84,13 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
+def is_launch_url(src: str) -> bool:
+    """True for a `fused-render://launch` deep link (D128): the action-only
+    "make sure the app/server is running" form. Case-insensitive, optional
+    trailing slash tolerated; a query string or any payload disqualifies it."""
+    return (src or "").strip().lower() in _LAUNCH_FORMS
+
+
 def github_url_from(src: str) -> str:
     """Accept either a raw deep link (`fused-render://open?git=<github url>`)
     or a bare GitHub URL, percent-encoded or not, and return the GitHub URL.
@@ -89,7 +108,8 @@ def github_url_from(src: str) -> str:
     else:
         if low.startswith("fused-render:"):
             raise DeeplinkError(
-                f"unsupported fused-render link (expected fused-render://open?git=…): {src}"
+                "unsupported fused-render link (expected fused-render://open?git=… "
+                f"or fused-render://launch): {src}"
             )
     if not src.lower().startswith(("https://", "http://")) and "%" in src:
         # Some carriers (browser address bars, chat apps) percent-encode the
@@ -208,20 +228,6 @@ def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise DeeplinkError(f"git {' '.join(args[:2])} failed:\n{detail[-2000:]}")
     return proc.stdout
-
-
-_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
-
-
-def _view_url_path(fs_path: str) -> str:
-    """/view URL for an absolute fs path, matching the frontend codec
-    (router.ts urlForFsPath) like seed._view_url — but Windows-aware the way
-    winopen._view_url is: a drive-letter path gets its backslashes normalized
-    to '/' before segmenting, so 'C:\\Users\\x' doesn't collapse into one
-    percent-encoded segment."""
-    norm = fs_path.replace("\\", "/") if _DRIVE_PATH.match(fs_path) else fs_path
-    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
-    return "/view/" + "/".join(segments)
 
 
 def _default_branch(dest: str) -> str:

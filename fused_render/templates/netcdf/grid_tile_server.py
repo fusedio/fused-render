@@ -784,8 +784,6 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         vals = sample_bbox(s, mx0, my0, mx1, my1, TILE, TILE)
         return 200, encode_png(np.ascontiguousarray(colorize(q, s, vals))), "image/png"
 
-    dir_sizes = {}     # store path -> capped-walk size (None when capped)
-
     def do_meta(q):
         path = os.path.abspath(os.path.expanduser(q1(q, "file")))
         s = slice_of(q)
@@ -798,35 +796,18 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
                "stats": s["stats"], "stretch": [s["stretch"]],
                "shape": [rows, cols],
                "lonlat_bounds": (g["bounds"] if g else None)}
+        # file_size: getsize() a regular file (a NetCDF, single stat — safe),
+        # but NEVER walk a directory store. INVARIANT: a zarr store can hold
+        # millions of chunk files and a single os.walk/os.scandir over a remote
+        # rclone NFS mount lists the whole S3 prefix — that trips the macOS NFS
+        # deadman and DROPS THE MOUNT, wedging the daemon. The old capped walk
+        # did NOT help: os.walk builds a directory's whole file list at once, so
+        # the fatal enumeration happens before any per-file cap is consulted.
+        # The daemon endpoints receive no `src`, so it cannot ask /api/fs/stat
+        # whether the path is remote (see GAP note) — hence size is simply
+        # omitted for directory stores. It is cosmetic; correctness > a number.
         try:
-            if os.path.isfile(path):
-                out["file_size"] = os.path.getsize(path)
-            elif path in dir_sizes:
-                out["file_size"] = dir_sizes[path]
-            else:
-                # capped walk: a store can hold millions of chunk files and on
-                # a remote mount every listing/stat is a network round-trip —
-                # give up after a short deadline instead of stalling /meta,
-                # and cache the answer so only the first /meta per store pays
-                deadline = time.time() + 2.0
-                total, files, capped = 0, 0, False
-                for dp, _, fs in os.walk(path):
-                    for f in fs:
-                        files += 1
-                        # Check per file, not per directory: a flat store can
-                        # hold all its chunks in one dir, and a per-dir check
-                        # would stat every one before the cap could fire.
-                        if time.time() > deadline or files > 20000:
-                            capped = True
-                            break
-                        try:
-                            total += os.path.getsize(os.path.join(dp, f))
-                        except OSError:
-                            pass
-                    if capped:
-                        break
-                dir_sizes[path] = None if capped else total
-                out["file_size"] = dir_sizes[path]
+            out["file_size"] = os.path.getsize(path) if os.path.isfile(path) else None
         except OSError:
             out["file_size"] = None
         return 200, json.dumps(out, default=str).encode(), "application/json"

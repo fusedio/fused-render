@@ -149,9 +149,70 @@ def _cache_dir(file: str) -> str:
 
 
 # -------------------------------------------------------------------- dispatcher
+# --- mount-safe directory listing ------------------------------------------
+# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
+# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
+# can DROP the mount, wedging the server. This template stays mount-AGNOSTIC:
+# it never imports shell.mounts and never matches mount paths. Instead the UI
+# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
+# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
+# paginated /api/fs/list — never through the kernel. _server_url + _stat are
+# copied verbatim from pyramid/overview_pyramid.py.
+import urllib.error as _urlerr
+import urllib.parse as _urlparse
+import urllib.request as _urlreq
+
+
+def _server_url(src, endpoint, path):
+    u = _urlparse.urlsplit(src)
+    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
+            + _urlparse.quote(path))
+
+
+def _stat(src, path):
+    url = _server_url(src, "/api/fs/stat", path)
+    try:
+        with _urlreq.urlopen(url, timeout=10) as r:
+            return ("ok", json.load(r))
+    except _urlerr.HTTPError as e:
+        if e.code == 404:
+            return ("missing", None)
+        return ("unreachable", None)
+    except Exception:  # noqa: BLE001 — any network error -> fall back to local
+        return ("unreachable", None)
+
+
+def _remote_dir(src, path):
+    """True iff the server says `path` is a remote (mount-backed) directory.
+    No src / unreachable / missing -> False (presume local, kernel listing OK)."""
+    if not src or not path:
+        return False
+    status, meta = _stat(src, path)
+    return status == "ok" and bool(meta.get("remote"))
+
+
+def _list_remote(src, path, cap=5000):
+    """List `path` via the server's mount-routed, paginated /api/fs/list — never
+    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
+    returns a bounded page set instead of tripping the NFS deadman."""
+    entries, cursor, truncated = [], "", False
+    while True:
+        url = _server_url(src, "/api/fs/list", path)
+        if cursor:
+            url += "&cursor=" + _urlparse.quote(cursor)
+        with _urlreq.urlopen(url, timeout=30) as r:
+            payload = json.load(r)
+        entries.extend(payload.get("entries") or [])
+        truncated = bool(payload.get("truncated"))
+        cursor = payload.get("cursor") or ""
+        if len(entries) >= cap or not truncated or not cursor:
+            break
+    return entries, truncated
+
+
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
          fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = "",
-         sha: str = "", keep: str = ""):
+         sha: str = "", keep: str = "", src: str = ""):
     if action == "warmup":
         import pypandoc
         return {"pandoc": pypandoc.get_pandoc_version()}
@@ -165,16 +226,39 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     # ---- directory listing for the "Save a copy…" browser
     if action == "listdir":
         base = os.path.abspath(os.path.expanduser(path)) if path else os.path.expanduser("~")
-        if not os.path.isdir(base):
-            base = os.path.dirname(base) or os.path.expanduser("~")
         dirs, files = [], []
-        for nm in sorted(os.listdir(base), key=str.lower):
-            if nm.startswith("."):
-                continue
-            if os.path.isdir(os.path.join(base, nm)):
-                dirs.append(nm)
-            elif nm.lower().endswith(".docx"):
-                files.append(nm)
+        # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
+        status, meta = _stat(src, base) if src else ("", None)
+        if status == "ok" and meta.get("remote"):
+            # Mount-backed: list via /api/fs/list, never a kernel scan. If `base` is a
+            # file (not a dir), descend to its parent with pure string ops — never a
+            # kernel os.path call on a remote path (that call wedges the NFS mount).
+            if not meta.get("is_dir"):
+                base = os.path.dirname(base) or os.path.expanduser("~")
+            try:
+                ents, _ = _list_remote(src, base)
+            except Exception:  # noqa: BLE001
+                ents = []
+            for ent in ents:
+                nm = ent["name"]
+                if nm.startswith("."):
+                    continue
+                if ent.get("is_dir"):
+                    dirs.append(nm)
+                elif nm.lower().endswith(".docx"):
+                    files.append(nm)
+        else:
+            if not os.path.isdir(base):
+                base = os.path.dirname(base) or os.path.expanduser("~")
+            for nm in sorted(os.listdir(base), key=str.lower):
+                if nm.startswith("."):
+                    continue
+                if os.path.isdir(os.path.join(base, nm)):
+                    dirs.append(nm)
+                elif nm.lower().endswith(".docx"):
+                    files.append(nm)
+        dirs.sort(key=str.lower)
+        files.sort(key=str.lower)
         parent = os.path.dirname(base) or base   # dirname(root) == root, so "up" stops there
         # forward slashes on every platform: the browser's crumb/join logic is "/"-based
         return {"path": base.replace(os.sep, "/"), "parent": parent.replace(os.sep, "/"),
@@ -275,6 +359,8 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             if keep:
                 with contextlib.suppress(OSError, ValueError):
                     keep_shas = set(json.loads(keep)) | {version_sha}
+                    # vdir is under CACHE_ROOT (~/.fused-render) — a local
+                    # version cache, never a user mount path; kernel scan is safe.
                     for e in os.scandir(vdir):
                         if e.name[:-len(".html")] not in keep_shas:
                             with contextlib.suppress(OSError):

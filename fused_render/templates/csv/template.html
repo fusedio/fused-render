@@ -65,6 +65,23 @@
   #status.error {
     color: #ff6b6b;
   }
+  /* Skeleton table shown while a page of rows is in flight (first load and
+     every subsequent Prev/Next/param-driven reload). Mirrors the real
+     table's header + row shape so the layout doesn't jump when data lands. */
+  .skel-bar {
+    display: inline-block;
+    height: 0.9em;
+    min-width: 2.5em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #1d1f24 25%, #292c32 50%, #1d1f24 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    vertical-align: middle;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
@@ -100,7 +117,32 @@
       return Number.isFinite(n) && n >= 0 ? n : 0;
     }
 
+    // Columns from the most recently rendered page, reused to shape the
+    // skeleton on the next load (Prev/Next/param change) so the header
+    // stays put instead of flashing back to a generic placeholder.
+    let lastCols = null;
+    const SKEL_ROWS = 14;
+    const SKEL_COLS = 6;
+
+    function renderSkeleton() {
+      const cols = lastCols && lastCols.length ? lastCols : new Array(SKEL_COLS).fill("");
+      const head = `<tr>${cols
+        .map((c) => (c ? `<th>${escapeHtml(c)}</th>` : `<th><span class="skel-bar" style="width:60%"></span></th>`))
+        .join("")}</tr>`;
+      const body = Array.from({ length: SKEL_ROWS }, () => {
+        const cells = cols
+          .map(() => {
+            const w = 35 + Math.floor(Math.random() * 55); // 35%-90%
+            return `<td><span class="skel-bar" style="width:${w}%"></span></td>`;
+          })
+          .join("");
+        return `<tr>${cells}</tr>`;
+      }).join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
     function render(data, offset) {
+      lastCols = data.columns;
       const total = data.total_rows;
       const shown = data.rows.length;
       const from = shown === 0 ? 0 : offset + 1;
@@ -120,7 +162,7 @@
     async function load() {
       const file = fused.params.get("_file");
       const offset = currentOffset();
-      wrap.innerHTML = `<div id="status">Loading…</div>`;
+      renderSkeleton();
       if (!file) {
         wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
