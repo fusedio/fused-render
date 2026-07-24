@@ -44,6 +44,7 @@ _ID_OPEN_LOGS = 5
 _ID_LOGIN = 6
 _ID_SEP2 = 7
 _ID_EXIT = 8
+_ID_UNINSTALL = 9
 
 # Menu ids that map straight to a queued TrayAction. The login id is handled
 # inline (see _dispatch_event), and "Default apps..." is Windows-only so it is
@@ -53,6 +54,7 @@ _ACTION_BY_ID: dict[int, TrayAction] = {
     _ID_OPEN: TrayAction.OPEN,
     _ID_OPEN_FILE: TrayAction.OPEN_FILE,
     _ID_OPEN_LOGS: TrayAction.OPEN_LOGS,
+    _ID_UNINSTALL: TrayAction.UNINSTALL,
     _ID_EXIT: TrayAction.EXIT,
 }
 
@@ -131,6 +133,10 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
             },
         ),
         _item(_ID_SEP2, {"type": "separator", "visible": True}),
+        _item(
+            _ID_UNINSTALL,
+            {"label": "Uninstall FusedRender…", "enabled": True, "visible": True},
+        ),
         _item(_ID_EXIT, {"label": "Exit", "enabled": True, "visible": True}),
     ]
     return _ROOT_ID, children

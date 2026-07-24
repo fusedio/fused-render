@@ -112,6 +112,14 @@ def enabled() -> bool:
     return _desktop_file().is_file()
 
 
+def _entry_text(launcher: Path) -> str:
+    """The autostart `.desktop` contents for `launcher` — the single source of
+    truth shared by `set_enabled(True)` (which writes it) and
+    `refresh_autostart` (which compares against it), so the two never drift."""
+    exec_line = f"{_exec_quote(str(launcher))} --startup"
+    return _ENTRY_TEMPLATE.format(exec_line=exec_line)
+
+
 def set_enabled(value: bool) -> None:
     desktop = _desktop_file()
     if not value:
@@ -122,6 +130,34 @@ def set_enabled(value: bool) -> None:
         return
 
     launcher = _launcher_path()  # raises before any write if unresolvable
-    exec_line = f"{_exec_quote(str(launcher))} --startup"
     desktop.parent.mkdir(parents=True, exist_ok=True)
-    desktop.write_text(_ENTRY_TEMPLATE.format(exec_line=exec_line), encoding="utf-8")
+    desktop.write_text(_entry_text(launcher), encoding="utf-8")
+
+
+def refresh_autostart() -> None:
+    """Self-heal the autostart entry after the AppImage moved. If autostart is
+    enabled and the launcher path is resolvable, rewrite the entry only when its
+    current contents differ from what set_enabled(True) would write now. No-op
+    when disabled or when the launcher can't be resolved (dev/unpackaged).
+
+    The parallel "Open with"/deep-link `.desktop` is already re-healed on every
+    packaged start by integration.integrate() (its stamp includes the resolved
+    AppImage path), but the autostart entry set_enabled(True) writes had no such
+    healing — after a move, login-autostart pointed at a dead path forever. This
+    closes that gap while never writing a broken entry (the module's discipline):
+    an unresolvable launcher is left strictly as-is."""
+    if not enabled():
+        return
+    try:
+        launcher = _launcher_path()
+    except FileNotFoundError:
+        return  # unresolvable (dev/unpackaged, or $APPIMAGE now missing): leave as-is
+    desired = _entry_text(launcher)
+    desktop = _desktop_file()
+    try:
+        current = desktop.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = None
+    if current == desired:
+        return  # already correct: no needless rewrite / mtime churn
+    set_enabled(True)
