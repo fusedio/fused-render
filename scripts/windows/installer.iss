@@ -161,32 +161,6 @@ begin
       ewWaitUntilTerminated, ResultCode) and (ResultCode = 0));
 end;
 
-procedure RecoverPayload();
-var
-  CurrentPayload: String;
-  PreviousPayload: String;
-begin
-  CurrentPayload := ExpandConstant('{app}\payload');
-  PreviousPayload := ExpandConstant('{app}\previous');
-  if not DirExists(CurrentPayload) and DirExists(PreviousPayload) and
-    not RenameFile(PreviousPayload, CurrentPayload) then
-    RaiseException('The previous FusedRender payload could not be recovered.');
-end;
-
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  Result := '';
-  if CompareText(ExpandConstant('{app}'),
-    ExpandConstant('{localappdata}\Programs\FusedRenderPy')) <> 0 then
-    Result := 'FusedRender must be installed in its private application directory.'
-  else
-  begin
-    RecoverPayload();
-    if not ShutdownSupervisor() then
-    Result := 'FusedRender could not be stopped. Exit it from the tray and retry setup.';
-  end;
-end;
-
 function RenameWithRetry(const OldDir, NewDir: String): Boolean;
 var
   Attempt: Integer;
@@ -201,6 +175,32 @@ begin
     if Result then
       Exit;
     Sleep(500);
+  end;
+end;
+
+procedure RecoverPayload();
+var
+  CurrentPayload: String;
+  PreviousPayload: String;
+begin
+  CurrentPayload := ExpandConstant('{app}\payload');
+  PreviousPayload := ExpandConstant('{app}\previous');
+  if not DirExists(CurrentPayload) and DirExists(PreviousPayload) and
+    not RenameWithRetry(PreviousPayload, CurrentPayload) then
+    RaiseException('The previous FusedRender payload could not be recovered.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  if CompareText(ExpandConstant('{app}'),
+    ExpandConstant('{localappdata}\Programs\FusedRenderPy')) <> 0 then
+    Result := 'FusedRender must be installed in its private application directory.'
+  else
+  begin
+    RecoverPayload();
+    if not ShutdownSupervisor() then
+    Result := 'FusedRender could not be stopped. Exit it from the tray and retry setup.';
   end;
 end;
 
