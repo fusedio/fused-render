@@ -208,6 +208,23 @@ if (-not $rcloneExe) {
 }
 Copy-Item -LiteralPath $rcloneExe.FullName -Destination (Join-Path $PythonRoot "rclone.exe") -Force
 
+# WinFsp MSI staged for installer.iss to chain-install when the driver is
+# missing (D133 — reverses D132's user-installs stance), so mounts work with
+# zero user setup. The app itself stays per-user; only this MSI elevates, from
+# the setup's post-install step. Pinned release, published-SHA256 verified
+# (same discipline as the rclone pin above).
+$WinFspVersion = "2.1.25156"
+$WinFspSha256 = "073a70e00f77423e34bed98b86e600def93393ba5822204fac57a29324db9f7a"
+$winfspMsi = Join-Path $BuildDir "winfsp-$WinFspVersion.msi"
+if (-not (Test-Path -LiteralPath $winfspMsi)) {
+    Invoke-WebRequest -Uri "https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-$WinFspVersion.msi" -OutFile $winfspMsi
+}
+$actualSha = (Get-FileHash -LiteralPath $winfspMsi -Algorithm SHA256).Hash.ToLower()
+if ($actualSha -ne $WinFspSha256) {
+    throw "WinFsp MSI SHA256 mismatch: expected $WinFspSha256, got $actualSha"
+}
+Copy-Item -LiteralPath $winfspMsi -Destination (Join-Path $StageDir "winfsp.msi") -Force
+
 $icons = Join-Path $StageDir "assets\icons"
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "fused_render\assets\fused-render.ico") -Destination $icons -Force

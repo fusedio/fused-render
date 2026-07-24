@@ -60,6 +60,9 @@ Source: "{#BundleDir}\{#ExeName}"; DestDir: "{app}\next"; Flags: ignoreversion
 Source: "{#BundleDir}\python\*"; DestDir: "{app}\next\python"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BundleDir}\assets\*"; DestDir: "{app}\next\assets"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BundleDir}\payload.complete"; DestDir: "{app}\next"; Flags: ignoreversion; AfterInstall: ActivatePayload
+; WinFsp MSI (D133): extracted on demand by InstallWinFsp, never persisted in
+; the payload — {tmp} is deleted when setup exits.
+Source: "{#BundleDir}\winfsp.msi"; Flags: dontcopy
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\next"
@@ -244,10 +247,45 @@ begin
       mbError, MB_OK);
 end;
 
+function WinFspInstalled(): Boolean;
+begin
+  { Mirrors shell/mounts.py's _winfsp_available(): WinFsp installs its system
+    DLL under %ProgramFiles(x86)%\WinFsp\bin — winfsp-x64.dll on x64,
+    winfsp-a64.dll on ARM64. }
+  Result :=
+    FileExists(ExpandConstant('{commonpf32}\WinFsp\bin\winfsp-x64.dll')) or
+    FileExists(ExpandConstant('{commonpf32}\WinFsp\bin\winfsp-a64.dll'));
+end;
+
+procedure InstallWinFsp();
+var
+  ErrorCode: Integer;
+begin
+  { Chain-install the bundled WinFsp MSI so mounts work with zero user setup
+    (D133). The app itself stays per-user (PrivilegesRequired=lowest); only
+    this MSI elevates, through the one UAC prompt the runas verb raises.
+    Declining that prompt (or an MSI failure) must never fail setup — mounts
+    then surface shell/mounts.py's "install WinFsp" message until the driver
+    is installed, so it degrades, not breaks. }
+  if WinFspInstalled() then
+    Exit;
+  ExtractTemporaryFile('winfsp.msi');
+  if not ShellExec('runas', 'msiexec.exe',
+    '/i "' + ExpandConstant('{tmp}\winfsp.msi') + '" /qn /norestart',
+    '', SW_HIDE, ewWaitUntilTerminated, ErrorCode) then
+    Log('WinFsp install did not run (UAC declined?): ' + SysErrorMessage(ErrorCode))
+  else if (ErrorCode <> 0) and (ErrorCode <> 3010) then
+    { 3010 = ERROR_SUCCESS_REBOOT_REQUIRED — installed fine under /norestart. }
+    Log(Format('WinFsp MSI exited with %d', [ErrorCode]));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     DelTree(ExpandConstant('{app}\previous'), True, True, True);
+    InstallWinFsp();
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
