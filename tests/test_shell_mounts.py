@@ -402,6 +402,43 @@ def test_attach_posix_creates_leaf_mountpoint(home, rcd, monkeypatch, plat):
     assert mounts_mod.os.path.isdir(mp)
 
 
+def test_force_unmount_win32_no_shellouts_returns_none_when_unmounted(monkeypatch):
+    # On win32 there is no umount/diskutil; _force_unmount must not shell out and
+    # returns None the moment the reparse point is gone.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda cmd, *a, **k: ran.append(cmd))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._force_unmount("/x/mnt") is None
+    assert ran == []
+
+
+def test_force_unmount_win32_polls_until_unmounted(monkeypatch):
+    # The poll loop returns None once os.path.ismount flips False.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    states = iter([True, True, False])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(states, False))
+    monkeypatch.setattr(mounts_mod, "_FORCE_UNMOUNT_WIN32_BUDGET_S", 5.0)
+    assert mounts_mod._force_unmount("/x/mnt") is None
+
+
+def test_force_unmount_win32_errors_when_still_mounted(monkeypatch):
+    # Still mounted after the budget expires -> an error string, and never a
+    # umount/diskutil shell-out.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda cmd, *a, **k: ran.append(cmd))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "_FORCE_UNMOUNT_WIN32_BUDGET_S", 0.2)
+    err = mounts_mod._force_unmount("/x/mnt")
+    assert err is not None
+    assert ran == []
+    assert not any(c and c[0] in ("umount", "diskutil") for c in ran)
+
+
 def test_unmount_calls_rc(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.detach_mount(c) is None

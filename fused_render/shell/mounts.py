@@ -3414,11 +3414,35 @@ def _quit_tile_daemons() -> None:
             continue
 
 
+# How long the win32 force-unmount polls os.path.ismount before giving up,
+# mirroring the 15 s timeout each POSIX umount attempt below gets.
+_FORCE_UNMOUNT_WIN32_BUDGET_S = 15.0
+
+
 def _force_unmount(mp: str) -> str | None:
     """Kernel-level unmount for a DEAD mount, escalating to force. Only for
     mounts whose serving daemon is gone/wedged — there is nothing left to
     corrupt, and rcd's own unmount either failed or can't be asked. Returns
     an error string or None."""
+    # win32 has no `umount` and no per-mount kernel detach. A WinFsp mount is
+    # backed by rcd's serving process and vanishes the instant that process dies
+    # — so process teardown, not a shell-out, IS the force-unmount. We do NOT
+    # kill rcd here: that would tear down EVERY mount it serves, and the shared
+    # kill path (_kill_current_rcd) is POSIX-only anyway — it escalates through
+    # signal.SIGKILL, which does not exist on Windows. So the win32 branch simply
+    # polls os.path.ismount within the same budget the POSIX ladder gets and
+    # reports success once the reparse point is gone (rcd already exited /
+    # unmounted), else an honest failure — there is nothing else safe to try.
+    if sys.platform == "win32":
+        deadline = time.time() + _FORCE_UNMOUNT_WIN32_BUDGET_S
+        while True:
+            if not os.path.ismount(mp):
+                return None
+            if time.time() >= deadline:
+                break
+            time.sleep(0.1)
+        return (f"force unmount of {mp} is not possible on Windows while rclone "
+                f"still serves it — disconnect the mount (or quit) to clear it")
     attempts = [["umount", mp]]
     if sys.platform == "darwin":
         attempts += [["umount", "-f", mp], ["diskutil", "unmount", "force", mp]]
