@@ -390,6 +390,63 @@ def test_attach_win32_refuses_nonempty_leaf(home, rcd, monkeypatch):
     assert not any(x[0] == "mount/mount" for x in rcd.calls)
 
 
+def test_attach_win32_stale_leaf_raced_delete_proceeds(home, rcd, monkeypatch):
+    # A concurrent delete of the stale leaf (FileNotFoundError from rmdir) means
+    # the leaf is already gone — exactly what we wanted — so the mount proceeds.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)  # isdir(mp) True so we enter the rmdir branch
+
+    def raise_fnf(_p):
+        raise FileNotFoundError(_errno.ENOENT, "raced away")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_fnf)
+    assert mounts_mod.attach_mount(c) is None  # proceeded to a normal mount
+    assert any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_stale_leaf_nonempty_reports_not_empty(home, rcd, monkeypatch):
+    # ENOTEMPTY/EEXIST from rmdir keeps the "not empty — remove it" guidance.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+
+    def raise_notempty(_p):
+        raise OSError(_errno.ENOTEMPTY, "directory not empty")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_notempty)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None and "not empty" in err
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_stale_leaf_other_oserror_reports_exception(home, rcd, monkeypatch):
+    # A permission/sharing-violation OSError must report the ACTUAL error, not
+    # falsely claim the leaf is non-empty.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+
+    def raise_perm(_p):
+        raise PermissionError(_errno.EACCES, "access is denied")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_perm)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert "not empty" not in err
+    assert "access is denied" in err or "Errno" in err
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
 @pytest.mark.parametrize("plat", ["darwin", "linux"])
 def test_attach_posix_creates_leaf_mountpoint(home, rcd, monkeypatch, plat):
     # Regression guard: POSIX (FUSE/NFS) mounts over an EXISTING empty dir, so

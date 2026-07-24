@@ -29,6 +29,7 @@ shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 import collections
 import configparser
 import email.utils
+import errno
 import json
 import logging
 import os
@@ -3334,9 +3335,19 @@ def attach_mount(m: dict) -> str | None:
         if os.path.isdir(mp) and not os.path.ismount(mp):
             try:
                 os.rmdir(mp)
-            except OSError:
-                return (f"mountpoint {mp} already exists and is not empty — "
-                        f"remove it before mounting")
+            except FileNotFoundError:
+                # Raced delete: the stale leaf is already gone, which is exactly
+                # the state we were trying to reach — proceed.
+                pass
+            except OSError as e:
+                if e.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    # A real non-empty leaf: never delete a user's files; ask
+                    # them to clear it.
+                    return (f"mountpoint {mp} already exists and is not empty — "
+                            f"remove it before mounting")
+                # Anything else (permissions, sharing violation, …) — report the
+                # actual failure instead of misblaming it on non-emptiness.
+                return f"could not clear stale mountpoint {mp}: {e}"
     else:
         os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
