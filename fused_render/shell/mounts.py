@@ -29,6 +29,7 @@ shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 import collections
 import configparser
 import email.utils
+import errno
 import json
 import logging
 import os
@@ -213,6 +214,24 @@ def _vfs_opt_for(m: dict) -> dict:
     return {**VFS_OPT, "ReadOnly": bool(m.get("read_only"))}
 
 
+def _effective_serve_read_only(m: dict) -> bool:
+    """The ReadOnly a mount's HTTP serve must carry so it SHARES the live mount's
+    VFS. rcd keys VFS reuse on (fs, vfsOpt); a ReadOnly disagreement forks a
+    SECOND VFS instead of sharing the mount's — the documented split-brain wedge
+    (INCIDENT 2026-07-16). A live kernel mount's VFS was baked with
+    `mounted_read_only` at mount/mount time; the record's `read_only` can since
+    have drifted AHEAD of the live mount — detection flipped it, or the win32
+    adopt-under-mismatch path deliberately DEFERRED the remount that would
+    reapply it (no WinFsp to remount with). So whenever a live mount exists and
+    we know what it baked (`mounted_read_only` recorded), the serve must mirror
+    THAT, not the record. With no live mount there is no VFS to share yet — the
+    next attach will bake the record's read_only — so fall back to the record
+    (also the legacy/foreign case where mounted_read_only was never recorded)."""
+    if m.get("mounted_read_only") is not None and os.path.ismount(mountpoint(m)):
+        return bool(m.get("mounted_read_only"))
+    return bool(m.get("read_only"))
+
+
 def _serve_vfs_opt_for(m: dict) -> dict:
     """The HTTP serve's flat vfs params for this mount: SERVE_VFS_OPT plus
     read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly (the CLI
@@ -225,9 +244,14 @@ def _serve_vfs_opt_for(m: dict) -> dict:
     sync_serves' drift check compares against that echo.
 
     Derived from _vfs_opt_for through _serve_params — NOT hand-written — so the
-    mount's vfsOpt and the serve's flat params can never drift (drift is what
-    split the VFS in two; the module's derive-don't-hand-write rule)."""
-    return _serve_params(_vfs_opt_for(m))
+    mount's non-ReadOnly vfsOpt and the serve's flat params can never drift
+    (drift is what split the VFS in two; the module's derive-don't-hand-write
+    rule). ReadOnly is the one field that must track the LIVE mount's baked value
+    rather than the record when the two disagree (see _effective_serve_read_only),
+    so a serve always shares the mount's VFS even mid-mismatch."""
+    vfs_opt = _vfs_opt_for(m)
+    vfs_opt["ReadOnly"] = _effective_serve_read_only(m)
+    return _serve_params(vfs_opt)
 
 
 def _nfs_mount_opt(m: dict) -> dict:
@@ -777,6 +801,45 @@ def rclone_bin() -> str | None:
         if os.path.isfile(bundled):
             return bundled
     return shutil.which("rclone")
+
+
+# The winfsp.dev release page — the single install source we point users at.
+WINFSP_DOWNLOAD_URL = "https://winfsp.dev/rel/"
+
+
+def _winfsp_missing_error() -> str:
+    """The friendly 'install WinFsp' message shared by every mount path that
+    can't proceed without the driver (attach's creation path, reconnect)."""
+    return ("Windows mounts require WinFsp, which isn't installed. Install "
+            f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
+            "kernel driver we don't bundle — see DECISIONS.md.)")
+
+
+def _winfsp_available() -> bool:
+    """Whether WinFsp — rclone's Windows mount backend — is installed.
+
+    WinFsp is a kernel-mode driver we deliberately do NOT bundle: its
+    GPLv3-with-exception license against this repo's intentionally-unset license
+    is unsettled (see DECISIONS.md), so — mirroring rclone's own distribution
+    stance — the user installs it from winfsp.dev. Non-win32 platforms don't use
+    WinFsp, so this is vacuously True there; on Windows we look for the system
+    DLL WinFsp installs under %ProgramFiles(x86)%\\WinFsp\\bin — winfsp-x64.dll
+    on x64, winfsp-a64.dll on ARM64 — falling back to a loader lookup for either.
+    Best-effort: a False here only downgrades the mount attempt into a friendly
+    install prompt, never a crash."""
+    if sys.platform != "win32":
+        return True
+    dll_names = ("winfsp-x64.dll", "winfsp-a64.dll")  # x64 and ARM64 builds
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(env)
+        if not base:
+            continue
+        if any(os.path.isfile(os.path.join(base, "WinFsp", "bin", dll))
+               for dll in dll_names):
+            return True
+    import ctypes.util
+    return any(ctypes.util.find_library(n) is not None
+               for n in ("winfsp-x64", "winfsp-a64"))
 
 
 # Whether a freshly spawned rcd should DETACH into its own session (setsid) and
@@ -3290,7 +3353,34 @@ def attach_mount(m: dict) -> str | None:
     # per-mount mountpoint, so the marker is in place the moment the mount goes
     # live and Spotlight never gets a chance to scan it.
     ensure_mounts_dir()
-    os.makedirs(mp, exist_ok=True)
+    # Mountpoint-leaf semantics diverge by platform. POSIX backends (FUSE, and
+    # the macOS loopback NFS mount) attach OVER an existing empty directory, so
+    # we pre-create the leaf. WinFsp — rclone's Windows mount backend — is the
+    # exact opposite: it creates the mountpoint itself and REFUSES to mount when
+    # the leaf already exists, so a pre-created directory makes mount/mount fail
+    # outright. Hence on win32 we must NOT create the leaf; we only clear a stale
+    # EMPTY leaf a previous mount left behind (os.rmdir succeeds only when empty)
+    # and refuse a non-empty leaf rather than delete a user's files. If the leaf
+    # is already a live mount we leave it for the adopt/reconcile path below.
+    if sys.platform == "win32":
+        if os.path.isdir(mp) and not os.path.ismount(mp):
+            try:
+                os.rmdir(mp)
+            except FileNotFoundError:
+                # Raced delete: the stale leaf is already gone, which is exactly
+                # the state we were trying to reach — proceed.
+                pass
+            except OSError as e:
+                if e.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                    # A real non-empty leaf: never delete a user's files; ask
+                    # them to clear it.
+                    return (f"mountpoint {mp} already exists and is not empty — "
+                            f"remove it before mounting")
+                # Anything else (permissions, sharing violation, …) — report the
+                # actual failure instead of misblaming it on non-emptiness.
+                return f"could not clear stale mountpoint {mp}: {e}"
+    else:
+        os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
         # deleted mount of the same name would otherwise pass for the
@@ -3317,7 +3407,22 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and bool(m.get("read_only")) != bool(
             m.get("mounted_read_only")
         ):
-            return reconnect_mount(m)  # unmounts first, so no recursion here
+            # Normally we remount (reconnect_mount) to bake the corrected
+            # read_only into the live VFS. But reconnect UNMOUNTS FIRST, and on
+            # win32 without WinFsp the re-attach can't succeed — so remounting
+            # here would destroy a healthy survivor to apply a mere safety tweak.
+            # The read_only remount is an improvement (it stops the doomed-upload
+            # retry loop on a read-only remote), not worth tearing down a working
+            # mount over: adopt as-is and let a later attach — once WinFsp is
+            # present — apply it. (reconnect_mount also gates this, so a direct
+            # /reconnect is safe too; this keeps the automount adopt path from
+            # even entering the unmount.) The record's read_only now sits AHEAD
+            # of what the live VFS baked (mounted_read_only); sync_serves below
+            # derives the serve's ReadOnly from mounted_read_only while a live
+            # mount exists (see _effective_serve_read_only), so the serve still
+            # SHARES the mount's VFS and does not fork a second one here.
+            if not (sys.platform == "win32" and not _winfsp_available()):
+                return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
         # HTTP serve may still be missing (a prior serve/start failed, or the
         # mount predates the serve layer), so reconcile serves here too:
@@ -3325,6 +3430,17 @@ def attach_mount(m: dict) -> str | None:
         # wedge-prone kernel mount.
         sync_serves()
         return None
+    # Only the mount-CREATION path needs WinFsp. Gate it here — AFTER the adopt
+    # branch above has returned for an already-live mount — so a mount that
+    # survived a restart (run_automount re-attaches it via this same function)
+    # is never rejected just because the detector false-negatives (non-default
+    # WinFsp install location) or WinFsp was removed while rcd + the mount stay
+    # alive under the Job Object. Still fail fast for a genuinely new mount:
+    # before ensure_rcd and mount/mount, rclone would otherwise error deep in
+    # the backend with an opaque message; point the user at the installer
+    # instead (vacuously True off Windows, so POSIX is unaffected).
+    if not _winfsp_available():
+        return _winfsp_missing_error()
     try:
         port = ensure_rcd()
         # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
@@ -3352,6 +3468,20 @@ def attach_mount(m: dict) -> str | None:
         # serve (whose read_only matches the vfsOpt.ReadOnly here).
         if sys.platform == "darwin":
             params["mountOpt"] = _nfs_mount_opt(m)
+        # win32 only: force WinFsp DISK mode (NetworkMode off). rclone defaults
+        # Windows mounts to network-redirector mode, which does NOT create a
+        # volume mount point — so Python's os.path.ismount (backed by
+        # GetVolumePathName) never sees the mount. Every win32 detection path
+        # here leans on ismount: the _await_ismount verify below would fail a
+        # SUCCESSFUL mount, and a retry could then mistake the live mount's
+        # contents for a non-empty leaf (or the force-unmount poll / mount_state
+        # would call a live mount dead). Disk mode makes a real volume mount
+        # point that ismount detects. Like the darwin mountOpt, NetworkMode is a
+        # transport option, NOT a vfs option, so it does not affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve.
+        elif sys.platform == "win32":
+            params["mountOpt"] = {"NetworkMode": False}
         _rc(port, "mount/mount", params, timeout=60)
     except RuntimeError as e:
         return str(e)
@@ -3368,9 +3498,17 @@ def attach_mount(m: dict) -> str | None:
                 f"kernel NFS mount is absent; retry reconnect")
     # Record what was actually baked into this mount's vfsOpt: rcd never
     # echoes mount options back, so this is the only way the adopt path above
-    # can tell a live VFS predates a read_only change and must be remounted.
-    if bool(m.get("mounted_read_only")) != bool(m.get("read_only")):
-        m["mounted_read_only"] = bool(m.get("read_only"))
+    # (and _effective_serve_read_only) can tell a live VFS predates a read_only
+    # change. Persist the bake EXPLICITLY, False included — a writable attach
+    # must write mounted_read_only=False, not leave the key absent: otherwise a
+    # later read_only=true drift on the win32 deferred-remount path can't tell
+    # the live VFS is writable and forks a second serve VFS. Only genuinely
+    # legacy/foreign records (adopted via listmounts, never through here) keep an
+    # absent key, which the consumers treat as "unknown bake". Compare against
+    # the raw stored value so an already-correct bool is a no-op (no churn).
+    baked = bool(m.get("read_only"))
+    if m.get("mounted_read_only") != baked:
+        m["mounted_read_only"] = baked
         _update_mount(m)
     sync_serves()
     return None
@@ -3397,11 +3535,35 @@ def _quit_tile_daemons() -> None:
             continue
 
 
+# How long the win32 force-unmount polls os.path.ismount before giving up,
+# mirroring the 15 s timeout each POSIX umount attempt below gets.
+_FORCE_UNMOUNT_WIN32_BUDGET_S = 15.0
+
+
 def _force_unmount(mp: str) -> str | None:
     """Kernel-level unmount for a DEAD mount, escalating to force. Only for
     mounts whose serving daemon is gone/wedged — there is nothing left to
     corrupt, and rcd's own unmount either failed or can't be asked. Returns
     an error string or None."""
+    # win32 has no `umount` and no per-mount kernel detach. A WinFsp mount is
+    # backed by rcd's serving process and vanishes the instant that process dies
+    # — so process teardown, not a shell-out, IS the force-unmount. We do NOT
+    # kill rcd here: that would tear down EVERY mount it serves, and the shared
+    # kill path (_kill_current_rcd) is POSIX-only anyway — it escalates through
+    # signal.SIGKILL, which does not exist on Windows. So the win32 branch simply
+    # polls os.path.ismount within the same budget the POSIX ladder gets and
+    # reports success once the reparse point is gone (rcd already exited /
+    # unmounted), else an honest failure — there is nothing else safe to try.
+    if sys.platform == "win32":
+        deadline = time.time() + _FORCE_UNMOUNT_WIN32_BUDGET_S
+        while True:
+            if not os.path.ismount(mp):
+                return None
+            if time.time() >= deadline:
+                break
+            time.sleep(0.1)
+        return (f"force unmount of {mp} is not possible on Windows while rclone "
+                f"still serves it — disconnect the mount (or quit) to clear it")
     attempts = [["umount", mp]]
     if sys.platform == "darwin":
         attempts += [["umount", "-f", mp], ["diskutil", "unmount", "force", mp]]
@@ -3497,6 +3659,13 @@ def reconnect_mount(m: dict) -> str | None:
     and would refuse to remount over its own stale entry — clearing it first
     lets attach_mount's mount/mount start clean."""
     mp = mountpoint(m)
+    # Gate BEFORE the very first unmount below: reconnect tears the mount down
+    # and then re-attaches, but on win32 without WinFsp the re-attach cannot
+    # succeed — so unmounting would destroy a live mount we can no longer
+    # rebuild. Refuse up front, leaving the existing mount untouched. (Vacuously
+    # True off Windows, so POSIX reconnects are unaffected.)
+    if not _winfsp_available():
+        return _winfsp_missing_error()
     port = _live_rcd_port()
     if port is not None:
         try:
