@@ -107,7 +107,33 @@ echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
     "import zipfile, sys, shutil, os; z = zipfile.ZipFile(sys.argv[1]); member = [n for n in z.namelist() if n.endswith('/rclone')][0]; dst = open(sys.argv[2], 'wb'); shutil.copyfileobj(z.open(member), dst); dst.close(); os.chmod(sys.argv[2], 0o755)" \
     "$RCLONE_ZIP" "$PYTHON_ROOT/bin/rclone"
 
-# --- prune caches ------------------------------------------------------------
+# --- prune dead weight (mirrors build_dmg.sh's D116/D118 pruning) ------------
+# manylinux wheels ship native libs with full debug + local symbol tables that
+# the Windows PE / macOS Mach-O wheels of the same libraries don't — the main
+# reason the Linux payload dwarfed the other platforms. strip -S drops debug
+# info, -x drops local symbols; globals stay so dlopen/linking is untouched.
+# The macOS DMG strips the same way. Per-file `|| true`: `find` matches by
+# extension and a stray non-ELF .so (e.g. a text stub) must not fail the build.
+log "Stripping bundled native libraries"
+require strip
+find "$PYTHON_ROOT" -type f \( -name '*.so' -o -name '*.so.*' \) \
+    -exec strip -S -x {} + 2>/dev/null || true
+
+# Package test suites (numpy/pandas/pyarrow/... ship `tests` dirs full of
+# fixtures) are never imported by the app or by user scripts — drop them, same
+# as the DMG build. Only directories literally named `tests`/`test`.
+find "$PYTHON_ROOT/lib/python3.12/site-packages" -type d \
+    \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
+
+# Drop `ty` (Astral's type checker, ~27 MB): the `fused` wheel declares it as a
+# runtime dependency, but nothing in fused_render imports it and the packaged
+# app never type-checks — it's pure dead weight in the bundle. Remove both the
+# console-script binary and the package. macOS/Windows can prune it the same
+# way; keep this in sync if that lands there too.
+rm -rf "$PYTHON_ROOT/bin/ty" \
+    "$PYTHON_ROOT"/lib/python3.12/site-packages/ty \
+    "$PYTHON_ROOT"/lib/python3.12/site-packages/ty-*.dist-info
+
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 # --- smoke tests (drop the pywin32 imports; add supervisor + tray) -----------
@@ -171,7 +197,15 @@ OUTPUT_APPIMAGE="$DIST_DIR/FusedRender-${VERSION}-${ARCH}.AppImage"
 rm -f "$OUTPUT_APPIMAGE"
 # --appimage-extract-and-run avoids needing libfuse2 to RUN appimagetool itself
 # in CI; --runtime-file embeds the static type-2 runtime in the OUTPUT.
+# Compression: appimagetool's bundled mksquashfs only supports zstd (no xz), so
+# push zstd to its max level (22, vs the level-15 default) and use 1 MiB blocks
+# — larger blocks give the dictionary more cross-file redundancy to exploit
+# across the many similar native libs. Worth ~55 MB here and closes most of the
+# compression gap to the Windows installer (LZMA) and macOS DMG (LZFSE).
 ARCH="$ARCH" "$APPIMAGETOOL" --appimage-extract-and-run \
+    --comp zstd \
+    --mksquashfs-opt -b --mksquashfs-opt 1M \
+    --mksquashfs-opt -Xcompression-level --mksquashfs-opt 22 \
     --runtime-file "$RUNTIME_FILE" "$STAGE_DIR" "$OUTPUT_APPIMAGE"
 [ -f "$OUTPUT_APPIMAGE" ] || { echo "appimagetool did not produce $OUTPUT_APPIMAGE" >&2; exit 1; }
 chmod +x "$OUTPUT_APPIMAGE"
