@@ -195,6 +195,10 @@
      .docx import + editor libs land, so the wait reads as "the doc is nearly
      here" rather than a blank flash. ---- */
   #boot { height: 100vh; overflow: hidden; }
+  /* A load failure replaces #boot's skeleton children with a plain error
+     string (see the two catch/guard spots in the boot script below) — fall
+     back to #nofile's padded/muted layout instead of the bare skeleton box. */
+  #boot.boot-error { padding: 44px; color: var(--ink-3); }
   .boot-skel { display: flex; flex-direction: column; height: 100%; }
   .boot-skel-top { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; padding: 7px 12px;
     background: var(--chrome); border-bottom: 1px solid var(--hair); }
@@ -346,6 +350,7 @@
 (async function boot() {
   const $ = (id) => document.getElementById(id);
   if (typeof fused === "undefined") {
+    $("boot").classList.add("boot-error");
     $("boot").textContent = "Open this page inside fused-render (e.g. http://127.0.0.1:1777/view/<path>/docs/template.html).";
     return;
   }
@@ -384,6 +389,7 @@
     PM = await import(assetUrl("vendor/prosemirror.esm.js"));
     katex = PM.katex;
   } catch (err) {
+    $("boot").classList.add("boot-error");
     $("boot").textContent = "Failed to load editor libraries: " + err.message; throw err;
   }
   // KaTeX fonts load from the CDN on first equation render, not from the bundle.

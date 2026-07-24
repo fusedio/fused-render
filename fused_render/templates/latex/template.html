@@ -208,6 +208,11 @@
      removed once the real workspace is ready (see boot script below). ---- */
   #boot { position: fixed; inset: 0; z-index: 300; background: var(--canvas);
     display: flex; flex-direction: column; overflow: hidden; }
+  /* A load failure replaces #boot's skeleton children with a plain error
+     string (see the codemirror import catch below) — switch back to the
+     centered/muted layout #empty uses instead of staying a flex column. */
+  #boot.boot-error { display: grid; place-items: center; text-align: center;
+    color: var(--ink-3); font-size: 14px; padding: 20px; }
   .boot-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
     padding: 7px 12px; background: var(--chrome); border-bottom: 1px solid var(--hair); }
   .boot-spacer { flex: 1 1 auto; }
@@ -367,7 +372,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   try {
     CM = await import(assetUrl("vendor/codemirror.esm.js"));
   } catch (err) {
-    document.getElementById("boot").textContent = "Failed to load the editor: " + err.message;
+    const bootEl = document.getElementById("boot");
+    bootEl.classList.add("boot-error");
+    bootEl.textContent = "Failed to load the editor: " + err.message;
     throw err;
   }
 

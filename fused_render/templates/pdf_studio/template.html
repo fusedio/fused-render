@@ -1348,7 +1348,7 @@ $("pages").addEventListener("click", (e) => {
 
 $("thumbs").addEventListener("click", (e) => {
   const t = e.target.closest(".thumb");
-  if (!t) return;
+  if (!t || !t.dataset.page) return; // skeleton placeholders reuse .thumb for sizing but carry no page number
   const n = +t.dataset.page;
   const qa = e.target.closest("[data-qa]");
   if (qa) {
