@@ -1,5 +1,7 @@
 # fused-render
 
+**[Download for macOS, Windows, and Linux →](https://render.fused.io)**
+
 A local file explorer for your whole computer. Browse any directory in the
 browser, preview files, and author your own interactive views: any `.html`
 file you open gets a tiny injected runtime that can call a Python `main()`
