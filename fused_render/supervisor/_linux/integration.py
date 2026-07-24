@@ -76,10 +76,16 @@ def integrate(
     if appimage is None:
         return  # dev / unpackaged: silent no-op
 
-    data_home = _xdg_home("XDG_DATA_HOME", ".local/share")
-    desktop_file = data_home / "applications" / _DESKTOP_NAME
-    mime_file = data_home / "mime" / "packages" / _MIME_PACKAGE_NAME
-    icon_file = data_home / "icons" / "hicolor" / "256x256" / "apps" / _ICON_NAME
+    # Self-heal the autostart Exec= after an AppImage move — before the stamp
+    # short-circuit below, so a stale autostart path is healed even when the
+    # desktop-integration stamp itself is up to date. Best-effort: a heal
+    # failure must never stop integration (log-and-continue).
+    try:
+        startup.refresh_autostart()
+    except Exception as error:  # noqa: BLE001 - autostart heal is never fatal
+        paths.log(f"desktop integration: autostart refresh failed: {error}")
+
+    data_home, desktop_file, mime_file, icon_file, stamp_file = _artifact_paths(paths)
 
     if icon_source is None:
         icon_source = _bundled_icon_source()
@@ -92,7 +98,6 @@ def integrate(
     desktop_text = _desktop_entry(appimage, icon_value)
     mime_text = custom_mime_xml()
 
-    stamp_file = paths.state / _STAMP_NAME
     stamp = _stamp(appimage, desktop_text, mime_text)
     # Skip only when the stamp matches AND every artifact it vouches for still
     # exists: a matching stamp is not proof the files are on disk (manual
@@ -126,6 +131,52 @@ def integrate(
         _write(stamp_file, json.dumps(stamp))
     except OSError as error:  # noqa: BLE001 stamp is an optimization, not correctness
         paths.log(f"desktop integration: could not write stamp: {error}")
+
+
+def _artifact_paths(paths) -> tuple[Path, Path, Path, Path, Path]:
+    """The XDG data home plus the four artifacts integrate() writes and
+    deintegrate() removes — the single source of truth for those paths so the
+    two functions can never drift. Returns
+    (data_home, desktop_file, mime_file, icon_file, stamp_file)."""
+    data_home = _xdg_home("XDG_DATA_HOME", ".local/share")
+    return (
+        data_home,
+        data_home / "applications" / _DESKTOP_NAME,
+        data_home / "mime" / "packages" / _MIME_PACKAGE_NAME,
+        data_home / "icons" / "hicolor" / "256x256" / "apps" / _ICON_NAME,
+        paths.state / _STAMP_NAME,
+    )
+
+
+def deintegrate(paths) -> None:
+    """Reverse integrate(): remove the user-level desktop integration this app
+    installed, best-effort, so nothing is left pointing at a binary the user is
+    about to delete. Integration-only — never touches app data or the binary.
+
+    Every step is wrapped and log-and-continue (matching integrate()): unlink
+    the four installed artifacts, refresh the freedesktop databases (removing
+    the .desktop + this refresh is what drops the "Open with" and scheme
+    associations), and remove the autostart entry. Deliberately does NOT delete
+    ~/.fused-render app data, the cache dir, or the AppImage file itself."""
+    data_home, desktop_file, mime_file, icon_file, stamp_file = _artifact_paths(paths)
+
+    for artifact in (desktop_file, mime_file, icon_file, stamp_file):
+        try:
+            artifact.unlink()
+        except FileNotFoundError:
+            pass  # already gone (never integrated / manual cleanup): fine
+        except OSError as error:  # noqa: BLE001 best-effort — never fatal
+            paths.log(f"desktop deintegration: could not remove {artifact}: {error}")
+
+    # Refresh the databases so the dropped .desktop actually clears the
+    # "Open with" list and the fused-render:// scheme association.
+    _run_tool(["update-mime-database", str(data_home / "mime")], paths)
+    _run_tool(["update-desktop-database", str(data_home / "applications")], paths)
+
+    try:
+        startup.set_enabled(False)
+    except OSError as error:  # noqa: BLE001 best-effort — never fatal
+        paths.log(f"desktop deintegration: could not remove autostart entry: {error}")
 
 
 def _desktop_entry(appimage: Path, icon_value: str) -> str:

@@ -63,6 +63,23 @@ def confirm_exit() -> bool:
     return bool(_tk_message("askyesno", title, message))
 
 
+def confirm_uninstall() -> bool:
+    message = (
+        "Remove FusedRender's desktop integration (Open-with entries, MIME "
+        "types, autostart) and quit?\n\n"
+        "This does not delete your data or the app file."
+    )
+    title = "Uninstall FusedRender"
+    tool = _dialog_tool()
+    if tool == "zenity":
+        result = _run(["zenity", "--question", "--title", title, "--text", message])
+        return result is not None and result.returncode == 0
+    if tool == "kdialog":
+        result = _run(["kdialog", "--title", title, "--yesno", message])
+        return result is not None and result.returncode == 0
+    return bool(_tk_message("askyesno", title, message))
+
+
 def report_open_rejected(path: str) -> None:
     alert(f"FusedRender could not open:\n\n{path}")
 
