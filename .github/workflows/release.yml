@@ -44,6 +44,16 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          # A dispatch can name an existing tag pointing at a different
+          # commit — never publish artifacts that don't match the tagged source.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_SHA="$(git rev-parse "$TAG^{commit}")"
+            RUN_SHA="$(git rev-parse "${{ github.sha }}^{commit}")"
+            if [ "$TAG_SHA" != "$RUN_SHA" ]; then
+              echo "::error::tag $TAG points at $TAG_SHA but this run builds $RUN_SHA — refusing to publish mismatched artifacts"
+              exit 1
+            fi
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, reusing it."
             exit 0
