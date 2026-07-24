@@ -349,13 +349,15 @@ jobs:
     # Runs once, after all three OS builds, so the manifest can carry every
     # platform's link at the same time — a single writer avoids the three
     # platform jobs racing to read-modify-write the same S3 object.
-    # `always()` + per-job outputs (rather than a hard `needs` success check)
-    # so a workflow_dispatch that only rebuilds one platform, or a platform
-    # build that fails, still publishes a manifest — merged against the live
-    # one via EXISTING_MANIFEST_PATH so untouched/failed platforms keep
-    # whatever link is already live instead of losing it.
+    # `!cancelled()` (rather than a hard `needs` success check) so a
+    # workflow_dispatch that only rebuilds one platform, or a platform build
+    # that fails, still publishes a manifest — merged against the live one
+    # via EXISTING_MANIFEST_PATH so untouched/failed platforms keep whatever
+    # link is already live instead of losing it. Deliberately NOT always():
+    # that also runs on a manually cancelled run, which could rewrite the
+    # live page from only whichever platform jobs happened to finish first.
     needs: [prepare-release, build-sign-notarize-release, build-windows-release, build-linux-release]
-    if: always() && needs.prepare-release.result == 'success'
+    if: ${{ !cancelled() && needs.prepare-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read # needed for actions/checkout
