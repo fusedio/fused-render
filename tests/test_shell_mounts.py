@@ -553,6 +553,43 @@ def test_attach_win32_adopt_path_not_gated_by_winfsp(home, rcd, monkeypatch):
     assert not any(x[0] == "mount/mount" for x in rcd.calls)  # no new mount made
 
 
+def test_reconnect_win32_missing_winfsp_refuses_before_unmount(home, rcd, monkeypatch):
+    # reconnect UNMOUNTS first, then re-attaches — but on win32 without WinFsp the
+    # re-attach can't succeed, so unmounting would destroy a live mount we can't
+    # rebuild. It must refuse up front, issuing NO mount/unmount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.reconnect_mount(c)
+    assert err is not None and "WinFsp" in err
+    assert not any(x[0] == "mount/unmount" for x in rcd.calls)
+
+
+def test_attach_win32_readonly_mismatch_keeps_live_mount_without_winfsp(
+        home, rcd, monkeypatch):
+    # The adopt branch's read_only-mismatch path normally remounts (via
+    # reconnect_mount) to bake the corrected flag into the VFS. That remount is a
+    # safety improvement, NOT worth tearing down a healthy survivor on win32 when
+    # WinFsp is unavailable (reconnect would unmount then fail to remount). Keep
+    # the live mount as-is; a later attach — once WinFsp is present — applies it.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # rcd knows this mount (fs set) so the mismatch branch is reachable, and the
+    # record disagrees on read_only vs what was baked in at mount time.
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
+    c["read_only"] = True
+    c["mounted_read_only"] = False
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.attach_mount(c)
+    assert err is None  # adopted as-is, mount survives
+    assert not any(x[0] == "mount/unmount" for x in rcd.calls)  # never torn down
+
+
 def test_unmount_calls_rc(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.detach_mount(c) is None

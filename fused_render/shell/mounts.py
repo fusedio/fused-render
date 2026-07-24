@@ -784,6 +784,14 @@ def rclone_bin() -> str | None:
 WINFSP_DOWNLOAD_URL = "https://winfsp.dev/rel/"
 
 
+def _winfsp_missing_error() -> str:
+    """The friendly 'install WinFsp' message shared by every mount path that
+    can't proceed without the driver (attach's creation path, reconnect)."""
+    return ("Windows mounts require WinFsp, which isn't installed. Install "
+            f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
+            "kernel driver we don't bundle — see DECISIONS.md.)")
+
+
 def _winfsp_available() -> bool:
     """Whether WinFsp — rclone's Windows mount backend — is installed.
 
@@ -3376,7 +3384,18 @@ def attach_mount(m: dict) -> str | None:
         if fs is not None and bool(m.get("read_only")) != bool(
             m.get("mounted_read_only")
         ):
-            return reconnect_mount(m)  # unmounts first, so no recursion here
+            # Normally we remount (reconnect_mount) to bake the corrected
+            # read_only into the live VFS. But reconnect UNMOUNTS FIRST, and on
+            # win32 without WinFsp the re-attach can't succeed — so remounting
+            # here would destroy a healthy survivor to apply a mere safety tweak.
+            # The read_only remount is an improvement (it stops the doomed-upload
+            # retry loop on a read-only remote), not worth tearing down a working
+            # mount over: adopt as-is and let a later attach — once WinFsp is
+            # present — apply it. (reconnect_mount also gates this, so a direct
+            # /reconnect is safe too; this keeps the automount adopt path from
+            # even entering the unmount.)
+            if not (sys.platform == "win32" and not _winfsp_available()):
+                return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
         # HTTP serve may still be missing (a prior serve/start failed, or the
         # mount predates the serve layer), so reconcile serves here too:
@@ -3394,9 +3413,7 @@ def attach_mount(m: dict) -> str | None:
     # the backend with an opaque message; point the user at the installer
     # instead (vacuously True off Windows, so POSIX is unaffected).
     if not _winfsp_available():
-        return ("Windows mounts require WinFsp, which isn't installed. Install "
-                f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
-                "kernel driver we don't bundle — see DECISIONS.md.)")
+        return _winfsp_missing_error()
     try:
         port = ensure_rcd()
         # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
@@ -3593,6 +3610,13 @@ def reconnect_mount(m: dict) -> str | None:
     and would refuse to remount over its own stale entry — clearing it first
     lets attach_mount's mount/mount start clean."""
     mp = mountpoint(m)
+    # Gate BEFORE the very first unmount below: reconnect tears the mount down
+    # and then re-attaches, but on win32 without WinFsp the re-attach cannot
+    # succeed — so unmounting would destroy a live mount we can no longer
+    # rebuild. Refuse up front, leaving the existing mount untouched. (Vacuously
+    # True off Windows, so POSIX reconnects are unaffected.)
+    if not _winfsp_available():
+        return _winfsp_missing_error()
     port = _live_rcd_port()
     if port is not None:
         try:
