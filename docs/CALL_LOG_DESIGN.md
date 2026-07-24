@@ -97,6 +97,8 @@ comparable numbers when deployed.
   "call_id": "01JX...",          // sortable id; the join key for detail lookups
   "occurred_at": "2026-07-24T18:42:07.921Z",
   "page": "/Users/you/views/sine.html",   // the APP — see attribution, §4.3
+  "target_file": null,           // the iframe's `_file`, when the page is a template (§4.6)
+  "first_party": false,          // page is a shipped/user template, not the user's own app (§4.6)
   "route": "/api/run",
   "http_method": "POST",
   "status": 200,
@@ -248,6 +250,91 @@ ok-but-superseded distinction; see §6.2.
 | `server.py` `/api/fs/write` | `bytes_written`, conflict/readonly outcome. |
 | `executor.py` (builtin path) | Should start returning `duration_ms` and a `stderr` tail so the two engines produce comparable records (§6.5). Small, independently useful change. |
 | `runtime.js` | `X-Fused-Page`, `X-Fused-Call`, `client_ms`, terminal client outcome. |
+
+### 4.5 Where in the call chain the write happens
+
+Six levels can see a call. Each knows a different subset, and no single one
+knows everything:
+
+```
+1  page JS            fused.runPython(...)        page identity, client latency, SUPERSESSION
+2  runtime.js         shared _fetch wrapper       ditto, uniformly for all five helpers
+3  ASGI middleware    no_cache_and_log            route, method, status, wall time, headers
+4  route handler      /api/run, /api/fs/write     params, resolved_py, stdout/stderr, traceback, result
+5  engine/executor    engine.py, executor.py      duration_ms, engine identity — no page, no HTTP
+6  worker process     _child.py, user main()      only what user code itself did
+```
+
+**The record is written at level 3, enriched from level 4, annotated from
+level 2.** Concretely:
+
+- The **middleware** creates a request-scoped record on the way in
+  (`request.state.call`), and on the way out fills status + `server_ms` and
+  makes the **single** `calls.record()` call. It is the only caller of
+  `record()` — that invariant is what guarantees one record per request and one
+  place where fail-open has to be correct.
+- **Route handlers enrich** that same dict in place; they never write. A handler
+  that adds nothing still produces a valid thin record, so new endpoints get
+  logged by default rather than by remembering to instrument them.
+- `calls.record()` itself only does `queue.put_nowait()`. The **background
+  writer thread** (level "outside the request") does the append. Nothing on the
+  request path touches the filesystem.
+- **`runtime.js` annotates but does not report** (in phase 1): it contributes
+  `X-Fused-Page` and `X-Fused-Call` as headers on the way in, so attribution and
+  the correlation id ride the request the server is already logging. The
+  client-side terminal outcome (`superseded`, `client_ms`) is a separate,
+  coalesced POST — deferred to phase 2 (§6.2).
+
+**Why not deeper.** Level 5 cannot see the page, the route, or the HTTP status,
+and it is shared by both engines and by the shell's own uses — it would need
+the page threaded down to it purely for logging. Level 6 is the user's own
+subprocess: it cannot log the case you most want logged (the run that died or
+timed out), and making user code responsible for its own observability is
+backwards.
+
+**Why not shallower.** Level 2 alone would be a client-side log: it misses
+runs whose page navigated away mid-call, it cannot see stdout/stderr for
+anything but `/api/run`, and it puts the durable record behind the very thing
+being debugged. It contributes what only it knows, and nothing more.
+
+Three consequences worth stating plainly, since they follow from choosing
+level 3:
+
+- **`server_ms` is time-to-response-object, not time-to-last-byte.** The
+  middleware resumes when `call_next` returns a `Response`; a `FileResponse` or
+  the pooled mount proxy has not streamed its body yet. For `/api/run` (a
+  `JSONResponse`, fully materialised) the two are the same. For `/api/fs/raw`
+  they are not, and `result_bytes` there comes from `Content-Length`, not from
+  measuring the stream. The existing access line (SV-3) already has exactly
+  this property, so this inherits a known limitation rather than adding one.
+- **500s are recorded from the `except` branch.** `@app.exception_handler(Exception)`
+  runs in `ServerErrorMiddleware`, *outside* user middleware, so an unhandled
+  exception escapes `call_next`. The existing middleware already duplicates its
+  log line there before re-raising; the record write joins it, and `err_id`
+  must be minted somewhere both can see it (`request.state` again) so the
+  record and the response body carry the same id.
+- **`request.state` is a new pattern here.** The repo uses `app.state` today
+  (the pooled httpx client) but never `request.state`. It is stock Starlette
+  and the right tool for request-scoped data; worth naming because it is new.
+
+### 4.6 Template readers are apps too
+
+A consequence of attributing by the iframe's own path: when you preview a
+parquet, the `duckdb` template's page calls `runPython('./reader.py')` through
+the same runtime and the same `/api/run`. Those are real calls and they get
+real records, attributed to `page = <package>/templates/duckdb/template.html`.
+
+That is correct — "how slow is the duckdb reader on this file" is a question
+worth answering, and §10.3 depends on it — but it means "my app's calls" needs
+a deliberate filter, not an accident. Two additions handle it:
+
+- The record carries **`target_file`** (the iframe's `_file` param) alongside
+  `page`. For a user's own page they are unrelated; for a template, `_file` is
+  the identity that matters — the record says "duckdb reader, on *this*
+  parquet."
+- A **`first_party`** boolean (page path is under the installed package's
+  `templates/` dir, or under `~/.fused-render/templates/`) so the default view
+  can show *your* pages and let template calls be one toggle away.
 
 ---
 
