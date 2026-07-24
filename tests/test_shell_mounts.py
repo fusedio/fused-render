@@ -17,6 +17,20 @@ import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
 
 
+@pytest.fixture(autouse=True)
+def _warm_https_opener():
+    """Build urllib's global HTTPS opener (and its SSL context) on the REAL
+    platform before any test runs. The win32 mount tests patch sys.platform to
+    "win32"; if the opener is first constructed while that patch is live,
+    ssl.load_default_certs takes the Windows cert-store branch
+    (enum_certificates), which doesn't exist off-Windows, and every rc call over
+    plain-HTTP loopback dies with a NameError. Pre-warming sidesteps the
+    artifact — real Windows has enum_certificates."""
+    import urllib.request as _u
+    if _u._opener is None:
+        _u._opener = _u.build_opener()
+
+
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -293,6 +307,39 @@ def test_serve_vfs_opt_derived_from_mount_vfs_opt():
     assert mounts_mod._serve_vfs_opt_for({})["read_only"] == "false"
 
 
+def test_serve_read_only_mirrors_live_mount_when_record_drifted(home, monkeypatch):
+    # A live mount's VFS was baked with mounted_read_only; if the record's
+    # read_only drifts ahead (win32 adopt-under-mismatch defers the remount), the
+    # serve must still mirror mounted_read_only so it SHARES the mount's VFS
+    # instead of forking a second one on the (fs, ReadOnly) key.
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": False}
+    mp = mounts_mod.mountpoint(m)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod._effective_serve_read_only(m) is False
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "false"
+
+
+def test_serve_read_only_uses_record_when_no_live_mount(home, monkeypatch):
+    # No live mount = no VFS to share yet; the next attach bakes the record's
+    # read_only, so the serve follows the record (also the legacy/foreign case).
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": False}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "true"
+
+
+def test_serve_read_only_matches_record_in_normal_path(home, monkeypatch):
+    # Guard: when record and mounted_read_only agree (the normal path — attach
+    # records mounted_read_only := read_only at mount time), the serve is
+    # unchanged, live mount or not.
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": True}
+    mp = mounts_mod.mountpoint(m)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "true"
+
+
 @pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
                     reason="nfsmount timeo override is macOS-only")
 def test_mount_raises_nfs_timeout_on_macos(home, rcd):
@@ -308,11 +355,352 @@ def test_mount_raises_nfs_timeout_on_macos(home, rcd):
     assert any(o.startswith("timeo=") for o in body["mountOpt"]["ExtraOptions"])
 
 
+def test_mount_win32_uses_disk_mode_mountopt(home, rcd, monkeypatch):
+    # rclone defaults Windows mounts to NETWORK mode, which creates no volume
+    # mount point — os.path.ismount (GetVolumePathName) then never sees a live
+    # mount, breaking every win32 detection path. attach must force disk mode
+    # (NetworkMode off) so a real volume mount point exists.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "mount"
+    assert body["mountOpt"] == {"NetworkMode": False}
+
+
+def test_mount_linux_passes_no_mountopt(home, rcd, monkeypatch):
+    # Linux FUSE needs neither the darwin NFS tuning nor the win32 disk-mode flag.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
+    assert body["mountType"] == "mount"
+    assert "mountOpt" not in body
+
+
 def test_mount_surfaces_rc_error(home, rcd):
     rcd.responses["mount/mount"] = (500, {"error": "mount helper failed"})
     c = mounts_mod.add_mount("data", "remote:bucket")
     err = mounts_mod.attach_mount(c)
     assert err is not None and "mount helper failed" in err
+
+
+# -- Windows (WinFsp) mount semantics ------------------------------------------
+# The whole win32 mount path is exercised here with sys.platform patched to
+# "win32" (real rclone/WinFsp is never invoked). WinFsp differs from the POSIX
+# backends in two ways the code must special-case: the mountpoint leaf must NOT
+# pre-exist, and there is no `umount` to force a detach.
+
+
+def test_attach_win32_does_not_create_leaf_mountpoint(home, rcd, monkeypatch):
+    # WinFsp creates the mountpoint itself; pre-creating the leaf makes
+    # mount/mount fail. So on win32 attach_mount must never makedirs the leaf
+    # (it still ensures the mounts ROOT, which carries the Spotlight marker).
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    made = []
+    real_makedirs = mounts_mod.os.makedirs
+
+    def spy_makedirs(path, *a, **k):
+        made.append(path)
+        return real_makedirs(path, *a, **k)
+
+    monkeypatch.setattr(mounts_mod.os, "makedirs", spy_makedirs)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert mounts_mod.attach_mount(c) is None
+    assert mp not in made               # leaf never pre-created (WinFsp does it)
+    assert mounts_mod.mounts_dir() in made  # but the root is still ensured
+
+
+def test_attach_win32_removes_stale_empty_leaf(home, rcd, monkeypatch):
+    # A previous mount can leave an empty leaf dir behind; WinFsp refuses to
+    # mount over it, so attach_mount rmdir's the stale empty leaf first.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)  # stale empty leaf
+    assert mounts_mod.os.path.isdir(mp)
+    assert mounts_mod.attach_mount(c) is None
+    # we removed the stale leaf and did NOT recreate it (WinFsp would),
+    # while the stub reports it as a live mount.
+    assert not mounts_mod.os.path.exists(mp)
+    assert mounts_mod.os.path.ismount(mp)
+
+
+def test_attach_win32_refuses_nonempty_leaf(home, rcd, monkeypatch):
+    # A non-empty leaf is a user's data (or a foreign mount's contents) — never
+    # rmdir it; error out and never even reach mount/mount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+    keep = mounts_mod.os.path.join(mp, "keep.txt")
+    with open(keep, "w") as f:
+        f.write("x")
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert mounts_mod.os.path.isdir(mp) and mounts_mod.os.path.isfile(keep)
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_stale_leaf_raced_delete_proceeds(home, rcd, monkeypatch):
+    # A concurrent delete of the stale leaf (FileNotFoundError from rmdir) means
+    # the leaf is already gone — exactly what we wanted — so the mount proceeds.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)  # isdir(mp) True so we enter the rmdir branch
+
+    def raise_fnf(_p):
+        raise FileNotFoundError(_errno.ENOENT, "raced away")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_fnf)
+    assert mounts_mod.attach_mount(c) is None  # proceeded to a normal mount
+    assert any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_stale_leaf_nonempty_reports_not_empty(home, rcd, monkeypatch):
+    # ENOTEMPTY/EEXIST from rmdir keeps the "not empty — remove it" guidance.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+
+    def raise_notempty(_p):
+        raise OSError(_errno.ENOTEMPTY, "directory not empty")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_notempty)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None and "not empty" in err
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_stale_leaf_other_oserror_reports_exception(home, rcd, monkeypatch):
+    # A permission/sharing-violation OSError must report the ACTUAL error, not
+    # falsely claim the leaf is non-empty.
+    import errno as _errno
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+
+    def raise_perm(_p):
+        raise PermissionError(_errno.EACCES, "access is denied")
+
+    monkeypatch.setattr(mounts_mod.os, "rmdir", raise_perm)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert "not empty" not in err
+    assert "access is denied" in err or "Errno" in err
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+@pytest.mark.parametrize("plat", ["darwin", "linux"])
+def test_attach_posix_creates_leaf_mountpoint(home, rcd, monkeypatch, plat):
+    # Regression guard: POSIX (FUSE/NFS) mounts over an EXISTING empty dir, so
+    # the leaf is still pre-created on darwin/linux.
+    monkeypatch.setattr(mounts_mod.sys, "platform", plat)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert not mounts_mod.os.path.exists(mp)
+    assert mounts_mod.attach_mount(c) is None
+    assert mounts_mod.os.path.isdir(mp)
+
+
+def test_force_unmount_win32_no_shellouts_returns_none_when_unmounted(monkeypatch):
+    # On win32 there is no umount/diskutil; _force_unmount must not shell out and
+    # returns None the moment the reparse point is gone.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda cmd, *a, **k: ran.append(cmd))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._force_unmount("/x/mnt") is None
+    assert ran == []
+
+
+def test_force_unmount_win32_polls_until_unmounted(monkeypatch):
+    # The poll loop returns None once os.path.ismount flips False.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    states = iter([True, True, False])
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: next(states, False))
+    monkeypatch.setattr(mounts_mod, "_FORCE_UNMOUNT_WIN32_BUDGET_S", 5.0)
+    assert mounts_mod._force_unmount("/x/mnt") is None
+
+
+def test_force_unmount_win32_errors_when_still_mounted(monkeypatch):
+    # Still mounted after the budget expires -> an error string, and never a
+    # umount/diskutil shell-out.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    ran = []
+    monkeypatch.setattr(mounts_mod.subprocess, "run",
+                        lambda cmd, *a, **k: ran.append(cmd))
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    monkeypatch.setattr(mounts_mod, "_FORCE_UNMOUNT_WIN32_BUDGET_S", 0.2)
+    err = mounts_mod._force_unmount("/x/mnt")
+    assert err is not None
+    assert ran == []
+    assert not any(c and c[0] in ("umount", "diskutil") for c in ran)
+
+
+def test_winfsp_available_true_off_win32(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "darwin")
+    assert mounts_mod._winfsp_available() is True
+
+
+def test_winfsp_available_finds_arm64_dll(tmp_path, monkeypatch):
+    # WinFsp ships winfsp-a64.dll (not winfsp-x64.dll) on ARM64 Windows; the
+    # detector must accept it via the ProgramFiles probe.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        monkeypatch.delenv(env, raising=False)
+    binp = tmp_path / "WinFsp" / "bin"
+    binp.mkdir(parents=True)
+    (binp / "winfsp-a64.dll").write_bytes(b"")  # ARM64 DLL only, no x64
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    assert mounts_mod._winfsp_available() is True
+
+
+def test_attach_win32_missing_winfsp_returns_friendly_error(home, monkeypatch):
+    # Missing WinFsp fails fast with an install hint, before any rcd work.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    called = []
+    monkeypatch.setattr(mounts_mod, "ensure_rcd",
+                        lambda *a, **k: called.append(True) or 1)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert "WinFsp" in err and "https://winfsp.dev/rel/" in err
+    assert called == []  # bailed before ensure_rcd
+
+
+def test_attach_win32_with_winfsp_proceeds(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    assert any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+def test_attach_win32_adopt_path_not_gated_by_winfsp(home, rcd, monkeypatch):
+    # A mount that survived a restart (already a LIVE kernel mount) must take the
+    # adopt/reconcile branch on win32 even when the WinFsp detector reports False
+    # — the driver false-negatives on a non-default install location, or WinFsp
+    # was removed while rcd + the mount stay alive under the Job Object. The gate
+    # exists to fail NEW mounts fast, not to declare a healthy adopted mount
+    # broken (run_automount would otherwise report every survivor as failed).
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.attach_mount(c)
+    assert err is None  # adopted, not rejected with the WinFsp install message
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)  # no new mount made
+
+
+def test_reconnect_win32_missing_winfsp_refuses_before_unmount(home, rcd, monkeypatch):
+    # reconnect UNMOUNTS first, then re-attaches — but on win32 without WinFsp the
+    # re-attach can't succeed, so unmounting would destroy a live mount we can't
+    # rebuild. It must refuse up front, issuing NO mount/unmount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.reconnect_mount(c)
+    assert err is not None and "WinFsp" in err
+    assert not any(x[0] == "mount/unmount" for x in rcd.calls)
+
+
+def test_attach_win32_readonly_mismatch_keeps_live_mount_without_winfsp(
+        home, rcd, monkeypatch):
+    # The adopt branch's read_only-mismatch path normally remounts (via
+    # reconnect_mount) to bake the corrected flag into the VFS. That remount is a
+    # safety improvement, NOT worth tearing down a healthy survivor on win32 when
+    # WinFsp is unavailable (reconnect would unmount then fail to remount). Keep
+    # the live mount as-is; a later attach — once WinFsp is present — applies it.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    # rcd knows this mount (fs set) so the mismatch branch is reachable, and the
+    # record disagrees on read_only vs what was baked in at mount time.
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
+    c["read_only"] = True
+    c["mounted_read_only"] = False
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.attach_mount(c)
+    assert err is None  # adopted as-is, mount survives
+    assert not any(x[0] == "mount/unmount" for x in rcd.calls)  # never torn down
+
+
+def test_win32_adopt_mismatch_serve_shares_live_mount_vfs(home, rcd, monkeypatch):
+    # The adopt-as-is fall-through calls sync_serves. The serve it starts must
+    # match the LIVE mount's VFS (mounted_read_only=False), NOT the drifted
+    # record (read_only=True) — otherwise rcd forks a second VFS on (fs, ReadOnly)
+    # and the mount/serve split-brain wedge returns.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
+    # Persist the mismatch so sync_serves (reads storage) sees it too.
+    c["read_only"] = True
+    c["mounted_read_only"] = False
+    mounts_mod._update_mount(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.attach_mount(c) is None
+    starts = [body for (meth, body) in rcd.calls if meth == "serve/start"]
+    assert starts, "a serve should have been started for the adopted mount"
+    assert all(s.get("read_only") == "false" for s in starts)  # shares live VFS
+
+
+def test_writable_attach_records_mounted_read_only_false(home, rcd):
+    # A successful WRITABLE attach must persist mounted_read_only=False (not skip
+    # the write), so _effective_serve_read_only always has the baked truth for
+    # mounts we attached — otherwise a later read_only drift falls back to the
+    # record and forks a second VFS.
+    c = mounts_mod.add_mount("data", "remote:bucket")  # writable (no read_only)
+    assert mounts_mod.attach_mount(c) is None
+    [stored] = mounts_mod.list_mounts()
+    assert stored["mounted_read_only"] is False
+
+
+def test_deferred_remount_formerly_writable_serve_read_only_false(home, rcd, monkeypatch):
+    # End-to-end: a normal writable attach persists the bake (False); later the
+    # record flips to read_only=True but win32 has no WinFsp, so the remount is
+    # deferred and the live VFS stays writable. The serve must derive ReadOnly
+    # from the RECORDED bake (False), not the drifted record (True).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert mounts_mod.attach_mount(c) is None
+    [stored] = mounts_mod.list_mounts()
+    assert stored["mounted_read_only"] is False  # bake persisted by the attach
+    # Detection later flips the record read-only; win32 defers the remount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    stored["read_only"] = True
+    mounts_mod._update_mount(stored)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": stored["remote"], "MountPoint": mp}]}
+    rcd.calls.clear()
+    assert mounts_mod.attach_mount(stored) is None
+    starts = [body for (meth, body) in rcd.calls if meth == "serve/start"]
+    assert starts and all(s.get("read_only") == "false" for s in starts)
 
 
 def test_unmount_calls_rc(home, rcd):
