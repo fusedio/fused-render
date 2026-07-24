@@ -67,7 +67,7 @@
      plus a shimmer sweep echo the tiled raster canvas that's about to land;
      hidden as soon as tiles are handed to maplibre (which fades individual
      tiles in on its own) or the fallback image is ready. */
-  #mapSkeleton { position: absolute; inset: 0; z-index: 6; display: none;
+  #mapSkeleton { position: absolute; inset: 0; z-index: 6; display: none; pointer-events: none;
     background: #16181c;
     background-image: linear-gradient(#1d2025 1px, transparent 1px),
       linear-gradient(90deg, #1d2025 1px, transparent 1px);
@@ -621,36 +621,38 @@ async function loadFile(){
   const file = P.file();
   if (!file) { status('no file — use Browse', true); return; }
   showMapSkeleton();
-  status('Opening…');
-  await styleReady();
-  const d = await ensureDaemon().catch(() => null);
-  meta = null; tileMode = false;
-  els.imgFallback.style.display = 'none';
-  for (const id of ['raster', 'rimg', 'rimg2']){
-    if (map.getLayer(id)) map.removeLayer(id);
-    if (map.getSource(id)) map.removeSource(id);
-  }
-  if (d && d.port){
-    try {
-      meta = await (await fetch(dURL('/meta?' + daemonQuery({file})))).json();
-      tileMode = !!meta.supported;
-    } catch (e) { meta = null; }
-  }
-  syncControls();
-  if (tileMode){
-    setRasterTiles();
+  try {
+    status('Opening…');
+    await styleReady();
+    const d = await ensureDaemon().catch(() => null);
+    meta = null; tileMode = false;
+    els.imgFallback.style.display = 'none';
+    for (const id of ['raster', 'rimg', 'rimg2']){
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    }
+    if (d && d.port){
+      try {
+        meta = await (await fetch(dURL('/meta?' + daemonQuery({file})))).json();
+        tileMode = !!meta.supported;
+      } catch (e) { meta = null; }
+    }
+    syncControls();
+    if (tileMode){
+      setRasterTiles();
+      fitToRaster();
+      status('');
+      refreshHist();
+    } else {
+      await loadFallback();
+      fitToRaster();
+    }
+    renderMeta();
+    loadedFile = file;
+    loadedQuery = renderQuery();
+  } finally {
     hideMapSkeleton();
-    fitToRaster();
-    status('');
-    refreshHist();
-  } else {
-    await loadFallback();
-    hideMapSkeleton();
-    fitToRaster();
   }
-  renderMeta();
-  loadedFile = file;
-  loadedQuery = renderQuery();
 }
 
 function onParamsChanged(){

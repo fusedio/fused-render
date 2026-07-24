@@ -704,7 +704,16 @@ async function renderAll() {
   $("pages").innerHTML = "";
   showThumbSkeleton(shown); // keep the thumb rail shimmering (sized to the real count) until thumbs start landing
   watchPages();
-  await renderPage(pdf, 1, gen);
+  try {
+    await renderPage(pdf, 1, gen);
+  } catch (err) {
+    // Page 1 failing means the background loop below (which is the only
+    // thing that ever clears the thumb skeleton) never starts — clear it
+    // here so it doesn't shimmer forever, then rethrow to the caller's
+    // existing try/catch + toast.
+    if (gen === renderGen) $("thumbs").innerHTML = "";
+    throw err;
+  }
   if (document.body.classList.contains("mode-edit")) primeOverlays();
   (async () => {
     for (let n = 2; n <= shown; n++) {

@@ -65,7 +65,7 @@
      first slice of a file is being resolved (before any content has ever
      painted) — a faint graticule plus a shimmer sweep, echoing the eventual
      map without pretending to know its bounds yet. */
-  #loadSkel { position: absolute; inset: 0; z-index: 6; display: none; overflow: hidden;
+  #loadSkel { position: absolute; inset: 0; z-index: 6; display: none; overflow: hidden; pointer-events: none;
     background:
       repeating-linear-gradient(to bottom, transparent 0 59px, #1c1f24 59px 60px),
       repeating-linear-gradient(to right, transparent 0 59px, #1c1f24 59px 60px),
@@ -455,34 +455,37 @@ async function loadSlice(){
   const sq = sliceQuery().toString();
   const firstLoad = !meta; // nothing has ever painted yet — show the full-pane skeleton
   if (firstLoad) showSkel();
-  statusLoading('Loading slice…');
-  await styleReady();
-  const d = await ensureDaemon();
-  if (!d || !d.port){ hideSkel(); status('daemon failed to start', true); return; }
-  let m;
   try {
-    m = await (await fetch(dURL('/meta?' + sq))).json();
-  } catch (e) { hideSkel(); status('daemon unreachable', true); return; }
-  if (m.error){ hideSkel(); status(m.error, true); return; }
-  const firstFile = !meta || meta.file !== m.file;
-  meta = m;
-  geographic = !!m.geographic;
-  syncControls();
-  renderMeta();
-  if (geographic){
-    els.imgFallback.style.display = 'none';
-    if (map.getLayer('raster') && firstFile){ map.removeLayer('raster'); map.removeSource('raster'); }
-    setRasterTiles();
-    if (firstFile) fitToData();
-    refreshHist();
-  } else {
-    if (map.getLayer('raster')){ map.removeLayer('raster'); map.removeSource('raster'); }
-    showImgFallback();
+    statusLoading('Loading slice…');
+    await styleReady();
+    const d = await ensureDaemon();
+    if (!d || !d.port){ status('daemon failed to start', true); return; }
+    let m;
+    try {
+      m = await (await fetch(dURL('/meta?' + sq))).json();
+    } catch (e) { status('daemon unreachable', true); return; }
+    if (m.error){ status(m.error, true); return; }
+    const firstFile = !meta || meta.file !== m.file;
+    meta = m;
+    geographic = !!m.geographic;
+    syncControls();
+    renderMeta();
+    if (geographic){
+      els.imgFallback.style.display = 'none';
+      if (map.getLayer('raster') && firstFile){ map.removeLayer('raster'); map.removeSource('raster'); }
+      setRasterTiles();
+      if (firstFile) fitToData();
+      refreshHist();
+    } else {
+      if (map.getLayer('raster')){ map.removeLayer('raster'); map.removeSource('raster'); }
+      showImgFallback();
+    }
+    status('');
+    loadedSlice = sq;
+    loadedQuery = renderQuery();
+  } finally {
+    hideSkel();
   }
-  status('');
-  hideSkel();
-  loadedSlice = sq;
-  loadedQuery = renderQuery();
 }
 
 function onParamsChanged(){

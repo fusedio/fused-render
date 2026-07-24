@@ -292,22 +292,26 @@ async function loadFile(){
   const key = file + '|' + P.maxPts();
   if (key === loadedKey) return;
   if (!data) showSkeleton(true);
-  status('Reading point cloud… (first read of a big .laz can take a few seconds)');
-  const r = await fused.runPython('./las_reader.py', {file, max_points: P.maxPts()})
-    .catch(e => ({error: String(e.message || e)}));
-  if (!r || r.error){ showSkeleton(false); status((r && r.error) || 'read failed', true); return; }
-  status('Decoding…');
-  data = r;
-  data.posArr = new Float32Array(await b64buf(r.pos));
-  data.n = data.posArr.length / 3;
-  data.rgbArr = r.rgb ? new Uint8Array(await b64buf(r.rgb)) : null;
-  data.intenArr = r.intensity ? new Uint16Array(await b64buf(r.intensity)) : null;
-  data.classArr = r.classification ? new Uint8Array(await b64buf(r.classification)) : null;
-  loadedKey = key;
-  syncControls();
-  render(true);
-  renderMeta();
-  status('');
+  try {
+    status('Reading point cloud… (first read of a big .laz can take a few seconds)');
+    const r = await fused.runPython('./las_reader.py', {file, max_points: P.maxPts()})
+      .catch(e => ({error: String(e.message || e)}));
+    if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
+    status('Decoding…');
+    data = r;
+    data.posArr = new Float32Array(await b64buf(r.pos));
+    data.n = data.posArr.length / 3;
+    data.rgbArr = r.rgb ? new Uint8Array(await b64buf(r.rgb)) : null;
+    data.intenArr = r.intensity ? new Uint16Array(await b64buf(r.intensity)) : null;
+    data.classArr = r.classification ? new Uint8Array(await b64buf(r.classification)) : null;
+    loadedKey = key;
+    syncControls();
+    render(true);
+    renderMeta();
+    status('');
+  } finally {
+    showSkeleton(false);
+  }
 }
 
 function syncControls(){

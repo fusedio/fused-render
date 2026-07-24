@@ -432,31 +432,33 @@ async function loadFile(){
   const key = file + '|' + P.h3Col();
   if (key === loadedKey) return;
   showMapSkeleton();
-  status('Reading parquet…');
-  await styleReady();
-  const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
-    .catch(e => ({error: String(e.message || e)}));
-  if (!r || r.error){
-    if (r && r.no_h3 && r.columns){
-      els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
-        r.columns.map(c => `<option>${esc(c)}</option>`).join('');
+  try {
+    status('Reading parquet…');
+    await styleReady();
+    const r = await fused.runPython('./h3_reader.py', {file, h3_col: P.h3Col()})
+      .catch(e => ({error: String(e.message || e)}));
+    if (!r || r.error){
+      if (r && r.no_h3 && r.columns){
+        els.h3Col.innerHTML = '<option value="">— pick H3 column —</option>' +
+          r.columns.map(c => `<option>${esc(c)}</option>`).join('');
+      }
+      status((r && r.error) || 'read failed', true);
+      return;
     }
+    data = r;
+    loadedKey = key;
+    status(`Building ${r.shown.toLocaleString()} hexagons…`);
+    gj = buildGeojson();
+    syncControls();
+    addLayers();
+    fitToData();
+    renderMeta();
+    refreshHist();
+    status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
+    if (r.truncated) setTimeout(() => status(''), 8000);
+  } finally {
     hideMapSkeleton();
-    status((r && r.error) || 'read failed', true);
-    return;
   }
-  data = r;
-  loadedKey = key;
-  status(`Building ${r.shown.toLocaleString()} hexagons…`);
-  gj = buildGeojson();
-  syncControls();
-  addLayers();
-  hideMapSkeleton();
-  fitToData();
-  renderMeta();
-  refreshHist();
-  status(r.truncated ? `showing first ${r.shown.toLocaleString()} of ${r.count.toLocaleString()} cells` : '');
-  if (r.truncated) setTimeout(() => status(''), 8000);
 }
 
 function syncControls(){
