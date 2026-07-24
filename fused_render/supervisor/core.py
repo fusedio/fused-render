@@ -33,6 +33,7 @@ instance = _backend.instance
 startup = _backend.startup
 ui = _backend.ui
 update = getattr(_backend, "update", None)  # optional hook (Windows only)
+deintegrate = getattr(_backend, "deintegrate", None)  # optional hook (Linux only)
 
 _READY_TIMEOUT_S = 20.0
 _SHUTDOWN_TIMEOUT_S = 5.0
@@ -40,6 +41,7 @@ _STOP_PIPE_TIMEOUT_S = 10.0
 
 _dialog_lock = threading.Lock()
 _exit_dialog_lock = threading.Lock()
+_uninstall_dialog_lock = threading.Lock()
 
 
 class SupervisorStoppedError(RuntimeError):
@@ -152,6 +154,7 @@ def _event_loop(
     opens are dispatched via _spawn_open, never awaited, so a hung open can't
     stall answering a concurrent ShutdownForUpgrade in its 20s window."""
     exit_confirm: "queue.Queue[bool]" = queue.Queue()
+    uninstall_confirm: "queue.Queue[bool]" = queue.Queue()
     while True:
         while True:
             try:
@@ -168,8 +171,31 @@ def _event_loop(
                 _spawn_call(paths, ui.open_default_apps)
             elif action is tray.TrayAction.CHECK_UPDATES:
                 _spawn_update_check(paths)
+            elif action is tray.TrayAction.UNINSTALL:
+                _spawn_uninstall_confirm(uninstall_confirm)
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
+
+        # Poll uninstall BEFORE exit: both confirmations resolve to a TRAY_EXIT,
+        # but uninstall is the superset (it must deintegrate first). Checking
+        # exit first would let a plain exit win a race where the user confirmed
+        # both dialogs, silently skipping the cleanup they asked for.
+        try:
+            if uninstall_confirm.get_nowait():  # False (clicked No) just resumes
+                # Reverse the first-launch desktop integration before exiting, so
+                # nothing is left pointing at a binary the user is about to
+                # delete. Best-effort and guarded: a missing hook (non-Linux) or
+                # a failure must still let the app exit through the normal
+                # teardown path below (tray stop -> pipe -> graceful shutdown ->
+                # job.close()). Integration-only — never the app data or binary.
+                if deintegrate is not None:
+                    try:
+                        deintegrate(paths)
+                    except Exception as error:  # noqa: BLE001 - never blocks exit
+                        paths.log(f"uninstall: deintegrate failed: {error}")
+                return _ExitReason.TRAY_EXIT, None
+        except queue.Empty:
+            pass
 
         try:
             if exit_confirm.get_nowait():  # False (user clicked No) just resumes
@@ -373,6 +399,26 @@ def _spawn_exit_confirm(results: "queue.Queue[bool]") -> None:
             _exit_dialog_lock.release()
 
     threading.Thread(target=worker, daemon=True, name="fused-render-exit-confirm").start()
+
+
+def _spawn_uninstall_confirm(results: "queue.Queue[bool]") -> None:
+    """Uninstall confirmation on a dedicated thread — same idiom as
+    `_spawn_exit_confirm`: the modal dialog must not block the loop, so a
+    ShutdownForUpgrade arriving while it's up is still answered in the pipe
+    server's window. A separate lock from the exit/file dialogs drops a second
+    click while one uninstall dialog is already open rather than stacking them."""
+    if not _uninstall_dialog_lock.acquire(blocking=False):
+        return
+
+    def worker():
+        try:
+            results.put(ui.confirm_uninstall())
+        finally:
+            _uninstall_dialog_lock.release()
+
+    threading.Thread(
+        target=worker, daemon=True, name="fused-render-uninstall-confirm"
+    ).start()
 
 
 def _open_command(port: int, command: protocol.Command) -> None:
