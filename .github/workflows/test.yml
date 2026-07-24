@@ -22,21 +22,37 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       linux_desktop: ${{ steps.filter.outputs.linux_desktop }}
+      windows_desktop: ${{ steps.filter.outputs.windows_desktop }}
+      windows_packaging: ${{ steps.filter.outputs.windows_packaging }}
+      macos_desktop: ${{ steps.filter.outputs.macos_desktop }}
+      macos_packaging: ${{ steps.filter.outputs.macos_packaging }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
-            # Packaging paths shared by both filters. Defined as a YAML anchor
-            # (must precede the aliases that reference it) so the two filters
-            # cannot drift: every linux_desktop path must also be an app path,
-            # because the linux-desktop job (where the gated smoke step lives)
-            # only runs when app fires. dorny/paths-filter flattens the aliased
-            # sequence into each filter's own list.
-            packaging: &packaging
+            # Each platform's packaging paths live in a YAML anchor (must precede
+            # the aliases below) and are ALSO referenced into `app`, so a platform
+            # filter can never match a path `app` does not: a *_desktop filter
+            # firing therefore implies `app` fired. That invariant is load-bearing
+            # for any desktop job that depends on the `frontend` artifact — the
+            # filter firing while `app` stayed false would leave `frontend` skipped
+            # and the artifact missing. dorny/paths-filter flattens each aliased
+            # sequence into the referencing filter's list; a path shared across
+            # anchors (file_associations.*) flattening into `app` twice is harmless.
+            linux_packaging: &linux_packaging
               - 'scripts/build_linux_appimage.sh'
               - 'scripts/linux/**'
+              - 'scripts/file_associations.*'
+            windows_packaging: &windows_packaging
+              - 'scripts/build_windows_installer.ps1'
+              - 'scripts/windows/**'
+              - 'scripts/file_associations.*'
+            macos_packaging: &macos_packaging
+              - 'scripts/build_dmg.sh'
+              - 'scripts/setup_py2app.py'
+              - 'scripts/app_entry.py'
               - 'scripts/file_associations.*'
             app:
               - 'fused_render/**'
@@ -46,18 +62,34 @@ jobs:
               - 'scripts/hatch_build.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
-              - *packaging
-            # Gates only the expensive AppImage build smoke (several minutes of
-            # toolchain downloads); the cheap Linux backend test run stays on
-            # the broad `app` filter above. macOS has no per-PR packaging job
-            # at all (the DMG is release-tag only), so this keeps Linux at
-            # parity-or-better without paying the smoke on every server PR.
+              - *linux_packaging
+              - *windows_packaging
+              - *macos_packaging
+            # Each *_desktop filter gates its platform's test job; the matching
+            # *_packaging filter gates only that job's expensive build smoke
+            # (minutes of toolchain downloads), pointless on a server-only PR.
+            # (linux-desktop keeps gating its smoke on the whole linux_desktop
+            # filter — pre-existing behavior, left unchanged.)
             linux_desktop:
               - 'fused_render/supervisor/**'
               - 'fused_render/shell/mounts.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
-              - *packaging
+              - *linux_packaging
+            windows_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/winopen.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *windows_packaging
+            macos_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/app.py'
+              - 'fused_render/menubar_pin.py'
+              - 'fused_render/shell/mounts.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *macos_packaging
 
   # The React shell (frontend/) is built once here and shared with every
   # python-version job below — fused_render/server.py refuses to start
@@ -237,10 +269,103 @@ jobs:
         if: needs.detect-changes.outputs.linux_desktop == 'true'
         run: bash scripts/build_linux_appimage.sh
 
+  # Windows desktop supervisor (docs/PYTHON_SUPERVISOR_SPEC.md). The _win32
+  # backend, the Explorer "Open with" entry point (winopen.py), and the
+  # ed25519-signed update-manifest verifier run here on real Windows — the Linux
+  # matrix never exercises them. No shell-dist dependency: none of these tests
+  # start the HTTP server (create_app), so the frontend artifact isn't needed.
+  windows-desktop:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.windows_desktop == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render (dev + windows-desktop extras)
+        run: python -m pip install -e ".[dev,windows-desktop]"
+
+      - name: Run the Windows backend suite
+        # test_supervisor_core is platform-neutral but its backend import
+        # succeeds on win32 (it raises → skips on darwin), so it executes here.
+        run: >
+          python -m pytest -q
+          tests/test_supervisor_core.py
+          tests/test_win_supervisor_update.py
+          tests/test_windows_registry.py
+          tests/test_winopen.py
+
+      # Dropped from the windows runner image (actions/runner-images#11644); the
+      # build script finds ISCC.exe where choco installs it. Setup copied from
+      # release.yml's build-windows-release job.
+      - name: Install Inno Setup
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - uses: astral-sh/setup-uv@v5
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+
+      - name: Build the Windows installer (smoke)
+        # Secret-free: the ed25519 manifest signing (FUSED_RENDER_UPDATE_SIGNING_
+        # KEY) happens in release.yml AFTER this script, not inside it. Step-gated
+        # to packaging changes — minutes of toolchain work (embeddable CPython,
+        # launcher compile, Inno Setup), pointless on a server-only PR.
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+        shell: pwsh
+        run: .\scripts\build_windows_installer.ps1
+
+  # macOS menu-bar app (SPEC DM-3/DM-7). darwin has no supervisor backend (only
+  # win32/linux), so the supervisor-core tests skip here; what this job uniquely
+  # covers is the darwin-only code the Linux matrix never runs — the nfsmount
+  # options in shell/mounts.py (test_shell_mounts.py's @skipif(platform != darwin)
+  # tests) — plus the macOS app entry (view-url mapping, in-process desktop
+  # instance/token) on real macOS. test_shell_mounts.py starts the HTTP server
+  # (create_app) through its client fixture, which refuses without the React
+  # shell, so this job depends on `frontend` and downloads shell-dist.
+  macos-desktop:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render (dev extra)
+        run: pip install -e ".[dev]"
+
+      - name: Run the macOS backend suite
+        run: >
+          python -m pytest -q
+          tests/test_shell_mounts.py
+          tests/test_app_desktop_instance.py
+          tests/test_app_view_url.py
+
+      - name: Build the DMG (smoke)
+        # build_dmg.sh falls back to ad-hoc signing when no Developer ID identity
+        # is configured (FUSED_RENDER_CODESIGN_IDENTITY unset) and skips
+        # notarization — a plain run needs no release secrets. Step-gated to
+        # packaging changes: py2app + the full [bundled] install is several
+        # minutes. setup-python 3.12 above satisfies the script's own version
+        # check (str | None syntax, py>=3.10), same as release.yml's DMG job.
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        run: bash scripts/build_dmg.sh
+
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
-    needs: [detect-changes, frontend, test-python, linux-desktop]
+    needs: [detect-changes, frontend, test-python, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -253,9 +378,21 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
+          # app fired ⇒ these three always run (they gate on app only), so
+          # anything other than success is a failure.
           for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.linux-desktop.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
+              exit 1
+            fi
+          done
+          # windows-desktop/macos-desktop gate on their OWN filters, so a
+          # "skipped" (filter did not fire) is a legitimate pass. Truth table
+          # per job: success → pass, skipped → pass, failure → fail,
+          # cancelled → fail.
+          for result in "${{ needs.windows-desktop.result }}" "${{ needs.macos-desktop.result }}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "Platform desktop job did not succeed or skip: $result"
               exit 1
             fi
           done

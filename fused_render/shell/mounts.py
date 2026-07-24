@@ -4523,12 +4523,16 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    bin_ = rclone_bin()
-    if not bin_:
-        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
+    # Validate the request body (a 400 client error) BEFORE probing for rclone
+    # (a 502 environment error): a bad name is bad on every platform, and where
+    # rclone is absent (e.g. a macOS host with no bundled/PATH binary) the
+    # availability check would otherwise mask the real 400 with a 502.
     name = (body.get("name") or "").strip()
     if not name or ":" in name or "/" in name:
         return JSONResponse({"error": "invalid remote name"}, status_code=400)
+    bin_ = rclone_bin()
+    if not bin_:
+        return JSONResponse({"error": "rclone is not installed"}, status_code=502)
     p = body.get("params") or {}
     cmd = [
         bin_, "config", "create", name, "s3",
