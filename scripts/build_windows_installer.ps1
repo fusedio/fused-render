@@ -223,6 +223,10 @@ if (-not (Test-Path -LiteralPath $LearnSrc -PathType Container)) {
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $LearnZip = Join-Path $StageDir "assets\learn.zip"
 [System.IO.Compression.ZipFile]::CreateFromDirectory($LearnSrc, $LearnZip)
+# Smoke-test the archive backend with the just-bundled rclone (mirrors
+# build_dmg.sh 4e): the exact binary and zip the app ships must list, so an
+# rclone bump that drops :archive: fails the build, not the user's first mount.
+Invoke-Native (Join-Path $PythonRoot "rclone.exe") @("lsf", ":archive:$LearnZip")
 Invoke-Native $Uv @(
     "run", "python", (Join-Path $RepoRoot "scripts\windows\generate_installer_registry.py"),
     (Join-Path $StageDir "registry.iss")

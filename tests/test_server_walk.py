@@ -1,5 +1,6 @@
 """Tests for GET /api/fs/walk (fused_render/server.py) — the recursive listing
 backing the explorer search."""
+import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import server
@@ -401,3 +402,20 @@ def test_walk_outside_mounts_keeps_big_cap(tmp_path, monkeypatch):
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is False
     assert len(data["entries"]) == 10
+
+
+def test_walk_hides_windows_hidden_system_entries(tmp_path):
+    # Search must hide the same HIDDEN+SYSTEM junctions /api/fs/list hides, or
+    # opening one from a search result errors (WinError 5).
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("hidden+system attributes are Windows-only")
+    (tmp_path / "visible.txt").write_text("v", encoding="utf-8")
+    protected = tmp_path / "protected.txt"
+    protected.write_text("p", encoding="utf-8")
+    subprocess.run(["attrib", "+h", "+s", str(protected)], check=True)
+    data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
+    rels = {e["rel"] for e in data["entries"]}
+    assert "visible.txt" in rels and "protected.txt" not in rels

@@ -608,6 +608,8 @@ def _walk_bfs(path, include_hidden, max_entries=None, max_depth=None):
                 name = child.name
                 if not include_hidden and name.startswith("."):
                     continue
+                if not mount_backed and _win_protected(child):
+                    continue  # hide protected OS junctions, as /api/fs/list does
                 try:
                     is_dir = child.is_dir()
                 except OSError:
