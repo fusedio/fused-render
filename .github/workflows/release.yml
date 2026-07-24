@@ -1,4 +1,4 @@
-name: release dmg
+name: release
 
 on:
   push:
@@ -18,6 +18,7 @@ on:
           - all
           - macos
           - windows
+          - linux
 
 jobs:
   # Creates the GitHub Release every OS build job uploads into, so the
@@ -43,6 +44,16 @@ jobs:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          # A dispatch can name an existing tag pointing at a different
+          # commit — never publish artifacts that don't match the tagged source.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_SHA="$(git rev-parse "$TAG^{commit}")"
+            RUN_SHA="$(git rev-parse "${{ github.sha }}^{commit}")"
+            if [ "$TAG_SHA" != "$RUN_SHA" ]; then
+              echo "::error::tag $TAG points at $TAG_SHA but this run builds $RUN_SHA — refusing to publish mismatched artifacts"
+              exit 1
+            fi
+          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, reusing it."
             exit 0
@@ -268,6 +279,65 @@ jobs:
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
           gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
+
+  build-linux-release:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the AppImage to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+      LINUX_PREFIX: fused-render-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      # desktop-file-utils provides desktop-file-validate, which appimagetool
+      # runs against the bundled .desktop file — same prerequisite the CI smoke
+      # installs. node (the wheel build's hatch hook runs npm) is preinstalled
+      # on ubuntu-latest; uv provides the relocatable CPython the script bundles.
+      - name: Install desktop-file-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+
+      - name: Build the AppImage
+        run: bash scripts/build_linux_appimage.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseLinux
+          aws-region: us-west-2
+
+      - name: Publish AppImage + attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APPIMAGE="$(ls dist/FusedRender-*-x86_64.AppImage)"
+          # Version from the built artifact, not the tag — same rule as the DMG.
+          VERSION="$(basename "$APPIMAGE" | sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/')"
+          echo "Publishing FusedRender $VERSION Linux AppImage"
+          aws s3 cp "$APPIMAGE" "s3://${S3_BUCKET}/${LINUX_PREFIX}/$(basename "$APPIMAGE")"
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/${LINUX_PREFIX}/*"
+          # No latest.json manifest: Linux has no auto-updater yet — the
+          # supervisor _linux backend exposes no `update` module (unlike _win32).
+          gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
 
   bump-homebrew:
     # Separate job so a tap-push failure can't fail the DMG job after the
