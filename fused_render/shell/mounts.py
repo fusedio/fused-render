@@ -791,18 +791,23 @@ def _winfsp_available() -> bool:
     is unsettled (see DECISIONS.md), so — mirroring rclone's own distribution
     stance — the user installs it from winfsp.dev. Non-win32 platforms don't use
     WinFsp, so this is vacuously True there; on Windows we look for the system
-    DLL WinFsp installs under %ProgramFiles(x86)%\\WinFsp\\bin (winfsp-x64.dll),
-    falling back to a loader lookup. Best-effort: a False here only downgrades
-    the mount attempt into a friendly install prompt, never a crash."""
+    DLL WinFsp installs under %ProgramFiles(x86)%\\WinFsp\\bin — winfsp-x64.dll
+    on x64, winfsp-a64.dll on ARM64 — falling back to a loader lookup for either.
+    Best-effort: a False here only downgrades the mount attempt into a friendly
+    install prompt, never a crash."""
     if sys.platform != "win32":
         return True
+    dll_names = ("winfsp-x64.dll", "winfsp-a64.dll")  # x64 and ARM64 builds
     for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
         base = os.environ.get(env)
-        if base and os.path.isfile(os.path.join(base, "WinFsp", "bin",
-                                                 "winfsp-x64.dll")):
+        if not base:
+            continue
+        if any(os.path.isfile(os.path.join(base, "WinFsp", "bin", dll))
+               for dll in dll_names):
             return True
     import ctypes.util
-    return ctypes.util.find_library("winfsp-x64") is not None
+    return any(ctypes.util.find_library(n) is not None
+               for n in ("winfsp-x64", "winfsp-a64"))
 
 
 # Whether a freshly spawned rcd should DETACH into its own session (setsid) and

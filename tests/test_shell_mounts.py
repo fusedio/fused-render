@@ -444,6 +444,19 @@ def test_winfsp_available_true_off_win32(monkeypatch):
     assert mounts_mod._winfsp_available() is True
 
 
+def test_winfsp_available_finds_arm64_dll(tmp_path, monkeypatch):
+    # WinFsp ships winfsp-a64.dll (not winfsp-x64.dll) on ARM64 Windows; the
+    # detector must accept it via the ProgramFiles probe.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        monkeypatch.delenv(env, raising=False)
+    binp = tmp_path / "WinFsp" / "bin"
+    binp.mkdir(parents=True)
+    (binp / "winfsp-a64.dll").write_bytes(b"")  # ARM64 DLL only, no x64
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    assert mounts_mod._winfsp_available() is True
+
+
 def test_attach_win32_missing_winfsp_returns_friendly_error(home, monkeypatch):
     # Missing WinFsp fails fast with an install hint, before any rcd work.
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
