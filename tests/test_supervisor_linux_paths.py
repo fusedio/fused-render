@@ -247,6 +247,30 @@ def test_ui_falls_back_to_tkinter(monkeypatch):
     assert ui._dialog_tool() == "tkinter"
 
 
+class _CompletedRun:
+    def __init__(self, returncode):
+        self.returncode = returncode
+        self.stdout = ""
+
+
+@pytest.mark.parametrize("tool", ["zenity", "kdialog"])
+@pytest.mark.parametrize("returncode, expected", [(0, True), (1, False)])
+def test_confirm_uninstall_maps_returncode(monkeypatch, tool, returncode, expected):
+    # confirm_uninstall mirrors confirm_exit: a Yes (returncode 0) is True, a No
+    # (non-zero) is False, for both the zenity and kdialog question dialogs.
+    monkeypatch.setattr(ui, "_dialog_tool", lambda: tool)
+    monkeypatch.setattr(ui, "_run", lambda argv: _CompletedRun(returncode))
+    assert ui.confirm_uninstall() is expected
+
+
+def test_confirm_uninstall_false_when_dialog_unavailable(monkeypatch):
+    # _run returning None (tool missing / timed out) is a declined uninstall,
+    # never an accidental teardown — same guard as confirm_exit.
+    monkeypatch.setattr(ui, "_dialog_tool", lambda: "zenity")
+    monkeypatch.setattr(ui, "_run", lambda argv: None)
+    assert ui.confirm_uninstall() is False
+
+
 class _FakePopen:
     def __init__(self, returncode=0, hang=False):
         self._returncode = returncode

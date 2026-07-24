@@ -26,6 +26,9 @@ Optional hooks (a backend may omit them; core probes with getattr):
   integrate      — best-effort user-level desktop self-integration at startup
                    (Linux only: .desktop / MIME / icon + deep-link handler;
                    Windows registers via its installer, so it has none)
+  deintegrate    — reverse of integrate(): remove that desktop integration
+                   (Linux only, driven by the tray "Uninstall" item;
+                   integration-only, never app data or the binary)
   update         — auto-updater: start_auto_checks(paths), check(paths)
                    (Windows only: signed-manifest poll + user-approved install)
 """
@@ -46,7 +49,7 @@ if sys.platform == "win32":
     SPAWN_ERRORS: tuple[type[BaseException], ...] = (pywintypes.error,)
 elif sys.platform.startswith("linux"):
     from fused_render.supervisor._linux import instance, startup, ui
-    from fused_render.supervisor._linux.integration import integrate
+    from fused_render.supervisor._linux.integration import deintegrate, integrate
     from fused_render.supervisor._linux.tree import Job
 
     # The Linux keeper spawns via stdlib primitives (subprocess / os), which

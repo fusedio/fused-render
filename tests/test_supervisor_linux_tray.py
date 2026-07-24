@@ -116,6 +116,20 @@ def test_menu_layout_structure(login_enabled):
     assert len(separators) == 2
 
 
+def test_menu_layout_includes_uninstall_above_exit():
+    # The "Uninstall FusedRender..." item sits just above Exit, set off from the
+    # login toggle by the second separator: ..., login, _SEP2, uninstall, exit.
+    _root_id, children = linux_tray._menu_layout(False, port=1777)
+    labels = _labels(children)
+    assert "Uninstall FusedRender…" in labels or "Uninstall FusedRender..." in labels
+
+    uninstall_label = next(l for l in labels if l and l.startswith("Uninstall FusedRender"))
+    assert labels.index(uninstall_label) == labels.index("Exit") - 1
+
+    by_id = {c["id"]: c for c in children}
+    assert by_id[linux_tray._ID_UNINSTALL]["properties"]["label"] == uninstall_label
+
+
 def test_menu_layout_status_line_is_first():
     # The greyed status line sits at the very top, set off by a separator.
     _root_id, children = linux_tray._menu_layout(False, port=1777)
@@ -152,6 +166,7 @@ def test_root_props_encode_to_string_variant():
         (linux_tray._ID_OPEN, tray.TrayAction.OPEN),
         (linux_tray._ID_OPEN_FILE, tray.TrayAction.OPEN_FILE),
         (linux_tray._ID_OPEN_LOGS, tray.TrayAction.OPEN_LOGS),
+        (linux_tray._ID_UNINSTALL, tray.TrayAction.UNINSTALL),
         (linux_tray._ID_EXIT, tray.TrayAction.EXIT),
     ],
 )
@@ -245,7 +260,7 @@ def test_get_layout_root_returns_revision_and_children():
     assert isinstance(revision, int)
     node_id, _props, children = layout
     assert node_id == linux_tray._ROOT_ID
-    assert len(children) == 8  # the eight menu items under the root
+    assert len(children) == 9  # the nine menu items under the root
 
 
 def test_get_layout_nonzero_parent_returns_matching_node():

@@ -197,6 +197,65 @@ def test_icon_falls_back_to_theme_name_without_source(env, monkeypatch):
     assert not env.icon_file.exists()
 
 
+# ---- deintegrate(): the reverse of integrate() (Uninstall) -------------------
+# Integration-only teardown: removes the four artifacts integrate() writes and
+# the autostart entry, refreshes the freedesktop databases, and NEVER touches
+# app data or the AppImage binary.
+
+
+def test_deintegrate_removes_all_artifacts_and_refreshes(env, monkeypatch):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    assert env.desktop_file.exists() and env.mime_file.exists()
+    assert env.icon_file.exists() and env.stamp_file.exists()
+
+    # Enable autostart too, so we can assert deintegrate removes it.
+    monkeypatch.setenv("APPIMAGE", str(env.appimage))
+    integration.startup.set_enabled(True)
+    autostart = integration.startup._desktop_file()
+    assert autostart.exists()
+
+    env.tool_calls.clear()
+    integration.deintegrate(env.paths)
+
+    # All four installed artifacts are gone.
+    assert not env.desktop_file.exists()
+    assert not env.mime_file.exists()
+    assert not env.icon_file.exists()
+    assert not env.stamp_file.exists()
+    # Autostart entry removed.
+    assert not autostart.exists()
+    # Databases refreshed (dropping "Open with" + scheme associations).
+    tools = [c[0] for c in env.tool_calls]
+    assert "update-mime-database" in tools
+    assert "update-desktop-database" in tools
+
+
+def test_deintegrate_leaves_binary_and_data_untouched(env, monkeypatch):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+    # Integration-only: the AppImage binary and the state dir itself survive.
+    integration.deintegrate(env.paths)
+    assert env.appimage.exists()  # the binary is never deleted
+    assert env.paths.state.exists()  # app data / state dir untouched
+
+
+def test_deintegrate_is_best_effort_when_artifacts_absent(env):
+    # A never-integrated (or partially cleaned) install: unlinking missing files
+    # must not raise, and the run must still complete.
+    integration.deintegrate(env.paths)  # no integrate() first
+    assert not env.desktop_file.exists()
+
+
+def test_deintegrate_swallows_tool_failures(env, monkeypatch):
+    integration.integrate(env.paths, appimage=env.appimage, icon_source=env.icon_src)
+
+    def boom(argv, **kw):
+        raise OSError("update tool crashed")
+
+    monkeypatch.setattr(integration.subprocess, "run", boom)
+    integration.deintegrate(env.paths)  # must not raise
+    assert not env.desktop_file.exists()  # artifacts still removed
+
+
 # ---- Desktop Entry Spec Exec= quoting (NOT shell/shlex quoting) --------------
 # freedesktop only recognizes double-quote quoting in Exec; shlex's single
 # quotes are rejected by some launchers. An argument with reserved characters
