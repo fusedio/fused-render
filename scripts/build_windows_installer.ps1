@@ -83,7 +83,7 @@ function Build-Launcher([string]$OutputExe) {
         }
         return
     }
-    # No MSVC found — fall back to a pinned zig cc (single ~80MB download,
+    # No MSVC found - fall back to a pinned zig cc (single ~80MB download,
     # no admin/VS install required). Not exercised on this machine (cl.exe is
     # present), kept for a from-scratch dev box.
     $zigVersion = "0.13.0"
@@ -151,7 +151,7 @@ Remove-Item -LiteralPath (Join-Path $PythonRoot "Lib\EXTERNALLY-MANAGED") -Force
 # directory to sys.path" behavior, which _child.py's worker subprocess relies
 # on (it does a top-level `from _binding import ...`, invoked as
 # `[sys.executable, .../fused_render/_child.py]` by executor.py, not as a
-# package module) — so fused_render's own install dir must be listed
+# package module) - so fused_render's own install dir must be listed
 # explicitly, or every /api/run call through the built-in executor fails with
 # ModuleNotFoundError in the packaged app.
 @("python312.zip", "DLLs", "Lib", ".", "Lib\site-packages", "Lib\site-packages\fused_render", "import site") |
@@ -209,7 +209,7 @@ if (-not $rcloneExe) {
 Copy-Item -LiteralPath $rcloneExe.FullName -Destination (Join-Path $PythonRoot "rclone.exe") -Force
 
 # WinFsp MSI staged for installer.iss to chain-install when the driver is
-# missing (D133 — reverses D132's user-installs stance), so mounts work with
+# missing (D133 - reverses D132's user-installs stance), so mounts work with
 # zero user setup. The app itself stays per-user; only this MSI elevates, from
 # the setup's post-install step. Pinned release, published-SHA256 verified
 # (same discipline as the rclone pin above).
@@ -235,14 +235,14 @@ Copy-Item -Path (Join-Path $RepoRoot "fused_render\assets\file_icons\*.ico") -De
 # child_environment points FUSED_RENDER_LEARN_ZIP here for ensure_learn_mount.
 $LearnSrc = Join-Path $RepoRoot "learn"
 if (-not (Test-Path -LiteralPath $LearnSrc -PathType Container)) {
-    throw "learn/ content is missing — it is part of the app"
+    throw "learn/ content is missing - it is part of the app"
 }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $LearnZip = Join-Path $StageDir "assets\learn.zip"
 # NOT ZipFile.CreateFromDirectory: on Windows PowerShell (.NET Framework) it
 # writes BACKSLASH entry separators, and the ZIP spec / rclone's archive backend
-# only treat '/' as a directory separator — nested learn/assets/* would surface
+# only treat '/' as a directory separator - nested learn/assets/* would surface
 # as literal root names, breaking Learn media. Build entries by hand with
 # forward slashes, matching build_dmg.sh's `zip -r`.
 $LearnSrcFull = (Resolve-Path -LiteralPath $LearnSrc).Path
@@ -259,7 +259,7 @@ try {
 }
 # Smoke-test the archive backend with the just-bundled rclone (mirrors
 # build_dmg.sh 4e), recursively so it also proves the nested assets/ entries are
-# forward-slash separated — a bump that drops :archive: or a backslashed zip
+# forward-slash separated - a bump that drops :archive: or a backslashed zip
 # fails the build, not the user's first mount.
 $LearnListing = & (Join-Path $PythonRoot "rclone.exe") lsf -R ":archive:$LearnZip"
 if ($LASTEXITCODE -ne 0) {
