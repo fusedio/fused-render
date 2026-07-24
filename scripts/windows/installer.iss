@@ -227,8 +227,10 @@ begin
     RaiseException('The installed FusedRender payload could not be moved.');
   if not RenameWithRetry(NewPayload, CurrentPayload) then
   begin
+    { Roll back with the same retry: the compensation rename races the identical
+      transient locks, so a plain RenameFile here could leave no payload dir. }
     if DirExists(PreviousPayload) then
-      RenameFile(PreviousPayload, CurrentPayload);
+      RenameWithRetry(PreviousPayload, CurrentPayload);
     RaiseException('The new FusedRender payload could not be activated.');
   end;
 end;
