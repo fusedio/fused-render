@@ -2984,6 +2984,38 @@ def test_upstream_sign_single_flight_validates_once(home, rcd, fresh_upstream, m
     assert all(r is not None for r in results)
 
 
+def test_upstream_rc_hiccup_does_not_pin_mode(home, rcd, fresh_upstream, monkeypatch):
+    # A request whose config read fails transiently (rcd hiccup / liveness
+    # probe timeout) settles on publiclink WITHOUT the config, so it must not
+    # cache that verdict: a cold racer pinning "link" here would stomp a
+    # sibling's just-validated "sign" and re-open the one-time validation,
+    # breaking the single-flight's exactly-once guarantee.
+    import os
+
+    rcd.responses["config/get"] = _CRED_S3_CFG
+    rcd.responses["operations/publiclink"] = {"url": "https://pl.example/x"}
+    calls = []
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status",
+                        lambda url: calls.append(url) or (206, None))
+    c = mounts_mod.add_mount("corp", "corp:bucket/pre")
+    mp = mounts_mod.mountpoint(c)
+    real_remote_config = mounts_mod._remote_config
+    hiccup = {"on": True}
+    monkeypatch.setattr(
+        mounts_mod, "_remote_config",
+        lambda name: None if hiccup["on"] else real_remote_config(name))
+    got = mounts_mod.upstream_url_for(os.path.join(mp, "a.parquet"))
+    assert got == "https://pl.example/x"  # served best-effort via publiclink
+    assert calls == []
+    assert "corp:bucket/pre" not in mounts_mod._upstream_mode  # nothing pinned
+    # rcd answers again: the next read derives sign mode and validates once.
+    hiccup["on"] = False
+    got = mounts_mod.upstream_url_for(os.path.join(mp, "b.parquet"))
+    assert got is not None and "X-Amz-Signature" in got
+    assert len(calls) == 1
+    assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
+
+
 # -- upstream cache hygiene (Task 4) -----------------------------------------
 
 
