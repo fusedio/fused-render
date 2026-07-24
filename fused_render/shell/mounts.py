@@ -3311,14 +3311,6 @@ def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
 
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
-    # Fail fast (before any dir work or rcd spawn) when Windows lacks WinFsp:
-    # rclone's mount would otherwise error deep in the backend with an opaque
-    # message. Point the user straight at the installer instead — vacuously True
-    # off Windows, so POSIX is unaffected.
-    if not _winfsp_available():
-        return ("Windows mounts require WinFsp, which isn't installed. Install "
-                f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
-                "kernel driver we don't bundle — see DECISIONS.md.)")
     mp = mountpoint(m)
     # Create the mounts root (with its Spotlight-exclusion marker) before the
     # per-mount mountpoint, so the marker is in place the moment the mount goes
@@ -3376,6 +3368,19 @@ def attach_mount(m: dict) -> str | None:
         # wedge-prone kernel mount.
         sync_serves()
         return None
+    # Only the mount-CREATION path needs WinFsp. Gate it here — AFTER the adopt
+    # branch above has returned for an already-live mount — so a mount that
+    # survived a restart (run_automount re-attaches it via this same function)
+    # is never rejected just because the detector false-negatives (non-default
+    # WinFsp install location) or WinFsp was removed while rcd + the mount stay
+    # alive under the Job Object. Still fail fast for a genuinely new mount:
+    # before ensure_rcd and mount/mount, rclone would otherwise error deep in
+    # the backend with an opaque message; point the user at the installer
+    # instead (vacuously True off Windows, so POSIX is unaffected).
+    if not _winfsp_available():
+        return ("Windows mounts require WinFsp, which isn't installed. Install "
+                f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
+                "kernel driver we don't bundle — see DECISIONS.md.)")
     try:
         port = ensure_rcd()
         # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):

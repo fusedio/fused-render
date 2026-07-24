@@ -466,6 +466,23 @@ def test_attach_win32_with_winfsp_proceeds(home, rcd, monkeypatch):
     assert any(x[0] == "mount/mount" for x in rcd.calls)
 
 
+def test_attach_win32_adopt_path_not_gated_by_winfsp(home, rcd, monkeypatch):
+    # A mount that survived a restart (already a LIVE kernel mount) must take the
+    # adopt/reconcile branch on win32 even when the WinFsp detector reports False
+    # — the driver false-negatives on a non-default install location, or WinFsp
+    # was removed while rcd + the mount stay alive under the Job Object. The gate
+    # exists to fail NEW mounts fast, not to declare a healthy adopted mount
+    # broken (run_automount would otherwise report every survivor as failed).
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    err = mounts_mod.attach_mount(c)
+    assert err is None  # adopted, not rejected with the WinFsp install message
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)  # no new mount made
+
+
 def test_unmount_calls_rc(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.detach_mount(c) is None
