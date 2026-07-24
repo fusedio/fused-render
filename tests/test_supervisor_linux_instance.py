@@ -70,10 +70,20 @@ def served(runtime):
         daemon=True,
     )
     thread.start()
-    # Wait for the listener to bind before any client connects.
+    # Wait until the listener actually accepts: the socket file appears at
+    # bind(), before listen(), so an exists() check can release a client into
+    # the bind->listen gap and fail its connect with ECONNREFUSED.
     deadline = time.monotonic() + 5
-    while not names.socket.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
+    while time.monotonic() < deadline:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(str(names.socket))
+        except OSError:
+            time.sleep(0.01)
+            continue
+        finally:
+            probe.close()
+        break
     yield names, requests, thread, logs
     stop.set()
     thread.join(timeout=5)

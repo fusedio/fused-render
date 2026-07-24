@@ -192,9 +192,15 @@ def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -
 def _launch_installer(installer: str):
     """ShellExecuteEx rather than os.startfile: the same UAC-aware launch,
     but it returns a process handle so _watch_setup can see the wizard exit.
-    win32 imports are deferred so the module still imports on non-Windows CI."""
-    import pywintypes
-    from win32com.shell import shell, shellcon
+    win32 imports are deferred so the module still imports on non-Windows CI,
+    and win32event is preloaded here so a broken pywin32 bundle surfaces on
+    this handled path, before the wizard launches — not in the watcher."""
+    try:
+        import pywintypes
+        import win32event  # noqa: F401 - preload for _wait_for_exit
+        from win32com.shell import shell, shellcon
+    except ImportError as error:
+        raise OSError(str(error)) from error
 
     try:
         info = shell.ShellExecuteEx(
