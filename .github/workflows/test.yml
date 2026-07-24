@@ -365,7 +365,7 @@ jobs:
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
-    needs: [detect-changes, frontend, test-python, linux-desktop]
+    needs: [detect-changes, frontend, test-python, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -378,9 +378,21 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
+          # app fired ⇒ these three always run (they gate on app only), so
+          # anything other than success is a failure.
           for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.linux-desktop.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
+              exit 1
+            fi
+          done
+          # windows-desktop/macos-desktop gate on their OWN filters, so a
+          # "skipped" (filter did not fire) is a legitimate pass. Truth table
+          # per job: success → pass, skipped → pass, failure → fail,
+          # cancelled → fail.
+          for result in "${{ needs.windows-desktop.result }}" "${{ needs.macos-desktop.result }}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "Platform desktop job did not succeed or skip: $result"
               exit 1
             fi
           done
