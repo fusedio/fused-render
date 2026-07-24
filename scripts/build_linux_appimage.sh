@@ -198,13 +198,15 @@ rm -f "$OUTPUT_APPIMAGE"
 # --appimage-extract-and-run avoids needing libfuse2 to RUN appimagetool itself
 # in CI; --runtime-file embeds the static type-2 runtime in the OUTPUT.
 # Compression: appimagetool's bundled mksquashfs only supports zstd (no xz), so
-# push zstd to its max level (22, vs the level-15 default) and use 1 MiB blocks
-# — larger blocks give the dictionary more cross-file redundancy to exploit
-# across the many similar native libs. Worth ~55 MB here and closes most of the
-# compression gap to the Windows installer (LZMA) and macOS DMG (LZFSE).
+# push zstd to its max level (22, vs the level-15 default). We deliberately keep
+# the DEFAULT squashfs block size (128 KiB): raising it (e.g. -b 1M) shaves ~30
+# MB more but amplifies random-read latency at every launch — this payload is a
+# large Python tree read as many small files at import time, and appimagetool
+# 1.9.0 returned to the default block size precisely to avoid that startup
+# regression. The level bump costs nothing at decompress time (zstd decode speed
+# is ~independent of level), so it's a free ~33 MB with no runtime penalty.
 ARCH="$ARCH" "$APPIMAGETOOL" --appimage-extract-and-run \
     --comp zstd \
-    --mksquashfs-opt -b --mksquashfs-opt 1M \
     --mksquashfs-opt -Xcompression-level --mksquashfs-opt 22 \
     --runtime-file "$RUNTIME_FILE" "$STAGE_DIR" "$OUTPUT_APPIMAGE"
 [ -f "$OUTPUT_APPIMAGE" ] || { echo "appimagetool did not produce $OUTPUT_APPIMAGE" >&2; exit 1; }
