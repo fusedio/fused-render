@@ -72,6 +72,8 @@ jobs:
     outputs:
       version: ${{ steps.artifacts.outputs.version }}
       dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
+      dmg_url: ${{ steps.artifacts.outputs.dmg_url }}
+      wheel_url: ${{ steps.artifacts.outputs.wheel_url }}
     permissions:
       contents: write # needed to attach the DMG to a GitHub Release
       id-token: write # needed to assume the AWS role via OIDC
@@ -171,48 +173,27 @@ jobs:
           # Consumed by the download-page step; served via CloudFront.
           echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
-          # Exposed as job outputs for the split-out bump-homebrew job.
+          # Exposed as job outputs for the split-out bump-homebrew job and the
+          # publish-download-page job (which needs every platform's URL at
+          # once to write a single merged manifest).
           echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
           echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
+          echo "dmg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_OUTPUT"
+          echo "wheel_url=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_OUTPUT"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
-      - name: Publish download page + version manifest
-        # The download page is cosmetic; the DMG/wheel (uploaded above) are the
-        # real artifacts. continue-on-error keeps ANY failure in this step —
-        # version derivation, write_manifest.py, or the S3 uploads — from
-        # skipping the CloudFront invalidation and GitHub Release/homebrew steps
-        # that follow.
-        continue-on-error: true
-        run: |
-          set -euo pipefail
-          # Same version derivation as the homebrew step below: from the DMG
-          # that was actually built, not the git tag.
-          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
-          export VERSION
-          python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
-          # These root keys need the IAM grant provisioned in Fused's
-          # infrastructure (index.html + latest.json). Until that applies, warn
-          # instead of erroring — though continue-on-error above is the real
-          # guarantee the release proceeds regardless.
-          if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
-               --content-type "application/json" --cache-control "max-age=300" \
-             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
-               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
-             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
-               --content-type "image/png" --cache-control "max-age=86400"; then
-            echo "download page + latest.json published"
-          else
-            echo "::warning::download page/manifest upload failed (root-key IAM grant not applied yet?) — release artifacts are unaffected"
-          fi
-
       - name: Invalidate CloudFront
+        # The root download page (index.html/latest.json/og-image.png) is
+        # published once, after every platform build, by the
+        # publish-download-page job below — not here, so its manifest can
+        # carry the Windows/Linux links too instead of racing those jobs to
+        # read-modify-write the same S3 object.
         run: |
           set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" \
-            "/index.html" "/latest.json" "/og-image.png" "/"
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
 
       - name: Upload DMG + wheel to GitHub Release
         env:
@@ -224,6 +205,9 @@ jobs:
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      installer_url: ${{ steps.artifacts.outputs.installer_url }}
     permissions:
       contents: write # attach the installer to the GitHub Release
       id-token: write # assume the AWS role via OIDC
@@ -258,6 +242,7 @@ jobs:
           aws-region: us-west-2
 
       - name: Sign manifest, publish installer, attach to release
+        id: artifacts
         shell: bash
         env:
           FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
@@ -279,11 +264,17 @@ jobs:
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/${WINDOWS_PREFIX}/*"
           gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
+          # Exposed as job outputs for the publish-download-page job.
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
 
   build-linux-release:
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      appimage_url: ${{ steps.artifacts.outputs.appimage_url }}
     permissions:
       contents: write # attach the AppImage to the GitHub Release
       id-token: write # assume the AWS role via OIDC
@@ -323,6 +314,7 @@ jobs:
           aws-region: us-west-2
 
       - name: Publish AppImage + attach to release
+        id: artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -338,6 +330,87 @@ jobs:
           # No latest.json manifest: Linux has no auto-updater yet — the
           # supervisor _linux backend exposes no `update` module (unlike _win32).
           gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
+          # Exposed as job outputs for the publish-download-page job.
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "appimage_url=https://${CDN_DOMAIN}/${LINUX_PREFIX}/$(basename "$APPIMAGE")" >> "$GITHUB_OUTPUT"
+
+  publish-download-page:
+    # Runs once, after all three OS builds, so the manifest can carry every
+    # platform's link at the same time — a single writer avoids the three
+    # platform jobs racing to read-modify-write the same S3 object.
+    # `always()` + per-job outputs (rather than a hard `needs` success check)
+    # so a workflow_dispatch that only rebuilds one platform, or a platform
+    # build that fails, still publishes a manifest — merged against the live
+    # one via EXISTING_MANIFEST_PATH so untouched/failed platforms keep
+    # whatever link is already live instead of losing it.
+    needs: [prepare-release, build-sign-notarize-release, build-windows-release, build-linux-release]
+    if: always() && needs.prepare-release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # needed for actions/checkout
+      id-token: write # needed to assume the AWS role via OIDC
+    env:
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseDownloadPage
+          aws-region: us-west-2
+
+      - name: Publish download page + version manifest
+        # The download page is cosmetic; the real per-platform artifacts were
+        # already uploaded (and attached to the Release) by each OS job.
+        # continue-on-error keeps ANY failure here — fetching the live
+        # manifest, write_manifest.py, or the S3 uploads — from failing the
+        # overall release run.
+        continue-on-error: true
+        env:
+          VERSION: >-
+            ${{ needs.build-sign-notarize-release.outputs.version ||
+            needs.build-windows-release.outputs.version ||
+            needs.build-linux-release.outputs.version }}
+          DMG_URL: ${{ needs.build-sign-notarize-release.outputs.dmg_url }}
+          DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
+          WHL_URL: ${{ needs.build-sign-notarize-release.outputs.wheel_url }}
+          WINDOWS_URL: ${{ needs.build-windows-release.outputs.installer_url }}
+          LINUX_URL: ${{ needs.build-linux-release.outputs.appimage_url }}
+        run: |
+          set -euo pipefail
+          # Best-effort: a first-ever publish (or a not-yet-applied IAM grant,
+          # see below) leaves no existing manifest — write_manifest.py treats
+          # a missing/unreadable file the same as "no existing manifest".
+          aws s3 cp "s3://${S3_BUCKET}/latest.json" "$RUNNER_TEMP/existing-latest.json" || true
+          EXISTING_MANIFEST_PATH="$RUNNER_TEMP/existing-latest.json" \
+            python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+          # These root keys need the IAM grant provisioned in Fused's
+          # infrastructure (index.html + latest.json). Until that applies, warn
+          # instead of erroring — though continue-on-error above is the real
+          # guarantee the release proceeds regardless.
+          if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
+               --content-type "application/json" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
+               --content-type "image/png" --cache-control "max-age=86400"; then
+            echo "download page + latest.json published"
+            aws cloudfront create-invalidation \
+              --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+              --paths "/index.html" "/latest.json" "/og-image.png" "/"
+          else
+            echo "::warning::download page/manifest upload failed (root-key IAM grant not applied yet?) — release artifacts are unaffected"
+          fi
 
   bump-homebrew:
     # Separate job so a tap-push failure can't fail the DMG job after the

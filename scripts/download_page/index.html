@@ -138,6 +138,24 @@
   </section>
 
   <section>
+    <h2>Windows</h2>
+    <!-- Usable before/without latest.json: falls back to the releases page,
+         upgraded to the direct installer link once the manifest loads. -->
+    <p><a class="btn" id="windows-exe" href="https://github.com/fusedio/fused-render/releases">Download for Windows</a></p>
+    <p class="muted">Installer (.exe), Windows 10+. Bundles its own Python and
+    the fused CLI — nothing else to install.</p>
+  </section>
+
+  <section>
+    <h2>Linux</h2>
+    <!-- Usable before/without latest.json: falls back to the releases page,
+         upgraded to the direct AppImage link once the manifest loads. -->
+    <p><a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a></p>
+    <p class="muted">AppImage (x86_64) — make it executable and run. Bundles
+    its own Python and the fused CLI — nothing else to install.</p>
+  </section>
+
+  <section>
     <h2>Python package (macOS, Windows, Linux)</h2>
     <p class="muted">Requires Python 3.10+. Install the wheel, then run
     <code>fused-render</code>:</p>
@@ -162,6 +180,12 @@
       }
       if (m.dmg_url) {
         document.getElementById("dmg").href = m.dmg_url;
+      }
+      if (m.windows_url) {
+        document.getElementById("windows-exe").href = m.windows_url;
+      }
+      if (m.linux_url) {
+        document.getElementById("linux-appimage").href = m.linux_url;
       }
       if (m.wheel_url) {
         document.getElementById("pip").textContent = "pip install " + m.wheel_url;
