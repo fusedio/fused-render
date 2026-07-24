@@ -24,6 +24,8 @@ jobs:
       linux_desktop: ${{ steps.filter.outputs.linux_desktop }}
       windows_desktop: ${{ steps.filter.outputs.windows_desktop }}
       windows_packaging: ${{ steps.filter.outputs.windows_packaging }}
+      macos_desktop: ${{ steps.filter.outputs.macos_desktop }}
+      macos_packaging: ${{ steps.filter.outputs.macos_packaging }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -47,6 +49,11 @@ jobs:
               - 'scripts/build_windows_installer.ps1'
               - 'scripts/windows/**'
               - 'scripts/file_associations.*'
+            macos_packaging: &macos_packaging
+              - 'scripts/build_dmg.sh'
+              - 'scripts/setup_py2app.py'
+              - 'scripts/app_entry.py'
+              - 'scripts/file_associations.*'
             app:
               - 'fused_render/**'
               - 'tests/**'
@@ -57,6 +64,7 @@ jobs:
               - '.github/workflows/test.yml'
               - *linux_packaging
               - *windows_packaging
+              - *macos_packaging
             # Each *_desktop filter gates its platform's test job; the matching
             # *_packaging filter gates only that job's expensive build smoke
             # (minutes of toolchain downloads), pointless on a server-only PR.
@@ -74,6 +82,14 @@ jobs:
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
               - *windows_packaging
+            macos_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/app.py'
+              - 'fused_render/menubar_pin.py'
+              - 'fused_render/shell/mounts.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *macos_packaging
 
   # The React shell (frontend/) is built once here and shared with every
   # python-version job below — fused_render/server.py refuses to start
@@ -301,6 +317,50 @@ jobs:
         if: needs.detect-changes.outputs.windows_packaging == 'true'
         shell: pwsh
         run: .\scripts\build_windows_installer.ps1
+
+  # macOS menu-bar app (SPEC DM-3/DM-7). darwin has no supervisor backend (only
+  # win32/linux), so the supervisor-core tests skip here; what this job uniquely
+  # covers is the darwin-only code the Linux matrix never runs — the nfsmount
+  # options in shell/mounts.py (test_shell_mounts.py's @skipif(platform != darwin)
+  # tests) — plus the macOS app entry (view-url mapping, in-process desktop
+  # instance/token) on real macOS. test_shell_mounts.py starts the HTTP server
+  # (create_app) through its client fixture, which refuses without the React
+  # shell, so this job depends on `frontend` and downloads shell-dist.
+  macos-desktop:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render (dev extra)
+        run: pip install -e ".[dev]"
+
+      - name: Run the macOS backend suite
+        run: >
+          python -m pytest -q
+          tests/test_shell_mounts.py
+          tests/test_app_desktop_instance.py
+          tests/test_app_view_url.py
+
+      - name: Build the DMG (smoke)
+        # build_dmg.sh falls back to ad-hoc signing when no Developer ID identity
+        # is configured (FUSED_RENDER_CODESIGN_IDENTITY unset) and skips
+        # notarization — a plain run needs no release secrets. Step-gated to
+        # packaging changes: py2app + the full [bundled] install is several
+        # minutes. setup-python 3.12 above satisfies the script's own version
+        # check (str | None syntax, py>=3.10), same as release.yml's DMG job.
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        run: bash scripts/build_dmg.sh
 
   test-status:
     name: Test Status
