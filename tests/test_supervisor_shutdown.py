@@ -2,7 +2,10 @@
 installer's ShutdownSupervisor() requires a non-zero exit whenever teardown
 did not actually happen, and must never block on a dialog."""
 import ctypes
+import os
 import queue
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -321,6 +324,9 @@ def test_initial_open_never_blocks_startup(monkeypatch):
     class _Tray:
         actions: "queue.Queue" = queue.Queue()
 
+        def set_update_available(self, version):
+            pass
+
     monkeypatch.setattr(instance, "acquire", lambda names: _Primary())
     monkeypatch.setattr(core, "DesktopPaths", _Paths)
     monkeypatch.setattr(
@@ -346,3 +352,55 @@ def test_initial_open_never_blocks_startup(monkeypatch):
     assert open_started.wait(5)  # the open really was dispatched, on its worker
     assert stages == ["loop", "teardown"]
     release_open.set()
+
+
+def _payload_with(tmp_path):
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    (payload / "payload.complete").write_text("")
+    return payload
+
+
+def _spawn_under(payload):
+    # A real, several-second process whose image lives under the payload dir.
+    # ping loads only System32 DLLs, so a copy runs fine from anywhere.
+    exe = shutil.copy(os.path.join(os.environ["SystemRoot"], "System32", "ping.exe"),
+                      str(payload / "sleeper.exe"))
+    return exe, subprocess.Popen([exe, "-n", "30", "127.0.0.1"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def test_wait_payload_gone_noops_without_marker(tmp_path, monkeypatch):
+    # No payload.complete → a dev running --shutdown-for-upgrade from a venv;
+    # the sweep must not even enumerate, let alone kill anything.
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    called = []
+    monkeypatch.setattr(instance.win32process, "EnumProcesses", lambda: called.append(1) or [])
+    instance._wait_payload_gone(time.monotonic() + 5, payload=str(payload))
+    assert not called
+
+
+def test_wait_payload_gone_terminates_process_under_payload(tmp_path):
+    payload = _payload_with(tmp_path)
+    _exe, proc = _spawn_under(payload)
+    try:
+        instance._wait_payload_gone(time.monotonic() + 10, payload=str(payload))
+        assert proc.poll() is not None  # a clean sweep means it's already dead
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_wait_payload_gone_times_out_when_process_survives(tmp_path, monkeypatch):
+    payload = _payload_with(tmp_path)
+    _exe, proc = _spawn_under(payload)
+    # A payload process that won't die (TerminateProcess neutered) must make the
+    # sweep raise at the deadline, so --shutdown-for-upgrade exits nonzero rather
+    # than let the installer swap a still-locked payload.
+    monkeypatch.setattr(instance.win32process, "TerminateProcess", lambda handle, code: None)
+    try:
+        with pytest.raises(TimeoutError):
+            instance._wait_payload_gone(time.monotonic() + 1.0, payload=str(payload))
+    finally:
+        proc.kill()

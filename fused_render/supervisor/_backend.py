@@ -26,7 +26,7 @@ Optional hooks (a backend may omit them; core probes with getattr):
   integrate      — best-effort user-level desktop self-integration at startup
                    (Linux only: .desktop / MIME / icon + deep-link handler;
                    Windows registers via its installer, so it has none)
-  update         — auto-updater: start_auto_checks(paths), check(paths)
+  update         — auto-updater: start_auto_checks(paths, notify), check(paths)
                    (Windows only: signed-manifest poll + user-approved install)
 """
 from __future__ import annotations

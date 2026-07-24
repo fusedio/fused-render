@@ -113,7 +113,7 @@ def run(initial: protocol.Command) -> None:
 
     tray_handle = tray.start(port, login_enabled, paths)
     if update is not None:
-        update.start_auto_checks(paths)
+        update.start_auto_checks(paths, tray_handle.set_update_available)
     pipe_requests: "queue.Queue[instance.Request]" = queue.Queue()
     pipe_thread = inst.serve(pipe_requests, paths.log)
 

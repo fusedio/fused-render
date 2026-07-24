@@ -76,7 +76,11 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         pystray.MenuItem(
             "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
         ),
-        pystray.MenuItem("Check for updates...", on_check_updates),
+        pystray.MenuItem(
+            lambda item: (f"Install update {state.available_update}..."
+                          if state.available_update else "Check for updates..."),
+            on_check_updates,
+        ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", on_exit),
     )
