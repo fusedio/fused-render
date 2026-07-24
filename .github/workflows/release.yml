@@ -173,15 +173,18 @@ jobs:
           # Consumed by the download-page step; served via CloudFront.
           echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
+          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
+          aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
           # Exposed as job outputs for the split-out bump-homebrew job and the
           # publish-download-page job (which needs every platform's URL at
-          # once to write a single merged manifest).
+          # once to write a single merged manifest). Written only after the
+          # uploads above succeed: publish-download-page runs under
+          # always() and would otherwise be able to pick up a dmg_url/
+          # wheel_url for a file that never actually made it to S3.
           echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
           echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
           echo "dmg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_OUTPUT"
           echo "wheel_url=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_OUTPUT"
-          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
-          aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
       - name: Invalidate CloudFront
         # The root download page (index.html/latest.json/og-image.png) is
