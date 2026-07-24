@@ -21,6 +21,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from fused_render import desktop_probe
+from fused_render._branch import branch_port
 from fused_render._view_url_codec import is_launch_url, open_target_url, view_url
 from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.supervisor import _backend, protocol, tray
@@ -463,7 +464,27 @@ def _current_python_dir() -> Path:
     return Path(sys.executable).resolve().parent
 
 
+def _port_in_use(port: int) -> bool:
+    """True if something is actively listening on the loopback port. A connect
+    probe — the same one app.pick_port and winopen use — is correct where a bind
+    probe is not: a live listener reads as taken, but a port merely lingering in
+    TIME_WAIT after a clean shutdown reads as free (TIME_WAIT refuses connects),
+    and it can't be fooled by Windows SO_REUSEADDR bind semantics."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.25)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _available_port() -> int:
+    """Prefer the branch's stable base port (1777 for a shipped build) so the
+    server keeps the same origin across restarts — open browser tabs stay valid
+    and per-origin localStorage (e.g. the onboarding tour's "seen" flag) isn't
+    wiped every launch. Fall back to an OS-assigned ephemeral port only if the
+    whole range is already serving."""
+    base = branch_port()
+    for port in range(base, base + 11):
+        if not _port_in_use(port):
+            return port
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]

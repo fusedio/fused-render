@@ -212,6 +212,45 @@ $icons = Join-Path $StageDir "assets\icons"
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "fused_render\assets\fused-render.ico") -Destination $icons -Force
 Copy-Item -Path (Join-Path $RepoRoot "fused_render\assets\file_icons\*.ico") -Destination $icons -Force
+
+# Bundle learn.zip into assets\ (mirrors build_dmg.sh step 4e). ZipFile uses
+# forward-slash entry names, which rclone's archive backend reads cleanly;
+# child_environment points FUSED_RENDER_LEARN_ZIP here for ensure_learn_mount.
+$LearnSrc = Join-Path $RepoRoot "learn"
+if (-not (Test-Path -LiteralPath $LearnSrc -PathType Container)) {
+    throw "learn/ content is missing — it is part of the app"
+}
+Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$LearnZip = Join-Path $StageDir "assets\learn.zip"
+# NOT ZipFile.CreateFromDirectory: on Windows PowerShell (.NET Framework) it
+# writes BACKSLASH entry separators, and the ZIP spec / rclone's archive backend
+# only treat '/' as a directory separator — nested learn/assets/* would surface
+# as literal root names, breaking Learn media. Build entries by hand with
+# forward slashes, matching build_dmg.sh's `zip -r`.
+$LearnSrcFull = (Resolve-Path -LiteralPath $LearnSrc).Path
+$LearnArchive = [System.IO.Compression.ZipFile]::Open(
+    $LearnZip, [System.IO.Compression.ZipArchiveMode]::Create)
+try {
+    foreach ($file in Get-ChildItem -LiteralPath $LearnSrcFull -Recurse -File) {
+        $rel = $file.FullName.Substring($LearnSrcFull.Length + 1).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $LearnArchive, $file.FullName, $rel)
+    }
+} finally {
+    $LearnArchive.Dispose()
+}
+# Smoke-test the archive backend with the just-bundled rclone (mirrors
+# build_dmg.sh 4e), recursively so it also proves the nested assets/ entries are
+# forward-slash separated — a bump that drops :archive: or a backslashed zip
+# fails the build, not the user's first mount.
+$LearnListing = & (Join-Path $PythonRoot "rclone.exe") lsf -R ":archive:$LearnZip"
+if ($LASTEXITCODE -ne 0) {
+    throw "bundled rclone cannot read learn.zip via :archive:"
+}
+if ($LearnListing -notmatch 'assets/') {
+    throw "learn.zip nested entries are not forward-slash separated (assets/ missing)"
+}
 Invoke-Native $Uv @(
     "run", "python", (Join-Path $RepoRoot "scripts\windows\generate_installer_registry.py"),
     (Join-Path $StageDir "registry.iss")
