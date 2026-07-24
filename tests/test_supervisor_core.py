@@ -199,3 +199,27 @@ def test_uninstall_confirmed_exits_cleanly_without_deintegrate_hook(monkeypatch)
     )
 
     assert reason is core._ExitReason.TRAY_EXIT
+
+
+def test_uninstall_and_exit_both_confirmed_still_deintegrates(monkeypatch):
+    # Bugbot regression: with BOTH the Exit and Uninstall dialogs confirmed,
+    # the confirmed uninstall must still deintegrate. Uninstall is the superset
+    # (it must clean up first) and is polled before exit, so a plain exit can't
+    # win the race and silently skip the cleanup the user asked for.
+    monkeypatch.setattr(core.ui, "confirm_exit", lambda: True)
+    monkeypatch.setattr(core.ui, "confirm_uninstall", lambda: True)
+    deintegrated = []
+    monkeypatch.setattr(core, "deintegrate", lambda paths: deintegrated.append(paths))
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    tray_actions.put(core.tray.TrayAction.EXIT)
+    tray_actions.put(core.tray.TrayAction.UNINSTALL)
+    process = _FakeProcess()  # never dies on its own
+
+    reason, _upgrade = core._event_loop(
+        9000, process, paths, tray_actions, queue.Queue()
+    )
+
+    assert reason is core._ExitReason.TRAY_EXIT
+    assert deintegrated == [paths]  # cleanup ran despite exit also being confirmed

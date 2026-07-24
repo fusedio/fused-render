@@ -176,12 +176,10 @@ def _event_loop(
             elif action is tray.TrayAction.EXIT:
                 _spawn_exit_confirm(exit_confirm)
 
-        try:
-            if exit_confirm.get_nowait():  # False (user clicked No) just resumes
-                return _ExitReason.TRAY_EXIT, None
-        except queue.Empty:
-            pass
-
+        # Poll uninstall BEFORE exit: both confirmations resolve to a TRAY_EXIT,
+        # but uninstall is the superset (it must deintegrate first). Checking
+        # exit first would let a plain exit win a race where the user confirmed
+        # both dialogs, silently skipping the cleanup they asked for.
         try:
             if uninstall_confirm.get_nowait():  # False (clicked No) just resumes
                 # Reverse the first-launch desktop integration before exiting, so
@@ -195,6 +193,12 @@ def _event_loop(
                         deintegrate(paths)
                     except Exception as error:  # noqa: BLE001 - never blocks exit
                         paths.log(f"uninstall: deintegrate failed: {error}")
+                return _ExitReason.TRAY_EXIT, None
+        except queue.Empty:
+            pass
+
+        try:
+            if exit_confirm.get_nowait():  # False (user clicked No) just resumes
                 return _ExitReason.TRAY_EXIT, None
         except queue.Empty:
             pass
