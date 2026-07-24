@@ -783,6 +783,20 @@ export interface Prefs {
   log: { path: string; dir: string };
   // Whether the preview-header Deploy button is shown (opt-in, default off).
   deploy: { enabled: boolean };
+  // The app call log (fused_render/calls.py): capture state, how much of a
+  // run's params is kept, retention window, and where the store lives.
+  calls: CallsPrefs;
+}
+
+export type CallsParamsMode = "full" | "keys" | "off";
+
+export interface CallsPrefs {
+  // On by default: a diagnostic you have to switch on before the thing you
+  // wanted to diagnose is worthless — the interesting call already happened.
+  enabled: boolean;
+  params: CallsParamsMode;
+  retention_days: number;
+  dir: string;
 }
 
 export function getPrefs(): Promise<Prefs> {
@@ -795,6 +809,18 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
+}
+
+export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_enabled: enabled });
+}
+
+export function putCallsParamsMode(mode: CallsParamsMode): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_params: mode });
+}
+
+export function putCallsRetentionDays(days: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_retention_days: days });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).

@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Calls</title>
+<style>
+  /* Shell palette (ARCHITECTURE §10) so this reads as the same product. */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --panel: #1b1d21;
+    --panel-2: #21242a;
+    --line: #2a2d33;
+    --line-soft: #23262c;
+    --text: #e8eaed;
+    --muted: #9aa0aa;
+    --faint: #6b7280;
+    --accent: #5b9dff;
+    --ok: #4ec9a0;
+    --err: #f0736a;
+    --dim: #6d5fb8;
+    --warn: #e6b450;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+
+  #bar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; border-bottom: 1px solid var(--line);
+    background: var(--panel); flex: 0 0 auto;
+  }
+  #bar .name { font-weight: 600; }
+  #bar .sep { color: var(--faint); }
+  #bar .grow { flex: 1 1 auto; }
+  #bar label { color: var(--muted); display: inline-flex; align-items: center; gap: 4px; }
+  select, input[type="search"], button {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 5px;
+    padding: 3px 7px; font: inherit;
+  }
+  input[type="search"] { min-width: 130px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
+  #stats {
+    display: flex; gap: 0; flex-wrap: wrap;
+    border-bottom: 1px solid var(--line); background: var(--panel); flex: 0 0 auto;
+  }
+  .stat { padding: 7px 14px; border-right: 1px solid var(--line-soft); min-width: 88px; }
+  .stat .k { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; }
+  .stat .v { font-size: 16px; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .stat .v.err { color: var(--err); }
+  .stat .v.dim { color: var(--dim); }
+
+  #body { flex: 1 1 auto; overflow: auto; padding: 12px; }
+  .charts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px; margin-bottom: 14px;
+  }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; }
+  .card > h2 {
+    margin: 0; padding: 7px 11px; font-size: 11.5px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: .05em;
+    border-bottom: 1px solid var(--line-soft);
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .card > h2 .legend { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); }
+  .card > h2 .legend b { font-weight: 400; }
+  .chart-wrap { height: 132px; padding: 6px 8px 8px; }
+  canvas { width: 100%; height: 100%; display: block; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 5px 9px; border-bottom: 1px solid var(--line-soft); }
+  th { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.mono { font-family: var(--mono); font-size: 11.5px; }
+  tbody tr:hover { background: var(--panel-2); }
+  .rows tbody tr { cursor: pointer; }
+  .pill {
+    display: inline-block; padding: 0 5px; border-radius: 3px;
+    font-size: 10.5px; border: 1px solid var(--line);
+  }
+  .pill.ok { color: var(--ok); border-color: rgba(78,201,160,.35); }
+  .pill.error, .pill.conflict { color: var(--err); border-color: rgba(240,115,106,.35); }
+  .pill.superseded, .pill.disconnected, .pill.aborted { color: var(--dim); border-color: rgba(109,95,184,.4); }
+  .pill.readonly { color: var(--warn); border-color: rgba(230,180,80,.35); }
+  .kind-page-error td { background: rgba(240,115,106,.06); }
+
+  .detail { background: #16181c; }
+  .detail td { padding: 10px 12px; }
+  .detail h3 { margin: 0 0 4px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .detail pre {
+    margin: 0 0 10px; padding: 7px 9px; background: #101216;
+    border: 1px solid var(--line-soft); border-radius: 5px;
+    font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap;
+    word-break: break-word; max-height: 260px; overflow: auto;
+  }
+  .empty { color: var(--muted); padding: 34px 12px; text-align: center; }
+  .empty code { font-family: var(--mono); color: var(--text); }
+  .empty .hint { color: var(--faint); margin-top: 8px; font-size: 12px; }
+  .note { color: var(--faint); font-size: 11.5px; margin: 0 0 10px; }
+  .err-text { color: var(--err); }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <span class="name" id="title">Calls</span>
+  <span class="sep">·</span>
+  <label>Window
+    <select id="since">
+      <option value="900">15 min</option>
+      <option value="3600" selected>1 hour</option>
+      <option value="21600">6 hours</option>
+      <option value="86400">24 hours</option>
+      <option value="604800">7 days</option>
+      <option value="0">All</option>
+    </select>
+  </label>
+  <label>Scope
+    <select id="scope">
+      <option value="file" selected>This file</option>
+      <option value="mine">My pages</option>
+      <option value="templates">Templates</option>
+      <option value="">Everything</option>
+    </select>
+  </label>
+  <input type="search" id="q" placeholder="Filter…" />
+  <button id="failed" aria-pressed="false" title="Show only errors and conflicts">Failed only</button>
+  <span class="grow"></span>
+  <button id="follow" aria-pressed="false" title="Poll for new calls every 2s">Follow</button>
+  <button id="refresh" title="Reload now">Refresh</button>
+</div>
+
+<div id="stats"></div>
+<div id="body"><div class="empty">Loading…</div></div>
+
+<script>
+const READER = "./reader.py";
+const $ = (id) => document.getElementById(id);
+
+// The file this view is about. A `.calls.jsonl` target is the STORE itself, so
+// it shows everything rather than filtering to its own path (same role
+// resolution idea as the history view's HV-3).
+const FILE = fused.params.get("_file") || "";
+const IS_STORE = /\.calls\.jsonl$/.test(FILE);
+
+const state = {
+  since: 3600,
+  scope: IS_STORE ? "" : "file",
+  q: "",
+  failed: false,
+  follow: false,
+  sort: "count",
+  desc: true,
+  openId: null,
+  detail: null,
+};
+
+let timer = null;
+let inflight = false;
+
+// ---- params <-> URL -------------------------------------------------------
+// Every filter lives in the URL, so a bookmarked call view restores exactly
+// what you were looking at (PR-1).
+// fused.params.get returns UNDEFINED for an absent key (not null), so every
+// read here must treat undefined as "not set" or the defaults get clobbered
+// (an absent `since` became Number(undefined)||0 = "All", and an absent `q`
+// rendered the literal string "undefined" in the filter box).
+function readParams() {
+  const since = fused.params.get("since");
+  if (since !== undefined && since !== "") state.since = Number(since) || 0;
+  const scope = fused.params.get("scope");
+  if (scope !== undefined) state.scope = scope;
+  const q = fused.params.get("q");
+  if (q !== undefined) state.q = q || "";
+  state.failed = fused.params.get("failed") === "1";
+  const sort = fused.params.get("sort");
+  if (sort) state.sort = sort;
+}
+
+function syncControls() {
+  $("since").value = String(state.since);
+  $("scope").value = state.scope;
+  $("q").value = state.q;
+  $("failed").setAttribute("aria-pressed", state.failed ? "true" : "false");
+  $("follow").setAttribute("aria-pressed", state.follow ? "true" : "false");
+  $("title").textContent = IS_STORE
+    ? "Call log · " + basename(FILE)
+    : "Calls · " + (basename(FILE) || "all pages");
+}
+
+function basename(p) {
+  return (p || "").split(/[\\/]/).pop();
+}
+
+// ---- reader calls ---------------------------------------------------------
+function filters() {
+  const f = { since: state.since || 0, q: state.q, scope: "" };
+  if (state.failed) f.failed = true;
+  if (state.scope === "file" && FILE && !IS_STORE) f.page = FILE;
+  else if (state.scope === "mine" || state.scope === "templates") f.scope = state.scope;
+  return f;
+}
+
+// opts.key groups each op on its own latest-wins channel (D114): a fast click
+// through the window selector supersedes the previous op of the SAME kind
+// without cancelling the other three ops of the same render.
+function op(name, extra) {
+  return fused.runPython(READER, Object.assign({ op: name }, filters(), extra || {}),
+                         { key: "calls:" + name });
+}
+
+async function load() {
+  if (inflight) return;
+  inflight = true;
+  try {
+    const [overview, series, targets, page] = await Promise.all([
+      op("overview"), op("series", { bucket_ms: bucketFor(state.since) }),
+      op("targets"), op("page", { limit: 200 }),
+    ]);
+    render({ overview, series, targets, page });
+  } catch (e) {
+    // A reader failure is shown here rather than through the error overlay:
+    // this view IS the diagnostics surface, so it should explain its own break.
+    $("body").innerHTML =
+      '<div class="empty err-text">Could not read the call log: ' + esc(e.message) + "</div>";
+  } finally {
+    inflight = false;
+  }
+}
+
+// One bucket per ~1/60th of the window, rounded to a sane unit, so the volume
+// chart always has a readable number of bars.
+function bucketFor(seconds) {
+  const span = seconds || 7 * 86400;
+  const target = (span * 1000) / 60;
+  const units = [1e3, 5e3, 15e3, 60e3, 3e5, 9e5, 36e5, 108e5, 864e5];
+  for (const u of units) if (target <= u) return u;
+  return 864e5;
+}
+
+// ---- render ---------------------------------------------------------------
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fmtMs(v) {
+  if (v === null || v === undefined) return "—";
+  if (v < 1000) return Math.round(v) + " ms";
+  return (v / 1000).toFixed(v < 10000 ? 2 : 1) + " s";
+}
+
+function fmtBytes(v) {
+  if (!v && v !== 0) return "—";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0, n = v;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+}
+
+function fmtWhen(epoch) {
+  if (!epoch) return "—";
+  const d = new Date(epoch * 1000);
+  const ago = (Date.now() / 1000) - epoch;
+  if (ago < 60) return Math.max(0, Math.round(ago)) + "s ago";
+  if (ago < 3600) return Math.round(ago / 60) + "m ago";
+  if (ago < 86400) return Math.round(ago / 3600) + "h ago";
+  return d.toLocaleString();
+}
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
+}
+
+function render(data) {
+  renderStats(data.overview);
+  const records = (data.page && data.page.records) || [];
+  const targets = (data.targets && data.targets.targets) || [];
+
+  if (!records.length && !targets.length) {
+    $("body").innerHTML = emptyState(data.overview);
+    return;
+  }
+
+  $("body").innerHTML =
+    '<div class="charts">' +
+      chartCard("Calls over time", "c-volume",
+                '<b style="color:var(--ok)">■</b> ok <b style="color:var(--err)">■</b> error ' +
+                '<b style="color:var(--dim)">■</b> superseded') +
+      chartCard("Duration", "c-dur",
+                '<b style="color:var(--accent)">—</b> p95 <b style="color:var(--muted)">—</b> p50 · dots = calls') +
+      chartCard("Response size", "c-size", "bytes returned per bucket") +
+    "</div>" +
+    '<div class="card" style="margin-bottom:14px">' +
+      '<h2>Per target <span class="legend">' + targets.length + " target(s)</span></h2>" +
+      targetsTable(targets) +
+    "</div>" +
+    '<div class="card">' +
+      '<h2>Recent calls <span class="legend">newest first · click a row for detail</span></h2>' +
+      rowsTable(records) +
+    "</div>";
+
+  drawVolume($("c-volume"), data.series);
+  drawDuration($("c-dur"), data.series, records);
+  drawSize($("c-size"), data.series);
+  wireTables(targets, records);
+}
+
+function chartCard(title, id, legend) {
+  return '<div class="card"><h2>' + esc(title) + '<span class="legend">' + legend + "</span></h2>" +
+         '<div class="chart-wrap"><canvas id="' + id + '"></canvas></div></div>';
+}
+
+function renderStats(o) {
+  o = o || {};
+  const out = o.outcomes || {};
+  const calls = (o.kinds && o.kinds.call) || 0;
+  const pageErrors = (o.kinds && o.kinds["page-error"]) || 0;
+  const errors = (out.error || 0) + (out.conflict || 0);
+  const stale = (out.superseded || 0) + (out.disconnected || 0) + (out.aborted || 0);
+  const cells = [
+    ["calls", calls, ""],
+    ["errors", errors, errors ? "err" : ""],
+    ["page errors", pageErrors, pageErrors ? "err" : ""],
+    ["superseded", stale, stale ? "dim" : ""],
+    ["last", fmtWhen(o.last_at), ""],
+  ];
+  if (o.dropped) cells.push(["dropped", o.dropped, "dim"]);
+  $("stats").innerHTML = cells.map(([k, v, cls]) =>
+    '<div class="stat"><div class="k">' + k + '</div><div class="v ' + cls + '">' + esc(v) + "</div></div>"
+  ).join("");
+}
+
+function emptyState(o) {
+  const anywhere = o && o.total === 0;
+  return '<div class="empty">' +
+    (anywhere ? "No calls recorded in this window." : "No calls match these filters.") +
+    '<div class="hint">' +
+      (IS_STORE
+        ? "This log file has no records in the selected window."
+        : "Open <code>" + esc(basename(FILE)) + "</code> and interact with it — every " +
+          "<code>fused.runPython</code>, <code>readFile</code>, <code>stat</code> and " +
+          "<code>writeFile</code> it makes is recorded here.") +
+      "<br />Widen the window, or switch Scope to Everything." +
+    "</div></div>";
+}
+
+// ---- tables --------------------------------------------------------------
+const TARGET_COLS = [
+  ["name", "Target", false],
+  ["count", "Calls", true],
+  ["p50", "p50", true],
+  ["p95", "p95", true],
+  ["max", "Max", true],
+  ["error_rate", "Errors", true],
+  ["bytes", "Bytes", true],
+  ["superseded", "Stale", true],
+  ["last_at", "Last", true],
+];
+
+function targetsTable(targets) {
+  const rows = targets.slice().sort((a, b) => {
+    const av = a[state.sort], bv = b[state.sort];
+    if (typeof av === "string" || typeof bv === "string") {
+      return (state.desc ? -1 : 1) * String(av).localeCompare(String(bv));
+    }
+    return (state.desc ? -1 : 1) * ((av === null ? -1 : av) - (bv === null ? -1 : bv));
+  });
+  return "<table><thead><tr>" +
+    TARGET_COLS.map(([key, label, num]) =>
+      '<th class="sortable' + (num ? " num" : "") + '" data-sort="' + key + '">' + label +
+      (state.sort === key ? (state.desc ? " ↓" : " ↑") : "") + "</th>").join("") +
+    "</tr></thead><tbody>" +
+    rows.map((t) =>
+      "<tr>" +
+      '<td class="mono" title="' + esc(t.entrypoint) + '">' + esc(t.name) + "</td>" +
+      '<td class="num">' + t.count + "</td>" +
+      '<td class="num">' + fmtMs(t.p50) + "</td>" +
+      '<td class="num">' + fmtMs(t.p95) + "</td>" +
+      '<td class="num">' + fmtMs(t.max) + "</td>" +
+      '<td class="num' + (t.errors ? " err-text" : "") + '">' +
+        (t.errors ? t.errors + " (" + Math.round(t.error_rate * 100) + "%)" : "—") + "</td>" +
+      '<td class="num">' + fmtBytes(t.bytes) + "</td>" +
+      '<td class="num">' + (t.superseded || "—") + "</td>" +
+      '<td class="num">' + fmtWhen(t.last_at) + "</td>" +
+      "</tr>").join("") +
+    "</tbody></table>";
+}
+
+function rowsTable(records) {
+  return '<table class="rows"><thead><tr>' +
+    "<th>Time</th><th>Outcome</th><th>Route</th><th>Target</th>" +
+    '<th class="num">Duration</th><th class="num">Size</th><th class="num">Rows</th><th>Params</th>' +
+    "</tr></thead><tbody>" +
+    records.map((r, i) => {
+      const isOpen = state.openId === r.call_id;
+      const params = r.params === null || r.params === undefined
+        ? "—"
+        : (Array.isArray(r.params) ? r.params.join(", ") : compactParams(r.params));
+      const main =
+        '<tr data-i="' + i + '" class="' + (r.kind === "page-error" ? "kind-page-error" : "") + '">' +
+        "<td>" + fmtTime(r.occurred_at) + "</td>" +
+        '<td><span class="pill ' + esc(r.outcome) + '">' + esc(r.outcome || "—") + "</span></td>" +
+        '<td class="mono">' + esc(r.kind === "page-error" ? "page error" : r.route || "—") + "</td>" +
+        '<td class="mono" title="' + esc(r.entrypoint || "") + '">' +
+          esc(r.entrypoint_name || basename(r.target_file) || "—") + "</td>" +
+        '<td class="num">' + fmtMs(r.run_ms !== undefined && r.run_ms !== null ? r.run_ms : r.server_ms) + "</td>" +
+        '<td class="num">' + fmtBytes(r.result_bytes) + "</td>" +
+        '<td class="num">' + (r.result_rows === null || r.result_rows === undefined ? "—" : r.result_rows) + "</td>" +
+        '<td class="mono">' + esc(params) + "</td>" +
+        "</tr>";
+      return isOpen ? main + detailRow(r) : main;
+    }).join("") +
+    "</tbody></table>";
+}
+
+function compactParams(obj) {
+  const parts = [];
+  for (const k of Object.keys(obj)) parts.push(k + "=" + obj[k]);
+  const s = parts.join(" ");
+  return s.length > 60 ? s.slice(0, 59) + "…" : s;
+}
+
+function detailRow(r) {
+  const blocks = [];
+  const add = (title, text, cls) => {
+    if (text === null || text === undefined || text === "") return;
+    blocks.push("<h3>" + esc(title) + "</h3><pre" + (cls ? ' class="' + cls + '"' : "") +
+                ">" + esc(text) + "</pre>");
+  };
+  const err = r.error || {};
+  if (err.type || err.message) {
+    add((err.type || "Error") + ": " + (err.message || ""), err.traceback || "(no traceback)", "err-text");
+  }
+  add("stdout", r.stdout_tail);
+  add("stderr", r.stderr_tail);
+  if (r.params && !Array.isArray(r.params)) add("params", JSON.stringify(r.params, null, 2));
+  if (Array.isArray(r.params)) add("param keys (values not recorded)", r.params.join("\n"));
+  if (r.source) add("source", r.source + (r.line ? ":" + r.line + (r.col ? ":" + r.col : "") : ""));
+
+  const facts = [
+    ["page", r.page], ["target file", r.target_file], ["entrypoint", r.entrypoint],
+    ["engine", r.engine], ["status", r.status], ["server_ms", r.server_ms],
+    ["run_ms", r.run_ms], ["result", r.result_kind], ["bytes written", r.bytes_written],
+    ["call_id", r.call_id], ["err_id", r.err_id],
+    ["truncated", r.truncated ? "yes" : null],
+  ].filter(([, v]) => v !== null && v !== undefined && v !== "");
+  add("record", facts.map(([k, v]) => k + ": " + v).join("\n"));
+
+  return '<tr class="detail"><td colspan="8">' + blocks.join("") + "</td></tr>";
+}
+
+function wireTables(targets, records) {
+  document.querySelectorAll("th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (state.sort === key) state.desc = !state.desc;
+      else { state.sort = key; state.desc = true; }
+      fused.params.set("sort", state.sort);
+      load();
+    });
+  });
+  document.querySelectorAll(".rows tbody tr[data-i]").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const rec = records[Number(tr.dataset.i)];
+      state.openId = state.openId === rec.call_id ? null : rec.call_id;
+      // Re-render only the rows table: redrawing the charts on a row click
+      // would flash them for no reason.
+      const card = tr.closest(".card");
+      card.querySelector("table").outerHTML = rowsTable(records);
+      wireTables(targets, records);
+    });
+  });
+}
+
+// ---- charts (hand-rolled canvas, no dependencies — ARCHITECTURE §10) ------
+function prep(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * ratio) || canvas.height !== Math.round(h * ratio)) {
+    canvas.width = Math.round(w * ratio);
+    canvas.height = Math.round(h * ratio);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h, pad: { l: 42, r: 6, t: 6, b: 16 } };
+}
+
+function axes(ctx, w, h, pad, maxVal, labels) {
+  ctx.strokeStyle = "#2a2d33";
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 2; i++) {
+    const y = pad.t + (h - pad.t - pad.b) * (i / 2);
+    ctx.beginPath();
+    ctx.moveTo(pad.l, Math.round(y) + 0.5);
+    ctx.lineTo(w - pad.r, Math.round(y) + 0.5);
+    ctx.stroke();
+    const value = maxVal * (1 - i / 2);
+    ctx.textAlign = "right";
+    ctx.fillText(labels(value), pad.l - 5, y + 3);
+  }
+}
+
+function noData(ctx, w, h) {
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("no data in this window", w / 2, h / 2);
+}
+
+function drawVolume(canvas, series) {
+  const { ctx, w, h, pad } = prep(canvas);
+  const points = (series && series.points) || [];
+  if (!points.length) return noData(ctx, w, h);
+  const max = Math.max(1, ...points.map((p) => p.count_ok + p.count_err + p.count_superseded));
+  axes(ctx, w, h, pad, max, (v) => String(Math.round(v)));
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  const bw = Math.max(1, Math.min(18, plotW / points.length - 1));
+  points.forEach((p, i) => {
+    const x = pad.l + (plotW * (i + 0.5)) / points.length - bw / 2;
+    let y = pad.t + plotH;
+    // Stacked bottom-up: ok, then error, then the superseded work on top —
+    // dimmer because it is thrown-away work, not served work.
+    [["#4ec9a0", p.count_ok], ["#f0736a", p.count_err], ["#6d5fb8", p.count_superseded]]
+      .forEach(([color, n]) => {
+        if (!n) return;
+        const barH = (n / max) * plotH;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y - barH, bw, barH);
+        y -= barH;
+      });
+  });
+}
+
+function drawDuration(canvas, series, records) {
+  const { ctx, w, h, pad } = prep(canvas);
+  const points = ((series && series.points) || []).filter((p) => p.p95 !== null);
+  if (!points.length) return noData(ctx, w, h);
+  const max = Math.max(1, ...points.map((p) => p.max || p.p95 || 0));
+  axes(ctx, w, h, pad, max, (v) => (v >= 1000 ? (v / 1000).toFixed(1) + "s" : Math.round(v) + "ms"));
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  // The domain runs to the END of the last bucket, not its start: a point's `t`
+  // is its bucket's start, so records inside the final bucket sit AFTER t1 and
+  // would fall outside a t0..t1 domain — which, when everything lands in one
+  // bucket (a burst inside a single minute), silently dropped every dot.
+  const width = ((series && series.bucket_ms) || 60000) / 1000;
+  const t0 = points[0].t, t1 = points[points.length - 1].t + width;
+  const xOf = (t) => pad.l + ((t - t0) / (t1 - t0)) * plotW;
+  const yOf = (v) => pad.t + plotH - (Math.min(v, max) / max) * plotH;
+
+  // Per-call scatter behind the lines: a mean hides the one cold 12-second run
+  // that made the user think the page was broken, so show the calls themselves.
+  ctx.fillStyle = "rgba(154,160,170,0.35)";
+  records.forEach((r) => {
+    const ms = r.run_ms !== undefined && r.run_ms !== null ? r.run_ms : r.server_ms;
+    const stamp = Date.parse(r.occurred_at) / 1000;
+    if (!ms || !stamp || stamp < t0 || stamp > t1) return;
+    if (["superseded", "disconnected", "aborted"].indexOf(r.outcome) !== -1) return;
+    ctx.beginPath();
+    ctx.arc(xOf(stamp), yOf(ms), 1.6, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Line AND a marker per bucket: a series with a single bucket (everything
+  // inside one minute) has nothing for a line to connect, so markers are what
+  // make a short burst readable at all.
+  [["p50", "#9aa0aa", 1], ["p95", "#5b9dff", 1.6]].forEach(([key, color, lw]) => {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lw;
+    ctx.beginPath();
+    let started = false;
+    points.forEach((p) => {
+      if (p[key] === null) return;
+      const x = xOf(p.t + width / 2), y = yOf(p[key]);
+      if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+    });
+    ctx.stroke();
+    points.forEach((p) => {
+      if (p[key] === null) return;
+      ctx.beginPath();
+      ctx.arc(xOf(p.t + width / 2), yOf(p[key]), lw + 1, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+}
+
+function drawSize(canvas, series) {
+  const { ctx, w, h, pad } = prep(canvas);
+  const points = (series && series.points) || [];
+  const max = Math.max(1, ...points.map((p) => p.bytes_sum || 0));
+  if (!points.length || max <= 1) return noData(ctx, w, h);
+  axes(ctx, w, h, pad, max, fmtBytes);
+  const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
+  const bw = Math.max(1, Math.min(18, plotW / points.length - 1));
+  ctx.fillStyle = "#5b9dff";
+  points.forEach((p, i) => {
+    if (!p.bytes_sum) return;
+    const x = pad.l + (plotW * (i + 0.5)) / points.length - bw / 2;
+    const barH = (p.bytes_sum / max) * plotH;
+    ctx.fillRect(x, pad.t + plotH - barH, bw, barH);
+  });
+}
+
+// ---- controls ------------------------------------------------------------
+$("since").addEventListener("change", (e) => {
+  state.since = Number(e.target.value) || 0;
+  fused.params.set("since", String(state.since));
+  load();
+});
+$("scope").addEventListener("change", (e) => {
+  state.scope = e.target.value;
+  fused.params.set("scope", state.scope);
+  load();
+});
+let qTimer = null;
+$("q").addEventListener("input", (e) => {
+  state.q = e.target.value;
+  clearTimeout(qTimer);
+  qTimer = setTimeout(() => { fused.params.set("q", state.q); load(); }, 250);
+});
+$("failed").addEventListener("click", () => {
+  state.failed = !state.failed;
+  fused.params.set("failed", state.failed ? "1" : "");
+  syncControls();
+  load();
+});
+$("refresh").addEventListener("click", load);
+$("follow").addEventListener("click", () => {
+  state.follow = !state.follow;
+  syncControls();
+  clearInterval(timer);
+  // Follow is a poll, not a push: the reader is allowlisted for in-process
+  // execution (D72), so a 2s poll costs a bounded local file read, not a
+  // subprocess spawn. Deliberately not a WebSocket — one fewer moving part.
+  if (state.follow) timer = setInterval(load, 2000);
+});
+
+// Re-render on any external param change (a bookmark restore, a hand-edited URL).
+fused.params.onChange(() => { readParams(); syncControls(); load(); });
+
+// This page reads a log that the act of reading does not change, so the
+// auto-reload watcher would only add churn — but its own reader edits during
+// development should still reload it, so leave auto-reload alone.
+window.addEventListener("resize", () => {
+  clearTimeout(window._callsResize);
+  window._callsResize = setTimeout(load, 150);
+});
+
+readParams();
+syncControls();
+load();
+</script>
+</body>
+</html>

@@ -344,6 +344,47 @@
   // which the unhandledrejection handler below treats as benign.
   const inflightByKey = new Map();
 
+  // ---- call-log attribution (docs/CALL_LOG_DESIGN.md §4.3) ------------------
+  // The server logs one record per API call a page makes, but the middleware
+  // sees only the route — not WHICH page called it. These headers carry that:
+  // X-Fused-Page is the page's own absolute path (the `path` query param of
+  // this iframe's /render URL), X-Fused-Target the file it is previewing
+  // (`_file`, set when this page is a template), X-Fused-Call a per-call id.
+  //
+  // Only this runtime sends them, so the shell's own requests (/api/fs/list,
+  // the conditions probe) carry no attribution and are excluded from the app
+  // log by construction — no endpoint blocklist to keep in sync. A custom
+  // header forces a CORS preflight exactly as X-Fused does; this is not auth
+  // (D3/D36 stand), it is attribution.
+  function ownQuery(key) {
+    try {
+      return new URLSearchParams(window.location.search).get(key);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function newCallId() {
+    try {
+      if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    } catch (e) {
+      /* fall through to the Math.random id below */
+    }
+    return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  }
+
+  // Merge the attribution headers into a call's own headers. Callers pass the
+  // headers they need (Content-Type, X-Fused) and get those plus attribution.
+  function callHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const page = ownQuery("path");
+    if (page) headers["X-Fused-Page"] = page;
+    const target = ownQuery("_file");
+    if (target) headers["X-Fused-Target"] = target;
+    headers["X-Fused-Call"] = newCallId();
+    return headers;
+  }
+
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -380,7 +421,7 @@
       method: "POST",
       // X-Fused forces a CORS preflight so a foreign page can't fire this
       // execute endpoint blind (see server.py _require_fused).
-      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
       signal: controller.signal,
     })
@@ -445,7 +486,7 @@
   // Fetch file metadata (same shape as /api/fs/stat). Rejects with an Error
   // carrying the server's message, mirroring runPython's rejection style.
   function stat(path) {
-    return fetch("/api/fs/stat?path=" + encodeURIComponent(path))
+    return fetch("/api/fs/stat?path=" + encodeURIComponent(path), { headers: callHeaders() })
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
@@ -454,8 +495,15 @@
   }
 
   // Read a file's text via the raw endpoint.
+  // NOTE (call log): readFile is attributed because it fetches, so the server
+  // sees the headers. rawUrl() is SYNCHRONOUS and returns a URL string that
+  // usually lands in an <img>/<embed> src — the browser issues that request
+  // with no way to attach a header, so element-src reads are NOT in the call
+  // log. Deliberate: adding a `_page` query param instead would change every
+  // raw URL (cache keys, and the hosted runtime's bundle-key resolution in
+  // docs/EXPORT.md), which is not worth it for one route's attribution.
   function readFile(path) {
-    return fetch(rawUrl(path)).then((res) => {
+    return fetch(rawUrl(path), { headers: callHeaders() }).then((res) => {
       if (!res.ok) throw new Error("failed to read " + path + " (HTTP " + res.status + ")");
       return res.text();
     });
@@ -474,7 +522,7 @@
     }
     return fetch("/api/fs/write", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(payload),
     })
       .then((res) => res.json().then((data) => ({ res, data })))
@@ -655,6 +703,55 @@
     document.body.appendChild(overlay);
   }
 
+  // ---- page-error records (docs/CALL_LOG_DESIGN.md §9.2a) -------------------
+  // The call log's most informative record is the one where NO call happened:
+  // a page whose JS threw before it ever reached runPython looks, to anyone
+  // reading the log, exactly like a page nobody opened. Reporting page-level
+  // errors turns "zero calls, cause unknown" into a message and a line number.
+  //
+  // Capped per page load — a broken render loop can throw thousands of times,
+  // and the first few are the diagnosis; the rest are noise that would spend
+  // the store's rate budget. Fire-and-forget with a swallowed rejection: a
+  // failed report must never itself trigger the unhandledrejection path.
+  const PAGE_ERROR_CAP = 5;
+  let pageErrorsSent = 0;
+
+  function reportPageError(fields) {
+    if (pageErrorsSent >= PAGE_ERROR_CAP) return;
+    pageErrorsSent += 1;
+    const page = ownQuery("path");
+    if (!page) return; // not a rendered page (no attribution to record it under)
+    try {
+      fetch("/api/calls/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Fused": "1" },
+        body: JSON.stringify(
+          Object.assign({ kind: "page-error", page: page, target_file: ownQuery("_file") }, fields)
+        ),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) {
+      /* reporting is best-effort; never let it break the page */
+    }
+  }
+
+  window.addEventListener("error", (event) => {
+    // Uncaught synchronous errors. A resource-load failure (a bad <img> src)
+    // also fires this event but carries no `error` object and targets an
+    // element rather than the window — skip those: they are not the page's
+    // code failing, and they would drown the real ones.
+    if (!event || event.target !== window) return;
+    const err = event.error;
+    reportPageError({
+      type: (err && err.name) || "Error",
+      message: (err && err.message) || event.message || "uncaught error",
+      source: event.filename || null,
+      line: typeof event.lineno === "number" ? event.lineno : null,
+      col: typeof event.colno === "number" ? event.colno : null,
+      stack: (err && err.stack) || null,
+    });
+  });
+
   window.addEventListener("unhandledrejection", (event) => {
     const err = event.reason;
     // A superseded/aborted runPython (D113) rejects with a benign AbortError:
@@ -666,7 +763,16 @@
     }
     if (err && err.traceback) {
       showOverlay(err);
+      // A runPython failure the page didn't catch: the server already recorded
+      // it against the /api/run call (with the real traceback), so recording it
+      // again here would double-count the same failure.
+      return;
     }
+    reportPageError({
+      type: (err && err.name) || "UnhandledRejection",
+      message: (err && err.message) || String(err),
+      stack: (err && err.stack) || null,
+    });
   });
 
   // Start watching after inline page scripts have run, so an opt-out via

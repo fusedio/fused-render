@@ -50,6 +50,11 @@
     "duckdb",
     "annotate"
   ],
+  ".calls.jsonl": [
+    "calls",
+    "log_studio",
+    "code"
+  ],
   ".docx": [
     "docs"
   ],
@@ -229,7 +234,8 @@
   ".py": [
     "code",
     "api",
-    "annotate"
+    "annotate",
+    "calls"
   ],
   ".js": [
     "code",
@@ -344,13 +350,15 @@
     "code",
     "claude",
     "annotate",
-    "history"
+    "history",
+    "calls"
   ],
   ".htm": [
     "_render",
     "code",
     "claude",
-    "annotate"
+    "annotate",
+    "calls"
   ],
   ".tif": [
     "geotiff",

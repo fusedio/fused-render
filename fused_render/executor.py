@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 import traceback
 
 from ._binding import bind_params
@@ -74,6 +75,12 @@ INPROCESS_HELPERS = frozenset(
         ("sqlite", "reader.py"),
         ("sqlite", "writer.py"),
         ("api", "inspector.py"),
+        # The call-log reader: first-party, never imports or executes user code
+        # (it parses JSONL the server itself wrote), and bounded — it reads at
+        # most a page of records or one pre-aggregated pass. In-process because
+        # the calls view POLLS while following, and ~700 ms of subprocess spawn
+        # per poll is the difference between a live tail and a slideshow.
+        ("calls", "reader.py"),
     )
 )
 
@@ -134,7 +141,7 @@ def _run_inprocess(path: str, params: dict) -> dict:
                 f"main() returned {type(result).__name__}, which is not JSON-serializable; "
                 "return dict/list/str/number/bool/None (e.g. df.to_dict('records'))"
             ) from None
-        return {"ok": True, "result": result, "stdout": ""}
+        return {"ok": True, "result": result, "stdout": "", "stderr": ""}
     except BaseException as e:  # noqa: BLE001 — mirror the child's catch-all
         return {
             "ok": False,
@@ -144,11 +151,18 @@ def _run_inprocess(path: str, params: dict) -> dict:
                 "traceback": traceback.format_exc(),
             },
             "stdout": "",
+            "stderr": "",
         }
 
 
 def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    # Time the run here so this engine reports `duration_ms` like the fused one
+    # (engine.py) does. Without it the call log's `run_ms` is mysteriously
+    # empty for the DEFAULT engine, which reads as a bug rather than a gap —
+    # and the two engines' numbers stop being comparable.
+    started = time.monotonic()
     result = _run_python(path, params, timeout)
+    result.setdefault("duration_ms", round((time.monotonic() - started) * 1000))
     if not result.get("ok"):
         # A failed run is the common "something wrong with right-click open"
         # symptom, and the browser only flashes it in an error overlay. Record
@@ -211,9 +225,17 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
     lines = proc.stdout.strip().splitlines()
     if lines:
         try:
-            return json.loads(lines[-1])
+            parsed = json.loads(lines[-1])
         except json.JSONDecodeError:
             pass
+        else:
+            # The worker's own stderr, which _child.py never captures (it
+            # redirects only stdout, to keep the result protocol clean) — so a
+            # warning or a C-library message printed by a run is otherwise
+            # lost. Tail, not head: the end is where the failure is.
+            if isinstance(parsed, dict) and proc.stderr:
+                parsed.setdefault("stderr", proc.stderr[-4000:])
+            return parsed
     return _error(
         "ExecutorError",
         f"worker exited with code {proc.returncode} without producing a result",

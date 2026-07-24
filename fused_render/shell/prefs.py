@@ -40,6 +40,8 @@ from fused_render.shell import storage
 router = APIRouter()
 
 VALID_ENGINES = ("builtin", "fused")
+VALID_CALLS_PARAMS = ("full", "keys", "off")
+DEFAULT_CALLS_RETENTION_DAYS = 14
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -76,6 +78,40 @@ def deploy_enabled() -> bool:
     don't deploy. Any non-`true` stored value (missing/legacy) reads as off.
     """
     return read_prefs().get("deploy_enabled") is True
+
+
+def calls_enabled() -> bool:
+    """Whether the app call log records anything (default ON — see calls.py).
+
+    On by default because a diagnostic that has to be switched on before the
+    thing you wanted to diagnose is worthless: the interesting call already
+    happened. `FUSED_RENDER_CALLS=0` is the process-level off switch that beats
+    this pref. Any non-`false` stored value (including missing) reads as on.
+    """
+    return read_prefs().get("calls_enabled") is not False
+
+
+def calls_params_mode() -> str:
+    """How much of a run's params the log keeps: full | keys | off.
+
+    Default `full`: params are the inputs the author's own code already
+    received and are usually the whole repro (the same named trade-off the
+    serve plane's error records make), and locally they are already sitting in
+    the URL bar. `keys` keeps only the key names for a page whose param is a
+    secret; `off` keeps nothing.
+    """
+    value = read_prefs().get("calls_params")
+    return value if value in VALID_CALLS_PARAMS else "full"
+
+
+def calls_retention_days() -> int:
+    """How long call-log files are kept (default 14, matching the serve plane's
+    `errors/` lifecycle rule). 0 disables age-based pruning — the directory
+    size cap in calls.sweep() still applies."""
+    value = read_prefs().get("calls_retention_days")
+    if isinstance(value, int) and 0 <= value <= 3_650:
+        return value
+    return DEFAULT_CALLS_RETENTION_DAYS
 
 
 def fused_engine_available() -> bool:
@@ -140,7 +176,24 @@ def _prefs_response() -> dict:
         "log": {"path": log_path(), "dir": log_dir()},
         # Whether the preview-header Deploy affordance is shown (opt-in).
         "deploy": {"enabled": deploy_enabled()},
+        # The app call log (calls.py): capture state, param redaction, retention.
+        # `dir` lets the page reveal the store through the existing
+        # /api/fs/reveal, exactly as `log.path` does.
+        "calls": {
+            "enabled": calls_enabled(),
+            "params": calls_params_mode(),
+            "retention_days": calls_retention_days(),
+            "dir": _calls_dir(),
+        },
     }
+
+
+def _calls_dir() -> str:
+    # Imported lazily: calls.py imports this module (for the prefs above), so a
+    # module-scope import here would be a cycle.
+    from fused_render import calls
+
+    return calls.store_dir()
 
 
 @router.get("/api/prefs")
@@ -172,9 +225,34 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'deploy_enabled' must be a boolean"}, status_code=400)
         prefs["deploy_enabled"] = value
         changed = True
+    if "calls_enabled" in body:
+        value = body.get("calls_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'calls_enabled' must be a boolean"}, status_code=400)
+        prefs["calls_enabled"] = value
+        changed = True
+    if "calls_params" in body:
+        value = body.get("calls_params")
+        if value not in VALID_CALLS_PARAMS:
+            return JSONResponse(
+                {"error": f"'calls_params' must be one of: {', '.join(VALID_CALLS_PARAMS)}"},
+                status_code=400,
+            )
+        prefs["calls_params"] = value
+        changed = True
+    if "calls_retention_days" in body:
+        value = body.get("calls_retention_days")
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 3_650:
+            return JSONResponse(
+                {"error": "'calls_retention_days' must be an integer between 0 and 3650"},
+                status_code=400,
+            )
+        prefs["calls_retention_days"] = value
+        changed = True
     if not changed:
         return JSONResponse(
-            {"error": "no known preference in request (expected 'engine' and/or 'deploy_enabled')"},
+            {"error": "no known preference in request (expected 'engine', 'deploy_enabled', "
+                      "'calls_enabled', 'calls_params' and/or 'calls_retention_days')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)

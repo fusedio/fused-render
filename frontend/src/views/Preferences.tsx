@@ -1,7 +1,8 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Logs, Execution engine, Deploy to Fused account
-//     (the opt-in Deploy-button toggle), Tour. Always present; the default
+//   Render preferences — Logs, Execution engine, Call log (capture/redaction/
+//     retention for fused_render/calls.py), Deploy to Fused account (the
+//     opt-in Deploy-button toggle), Tour. Always present; the default
 //     (clean URL).
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
@@ -11,8 +12,16 @@
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
-import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/api";
-import type { Prefs } from "../lib/api";
+import {
+  getPrefs,
+  putCallsEnabled,
+  putCallsParamsMode,
+  putCallsRetentionDays,
+  putDeployEnabled,
+  putEnginePref,
+  revealPath,
+} from "../lib/api";
+import type { CallsParamsMode, Prefs } from "../lib/api";
 import { navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { startTour } from "../lib/tour";
@@ -181,6 +190,89 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
+function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const calls = prefs.calls;
+
+  const apply = async (fn: () => Promise<Prefs>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await fn());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Call log</h2>
+      <p className="deploy-muted">
+        Records every API call your pages make — each <code>runPython</code>, <code>readFile</code>,{" "}
+        <code>stat</code> and <code>writeFile</code>, with its duration, result size, output and
+        any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
+        a per-target breakdown; <code>fused-render calls</code> reads the same log from a terminal.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={calls.enabled}
+          disabled={busy}
+          onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
+        />
+        <span>
+          <b>Record API calls</b> made by pages rendered in this app.
+        </span>
+      </label>
+      <div className="prefs-field">
+        <label>
+          Parameters{" "}
+          <select
+            value={calls.params}
+            disabled={busy || !calls.enabled}
+            onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
+          >
+            <option value="full">Record values</option>
+            <option value="keys">Record names only</option>
+            <option value="off">Record nothing</option>
+          </select>
+        </label>
+        <p className="deploy-muted">
+          A run's parameters are usually the whole repro, so they are recorded by default — they
+          are already visible in the URL. Switch to names-only if a page passes a secret as a
+          parameter.
+        </p>
+      </div>
+      <div className="prefs-field">
+        <label>
+          Keep for{" "}
+          <select
+            value={String(calls.retention_days)}
+            disabled={busy || !calls.enabled}
+            onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
+          >
+            <option value="1">1 day</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="90">90 days</option>
+            <option value="0">Until the size cap</option>
+          </select>
+        </label>
+      </div>
+      <p className="deploy-muted">
+        Stored at <code>{calls.dir}</code>.
+      </p>
+      <button type="button" onClick={() => revealPath(calls.dir).catch((e) => setError(e.message))}>
+        Open call log location
+      </button>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 function DeploymentsSection({
   prefs,
   onChange,
@@ -266,6 +358,7 @@ export default function Preferences() {
               <>
                 <LogsSection prefs={prefs} />
                 <EngineSection prefs={prefs} onChange={setPrefs} />
+                <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}
                   onChange={setPrefs}

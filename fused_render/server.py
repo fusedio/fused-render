@@ -49,6 +49,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render import __version__
+from fused_render import calls as shell_calls
 from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
@@ -2915,6 +2916,14 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.middleware("http")
     async def no_cache_and_log(request, call_next):
+        # The app call log's single write point (calls.py, design §4.5). begin()
+        # returns a record only for a request carrying runtime.js's
+        # X-Fused-Page header — so the shell's own /api/fs/list, the conditions
+        # probe, and every non-page caller are excluded by construction rather
+        # than by an endpoint blocklist that would drift. Route handlers enrich
+        # the same dict through request.state.fused_call; only finish() writes.
+        call = shell_calls.begin(request)
+        request.state.fused_call = call
         # App code changes between restarts and user files change on disk;
         # stale browser caches of shell/runtime JS cause confusing half-old UIs.
         # Also the browser request log (SPEC SV-3): one INFO line per request
@@ -2928,15 +2937,42 @@ def create_app(start_dir: str) -> FastAPI:
         start = time.monotonic()
         try:
             response = await call_next(request)
+        except asyncio.CancelledError:
+            # The client went away mid-request — overwhelmingly a runPython
+            # superseded by a newer call for the same .py (D114/RH-9) or a
+            # closed tab. Recorded as its own outcome and kept out of every
+            # latency statistic: a slider scrub would otherwise report dozens
+            # of "slow" calls for what the user experienced as one request.
+            if call is not None:
+                shell_calls.finish(
+                    call, status=None, elapsed_ms=(time.monotonic() - start) * 1000,
+                    outcome="disconnected",
+                )
+            raise
         except Exception:
             if logged:
                 dur = (time.monotonic() - start) * 1000
                 logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
+            # An unhandled exception escapes call_next: @app.exception_handler
+            # runs in ServerErrorMiddleware, OUTSIDE user middleware, so this
+            # except branch is the only place the record can be closed out.
+            if call is not None:
+                shell_calls.finish(
+                    call, status=500, elapsed_ms=(time.monotonic() - start) * 1000,
+                    outcome="error",
+                )
             raise
         if logged:
             dur = (time.monotonic() - start) * 1000
             logger.info(
                 "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
+            )
+        if call is not None:
+            shell_calls.finish(
+                call,
+                status=response.status_code,
+                elapsed_ms=(time.monotonic() - start) * 1000,
+                content_length=response.headers.get("content-length"),
             )
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -2970,6 +3006,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
     app.include_router(recents_router)
+    # The app call log (calls.py): GET /api/calls/config + the page-error
+    # event POST. The records themselves are written by the middleware above.
+    app.include_router(shell_calls.router)
     # Mounts: remote storage mounted as local paths via rclone rcd
     # (shell/mounts.py). startup() remounts every mount in a background
     # thread; mounts deliberately survive server restarts.
@@ -3674,9 +3713,19 @@ def create_app(start_dir: str) -> FastAPI:
     # cache accepts for out-of-band changes — and the editor navigates top-down,
     # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
-    def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    def api_fs_write(request: Request, body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
         result = _fs_write(body, x_fused)
         _invalidate_stat_cache(body.get("path"))
+        # What the app wrote and how big — never the content (calls.py).
+        # `_fs_write` returns a stat payload on success and a JSONResponse on
+        # every refusal, so the status has to come off the response object.
+        shell_calls.enrich_write(
+            getattr(request.state, "fused_call", None),
+            path=body.get("path") if isinstance(body.get("path"), str) else "",
+            content=body.get("content"),
+            status=getattr(result, "status_code", 200),
+        )
         return result
 
     @app.post("/api/fs/mkdir")
@@ -3727,7 +3776,8 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    async def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    async def api_run(request: Request, body: dict = Body(...),
+                      x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
@@ -3781,7 +3831,8 @@ def create_app(start_dir: str) -> FastAPI:
         # engine adds stderr/duration_ms), so pages never see which ran.
         # Resolved per request: the Preferences switch applies to the next
         # run, no restart (a set FUSED_RENDER_ENGINE pins it instead).
-        if current_engine() == "fused":
+        engine_used = current_engine()
+        if engine_used == "fused":
             from fused_render import engine as _engine
 
             result = await _engine.run_python(resolved, params)
@@ -3789,6 +3840,14 @@ def create_app(start_dir: str) -> FastAPI:
             # The built-in executor blocks on a subprocess; keep the event
             # loop free (the endpoint is async now for the engine's sake).
             result = await asyncio.to_thread(run_python, resolved, params)
+        # Hand the run's detail to the in-flight call record (calls.py): the
+        # resolved .py, the params, the engine, and — on failure — the
+        # traceback and output tails a user has since clicked away from. The
+        # handler enriches; the middleware writes.
+        shell_calls.enrich_run(
+            getattr(request.state, "fused_call", None),
+            resolved=resolved, params=params, engine=engine_used, result=result,
+        )
         # Tell the runtime which absolute file actually ran so it can watch it
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.
