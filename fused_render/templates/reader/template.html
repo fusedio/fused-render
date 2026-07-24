@@ -1,0 +1,1670 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Reader</title>
+<style>
+  /* Tokens borrow the app's dark chrome (annotate/history/markdown): near-black
+     bg, off-white ink, muted grays, lime accent — so listen mode reads as the
+     same product, just a clean reading column instead of the raw view. */
+  :root {
+    color-scheme: dark;
+    --bg: #0a0d12;
+    --panel: #14171d;
+    --panel-2: #1b1d21;
+    --line: #2a2d33;
+    --line-2: #3a3e46;
+    --ink: #eef1f4;
+    --ink-2: #9aa0a6;
+    --ink-3: #6b7178;
+    --accent: #E5FF44;
+    --accent-ink: #10131a;
+    --radius: 10px;
+    --radius-sm: 7px;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, Menlo, Consolas, "SF Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--bg);
+    /* room for the sticky controls bar so the last block can scroll to center */
+    padding-bottom: 44vh;
+  }
+
+  /* ===================== header (sticky, small) ===================== */
+  #head {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in oklab, var(--panel) 88%, transparent);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    color: var(--ink-2);
+    font-size: 12px;
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    #head { background: var(--panel); }
+  }
+  #head .name {
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40vw;
+  }
+  #head .spacer { flex: 1 1 auto; }
+  #head select {
+    font: inherit;
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  #head .meta { color: var(--ink-3); white-space: nowrap; }
+
+  /* ===================== reading column ===================== */
+  #doc {
+    max-width: 68ch;
+    margin: 0 auto;
+    padding: 48px 24px 0;
+    font-size: 1.15rem;
+    line-height: 1.7;
+  }
+  .block {
+    position: relative;
+    margin: 0 0 0.85em;
+    padding: 4px 12px;
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: background-color 140ms cubic-bezier(0.2, 0, 0, 1),
+                border-color 140ms cubic-bezier(0.2, 0, 0, 1);
+    word-break: break-word;
+  }
+  .block:hover { background: rgba(255, 255, 255, 0.03); }
+  /* current block: soft tint + left accent bar (SPEC karaoke follow) */
+  .block.current {
+    background: rgba(229, 255, 68, 0.05);
+    border-left-color: var(--accent);
+  }
+  h1.block, h2.block, h3.block, h4.block, h5.block, h6.block {
+    line-height: 1.25;
+    font-weight: 700;
+    margin-top: 1.1em;
+  }
+  h1.block { font-size: 1.9rem; }
+  h2.block { font-size: 1.55rem; }
+  h3.block { font-size: 1.3rem; }
+  h4.block { font-size: 1.12rem; }
+  h5.block, h6.block { font-size: 1rem; color: var(--ink-2); }
+  p.block.item { padding-left: 28px; }
+  p.block.item::before {
+    content: "•";
+    position: absolute;
+    left: 14px;
+    color: var(--ink-3);
+  }
+  p.block.row { color: var(--ink); font-variant-numeric: tabular-nums; }
+  blockquote.block {
+    color: var(--ink-2);
+    border-left-color: var(--line-2);
+    font-style: italic;
+  }
+  pre.block {
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    padding: 12px 14px;
+  }
+  pre.block.current { border-left-width: 3px; }
+
+  /* karaoke highlights via the Custom Highlight API — zero DOM mutation of the
+     text nodes, so charIndex→offset mapping stays exact (SPEC onboundary). */
+  ::highlight(reader-sentence) { background-color: rgba(229, 255, 68, 0.11); }
+  ::highlight(reader-word) {
+    background-color: rgba(229, 255, 68, 0.34);
+    color: #fff;
+  }
+
+  .more {
+    display: block;
+    width: 100%;
+    margin: 8px 0 24px;
+    padding: 10px 0;
+    font: inherit;
+    color: var(--ink-2);
+    background: var(--panel);
+    border: 1px dashed var(--line-2);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .more:hover { color: var(--ink); border-color: var(--line-2); }
+
+  /* ===================== empty / error states ===================== */
+  #empty, #fatal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    place-items: center;
+    text-align: center;
+    padding: 40px;
+    color: var(--ink-2);
+    pointer-events: none;
+  }
+  #empty.show, #fatal.show { display: grid; }
+  #empty .big, #fatal .big {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 6px;
+  }
+  #fatal { color: #ff9d9d; }
+
+  /* ===================== no-voices banner ===================== */
+  #novoice {
+    display: none;
+    max-width: 68ch;
+    margin: 16px auto 0;
+    padding: 12px 16px;
+    border: 1px solid #5c4a1f;
+    border-radius: var(--radius);
+    background: #1b1913;
+    color: #e8d8ac;
+    font-size: 13px;
+  }
+  #novoice.show { display: block; }
+
+  /* ===================== selection speak pill ===================== */
+  #pill {
+    position: absolute;
+    display: none;
+    z-index: 20;
+    width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--ink);
+    color: var(--bg);
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  }
+  #pill:hover { background: #fff; }
+  #pill svg { display: block; }
+
+  /* ===================== controls bar (glass, sticky bottom) ===================== */
+  #controls {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    max-width: calc(100vw - 24px);
+    border-radius: 14px;
+    background: color-mix(in oklab, var(--panel) 62%, transparent);
+    border: 1px solid color-mix(in oklab, white 12%, transparent);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 0 color-mix(in oklab, white 10%, transparent);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    #controls { background: var(--panel); }
+  }
+  /* direct children only — the voice popover's rows are buttons too and must
+     keep their own flex layout (the old `#controls button` grid squashed them) */
+  #controls > button {
+    display: grid;
+    place-items: center;
+    height: 34px;
+    min-width: 34px;
+    padding: 0 6px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: color 110ms, background-color 110ms;
+  }
+  #controls > button:hover {
+    color: var(--ink);
+    background: color-mix(in oklab, var(--ink) 9%, transparent);
+  }
+  #controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #controls #btn-play {
+    /* Neutral filled primary — accent stays reserved for selection/progress
+       (same call as the shell's modal buttons). */
+    background: var(--ink);
+    color: var(--bg);
+    width: 40px;
+  }
+  #controls #btn-play:hover { background: #fff; color: var(--bg); }
+  #controls .sep { width: 1px; height: 22px; background: var(--line); margin: 0 2px; }
+  #controls select {
+    font: inherit;
+    height: 30px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    max-width: 200px;
+    text-overflow: ellipsis;
+  }
+  #controls .prog {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 92px;
+    padding: 0 4px;
+  }
+  #controls .prog .lbl {
+    font-size: 11px;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+  #controls .prog .track {
+    height: 3px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  #controls .prog .fill {
+    height: 100%;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: var(--accent);
+    /* scaleX (not width) so the bar never triggers layout — GPU-composited */
+    transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  #controls svg { display: block; }
+
+  /* ===================== voice picker (custom searchable dropdown) =====
+     Replaces the flat 100+ entry <select>. A button in the bar opens a glass
+     popover UPWARD (the bar is sticky-bottom, so a native menu would open
+     off-screen). Anchored to a position:relative wrapper so it tracks the
+     button even as the bar flex-wraps. */
+  #voicewrap { position: relative; display: inline-flex; }
+  /* Button reads like the sibling <select> (border/bg/height), NOT like the
+     transparent icon buttons — hence the id override of #controls button. */
+  #controls #voicebtn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    min-width: 0;
+    max-width: 200px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+    font: inherit;
+    cursor: pointer;
+    transition: color 110ms, border-color 110ms;
+  }
+  #controls #voicebtn:hover:not(:disabled) { color: var(--ink); border-color: var(--line-2); }
+  #controls #voicebtn:disabled { color: var(--ink-3); cursor: default; }
+  #voicebtn .vlabel {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  #voicebtn .vchev { flex: 0 0 auto; opacity: 0.65; }
+
+  /* popover: opens upward, right-aligned to the button — same glass tokens as
+     #controls so it reads as one surface. */
+  #voicepop {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 40;
+    width: 280px;
+    max-height: 320px;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 14px;
+    /* more opaque than the bar — the popover floats over body TEXT, and a 62%
+       wash lets it bleed through the option rows */
+    background: color-mix(in oklab, var(--panel) 92%, transparent);
+    border: 1px solid color-mix(in oklab, white 12%, transparent);
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5),
+                inset 0 1px 0 0 color-mix(in oklab, white 10%, transparent);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    #voicepop { background: var(--panel); }
+  }
+  #voicepop.open { display: flex; }
+  #voicesearch {
+    font: inherit;
+    margin: 8px 8px 4px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--ink);
+  }
+  #voicesearch::placeholder { color: var(--ink-3); }
+  /* neutral focus border on fields — accent rings are for buttons only */
+  #voicesearch:focus { outline: none; border-color: var(--ink-2); }
+  #voicelist {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 2px 6px;
+  }
+  .vopt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+  }
+  .vopt:hover, .vopt.hi { background: color-mix(in oklab, var(--ink) 9%, transparent); }
+  .vopt .vname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vopt .vlang { flex: 0 0 auto; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  /* check reserves its slot (visibility, not display) so rows stay aligned */
+  .vopt .vcheck { flex: 0 0 auto; width: 12px; color: var(--accent); visibility: hidden; }
+  .vopt.on .vcheck { visibility: visible; }
+  .vopt.on .vname { color: var(--accent); }
+  .vgroup {
+    padding: 8px 8px 3px;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .vempty { padding: 14px 8px; color: var(--ink-3); text-align: center; }
+  .vfoot { flex: 0 0 auto; border-top: 1px solid var(--line); padding: 6px; }
+  #voiceall {
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--ink-2);
+    cursor: pointer;
+    font: inherit;
+    text-align: center;
+  }
+  #voiceall:hover { color: var(--ink); background: color-mix(in oklab, var(--ink) 9%, transparent); }
+
+  /* ===================== toast ===================== */
+  #toast {
+    position: fixed;
+    left: 50%;
+    bottom: 74px;
+    transform: translateX(-50%) translateY(8px);
+    z-index: 30;
+    padding: 8px 14px;
+    border-radius: var(--radius);
+    background: #2a1416;
+    border: 1px solid #5c2a2a;
+    color: #f0c4c4;
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms, transform 180ms;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* the hidden extraction iframe: rendered (real size, for layout / virtualized
+     views) but off-screen and inert — we only read its DOM. */
+  #extract-frame {
+    position: fixed;
+    left: 0; top: 0;
+    width: 1024px; height: 768px;
+    border: none;
+    opacity: 0;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+  <div id="head">
+    <span class="name" id="fname"></span>
+    <select id="viewsel" title="Which view to read from" hidden></select>
+    <span class="spacer"></span>
+    <span class="meta" id="meta"></span>
+  </div>
+
+  <div id="novoice">
+    No system voices are available, so nothing can be spoken. Add a voice in
+    <b>System Settings → Accessibility → Spoken Content → System Voice</b>, then
+    reload. The reader itself still works.
+  </div>
+
+  <div id="doc"></div>
+
+  <div id="empty"><div><div class="big">Nothing to read here</div>No readable text was found in this file.</div></div>
+  <div id="fatal"><div><div class="big">Reader unavailable</div><span id="fatal-msg"></span></div></div>
+
+  <button id="pill" title="Speak selection" aria-label="Speak selection">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+  </button>
+
+  <div id="controls" role="toolbar" aria-label="Playback controls">
+    <button id="btn-pblock" title="Previous block (Up)" aria-label="Previous block">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 18 11 12 17 6"/><polyline points="11 18 5 12 11 6"/></svg>
+    </button>
+    <button id="btn-psent" title="Previous sentence (Left)" aria-label="Previous sentence">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <button id="btn-play" title="Play / pause (Space)" aria-label="Play"></button>
+    <button id="btn-nsent" title="Next sentence (Right)" aria-label="Next sentence">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <button id="btn-nblock" title="Next block (Down)" aria-label="Next block">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 6 13 12 7 18"/><polyline points="13 6 19 12 13 18"/></svg>
+    </button>
+    <span class="sep"></span>
+    <select id="ratesel" title="Speed" aria-label="Speed"></select>
+    <span id="voicewrap">
+      <button id="voicebtn" title="Voice" aria-label="Voice" aria-haspopup="listbox" aria-expanded="false">
+        <span class="vlabel">Voice</span>
+        <svg class="vchev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+      </button>
+      <div id="voicepop" role="listbox" aria-label="Voice">
+        <input id="voicesearch" type="text" placeholder="Search voices…" autocomplete="off" spellcheck="false" />
+        <div id="voicelist"></div>
+        <div class="vfoot"><button id="voiceall" type="button">Show all voices</button></div>
+      </div>
+    </span>
+    <span class="sep"></span>
+    <div class="prog">
+      <span class="lbl" id="prog-lbl">–</span>
+      <div class="track"><div class="fill" id="prog-fill"></div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <iframe id="extract-frame"></iframe>
+
+  <script>
+  // =========================================================================
+  // Reader — a VIEW TEMPLATE of its own (annotate/claude pattern): registry-
+  // bound mode, entirely self-contained in this file, nothing injected into
+  // other views or the shell (SPEC §17 containment). It EXTRACTS text from the
+  // file's ordinary view (hidden same-origin iframe DOM walk; pdfjs for PDFs),
+  // renders its own clean reading column, and speaks it with the browser's
+  // speechSynthesis — karaoke follow-along, one utterance per sentence.
+  //
+  // Params (ordinary, URL-synced, strings): `view` (which underlying mode was
+  // extracted), `rate`, `voice` (voiceURI), `pos` (current block index). A
+  // shared URL is a "listen from here" link.
+  // =========================================================================
+  "use strict";
+
+  // Isolate the hidden extraction iframe's param writes: mark THIS window as a
+  // fused param boundary so a nested view's runtime targets its own iframe URL
+  // (e.g. a duckdb offset) instead of climbing to the shell URL and polluting
+  // it. Our own runtime already cached its target at load, so reader's own
+  // params still sync to the shell — this only affects windows below us.
+  window._fusedParamBoundary = true;
+
+  const META = new Set(["reader", "annotate", "history", "claude"]);
+  const CAP = 3000;          // rendered/playable block cap (SPEC)
+  const HARD_EXTRACT = 20000; // absolute ceiling on extraction work
+  const WPM = 170;           // for the listen-time estimate
+
+  const file = fused.params.get("_file");
+  const docEl = document.getElementById("doc");
+  const viewSel = document.getElementById("viewsel");
+  const rateSel = document.getElementById("ratesel");
+  // Voice picker: custom searchable dropdown (replaces the flat <select>).
+  const voiceWrap = document.getElementById("voicewrap");
+  const voiceBtn = document.getElementById("voicebtn");
+  const voicePop = document.getElementById("voicepop");
+  const voiceSearch = document.getElementById("voicesearch");
+  const voiceList = document.getElementById("voicelist");
+  const voiceAll = document.getElementById("voiceall");
+  const metaEl = document.getElementById("meta");
+  const fnameEl = document.getElementById("fname");
+  const pill = document.getElementById("pill");
+  const toastEl = document.getElementById("toast");
+  const progLbl = document.getElementById("prog-lbl");
+  const progFill = document.getElementById("prog-fill");
+  const btnPlay = document.getElementById("btn-play");
+
+  // This template's own registry name (folder from its /render URL) — excluded
+  // from the view picker so we never try to read from ourselves.
+  const OWN_NAME = (() => {
+    const p = (new URLSearchParams(location.search).get("path") || "")
+      .replace(/\\/g, "/").split("/");
+    return p.length >= 2 ? p[p.length - 2] : "reader";
+  })();
+
+  function fatal(msg) {
+    const box = document.getElementById("fatal");
+    document.getElementById("fatal-msg").textContent = msg;
+    box.classList.add("show");
+  }
+  if (!file) {
+    fatal("No file selected (missing _file param).");
+    throw new Error("no _file");
+  }
+
+  const PLAY_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  const PAUSE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+
+  // ---- tiny helpers --------------------------------------------------------
+  const collapse = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+  let toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("show"), 3200);
+  }
+
+  // ---- sentence chunking (SPEC: one utterance per sentence) ----------------
+  // Intl.Segmenter is the primary path; a lookbehind split is the fallback.
+  // Each chunk keeps its `start` offset within the block text so onboundary
+  // charIndex maps back to an exact range in the rendered text node.
+  const segmenter =
+    (typeof Intl !== "undefined" && Intl.Segmenter)
+      ? new Intl.Segmenter("en", { granularity: "sentence" })
+      : null;
+  function chunkSentences(text) {
+    const out = [];
+    if (!text) return out;
+    if (segmenter) {
+      for (const seg of segmenter.segment(text)) {
+        if (seg.segment.trim()) out.push({ text: seg.segment, start: seg.index });
+      }
+    } else {
+      let idx = 0;
+      for (const part of text.split(/(?<=[.!?])\s+/)) {
+        const at = text.indexOf(part, idx);
+        const start = at >= 0 ? at : idx;
+        if (part.trim()) out.push({ text: part, start });
+        idx = start + part.length;
+      }
+    }
+    if (!out.length && text.trim()) out.push({ text, start: 0 });
+    return out;
+  }
+
+  // ---- speech engine (SPEC: swappable interface, referenced at CALL time so
+  // tests can stub window.speechSynthesis / SpeechSynthesisUtterance) ---------
+  function createSpeechEngine() {
+    let current = null;
+    let keepalive = null;
+    function stopKeepalive() {
+      if (keepalive) { clearInterval(keepalive); keepalive = null; }
+    }
+    function startKeepalive() {
+      stopKeepalive();
+      // Chrome pauses long/queued speech; nudging resume() every ~10s while it
+      // is actively speaking keeps it alive. It never un-pauses a USER pause
+      // (guarded on !paused), and is a harmless no-op in Safari/Firefox.
+      keepalive = setInterval(() => {
+        const s = window.speechSynthesis;
+        if (s && s.speaking && !s.paused) s.resume();
+      }, 10000);
+    }
+    let pendingSpeak = null; // deferred-speak timer (see cancel-race note)
+    let lastCancelAt = -Infinity;
+    const now = () => (window.performance ? performance.now() : Date.now());
+    return {
+      speak(text, opts) {
+        opts = opts || {};
+        const synth = window.speechSynthesis;
+        const U = window.SpeechSynthesisUtterance;
+        if (!synth || !U) { if (opts.onError) opts.onError(); return; }
+        const token = {}; // identity for cancel checks across the async hops
+        current = token;
+
+        const launch = (retriesLeft, dropVoice) => {
+          if (current !== token) return;
+          const u = new U(text);
+          if (opts.rate) u.rate = opts.rate;
+          if (opts.voice && !dropVoice) u.voice = opts.voice;
+          let started = false;
+          u.onstart = () => { started = true; };
+          u.onboundary = (e) => { started = true; if (opts.onBoundary) opts.onBoundary(e); };
+          u.onend = () => {
+            if (current !== token) return;
+            if (!started) {
+              // Bare end without ever starting = the synth swallowed it.
+              // Mid-retries the watchdog owns recovery; on the final attempt
+              // report an ERROR (counts toward the consecutive-error stop)
+              // instead of pretending the sentence was spoken.
+              if (retriesLeft > 0) return;
+              current = null; stopKeepalive();
+              if (opts.onError) opts.onError();
+              return;
+            }
+            current = null; stopKeepalive();
+            if (opts.onEnd) opts.onEnd();
+          };
+          u.onerror = (e) => {
+            if (current !== token) return;
+            current = null; stopKeepalive();
+            if (opts.onError) opts.onError(e);
+          };
+          token.u = u;
+          synth.speak(u);
+          startKeepalive();
+          // Watchdog: Chrome sometimes never starts an utterance (stuck synth,
+          // network voices). Nudge, then rebuild once, then give up via onError
+          // so the document keeps advancing instead of going silent.
+          setTimeout(() => {
+            if (current !== token || started) return;
+            try { synth.resume(); } catch (e) {}
+            setTimeout(() => {
+              if (current !== token || started) return;
+              u.onend = u.onerror = u.onboundary = u.onstart = null;
+              try { synth.cancel(); } catch (e) {}
+              if (retriesLeft > 0) {
+                setTimeout(() => launch(retriesLeft - 1, dropVoice), 120);
+              } else if (opts.voice && !dropVoice) {
+                // The pinned voice never starts (network voices do this
+                // silently) — try once more with the system default so the
+                // reader degrades to a different voice, not to silence.
+                if (opts.onVoiceFallback) opts.onVoiceFallback();
+                setTimeout(() => launch(0, true), 120);
+              } else {
+                current = null; stopKeepalive();
+                if (opts.onError) opts.onError();
+              }
+            }, 400);
+          }, 1200);
+        };
+
+        // Chrome race: a speak() issued right after cancel() is silently
+        // swallowed (worst with network voices). Give the synth a beat.
+        const wait = Math.max(0, 100 - (now() - lastCancelAt));
+        if (pendingSpeak) clearTimeout(pendingSpeak);
+        pendingSpeak = setTimeout(() => { pendingSpeak = null; launch(1); }, wait);
+      },
+      cancel() {
+        // Detach handlers BEFORE cancelling so the synthetic end/error a
+        // cancel() fires can't trigger auto-advance.
+        if (pendingSpeak) { clearTimeout(pendingSpeak); pendingSpeak = null; }
+        if (current) {
+          const u = current.u;
+          if (u) u.onend = u.onerror = u.onboundary = u.onstart = null;
+          current = null;
+        }
+        stopKeepalive();
+        lastCancelAt = now();
+        try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+      },
+      // No pause()/resume() on purpose: Chrome's synth pause state is shared
+      // browser-wide, so touching it from one tab bleeds into others. The
+      // template pauses by cancel() and replays the current sentence.
+    };
+  }
+  const engine = createSpeechEngine();
+  const engineReady = () =>
+    typeof window.speechSynthesis !== "undefined" &&
+    typeof window.SpeechSynthesisUtterance !== "undefined";
+
+  // ---- Custom Highlight API (karaoke paint, no DOM mutation) ---------------
+  const HL = (window.CSS && CSS.highlights && window.Highlight) ? CSS.highlights : null;
+  function setHL(name, start, end, node) {
+    if (!HL || !node) return;
+    try {
+      const r = document.createRange();
+      const len = node.length || 0;
+      r.setStart(node, Math.max(0, Math.min(start, len)));
+      r.setEnd(node, Math.max(0, Math.min(end, len)));
+      HL.set(name, new Highlight(r));
+    } catch (e) { /* range out of bounds — skip this paint */ }
+  }
+  function clearHL(name) { if (HL) { try { HL.delete(name); } catch (e) {} } }
+
+  // ---- extraction: hidden-iframe DOM walk ----------------------------------
+  const HEADING = { H1: 1, H2: 2, H3: 3, H4: 4, H5: 5, H6: 6 };
+  // Non-text / interactive elements never contribute prose.
+  const SKIP = new Set([
+    "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "IFRAME", "SVG", "CANVAS",
+    "VIDEO", "AUDIO", "IMG", "OBJECT", "EMBED", "MAP", "BUTTON", "INPUT",
+    "SELECT", "TEXTAREA", "OPTION",
+  ]);
+  // Block-ish tags: their presence as a child means "this element is a
+  // container, recurse into it" rather than "emit its whole text as one block".
+  const BLOCKISH = new Set([
+    "H1", "H2", "H3", "H4", "H5", "H6", "P", "PRE", "BLOCKQUOTE", "LI",
+    "UL", "OL", "MENU", "DL", "DT", "DD", "TABLE", "THEAD", "TBODY", "TFOOT",
+    "TR", "SECTION", "ARTICLE", "DIV", "FIGURE", "FIGCAPTION", "FORM",
+    "FIELDSET", "MAIN", "HEADER", "FOOTER", "NAV", "ASIDE", "DETAILS",
+  ]);
+
+  function pushBlock(out, kind, text, level) {
+    if (out.length >= HARD_EXTRACT) return;
+    const t = kind === "code" ? String(text || "").replace(/\s+$/, "") : collapse(text);
+    if (!t || !t.trim()) return;
+    const b = { kind, text: t };
+    if (level) b.level = level;
+    out.push(b);
+  }
+  // An <li>'s own lead text, excluding any nested lists (those recurse as their
+  // own item blocks — otherwise the parent would swallow the whole subtree).
+  function liLeadText(li) {
+    // Only the LI's own text + inline children. Nested BLOCK children (loose
+    // lists: <li><p>…</p></li>) are emitted by the recursive walk — including
+    // them here read the same prose twice.
+    let s = "";
+    for (const n of li.childNodes) {
+      if (n.nodeType === 3) s += n.nodeValue;
+      else if (n.nodeType === 1 && !BLOCKISH.has(n.tagName)) s += n.textContent;
+    }
+    return s;
+  }
+  function hasBlockChild(el) {
+    for (const c of el.children) {
+      if (SKIP.has(c.tagName)) continue;
+      if (BLOCKISH.has(c.tagName)) return true;
+    }
+    return false;
+  }
+  function walk(node, win, out) {
+    for (const el of node.children) {
+      if (out.length >= HARD_EXTRACT) return;
+      const tag = el.tagName;
+      if (SKIP.has(tag)) continue;
+      let cs = null;
+      try { cs = win.getComputedStyle(el); } catch (e) {}
+      if (cs && (cs.display === "none" || cs.visibility === "hidden" || cs.visibility === "collapse")) continue;
+
+      if (HEADING[tag]) { pushBlock(out, "heading", el.textContent, HEADING[tag]); continue; }
+      if (tag === "PRE") { pushBlock(out, "code", el.textContent); continue; }
+      if (tag === "BLOCKQUOTE") { pushBlock(out, "quote", el.textContent); continue; }
+      if (tag === "TR") {
+        const cells = [];
+        for (const c of el.children) {
+          if (c.tagName === "TD" || c.tagName === "TH") {
+            const ct = collapse(c.textContent);
+            if (ct) cells.push(ct);
+          }
+        }
+        pushBlock(out, "row", cells.join(", "));
+        continue;
+      }
+      if (tag === "LI") { pushBlock(out, "item", liLeadText(el)); walk(el, win, out); continue; }
+      if (tag === "P") { pushBlock(out, "para", el.textContent); continue; }
+      if (tag === "DT" || tag === "DD") { pushBlock(out, "item", el.textContent); continue; }
+      // Generic element: a container (has block children) recurses; a leaf
+      // (only inline content / text) becomes one paragraph. This is what keeps
+      // arbitrary view DOM from double-counting.
+      if (hasBlockChild(el)) walk(el, win, out);
+      else pushBlock(out, "para", el.textContent);
+    }
+  }
+  function walkDoc(doc) {
+    if (!doc || !doc.body) return [];
+    const out = [];
+    walk(doc.body, doc.defaultView || window, out);
+    return out;
+  }
+
+  // Views render async (tables run python, editors mount lazily): wait for the
+  // framed body text length to hold steady (~600ms) or a hard timeout.
+  function waitSettle(doc, timeout) {
+    return new Promise((resolve) => {
+      let last = -1, stable = 0;
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        let len = 0;
+        try { len = ((doc.body && (doc.body.innerText || doc.body.textContent)) || "").length; } catch (e) {}
+        if (len === last) { if (++stable >= 3) { clearInterval(iv); resolve(); return; } }
+        else { stable = 0; last = len; }
+        if (Date.now() - t0 > timeout) { clearInterval(iv); resolve(); }
+      }, 200);
+    });
+  }
+
+  function extractFromView(view) {
+    return new Promise((resolve) => {
+      const frame = document.getElementById("extract-frame");
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { resolve(walkDoc(frame.contentDocument)); } catch (e) { resolve([]); }
+      };
+      // Belt-and-suspenders for a load that never fires; cancelled once load
+      // arrives so it can't race waitSettle and resolve a partial DOM.
+      const noLoad = setTimeout(finish, 12000);
+      frame.addEventListener("load", async () => {
+        clearTimeout(noLoad);
+        const doc = frame.contentDocument;
+        if (!doc) { finish(); return; }
+        await waitSettle(doc, 8000);
+        finish();
+      }, { once: true });
+      frame.src =
+        view.mode === "_render"
+          ? "/render?path=" + encodeURIComponent(file)
+          : "/render?path=" + encodeURIComponent(view.path) + "&_file=" + encodeURIComponent(file);
+    });
+  }
+
+  // ---- extraction: PDF via vendored pdfjs (no DOM text in the pdf view) -----
+  async function extractPdf() {
+    const pdfjs = await import("/template-assets/pdfjs.bundle.mjs");
+    pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
+    const resp = await fetch(fused.rawUrl(file));
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data }).promise;
+    const out = [];
+    for (let n = 1; n <= pdf.numPages; n++) {
+      pushBlock(out, "heading", "Page " + n, 2);
+      const page = await pdf.getPage(n);
+      const content = await page.getTextContent();
+      // Group items into lines by y-position, then lines into paragraphs by
+      // vertical gaps (PDF user-space y increases upward, so a normal line
+      // break DECREASES y).
+      const lines = [];
+      let cur = null;
+      for (const it of content.items) {
+        if (!it.str) continue;
+        const y = it.transform[5];
+        const h = it.height || 12;
+        if (!cur || Math.abs(y - cur.y) > h * 0.6) {
+          cur = { y, h, text: it.str };
+          lines.push(cur);
+        } else {
+          cur.text += it.str;
+        }
+      }
+      let para = "", prevY = null, prevH = null;
+      for (const ln of lines) {
+        const t = collapse(ln.text);
+        if (!t) continue;
+        if (prevY !== null && prevY - ln.y > (prevH || 12) * 1.8) {
+          pushBlock(out, "para", para);
+          para = "";
+        }
+        para = para ? para + " " + t : t;
+        prevY = ln.y; prevH = ln.h;
+      }
+      pushBlock(out, "para", para);
+      if (out.length >= HARD_EXTRACT) break;
+    }
+    return out;
+  }
+
+  // ==========================================================================
+  // Playback controller
+  // ==========================================================================
+  let blocks = [];          // {kind, level?, text, sentences:[{text,start}], el?}
+  let totalWords = 0;
+  let renderedCount = 0;    // how many blocks are currently in the DOM
+  let pos = 0, sent = 0;    // cursor: block index, sentence index within block
+  let playing = false;
+  let speakGen = 0;         // invalidates stale engine callbacks after a reseat
+  let errCount = 0;         // consecutive utterance errors
+  let curRate = 1;
+  let curVoice = null;      // SpeechSynthesisVoice | null
+  let voices = [];          // ALL system voices
+  let curatedVoices = [];   // the curated short list (family + quality-ranked)
+  let popOpen = false;      // voice popover open?
+  let showAll = false;      // popover showing ALL voices (grouped) vs curated?
+  let hiIndex = -1;         // roving keyboard highlight into the rendered list
+  let curEl = null;
+  let lastWrittenPos = -1;
+
+  // auto-scroll politeness: don't yank the page if the user recently scrolled
+  // away themselves (SPEC: >1 viewport within last 3s → let them read).
+  let lastUserScroll = 0;
+  const prefersReduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function markUserScroll() { lastUserScroll = Date.now(); }
+  window.addEventListener("wheel", markUserScroll, { passive: true });
+  window.addEventListener("touchmove", markUserScroll, { passive: true });
+
+  function maybeScrollTo(el) {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const away = Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) > window.innerHeight;
+    if (Date.now() - lastUserScroll < 3000 && away) return; // respect the reader
+    try {
+      el.scrollIntoView({ block: "center", behavior: prefersReduced ? "auto" : "smooth" });
+    } catch (e) { el.scrollIntoView(); }
+  }
+
+  function tagFor(b) {
+    if (b.kind === "heading") return "h" + (b.level || 2);
+    if (b.kind === "code") return "pre";
+    if (b.kind === "quote") return "blockquote";
+    return "p"; // para / item / row
+  }
+  function renderColumn() {
+    // Ranges held by the highlight registry would pin the old text nodes.
+    clearHL("reader-sentence");
+    clearHL("reader-word");
+    docEl.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    const shown = Math.min(renderedCount, blocks.length);
+    for (let i = 0; i < shown; i++) {
+      const b = blocks[i];
+      const el = document.createElement(tagFor(b));
+      el.className = "block " + b.kind;
+      el.textContent = b.text; // single text node → exact karaoke offsets
+      el.dataset.idx = i;
+      el.addEventListener("click", () => {
+        // A trailing click after a drag-select must not hijack the selection.
+        const s = window.getSelection();
+        if (s && !s.isCollapsed) return;
+        jumpTo(i);
+      });
+      b.el = el;
+      frag.appendChild(el);
+    }
+    docEl.appendChild(frag);
+    if (renderedCount < blocks.length) {
+      const more = blocks.length - renderedCount;
+      const btn = document.createElement("button");
+      btn.className = "more";
+      btn.textContent = "+" + more + " more not loaded — Keep reading";
+      btn.addEventListener("click", () => {
+        renderedCount = Math.min(blocks.length, renderedCount + CAP);
+        renderColumn();
+        updateCursorUI(false);
+        btn.blur();
+      });
+      docEl.appendChild(btn);
+    }
+  }
+  function ensureRendered(idx) {
+    if (idx < renderedCount) return;
+    renderedCount = Math.min(blocks.length, Math.ceil((idx + 1) / CAP) * CAP);
+    renderColumn();
+  }
+
+  function updateProgress() {
+    progLbl.textContent = blocks.length ? "block " + (pos + 1) + "/" + blocks.length : "–";
+    progFill.style.transform = "scaleX(" + (blocks.length ? (pos + 1) / blocks.length : 0) + ")";
+  }
+  function paintSentence() {
+    const b = blocks[pos];
+    if (!b || !b.el || !b.sentences[sent]) { clearHL("reader-sentence"); return; }
+    const s = b.sentences[sent];
+    setHL("reader-sentence", s.start, s.start + s.text.length, b.el.firstChild);
+  }
+  function paintWord(b, s, e) {
+    if (!HL || !b.el) return;
+    const ci = e && typeof e.charIndex === "number" ? e.charIndex : 0;
+    let len = e && typeof e.charLength === "number" ? e.charLength : 0;
+    if (!len || len <= 0) {
+      // Safari omits charLength — scan to the next whitespace for the word end.
+      let j = ci;
+      while (j < s.text.length && !/\s/.test(s.text[j])) j++;
+      len = Math.max(1, j - ci);
+    }
+    setHL("reader-word", s.start + ci, s.start + ci + len, b.el.firstChild);
+  }
+  function updateCursorUI(scroll) {
+    // Paused navigation (jump/step) can move past the lazy render cap —
+    // materialize the block before painting, or the cursor chrome vanishes.
+    ensureRendered(pos);
+    if (curEl) curEl.classList.remove("current");
+    const b = blocks[pos];
+    if (b && b.el) {
+      b.el.classList.add("current");
+      curEl = b.el;
+      if (scroll) maybeScrollTo(b.el);
+    }
+    paintSentence();
+    clearHL("reader-word");
+    updateProgress();
+  }
+  function writePos() {
+    if (pos === lastWrittenPos) return; // throttle: one write per block change
+    lastWrittenPos = pos;
+    try { fused.params.set("pos", String(pos)); } catch (e) {}
+  }
+
+  function nextNonEmpty(from) {
+    for (let i = from; i < blocks.length; i++) if (blocks[i].sentences.length) return i;
+    return -1;
+  }
+  function prevNonEmpty(from) {
+    for (let i = from; i >= 0; i--) if (blocks[i].sentences.length) return i;
+    return -1;
+  }
+  // Advance the cursor one sentence (auto-play path). Returns false at the end.
+  function advanceOne() {
+    if (sent + 1 < blocks[pos].sentences.length) { sent++; return true; }
+    const np = nextNonEmpty(pos + 1);
+    if (np < 0) return false;
+    pos = np; sent = 0; return true;
+  }
+
+  // Fires once: drop the dead voice for THIS session (URL param stays, so the
+  // preference is retried next load) — otherwise every following sentence
+  // re-suffers the full watchdog delay before falling back again.
+  let voiceFallbackToasted = false;
+  let deadVoiceURI = null;
+  function noteVoiceFallback() {
+    if (voiceFallbackToasted) return;
+    voiceFallbackToasted = true;
+    const name = curVoice ? curVoice.name : "Selected voice";
+    deadVoiceURI = curVoice ? curVoice.voiceURI : null;
+    curVoice = null;
+    setVoiceLabel("System voice");
+    renderVoiceOptions();
+    toast(name + " isn't responding — using the system voice");
+  }
+
+  function speakFromCursor() {
+    if (!engineReady() || pos >= blocks.length) { finish(); return; }
+    const b = blocks[pos];
+    if (!b.sentences.length) {
+      if (advanceOne()) { updateCursorUI(true); writePos(); speakFromCursor(); }
+      else finish();
+      return;
+    }
+    ensureRendered(pos);
+    const s = b.sentences[sent];
+    paintSentence();
+    const gen = ++speakGen;
+    engine.speak(s.text, {
+      rate: curRate,
+      voice: curVoice,
+      onVoiceFallback: noteVoiceFallback,
+      onBoundary: (e) => { if (gen === speakGen) paintWord(b, s, e); },
+      onEnd: () => {
+        if (gen !== speakGen) return;
+        errCount = 0;
+        const prevBlock = pos;
+        if (advanceOne()) {
+          updateCursorUI(pos !== prevBlock);
+          if (pos !== prevBlock) writePos();
+          speakFromCursor();
+        } else finish();
+      },
+      onError: () => {
+        if (gen !== speakGen) return;
+        // Skip the failed sentence and keep going; give up after a run of them.
+        if (++errCount >= 5) { toast("Speech failed"); finish(); return; }
+        const prevBlock = pos;
+        if (advanceOne()) {
+          updateCursorUI(pos !== prevBlock);
+          if (pos !== prevBlock) writePos();
+          speakFromCursor();
+        } else finish();
+      },
+    });
+  }
+
+  function updatePlayUI() {
+    btnPlay.innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
+    btnPlay.setAttribute("aria-label", playing ? "Pause" : "Play");
+  }
+  // Chrome's speechSynthesis queue and paused flag are BROWSER-global, not
+  // per-tab: two readers speak into one interleaved queue, and one tab's
+  // resume() un-pauses another tab's pause. So (a) pause is CANCEL-based —
+  // this template never leaves a paused utterance in the shared synth, at the
+  // cost of restarting the current sentence on play — and (b) a broadcast
+  // channel makes readers mutually exclusive: whoever plays silences the rest.
+  const audioBus = "BroadcastChannel" in window ? new BroadcastChannel("fused-reader-audio") : null;
+  const audioTabId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  function claimAudio() {
+    if (audioBus) { try { audioBus.postMessage(audioTabId); } catch (e) {} }
+  }
+  if (audioBus) {
+    audioBus.onmessage = (e) => {
+      if (e.data === audioTabId) return;
+      speakGen++; // kills an in-flight selection speech too
+      engine.cancel();
+      clearHL("reader-word");
+      if (playing) { playing = false; updatePlayUI(); }
+    };
+  }
+
+  function play() {
+    if (!engineReady()) { toast("Speech not available on this browser"); return; }
+    if (playing || !blocks.length) return;
+    playing = true;
+    updatePlayUI();
+    claimAudio();
+    engine.cancel(); // clean slate in the shared queue
+    speakFromCursor();
+  }
+  function pause() {
+    if (!playing) return;
+    playing = false;
+    updatePlayUI();
+    // cancel, not synth.pause() — see the shared-synth note above
+    engine.cancel();
+    clearHL("reader-word");
+  }
+  function toggle() { playing ? pause() : play(); }
+  function finish() {
+    playing = false;
+    updatePlayUI();
+    engine.cancel();
+    clearHL("reader-word");
+  }
+  // Restart speech at the (already-moved) cursor: only speaks if we were
+  // playing — a paused move just repositions the cursor (SPEC).
+  function reseat() {
+    engine.cancel();
+    speakGen++;
+    if (playing) speakFromCursor();
+  }
+
+  function stepSentence(dir) {
+    if (!blocks.length) return;
+    let p = pos, s = sent;
+    if (dir > 0) {
+      if (s + 1 < blocks[p].sentences.length) s++;
+      else { const np = nextNonEmpty(p + 1); if (np < 0) return; p = np; s = 0; }
+    } else {
+      if (s > 0) s--;
+      else { const pp = prevNonEmpty(p - 1); if (pp < 0) return; p = pp; s = Math.max(0, blocks[p].sentences.length - 1); }
+    }
+    pos = p; sent = s;
+    updateCursorUI(true);
+    writePos();
+    reseat();
+  }
+  function stepBlock(dir) {
+    if (!blocks.length) return;
+    const np = dir > 0 ? nextNonEmpty(pos + 1) : prevNonEmpty(pos - 1);
+    if (np < 0) return;
+    pos = np; sent = 0;
+    updateCursorUI(true);
+    writePos();
+    reseat();
+  }
+  function jumpTo(idx) {
+    if (idx < 0 || idx >= blocks.length) return;
+    pos = idx; sent = 0;
+    updateCursorUI(true);
+    writePos();
+    reseat(); // continues playing from here if playing; else just moves cursor
+  }
+
+  // Selection → speak only that text; main playback stays PAUSED where it was.
+  function speakSelection(text) {
+    const sents = chunkSentences(text);
+    if (!sents.length || !engineReady()) return;
+    claimAudio();
+    engine.cancel();
+    playing = false;
+    updatePlayUI();
+    clearHL("reader-word");
+    const gen = ++speakGen;
+    let i = 0;
+    (function step() {
+      if (gen !== speakGen || i >= sents.length) return;
+      engine.speak(sents[i].text, {
+        rate: curRate,
+        voice: curVoice,
+        onVoiceFallback: noteVoiceFallback,
+        onEnd: () => { if (gen === speakGen) { i++; step(); } },
+        onError: () => { if (gen === speakGen) { i++; step(); } },
+      });
+    })();
+  }
+
+  // ---- selection pill ------------------------------------------------------
+  let pillText = "";
+  function hidePill() { pill.style.display = "none"; pillText = ""; }
+  function showPillFromSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) { hidePill(); return; }
+    const text = sel.toString();
+    if (!text.trim() || !docEl.contains(sel.anchorNode)) { hidePill(); return; }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect.width && !rect.height) { hidePill(); return; }
+    pillText = text;
+    pill.style.display = "flex";
+    pill.style.left = (window.scrollX + rect.left + rect.width / 2 - 18) + "px";
+    pill.style.top = Math.max(0, window.scrollY + rect.top - 44) + "px";
+  }
+  docEl.addEventListener("mouseup", () => setTimeout(showPillFromSelection, 0));
+  pill.addEventListener("mousedown", (e) => e.preventDefault()); // keep selection
+  pill.addEventListener("click", () => { const t = pillText; hidePill(); speakSelection(t); });
+  window.addEventListener("scroll", hidePill, { passive: true });
+  docEl.addEventListener("mousedown", (e) => { if (e.target !== pill) hidePill(); });
+
+  // ---- keyboard (SPEC: not while a select/input is focused) ----------------
+  document.addEventListener("keydown", (e) => {
+    const a = document.activeElement;
+    if (a && /^(input|select|textarea)$/i.test(a.tagName)) return;
+    if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggle(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); stepSentence(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); stepSentence(-1); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); stepBlock(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); stepBlock(-1); }
+  });
+
+  // ---- controls wiring -----------------------------------------------------
+  const blurAfter = (fn) => (e) => { fn(); if (e && e.currentTarget) e.currentTarget.blur(); };
+  btnPlay.addEventListener("click", blurAfter(toggle));
+  document.getElementById("btn-psent").addEventListener("click", blurAfter(() => stepSentence(-1)));
+  document.getElementById("btn-nsent").addEventListener("click", blurAfter(() => stepSentence(1)));
+  document.getElementById("btn-pblock").addEventListener("click", blurAfter(() => stepBlock(-1)));
+  document.getElementById("btn-nblock").addEventListener("click", blurAfter(() => stepBlock(1)));
+
+  const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2];
+  function setupRates() {
+    rateSel.innerHTML = RATES
+      .map((r) => '<option value="' + r + '">' + r + "×</option>")
+      .join("");
+    rateSel.value = String(curRate);
+    rateSel.addEventListener("change", () => {
+      curRate = parseFloat(rateSel.value) || 1;
+      try { fused.params.set("rate", String(curRate)); } catch (e) {}
+      updateMeta();
+      reseat(); // rate can't change mid-utterance — restart the current sentence
+    });
+  }
+
+  // ---- voice curation ------------------------------------------------------
+  // WHY: real macOS Chrome exposes 100+ voices — most are other languages or
+  // novelty voices nobody wants to listen to a document in. We show a short,
+  // quality-ranked list of the UI language's voices, with an escape hatch to
+  // ALL of them. Curation is pure (voices in → curated out) so it's testable.
+
+  // macOS novelty/legacy voices, matched case-insensitively on the name's
+  // leading token(s). Multi-word entries ("Bad News") match as a phrase prefix,
+  // so "Fred" and "Fred (Enhanced)" both drop, but "Florian" never does.
+  const NOVELTY = [
+    "albert", "bad news", "bahh", "bells", "boing", "bubbles", "cellos",
+    "deranged", "good news", "jester", "organ", "superstar", "trinoids",
+    "whisper", "wobble", "zarvox", "eddy", "flo", "grandma", "grandpa",
+    "reed", "rocko", "sandy", "shelley", "ralph", "fred", "junior", "kathy",
+  ];
+  function isNovelty(name) {
+    const n = collapse(name).toLowerCase();
+    for (const bad of NOVELTY) {
+      if (n === bad || n.startsWith(bad + " ")) return true;
+    }
+    return false;
+  }
+  // Names hinting a higher-quality synthesis tier — ranked above plain voices.
+  const QUALITY_RE = /siri|\(enhanced\)|\(premium\)|natural|neural/i;
+  // lower rank = shown first
+  function voiceRank(v) {
+    let r = 0;
+    if (v.default) r -= 1000;              // the system default leads
+    if (QUALITY_RE.test(v.name || "")) r -= 100; // then the quality tier
+    if (v.localService) r -= 10;           // local before network
+    return r;
+  }
+  function langFamily(v) {
+    return String(v.lang || "").replace(/_/g, "-").split("-")[0].toLowerCase();
+  }
+  function curateVoices(all) {
+    const ui = (navigator.language || "en").split("-")[0].toLowerCase();
+    const inFamily = (v) => langFamily(v) === ui;
+
+    // 1) UI language family, novelty dropped.
+    let list = all.filter((v) => inFamily(v) && !isNovelty(v.name));
+    // 2) fallbacks so a non-English system never sees an empty menu.
+    if (!list.length) list = all.filter(inFamily);
+    if (!list.length) list = all.slice();
+
+    // 3) dedupe by name+lang, keeping the highest-ranked instance.
+    const byKey = new Map();
+    for (const v of list) {
+      const key = v.name + "|" + v.lang;
+      const prev = byKey.get(key);
+      if (!prev || voiceRank(v) < voiceRank(prev)) byKey.set(key, v);
+    }
+    list = Array.from(byKey.values());
+
+    // 4) rank, then alphabetical.
+    list.sort((a, b) => voiceRank(a) - voiceRank(b) || (a.name || "").localeCompare(b.name || ""));
+    return list;
+  }
+  // The curated list, plus the active voice pinned in if curation dropped it —
+  // so the UI never hides which voice is actually speaking.
+  function curatedWithCurrent() {
+    const list = curatedVoices.slice();
+    if (curVoice && !list.some((v) => v.voiceURI === curVoice.voiceURI)) {
+      list.unshift(curVoice);
+    }
+    return list;
+  }
+
+  // ---- voice picker UI -----------------------------------------------------
+  function setVoiceLabel(txt) {
+    const l = voiceBtn.querySelector(".vlabel");
+    if (l) l.textContent = txt;
+    voiceBtn.title = txt;
+  }
+  // Rebuild the button + curated list. Called on voice (re)load.
+  function populateVoices() {
+    const banner = document.getElementById("novoice");
+    curatedVoices = curateVoices(voices);
+    if (!voices.length) {
+      voiceBtn.disabled = true;
+      setVoiceLabel("No voices");
+      banner.classList.add("show");
+      closeVoicePop();
+      return;
+    }
+    banner.classList.remove("show");
+    voiceBtn.disabled = false;
+    setVoiceLabel(curVoice ? curVoice.name : "Voice");
+    if (popOpen) renderVoiceOptions();
+  }
+  function resolveVoice() {
+    if (!voices.length) { curVoice = null; return; }
+    // voiceschanged re-runs this — never re-bind a voice the watchdog
+    // declared dead this session (same guard as the params.onChange sync).
+    const wanted0 = fused.params.get("voice");
+    const wanted = wanted0 === deadVoiceURI ? null : wanted0;
+    curVoice =
+      (wanted && voices.find((v) => v.voiceURI === wanted)) ||
+      voices.find((v) => v.default) ||
+      voices[0] ||
+      null;
+  }
+  function loadVoices() {
+    try { voices = window.speechSynthesis ? (window.speechSynthesis.getVoices() || []) : []; }
+    catch (e) { voices = []; }
+    resolveVoice();
+    populateVoices();
+  }
+
+  // Render the popover option rows for the current search + showAll state.
+  function renderVoiceOptions() {
+    const q = collapse(voiceSearch.value).toLowerCase();
+    const match = (v) => !q || (v.name + " " + (v.lang || "")).toLowerCase().indexOf(q) !== -1;
+    const frag = document.createDocumentFragment();
+    let rows = 0;
+
+    const addOpt = (v) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "vopt" + (curVoice && v.voiceURI === curVoice.voiceURI ? " on" : "");
+      b.dataset.uri = v.voiceURI;             // E2E hook: identify the row's voice
+      const name = document.createElement("span");
+      name.className = "vname";
+      name.textContent = v.name;
+      const lang = document.createElement("span");
+      lang.className = "vlang";
+      lang.textContent = v.lang || "";
+      const chk = document.createElement("span");
+      chk.className = "vcheck";
+      chk.textContent = "✓";
+      b.appendChild(name);
+      b.appendChild(lang);
+      b.appendChild(chk);
+      b.addEventListener("click", () => selectVoice(v.voiceURI));
+      frag.appendChild(b);
+      rows++;
+    };
+
+    if (showAll) {
+      // ALL voices, grouped by language (non-interactive header per group).
+      const groups = new Map();
+      for (const v of voices) {
+        if (!match(v)) continue;
+        const g = v.lang || "—";
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(v);
+      }
+      const keys = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+      for (const g of keys) {
+        const h = document.createElement("div");
+        h.className = "vgroup";
+        h.textContent = g;
+        frag.appendChild(h);
+        groups.get(g)
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+          .forEach(addOpt);
+      }
+    } else {
+      curatedWithCurrent().filter(match).forEach(addOpt);
+    }
+
+    if (!rows) {
+      const e = document.createElement("div");
+      e.className = "vempty";
+      e.textContent = "No matches";
+      frag.appendChild(e);
+    }
+    voiceList.textContent = "";
+    voiceList.appendChild(frag);
+    voiceAll.textContent = showAll ? "Show fewer" : ("Show all voices (" + voices.length + ")");
+    hiIndex = -1; // list changed — drop any roving highlight
+  }
+
+  // Selection: EXACTLY the old <select> change behavior (curVoice + param +
+  // reseat), plus label update and closing the popover.
+  function selectVoice(uri) {
+    const v = voices.find((x) => x.voiceURI === uri);
+    if (!v) return;
+    curVoice = v;
+    try { fused.params.set("voice", v.voiceURI); } catch (e) {}
+    setVoiceLabel(v.name);
+    closeVoicePop();
+    reseat();
+  }
+
+  function openVoicePop() {
+    if (voiceBtn.disabled) return;
+    popOpen = true;
+    voicePop.classList.add("open");
+    voiceBtn.setAttribute("aria-expanded", "true");
+    voiceSearch.value = "";
+    renderVoiceOptions();
+    // Focus the search field but never scroll the page or touch playback.
+    setTimeout(() => {
+      try { voiceSearch.focus({ preventScroll: true }); } catch (e) { voiceSearch.focus(); }
+    }, 0);
+  }
+  function closeVoicePop() {
+    if (!popOpen) return;
+    popOpen = false;
+    voicePop.classList.remove("open");
+    voiceBtn.setAttribute("aria-expanded", "false");
+    hiIndex = -1;
+  }
+  function toggleVoicePop() { popOpen ? closeVoicePop() : openVoicePop(); }
+
+  // roving keyboard highlight over the currently rendered .vopt rows
+  function moveHi(dir) {
+    const opts = Array.prototype.slice.call(voiceList.querySelectorAll(".vopt"));
+    if (!opts.length) return;
+    opts.forEach((o) => o.classList.remove("hi"));
+    hiIndex += dir;
+    if (hiIndex < 0) hiIndex = opts.length - 1;
+    if (hiIndex >= opts.length) hiIndex = 0;
+    const el = opts[hiIndex];
+    el.classList.add("hi");
+    try { el.scrollIntoView({ block: "nearest" }); } catch (e) {}
+  }
+
+  voiceBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleVoicePop(); });
+  voiceSearch.addEventListener("input", renderVoiceOptions);
+  voiceAll.addEventListener("click", (e) => {
+    e.stopPropagation();
+    showAll = !showAll;
+    renderVoiceOptions();
+    try { voiceSearch.focus({ preventScroll: true }); } catch (e2) {}
+  });
+  // Click outside the wrapper closes (mousedown, so it beats the button's click).
+  document.addEventListener("mousedown", (e) => {
+    if (popOpen && !voiceWrap.contains(e.target)) closeVoicePop();
+  });
+  // Esc + arrow/enter nav: CAPTURE phase + stopPropagation. House rule — a
+  // bubble-phase Esc loses to document listeners registered earlier, so capture
+  // guarantees the popover eats the key first.
+  document.addEventListener("keydown", (e) => {
+    if (!popOpen) return;
+    if (e.key === "Escape") {
+      e.preventDefault(); e.stopPropagation();
+      closeVoicePop(); voiceBtn.focus();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault(); e.stopPropagation(); moveHi(1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault(); e.stopPropagation(); moveHi(-1);
+    } else if (e.key === "Enter") {
+      const opts = voiceList.querySelectorAll(".vopt");
+      if (hiIndex >= 0 && opts[hiIndex]) { e.preventDefault(); e.stopPropagation(); opts[hiIndex].click(); }
+    }
+  }, true);
+
+  function updateMeta() {
+    const mins = Math.max(1, Math.round(totalWords / (WPM * curRate)));
+    metaEl.textContent = blocks.length
+      ? blocks.length + " blocks · ~" + mins + " min"
+      : "";
+  }
+
+  // Reload to re-extract when the underlying view changes (mirrors annotate).
+  // rate/voice can also change under us (back/forward navigation, hand-edited
+  // URL) — adopt them without a reload so the knobs never go stale.
+  fused.params.onChange(() => {
+    const v = fused.params.get("view") || "";
+    if (window._readerActiveView && v && v !== window._readerActiveView) { location.reload(); return; }
+    const r = parseFloat(fused.params.get("rate") || "");
+    if (!isNaN(r) && RATES.indexOf(r) !== -1 && r !== curRate) {
+      curRate = r;
+      rateSel.value = String(r);
+      updateMeta();
+      reseat();
+    }
+    const uri = fused.params.get("voice") || "";
+    if (uri && (!curVoice || curVoice.voiceURI !== uri)) {
+      // Never re-adopt a voice the watchdog declared dead this session — the
+      // param stays in the URL, and every pos write replays this handler.
+      const match = voices.find((vc) => vc.voiceURI === uri && vc.voiceURI !== deadVoiceURI);
+      if (match) {
+        curVoice = match;
+        setVoiceLabel(match.name);
+        if (popOpen) renderVoiceOptions();
+        reseat();
+      }
+    }
+  });
+
+  // ==========================================================================
+  // Boot
+  // ==========================================================================
+  (async () => {
+    fnameEl.textContent = file.split("/").pop() || file;
+
+    // read persisted knobs up front
+    const rateParam = parseFloat(fused.params.get("rate") || "");
+    if (!isNaN(rateParam) && RATES.indexOf(rateParam) !== -1) curRate = rateParam;
+    setupRates();
+    loadVoices();
+    if (window.speechSynthesis && "onvoiceschanged" in window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+    updatePlayUI();
+
+    // which underlying view to read from
+    let stat;
+    try { stat = await fused.stat(file); } catch (e) { fatal("Cannot stat this file."); return; }
+    const views = (stat.templates || []).filter((t) => !META.has(t.mode) && t.mode !== OWN_NAME);
+    const saved = fused.params.get("view");
+    const activeView = views.find((v) => v.mode === saved) || views[0] || null;
+    if (activeView) {
+      window._readerActiveView = activeView.mode;
+      // Normalize a missing/invalid saved view into the URL — otherwise every
+      // later pos/rate/voice write re-runs onChange, sees the stale param
+      // disagree with the active view, and reloads the page mid-playback.
+      if (saved !== activeView.mode) {
+        try { fused.params.set("view", activeView.mode); } catch (e) {}
+      }
+    }
+
+    // view picker (only meaningful when >1 candidate)
+    if (views.length > 1) {
+      viewSel.hidden = false;
+      viewSel.innerHTML = views
+        .map((v) => '<option value="' + v.mode + '"' +
+          (activeView && v.mode === activeView.mode ? " selected" : "") + ">" +
+          (v.mode === "_render" ? "preview" : v.mode) + "</option>")
+        .join("");
+      viewSel.addEventListener("change", () => {
+        try { fused.params.set("view", viewSel.value); } catch (e) {} // triggers reload
+      });
+    }
+
+    // extract — PDF bypasses the iframe (canvas view has no DOM text)
+    let raw = [];
+    try {
+      if (/\.pdf$/i.test(file)) raw = await extractPdf();
+      else if (activeView) raw = await extractFromView(activeView);
+    } catch (e) {
+      fatal("Could not read this file: " + (e && e.message ? e.message : String(e)));
+      return;
+    }
+
+    // build playable blocks (drop empties, chunk sentences, count words)
+    blocks = [];
+    totalWords = 0;
+    for (const b of raw) {
+      if (!b.text || !b.text.trim()) continue;
+      const sentences = chunkSentences(b.text);
+      totalWords += (b.text.match(/\S+/g) || []).length;
+      blocks.push({ kind: b.kind, level: b.level, text: b.text, sentences });
+    }
+
+    updateMeta();
+
+    if (!blocks.length) {
+      document.getElementById("empty").classList.add("show");
+      return;
+    }
+
+    // initial cursor: honor `pos` (a "listen from here" link) — paused, scrolled
+    const posParam = parseInt(fused.params.get("pos") || "", 10);
+    if (!isNaN(posParam) && posParam >= 0 && posParam < blocks.length) pos = posParam;
+    lastWrittenPos = pos;
+
+    renderedCount = Math.min(CAP, blocks.length);
+    ensureRendered(pos);
+    renderColumn();
+    updateCursorUI(true); // scroll to the starting block on load
+
+    // Never autoplay (SPEC) — playback waits for a user gesture.
+  })();
+  </script>
+</body>
+</html>
