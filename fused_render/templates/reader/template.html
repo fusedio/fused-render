@@ -455,6 +455,43 @@
     z-index: -1;
   }
 
+  /* ===================== PDF "Original" layout =====================
+     A centered column of rendered pages. Each .pdfpage is sized in CSS px from
+     the page's user-space viewport times the fit-to-column scale, so its height
+     is correct BEFORE the canvas renders — placeholders keep scroll stable for
+     200+ page books (lazy render via IntersectionObserver). The .pdfhl overlay
+     sits above the canvas in the SAME coordinate box; highlight/word/click rects
+     are positioned in those CSS px (PDF y-flip applied at compute time). */
+  #pdfview { display: none; margin: 0 auto; padding: 32px 0 0; }
+  .pdfpage {
+    position: relative;
+    margin: 0 auto 16px;
+    /* the page paper — white so the rendered PDF reads as itself, with a soft
+       lift off the near-black reader bg */
+    background: #fff;
+    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.5);
+    max-width: 100%;
+  }
+  .pdfpage canvas.pdfcanvas { display: block; width: 100%; height: 100%; }
+  .pdfhl { position: absolute; inset: 0; pointer-events: none; }
+  /* current sentence: soft accent tint (mirrors ::highlight(reader-sentence)). */
+  .pdfhl-sent {
+    position: absolute;
+    background: rgba(229, 255, 68, 0.18);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+  /* current word: smaller, stronger (mirrors ::highlight(reader-word)). */
+  .pdfhl-word {
+    position: absolute;
+    background: rgba(229, 255, 68, 0.4);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+  /* invisible click target over a block's text bounds → jumpTo. pointer-events
+     re-enabled here (the overlay itself is inert) so clicks land on canvas. */
+  .pdftext { position: absolute; cursor: pointer; pointer-events: auto; }
+
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
   }
@@ -464,6 +501,13 @@
   <div id="head">
     <span class="name" id="fname"></span>
     <select id="viewsel" title="Which view to read from" hidden></select>
+    <!-- PDF-only layout toggle: karaoke on the rendered page ("original") vs the
+         clean extracted text column ("text"). Hidden for non-pdf files. A real
+         <select> (not a segmented control) so E2E can drive it by value. -->
+    <select id="layoutsel" title="Layout" aria-label="Layout" hidden>
+      <option value="original">Original</option>
+      <option value="text">Text</option>
+    </select>
     <span class="spacer"></span>
     <span class="meta" id="meta"></span>
   </div>
@@ -475,6 +519,10 @@
   </div>
 
   <div id="doc"></div>
+  <!-- PDF "Original" layout surface: a centered column of rendered page canvases
+       with an absolutely-positioned highlight/click overlay per page. Empty and
+       display:none until the pdf original layout is first shown. -->
+  <div id="pdfview"></div>
 
   <div id="empty"><div><div class="big">Nothing to read here</div>No readable text was found in this file.</div></div>
   <div id="fatal"><div><div class="big">Reader unavailable</div><span id="fatal-msg"></span></div></div>
@@ -566,6 +614,14 @@
   const progLbl = document.getElementById("prog-lbl");
   const progFill = document.getElementById("prog-fill");
   const btnPlay = document.getElementById("btn-play");
+  const layoutSel = document.getElementById("layoutsel");
+  const pdfView = document.getElementById("pdfview");
+
+  // PDF "Original" layout: karaoke painted directly on the rendered page. Only
+  // pdf files get the toggle; everything else is always the clean text column
+  // and `layout` is ignored. Default for pdf is "original".
+  const isPdf = /\.pdf$/i.test(file);
+  let layout = "text"; // real value set at boot from the param (pdf → original)
 
   // This template's own registry name (folder from its /render URL) — excluded
   // from the view picker so we never try to read from ourselves.
@@ -883,6 +939,72 @@
     });
   }
 
+  // ---- pdf geometry state (kept between the extraction pass and rendering) --
+  // The doc object is reused for on-demand page rendering — we never fetch or
+  // parse the file twice. Per-page unscaled viewport dims size the placeholders
+  // and drive the PDF-user-space → CSS-px math (see pdfRenderScale).
+  let pdfDoc = null;
+  let pdfNumPages = 0;
+  const pdfPageW = {};        // page n → unscaled viewport width  (user units)
+  const pdfPageH = {};        // page n → unscaled viewport height (user units)
+  const pdfRenderScale = {};  // page n → CSS px per user unit (fit to column)
+
+  // collapse() equivalent that ALSO returns a raw-index → collapsed-index map,
+  // so an item's [rawStart,rawEnd) byte range within the assembled paragraph
+  // string maps to its [cStart,cEnd) char range in the FINAL block text. This
+  // is what lets a sentence/word char range resolve back to source glyph rects.
+  // The produced text is byte-identical to collapse() of the same input.
+  function collapseWithMap(raw) {
+    let out = "";
+    const srcToOut = new Array(raw.length + 1);
+    let pendingSpace = false; // whitespace seen; emit one space before next glyph
+    let started = false;      // any glyph emitted yet? (kills leading whitespace)
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+      if (c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f" || c === "\v" || /\s/.test(c)) {
+        srcToOut[i] = out.length;
+        if (started) pendingSpace = true;
+      } else {
+        if (pendingSpace) { out += " "; pendingSpace = false; }
+        srcToOut[i] = out.length;
+        out += c;
+        started = true;
+      }
+    }
+    srcToOut[raw.length] = out.length;
+    return { text: out, srcToOut };
+  }
+
+  // Finalize one paragraph from its accumulated lines (each line = ordered
+  // items). Builds the collapsed block text AND, for the pdf path, the item
+  // geometry with each item's char range within that text. Items whose text
+  // fully collapses to whitespace are dropped (they contribute no rects).
+  function finishPdfPara(out, lines, page) {
+    if (!lines.length || out.length >= HARD_EXTRACT) return;
+    let raw = "";
+    const spans = [];
+    for (let li = 0; li < lines.length; li++) {
+      if (li > 0) raw += " "; // line join — matches the old collapse(a)+" "+collapse(b)
+      for (const it of lines[li].items) {
+        const rawStart = raw.length;
+        raw += it.str;
+        spans.push({ it, rawStart, rawEnd: raw.length });
+      }
+    }
+    const mapped = collapseWithMap(raw);
+    const text = mapped.text;
+    if (!text || !text.trim()) return;
+    const items = [];
+    for (const sp of spans) {
+      const cstart = mapped.srcToOut[sp.rawStart];
+      const cend = mapped.srcToOut[sp.rawEnd];
+      if (cend <= cstart) continue; // whitespace-only item
+      const it = sp.it;
+      items.push({ str: it.str, x: it.x, y: it.y, w: it.w, h: it.h, page, cstart, cend });
+    }
+    out.push({ kind: "para", text, items, page });
+  }
+
   // ---- extraction: PDF via vendored pdfjs (no DOM text in the pdf view) -----
   async function extractPdf() {
     const pdfjs = await import("/template-assets/pdfjs.bundle.mjs");
@@ -891,43 +1013,342 @@
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.arrayBuffer();
     const pdf = await pdfjs.getDocument({ data }).promise;
+    pdfDoc = pdf;            // keep for lazy page rendering (no second parse)
+    pdfNumPages = pdf.numPages;
     const out = [];
     for (let n = 1; n <= pdf.numPages; n++) {
       pushBlock(out, "heading", "Page " + n, 2);
+      // Tag the heading with its page so "Original" layout can scroll to the
+      // page while it's spoken (it has no items, so no highlight — that's fine).
+      if (out.length && out[out.length - 1].kind === "heading") out[out.length - 1].page = n;
       const page = await pdf.getPage(n);
+      // Unscaled dims → placeholder sizing + coordinate math (rotation ignored).
+      const vp1 = page.getViewport({ scale: 1 });
+      pdfPageW[n] = vp1.width;
+      pdfPageH[n] = vp1.height;
       const content = await page.getTextContent();
       // Group items into lines by y-position, then lines into paragraphs by
       // vertical gaps (PDF user-space y increases upward, so a normal line
-      // break DECREASES y).
+      // break DECREASES y). Each line KEEPS its items (with coords) so geometry
+      // survives into the block.
       const lines = [];
       let cur = null;
       for (const it of content.items) {
         if (!it.str) continue;
-        const y = it.transform[5];
+        const x = it.transform[4], y = it.transform[5];
         const h = it.height || 12;
+        const w = it.width || 0;
+        const item = { str: it.str, x: x, y: y, w: w, h: h };
         if (!cur || Math.abs(y - cur.y) > h * 0.6) {
-          cur = { y, h, text: it.str };
+          cur = { y: y, h: h, items: [item] };
           lines.push(cur);
         } else {
-          cur.text += it.str;
+          cur.items.push(item);
         }
       }
-      let para = "", prevY = null, prevH = null;
+      let buf = [], prevY = null, prevH = null;
       for (const ln of lines) {
-        const t = collapse(ln.text);
-        if (!t) continue;
+        // skip lines that are all whitespace (matches the old collapse-continue)
+        let hasText = false;
+        for (const it of ln.items) { if (it.str && it.str.trim()) { hasText = true; break; } }
+        if (!hasText) continue;
         if (prevY !== null && prevY - ln.y > (prevH || 12) * 1.8) {
-          pushBlock(out, "para", para);
-          para = "";
+          finishPdfPara(out, buf, n);
+          buf = [];
         }
-        para = para ? para + " " + t : t;
+        buf.push(ln);
         prevY = ln.y; prevH = ln.h;
       }
-      pushBlock(out, "para", para);
+      finishPdfPara(out, buf, n);
       if (out.length >= HARD_EXTRACT) break;
     }
     return out;
   }
+
+  // ==========================================================================
+  // PDF "Original" layout — karaoke painted ON the rendered pages
+  //
+  // The surface is a column of .pdfpage wrappers, one per PDF page, each sized
+  // in CSS px so scroll geometry is correct before its canvas renders. Pages
+  // render lazily (IntersectionObserver) and tear down when far off-screen, so
+  // a 200+ page book never holds every canvas in memory at once. Highlights and
+  // click targets live in a per-page .pdfhl overlay that shares the canvas's
+  // coordinate box; every rect is computed from PDF user space via the SAME
+  // scale used to render the page, with the y-flip applied (PDF origin is
+  // bottom-left, CSS is top-left).
+  // ==========================================================================
+  let pdfBuilt = false;               // has buildPdfView() run yet?
+  let pdfObserver = null;
+  const pdfPageEl = {};               // page n → .pdfpage wrapper
+  const pdfOverlayEl = {};            // page n → .pdfhl overlay div
+  const pdfCanvasRendered = new Set();// pages whose canvas is currently mounted
+
+  function pdfOverlayFor(page) { return (page && pdfOverlayEl[page]) || null; }
+
+  // PDF user-space rects for a char range in block b, merged per visual line
+  // (one rect per line the range spans). Used for both the sentence highlight
+  // and the per-block click targets. Returns CSS-px rects {page,left,top,w,h}.
+  function rectsForCharRange(b, cStart, cEnd) {
+    if (!b || !b.items || !b.items.length) return [];
+    const byLine = new Map(); // page|roundedTop → bounding box being merged
+    for (const it of b.items) {
+      const os = Math.max(cStart, it.cstart);
+      const oe = Math.min(cEnd, it.cend);
+      if (oe <= os) continue;
+      const scale = pdfRenderScale[it.page] || 1;
+      const H = pdfPageH[it.page] || 0;
+      const span = (it.cend - it.cstart) || 1;
+      const f0 = (os - it.cstart) / span;
+      const f1 = (oe - it.cstart) / span;
+      const left = (it.x + it.w * f0) * scale;
+      const width = it.w * (f1 - f0) * scale;
+      // y-flip: item.y is the baseline (up-positive); the glyph box rises `h`
+      // above it, so the CSS top is (pageHeight - y - h) * scale.
+      const top = (H - it.y - it.h) * scale;
+      const height = it.h * scale;
+      const key = it.page + "|" + Math.round(top);
+      const prev = byLine.get(key);
+      if (!prev) {
+        byLine.set(key, { page: it.page, left: left, top: top, right: left + width, bottom: top + height });
+      } else {
+        prev.left = Math.min(prev.left, left);
+        prev.right = Math.max(prev.right, left + width);
+        prev.top = Math.min(prev.top, top);
+        prev.bottom = Math.max(prev.bottom, top + height);
+      }
+    }
+    const outR = [];
+    byLine.forEach((r) => outR.push({ page: r.page, left: r.left, top: r.top, w: r.right - r.left, h: r.bottom - r.top }));
+    return outR;
+  }
+
+  // Approximate rect for the word at absolute char index `idx` (length `len`)
+  // within block b: locate the covering item, then a proportional intra-item x
+  // offset (item width × char fraction). One rect, never line-merged.
+  function wordRectFor(b, idx, len) {
+    if (!b || !b.items) return null;
+    for (const it of b.items) {
+      if (idx >= it.cstart && idx < it.cend) {
+        const span = (it.cend - it.cstart) || 1;
+        const scale = pdfRenderScale[it.page] || 1;
+        const H = pdfPageH[it.page] || 0;
+        const f0 = (idx - it.cstart) / span;
+        const f1 = Math.min(1, (idx - it.cstart + Math.max(1, len)) / span);
+        return {
+          page: it.page,
+          left: (it.x + it.w * f0) * scale,
+          top: (H - it.y - it.h) * scale,
+          w: it.w * (f1 - f0) * scale,
+          h: it.h * scale,
+        };
+      }
+    }
+    return null;
+  }
+
+  function positionRect(el, r) {
+    el.style.left = r.left + "px";
+    el.style.top = r.top + "px";
+    el.style.width = r.w + "px";
+    el.style.height = r.h + "px";
+  }
+
+  function clearPdfSent() {
+    if (!pdfView) return;
+    pdfView.querySelectorAll(".pdfhl-sent").forEach((e) => e.remove());
+  }
+  function clearPdfWord() {
+    if (!pdfView) return;
+    pdfView.querySelectorAll(".pdfhl-word").forEach((e) => e.remove());
+  }
+
+  // Invisible click targets over a block's text bounds → jumpTo (one per line).
+  // Added at page-render time (not build) so a big book doesn't hold thousands
+  // of rects for pages that are nowhere near the viewport.
+  function addClickTargets(page, overlay) {
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (b.page !== page || !b.items || !b.items.length) continue;
+      const rects = rectsForCharRange(b, 0, b.text.length);
+      for (const r of rects) {
+        const d = document.createElement("div");
+        d.className = "pdftext";
+        d.dataset.idx = i;
+        positionRect(d, r);
+        d.addEventListener("click", ((idx) => () => jumpTo(idx))(i));
+        overlay.appendChild(d);
+      }
+    }
+  }
+
+  // Paint the current sentence's rects into its page overlay. Overlay exists as
+  // soon as the page wrapper is built, so the highlight can show even before the
+  // canvas finishes rendering.
+  function paintSentenceOriginal() {
+    clearPdfSent();
+    const b = blocks[pos];
+    if (!b || !b.items || !b.sentences[sent]) return;
+    const s = b.sentences[sent];
+    const overlay = pdfOverlayFor(b.page);
+    if (!overlay) return;
+    const rects = rectsForCharRange(b, s.start, s.start + s.text.length);
+    for (const r of rects) {
+      const d = document.createElement("div");
+      d.className = "pdfhl-sent";
+      positionRect(d, r);
+      overlay.appendChild(d);
+    }
+  }
+  function paintWordOriginal(b, s, e) {
+    clearPdfWord();
+    if (!b || !b.items) return;
+    const ci = e && typeof e.charIndex === "number" ? e.charIndex : 0;
+    let len = e && typeof e.charLength === "number" ? e.charLength : 0;
+    if (!len || len <= 0) {
+      let j = ci;
+      while (j < s.text.length && !/\s/.test(s.text[j])) j++;
+      len = Math.max(1, j - ci);
+    }
+    const r = wordRectFor(b, s.start + ci, len);
+    if (!r) return;
+    const overlay = pdfOverlayFor(b.page);
+    if (!overlay) return;
+    const d = document.createElement("div");
+    d.className = "pdfhl-word";
+    positionRect(d, r);
+    overlay.appendChild(d);
+  }
+
+  // Render a page's canvas (devicePixelRatio-aware) beneath its overlay, and
+  // (re)build that overlay's click targets. Idempotent + failure-tolerant: a
+  // render error leaves a blank canvas and never breaks playback.
+  async function renderPage(n) {
+    if (pdfCanvasRendered.has(n) || !pdfDoc) return;
+    const wrap = pdfPageEl[n], overlay = pdfOverlayEl[n];
+    if (!wrap || !overlay) return;
+    pdfCanvasRendered.add(n);
+    overlay.innerHTML = "";
+    addClickTargets(n, overlay);
+    const scale = pdfRenderScale[n] || 1;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = (pdfPageW[n] || 612) * scale;
+    const cssH = (pdfPageH[n] || 792) * scale;
+    const canvas = document.createElement("canvas");
+    canvas.id = "__fr_reader_page_" + n;
+    canvas.className = "pdfcanvas";
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    canvas.width = Math.max(1, Math.round(cssW * dpr));
+    canvas.height = Math.max(1, Math.round(cssH * dpr));
+    wrap.insertBefore(canvas, overlay); // canvas below the overlay
+    try {
+      const page = await pdfDoc.getPage(n);
+      const viewport = page.getViewport({ scale: scale * dpr });
+      const ctx = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    } catch (e) { /* blank canvas is fine — text still plays */ }
+    // If the page we just rendered holds the current sentence, repaint it so the
+    // highlight lands now that geometry is on screen.
+    if (blocks[pos] && blocks[pos].page === n) paintSentenceOriginal();
+  }
+  function teardownPage(n) {
+    if (!pdfCanvasRendered.has(n)) return;
+    // never evict the page the cursor is on (its highlight must survive)
+    if (blocks[pos] && blocks[pos].page === n) return;
+    pdfCanvasRendered.delete(n);
+    const wrap = pdfPageEl[n], overlay = pdfOverlayEl[n];
+    if (wrap) { const c = wrap.querySelector("canvas"); if (c) c.remove(); }
+    if (overlay) overlay.innerHTML = ""; // drops click targets + any highlight
+  }
+
+  function buildPdfView() {
+    pdfView.innerHTML = "";
+    // Fit page width to the column (max ~900px, no horizontal body scroll).
+    const target = Math.max(280, Math.min(900, (window.innerWidth || 900) - 32));
+    pdfObserver = new IntersectionObserver((entries) => {
+      for (const en of entries) {
+        const n = +en.target.dataset.page;
+        if (en.isIntersecting) renderPage(n);
+        else teardownPage(n);
+      }
+    }, { root: null, rootMargin: "800px 0px" });
+    for (let n = 1; n <= pdfNumPages; n++) {
+      const Wu = pdfPageW[n] || 612, Hu = pdfPageH[n] || 792;
+      const scale = target / Wu;
+      pdfRenderScale[n] = scale;
+      const wrap = document.createElement("div");
+      wrap.className = "pdfpage";
+      wrap.dataset.page = n;
+      wrap.style.width = (Wu * scale) + "px";
+      wrap.style.height = (Hu * scale) + "px";
+      const overlay = document.createElement("div");
+      overlay.className = "pdfhl";
+      wrap.appendChild(overlay);
+      pdfView.appendChild(wrap);
+      pdfPageEl[n] = wrap;
+      pdfOverlayEl[n] = overlay;
+      pdfObserver.observe(wrap);
+    }
+  }
+
+  // Make sure the current block's page is rendered even when we jumped far (the
+  // observer only catches scroll). No-op until the surface is built.
+  function ensurePdfBlockVisible(idx) {
+    if (!pdfBuilt) return;
+    const b = blocks[idx];
+    if (b && b.page) renderPage(b.page);
+  }
+  // Politely center the current sentence (prefer a painted rect; fall back to
+  // the page wrapper for pages/headings with no rects). Reuses maybeScrollTo's
+  // "don't yank a reader who just scrolled" rule.
+  function scrollToCurrentPdf() {
+    const rect = pdfView.querySelector(".pdfhl-sent");
+    if (rect) { maybeScrollTo(rect); return; }
+    const b = blocks[pos];
+    const pageEl = b && pdfPageEl[b.page];
+    if (pageEl) maybeScrollTo(pageEl);
+  }
+
+  // Swap the visible surface for the active layout. Preserves pos/sent — just
+  // re-renders and re-centers; playback (if any) keeps going uninterrupted.
+  function applyLayout() {
+    const original = isPdf && layout === "original";
+    if (original) {
+      docEl.style.display = "none";
+      // explicit "block" — the stylesheet default for #pdfview is display:none,
+      // so clearing the inline style would re-hide it.
+      pdfView.style.display = "block";
+      if (!pdfBuilt) { buildPdfView(); pdfBuilt = true; }
+      hidePill();
+    } else {
+      pdfView.style.display = "none";
+      docEl.style.display = "";
+      ensureRendered(pos);
+      renderColumn();
+    }
+    updateCursorUI(true);
+  }
+  function setupLayout() {
+    if (!isPdf) { layoutSel.hidden = true; return; }
+    layoutSel.hidden = false;
+    layoutSel.value = layout;
+    layoutSel.addEventListener("change", () => {
+      const v = layoutSel.value === "text" ? "text" : "original";
+      if (v === layout) return;
+      layout = v;
+      try { fused.params.set("layout", layout); } catch (e) {}
+      applyLayout();
+    });
+  }
+
+  // Materialize whatever the ACTIVE layout needs for a given block before it is
+  // painted/spoken (text column lazy render, or the pdf page).
+  function ensureVisible(idx) {
+    if (isPdf && layout === "original") { ensurePdfBlockVisible(idx); return; }
+    ensureRendered(idx);
+  }
+  // Clear the word highlight in BOTH surfaces (cheap; the inactive one no-ops).
+  function clearWordHL() { clearHL("reader-word"); clearPdfWord(); }
 
   // ==========================================================================
   // Playback controller
@@ -1021,12 +1442,16 @@
     progFill.style.transform = "scaleX(" + (blocks.length ? (pos + 1) / blocks.length : 0) + ")";
   }
   function paintSentence() {
+    // Original pdf layout: rects on the page overlay. Text layout: Custom
+    // Highlight API on the rendered text node (zero DOM mutation).
+    if (isPdf && layout === "original") { paintSentenceOriginal(); return; }
     const b = blocks[pos];
     if (!b || !b.el || !b.sentences[sent]) { clearHL("reader-sentence"); return; }
     const s = b.sentences[sent];
     setHL("reader-sentence", s.start, s.start + s.text.length, b.el.firstChild);
   }
   function paintWord(b, s, e) {
+    if (isPdf && layout === "original") { paintWordOriginal(b, s, e); return; }
     if (!HL || !b.el) return;
     const ci = e && typeof e.charIndex === "number" ? e.charIndex : 0;
     let len = e && typeof e.charLength === "number" ? e.charLength : 0;
@@ -1039,6 +1464,16 @@
     setHL("reader-word", s.start + ci, s.start + ci + len, b.el.firstChild);
   }
   function updateCursorUI(scroll) {
+    // Original pdf layout: no text-column "current" block — the page overlay
+    // carries the highlight, and we center the sentence's page region.
+    if (isPdf && layout === "original") {
+      ensurePdfBlockVisible(pos);
+      paintSentence();
+      clearWordHL();
+      if (scroll) scrollToCurrentPdf();
+      updateProgress();
+      return;
+    }
     // Paused navigation (jump/step) can move past the lazy render cap —
     // materialize the block before painting, or the cursor chrome vanishes.
     ensureRendered(pos);
@@ -1050,7 +1485,7 @@
       if (scroll) maybeScrollTo(b.el);
     }
     paintSentence();
-    clearHL("reader-word");
+    clearWordHL();
     updateProgress();
   }
   function writePos() {
@@ -1099,7 +1534,7 @@
       else finish();
       return;
     }
-    ensureRendered(pos);
+    ensureVisible(pos);
     const s = b.sentences[sent];
     paintSentence();
     const gen = ++speakGen;
@@ -1152,7 +1587,7 @@
       if (e.data === audioTabId) return;
       speakGen++; // kills an in-flight selection speech too
       engine.cancel();
-      clearHL("reader-word");
+      clearWordHL();
       if (playing) { playing = false; updatePlayUI(); }
     };
   }
@@ -1172,14 +1607,14 @@
     updatePlayUI();
     // cancel, not synth.pause() — see the shared-synth note above
     engine.cancel();
-    clearHL("reader-word");
+    clearWordHL();
   }
   function toggle() { playing ? pause() : play(); }
   function finish() {
     playing = false;
     updatePlayUI();
     engine.cancel();
-    clearHL("reader-word");
+    clearWordHL();
   }
   // Restart speech at the (already-moved) cursor: only speaks if we were
   // playing — a paused move just repositions the cursor (SPEC).
@@ -1229,7 +1664,7 @@
     engine.cancel();
     playing = false;
     updatePlayUI();
-    clearHL("reader-word");
+    clearWordHL();
     const gen = ++speakGen;
     let i = 0;
     (function step() {
@@ -1248,6 +1683,8 @@
   let pillText = "";
   function hidePill() { pill.style.display = "none"; pillText = ""; }
   function showPillFromSelection() {
+    // Original pdf layout has no selectable DOM text (canvas) — no pill there.
+    if (isPdf && layout === "original") { hidePill(); return; }
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || sel.rangeCount === 0) { hidePill(); return; }
     const text = sel.toString();
@@ -1579,6 +2016,16 @@
         reseat();
       }
     }
+    // layout: adopt an external change (back/forward, hand-edited URL) without a
+    // reload — pdf only, and only for the two valid values.
+    if (isPdf) {
+      const lay = fused.params.get("layout");
+      if ((lay === "original" || lay === "text") && lay !== layout) {
+        layout = lay;
+        layoutSel.value = layout;
+        applyLayout();
+      }
+    }
   });
 
   // ==========================================================================
@@ -1590,6 +2037,15 @@
     // read persisted knobs up front
     const rateParam = parseFloat(fused.params.get("rate") || "");
     if (!isNaN(rateParam) && RATES.indexOf(rateParam) !== -1) curRate = rateParam;
+    // layout: pdf defaults to "original"; a shared/hand-edited param can pin
+    // either value. Non-pdf files stay on the text column (param ignored).
+    if (isPdf) {
+      const lp = fused.params.get("layout");
+      layout = lp === "text" ? "text" : "original";
+      // normalize the URL so a shared "listen from here" link is explicit
+      if (lp !== layout) { try { fused.params.set("layout", layout); } catch (e) {} }
+    }
+    setupLayout();
     setupRates();
     loadVoices();
     if (window.speechSynthesis && "onvoiceschanged" in window.speechSynthesis) {
@@ -1643,7 +2099,9 @@
       if (!b.text || !b.text.trim()) continue;
       const sentences = chunkSentences(b.text);
       totalWords += (b.text.match(/\S+/g) || []).length;
-      blocks.push({ kind: b.kind, level: b.level, text: b.text, sentences });
+      // items/page are pdf-only geometry (undefined otherwise) — carried through
+      // for the "Original" layout's on-page highlight and click targets.
+      blocks.push({ kind: b.kind, level: b.level, text: b.text, sentences, items: b.items, page: b.page });
     }
 
     updateMeta();
@@ -1659,9 +2117,9 @@
     lastWrittenPos = pos;
 
     renderedCount = Math.min(CAP, blocks.length);
-    ensureRendered(pos);
-    renderColumn();
-    updateCursorUI(true); // scroll to the starting block on load
+    // Build whichever surface the active layout needs (text column or pdf pages)
+    // and scroll to the starting block. applyLayout ends with updateCursorUI.
+    applyLayout();
 
     // Never autoplay (SPEC) — playback waits for a user gesture.
   })();
