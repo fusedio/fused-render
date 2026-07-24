@@ -2810,6 +2810,23 @@ def _fs_copy(body: dict, x_fused: str | None):
     return _stat_payload(dst, os.path.isdir(dst))
 
 
+def set_server_origin_env(port: int, host: str = "127.0.0.1") -> str:
+    """Publish the server's ACTUAL bound origin so in-process runPython
+    children read store bytes from the port the server is really on.
+
+    The zarr_aoi tile daemon (and any other child that fetches bytes back
+    through ``/api/fs/raw``) reads the origin from ``FUSED_RENDER_ORIGIN``.
+    Without this, it falls back to ``_branch.branch_port()`` — the baseline
+    default ``1777`` — which is wrong under any ``--port`` override (e.g. the
+    desktop launcher's auto-picked free port), sending every read to a dead
+    port and surfacing "No group found in store" from zarr. Set it before the
+    server starts serving so every child process inherits the correct origin.
+    """
+    origin = f"http://{host}:{port}"
+    os.environ["FUSED_RENDER_ORIGIN"] = origin
+    return origin
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
