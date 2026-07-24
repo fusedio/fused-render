@@ -51,6 +51,9 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
     def on_default_apps(icon, item):
         emit(TrayAction.DEFAULT_APPS)
 
+    def on_check_updates(icon, item):
+        emit(TrayAction.CHECK_UPDATES)
+
     def on_exit(icon, item):
         emit(TrayAction.EXIT)
 
@@ -73,6 +76,7 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         pystray.MenuItem(
             "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
         ),
+        pystray.MenuItem("Check for updates...", on_check_updates),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", on_exit),
     )

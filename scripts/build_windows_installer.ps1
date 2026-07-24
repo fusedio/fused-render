@@ -105,9 +105,13 @@ if ($initPy -notmatch '(?m)^__version__\s*=\s*"([^"]+)"') {
     throw "project version not found"
 }
 $Version = $Matches[1]
-$Branch = (& git -C $RepoRoot branch --show-current).Trim()
+$Branch = "$(& git -C $RepoRoot branch --show-current)".Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "could not resolve the Git branch"
+}
+if (-not $Branch) {
+    # detached HEAD (a tag checkout in release CI)
+    $Branch = "$(& git -C $RepoRoot rev-parse --short HEAD)".Trim()
 }
 Write-Host "Building FusedRender $Version from $Branch"
 
@@ -216,7 +220,7 @@ Set-Content -Path (Join-Path $StageDir "payload.complete") -Encoding Ascii -Valu
 
 Invoke-Native $bundlePython @(
     "-I", "-c",
-    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, win32job, win32pipe, win32security, win32event, win32process, pystray; print('bundle imports ok')"
+    "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, win32job, win32pipe, win32security, win32event, win32process, win32com.shell.shell, pystray, cryptography; print('bundle imports ok')"
 )
 Invoke-Native (Join-Path $PythonRoot "uv.exe") @("--version")
 Invoke-Native (Join-Path $PythonRoot "rclone.exe") @("version")

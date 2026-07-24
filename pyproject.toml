@@ -54,6 +54,10 @@ dev = [
     # Coverage reporting (pytest --cov=fused_render). Combines per-worker data
     # under -n auto (xdist) automatically — no extra config needed there.
     "pytest-cov",
+    # The Windows updater's tests (tests/test_win_supervisor_update.py) are
+    # mock-based and cross-platform, but importorskip("cryptography") skips them
+    # in CI unless it's installed here — it's win32-only in windows-desktop.
+    "cryptography",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
@@ -128,6 +132,8 @@ windows-desktop = [
     'pywin32>=306 ; sys_platform == "win32"',
     'pystray>=0.19 ; sys_platform == "win32"',
     'pillow ; sys_platform == "win32"',
+    # Verifies the ed25519-signed update manifest (supervisor/_win32/update.py).
+    'cryptography ; sys_platform == "win32"',
 ]
 # Linux desktop supervisor backend (fused_render/supervisor/_linux,
 # docs/LINUX_DESKTOP_SPEC.md). Linux-only; installed only by the packaged

@@ -1,24 +1,16 @@
-"""Job Object process-tree kill + suspended-create/resume child launch — port
-of windows/supervisor/src/job.rs (feat/windows-desktop-foundation, PR #162).
+"""Job Object process-tree kill + suspended-create/resume child launch (port
+of windows/supervisor/src/job.rs).
 
-This is the one guarantee the whole Python-supervisor experiment hinges on
-(docs/PYTHON_SUPERVISOR_SPEC.md's "no-orphans-on-crash" acceptance gate):
-closing the last handle to the Job Object (including the kernel closing it
-for us when this process dies, e.g. `taskkill /F`) must kill the entire
-process tree it owns.
+Closing the last handle to the Job Object — including the kernel closing it
+when this process dies (e.g. `taskkill /F`) — must kill the whole owned tree
+(the "no-orphans-on-crash" gate). Two pywin32 gotchas that silently break it:
 
-Two pywin32-specific gotchas that would silently break that guarantee if
-gotten wrong (see the design doc / PYTHON_SUPERVISOR_SPEC.md):
-
-1. PyHANDLE auto-closes on garbage collection. The `Job` returned by `Job()`
-   must be kept alive for the supervisor's entire process lifetime (owned by
-   `supervisor.run()`'s top-level frame) — if it were a short-lived local, its
-   GC would fire KILL_ON_JOB_CLOSE against a healthy running server.
-2. The job handle itself must stay non-inheritable. `CreateJobObjectW(NULL,
-   NULL)` gives a non-inheritable anonymous handle; do not change that, even
-   though the child process is created with `bInheritHandles=True` (required
-   for the redirected stdio handles) — an inherited job handle would let the
-   child keep the job alive past the supervisor's own death.
+1. PyHANDLE auto-closes on GC, so the `Job` must be kept alive for the
+   supervisor's whole lifetime (owned by `supervisor.run()`'s frame), or its
+   GC fires KILL_ON_JOB_CLOSE against a healthy server.
+2. The job handle must stay non-inheritable, even though the child is created
+   with bInheritHandles=True for stdio — an inherited job handle would let the
+   child keep the job alive past the supervisor's death.
 """
 from __future__ import annotations
 
@@ -107,12 +99,9 @@ class SupervisedProcess:
 
 class Job:
     def __init__(self):
-        # pywin32's CreateJobObject cannot pass a NULL name (None raises
-        # TypeError), so go through ctypes for a truly anonymous job object.
-        # An empty-string name ("") is NOT the same thing to the kernel — it
-        # is a distinct, valid object name, not documented as "unnamed", so
-        # a future CreateJobObject with that same name could open an
-        # existing job instead of creating a private one.
+        # pywin32's CreateJobObject can't pass a NULL name (None raises
+        # TypeError) and "" is a real named object, not anonymous — so go
+        # through ctypes for a truly private job.
         raw = _kernel32.CreateJobObjectW(None, None)
         if not raw:
             raise pywintypes.error(

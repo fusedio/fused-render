@@ -4,14 +4,68 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (created at the current commit if it doesn't exist yet)"
+        required: true
+      platforms:
+        description: "Which OS builds to run"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
 
 jobs:
+  # Creates the GitHub Release every OS build job uploads into, so the
+  # builds run in parallel instead of serializing behind the DMG job.
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # previous-tag lookup needs all tags
+
+      - name: Resolve release tag
+        id: resolve
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, reusing it."
+            exit 0
+          fi
+          # GitHub's own previous-tag auto-detection has proven unreliable
+          # here — pin it explicitly (empty on the very first release).
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
+          gh release create "$TAG" --target "${{ github.sha }}" \
+            --title "FusedRender $TAG" \
+            --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
+
   build-sign-notarize-release:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
     runs-on: macos-14
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
     permissions:
       contents: write # needed to attach the DMG to a GitHub Release
       id-token: write # needed to assume the AWS role via OIDC
     env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
       KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
       NOTARY_PROFILE: ci-notary
       AWS_DEFAULT_REGION: us-west-2
@@ -23,11 +77,6 @@ jobs:
       CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
     steps:
       - uses: actions/checkout@v4
-        with:
-          # release notes generation below needs every tag reachable, not
-          # just the one that triggered this run (default fetch-depth: 1
-          # only grabs the tagged commit itself)
-          fetch-depth: 0
 
       # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
       # macOS runners' default `python3` can resolve to an older CLT/system
@@ -91,6 +140,7 @@ jobs:
           aws-region: us-west-2
 
       - name: Upload DMG + wheel to S3
+        id: artifacts
         run: |
           set -euo pipefail
           # Not `brew install awscli`: GH's macos-14 image doesn't have the
@@ -107,9 +157,12 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
           echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
-          # Served via CloudFront (public bucket behind the CDN).
+          # Consumed by the download-page step; served via CloudFront.
           echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
+          # Exposed as job outputs for the split-out bump-homebrew job.
+          echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
 
@@ -150,54 +203,93 @@ jobs:
             --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" \
             "/index.html" "/latest.json" "/og-image.png" "/"
 
-      - name: Find previous tag
-        id: prev_tag
+      - name: Upload DMG + wheel to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
+
+  build-windows-release:
+    # See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
+    runs-on: windows-latest
+    permissions:
+      contents: write # attach the installer to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+      WINDOWS_PREFIX: fused-render-windows
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dropped from the windows-2025 runner image
+      # (actions/runner-images#11644); the build script finds ISCC.exe where
+      # choco installs it.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build_windows_installer.ps1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseWindows
+          aws-region: us-west-2
+
+      - name: Sign manifest, publish installer, attach to release
+        shell: bash
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # GitHub's own previous-tag auto-detection has proven unreliable
-          # here (past releases each listed the full PR history instead of
-          # just what changed since the prior release) — pin it explicitly.
-          # grep exits 1 (failing the pipeline under pipefail) when there's
-          # no other tag yet, e.g. on the very first release — that's a
-          # legitimate case, not an error, so tolerate it and leave PREV_TAG
-          # empty; the release action falls back to its own auto-detection.
-          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -n1 || true)"
-          echo "tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          INSTALLER="$(ls dist/FusedRenderPy-*-setup.exe)"
+          # Version from the built artifact, not the tag — same rule as the DMG.
+          VERSION="$(basename "$INSTALLER" | sed -E 's/^FusedRenderPy-(.*)-setup\.exe$/\1/')"
+          BASE_URL="https://${CDN_DOMAIN}/${WINDOWS_PREFIX}"
+          uv run scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
+          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
+          aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
+            --cache-control no-cache
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/${WINDOWS_PREFIX}/*"
+          gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.DMG_PATH }}
-            ${{ env.WHL_PATH }}
-          name: FusedRender ${{ github.ref_name }}
-          # body is prepended before the auto-generated notes (GH Releases
-          # API behavior), so this ends up as the first section.
-          body: |
-            ## Downloads
-            - [DMG](${{ env.DMG_URL }})
-            - [Wheel](${{ env.WHL_URL }})
-          generate_release_notes: true
-          previous_tag: ${{ steps.prev_tag.outputs.tag }}
-
+  bump-homebrew:
+    # Separate job so a tap-push failure can't fail the DMG job after the
+    # Release already published.
+    needs: build-sign-notarize-release
+    runs-on: ubuntu-latest
+    permissions: {} # uses the tap PAT only; no GITHUB_TOKEN scopes needed
+    steps:
       - name: Bump homebrew-tap cask
         env:
           TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          # From the DMG that was actually built+hashed, not the git tag.
+          VERSION: ${{ needs.build-sign-notarize-release.outputs.version }}
+          DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
         run: |
           set -euo pipefail
-          # Version comes from the DMG that was actually built+uploaded+hashed
-          # above, not the git tag — keeps cask version/sha256 tied to one
-          # artifact even if a tag is pushed before pyproject.toml is bumped.
-          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
-
           git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
           cd /tmp/homebrew-tap
-
-          sed -i '' \
+          sed -i \
             -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
             -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
             Casks/fused-render.rb
-
           git config user.name "fused-render-ci"
           git config user.email "ci@fused.io"
           git add Casks/fused-render.rb

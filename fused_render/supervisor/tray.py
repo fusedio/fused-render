@@ -37,6 +37,7 @@ class TrayAction(Enum):
     OPEN_FILE = auto()
     OPEN_LOGS = auto()
     DEFAULT_APPS = auto()
+    CHECK_UPDATES = auto()
     EXIT = auto()
 
 

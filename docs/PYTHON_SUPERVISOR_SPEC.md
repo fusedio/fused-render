@@ -93,3 +93,128 @@ crash), we keep Rust.
 If all gates pass (especially no-orphans-on-crash), open a migration PR to
 replace the Rust supervisor. If any fail, record the failure here and keep the
 Rust supervisor as the shipping path.
+
+## Software updates (auto-check + auto-download, user-approved install)
+
+Goal: an installed build checks for a newer version on its own, downloads and
+verifies it silently in the background, and then prompts the user — the
+**install is always one click**, never silent. No surprise restarts: the app
+is only ever replaced after the user says yes.
+
+The genuinely hard parts already ship in `scripts/windows/installer.iss`: it
+stops the running app (`PrepareToInstall` → `ShutdownSupervisor` execs the
+installed exe with `--shutdown-for-upgrade`), does the atomic payload swap
+(`ActivatePayload`: `next` → `payload`, keep `previous` for rollback), and
+refuses a downgrade (`InitializeSetup`). So an "update" is just: fetch the new
+`setup.exe` and run it. Reuse it as the update vehicle; do not build a second
+install path.
+
+**Approach: roll-your-own manifest check, not WinSparkle.** Even with
+background checking, WinSparkle's value (its cadence/skip-version state and
+dialog stack) doesn't outweigh its cost — a native DLL, ctypes callback
+lifetime hazards, appcast XML, and a shutdown-ownership negotiation with our
+installer. The homegrown path is ~150 lines reusing idioms already in
+`supervisor.py` (off-thread `MessageBoxW` per `_confirm_exit`, the `_spawn_*`
+worker-thread pattern) plus one daemon timer thread.
+
+1. **Client flow** (`fused_render/supervisor/_win32/update.py`). Two entry points,
+   one shared `_check_lock` (one check at a time, whichever fires):
+   - **Automatic** — `start_auto_checks(paths)`, called once from
+     `supervisor.run()` after the tray starts, spawns a daemon thread that
+     waits `_STARTUP_DELAY_S` (so it never competes with launch) then loops
+     every `_CHECK_INTERVAL_S` (6 h). Each tick is **silent** on "up to date"
+     and on transient network errors (logged only, never a dialog), so it can't
+     nag. `FUSED_RENDER_NO_AUTO_UPDATE` disables it.
+   - **Manual** — the `TrayAction.CHECK_UPDATES` tray item runs the same flow
+     on demand, but reports its result either way ("up to date" / an error
+     dialog).
+   - The ed25519 signature is verified in `_fetch_manifest`, **before** the
+     `version` is trusted for the "up to date"/prompt decision — a CDN/bucket
+     compromise can't forge a version to suppress or fake an update. When
+     `manifest.version` > `fused_render.__version__`: download the installer to
+     `%TEMP%` (**not** `Desktop\temp` — the installer's `[InstallDelete]` wipes
+     that), streaming it under a size cap while confirming its SHA-256 equals
+     the signed `manifest.sha256` (mismatch → refuse, report/log, never run an
+     unverified exe), then `MessageBoxW` MB_YESNO "FusedRender X.Y.Z is ready to
+     install…". On Yes, **re-hash the staged file one last time** (it sat in
+     `%TEMP%` while the prompt was open) and only then `os.startfile(installer)`
+     and return; the installer takes over. A declined version is remembered in
+     `_prompted_versions` so the background loop won't re-prompt it this session
+     (a restart or manual check offers it again); an accepted-but-failed launch
+     is not remembered, so it retries.
+2. **Manifest** — `latest.json` published next to the installer on the CDN
+   (`https://d2ic19jpchjovp.cloudfront.net/fused-render-windows/latest.json`):
+   ```json
+   { "schema": 1, "version": "0.3.7",
+     "url": "https://…/fused-render-windows/FusedRenderPy-0.3.7-setup.exe",
+     "sha256": "<hex>", "signature": "<base64 ed25519>" }
+   ```
+   The signature covers a domain-separated message
+   `"fused-render-update\n<version>\n<sha256>\n"`, so a CDN/bucket compromise
+   cannot forge a manifest that points the updater at a different installer —
+   the sha256 in the manifest is signed and re-checked against the actual
+   download. Signing lives in `scripts/windows/generate_update_manifest.py`
+   (`uv run`, private key from `$FUSED_RENDER_UPDATE_SIGNING_KEY`).
+   **Pinned public key** (client verifies against this constant):
+   `u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=`. Verification uses
+   `cryptography`, added to the `windows-desktop` extra (the only new runtime
+   dependency this feature needs; the loop itself is stdlib threading/time).
+3. **Shutdown ownership — no conflict, no new IPC.** The updater just launches
+   the installer and exits its worker; the installer's `PrepareToInstall`
+   execs `--shutdown-for-upgrade`, which forwards over the named pipe to the
+   still-running primary → `_event_loop` returns `_ExitReason.UPGRADE` → the
+   one `_teardown` path runs (job close, port freed). The installer process is
+   spawned by (but not inside) the supervisor's Job, so it outlives the
+   teardown. This is exactly the existing upgrade path — nothing new to wire.
+4. **Run the installer with its (near-empty) UI, not `/VERYSILENT`.** The
+   `[Run]` relaunch entry is `skipifsilent` and nothing else restarts the app,
+   so a silent install would leave FusedRender closed; the normal wizard
+   (`DisableDirPage` + `DisableProgramGroupPage` make it nearly page-free) ends
+   on a finish page that relaunches. `SetupMutex=FusedRenderPySetup` serializes
+   installer runs, so an auto-update prompt launching setup can't race a manual
+   reinstall through `ActivatePayload`'s rename dance. Keep Windows release
+   versions strictly numeric — the client's version compare (and the `.iss`
+   `CompareVersions`' `StrToIntDef`) treats a PEP 440 suffix like `0.5.0rc1` as
+   non-numeric (the client refuses it and logs; keeps the loop alive).
+5. **Release/CI** (done — `.github/workflows/release.yml`, `build-windows-
+   release` job, mirrors the DMG contract). On a `v*` tag, after the DMG job:
+   build via `build_windows_installer.ps1` (Inno installed with choco — it was
+   dropped from the windows-2025 image), sign the manifest, upload the
+   installer + `latest.json` to `s3://fused-render/fused-render-windows/`
+   behind CloudFront, invalidate `/fused-render-windows/*` (the fixed-name
+   `latest.json` is also served `no-cache`), and `gh release upload` the
+   installer onto the release the DMG job created (`needs:` it, so no
+   release-create race).
+6. **One-time setup required:** add the ed25519 private key as the repo secret
+   `FUSED_RENDER_UPDATE_SIGNING_KEY` (base64 raw 32-byte seed; matching the
+   pinned public key above). Until it exists the `build-windows-release` job
+   fails at the signing step — the DMG release still publishes.
+
+**Deferred (not in v1):**
+- **In-app (web-shell) "Check for updates" button.** It would need a new
+  named-pipe opcode, but `protocol.py` is byte-identical to the Rust
+  supervisor for cross-implementation migration; adding an opcode there is a
+  contract change. Tray-only for v1; add the opcode (trigger-and-forget, since
+  a full check/download blows past `_serve_pipe`'s 20s response window) only
+  once the Rust side is retired or mirrors it.
+- **Authenticode signing** of `setup.exe`/`FusedRenderPy.exe`. Post-2023 CA/B
+  rules require an HSM (Azure Trusted Signing / SSL.com eSigner — USB tokens
+  don't work on hosted runners), i.e. org verification + pipeline work. It
+  mainly buys first-install SmartScreen trust, which the update path largely
+  dodges (the file is written directly, no Mark-of-the-Web). Fast-follow.
+- **Fully silent auto-install** (no install prompt) and **WinSparkle** — out of
+  scope by design. The install step stays user-approved.
+
+## Acceptance gates — updates
+
+- Background check on a current build → silent: nothing downloaded, no dialog.
+- Background check when a newer version exists → downloads + verifies silently,
+  then prompts; **decline** leaves the app untouched and isn't re-prompted this
+  session; **accept** launches the installer, the app updates in place and
+  relaunches, no orphan processes, port freed.
+- Manual "Check for updates…" with no newer version → "up to date" dialog.
+- Tampered manifest or binary (bad signature or sha256 mismatch) → refused, no
+  install (background: silent + logged; manual: error dialog).
+- Transient network failure on a background tick → silent (logged), no dialog.
+- A release actually publishes `setup.exe` + `latest.json` to the CDN and the
+  manifest is not served stale after invalidation.

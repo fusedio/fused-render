@@ -16,11 +16,9 @@ from urllib.parse import quote, unquote, urlsplit
 
 
 def _is_drive_path(fs_path: str) -> bool:
-    # PureWindowsPath does the shape reasoning that a hand-rolled
-    # ^[A-Za-z]:[\\/] regex was doing before: a drive-letter path's drive is
-    # 'C:' plus a non-empty root; a UNC path's drive is '\\\\server\\share'
-    # (doesn't end in ':'); a POSIX path's drive is ''. 'C:foo' (drive-
-    # relative, no root) is excluded, matching the old regex's behavior.
+    # A drive-letter path has drive 'C:' + a non-empty root; a UNC path's
+    # drive is '\\\\server\\share' (no trailing ':'); a POSIX path's is ''.
+    # 'C:foo' (drive-relative, no root) is excluded.
     p = PureWindowsPath(fs_path)
     return p.drive.endswith(":") and bool(p.root)
 

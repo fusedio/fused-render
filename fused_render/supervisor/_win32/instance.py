@@ -95,12 +95,9 @@ class SecondaryInstance:
             return  # primary already gone
         try:
             result = win32event.WaitForSingleObject(mutex, int(timeout * 1000))
-            # 0 = WAIT_OBJECT_0, 0x80 = WAIT_ABANDONED (repo convention: the
-            # raw value, as winopen.py already uses, rather than win32con's
-            # copy of the constant — not guaranteed present on every pywin32
-            # build). Abandoned is the NORMAL case here: the primary's
-            # upgrade-teardown path never calls release() itself, it just
-            # exits and lets Windows mark the mutex abandoned.
+            # 0x80 = WAIT_ABANDONED (raw value; not on every pywin32 build).
+            # Abandoned is normal here: the primary's upgrade teardown exits
+            # without release(), so Windows marks the mutex abandoned.
             if result in (win32event.WAIT_OBJECT_0, 0x80):
                 try:
                     win32event.ReleaseMutex(mutex)
@@ -126,13 +123,11 @@ class PrimaryInstance:
         return thread
 
     def stop_serving(self) -> None:
-        """Idempotent stop for the pipe thread. Sets the stop flag first,
-        then pokes the pipe with a single non-protocol byte purely to
-        unblock a ConnectNamedPipe parked in _serve_pipe — deliberately NOT
-        a ShutdownForUpgrade frame, so a genuine installer request racing a
-        TRAY_EXIT/SERVER_DIED teardown stays distinguishable from this
-        self-unblock (the poke is answered with status 1 inside _serve_pipe
-        and never reaches the requests queue)."""
+        """Idempotent stop for the pipe thread: set the stop flag, then poke
+        the pipe with a single non-protocol byte to unblock a parked
+        ConnectNamedPipe. Deliberately not a ShutdownForUpgrade frame, so a
+        real installer request stays distinguishable from this self-unblock
+        (the poke is answered status 1 and never reaches the queue)."""
         self._stop.set()
         try:
             win32pipe.CallNamedPipe(self.names.pipe, b"\x00", 4, 250)
@@ -151,12 +146,9 @@ def acquire(names: InstanceNames) -> PrimaryInstance | SecondaryInstance:
     mutex = win32event.CreateMutex(sa, True, names.mutex)
     already_exists = win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS
     if already_exists:
-        # Close explicitly rather than let refcounting/GC time this — the
-        # named mutex is a kernel object shared with the primary and stays
-        # alive as long as ANY handle references it; a lingering secondary
-        # handle would keep it alive past the primary's own exit, making a
-        # later launch also see ERROR_ALREADY_EXISTS and burn its pipe
-        # timeout as a secondary instead of taking over as primary.
+        # Close explicitly, not via GC: the named mutex lives as long as any
+        # handle does, so a lingering secondary handle would keep it alive
+        # past the primary's exit and make a later launch a secondary too.
         mutex.Close()
         return SecondaryInstance(names)
     return PrimaryInstance(mutex, names)
@@ -187,11 +179,9 @@ def _serve_pipe(
                 sa,
             )
         except pywintypes.error as error:
-            # FIRST_PIPE_INSTANCE races the previous client's handle close: a
-            # just-disconnected client that still holds its handle makes this
-            # transiently fail with ERROR_ACCESS_DENIED. One transient
-            # failure must not kill IPC for the rest of the session — retry
-            # with backoff, and only give up (loudly) if it never clears.
+            # FIRST_PIPE_INSTANCE races a just-disconnected client that still
+            # holds its handle (transient ERROR_ACCESS_DENIED). Retry with
+            # backoff; give up loudly only if it never clears.
             failures += 1
             if failures >= _GIVE_UP_AFTER_ATTEMPTS:
                 if log is not None:
@@ -213,10 +203,8 @@ def _serve_pipe(
                     if e.winerror != winerror.ERROR_PIPE_CONNECTED:
                         raise
 
-                # Deliberate NOWAIT + poll loop (not a blocking ReadFile): bounds a
-                # slow/hung client to a 5s deadline instead of stalling this
-                # thread's accept loop indefinitely — a DoS guard, not a style
-                # choice. Do not "simplify" to a blocking read.
+                # NOWAIT + poll (not a blocking ReadFile) bounds a slow/hung
+                # client to a 5s deadline instead of stalling the accept loop.
                 win32pipe.SetNamedPipeHandleState(
                     handle, win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_NOWAIT, None, None
                 )
@@ -262,10 +250,8 @@ def _serve_pipe(
                     stop.set()
                     return
             except Exception as error:  # noqa: BLE001 - one broken client must not kill IPC
-                # This boundary's job is "handle one client, however
-                # malformed, then take the next" — the thread has no caller
-                # to re-raise to, so an uncaught exception here is silently
-                # fatal to single-instance IPC for the rest of the session.
+                # No caller to re-raise to: an uncaught exception here would
+                # silently kill IPC for the rest of the session.
                 if log is not None:
                     log(f"pipe client handling failed: {error}")
         finally:

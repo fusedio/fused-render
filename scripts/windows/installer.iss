@@ -51,6 +51,9 @@ CloseApplications=no
 RestartApplications=no
 ChangesAssociations=yes
 SetupLogging=yes
+; Serialize installer runs — an auto-update prompt launching setup can race a
+; manual reinstall through ActivatePayload's rename dance otherwise.
+SetupMutex=FusedRenderPySetup
 
 [Files]
 Source: "{#BundleDir}\{#ExeName}"; DestDir: "{app}\next"; Flags: ignoreversion
