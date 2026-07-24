@@ -3498,9 +3498,17 @@ def attach_mount(m: dict) -> str | None:
                 f"kernel NFS mount is absent; retry reconnect")
     # Record what was actually baked into this mount's vfsOpt: rcd never
     # echoes mount options back, so this is the only way the adopt path above
-    # can tell a live VFS predates a read_only change and must be remounted.
-    if bool(m.get("mounted_read_only")) != bool(m.get("read_only")):
-        m["mounted_read_only"] = bool(m.get("read_only"))
+    # (and _effective_serve_read_only) can tell a live VFS predates a read_only
+    # change. Persist the bake EXPLICITLY, False included — a writable attach
+    # must write mounted_read_only=False, not leave the key absent: otherwise a
+    # later read_only=true drift on the win32 deferred-remount path can't tell
+    # the live VFS is writable and forks a second serve VFS. Only genuinely
+    # legacy/foreign records (adopted via listmounts, never through here) keep an
+    # absent key, which the consumers treat as "unknown bake". Compare against
+    # the raw stored value so an already-correct bool is a no-op (no churn).
+    baked = bool(m.get("read_only"))
+    if m.get("mounted_read_only") != baked:
+        m["mounted_read_only"] = baked
         _update_mount(m)
     sync_serves()
     return None

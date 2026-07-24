@@ -669,6 +669,40 @@ def test_win32_adopt_mismatch_serve_shares_live_mount_vfs(home, rcd, monkeypatch
     assert all(s.get("read_only") == "false" for s in starts)  # shares live VFS
 
 
+def test_writable_attach_records_mounted_read_only_false(home, rcd):
+    # A successful WRITABLE attach must persist mounted_read_only=False (not skip
+    # the write), so _effective_serve_read_only always has the baked truth for
+    # mounts we attached — otherwise a later read_only drift falls back to the
+    # record and forks a second VFS.
+    c = mounts_mod.add_mount("data", "remote:bucket")  # writable (no read_only)
+    assert mounts_mod.attach_mount(c) is None
+    [stored] = mounts_mod.list_mounts()
+    assert stored["mounted_read_only"] is False
+
+
+def test_deferred_remount_formerly_writable_serve_read_only_false(home, rcd, monkeypatch):
+    # End-to-end: a normal writable attach persists the bake (False); later the
+    # record flips to read_only=True but win32 has no WinFsp, so the remount is
+    # deferred and the live VFS stays writable. The serve must derive ReadOnly
+    # from the RECORDED bake (False), not the drifted record (True).
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert mounts_mod.attach_mount(c) is None
+    [stored] = mounts_mod.list_mounts()
+    assert stored["mounted_read_only"] is False  # bake persisted by the attach
+    # Detection later flips the record read-only; win32 defers the remount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    stored["read_only"] = True
+    mounts_mod._update_mount(stored)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": stored["remote"], "MountPoint": mp}]}
+    rcd.calls.clear()
+    assert mounts_mod.attach_mount(stored) is None
+    starts = [body for (meth, body) in rcd.calls if meth == "serve/start"]
+    assert starts and all(s.get("read_only") == "false" for s in starts)
+
+
 def test_unmount_calls_rc(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.detach_mount(c) is None
