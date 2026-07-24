@@ -106,12 +106,21 @@ made *no* calls at all. `--since-cursor <id>` (the `cursor` printed at the end)
 returns only what is new since a previous run, which is handy in a loop or for
 an agent checking its own work.
 
+**Superseded calls.** Dragging a slider fires a call per tick, and each one
+cancels the last — so most of a drag is work nobody waited for. Those calls are
+recorded and counted as **stale**, but deliberately left out of the duration
+percentiles: including them would report a dozen slow calls for what you
+experienced as one. A large stale count next to a small ok count is the sign a
+page is re-running Python far more than it needs to (a slider with no debounce,
+or an `onChange` handler that retriggers itself).
+
 **Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
-per day per server process. Records are capped (a long traceback or a big
-parameter is truncated, and marked as such), rate-limited per page, and pruned
-after 14 days or once the directory passes 200 MB — whichever comes first. The
-files are ordinary JSONL, so `tail`, `jq`, and the built-in `duckdb` view all
-work on them.
+per day per server process, rolled to a new part every 32 MB. Records are capped
+(a long traceback or a big parameter is truncated, and marked as such),
+rate-limited per page, and pruned after 14 days or once the directory passes
+200 MB — whichever comes first. Today's files are never pruned, since a running
+server is appending to them. The files are ordinary JSONL, so `tail`, `jq`, and
+the built-in `duckdb` view all work on them.
 
 **A note on parameters.** A run's parameters are recorded by default: they are
 usually the whole reproduction, and they are already visible in the URL. If a

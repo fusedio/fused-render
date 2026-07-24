@@ -458,10 +458,51 @@ def test_config_reports_the_store_location(app_client):
     assert body["retention_days"] == 14
 
 
-def test_day_file_is_per_process(store):
+def test_day_file_is_per_process_and_part(store):
     """Two live servers must not interleave lines into one file (the same
-    reasoning logs.py applies to its per-pid log)."""
-    assert f"-{os.getpid()}.calls.jsonl" in calls.day_file()
+    reasoning logs.py applies to its per-pid log), and the part suffix is
+    zero-padded so a name sort stays chronological — which the oldest-first size
+    trim depends on."""
+    assert calls.day_file().endswith(f"-{os.getpid()}-001.calls.jsonl")
+    assert sorted([calls.day_file(part=10), calls.day_file(part=2)]) == [
+        calls.day_file(part=2), calls.day_file(part=10)]
+
+
+def test_appends_roll_to_a_new_part_past_the_file_cap(store, monkeypatch):
+    """Without a per-file cap a single day's file grows unbounded: the directory
+    cap can only delete whole files and must never delete a live one."""
+    monkeypatch.setattr(calls, "MAX_FILE_BYTES", 400)
+    first = calls.current_file()
+    write_records([rec() for _ in range(4)])
+    assert os.path.getsize(first) >= 400
+    second = calls.current_file()
+    assert second != first and second.endswith("-002.calls.jsonl")
+    write_records([rec(call_id="rolled")])
+    assert os.path.exists(second)
+    # Both parts are still one logical log.
+    assert calls.overview()["total"] == 5
+
+
+def test_size_trim_never_deletes_a_live_file(store, monkeypatch):
+    """Trimming is whole-file, so today's files (possibly open for append by this
+    process OR another server) are not candidates — deleting one silently
+    discarded the whole day, since the writer just recreates it."""
+    os.makedirs(store, exist_ok=True)
+    live = calls.current_file()
+    with open(live, "w") as fh:
+        fh.write("x" * 3000)
+    monkeypatch.setattr(calls, "DEFAULT_MAX_BYTES", 1000)
+    monkeypatch.setenv(calls.RETENTION_DAYS_ENV, "14")
+    assert calls.sweep() == 0
+    assert os.path.exists(live), "the live file must survive an over-cap sweep"
+
+    # An older file IS fair game, and the live one still survives.
+    old = os.path.join(store, "2020-01-02-1-001.calls.jsonl")
+    with open(old, "w") as fh:
+        fh.write("y" * 3000)
+    os.utime(old, (time.time() - 2 * 86400,) * 2)  # inside the age window
+    assert calls.sweep() == 1
+    assert os.path.exists(live) and not os.path.exists(old)
 
 
 # ------------------------------------------------------- registry + gate wiring
@@ -548,3 +589,160 @@ def test_calls_reader_is_allowlisted_for_in_process_execution():
 
     reader = os.path.realpath(os.path.join(core_templates_dir(), "calls", "reader.py"))
     assert reader in executor.INPROCESS_HELPERS
+
+
+# ------------------------------------------------- superseded reporting (CL-5)
+
+def test_an_abandoned_call_is_marked_superseded(app_client):
+    """The seam the original test missed: it asserted the ROLLUP excludes
+    superseded records, never that anything ever produces one.
+
+    The server cannot detect this itself — aborting a fetch does not raise into
+    the handler, so the run completes and would be recorded as an ordinary
+    success. The page reports it, keyed by the X-Fused-Call id it already sent.
+    """
+    client, d = app_client
+    assert client.post("/api/calls/event",
+                       json={"kind": "superseded", "call_ids": ["scrub-1"]},
+                       headers={"X-Fused": "1"}).json() == {"marked": 1}
+    client.post("/api/run",
+                json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "scrub-1"}))
+    assert drain()
+    got = calls.detail("scrub-1")
+    assert got["outcome"] == "superseded"
+    assert got["status"] == 200, "the run itself still succeeded; only the label differs"
+
+
+def test_a_superseded_run_is_excluded_from_the_percentiles_end_to_end(app_client):
+    """One drag: several abandoned calls plus the one the user waited for. The
+    chart must report the kept call's latency, not the drag's."""
+    client, d = app_client
+    for i in range(4):
+        call_id = f"tick-{i}"
+        if i < 3:  # the first three are superseded by the next
+            client.post("/api/calls/event",
+                        json={"kind": "superseded", "call_ids": [call_id]},
+                        headers={"X-Fused": "1"})
+        client.post("/api/run",
+                    json={"py": str(d / "ok.py"), "html": str(d / "p.html"),
+                          "params": {"freq": str(i)}},
+                    headers=app_headers(d / "p.html", **{"X-Fused-Call": call_id}))
+    assert drain()
+    row = calls.targets()["targets"][0]
+    assert row["count"] == 4
+    assert row["superseded"] == 3
+    kept = calls.detail("tick-3")
+    assert row["max"] == kept["server_ms"], "percentiles must reflect only the kept call"
+
+
+def test_a_mark_is_consumed_once(store):
+    """An id must never stamp two records — a recycled or replayed report cannot
+    silently reclassify a later, real call."""
+    calls.mark_superseded(["once"])
+    assert calls._take_superseded("once") is True
+    assert calls._take_superseded("once") is False
+
+
+def test_marks_expire_and_are_hard_bounded(store, monkeypatch):
+    """A page that reports and then navigates away must not leave ids resident
+    forever, and a runaway page must not grow the set without limit."""
+    monkeypatch.setattr(calls, "_SUPERSEDED", {})
+    monkeypatch.setattr(calls, "_SUPERSEDED_TTL_S", 0.0)
+    calls.mark_superseded(["stale"])
+    calls.mark_superseded(["fresh"])  # the sweep on entry evicts 'stale'
+    assert calls._take_superseded("stale") is False
+
+    monkeypatch.setattr(calls, "_SUPERSEDED", {})
+    monkeypatch.setattr(calls, "_SUPERSEDED_TTL_S", 300.0)
+    monkeypatch.setattr(calls, "_SUPERSEDED_MAX", 10)
+    calls.mark_superseded([f"id-{i}" for i in range(50)])
+    assert len(calls._SUPERSEDED) == 10
+
+
+def test_superseded_event_validates_its_payload(app_client):
+    client, _ = app_client
+    res = client.post("/api/calls/event", json={"kind": "superseded", "call_ids": "nope"},
+                      headers={"X-Fused": "1"})
+    assert res.status_code == 400
+    assert "call_ids" in res.json()["error"]
+
+
+def test_the_runtime_reports_supersession(store):
+    """The client half of CL-5 — assert the wiring exists in runtime.js, since
+    nothing else in the suite executes it (it needs a real browser)."""
+    runtime = os.path.join(os.path.dirname(calls.__file__), "static", "runtime.js")
+    src = open(runtime, encoding="utf-8").read()
+    assert "reportSuperseded(prev._callId)" in src, "the abort path must report"
+    assert '"kind": "superseded"' in src or '"superseded"' in src
+    assert "controller._callId = newCallId()" in src, "the id must be stable per call"
+    assert "flushSuperseded();" in src, "a closing page must flush its queue"
+
+
+# --------------------------------------------------- scoping + bounded reads
+
+def test_this_file_scope_works_for_a_py_target(store):
+    """A `.py` is never a record's `page` (the .html is) — so filtering by it
+    must also match the call's entrypoint, or the Calls view the registry offers
+    for a data file shows nothing on a file that plainly has history."""
+    write_records([rec(page="/app/p.html", entrypoint="/app/d.py", entrypoint_name="d.py")])
+    assert calls.overview(page="/app/d.py")["total"] == 1
+    assert calls.overview(page="/app/p.html")["total"] == 1
+    assert calls.overview(page="/app/other.py")["total"] == 0
+
+
+def test_reads_skip_files_outside_the_window(store, monkeypatch):
+    """A one-hour question must not parse a fortnight of records."""
+    os.makedirs(store, exist_ok=True)
+    old_path = os.path.join(store, "2020-01-01-1-001.calls.jsonl")
+    with open(old_path, "w") as fh:
+        for i in range(500):
+            fh.write(json.dumps(rec(call_id=f"old-{i}",
+                                    occurred_at="2020-01-01T00:00:00.000Z")) + "\n")
+    os.utime(old_path, (time.time() - 400 * 86400,) * 2)
+    write_records([rec(call_id="new")])
+
+    opened = []
+    real_open = calls._iter_lines_reverse
+
+    def spy(path, *a, **kw):
+        opened.append(os.path.basename(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(calls, "_iter_lines_reverse", spy)
+    assert calls.overview(since=time.time() - 3600)["total"] == 1
+    assert old_path.split(os.sep)[-1] not in opened, "the stale file must not be read at all"
+
+
+def test_reads_stop_at_the_window_inside_a_file(store):
+    """Within a file, records are append-ordered, so the first one older than the
+    window ends it — the rest are older still."""
+    os.makedirs(store, exist_ok=True)
+    path = calls.current_file()
+    with open(path, "w") as fh:
+        for i in range(200):  # older half, written first
+            fh.write(json.dumps(rec(call_id=f"old-{i}",
+                                    occurred_at="2020-01-01T00:00:00.000Z")) + "\n")
+        for i in range(3):
+            fh.write(json.dumps(rec(call_id=f"new-{i}")) + "\n")
+    seen = list(calls._iter_records([path], since=time.time() - 3600))
+    assert [r["call_id"] for r in seen] == ["new-2", "new-1", "new-0"]
+
+
+def test_reverse_line_reader_handles_block_boundaries(store):
+    """A line straddling the read-block boundary must not be split or lost."""
+    os.makedirs(store, exist_ok=True)
+    path = os.path.join(store, "2026-07-24-1-001.calls.jsonl")
+    payloads = [json.dumps(rec(call_id=f"c-{i}", stdout_tail="x" * 97)) for i in range(200)]
+    with open(path, "w") as fh:
+        fh.write("\n".join(payloads) + "\n")
+    got = [json.loads(line)["call_id"] for line in calls._iter_lines_reverse(path, chunk=128)]
+    assert got == [f"c-{i}" for i in reversed(range(200))]
+
+
+def test_a_file_without_a_trailing_newline_is_fully_read(store):
+    os.makedirs(store, exist_ok=True)
+    path = os.path.join(store, "2026-07-24-2-001.calls.jsonl")
+    with open(path, "w") as fh:
+        fh.write(json.dumps(rec(call_id="a")) + "\n" + json.dumps(rec(call_id="b")))
+    assert [r["call_id"] for r in calls._iter_records([path])] == ["b", "a"]

@@ -312,6 +312,9 @@
     // A pending coalesced write (D99) must not die with this document — the
     // URL is the bookmarkable truth.
     flushHistory();
+    // Likewise a queued supersession report: without it the abandoned calls a
+    // closing page had in flight get recorded as ordinary successes.
+    flushSuperseded();
     for (const win of hookedWindows) {
       try {
         win.removeEventListener("fused:urlchange", notifyIfChanged);
@@ -375,14 +378,60 @@
 
   // Merge the attribution headers into a call's own headers. Callers pass the
   // headers they need (Content-Type, X-Fused) and get those plus attribution.
-  function callHeaders(extra) {
+  function callHeaders(extra, callId) {
     const headers = Object.assign({}, extra || {});
     const page = ownQuery("path");
     if (page) headers["X-Fused-Page"] = page;
     const target = ownQuery("_file");
     if (target) headers["X-Fused-Target"] = target;
-    headers["X-Fused-Call"] = newCallId();
+    // A caller-supplied id lets the abort path name the call it cancelled
+    // (see reportSuperseded); anything else gets a fresh one.
+    headers["X-Fused-Call"] = callId || newCallId();
     return headers;
+  }
+
+  // ---- superseded reporting (docs/CALL_LOG_DESIGN.md §6.2, SPEC CL-5) -------
+  // The server CANNOT infer that a call was abandoned: aborting the fetch does
+  // not raise into the handler, so it runs to completion and gets recorded as an
+  // ordinary success — which would make one slider drag look like a dozen real
+  // requests and put their durations into the latency percentiles. Only the page
+  // knows, so it says so, keyed by the X-Fused-Call id it already sent.
+  //
+  // The superseded run keeps executing for as long as it would have, so this
+  // report reliably lands before the record is written — which is what lets the
+  // server stamp the outcome in place instead of patching an append-only file.
+  const supersededIds = [];
+  let supersededQueued = false;
+
+  function reportSuperseded(callId) {
+    if (!callId || !ownQuery("path")) return;
+    supersededIds.push(callId);
+    if (supersededQueued) return;
+    supersededQueued = true;
+    // Next macrotask — batches only the ids produced by this one task (several
+    // runPython calls fired from a single handler), which is the whole realistic
+    // burst: a slider tick supersedes exactly one call. A timed window would buy
+    // nothing and could land after a short run's record was already written.
+    setTimeout(flushSuperseded, 0);
+  }
+
+  function flushSuperseded() {
+    supersededQueued = false;
+    const ids = supersededIds.splice(0, supersededIds.length);
+    if (!ids.length) return;
+    try {
+      // keepalive, NOT navigator.sendBeacon: a beacon cannot set the X-Fused
+      // header this endpoint requires, so it would simply 403. keepalive gives
+      // the same survives-unload property with headers intact.
+      fetch("/api/calls/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Fused": "1" },
+        body: JSON.stringify({ kind: "superseded", call_ids: ids }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) {
+      /* reporting is best-effort; never let it break a run */
+    }
   }
 
   function runPython(pyPath, params, opts) {
@@ -391,10 +440,12 @@
     const key = opts.key === undefined ? pyPath : opts.key;
     const keyed = key !== null;
     const controller = new AbortController();
+    controller._callId = newCallId();
     if (keyed) {
       const prev = inflightByKey.get(key);
       if (prev) {
         prev._supersededByKey = true; // its impending abort is supersession, not an error
+        reportSuperseded(prev._callId); // so the log doesn't count it as a real call
         prev.abort();
       }
       inflightByKey.set(key, controller);
@@ -421,7 +472,8 @@
       method: "POST",
       // X-Fused forces a CORS preflight so a foreign page can't fire this
       // execute endpoint blind (see server.py _require_fused).
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                           controller._callId),
       body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
       signal: controller.signal,
     })

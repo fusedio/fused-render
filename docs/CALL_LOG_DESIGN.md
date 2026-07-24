@@ -6,11 +6,13 @@ attribution headers and `window.onerror` hook, the `fused-render calls` CLI,
 Preferences controls, `tests/test_calls.py`. This file stays the design record:
 the rationale, the alternatives that were rejected, and the phases still open.
 
-The five §6 decisions were resolved as recommended, with two changes of scope:
-the CLI moved **into** phase 1 (it is the agent's only read surface, §9.2) and
-`page-error` records were added to it (§9.2a — the runtime had no
-`window.onerror` hook, so the most informative record was uncapturable).
-Deviations from the design as written are marked **[shipped]** inline below.
+Two changes of scope from the plan: the CLI moved **into** phase 1 (it is the
+agent's only read surface, §9.2) and `page-error` records were added to it
+(§9.2a — the runtime had no `window.onerror` hook, so the most informative record
+was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
+deferral of client-side supersession reporting, which turned out to be the whole
+of CL-5 rather than a refinement of it (D135; the four defects review found are
+in §9.5). Deviations from the design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
 > **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
@@ -462,10 +464,17 @@ recommendation: **(b)**, with the sidecar left alone. Sidecar writes on a
 firehose is the thing §4.1 rejected, and a debounced version of it is the same
 bug with a longer fuse.
 
-**6.2 Is client-side reconciliation worth it?** **[shipped: deferred to phase
-2, as recommended.]** The server infers `disconnected` from
-`asyncio.CancelledError` in the middleware; `X-Fused-Call` is already sent, so
-adding reconciliation later is additive.
+**6.2 Is client-side reconciliation worth it?** **[shipped — and the original
+recommendation here was WRONG, corrected in D135.]** Deferring it traded away
+CL-5, the feature's central guarantee: the server-side substitute this decision
+assumed (`asyncio.CancelledError` out of `call_next`) **never fires**, so every
+abandoned call was recorded as an ordinary success and counted in the
+percentiles. The client now reports abandoned `call_id`s and `finish()` stamps
+the outcome. It turned out cheap because of a timing accident the original
+analysis missed — the client knows at abort time, ~1 s before the still-running
+handler finishes, so the report lands before the record is written and no
+append-only mutation is needed. Exact `client_ms` remains unshipped; that part
+really is a nicety.
 
 *Original text:* The `X-Fused-Call` +
 `/api/calls/outcome` round trip (§4.3) is what makes `superseded` and
@@ -718,7 +727,10 @@ the difference between "I wrote the files, try it" and "verified: three calls,
 
 ## 9.4 What implementation changed about the design
 
-Three things only building it revealed:
+Three things building it revealed, and four more that only adversarial review
+did (D135) — the four are in §9.5 because they are a different lesson.
+
+From building it:
 
 - **Built-in templates run from a staged copy**, not the package dir
   (`core_templates.py` stages them into `~/.fused-render/.core-templates/`).
@@ -736,6 +748,35 @@ Three things only building it revealed:
   `Number(undefined) || 0` silently turned the default time window into "All",
   and the filter box rendered the literal string "undefined". Worth knowing for
   any template that reads params with a default.
+
+## 9.5 What review revealed, after "done"
+
+The four defects found by asking "what doesn't work?" of a feature whose tests
+were green. Recorded because the *shape* of each is more instructive than the
+fix:
+
+- **A guarantee with no producer.** CL-5's exclusion of superseded calls was
+  implemented, specced, and tested — and nothing ever set the outcome it filters
+  on. The test wrote `outcome="superseded"` records by hand and asserted the
+  rollup dropped them: it tested the consumer, and the producer did not exist.
+  Both halves correct, empty seam. The lesson is that a test which constructs
+  its own input cannot tell you the input ever occurs.
+- **A mode that passes its own gate and shows nothing.** The `.py` binding's
+  `condition.py` correctly confirmed a data file had history, then the default
+  scope filtered on a field a `.py` never occupies. Two correct components,
+  contradictory together — and only visible by opening the thing.
+- **A bound that measured the wrong dimension.** "Pre-aggregated so the charts
+  stay fast" was true of the *response* and false of the *work*: a one-hour
+  window parsed the whole retention window. Bounding what you send is not
+  bounding what you read.
+- **A cleanup that destroyed live data.** The directory cap deleted the file the
+  writer had open — the safety mechanism doing the damage, in precisely the
+  scenario it existed for.
+
+Common thread: every one of them sat in the gap *between* two pieces that were
+each individually correct and individually tested. None would have been found by
+more unit tests of either side; three of the four needed a real browser or a
+real socket, and the fourth needed a benchmark.
 
 ## 10. Other uses this unlocks
 

@@ -97,6 +97,13 @@ DEFAULT_MAX_BYTES = 200 * 1024 * 1024
 RETENTION_DAYS_ENV = "FUSED_RENDER_CALLS_RETENTION_DAYS"
 DISABLE_ENV = "FUSED_RENDER_CALLS"
 
+# Per-FILE cap, rolled to a new part when exceeded. Without it a single day's
+# file grows without bound: the directory cap (above) can only delete whole
+# files, and it must never delete a live one — so a burst inside one day had
+# nothing standing in its way at all. logs.py rotates the app log for the same
+# reason; this is the call log's equivalent.
+MAX_FILE_BYTES = 32 * 1024 * 1024
+
 _SUFFIX = ".calls.jsonl"
 
 # The calls view's own reader. Reading the log must not append to the log:
@@ -128,17 +135,42 @@ def store_dir() -> str:
     return os.path.join(storage.home_dir(), "calls")
 
 
-def day_file(when: float | None = None) -> str:
-    """This process's file for a given day: ``<date>-<pid>.calls.jsonl``.
+def day_stamp(when: float | None = None) -> str:
+    """The UTC date segment that names a file: ``YYYY-MM-DD``."""
+    stamp = datetime.fromtimestamp(when if when is not None else time.time(), timezone.utc)
+    return stamp.strftime("%Y-%m-%d")
+
+
+def day_file(when: float | None = None, part: int = 1) -> str:
+    """This process's file: ``<date>-<pid>-<part>.calls.jsonl``.
 
     Per-pid like logs.py's log_path(), and for the same reason: two live
     servers (two ports, or the desktop app beside a CLI) would otherwise
     interleave lines into one file. The reader globs the day, so a split file
-    set costs nothing on the read side. The ``.calls.jsonl`` compound suffix is
+    set costs nothing on the read side.
+
+    ``part`` is the within-day roll (MAX_FILE_BYTES). Zero-padded so a plain
+    name sort stays chronological — date, then pid, then part — which the
+    oldest-first size trim depends on. The ``.calls.jsonl`` compound suffix is
     what the template registry binds (CT-3 specificity beats a bare ``.jsonl``).
     """
-    stamp = datetime.fromtimestamp(when if when is not None else time.time(), timezone.utc)
-    return os.path.join(store_dir(), f"{stamp.strftime('%Y-%m-%d')}-{os.getpid()}{_SUFFIX}")
+    return os.path.join(
+        store_dir(), f"{day_stamp(when)}-{os.getpid()}-{part:03d}{_SUFFIX}")
+
+
+def current_file() -> str:
+    """The file to append to now: the highest existing part for today+pid, rolled
+    to the next part once it passes MAX_FILE_BYTES."""
+    part = 1
+    while part < 1000:
+        path = day_file(part=part)
+        try:
+            if os.path.getsize(path) < MAX_FILE_BYTES:
+                return path
+        except OSError:
+            return path  # absent -> this is the one to create
+        part += 1
+    return day_file(part=999)  # pathological; keep writing rather than lose records
 
 
 def store_files() -> list[str]:
@@ -317,6 +349,51 @@ def is_first_party(page: str | None) -> bool:
     return False
 
 
+# ------------------------------------------------------ superseded reporting
+
+# Call ids the PAGE has reported as abandoned (D114 latest-wins cancellation).
+# The server cannot infer this: a client abort does not raise into the handler —
+# uvicorn runs it to completion and the middleware would record an ordinary
+# success — so the page is the only source of truth, and this is where its
+# report waits for the still-running call to finish. That ordering is what makes
+# the whole approach work: the client knows at abort time, typically ~1s before
+# the handler returns, so the mark is nearly always present when finish() writes
+# the record, and no patching of an append-only file is needed.
+#
+# Bounded two ways: a TTL, because a page that reports and then navigates away
+# would otherwise leave ids resident forever, and a hard count, because a
+# runaway page must not grow this without limit.
+_SUPERSEDED: dict[str, float] = {}
+_SUPERSEDED_TTL_S = 300.0
+_SUPERSEDED_MAX = 4096
+_superseded_lock = threading.Lock()
+
+
+def mark_superseded(call_ids: list) -> int:
+    """Remember that the page abandoned these calls; returns how many were taken."""
+    now = time.monotonic()
+    with _superseded_lock:
+        for known, seen in list(_SUPERSEDED.items()):
+            if now - seen > _SUPERSEDED_TTL_S:
+                del _SUPERSEDED[known]
+        added = 0
+        for call_id in call_ids:
+            if isinstance(call_id, str) and call_id:
+                _SUPERSEDED[call_id] = now
+                added += 1
+        while len(_SUPERSEDED) > _SUPERSEDED_MAX:
+            _SUPERSEDED.pop(next(iter(_SUPERSEDED)))
+    return added
+
+
+def _take_superseded(call_id: str | None) -> bool:
+    """Consume a pending mark — once, so an id can never stamp two records."""
+    if not call_id:
+        return False
+    with _superseded_lock:
+        return _SUPERSEDED.pop(call_id, None) is not None
+
+
 # ------------------------------------------------------------- the write path
 
 _queue: queue.Queue | None = None
@@ -369,6 +446,7 @@ def _writer_loop(q: queue.Queue) -> None:
     """
     _sweep_safely()
     last_sweep = time.monotonic()
+    last_day = day_stamp()
     while True:
         try:
             first = q.get()
@@ -384,14 +462,19 @@ def _writer_loop(q: queue.Queue) -> None:
             _append(batch)
         except OSError as e:
             logger.warning("call log: could not write %d record(s): %s", len(batch), e)
-        # Retention runs on the writer thread (never a request), once a day.
-        if time.monotonic() - last_sweep > 86_400:
+        # Retention runs on the writer thread (never a request). On a day roll as
+        # well as the 24h timer: a server running across midnight should prune the
+        # newly-expired day promptly, and the roll is the natural hook — the
+        # writer has just moved to a new file.
+        today = day_stamp()
+        if today != last_day or time.monotonic() - last_sweep > 86_400:
+            last_day = today
             _sweep_safely()
             last_sweep = time.monotonic()
 
 
 def _append(records: list[dict]) -> None:
-    path = day_file()
+    path = current_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = []
     for rec in records:
@@ -487,15 +570,30 @@ def sweep(now: float | None = None) -> int:
             continue
         sizes.append((path, size))
         total += size
+
+    # A file dated TODAY may be open for append — by this process or by another
+    # server on another port — and deleting it would silently discard the whole
+    # day's records (the writer just recreates it on its next batch). Trimming is
+    # whole-file, so today's files are simply not candidates; MAX_FILE_BYTES is
+    # what bounds growth inside a day.
+    today = day_stamp(now if now is not None else time.time())
     for path, size in sizes:  # oldest first (store_files is name-sorted)
         if total <= DEFAULT_MAX_BYTES:
             break
+        if os.path.basename(path).startswith(today):
+            continue
         try:
             os.unlink(path)
         except OSError:
             continue
         total -= size
         removed += 1
+    if total > DEFAULT_MAX_BYTES:
+        # Everything left is today's. Say so rather than pretending the cap held.
+        logger.warning(
+            "call log: %.1f MB exceeds the %.0f MB cap but only today's files "
+            "remain (live; not deleted) — per-file rolling caps each at %.0f MB",
+            total / 1e6, DEFAULT_MAX_BYTES / 1e6, MAX_FILE_BYTES / 1e6)
     return removed
 
 
@@ -643,6 +741,13 @@ def finish(call: dict | None, *, status: int | None, elapsed_ms: float,
     call["server_ms"] = round(elapsed_ms)
     if err_id:
         call["err_id"] = err_id
+    if _take_superseded(call.get("call_id")):
+        # The page threw this result away before it arrived, so the call must not
+        # enter any latency statistic (CL-5). This wins over the handler's own
+        # ok/error label because "nobody ever saw this" is the truer fact about
+        # the call; any error detail already enriched onto the record is kept —
+        # only the outcome changes.
+        outcome = "superseded"
     if outcome:
         call["outcome"] = outcome
     elif call.get("outcome") is None:
@@ -707,35 +812,91 @@ def record_page_error(body: dict) -> dict:
 
 # ------------------------------------------------------------------ read side
 
-def _iter_records(paths: list[str]):
+READ_CHUNK = 256 * 1024
+
+
+def _iter_lines_reverse(path: str, chunk: int = READ_CHUNK):
+    """Yield a file's lines from the END, reading backwards in blocks.
+
+    Records are appended, so newest-last — and every caller wants newest-first.
+    Reading backwards means a `since` window or a `limit` touches only the tail
+    it needs; the previous `readlines()` pulled an entire day's file into memory
+    before yielding its first line, which on a large store was the whole cost.
+    """
+    with open(path, "rb") as fh:
+        try:
+            pos = fh.seek(0, os.SEEK_END)
+        except OSError:  # pragma: no cover - unseekable store file
+            return
+        tail = b""
+        while pos > 0:
+            step = min(chunk, pos)
+            pos -= step
+            fh.seek(pos)
+            block = fh.read(step) + tail
+            lines = block.split(b"\n")
+            # The first element may be a partial line continuing into the
+            # previous block; hold it back until that block is read.
+            tail = lines.pop(0)
+            for line in reversed(lines):
+                if line.strip():
+                    yield line.decode("utf-8", "replace")
+        if tail.strip():
+            yield tail.decode("utf-8", "replace")
+
+
+def _iter_records(paths: list[str], since: float | None = None):
     """Yield parsed records from newest file to oldest, newest line first.
 
-    Reads one file at a time and never holds the whole store: callers stop
-    early once their limit is met. A corrupt line (a partial write at the tail
-    of a file being appended right now) is skipped, not fatal.
+    ``since`` is an optimization, not a filter (callers still match on it): it
+    lets this stop reading instead of parsing the whole store to answer a
+    one-hour question.
+
+      * a file whose mtime predates the window is skipped whole — its last
+        append is older than anything asked for, and for an append-only file
+        mtime IS its newest record;
+      * within a file, the first record older than the window ends that file —
+        everything further back is older still.
+
+    Files are only skipped, never stopped at, because same-day files from
+    different processes interleave in time; the per-file bound is exact.
+
+    A corrupt line (a torn tail of a file being appended right now) is skipped,
+    not fatal.
     """
     for path in reversed(paths):
+        if since is not None:
+            try:
+                if os.path.getmtime(path) < since:
+                    continue
+            except OSError:
+                continue
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = fh.readlines()
+            for line in _iter_lines_reverse(path):
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if since is not None:
+                    stamp = _epoch(rec.get("occurred_at"))
+                    if stamp is not None and stamp < since:
+                        break  # rest of this file is older
+                yield rec
         except OSError:
             continue
-        for line in reversed(lines):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(rec, dict):
-                yield rec
 
 
 def _matches(rec: dict, *, page=None, entrypoint=None, route=None, outcome=None,
              kind=None, since=None, until=None, failed=False, q=None,
              first_party=None) -> bool:
-    if page and rec.get("page") != page and rec.get("target_file") != page:
+    # "This file" matches any of the three roles a path can play in a record:
+    # the page that made the call, the file a template page was previewing, or
+    # the call's own target. The last one is not optional — a `.py` is NEVER a
+    # `page` (the .html is), so without it the Calls view on a data file, which
+    # the registry offers and the gate confirms has history, showed nothing.
+    if page and page not in (rec.get("page"), rec.get("target_file"), rec.get("entrypoint")):
         return False
     if entrypoint and entrypoint not in (rec.get("entrypoint") or ""):
         return False
@@ -790,7 +951,10 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
     out: list[dict] = []
     newest: str | None = None
     seeking = cursor is not None
-    for rec in _iter_records(store_files()):
+    # No `since` hint while seeking a cursor: the walk has to reach the cursor
+    # record itself, which may sit outside the caller's time window.
+    hint = None if seeking else filters.get("since")
+    for rec in _iter_records(store_files(), since=hint):
         if newest is None:
             newest = rec.get("call_id")
         if seeking:
@@ -814,7 +978,7 @@ def overview(**filters) -> dict:
     pages: dict[str, int] = {}
     first = last = None
     total = 0
-    for rec in _iter_records(store_files()):
+    for rec in _iter_records(store_files(), since=filters.get("since")):
         if not _matches(rec, **filters):
             continue
         total += 1
@@ -873,7 +1037,7 @@ def targets(**filters) -> dict:
     "which of my .py files carries this page, and which one is slow".
     """
     acc: dict[str, dict] = {}
-    for rec in _iter_records(store_files()):
+    for rec in _iter_records(store_files(), since=filters.get("since")):
         if not _matches(rec, **filters):
             continue
         # A page-error has no target — it is what happened INSTEAD of a call —
@@ -928,7 +1092,7 @@ def series(bucket_ms: int = 60_000, **filters) -> dict:
     bucket_ms = max(1_000, min(int(bucket_ms), 86_400_000))
     width = bucket_ms / 1000.0
     buckets: dict[int, dict] = {}
-    for rec in _iter_records(store_files()):
+    for rec in _iter_records(store_files(), since=filters.get("since")):
         if not _matches(rec, **filters):
             continue
         stamp = _epoch(rec.get("occurred_at"))
@@ -999,14 +1163,23 @@ def api_calls_config():
 
 @router.post("/api/calls/event")
 def api_calls_event(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Record a page-level event (today: a JS error) from the runtime."""
+    """Page-originated events: a JS error, or calls the page abandoned.
+
+    Both are things only the page can know — a JS error is what happened
+    *instead* of a call, and a superseded call looks like a plain success from
+    the server's side (CL-5/CL-6).
+    """
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     kind = body.get("kind")
+    if kind == "superseded":
+        ids = body.get("call_ids")
+        if not isinstance(ids, list):
+            return JSONResponse(
+                {"error": "'call_ids' must be a list of call ids"}, status_code=400)
+        return {"marked": mark_superseded(ids)}
     if kind != "page-error":
         return JSONResponse(
-            {"error": "'kind' must be 'page-error' (the only page event recorded today)"},
-            status_code=400,
-        )
+            {"error": "'kind' must be 'page-error' or 'superseded'"}, status_code=400)
     return record_page_error(body)

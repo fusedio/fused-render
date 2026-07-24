@@ -2156,20 +2156,40 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   Thrown-away work is a signal worth seeing (it is the "my page is hammering
   Python" tell); folding it into percentiles would report a dozen slow calls
   for what the user experienced as one request.
+- **CL-5a** **The page reports supersession; the server cannot infer it.**
+  Aborting a `fetch` does **not** raise into the handler — the run completes and
+  the middleware would record an ordinary success — so `runtime.js` posts the
+  abandoned `call_id`s to `POST /api/calls/event` (`kind: "superseded"`) at abort
+  time and `finish()` stamps the outcome from a short-TTL, hard-bounded set of
+  pending marks. The ordering is what makes this work without mutating an
+  append-only file: the superseded run keeps executing for as long as it would
+  have, so the report reliably arrives before its record is written. A mark is
+  consumed once, so an id can never reclassify a second record. The report is
+  batched per macrotask and flushed on `pagehide`. **Known gap:** a closed tab or
+  a reload is not reported by anyone and still records as `ok` — closing that
+  needs server-side disconnect detection (`request.is_disconnected()`), which is
+  also the hook for actually killing the abandoned subprocess. Today the run
+  completes in full: `runPython`'s cancellation frees the browser's connection,
+  not the compute.
 - **CL-6** **`page-error` records: the record for when NO call happened.** A
   page whose JS throws before it reaches `runPython` is, in the log, identical
   to a page nobody opened — so `runtime.js` reports uncaught errors and
   non-runPython unhandled rejections to `POST /api/calls/event`
   (`kind: "page-error"`, carrying message/source/line/col/stack), capped per
-  page load. This is the one writer that is not the middleware, deliberately:
-  a page error is not an HTTP call, it is what happened instead of one. A
+  page load. `POST /api/calls/event` carries both page-originated kinds — this
+  one and `superseded` (CL-5a) — since both are facts only the page can know.
+  A page error is the one record that is not written by the middleware,
+  deliberately: it is not an HTTP call, it is what happened instead of one. A
   runPython failure the page did not catch is NOT re-reported here — the
   server already recorded it against the `/api/run` call, with the real
   traceback.
-- **CL-7** **Store.** `~/.fused-render/calls/<date>-<pid>.calls.jsonl` —
+- **CL-7** **Store.** `~/.fused-render/calls/<date>-<pid>-<part>.calls.jsonl` —
   append-only JSONL under the branch-aware shell home, one file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
-  interleave lines, and the reader globs the day anyway). Not the `<file>.json`
+  interleave lines, and the reader globs the day anyway), rolled to the next
+  `part` past `MAX_FILE_BYTES` (CL-9). `part` is zero-padded so a plain name sort
+  stays chronological — date, then pid, then part — which the oldest-first size
+  trim depends on. Not the `<file>.json`
   sidecar (§21, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
@@ -2185,13 +2205,21 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the record and counts the drop** (surfaced as `dropped`); none may alter the
   response. The writer thread swallows write errors and keeps draining — a
   dead writer would silently stop logging while callers kept queueing.
-- **CL-9** **Three independent bounds**, because a diagnostics store that fills
+- **CL-9** **Four independent bounds**, because a diagnostics store that fills
   the disk would be a worse bug than the one it exists to find: per-record caps
   (CL-2), a **per-page token bucket** (600/min, burst 200 — a runaway render
-  loop drops its excess and cannot silence other pages), and **retention by
-  both age and size** (default 14 days, matching the serve plane's `errors/`
-  lifecycle rule, plus a 200 MB directory cap trimmed oldest-first). Retention
-  runs on the writer thread, never a request. D68 chose the temp dir for the
+  loop drops its excess and cannot silence other pages), a **per-file cap**
+  (`MAX_FILE_BYTES`, 32 MB, rolled to a new part — without it a single day's
+  file grows unbounded, since the directory cap can only delete whole files),
+  and **retention by both age and directory size** (default 14 days, matching
+  the serve plane's `errors/` lifecycle rule, plus a 200 MB cap trimmed
+  oldest-first). **A file dated today is never trimmed**: it may be open for
+  append by this process or another server, and deleting it would silently
+  discard the whole day (the writer simply recreates it) — so within-day growth
+  is bounded by the per-file roll, not by the directory cap, and a store still
+  over cap with only today's files left logs a warning rather than pretending
+  the cap held. Retention runs on the writer thread, never a request — at
+  startup, on a day roll, and on a 24 h timer. D68 chose the temp dir for the
   app log precisely because "nothing prunes the directory"; this store is
   durable instead, so the pruning is code.
 - **CL-10** **Reading the log never appends to it.** The `calls` reader is
@@ -2215,7 +2243,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   `log_studio/reader.py`: `overview`, `page` (cursor-paged), `series`
   (bucketed points), `targets` (per-entrypoint rollup), `detail`, `config`.
   Bucketing and percentiles happen server-side — the template sees one point
-  per bucket, never 100k records. `calls/reader.py` is on
+  per bucket, never 100k records. Reads are also bounded by the **window**, not
+  just by the response size: files are read backwards from the tail, a file
+  whose mtime predates the window is skipped whole (for an append-only file its
+  mtime IS its newest record), and within a file the first record older than the
+  window ends it. Files are skipped but never stopped at, because same-day files
+  from different processes interleave in time. Without this a one-hour question
+  parsed the entire retention window. `calls/reader.py` is on
   `INPROCESS_HELPERS` (D72): it is first-party, never imports or executes user
   code, and its reads are bounded, so following polls a local file read rather
   than a ~700 ms subprocess spawn. Charts are hand-rolled `<canvas>` with no
