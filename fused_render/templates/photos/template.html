@@ -715,6 +715,9 @@ q("moreBtn").onclick = loadMore;
 
 // ---- lightbox (zoom + pan) -----------------------------------------------
 let lbReq = 0;
+let lbImgReq = 0; // request that most recently assigned #lbImg's src, so a stale
+                   // onload/onerror (from an in-flight load a newer request hasn't
+                   // replaced yet) can't hide a newer request's own skeleton.
 let lbCurrentPath = "";
 let zoom = 1, tx = 0, ty = 0, fullLoaded = false, dragging = false, dragSX = 0, dragSY = 0;
 const currentIndex = () => items.findIndex((i) => i.name === P.get("photo"));
@@ -760,6 +763,7 @@ async function openLightbox(photo) {
   captionSkeleton();
   if (isNativePhoto(photo)) {
     fullLoaded = true;
+    lbImgReq = myReq;
     q("lbImg").src = fused.rawUrl(photoPath);
     loadMeta(photoPath);
     preloadNeighbors(idx);
@@ -775,6 +779,7 @@ async function openLightbox(photo) {
     return;
   }
   if (myReq !== lbReq) return;
+  lbImgReq = myReq;
   q("lbImg").src = fused.rawUrl(out.cache);
   loadMeta(photoPath);
   preloadNeighbors(idx);
@@ -945,9 +950,12 @@ stage.addEventListener("wheel", (e) => {
   const cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
   setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), cx, cy, false);
 }, { passive: false });
-q("lbImg").onload = () => { q("lbSpin").style.display = "none"; q("lbSkeleton").style.display = "none"; };
+q("lbImg").onload = () => {
+  if (lbImgReq !== lbReq) return; // a stale load an in-flight newer request hasn't replaced yet
+  q("lbSpin").style.display = "none"; q("lbSkeleton").style.display = "none";
+};
 q("lbImg").onerror = () => {
-  if (!q("lbImg").src) return;
+  if (!q("lbImg").src || lbImgReq !== lbReq) return;
   q("lbSkeleton").style.display = "none";
   q("lbSpin").style.display = "block"; q("lbSpin").textContent = "Cannot display";
 };
