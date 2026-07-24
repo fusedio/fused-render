@@ -21,6 +21,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from fused_render import desktop_probe
+from fused_render._branch import branch_port
 from fused_render._view_url_codec import is_launch_url, open_target_url, view_url
 from fused_render.desktop_probe import DESKTOP_INSTANCE_ID as _INSTANCE_ID
 from fused_render.supervisor import _backend, protocol, tray
@@ -464,6 +465,19 @@ def _current_python_dir() -> Path:
 
 
 def _available_port() -> int:
+    """Prefer the branch's stable base port (1777 for a shipped build) so the
+    server keeps the same origin across restarts — open browser tabs stay valid
+    and per-origin localStorage (e.g. the onboarding tour's "seen" flag) isn't
+    wiped every launch. Scan a small range for the first free port; fall back to
+    an OS-assigned ephemeral port only if the whole range is taken."""
+    base = branch_port()
+    for port in range(base, base + 11):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                continue
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]

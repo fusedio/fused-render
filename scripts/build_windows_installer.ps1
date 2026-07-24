@@ -212,6 +212,17 @@ $icons = Join-Path $StageDir "assets\icons"
 New-Item -ItemType Directory -Force -Path $icons | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot "fused_render\assets\fused-render.ico") -Destination $icons -Force
 Copy-Item -Path (Join-Path $RepoRoot "fused_render\assets\file_icons\*.ico") -Destination $icons -Force
+
+# Bundle learn.zip into assets\ (mirrors build_dmg.sh step 4e). ZipFile uses
+# forward-slash entry names, which rclone's archive backend reads cleanly;
+# child_environment points FUSED_RENDER_LEARN_ZIP here for ensure_learn_mount.
+$LearnSrc = Join-Path $RepoRoot "learn"
+if (-not (Test-Path -LiteralPath $LearnSrc -PathType Container)) {
+    throw "learn/ content is missing — it is part of the app"
+}
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$LearnZip = Join-Path $StageDir "assets\learn.zip"
+[System.IO.Compression.ZipFile]::CreateFromDirectory($LearnSrc, $LearnZip)
 Invoke-Native $Uv @(
     "run", "python", (Join-Path $RepoRoot "scripts\windows\generate_installer_registry.py"),
     (Join-Path $StageDir "registry.iss")

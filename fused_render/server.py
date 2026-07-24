@@ -412,6 +412,22 @@ def _mount_list_item(de):
     }
 
 
+def _win_protected(entry: "os.DirEntry") -> bool:
+    """True for a Windows hidden+system entry — the "protected operating system
+    files" Explorer hides by default. Checked with follow_symlinks=False so a
+    reparse junction is judged by its own attributes (the deny-ACL
+    Documents\\My Videos / My Music / My Pictures compat junctions are exactly
+    this), not the target it points at. Always False off Windows."""
+    if sys.platform != "win32":
+        return False
+    try:
+        attrs = entry.stat(follow_symlinks=False).st_file_attributes
+    except OSError:
+        return False
+    return bool(attrs & stat_mod.FILE_ATTRIBUTE_HIDDEN
+                and attrs & stat_mod.FILE_ATTRIBUTE_SYSTEM)
+
+
 def _sort_entries(entries):
     """Sort /api/fs/list items in place and return them: dirs first, then
     case-insensitive by name with the exact name as a deterministic tiebreak so
@@ -3236,6 +3252,11 @@ def create_app(start_dir: str) -> FastAPI:
                 return _error(broken, status=503)
         for de in dents:
             try:
+                if _win_protected(de):
+                    # Windows hidden+system entries (e.g. the deny-ACL
+                    # Documents\My Videos compat junction) — Explorer hides
+                    # these, and scandir'ing into them raises WinError 5.
+                    continue
                 st = de.stat()
                 is_dir = de.is_dir()
             except OSError:

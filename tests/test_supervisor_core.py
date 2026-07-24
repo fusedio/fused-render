@@ -124,3 +124,25 @@ def _view_path(fs_path: str) -> str:
     from fused_render._view_url_codec import view_url_path
 
     return view_url_path(fs_path)
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_available_port_prefers_branch_base_then_next(monkeypatch):
+    # The desktop server binds the branch base (1777 for a shipped build) so its
+    # origin — and the browser tabs / per-origin localStorage keyed to it —
+    # survives a restart, instead of the old ephemeral :0 that moved every launch.
+    import socket
+
+    base = _free_port()
+    monkeypatch.setattr(core, "branch_port", lambda: base)
+    assert core._available_port() == base  # base free -> reuse it
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", base))
+        assert core._available_port() == base + 1  # base taken -> next in range

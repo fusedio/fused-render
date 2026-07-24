@@ -56,3 +56,33 @@ def test_order_is_stable_across_repeated_calls(tmp_path):
         (tmp_path / n).mkdir()
     orders = [_names(tmp_path) for _ in range(5)]
     assert all(o == orders[0] for o in orders)
+
+
+def test_win_protected_short_circuits_off_windows(monkeypatch):
+    # Off Windows the hidden+system filter must not even stat the entry.
+    from fused_render import server
+
+    monkeypatch.setattr(server.sys, "platform", "linux")
+
+    class _Entry:
+        def stat(self, follow_symlinks=True):
+            raise AssertionError("must not stat off win32")
+
+    assert server._win_protected(_Entry()) is False
+
+
+def test_list_hides_windows_hidden_system_entries(tmp_path):
+    # HIDDEN+SYSTEM ("protected OS") entries — like the deny-ACL
+    # Documents\My Videos junction that raises WinError 5 on scandir — are
+    # dropped from the listing, matching Explorer's default.
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        pytest.skip("hidden+system attributes are Windows-only")
+    (tmp_path / "normal.txt").write_text("x", encoding="utf-8")
+    protected = tmp_path / "protected.txt"
+    protected.write_text("y", encoding="utf-8")
+    subprocess.run(["attrib", "+h", "+s", str(protected)], check=True)
+    names = _names(tmp_path)
+    assert "normal.txt" in names and "protected.txt" not in names
