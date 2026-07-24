@@ -779,6 +779,32 @@ def rclone_bin() -> str | None:
     return shutil.which("rclone")
 
 
+# The winfsp.dev release page — the single install source we point users at.
+WINFSP_DOWNLOAD_URL = "https://winfsp.dev/rel/"
+
+
+def _winfsp_available() -> bool:
+    """Whether WinFsp — rclone's Windows mount backend — is installed.
+
+    WinFsp is a kernel-mode driver we deliberately do NOT bundle: its
+    GPLv3-with-exception license against this repo's intentionally-unset license
+    is unsettled (see DECISIONS.md), so — mirroring rclone's own distribution
+    stance — the user installs it from winfsp.dev. Non-win32 platforms don't use
+    WinFsp, so this is vacuously True there; on Windows we look for the system
+    DLL WinFsp installs under %ProgramFiles(x86)%\\WinFsp\\bin (winfsp-x64.dll),
+    falling back to a loader lookup. Best-effort: a False here only downgrades
+    the mount attempt into a friendly install prompt, never a crash."""
+    if sys.platform != "win32":
+        return True
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(env)
+        if base and os.path.isfile(os.path.join(base, "WinFsp", "bin",
+                                                 "winfsp-x64.dll")):
+            return True
+    import ctypes.util
+    return ctypes.util.find_library("winfsp-x64") is not None
+
+
 # Whether a freshly spawned rcd should DETACH into its own session (setsid) and
 # so outlive this server, or run as a normal child that dies with it.
 #
@@ -3285,6 +3311,14 @@ def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
 
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
+    # Fail fast (before any dir work or rcd spawn) when Windows lacks WinFsp:
+    # rclone's mount would otherwise error deep in the backend with an opaque
+    # message. Point the user straight at the installer instead — vacuously True
+    # off Windows, so POSIX is unaffected.
+    if not _winfsp_available():
+        return ("Windows mounts require WinFsp, which isn't installed. Install "
+                f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
+                "kernel driver we don't bundle — see DECISIONS.md.)")
     mp = mountpoint(m)
     # Create the mounts root (with its Spotlight-exclusion marker) before the
     # per-mount mountpoint, so the marker is in place the moment the mount goes

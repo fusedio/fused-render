@@ -439,6 +439,33 @@ def test_force_unmount_win32_errors_when_still_mounted(monkeypatch):
     assert not any(c and c[0] in ("umount", "diskutil") for c in ran)
 
 
+def test_winfsp_available_true_off_win32(monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "darwin")
+    assert mounts_mod._winfsp_available() is True
+
+
+def test_attach_win32_missing_winfsp_returns_friendly_error(home, monkeypatch):
+    # Missing WinFsp fails fast with an install hint, before any rcd work.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    called = []
+    monkeypatch.setattr(mounts_mod, "ensure_rcd",
+                        lambda *a, **k: called.append(True) or 1)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert "WinFsp" in err and "https://winfsp.dev/rel/" in err
+    assert called == []  # bailed before ensure_rcd
+
+
+def test_attach_win32_with_winfsp_proceeds(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    assert mounts_mod.attach_mount(c) is None
+    assert any(x[0] == "mount/mount" for x in rcd.calls)
+
+
 def test_unmount_calls_rc(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.detach_mount(c) is None
