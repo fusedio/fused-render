@@ -79,7 +79,12 @@ def test_open_command_routes_file_uri_to_view(monkeypatch, tmp_path):
     f.write_text("x")
     opened = []
     monkeypatch.setattr(core, "_open_browser", opened.append)
-    core._open_command(9000, protocol.Open(f"file://{f}"))
+    # Path.as_uri() — not f"file://{f}" — builds a well-formed file URI on every
+    # platform: on Windows the drive path becomes file:///C:/... (three slashes),
+    # whereas f"file://{f}" would read C:\... as the netloc and be rejected as a
+    # remote host. This mirrors what the OS actually hands the app (macOS
+    # openURLs:, RFC 8089 §2).
+    core._open_command(9000, protocol.Open(f.as_uri()))
     assert opened == [f"http://127.0.0.1:9000" + _view_path(str(f))]
 
 
