@@ -145,5 +145,5 @@ def test_available_port_prefers_branch_base_then_next(monkeypatch):
     assert core._available_port() == base  # base free -> reuse it
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
         taken.bind(("127.0.0.1", base))
-        taken.listen()  # a LIVE listener blocks the bind even with SO_REUSEADDR
+        taken.listen()  # a live listener answers the connect probe -> in use
         assert core._available_port() == base + 1  # base taken -> next in range
