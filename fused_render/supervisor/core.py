@@ -473,6 +473,12 @@ def _available_port() -> int:
     base = branch_port()
     for port in range(base, base + 11):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # SO_REUSEADDR so this probe agrees with uvicorn's own bind (see
+            # cli._port_free): a base port merely lingering in TIME_WAIT after a
+            # clean shutdown reads as free, so a quick relaunch keeps 1777
+            # instead of drifting to 1778. A live listener still fails the bind,
+            # so a real collision is still caught.
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("127.0.0.1", port))
                 return port
