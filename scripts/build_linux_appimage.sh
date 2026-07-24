@@ -107,7 +107,25 @@ echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
     "import zipfile, sys, shutil, os; z = zipfile.ZipFile(sys.argv[1]); member = [n for n in z.namelist() if n.endswith('/rclone')][0]; dst = open(sys.argv[2], 'wb'); shutil.copyfileobj(z.open(member), dst); dst.close(); os.chmod(sys.argv[2], 0o755)" \
     "$RCLONE_ZIP" "$PYTHON_ROOT/bin/rclone"
 
-# --- prune caches ------------------------------------------------------------
+# --- prune dead weight (mirrors build_dmg.sh's D116/D118 pruning) ------------
+# manylinux wheels ship native libs with full debug + local symbol tables
+# (polars/pyarrow/GDAL alone carry tens of MB each). strip -S drops debug info,
+# -x drops local symbols; globals stay so dlopen/linking is untouched. This is
+# the single biggest AppImage-size lever — the macOS DMG strips the same way,
+# which is why the unstripped Linux payload was ~200 MB heavier. Per-file
+# `|| true`: `find` matches by extension and a stray non-ELF .so (e.g. a text
+# stub) must not fail the build.
+log "Stripping bundled native libraries"
+require strip
+find "$PYTHON_ROOT" -type f \( -name '*.so' -o -name '*.so.*' \) \
+    -exec strip -S -x {} + 2>/dev/null || true
+
+# Package test suites (numpy/pandas/pyarrow/... ship `tests` dirs full of
+# fixtures) are never imported by the app or by user scripts — drop them, same
+# as the DMG build. Only directories literally named `tests`/`test`.
+find "$PYTHON_ROOT/lib/python3.12/site-packages" -type d \
+    \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
+
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 # --- smoke tests (drop the pywin32 imports; add supervisor + tray) -----------
