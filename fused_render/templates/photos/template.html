@@ -816,7 +816,9 @@ function preloadNeighbors(idx) {
 const LABELS = { DateTimeOriginal: "Taken", Make: "Make", Model: "Model", LensModel: "Lens", FNumber: "Aperture", ExposureTime: "Exposure", ISOSpeedRatings: "ISO", FocalLength: "Focal length", GPSLatitude: "Latitude", GPSLongitude: "Longitude" };
 async function loadMeta(photoPath) {
   const myReq = lbReq;
-  let e; try { e = await pyRun( { action: "exif", path: photoPath }); } catch { return; }
+  let e;
+  try { e = await pyRun( { action: "exif", path: photoPath }); }
+  catch { if (myReq === lbReq) q("lbCaption").innerHTML = ""; return; }
   if (myReq !== lbReq) return;
   renderCaption(e);
   renderInfo(e);
