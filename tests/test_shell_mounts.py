@@ -307,6 +307,39 @@ def test_serve_vfs_opt_derived_from_mount_vfs_opt():
     assert mounts_mod._serve_vfs_opt_for({})["read_only"] == "false"
 
 
+def test_serve_read_only_mirrors_live_mount_when_record_drifted(home, monkeypatch):
+    # A live mount's VFS was baked with mounted_read_only; if the record's
+    # read_only drifts ahead (win32 adopt-under-mismatch defers the remount), the
+    # serve must still mirror mounted_read_only so it SHARES the mount's VFS
+    # instead of forking a second one on the (fs, ReadOnly) key.
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": False}
+    mp = mounts_mod.mountpoint(m)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod._effective_serve_read_only(m) is False
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "false"
+
+
+def test_serve_read_only_uses_record_when_no_live_mount(home, monkeypatch):
+    # No live mount = no VFS to share yet; the next attach bakes the record's
+    # read_only, so the serve follows the record (also the legacy/foreign case).
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": False}
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "true"
+
+
+def test_serve_read_only_matches_record_in_normal_path(home, monkeypatch):
+    # Guard: when record and mounted_read_only agree (the normal path — attach
+    # records mounted_read_only := read_only at mount time), the serve is
+    # unchanged, live mount or not.
+    m = {"name": "data", "remote": "remote:bucket",
+         "read_only": True, "mounted_read_only": True}
+    mp = mounts_mod.mountpoint(m)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod._serve_vfs_opt_for(m)["read_only"] == "true"
+
+
 @pytest.mark.skipif(mounts_mod.sys.platform != "darwin",
                     reason="nfsmount timeo override is macOS-only")
 def test_mount_raises_nfs_timeout_on_macos(home, rcd):
@@ -588,6 +621,28 @@ def test_attach_win32_readonly_mismatch_keeps_live_mount_without_winfsp(
     err = mounts_mod.attach_mount(c)
     assert err is None  # adopted as-is, mount survives
     assert not any(x[0] == "mount/unmount" for x in rcd.calls)  # never torn down
+
+
+def test_win32_adopt_mismatch_serve_shares_live_mount_vfs(home, rcd, monkeypatch):
+    # The adopt-as-is fall-through calls sync_serves. The serve it starts must
+    # match the LIVE mount's VFS (mounted_read_only=False), NOT the drifted
+    # record (read_only=True) — otherwise rcd forks a second VFS on (fs, ReadOnly)
+    # and the mount/serve split-brain wedge returns.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": c["remote"], "MountPoint": mp}]}
+    # Persist the mismatch so sync_serves (reads storage) sees it too.
+    c["read_only"] = True
+    c["mounted_read_only"] = False
+    mounts_mod._update_mount(c)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.attach_mount(c) is None
+    starts = [body for (meth, body) in rcd.calls if meth == "serve/start"]
+    assert starts, "a serve should have been started for the adopted mount"
+    assert all(s.get("read_only") == "false" for s in starts)  # shares live VFS
 
 
 def test_unmount_calls_rc(home, rcd):

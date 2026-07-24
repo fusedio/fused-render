@@ -214,6 +214,24 @@ def _vfs_opt_for(m: dict) -> dict:
     return {**VFS_OPT, "ReadOnly": bool(m.get("read_only"))}
 
 
+def _effective_serve_read_only(m: dict) -> bool:
+    """The ReadOnly a mount's HTTP serve must carry so it SHARES the live mount's
+    VFS. rcd keys VFS reuse on (fs, vfsOpt); a ReadOnly disagreement forks a
+    SECOND VFS instead of sharing the mount's — the documented split-brain wedge
+    (INCIDENT 2026-07-16). A live kernel mount's VFS was baked with
+    `mounted_read_only` at mount/mount time; the record's `read_only` can since
+    have drifted AHEAD of the live mount — detection flipped it, or the win32
+    adopt-under-mismatch path deliberately DEFERRED the remount that would
+    reapply it (no WinFsp to remount with). So whenever a live mount exists and
+    we know what it baked (`mounted_read_only` recorded), the serve must mirror
+    THAT, not the record. With no live mount there is no VFS to share yet — the
+    next attach will bake the record's read_only — so fall back to the record
+    (also the legacy/foreign case where mounted_read_only was never recorded)."""
+    if m.get("mounted_read_only") is not None and os.path.ismount(mountpoint(m)):
+        return bool(m.get("mounted_read_only"))
+    return bool(m.get("read_only"))
+
+
 def _serve_vfs_opt_for(m: dict) -> dict:
     """The HTTP serve's flat vfs params for this mount: SERVE_VFS_OPT plus
     read_only, the serve-side spelling of the mount's vfsOpt.ReadOnly (the CLI
@@ -226,9 +244,14 @@ def _serve_vfs_opt_for(m: dict) -> dict:
     sync_serves' drift check compares against that echo.
 
     Derived from _vfs_opt_for through _serve_params — NOT hand-written — so the
-    mount's vfsOpt and the serve's flat params can never drift (drift is what
-    split the VFS in two; the module's derive-don't-hand-write rule)."""
-    return _serve_params(_vfs_opt_for(m))
+    mount's non-ReadOnly vfsOpt and the serve's flat params can never drift
+    (drift is what split the VFS in two; the module's derive-don't-hand-write
+    rule). ReadOnly is the one field that must track the LIVE mount's baked value
+    rather than the record when the two disagree (see _effective_serve_read_only),
+    so a serve always shares the mount's VFS even mid-mismatch."""
+    vfs_opt = _vfs_opt_for(m)
+    vfs_opt["ReadOnly"] = _effective_serve_read_only(m)
+    return _serve_params(vfs_opt)
 
 
 def _nfs_mount_opt(m: dict) -> dict:
@@ -3393,7 +3416,11 @@ def attach_mount(m: dict) -> str | None:
             # mount over: adopt as-is and let a later attach — once WinFsp is
             # present — apply it. (reconnect_mount also gates this, so a direct
             # /reconnect is safe too; this keeps the automount adopt path from
-            # even entering the unmount.)
+            # even entering the unmount.) The record's read_only now sits AHEAD
+            # of what the live VFS baked (mounted_read_only); sync_serves below
+            # derives the serve's ReadOnly from mounted_read_only while a live
+            # mount exists (see _effective_serve_read_only), so the serve still
+            # SHARES the mount's VFS and does not fork a second one here.
             if not (sys.platform == "win32" and not _winfsp_available()):
                 return reconnect_mount(m)  # unmounts first, so no recursion here
         # Already mounted (double-click, adopted foreign mount) — but the
