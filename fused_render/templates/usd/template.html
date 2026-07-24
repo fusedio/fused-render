@@ -175,6 +175,22 @@
   .fmRow.sel { background: #39415a; }
   .fmRow .sz { margin-left: auto; color: var(--dim); font-size: 10px; }
   .fmEmpty { padding: 14px; color: var(--dim); }
+  /* Directory listing in flight: row-shaped shimmer (icon + name + size bars)
+     instead of a bare "listing…" line — mirrors the real .fmRow layout. */
+  .fmRow.skel { cursor: default; }
+  .fmRow.skel .sk {
+    display: block; border-radius: 3px;
+    background: linear-gradient(90deg, var(--panel2) 25%, #38383f 50%, var(--panel2) 75%);
+    background-size: 200% 100%;
+    animation: fm-skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .fmRow.skel .sk-ico { width: 13px; height: 13px; }
+  .fmRow.skel .sk-name { height: 10px; flex: 0 0 auto; }
+  .fmRow.skel .sk-sz { width: 34px; height: 9px; margin-left: auto; }
+  @keyframes fm-skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
   #fmFoot {
     padding: 8px 12px; border-top: 1px solid var(--line); display: flex;
     align-items: center; gap: 10px;
@@ -1658,7 +1674,13 @@
   let fmSelected = "";
   async function fmOpen(dir) {
     el.fileModal.classList.remove("hidden");
-    el.fmList.innerHTML = `<div class="fmEmpty">listing…</div>`;
+    // row-shaped shimmer placeholders (icon/name/size), widths varied so the
+    // list doesn't look like a single repeated bar
+    const skelWidths = [62, 38, 74, 50, 84, 44, 30];
+    el.fmList.innerHTML = skelWidths.map((w) =>
+      `<div class="fmRow skel"><span class="sk sk-ico"></span>` +
+      `<span class="sk sk-name" style="width:${w}%"></span>` +
+      `<span class="sk sk-sz"></span></div>`).join("");
     let res;
     try {
       res = await py({ action: "browse", file: filesList().slice(-1)[0] || "",

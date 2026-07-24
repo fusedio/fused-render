@@ -108,6 +108,24 @@
   }
   .g-size .muted { color: #6b7076; }
   .grid-note { max-width: 700px; margin: 16px 0 0; color: #9aa0a6; font-size: 12px; line-height: 1.5; }
+
+  /* ---- Loading skeleton ----
+     Shimmering placeholders shaped like whichever tab is about to render
+     (Grid bars / Layout boxes / Metadata rows), so the wait previews the real
+     layout instead of a bare "Loading…" line. One shimmer sweep reused
+     everywhere: a gradient dragged across background-position. */
+  .skel {
+    background: linear-gradient(90deg, #1c1f24 25%, #2b2f37 50%, #1c1f24 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    border-radius: 4px;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-text { display: inline-block; height: 11px; vertical-align: middle; }
+  .skel-swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -119,7 +137,21 @@
       <button id="tab-metadata">Metadata</button>
     </div>
   </div>
-  <div id="content"><div id="status">Loading…</div></div>
+  <div id="content">
+    <div class="grid-legend">
+      <span class="leg-item"><span class="skel skel-swatch"></span><span class="skel skel-text" style="width:130px"></span></span>
+      <span class="leg-item"><span class="skel skel-swatch"></span><span class="skel skel-text" style="width:150px"></span></span>
+      <span class="leg-item"><span class="skel skel-swatch"></span><span class="skel skel-text" style="width:105px"></span></span>
+      <span class="leg-item"><span class="skel skel-swatch"></span><span class="skel skel-text" style="width:95px"></span></span>
+      <span class="leg-item"><span class="skel skel-swatch"></span><span class="skel skel-text" style="width:120px"></span></span>
+    </div>
+    <div class="grid-chart">
+      <div class="g-row"><span class="g-label"><span class="skel skel-text" style="width:26px"></span></span><span class="g-track"><span class="skel" style="display:block;height:100%;width:86%"></span></span><span class="g-size"><span class="skel skel-text" style="width:70px"></span></span></div>
+      <div class="g-row"><span class="g-label"><span class="skel skel-text" style="width:26px"></span></span><span class="g-track"><span class="skel" style="display:block;height:100%;width:62%"></span></span><span class="g-size"><span class="skel skel-text" style="width:70px"></span></span></div>
+      <div class="g-row"><span class="g-label"><span class="skel skel-text" style="width:26px"></span></span><span class="g-track"><span class="skel" style="display:block;height:100%;width:74%"></span></span><span class="g-size"><span class="skel skel-text" style="width:70px"></span></span></div>
+      <div class="g-row"><span class="g-label"><span class="skel skel-text" style="width:26px"></span></span><span class="g-track"><span class="skel" style="display:block;height:100%;width:45%"></span></span><span class="g-size"><span class="skel skel-text" style="width:70px"></span></span></div>
+    </div>
+  </div>
   <script>
     const el = (id) => document.getElementById(id);
     const content = el("content");
@@ -302,12 +334,98 @@
         Segments show how those bytes split across columns — hover any segment for exact sizes.</p>`;
     }
 
+    // ---- Loading skeletons: same-shaped stand-ins for renderSummary/renderGrid/
+    // renderLayout/renderMetadata, built from shimmering .skel bars so the wait
+    // previews the tab that is about to land instead of a blank/"Loading…" pane.
+    function skelText(w) { return `<span class="skel skel-text" style="width:${w}px"></span>`; }
+
+    function skeletonSummary() {
+      return [46, 50, 66, 58, 74]
+        .map((w) => `<span class="stat">${skelText(w)}</span>`)
+        .join(`<span class="sep">·</span>`);
+    }
+
+    function skeletonGrid() {
+      const legend = [130, 150, 105, 95, 120].map((w) => `
+        <span class="leg-item"><span class="skel skel-swatch"></span>${skelText(w)}</span>`).join("");
+      const rows = [86, 62, 74, 45, 93, 58].map((w) => `
+        <div class="g-row">
+          <span class="g-label">${skelText(26)}</span>
+          <span class="g-track"><span class="skel" style="display:block;height:100%;width:${w}%"></span></span>
+          <span class="g-size">${skelText(70)}</span>
+        </div>`).join("");
+      return `<div class="grid-legend">${legend}</div><div class="grid-chart">${rows}</div>`;
+    }
+
+    function skeletonLayout() {
+      const col = () => `
+        <div class="box col">
+          <div class="box-head">
+            <span class="box-title">${skelText(120)}</span>
+            <span class="box-range">${skelText(70)}</span>
+          </div>
+          <div class="data">
+            <div class="box-head">
+              <span class="box-title">${skelText(40)}</span>
+              <span class="box-range">${skelText(90)}</span>
+            </div>
+          </div>
+        </div>`;
+      const rg = (n) => `
+        <div class="box rg">
+          <div class="box-head">
+            <span class="box-title">${skelText(100)}</span>
+            <span class="box-range">${skelText(60)}</span>
+          </div>
+          <div class="cols">${Array.from({ length: n }, col).join("")}</div>
+        </div>`;
+      return `<div class="lay">
+        <div class="box magic"><div class="box-head">
+          <span class="box-title">${skelText(90)}</span>
+          <span class="box-range">${skelText(100)}</span>
+        </div></div>
+        ${rg(2)}${rg(3)}
+      </div>`;
+    }
+
+    function skeletonMetadata() {
+      const kv = [90, 140, 60, 130, 130, 70]
+        .map((w) => `<dt>${skelText(70)}</dt><dd>${skelText(w)}</dd>`).join("");
+      const schemaRows = [110, 95, 80, 120, 90].map((w) => `<tr>
+        <td>${skelText(w)}</td><td>${skelText(60)}</td><td>${skelText(70)}</td>
+        <td class="num">${skelText(16)}</td><td class="num">${skelText(16)}</td></tr>`).join("");
+      const chunkRow = () => `<tr>
+        <td>${skelText(100)}</td><td>${skelText(50)}</td><td>${skelText(50)}</td><td>${skelText(70)}</td>
+        <td class="num">${skelText(40)}</td><td class="num">${skelText(50)}</td><td class="num">${skelText(50)}</td>
+        <td class="num">${skelText(40)}</td><td>${skelText(80)}</td><td class="num">${skelText(24)}</td></tr>`;
+      const rgSkel = [3, 2].map((n) => `<details class="rgd" open>
+          <summary>${skelText(90)}<span class="muted">${skelText(150)}</span></summary>
+          <div class="rgd-body"><table><thead><tr>
+            <th>Column</th><th>Type</th><th>Codec</th><th>Encodings</th><th>Values</th>
+            <th>Compressed</th><th>Uncompressed</th><th>Offset</th><th>Min … Max</th><th>Nulls</th>
+          </tr></thead><tbody>${Array.from({ length: n }, chunkRow).join("")}</tbody></table></div>
+        </details>`).join("");
+      return `
+        <div class="meta-section"><h3>File</h3><dl class="kv">${kv}</dl></div>
+        <div class="meta-section"><h3>Schema</h3>
+          <table><thead><tr><th>Column</th><th>Physical type</th><th>Logical type</th>
+          <th class="num">Max def</th><th class="num">Max rep</th></tr></thead>
+          <tbody>${schemaRows}</tbody></table></div>
+        <div class="meta-section"><h3>Row groups</h3>${rgSkel}</div>`;
+    }
+
+    function skeletonMarkup(tab) {
+      if (tab === "metadata") return skeletonMetadata();
+      if (tab === "layout") return skeletonLayout();
+      return skeletonGrid();
+    }
+
     function renderTab() {
       const tab = currentTab();
       el("tab-layout").classList.toggle("active", tab === "layout");
       el("tab-grid").classList.toggle("active", tab === "grid");
       el("tab-metadata").classList.toggle("active", tab === "metadata");
-      if (!data) return;
+      if (!data) { content.innerHTML = skeletonMarkup(tab); return; }
       if (tab === "metadata") renderMetadata();
       else if (tab === "grid") renderGrid();
       else renderLayout();
@@ -320,9 +438,10 @@
       // Drop any prior file's data up front so a tab switch mid-load (or after
       // a failure) can't repaint stale layout/metadata for the wrong file.
       data = null;
-      summaryEl.innerHTML = "";
-      content.innerHTML = `<div id="status">Loading…</div>`;
+      summaryEl.innerHTML = skeletonSummary();
+      content.innerHTML = skeletonMarkup(currentTab());
       if (!file) {
+        summaryEl.innerHTML = "";
         content.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }

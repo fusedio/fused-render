@@ -92,13 +92,40 @@
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
     background: rgba(255,255,255,.95); border: 1px solid var(--edge);
     padding: 5px 14px; border-radius: 20px; color: var(--text);
-    display: none; z-index: 30; font-size: 12px;
+    display: none; align-items: center; gap: 7px;
+    z-index: 30; font-size: 12px;
     box-shadow: 0 2px 8px rgba(0,0,0,.08);
   }
+  #spin::before {
+    content: ""; width: 11px; height: 11px; border-radius: 50%; flex: none;
+    border: 2px solid var(--edge); border-top-color: var(--accent2);
+    animation: spin-rot .8s linear infinite;
+  }
+  @keyframes spin-rot { to { transform: rotate(360deg); } }
   #warnband {
     position: absolute; top: 12px; left: 12px; z-index: 25; display: none;
     background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
     padding: 5px 12px; border-radius: 8px; font-size: 12px; max-width: 60%;
+  }
+
+  /* ---------- initial-load skeleton (shape of the eventual pano pane) ---------- */
+  #skel {
+    position: absolute; inset: 18px; z-index: 12; display: none;
+    align-items: center; justify-content: center; overflow: hidden;
+    border-radius: 10px; border: 1px solid var(--edge); background: var(--panel2);
+    box-shadow: var(--shadow-sm);
+  }
+  #skel .sweep {
+    position: absolute; inset: 0;
+    background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.9) 50%, transparent 70%);
+    background-size: 200% 100%; animation: skel-sweep 1.6s ease-in-out infinite;
+  }
+  #skel .horizon { position: absolute; left: 9%; right: 9%; top: 50%; height: 1px;
+    background: var(--edge); }
+  #skel .glyph { position: relative; font-size: 42px; color: var(--edge); }
+  @keyframes skel-sweep {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
   }
 
   /* ---------- controls panel ---------- */
@@ -176,6 +203,7 @@
       <div id="imgwrap"><div class="inner"><img id="imgview" draggable="false"></div></div>
       <div id="facegrid"><div class="grid"></div></div>
       <div id="empty"><div style="font-size:40px">◐</div><div id="emptyMsg">No file selected</div></div>
+      <div id="skel"><div class="sweep"></div><div class="horizon"></div><div class="glyph">◐</div></div>
       <div id="spin">converting…</div>
       <div id="warnband"></div>
       <div id="ctrl"></div>
@@ -258,7 +286,7 @@
   const $ = (id) => document.getElementById(id);
   const els = {
     pano: $("pano360"), imgwrap: $("imgwrap"), img: $("imgview"),
-    faces: $("facegrid"), empty, spin: $("spin"), warn: $("warnband"),
+    faces: $("facegrid"), empty, skel: $("skel"), spin: $("spin"), warn: $("warnband"),
     ctrl: $("ctrl"), stAsset: $("st-asset"), stView: $("st-view"),
     stMsg: $("st-msg"),
   };
@@ -397,8 +425,14 @@
     els.empty.style.display = which === "empty" ? "flex" : "none";
   }
   function busy(on, msg) {
-    els.spin.style.display = on ? "block" : "none";
+    els.spin.style.display = on ? "flex" : "none";
     if (msg) els.spin.textContent = msg;
+  }
+  // Content-shaped placeholder for the very first "no image on screen yet"
+  // load only — later busy() calls (mode switch, cube reproject) keep the
+  // previous view visible behind the small spin pill instead.
+  function skeleton(on) {
+    els.skel.style.display = on ? "flex" : "none";
   }
   function setViewStatus(text, extra) {
     els.stView.textContent = text || "";
@@ -570,13 +604,16 @@
   $("fname").textContent = file.split(/[\\/]/).pop();
   fused.params.onChange(draw);
   try {
+    skeleton(true);
     busy(true, "loading image…");
     const r = await py({ action: "open" });
     meta = r.asset;
     busy(false);
+    skeleton(false);
     draw();
   } catch (err) {
     busy(false);
+    skeleton(false);
     toast(`failed to load image: ${err.message}`, true);
     draw();
   }

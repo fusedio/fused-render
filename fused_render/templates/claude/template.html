@@ -309,6 +309,34 @@
     color: var(--dim);
     text-align: center;
   }
+
+  /* ── skeleton loading placeholders (chat history restore, session list) ── */
+  .skel-bar {
+    height: 11px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-turn { margin: 0 0 14px; }
+  .skel-turn-user .skel-bar { width: 34%; }
+  .skel-turn-assistant { display: flex; gap: 8px; }
+  .skel-turn-assistant .skel-dot-a {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0; margin-top: 3px;
+  }
+  .skel-turn-assistant .skel-lines { flex: 1; display: flex; flex-direction: column; gap: 7px; }
+  .skel-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+  .skel-row .skel-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--border); flex-shrink: 0;
+  }
+  .skel-row .skel-bar.title { flex: 1; }
+  .skel-row .skel-bar.sub { width: 42px; flex-shrink: 0; }
 </style>
 </head>
 <body class="home">
@@ -926,21 +954,41 @@ function ago(ts) {
   return Math.floor(s / 86400) + "d ago";
 }
 
+// Content-shaped placeholder for a restoring transcript: a short user bar
+// followed by a wider multi-line assistant block, so the chat pane never
+// flashes fully blank while the history fetch is in flight.
+function renderLogSkeleton() {
+  log.innerHTML = "";
+  const user = document.createElement("div");
+  user.className = "turn skel-turn skel-turn-user";
+  user.innerHTML = '<div class="skel-bar"></div>';
+  const assistant = document.createElement("div");
+  assistant.className = "turn skel-turn skel-turn-assistant";
+  assistant.innerHTML =
+    '<span class="skel-dot-a"></span><span class="skel-lines">' +
+    '<span class="skel-bar" style="width:88%"></span>' +
+    '<span class="skel-bar" style="width:72%"></span>' +
+    '<span class="skel-bar" style="width:50%"></span></span>';
+  log.append(user, assistant);
+}
+
 async function loadHistory(session_id) {
   // Reuse the `sending` gate: a message sent during the await below would be
   // appended first and the older history turns dumped after it, scrambling the
   // transcript order. Blocking sends for the load keeps turns in order.
   if (sending) return;
   sending = true;
-  log.innerHTML = "";  // replace the visible conversation, don't append to it
+  renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id }, { key: null });
+    log.innerHTML = "";  // drop the skeleton now that real turns are ready
     for (const t of turns) {
       if (t.role === "user") addUser(t.text);
       else addAssistant("").lastChild.innerHTML = renderMd(t.text);
     }
     log.scrollTop = log.scrollHeight;
   } catch (err) {
+    log.innerHTML = "";  // drop the skeleton, mirror the original blank fallback
     console.warn("history restore failed:", err.message);
   } finally {
     sending = false;
@@ -966,17 +1014,36 @@ function addChatRow(list, s) {
   list.appendChild(row);
 }
 
+// Content-shaped placeholder for the session list: a few chat-row-sized bars
+// (dot + title + timestamp) so "Sessions for this file" never sits over a
+// flash of empty space while the fetch is in flight.
+function renderRecentSkeleton(list) {
+  list.innerHTML = "";
+  [72, 58, 44].forEach((pct) => {
+    const row = document.createElement("div");
+    row.className = "skel-row";
+    row.innerHTML =
+      '<span class="skel-dot"></span>' +
+      '<span class="skel-bar title" style="max-width:' + pct + '%"></span>' +
+      '<span class="skel-bar sub"></span>';
+    list.appendChild(row);
+  });
+}
+
 async function loadRecent() {
   const list = document.getElementById("recentlist");
+  renderRecentSkeleton(list);
   try {
     const { sessions, error } = await fused.runPython("./agent.py", { action: "sessions", file: FILE }, { key: null });
     if (error) throw new Error(error);
+    list.innerHTML = "";  // drop the skeleton now that we know the real state
     if (!sessions.length) {
       document.getElementById("recent").style.display = "none";
       return;
     }
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
+    list.innerHTML = "";  // drop the skeleton, mirror the original blank fallback
     console.warn("session list failed:", err.message);
   }
 }

@@ -44,11 +44,28 @@
     color: #9aa0a6;
   }
   #status.error { color: #ff6b6b; }
+  /* Loading skeleton: page-shaped rectangles echoing the real canvas (same
+     max-width, same drop shadow, roughly letter-page proportions) so the
+     placeholder reads as "pages about to appear" rather than a bare spinner. */
+  .skel-page {
+    width: min(900px, 100%);
+    aspect-ratio: 0.7727;
+    border-radius: 2px;
+    background: linear-gradient(100deg, #1b1d21 30%, #26292f 50%, #1b1d21 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.3s ease-in-out infinite;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  }
+  .skel-page:nth-child(2) { animation-delay: 0.15s; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
 </style>
 </head>
 <body>
   <div id="bar"></div>
-  <div id="pages"><div id="status">Loading…</div></div>
+  <div id="pages"><div class="skel-page"></div><div class="skel-page"></div></div>
   <script type="module">
     // pdf.js renders each page to a real <canvas> (vendored bundle, no CDN —
     // same self-containment rule as geotiff/netcdf/zarr). A canvas per page

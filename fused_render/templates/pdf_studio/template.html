@@ -202,13 +202,51 @@
   #toast.err { background: var(--danger); }
   #boot { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px;
     background: var(--canvas); z-index: 300; text-align: center; line-height: 1.7; }
+  /* boot skeleton: absolutely positioned so it fills #boot without disturbing the
+     grid/place-items centering that the plain-text engine-missing / failure states rely on */
+  #boot .boot-skel { position: absolute; inset: 0; display: flex; flex-direction: column; text-align: left; }
+  #boot .boot-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 7px 12px;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); }
+  #boot .boot-body { flex: 1 1 auto; min-height: 0; display: flex; }
+  #boot .boot-side { flex: 0 0 224px; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+  #boot .boot-canvas { flex: 1 1 auto; display: flex; justify-content: center; padding-top: 40px; overflow: hidden; }
+  #boot .boot-page { width: min(560px, 60vw); aspect-ratio: 8.5 / 11; border-radius: 3px;
+    box-shadow: 0 2px 10px rgba(15,23,42,.14); }
+  #boot .boot-msg { align-self: end; margin-bottom: 30px; background: rgba(255,255,255,.9); color: var(--ink-2);
+    padding: 7px 16px; border-radius: 999px; box-shadow: var(--shadow-1); font-size: 13px; }
+  /* ---- shimmer skeleton (boot screen + doc/page loading placeholders) ---- */
+  @keyframes skelShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .skel-shimmer {
+    background: linear-gradient(90deg, var(--hair-2) 25%, #f6f7f9 50%, var(--hair-2) 75%) !important;
+    background-size: 200% 100%; animation: skelShimmer 1.3s ease-in-out infinite;
+  }
+  .thumb.skel-thumb { border-radius: 4px; cursor: default; }
   #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
     font-size: 12.5px; flex: 0 0 auto; }
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
 <body class="mode-view">
-<div id="boot">Loading PDF Studio…</div>
+<div id="boot">
+  <div class="boot-skel" aria-hidden="true">
+    <div class="boot-topbar">
+      <span class="skel-shimmer" style="width:78px;height:16px;border-radius:5px"></span>
+      <span class="skel-shimmer" style="width:130px;height:11px;border-radius:4px"></span>
+    </div>
+    <div class="boot-body">
+      <div class="boot-side">
+        <span class="skel-shimmer" style="width:60%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:80%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:45%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:70%;height:9px;border-radius:3px;margin-top:14px"></span>
+        <span class="skel-shimmer" style="width:50%;height:9px;border-radius:3px"></span>
+      </div>
+      <div class="boot-canvas"><div class="boot-page skel-shimmer"></div></div>
+    </div>
+  </div>
+  <div class="boot-msg">Loading PDF Studio…</div>
+</div>
 
 <div id="topbar">
   <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
@@ -605,6 +643,35 @@ async function renderThumb(pdf, n, gen) {
   await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
 }
 
+// Shimmering placeholders shown for the gap between "doc/zoom switch requested"
+// and "first real page/thumb landed" — shaped/positioned like the real content
+// they stand in for, instead of leaving #pages/#thumbs blank.
+function skelPageEl() {
+  const w = pageWidth();
+  const div = document.createElement("div");
+  div.className = "pdf-page skel-shimmer";
+  div.style.width = w + "px";
+  div.style.height = Math.round(w * 1.294) + "px"; // ~US-letter aspect, real size lands after load
+  return div;
+}
+function skelThumbEl() {
+  const div = document.createElement("div");
+  div.className = "thumb skel-thumb skel-shimmer";
+  div.style.height = Math.round(132 * 1.294) + "px";
+  return div;
+}
+function showThumbSkeleton(count = 4) {
+  const wrap = $("thumbs");
+  wrap.innerHTML = "";
+  for (let i = 0; i < Math.min(count, 6); i++) wrap.appendChild(skelThumbEl());
+}
+function showRenderSkeleton() {
+  const wrap = $("pages");
+  wrap.innerHTML = "";
+  wrap.appendChild(skelPageEl());
+  showThumbSkeleton();
+}
+
 // Resolves once page 1 is on screen; the remaining pages and the thumbnail
 // rail keep rendering in the background.
 async function renderAll() {
@@ -612,8 +679,20 @@ async function renderAll() {
   state.spans = {};
   const gen = ++renderGen;
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
-  const data = await loadPdfBytes();
-  const pdf = await pdfjs.getDocument({ data }).promise;
+  showRenderSkeleton();
+  let data, pdf;
+  try {
+    data = await loadPdfBytes();
+    pdf = await pdfjs.getDocument({ data }).promise;
+  } catch (err) {
+    // Only wipe the skeleton if this call is still the current one — a
+    // superseded request's skeleton belongs to whatever newer renderAll()
+    // already repainted #pages/#thumbs. Callers already try/catch renderAll()
+    // and toast the error; this just stops the placeholder from shimmering
+    // forever with nothing behind it.
+    if (gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
+    throw err;
+  }
   if (gen !== renderGen) { pdf.destroy(); return; }
   state.pdf = pdf;
   const shown = Math.min(pdf.numPages, MAX_PAGES);
@@ -623,15 +702,25 @@ async function renderAll() {
     note.textContent = `Showing ${shown} of ${pdf.numPages} pages`;
   $("docPages").textContent = `${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
   $("pages").innerHTML = "";
-  $("thumbs").innerHTML = "";
+  showThumbSkeleton(shown); // keep the thumb rail shimmering (sized to the real count) until thumbs start landing
   watchPages();
-  await renderPage(pdf, 1, gen);
+  try {
+    await renderPage(pdf, 1, gen);
+  } catch (err) {
+    // Page 1 failing means the background loop below (which is the only
+    // thing that ever clears the thumb skeleton) never starts — clear it
+    // here so it doesn't shimmer forever, then rethrow to the caller's
+    // existing try/catch + toast.
+    if (gen === renderGen) $("thumbs").innerHTML = "";
+    throw err;
+  }
   if (document.body.classList.contains("mode-edit")) primeOverlays();
   (async () => {
     for (let n = 2; n <= shown; n++) {
       if (gen !== renderGen) return;
       await renderPage(pdf, n, gen);
     }
+    $("thumbs").innerHTML = "";
     for (let n = 1; n <= shown; n++) {
       if (gen !== renderGen) return;
       await renderThumb(pdf, n, gen);
@@ -1268,7 +1357,7 @@ $("pages").addEventListener("click", (e) => {
 
 $("thumbs").addEventListener("click", (e) => {
   const t = e.target.closest(".thumb");
-  if (!t) return;
+  if (!t || !t.dataset.page) return; // skeleton placeholders reuse .thumb for sizing but carry no page number
   const n = +t.dataset.page;
   const qa = e.target.closest("[data-qa]");
   if (qa) {

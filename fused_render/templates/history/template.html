@@ -311,6 +311,46 @@
   .other summary { cursor: pointer; color: var(--ink-3); font-size: 12px; }
   .all-hidden { margin-top: 28px; color: var(--ink-3); }
 
+  /* ================= skeleton (initial sidecar fetch) =================
+     Mirrors the real layout (.head, .pulse-line, .chips, .timeline .day/.ev)
+     so the page never flashes a blank "Loading…" swap — only the pixels
+     that are about to be replaced by real content shimmer. */
+  .skel-bar {
+    display: block;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--surface-2) 25%, #2f333c 50%, var(--surface-2) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.3s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  .skel-head { margin-bottom: 12px; }
+  .skel-title { height: 30px; width: 46%; border-radius: 6px; }
+  .skel-sub { height: 11px; width: 220px; max-width: 60%; margin-top: 12px; }
+  .skel-pulse { height: 13px; width: 260px; max-width: 60%; margin: 22px 0 0; }
+  .skel-chips { display: flex; gap: 8px; margin: 18px 0 0; }
+  .skel-chip { height: 27px; width: 84px; border-radius: 999px; }
+  .skel-chip:nth-child(2) { width: 112px; }
+  .skel-chip:nth-child(3) { width: 96px; }
+  .skel-timeline { margin-top: 36px; }
+  .skel-day { position: relative; padding-left: 34px; margin: 0 0 22px; }
+  .skel-day::before {
+    content: "";
+    position: absolute;
+    left: var(--spine-x);
+    top: 2px;
+    bottom: -10px;
+    width: 1px;
+    background: var(--line);
+  }
+  .skel-daylabel { height: 12px; width: 64px; margin: 0 0 14px -34px; }
+  .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; }
+  .skel-dot { flex: none; width: 7px; height: 7px; margin-left: 1px; border-radius: 50%; background: var(--line); }
+  .skel-line { height: 13px; }
+  .skel-time { flex: none; width: 64px; height: 11px; margin-left: auto; }
+
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
     .ev .go, .continue .go { transform: none; }
@@ -318,7 +358,31 @@
 </style>
 </head>
 <body>
-  <div id="root"><div id="status">Loading…</div></div>
+  <div id="root">
+    <div class="skel-head">
+      <div class="skel-bar skel-title"></div>
+      <div class="skel-bar skel-sub"></div>
+    </div>
+    <div class="skel-bar skel-pulse"></div>
+    <div class="skel-chips">
+      <div class="skel-bar skel-chip"></div>
+      <div class="skel-bar skel-chip"></div>
+      <div class="skel-bar skel-chip"></div>
+    </div>
+    <div class="skel-timeline">
+      <div class="skel-day">
+        <div class="skel-bar skel-daylabel"></div>
+        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:220px"></span><span class="skel-bar skel-time"></span></div>
+        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:150px"></span><span class="skel-bar skel-time"></span></div>
+        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:270px"></span><span class="skel-bar skel-time"></span></div>
+      </div>
+      <div class="skel-day">
+        <div class="skel-bar skel-daylabel" style="width:56px"></div>
+        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:190px"></span><span class="skel-bar skel-time"></span></div>
+        <div class="skel-row"><span class="skel-dot"></span><span class="skel-bar skel-line" style="width:130px"></span><span class="skel-bar skel-time"></span></div>
+      </div>
+    </div>
+  </div>
 
 <script>
 (async function () {

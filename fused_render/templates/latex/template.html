@@ -200,11 +200,73 @@
 
   #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
     padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-2); z-index: 200; display: none; }
-  #boot, #empty { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px; background: var(--canvas); z-index: 300; }
+  #empty { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px; background: var(--canvas); z-index: 300; }
+
+  /* ---- boot skeleton: mimics the topbar + sidebar + editor + PDF workspace
+     shape while the vendored CodeMirror bundle is still loading, instead of a
+     bare "Loading…" text swap. Purely decorative — the whole #boot node is
+     removed once the real workspace is ready (see boot script below). ---- */
+  #boot { position: fixed; inset: 0; z-index: 300; background: var(--canvas);
+    display: flex; flex-direction: column; overflow: hidden; }
+  /* A load failure replaces #boot's skeleton children with a plain error
+     string (see the codemirror import catch below) — switch back to the
+     centered/muted layout #empty uses instead of staying a flex column. */
+  #boot.boot-error { display: grid; place-items: center; text-align: center;
+    color: var(--ink-3); font-size: 14px; padding: 20px; }
+  .boot-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 7px 12px; background: var(--chrome); border-bottom: 1px solid var(--hair); }
+  .boot-spacer { flex: 1 1 auto; }
+  .boot-body { flex: 1 1 auto; min-height: 0; display: flex; }
+  .boot-side { flex: 0 0 232px; background: var(--chrome); border-right: 1px solid var(--hair); padding: 14px 10px; }
+  .boot-editor { flex: 1 1 50%; min-width: 0; background: #fff; border-right: 1px solid var(--hair); padding: 18px 22px; }
+  .boot-pdf { flex: 1 1 50%; min-width: 0; background: #eceef1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .sk-bar { height: 11px; border-radius: 4px; margin: 0 0 9px;
+    background: linear-gradient(90deg, var(--hair-2) 25%, #fff 50%, var(--hair-2) 75%);
+    background-size: 200% 100%; animation: sk-shimmer 1.2s ease-in-out infinite; }
+  /* single shimmering page-shaped placeholder for the PDF pane — matches the
+     real .pdf-page's look (white sheet + shadow) and aspect, used both during
+     initial boot and for the very first compile of a doc that has no PDF yet. */
+  .sk-page { position: relative; width: min(600px, 86%); aspect-ratio: 0.773;
+    background: #fff; box-shadow: var(--shadow-1); overflow: hidden; flex: 0 0 auto; }
+  .sk-page::after { content: ""; position: absolute; inset: 0;
+    background: linear-gradient(100deg, #fff 30%, var(--hair-2) 50%, #fff 70%);
+    background-size: 200% 100%; animation: sk-shimmer 1.2s ease-in-out infinite; }
+  @keyframes sk-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 </style>
 </head>
 <body class="mode-edit">
-<div id="boot">Loading LaTeX…</div>
+<div id="boot" role="status" aria-label="Loading LaTeX workspace">
+  <div class="boot-topbar">
+    <div class="sk-bar" style="width:22px;height:22px;border-radius:5px;margin:0;"></div>
+    <div class="sk-bar" style="width:130px;height:13px;margin:0;"></div>
+    <div class="boot-spacer"></div>
+    <div class="sk-bar" style="width:96px;height:24px;border-radius:6px;margin:0;"></div>
+    <div class="sk-bar" style="width:110px;height:24px;border-radius:6px;margin:0;"></div>
+  </div>
+  <div class="boot-body">
+    <div class="boot-side">
+      <div class="sk-bar" style="width:56px;height:9px;"></div>
+      <div class="sk-bar" style="width:92%;"></div>
+      <div class="sk-bar" style="width:70%;"></div>
+      <div class="sk-bar" style="width:84%;"></div>
+      <div class="sk-bar" style="width:64px;height:9px;margin-top:16px;"></div>
+      <div class="sk-bar" style="width:80%;"></div>
+      <div class="sk-bar" style="width:60%;"></div>
+    </div>
+    <div class="boot-editor">
+      <div class="sk-bar" style="width:38%;"></div>
+      <div class="sk-bar" style="width:88%;"></div>
+      <div class="sk-bar" style="width:66%;"></div>
+      <div class="sk-bar" style="width:94%;"></div>
+      <div class="sk-bar" style="width:52%;"></div>
+      <div class="sk-bar" style="width:76%;"></div>
+      <div class="sk-bar" style="width:40%;"></div>
+      <div class="sk-bar" style="width:90%;"></div>
+      <div class="sk-bar" style="width:58%;"></div>
+    </div>
+    <div class="boot-pdf"><div class="sk-page"></div></div>
+  </div>
+</div>
 <div id="empty" class="hidden">No file selected (missing _file param).</div>
 
 <!-- ============ top bar ============ -->
@@ -310,7 +372,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   try {
     CM = await import(assetUrl("vendor/codemirror.esm.js"));
   } catch (err) {
-    document.getElementById("boot").textContent = "Failed to load the editor: " + err.message;
+    const bootEl = document.getElementById("boot");
+    bootEl.classList.add("boot-error");
+    bootEl.textContent = "Failed to load the editor: " + err.message;
     throw err;
   }
 
@@ -517,6 +581,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
     S.compiling = true; setStatus("busy", "compiling…");
+    // First compile of this doc (no PDF rendered yet): swap the blank pane for
+    // a shimmering page placeholder instead of leaving it empty. Recompiles of
+    // an already-rendered doc intentionally keep the stale PDF up (see below).
+    if (!S.lastPdf) $("pdfpages").innerHTML = '<div class="sk-page pdf-skel"></div>';
     try {
       if (S.dirty) await saveNow();
       const r = await py({ action: "compile", path: S.mainAbs, force: force ? 1 : 0, src: rawURL(S.mainAbs) });
@@ -537,6 +605,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       setStatus("err", "error"); toast("Compile failed: " + err.message);
     } finally {
       S.compiling = false;
+      // Belt-and-braces: the r.error / thrown-err branches above don't touch
+      // #pdfpages, so if the skeleton placeholder is still sitting there
+      // un-replaced, swap it for the same empty-state message the "compiled
+      // but no PDF" branch uses — never leave it shimmering forever.
+      if (!S.lastPdf && $("pdfpages").querySelector(".pdf-skel")) {
+        $("pdfpages").innerHTML = '<div class="side-empty" style="padding:40px">No PDF yet — fix the errors below.</div>';
+      }
       if (S.pendingCompile) { S.pendingCompile = false; compile(); }   // run the coalesced request
     }
   }

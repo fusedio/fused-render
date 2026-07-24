@@ -583,17 +583,40 @@
 
   .status.error { color: #f18c8c; }
 
-  .spinner {
-    width: 20px;
-    height: 20px;
-    margin: auto;
-    border: 2px solid var(--line);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.75s linear infinite;
+  .skel-bar {
+    display: inline-block;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--panel-2) 50%, var(--line-soft) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
   }
 
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+
+  .skel-row, .skel-row:hover { background: var(--bg); cursor: default; }
+  .skel-row .log-cell { display: flex; align-items: center; }
+
+  .skel-level, .skel-level:hover { background: transparent; cursor: default; }
+
+  dd.skel-dd { display: flex; justify-content: flex-end; }
+
+  .skel-picker-row, .skel-picker-row:hover { background: transparent; cursor: default; }
+
+  .hist-skel {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--panel-2) 50%, var(--line-soft) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  .hist-skel[hidden] { display: none; }
 
   .log-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
@@ -762,11 +785,23 @@
         </section>
         <section class="facet-section" id="file-overview">
           <h2 class="facet-title">Active file</h2>
-          <div class="file-name">Waiting for file</div>
+          <div class="file-name"><span class="skel-bar" style="width:70%;height:12px"></span></div>
+          <div class="file-path"><span class="skel-bar" style="width:94%;height:10px"></span></div>
+          <dl class="facts">
+            <dt><span class="skel-bar" style="width:30px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:46px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:34px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:40px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:28px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:64px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:26px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:64px;height:9px"></span></dd>
+          </dl>
         </section>
         <section class="facet-section">
           <h2 class="facet-title">Level</h2>
-          <div class="level-list" id="level-list"><span class="file-path">Loading facets...</span></div>
+          <div class="level-list" id="level-list">
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:60%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:44%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:52%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:36%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+          </div>
         </section>
       </div>
     </aside>
@@ -791,6 +826,7 @@
         </div>
         <div class="canvas-wrap" id="canvas-wrap">
           <canvas id="histogram"></canvas>
+          <div class="hist-skel" id="hist-skel" aria-hidden="true"></div>
           <div id="hist-tooltip"></div>
         </div>
       </section>
@@ -803,7 +839,16 @@
 
       <div id="notice-area"></div>
       <section id="results" aria-live="polite">
-        <div class="status"><span class="spinner"></span><span>Reading log...</span></div>
+        <div class="log-list">
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:88%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:62%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:95%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:48%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:79%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:91%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:55%;height:10px"></span></span></div>
+        </div>
       </section>
       <footer class="pager" id="pager" hidden>
         <button class="button" id="prev-page" type="button">Previous</button>
@@ -873,6 +918,7 @@
   const pagePosition = document.getElementById("page-position");
   const canvas = document.getElementById("histogram");
   const canvasWrap = document.getElementById("canvas-wrap");
+  const histSkel = document.getElementById("hist-skel");
   const histTooltip = document.getElementById("hist-tooltip");
   const histSummary = document.getElementById("hist-summary");
   const timeWindow = document.getElementById("time-window");
@@ -913,6 +959,32 @@
   function number(value, fallback = 0) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function skelBar(width, height = "10px") {
+    return `<span class="skel-bar" style="width:${width};height:${height}"></span>`;
+  }
+
+  const RESULT_SKELETON_WIDTHS = [88, 62, 95, 48, 79, 60, 91, 55];
+
+  function resultsSkeleton() {
+    return `<div class="log-list">${RESULT_SKELETON_WIDTHS.map((width) => `
+        <div class="log-row skel-row">
+          <span class="log-cell"></span>
+          <span class="log-cell">${skelBar("74%")}</span>
+          <span class="log-cell">${skelBar("46%")}</span>
+          <span class="log-cell">${skelBar("60%")}</span>
+          <span class="log-cell">${skelBar(`${width}%`)}</span>
+        </div>`).join("")}</div>`;
+  }
+
+  function pickerSkeleton() {
+    const widths = [62, 44, 78, 50, 68];
+    return widths.map((width) => `
+      <div class="picker-entry skel-picker-row">
+        <span class="file-kind">${skelBar("22px", "8px")}</span>
+        <span class="picker-name">${skelBar(`${width}%`)}</span>
+      </div>`).join("");
   }
 
   function currentState() {
@@ -1111,7 +1183,7 @@
 
   async function loadPickerDir(path) {
     pickerError.hidden = true;
-    pickerList.innerHTML = `<div class="picker-empty">Loading…</div>`;
+    pickerList.innerHTML = pickerSkeleton();
     try {
       // src (origin only) lets the reader route a mount-backed dir via
       // /api/fs/list instead of a kernel scan that could drop the mount.
@@ -1326,6 +1398,7 @@
   }
 
   function renderHistogram(data, state) {
+    histSkel.hidden = true;
     const buckets = normalizeBuckets(data);
     const overviewRangeValue = overviewRange(overviewData || {});
     const min = buckets.length ? Math.min(...buckets.map((bucket) => bucket.start)) : number(overviewRangeValue.min);
@@ -1484,13 +1557,15 @@
     resultSummary.textContent = "Loading...";
     noticeArea.innerHTML = "";
     pager.hidden = true;
-    results.innerHTML = `<div class="status"><span class="spinner"></span><span>Reading log...</span></div>`;
+    histSkel.hidden = false;
+    results.innerHTML = resultsSkeleton();
   }
 
   function setError(error) {
     const type = error && error.type ? `<strong>${escapeHtml(error.type)}</strong><br>` : "";
     resultSummary.textContent = "Reader failed";
     pager.hidden = true;
+    histSkel.hidden = true;
     results.innerHTML = `<div class="status error">${type}<span>${escapeHtml(errorMessage(error))}</span></div>`;
   }
 
@@ -1573,6 +1648,7 @@
       resultSummary.textContent = "No file open";
       noticeArea.innerHTML = "";
       pager.hidden = true;
+      histSkel.hidden = true;
       results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Use "Browse files..." to pick a log.</span></div>`;
       return;
     }

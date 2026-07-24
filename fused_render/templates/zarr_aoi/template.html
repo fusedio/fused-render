@@ -46,6 +46,18 @@
   .row .ic { width: 18px; text-align: center; }
   .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .sz { color: #6b7178; font-size: 11px; }
+  .row.skel { cursor: default; }
+  .row.skel:hover { background: none; }
+  .row.skel .ic, .row.skel .nm, .row.skel .sz { color: transparent; border-radius: 4px;
+    background: linear-gradient(90deg, #1c1f24 25%, #2a2d33 50%, #1c1f24 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite; }
+  .row.skel .ic { height: 13px; width: 16px; flex: 0 0 16px; }
+  .row.skel .nm { height: 11px; }
+  .row.skel .sz { height: 9px; width: 30px; flex: 0 0 30px; }
+  @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  #crumbs.skel { display: inline-block; height: 11px; width: 130px; border-radius: 4px;
+    background: linear-gradient(90deg, #1c1f24 25%, #2a2d33 50%, #1c1f24 75%);
+    background-size: 200% 100%; animation: skel-shimmer 1.2s ease-in-out infinite; }
   input[type=range] { vertical-align: middle; }
   #readout { left: 10px; bottom: 26px; font-size: 12px; font-variant-numeric: tabular-nums;
     color: #cdd0d4; max-width: 520px; }
@@ -472,10 +484,22 @@ els.browse.onclick = async () => {
 };
 els.showAll.onchange = () => { fused.params.set('showall', els.showAll.checked ? '1' : ''); refreshExplorer(); };
 const rawURL = f => `${location.origin}/api/fs/raw?path=${encodeURIComponent(f)}`;
+const SKEL_WIDTHS = [130, 90, 150, 70, 115, 160, 95];
+function skeletonRows(){
+  return SKEL_WIDTHS.map(w =>
+    `<div class="row skel"><span class="ic"></span><span class="nm" style="flex:0 0 ${w}px"></span><span class="sz"></span></div>`
+  ).join('');
+}
 async function refreshExplorer(dir){
   dir = dir || P.dir();
+  els.crumbs.classList.add('skel');
+  els.explorerList.innerHTML = skeletonRows();
   const r = await fused.runPython('./browse.py', { dir, exts: EXTS, show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
-  if (!r || r.error) return;
+  els.crumbs.classList.remove('skel');
+  if (!r || r.error){
+    els.explorerList.innerHTML = '<div class="row" style="color:#ff7b72">failed to list this folder</div>';
+    return;
+  }
   els.crumbs.innerHTML = r.crumbs.map(c =>
     `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));

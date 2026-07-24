@@ -151,6 +151,34 @@
   #load-more-btn:hover:not(:disabled) { background: var(--bg-alt); }
   #load-more-btn:disabled { opacity: .6; cursor: default; }
 
+  /* Skeleton loading state: shimmering bars shaped like the real listing
+     table (icon + name + size + mtime), and a full-pane placeholder while a
+     file preview loads. Built from this file's own tokens (--bg-alt/--border)
+     so it reads as part of the same UI, not a borrowed style. */
+  .skel-bar {
+    display: inline-block;
+    height: 10px;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skel-bar.icon-skel { width: 16px; height: 16px; border-radius: 4px; flex: 0 0 auto; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  table.listing-table tr.skel-row td { cursor: default; }
+  table.listing-table tr.skel-row:hover { background: transparent; }
+  .pane-skel {
+    flex: 1 1 auto;
+    margin: 14px;
+    border-radius: 8px;
+    background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+
   /* Placeholder / folder card shown in the preview pane. */
   .pane-center { margin: auto; text-align: center; color: var(--fg-muted); padding: 32px; }
   .pane-center .big-icon { display: inline-flex; margin-bottom: 12px; }
@@ -177,7 +205,7 @@
         <input id="search" type="search" placeholder="Start typing to search…" autocomplete="off" spellcheck="false" />
         <span class="count" id="search-count"></span>
       </div>
-      <div class="list-body" id="list-body"><div class="status-message">Loading…</div></div>
+      <div class="list-body" id="list-body"></div>
     </div>
     <div class="divider" id="divider"></div>
     <div class="preview-pane" id="preview-pane"></div>
@@ -362,6 +390,13 @@
       previewPaneEl.innerHTML = `<div class="pane-center">${html}</div>`;
     }
 
+    // Full-pane shimmer while a file's own preview template is being resolved
+    // (fused.stat + iframe boot) — mirrors the shape of what lands next (an
+    // edge-to-edge iframe or metadata card fills this same pane).
+    function showPaneSkeleton() {
+      previewPaneEl.innerHTML = `<div class="pane-skel"></div>`;
+    }
+
     function previewFolder(entry) {
       showPlaceholder(
         `<div class="big-icon">${iconSvg(entry.name, true)}</div>` +
@@ -377,7 +412,7 @@
     // its default template, then embed the normal /render iframe. A file with
     // no bound template falls back to a metadata card.
     async function previewFile(entry) {
-      showPlaceholder(`<div class="hint">Loading preview…</div>`);
+      showPaneSkeleton();
       try {
         const st = await fused.stat(entry.path);
         if (selectedPath !== entry.path) return; // superseded by another click
@@ -425,6 +460,24 @@
     // (views/Listing.tsx sortEntries): dot-entries always group last, dirs
     // group first within each, then the active key, with a name tiebreak.
     const COLUMNS = [["name", "Name"], ["size", "Size"], ["mtime", "Modified"]];
+
+    // Shimmering placeholder table shown while a listing/search fetch is in
+    // flight — same head + column shape as the real table (rowHtml above),
+    // just with shimmer bars instead of text so it never reads as "frozen".
+    const SKEL_NAME_W = [70, 45, 82, 38, 60, 50, 74, 42, 66, 34];
+    const SKEL_SIZE_W = [34, 28, 40, 24, 36, 30, 26, 38, 32, 22];
+    function skeletonTableHtml(n) {
+      const head = `<thead><tr>${COLUMNS.map(([, l]) => `<th>${escapeHtml(l)}</th>`).join("")}</tr></thead>`;
+      let body = "";
+      for (let i = 0; i < n; i++) {
+        body += `<tr class="skel-row">` +
+          `<td class="name"><span class="skel-bar icon-skel"></span>` +
+          `<span class="skel-bar" style="width:${SKEL_NAME_W[i % SKEL_NAME_W.length]}%"></span></td>` +
+          `<td class="size"><span class="skel-bar" style="width:${SKEL_SIZE_W[i % SKEL_SIZE_W.length]}px"></span></td>` +
+          `<td class="mtime"><span class="skel-bar" style="width:84px"></span></td></tr>`;
+      }
+      return `<table class="listing-table skel-table">${head}<tbody>${body}</tbody></table>`;
+    }
 
     function sortedEntries() {
       const flip = sortOrder === "desc" ? -1 : 1;
@@ -593,10 +646,11 @@
       // (Re)fetch the recursive walk when the cache is missing or for the wrong
       // folder / hidden generation.
       if (!WALK || WALK.dir !== baseDir || WALK.hidden !== wantHidden) {
-        // Clear the selectable rows while a message-only view is up, so arrow
-        // keys / Enter can't drive preview or navigation against a stale list.
+        // Clear the selectable rows while the non-interactive skeleton is up,
+        // so arrow keys / Enter can't drive preview or navigation against a
+        // stale list.
         currentRows = [];
-        listBodyEl.innerHTML = `<div class="status-message">Searching…</div>`;
+        listBodyEl.innerHTML = skeletonTableHtml(6);
         searchCountEl.textContent = "";
         try {
           const url = "/api/fs/walk?path=" + encodeURIComponent(baseDir) + (wantHidden ? "&hidden=1" : "");
@@ -741,6 +795,7 @@
         listBodyEl.innerHTML = `<div class="status-message error">No folder selected (missing _file param).</div>`;
         return;
       }
+      listBodyEl.innerHTML = skeletonTableHtml(8);
       try {
         const res = await fetch("/api/fs/list?path=" + encodeURIComponent(dir));
         const data = await res.json();
