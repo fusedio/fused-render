@@ -187,6 +187,23 @@ begin
   end;
 end;
 
+function RenameWithRetry(const OldDir, NewDir: String): Boolean;
+var
+  Attempt: Integer;
+begin
+  { The supervisor's --shutdown-for-upgrade sweeps its process tree before this
+    runs, but a terminated process's handles release asynchronously (and AV /
+    the indexer may briefly hold a freshly written dir). Retry ~15s so the swap
+    rides out that residue instead of failing the whole upgrade. }
+  for Attempt := 1 to 30 do
+  begin
+    Result := RenameFile(OldDir, NewDir);
+    if Result then
+      Exit;
+    Sleep(500);
+  end;
+end;
+
 procedure ActivatePayload();
 var
   CurrentPayload: String;
@@ -206,9 +223,9 @@ begin
     not FileExists(NewPayload + '\python\Lib\site-packages\fused_render\static\shell-dist\index.html') then
     RaiseException('The new FusedRender payload is incomplete.');
   DelTree(PreviousPayload, True, True, True);
-  if DirExists(CurrentPayload) and not RenameFile(CurrentPayload, PreviousPayload) then
+  if DirExists(CurrentPayload) and not RenameWithRetry(CurrentPayload, PreviousPayload) then
     RaiseException('The installed FusedRender payload could not be moved.');
-  if not RenameFile(NewPayload, CurrentPayload) then
+  if not RenameWithRetry(NewPayload, CurrentPayload) then
   begin
     if DirExists(PreviousPayload) then
       RenameFile(PreviousPayload, CurrentPayload);

@@ -44,6 +44,9 @@ class TrayAction(Enum):
 @dataclass
 class _State:
     login_enabled: bool
+    # The version of a background-discovered update, or None. Read by the
+    # backend's menu-label callable; set via TrayHandle.set_update_available.
+    available_update: str | None = None
 
 
 @dataclass
@@ -59,9 +62,11 @@ class TrayHandle:
 
     actions: "queue.Queue[TrayAction]"
     # 0 or 1 backend icon handle — a pystray.Icon on Windows, a stop-shim on
-    # Linux. Whatever it is, `stop()` only needs `.stop()` on it.
+    # Linux. `stop()` needs `.stop()` on it; `set_update_available` additionally
+    # needs `.update_menu()` (only ever called on Windows, where `update` lives).
     _current_icon: list = field(default_factory=list)
     _stopped: threading.Event = field(default_factory=threading.Event)
+    _state: "_State | None" = None
 
     def stop(self) -> None:
         self._stopped.set()
@@ -71,6 +76,16 @@ class TrayHandle:
             except Exception:  # noqa: BLE001 - best-effort, process is exiting anyway
                 pass
 
+    def set_update_available(self, version: str) -> None:
+        """Flag a background-discovered update so the tray item reads "Install
+        update X" instead of "Check for updates". Idempotent — a re-check of the
+        same version won't re-draw the menu."""
+        if self._state.available_update == version:
+            return
+        self._state.available_update = version
+        for icon in self._current_icon:
+            icon.update_menu()
+
 
 def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     """Spawns the tray on its own daemon thread and returns immediately — the
@@ -78,8 +93,8 @@ def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
     Explorer's notification-area infrastructure isn't up yet (launched from
     the sign-in Run key before Explorer's tray is ready), retry with backoff
     until it succeeds: the icon shows up late, never "not at all.\""""
-    handle = TrayHandle(actions=queue.Queue())
     state = _State(login_enabled=login_enabled)
+    handle = TrayHandle(actions=queue.Queue(), _state=state)
 
     def loop():
         delay = _RETRY_START

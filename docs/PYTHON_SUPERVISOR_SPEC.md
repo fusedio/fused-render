@@ -94,12 +94,14 @@ If all gates pass (especially no-orphans-on-crash), open a migration PR to
 replace the Rust supervisor. If any fail, record the failure here and keep the
 Rust supervisor as the shipping path.
 
-## Software updates (auto-check + auto-download, user-approved install)
+## Software updates (silent auto-check + tray badge, user-approved download+install)
 
-Goal: an installed build checks for a newer version on its own, downloads and
-verifies it silently in the background, and then prompts the user — the
-**install is always one click**, never silent. No surprise restarts: the app
-is only ever replaced after the user says yes.
+Goal: an installed build checks for a newer version on its own but stays out of
+the way — a discovered update is surfaced **only** by relabeling the tray item
+to "Install update X.Y.Z", never a background download or an unprompted dialog.
+Downloading and installing happen only when the user clicks that item and
+approves the prompt. No surprise restarts: the app is only ever replaced after
+the user says yes.
 
 The genuinely hard parts already ship in `scripts/windows/installer.iss`: it
 stops the running app (`PrepareToInstall` → `ShutdownSupervisor` execs the
@@ -119,29 +121,30 @@ worker-thread pattern) plus one daemon timer thread.
 
 1. **Client flow** (`fused_render/supervisor/_win32/update.py`). Two entry points,
    one shared `_check_lock` (one check at a time, whichever fires):
-   - **Automatic** — `start_auto_checks(paths)`, called once from
+   - **Automatic** — `start_auto_checks(paths, notify)`, called once from
      `supervisor.run()` after the tray starts, spawns a daemon thread that
      waits `_STARTUP_DELAY_S` (so it never competes with launch) then loops
-     every `_CHECK_INTERVAL_S` (6 h). Each tick is **silent** on "up to date"
-     and on transient network errors (logged only, never a dialog), so it can't
-     nag. `FUSED_RENDER_NO_AUTO_UPDATE` disables it.
-   - **Manual** — the `TrayAction.CHECK_UPDATES` tray item runs the same flow
-     on demand, but reports its result either way ("up to date" / an error
-     dialog).
+     every `_CHECK_INTERVAL_S` (6 h). Each tick is **silent**: it fetches and
+     verifies the (small, signed) manifest only, and on a newer version calls
+     `notify(version)` — which relabels the tray item. It never downloads or
+     prompts. "Up to date" and transient network errors are logged, never a
+     dialog. `FUSED_RENDER_NO_AUTO_UPDATE` disables it.
+   - **Manual** — the `TrayAction.CHECK_UPDATES` tray item (labeled "Install
+     update X.Y.Z" once the badge is set) runs the download+install flow on
+     demand, and reports its result either way ("up to date" / an error dialog).
    - The ed25519 signature is verified in `_fetch_manifest`, **before** the
-     `version` is trusted for the "up to date"/prompt decision — a CDN/bucket
-     compromise can't forge a version to suppress or fake an update. When
-     `manifest.version` > `fused_render.__version__`: download the installer to
-     `%TEMP%` (**not** `Desktop\temp` — the installer's `[InstallDelete]` wipes
-     that), streaming it under a size cap while confirming its SHA-256 equals
-     the signed `manifest.sha256` (mismatch → refuse, report/log, never run an
-     unverified exe), then `MessageBoxW` MB_YESNO "FusedRender X.Y.Z is ready to
-     install…". On Yes, **re-hash the staged file one last time** (it sat in
-     `%TEMP%` while the prompt was open) and only then `os.startfile(installer)`
-     and return; the installer takes over. A declined version is remembered in
-     `_prompted_versions` so the background loop won't re-prompt it this session
-     (a restart or manual check offers it again); an accepted-but-failed launch
-     is not remembered, so it retries.
+     `version` is trusted for the "up to date"/badge/prompt decision — a
+     CDN/bucket compromise can't forge a version to suppress or fake an update.
+     On a manual check where `manifest.version` > `fused_render.__version__`:
+     `MessageBoxW` MB_YESNO "FusedRender X.Y.Z is available. Download and install
+     now?" **first**; only on Yes download the installer to `%TEMP%` (**not**
+     `Desktop\temp` — the installer's `[InstallDelete]` wipes that), streaming it
+     under a size cap while confirming its SHA-256 equals the signed
+     `manifest.sha256` (mismatch → refuse, report/log, never run an unverified
+     exe), then launch the installer (`_launch_installer` → `ShellExecuteEx`) and
+     return; it takes over. Declining stages nothing; an accepted-but-failed
+     launch discards the staged file and stays un-latched so a later check
+     retries.
 2. **Manifest** — `latest.json` published next to the installer on the CDN
    (`https://d2ic19jpchjovp.cloudfront.net/fused-render-windows/latest.json`):
    ```json
@@ -166,6 +169,13 @@ worker-thread pattern) plus one daemon timer thread.
    one `_teardown` path runs (job close, port freed). The installer process is
    spawned by (but not inside) the supervisor's Job, so it outlives the
    teardown. This is exactly the existing upgrade path — nothing new to wire.
+   The `--shutdown-for-upgrade` process does not exit 0 until
+   `SecondaryInstance.wait_for_exit` confirms the mutex released **and** no
+   process whose image is under `payload\` survives (`_wait_payload_gone` sweeps
+   the tree — the mutex is abandoned on thread exit, before the process and its
+   Job-killed children release their handles), so `ActivatePayload`'s rename
+   can't lose to a lingering lock. `RenameWithRetry` in the `.iss` backstops the
+   last-millisecond async handle release.
 4. **Run the installer with its (near-empty) UI, not `/VERYSILENT`.** The
    `[Run]` relaunch entry is `skipifsilent` and nothing else restarts the app,
    so a silent install would leave FusedRender closed; the normal wizard
@@ -207,11 +217,14 @@ worker-thread pattern) plus one daemon timer thread.
 
 ## Acceptance gates — updates
 
-- Background check on a current build → silent: nothing downloaded, no dialog.
-- Background check when a newer version exists → downloads + verifies silently,
-  then prompts; **decline** leaves the app untouched and isn't re-prompted this
-  session; **accept** launches the installer, the app updates in place and
-  relaunches, no orphan processes, port freed.
+- Background check on a current build → silent: nothing downloaded, no dialog,
+  tray item stays "Check for updates…".
+- Background check when a newer version exists → silent, nothing downloaded, no
+  dialog; the tray item relabels to "Install update X.Y.Z".
+- Manual check when a newer version exists → prompt "…is available. Download and
+  install now?" **before** any download; **decline** leaves the app untouched
+  and stages nothing; **accept** downloads + verifies, launches the installer,
+  and the app updates in place and relaunches, no orphan processes, port freed.
 - Manual "Check for updates…" with no newer version → "up to date" dialog.
 - Tampered manifest or binary (bad signature or sha256 mismatch) → refused, no
   install (background: silent + logged; manual: error dialog).
