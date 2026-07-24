@@ -124,3 +124,102 @@ def _view_path(fs_path: str) -> str:
     from fused_render._view_url_codec import view_url_path
 
     return view_url_path(fs_path)
+
+
+# ---- tray UNINSTALL: confirm -> deintegrate -> TRAY_EXIT ----------------------
+
+
+class _FakeProcess:
+    """Stand-in for the supervised server process: `wait(0)` reports "still
+    running" (0) until `die_after` loop polls have passed, then "exited" (1) so
+    the run loop terminates deterministically in a declined-uninstall test."""
+
+    def __init__(self, die_after=None):
+        self.calls = 0
+        self.die_after = die_after
+
+    def wait(self, timeout):
+        self.calls += 1
+        if self.die_after is not None and self.calls > self.die_after:
+            return 1  # truthy: the server exited
+        return 0  # falsy: still running
+
+
+def test_uninstall_confirmed_deintegrates_and_exits(monkeypatch):
+    monkeypatch.setattr(core.ui, "confirm_uninstall", lambda: True)
+    deintegrated = []
+    monkeypatch.setattr(core, "deintegrate", lambda paths: deintegrated.append(paths))
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    tray_actions.put(core.tray.TrayAction.UNINSTALL)
+    process = _FakeProcess()  # never dies on its own
+
+    reason, upgrade = core._event_loop(
+        9000, process, paths, tray_actions, queue.Queue()
+    )
+
+    assert reason is core._ExitReason.TRAY_EXIT
+    assert upgrade is None
+    assert deintegrated == [paths]  # the backend hook ran, with paths
+
+
+def test_uninstall_declined_neither_deintegrates_nor_exits(monkeypatch):
+    monkeypatch.setattr(core.ui, "confirm_uninstall", lambda: False)
+    deintegrated = []
+    monkeypatch.setattr(core, "deintegrate", lambda paths: deintegrated.append(paths))
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    tray_actions.put(core.tray.TrayAction.UNINSTALL)
+    process = _FakeProcess(die_after=6)  # loop continues, then the server exits
+
+    reason, _upgrade = core._event_loop(
+        9000, process, paths, tray_actions, queue.Queue()
+    )
+
+    # A declined uninstall must NOT deintegrate and must NOT be a TRAY_EXIT: the
+    # loop resumed and only ended because the fake server later died.
+    assert deintegrated == []
+    assert reason is core._ExitReason.SERVER_DIED
+
+
+def test_uninstall_confirmed_exits_cleanly_without_deintegrate_hook(monkeypatch):
+    # On a backend with no deintegrate hook, a confirmed uninstall still tears
+    # down cleanly (guarded call) rather than raising AttributeError.
+    monkeypatch.setattr(core.ui, "confirm_uninstall", lambda: True)
+    monkeypatch.setattr(core, "deintegrate", None)
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    tray_actions.put(core.tray.TrayAction.UNINSTALL)
+
+    reason, _upgrade = core._event_loop(
+        9000, _FakeProcess(), paths, tray_actions, queue.Queue()
+    )
+
+    assert reason is core._ExitReason.TRAY_EXIT
+
+
+def test_uninstall_and_exit_both_confirmed_still_deintegrates(monkeypatch):
+    # Bugbot regression: with BOTH the Exit and Uninstall dialogs confirmed,
+    # the confirmed uninstall must still deintegrate. Uninstall is the superset
+    # (it must clean up first) and is polled before exit, so a plain exit can't
+    # win the race and silently skip the cleanup the user asked for.
+    monkeypatch.setattr(core.ui, "confirm_exit", lambda: True)
+    monkeypatch.setattr(core.ui, "confirm_uninstall", lambda: True)
+    deintegrated = []
+    monkeypatch.setattr(core, "deintegrate", lambda paths: deintegrated.append(paths))
+
+    paths = _Paths()
+    tray_actions = queue.Queue()
+    tray_actions.put(core.tray.TrayAction.EXIT)
+    tray_actions.put(core.tray.TrayAction.UNINSTALL)
+    process = _FakeProcess()  # never dies on its own
+
+    reason, _upgrade = core._event_loop(
+        9000, process, paths, tray_actions, queue.Queue()
+    )
+
+    assert reason is core._ExitReason.TRAY_EXIT
+    assert deintegrated == [paths]  # cleanup ran despite exit also being confirmed
