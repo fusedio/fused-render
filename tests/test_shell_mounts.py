@@ -2948,39 +2948,66 @@ def test_upstream_sign_negative_cache_skips_revalidation(home, rcd, fresh_upstre
 def test_upstream_sign_single_flight_validates_once(home, rcd, fresh_upstream, monkeypatch):
     # Finding 2: N concurrent first reads must issue ONE validation, not N, and
     # the losing racer's fallback must never erase the winner's adopted region.
+    #
+    # Deterministic, no real sleep: the winner is trapped INSIDE the one
+    # validation probe on an Event the test controls, so it provably holds the
+    # per-fs single-flight lock the entire time. Every other worker therefore
+    # fails the non-blocking lock.acquire() and completes via the publiclink
+    # fallback. The test releases the winner only AFTER confirming all seven
+    # losers have returned, so the interleaving the assertions depend on is
+    # guaranteed by synchronization rather than raced on scheduler timing.
     import os
 
     rcd.responses["config/get"] = _CRED_S3_CFG
     rcd.responses["operations/publiclink"] = {"url": "https://pl.example/x"}
     calls = []
     calls_lock = threading.Lock()
+    entered = threading.Event()   # a worker has entered the one validation probe
+    release = threading.Event()   # ... and is trapped there until the test frees it
 
-    def slow_validate(url):
+    def gated_validate(url):
         with calls_lock:
             calls.append(url)
-        time.sleep(0.25)  # hold the flight so siblings pile up
+        entered.set()
+        assert release.wait(timeout=10), "validation was never released"
         return (206, None)
 
-    monkeypatch.setattr(mounts_mod, "_sign_validation_status", slow_validate)
+    monkeypatch.setattr(mounts_mod, "_sign_validation_status", gated_validate)
     c = mounts_mod.add_mount("corp", "corp:bucket/pre")
     mp = mounts_mod.mountpoint(c)
+
     results = []
-    res_lock = threading.Lock()
+    done = threading.Condition()
 
     def worker(i):
         u = mounts_mod.upstream_url_for(os.path.join(mp, f"obj{i}.parquet"))
-        with res_lock:
+        with done:
             results.append(u)
+            done.notify_all()
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
     for t in threads:
         t.start()
+    # The winner is now inside validation, holding the single-flight lock. No
+    # other worker can win it, so validation can never fire a second time.
+    assert entered.wait(timeout=10), "no worker entered validation"
+    # Block until every one of the seven losers has finished. They cannot win
+    # the held lock, so each takes the non-blocking-acquire -> "retry" -> publiclink
+    # fallback path; waiting on the count proves they ran, without a sleep.
+    with done:
+        assert done.wait_for(lambda: len(results) >= 7, timeout=10), \
+            "losing racers did not all complete"
+    # Only now free the winner: it publishes sign mode and mints its signed URL.
+    release.set()
     for t in threads:
-        t.join()
+        t.join(timeout=10)
+        assert not t.is_alive()
+
     assert len(calls) == 1  # exactly one validation across all threads
     assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
-    # Every request got a usable URL — signed (winner + latecomers) or the
-    # publiclink fallback (racers that didn't win the flight).
+    # Every request got a usable URL — signed (the winner) or the publiclink
+    # fallback (the racers that didn't win the flight); none returned None.
+    assert len(results) == 8
     assert all(r is not None for r in results)
 
 
@@ -3014,6 +3041,109 @@ def test_upstream_rc_hiccup_does_not_pin_mode(home, rcd, fresh_upstream, monkeyp
     assert got is not None and "X-Amz-Signature" in got
     assert len(calls) == 1
     assert mounts_mod._upstream_mode["corp:bucket/pre"] == "sign"
+
+
+# -- _sign_single_flight state machine: thread-free branch coverage ----------
+# The concurrency test above pins the single-flight COUNT invariant; these
+# drive each disposition of the state machine directly with plain fakes and
+# zero threads, so the branch behaviour is covered deterministically and far
+# more thoroughly than a race could.
+
+
+def test_sign_single_flight_active_mints_without_validating(fresh_upstream):
+    # Mode already pinned -> mint straight away, never re-run the probe.
+    fs = "corp:bucket/pre"
+    mounts_mod._upstream_mode[fs] = "sign"
+
+    def boom():
+        raise AssertionError("must not validate when the mode is already active")
+
+    url, disp = mounts_mod._sign_single_flight(
+        fs, "sign", mint_fn=lambda: "signed://url", validate_fn=boom,
+        reject_disp="link")
+    assert (url, disp) == ("signed://url", "sign")
+
+
+def test_sign_single_flight_win_pins_mode_and_clears_neg_cache(fresh_upstream):
+    # The flight winner validates once, pins the mode, and drops any stale
+    # negative-cache mark.
+    fs = "corp:bucket/pre"
+    mounts_mod._sign_neg_cache[fs] = 0.0  # expired mark a win must clear
+    calls = []
+
+    def validate():
+        calls.append(1)
+        return ("signed://ok", "ok")
+
+    url, disp = mounts_mod._sign_single_flight(
+        fs, "sign", mint_fn=lambda: "mint", validate_fn=validate,
+        reject_disp="link")
+    assert (url, disp) == ("signed://ok", "sign")
+    assert calls == [1]  # validated exactly once
+    assert mounts_mod._upstream_mode[fs] == "sign"
+    assert fs not in mounts_mod._sign_neg_cache
+
+
+def test_sign_single_flight_reject_settles_on_fallback(fresh_upstream):
+    # A definite reject returns the caller's fallback disposition (here "link",
+    # for S3's publiclink ladder — a GCS caller passes "bearer"), negative-caches
+    # so the blocking probe isn't re-run per request, and does NOT pin sign mode.
+    fs = "corp:bucket/pre"
+    url, disp = mounts_mod._sign_single_flight(
+        fs, "sign", mint_fn=lambda: "mint",
+        validate_fn=lambda: (None, "reject"), reject_disp="link")
+    assert (url, disp) == (None, "link")
+    assert mounts_mod._upstream_mode.get(fs) != "sign"
+    assert mounts_mod._sign_neg_cache.get(fs, 0.0) > time.monotonic()
+
+
+def test_sign_single_flight_inconclusive_leaves_mode_open(fresh_upstream):
+    # A transient (network/5xx) failure must NOT pin a mode — it returns "retry"
+    # (serve this request via the fallback) but negative-caches briefly so the
+    # blocking probe isn't hammered, leaving sign to be re-attempted later.
+    fs = "corp:bucket/pre"
+    url, disp = mounts_mod._sign_single_flight(
+        fs, "sign", mint_fn=lambda: "mint",
+        validate_fn=lambda: (None, "inconclusive"), reject_disp="link")
+    assert (url, disp) == (None, "retry")
+    assert mounts_mod._upstream_mode.get(fs) != "sign"
+    assert mounts_mod._sign_neg_cache.get(fs, 0.0) > time.monotonic()
+
+
+def test_sign_single_flight_skips_validation_within_neg_cache(fresh_upstream):
+    # Inside the negative-cache window the probe is skipped entirely -> "retry".
+    fs = "corp:bucket/pre"
+    mounts_mod._sign_neg_cache[fs] = time.monotonic() + 100
+
+    def boom():
+        raise AssertionError("neg-cache window must skip validation")
+
+    url, disp = mounts_mod._sign_single_flight(
+        fs, "sign", mint_fn=lambda: "mint", validate_fn=boom, reject_disp="link")
+    assert (url, disp) == (None, "retry")
+
+
+def test_sign_single_flight_defers_when_lock_held(fresh_upstream):
+    # Another caller already holds the per-fs validation lock: don't pile on,
+    # don't validate — return "retry" and let this request use the fallback.
+    # Holding the (non-reentrant) lock in the test thread reproduces the
+    # "another thread is validating" state deterministically, no second thread.
+    fs = "corp:bucket/pre"
+    held = threading.Lock()
+    mounts_mod._validation_locks[fs] = held
+    held.acquire()
+
+    def boom():
+        raise AssertionError("must not validate while the lock is held")
+
+    try:
+        url, disp = mounts_mod._sign_single_flight(
+            fs, "sign", mint_fn=lambda: "mint", validate_fn=boom,
+            reject_disp="link")
+    finally:
+        held.release()
+    assert (url, disp) == (None, "retry")
+    assert mounts_mod._upstream_mode.get(fs) != "sign"
 
 
 # -- upstream cache hygiene (Task 4) -----------------------------------------
