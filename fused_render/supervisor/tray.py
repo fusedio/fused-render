@@ -63,8 +63,7 @@ class TrayHandle:
 
     actions: "queue.Queue[TrayAction]"
     # 0 or 1 backend icon handle — a pystray.Icon on Windows, a stop-shim on
-    # Linux. `stop()` needs `.stop()` on it; `set_update_available` additionally
-    # needs `.update_menu()` (only ever called on Windows, where `update` lives).
+    # Linux. `stop()` needs `.stop()` on it.
     _current_icon: list = field(default_factory=list)
     _stopped: threading.Event = field(default_factory=threading.Event)
     _state: "_State | None" = None
@@ -79,13 +78,13 @@ class TrayHandle:
 
     def set_update_available(self, version: str) -> None:
         """Flag a background-discovered update so the tray item reads "Install
-        update X" instead of "Check for updates". Idempotent — a re-check of the
-        same version won't re-draw the menu."""
-        if self._state.available_update == version:
-            return
+        update X" instead of "Check for updates". Called from the auto-update
+        daemon thread, so this only writes state: the Windows backend re-reads
+        it (the label is a callable) when it rebuilds the menu on the icon's
+        own thread at the next open. Calling `update_menu()` from here would
+        DestroyMenu the handle a TrackPopupMenuEx on the icon thread may be
+        displaying."""
         self._state.available_update = version
-        for icon in self._current_icon:
-            icon.update_menu()
 
 
 def start(port: int, login_enabled: bool, paths: DesktopPaths) -> TrayHandle:
