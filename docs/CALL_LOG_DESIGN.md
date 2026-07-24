@@ -482,7 +482,8 @@ additive change to `_child.py`'s envelope and independently useful.
 |---|---|
 | `fused_render/calls.py` | **new.** Record shape, caps, background writer thread, retention sweep, rate cap, `record()`, `GET /api/calls/config`. |
 | `fused_render/server.py` | Include the router; one `calls.record()` in the middleware; enrich in `/api/run` and `/api/fs/write`. |
-| `fused_render/static/runtime.js` | Shared `_fetch` wrapper adding `X-Fused-Page`. |
+| `fused_render/static/runtime.js` | Shared `_fetch` wrapper adding `X-Fused-Page`; a `window.onerror` hook feeding `page-error` records (§9.2a). |
+| `fused-render calls` CLI | Cursor-based reads, digest-by-default `--json`, `--follow` (§9.2b–d). Phase 1, not 2 — it is the agent's only surface. |
 | `fused_render/executor.py`, `_child.py` | Return `duration_ms` + `stderr` tail (§6.5). |
 | `fused_render/templates/calls/` | **new.** `template.html` (charts, tail, table, detail), `reader.py` (the ops in §5.1), `condition.py` (CT-12 gate), `icon.svg`. |
 | `fused_render/templates/registry.json` | `calls` appended to `.html`/`.py`; `.calls.jsonl` key. |
@@ -498,7 +499,7 @@ tile daemons.
 ### Phase 2 — make it ambient
 
 Header chip (§5.4); the history-view Calls section (§5.3); client-side
-reconciliation (§6.2); the `fused-render calls` CLI (§5.5); brush-to-filter
+reconciliation (§6.2); brush-to-filter
 between chart and table.
 
 ### Phase 3 — deployed apps (the `fused` repo)
@@ -595,6 +596,95 @@ that works. The call log closes that loop with a file it can read.
 The general shape: **the log turns authoring from open-loop code generation
 into a closed loop with an observable.** That is worth more to an agent than to
 a human, because a human already has a browser.
+
+### 9.1 What an agent can already do, and what it actually gains
+
+Worth being exact, so this isn't oversold. An agent can **already** verify the
+Python half today with no new feature: `POST /api/run` with `X-Fused: 1` returns
+`{ok, result, stdout, error}` synchronously. Testing a `.py` is a solved
+problem.
+
+What no agent can see today, by any means, is **what the page did** — which
+calls its JS actually issued, in what order, how many times, with which params.
+That is the gap this closes, and every agent workflow below lives in it.
+
+| The agent's question | What answers it |
+|---|---|
+| Did my page work when it was opened? | records exist for `page`, all `outcome: ok` |
+| **Did my page call Python at all?** | **zero records — the JS died before `runPython`** |
+| Why did it fail? | `error.traceback` + the exact `params` that produced it |
+| Is my page pathological? | calls/sec, and a high `superseded` count = work thrown away |
+| Did my optimisation help? | the `targets` rollup, p50/p95 before vs after |
+| What did the human actually try? | recorded `params` across their real interactions |
+| Which of these 40 views are broken? | `--failed --since 24h`, all pages |
+
+**The zero-calls signal is the single most valuable one.** A blank page that
+made zero calls and a blank page whose reader raised look *identical* to an
+agent today. They are completely different bugs. Separating them is most of the
+diagnostic value here.
+
+### 9.2 Five additions that make it usable by an agent
+
+The log alone is necessary but not sufficient. Each of these is small, and
+without them an agent burns turns guessing.
+
+**(a) `page-error` records — the highest-value item in this whole design.**
+The plan as written logs API *calls*. For an agent the most informative record
+is the one where **no call happened because the page threw**. `runtime.js`
+already hooks `unhandledrejection` (line 658, for the overlay) but has **no
+`window.onerror`**. Add one, plus a `kind: "page-error"` record carrying
+`message`, `source`, `line`, `col`, and the stack. That turns "zero calls,
+cause unknown" into `TypeError: freq is not defined at sine.html:42` — a fix
+with a line number. ~15 lines in `runtime.js` and one route. It is not an API
+call, so it is a distinct `kind` in the same store, excluded from latency
+charts.
+
+**(b) A cursor, not a wall-clock guess.** "Since when?" is the whole problem in
+a loop. `--since 2m` makes the agent guess how long the human took. Every read
+surface should accept `--since-cursor <call_id>` and print the newest cursor on
+exit, so the agent's next read is exactly "everything new." The `tail` op
+(§5.1) already has the cursor; the CLI must expose it.
+
+**(c) Digest by default, full records on failure.** An agent reading 400 raw
+JSONL lines burns its context for no gain. `fused-render calls --json` should
+emit a **rollup** — per-entrypoint counts, percentiles, outcome tallies — plus
+full records only for failures, with `--verbose` to get everything. Context is
+the scarce resource; pre-aggregating server-side is the whole reason the
+`series`/`targets` ops exist, and the agent surface should default to them.
+
+**(d) `--follow --timeout 60s`.** An agent cannot execute the page's JS: it can
+run the `.py` directly, but nothing renders the HTML, and the deep-link scheme
+is `fused-render://open?git=` (repo clone, D110/§26) — there is no
+"open this local file" trigger. So phase 1's loop is genuinely
+human-in-the-loop: *"I've written the page — open it and I'll check."* Make the
+waiting ergonomic rather than pretending otherwise: a blocking follow that
+returns as soon as records appear for a page (or times out) turns two round
+trips into one. Headless rendering would close the loop fully, but Playwright
+is a dependency this repo does not have and should not take on for this.
+
+**(e) A line in the authoring skill.** `skills/fused-render-authoring/SKILL.md`
+is what teaches an agent the `runPython`/params contract. If it does not name
+the verification command, no agent will know the log exists and none of the
+above happens. A short "check your work" section is the difference between a
+feature and a used feature.
+
+### 9.3 The loop, concretely
+
+```
+1. agent writes sine.html + sine.py
+2. agent runs the .py directly            POST /api/run          → Python is sound
+3. agent asks the human to open the page  (one message)
+4. agent blocks on new records            calls --page sine.html --follow --json
+5. reads the digest:
+     0 records          → the JS never called Python; check page-error records (9.2a)
+     1 record, error    → traceback + params; fix and go to 3
+     3 records, all ok  → verified; report the timings
+     40 records/2s      → render loop; add the diff guard
+```
+
+Step 2 is available today. Steps 4–5 are what this feature adds, and they are
+the difference between "I wrote the files, try it" and "verified: three calls,
+80 rows, 40 ms — and your slider is throwing away 37 runs per drag."
 
 ---
 
