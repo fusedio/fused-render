@@ -17,6 +17,20 @@ import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
 
 
+@pytest.fixture(autouse=True)
+def _warm_https_opener():
+    """Build urllib's global HTTPS opener (and its SSL context) on the REAL
+    platform before any test runs. The win32 mount tests patch sys.platform to
+    "win32"; if the opener is first constructed while that patch is live,
+    ssl.load_default_certs takes the Windows cert-store branch
+    (enum_certificates), which doesn't exist off-Windows, and every rc call over
+    plain-HTTP loopback dies with a NameError. Pre-warming sidesteps the
+    artifact — real Windows has enum_certificates."""
+    import urllib.request as _u
+    if _u._opener is None:
+        _u._opener = _u.build_opener()
+
+
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -313,6 +327,79 @@ def test_mount_surfaces_rc_error(home, rcd):
     c = mounts_mod.add_mount("data", "remote:bucket")
     err = mounts_mod.attach_mount(c)
     assert err is not None and "mount helper failed" in err
+
+
+# -- Windows (WinFsp) mount semantics ------------------------------------------
+# The whole win32 mount path is exercised here with sys.platform patched to
+# "win32" (real rclone/WinFsp is never invoked). WinFsp differs from the POSIX
+# backends in two ways the code must special-case: the mountpoint leaf must NOT
+# pre-exist, and there is no `umount` to force a detach.
+
+
+def test_attach_win32_does_not_create_leaf_mountpoint(home, rcd, monkeypatch):
+    # WinFsp creates the mountpoint itself; pre-creating the leaf makes
+    # mount/mount fail. So on win32 attach_mount must never makedirs the leaf
+    # (it still ensures the mounts ROOT, which carries the Spotlight marker).
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    made = []
+    real_makedirs = mounts_mod.os.makedirs
+
+    def spy_makedirs(path, *a, **k):
+        made.append(path)
+        return real_makedirs(path, *a, **k)
+
+    monkeypatch.setattr(mounts_mod.os, "makedirs", spy_makedirs)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert mounts_mod.attach_mount(c) is None
+    assert mp not in made               # leaf never pre-created (WinFsp does it)
+    assert mounts_mod.mounts_dir() in made  # but the root is still ensured
+
+
+def test_attach_win32_removes_stale_empty_leaf(home, rcd, monkeypatch):
+    # A previous mount can leave an empty leaf dir behind; WinFsp refuses to
+    # mount over it, so attach_mount rmdir's the stale empty leaf first.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)  # stale empty leaf
+    assert mounts_mod.os.path.isdir(mp)
+    assert mounts_mod.attach_mount(c) is None
+    # we removed the stale leaf and did NOT recreate it (WinFsp would),
+    # while the stub reports it as a live mount.
+    assert not mounts_mod.os.path.exists(mp)
+    assert mounts_mod.os.path.ismount(mp)
+
+
+def test_attach_win32_refuses_nonempty_leaf(home, rcd, monkeypatch):
+    # A non-empty leaf is a user's data (or a foreign mount's contents) — never
+    # rmdir it; error out and never even reach mount/mount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True, raising=False)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    mounts_mod.os.makedirs(mp)
+    keep = mounts_mod.os.path.join(mp, "keep.txt")
+    with open(keep, "w") as f:
+        f.write("x")
+    err = mounts_mod.attach_mount(c)
+    assert err is not None
+    assert mounts_mod.os.path.isdir(mp) and mounts_mod.os.path.isfile(keep)
+    assert not any(x[0] == "mount/mount" for x in rcd.calls)
+
+
+@pytest.mark.parametrize("plat", ["darwin", "linux"])
+def test_attach_posix_creates_leaf_mountpoint(home, rcd, monkeypatch, plat):
+    # Regression guard: POSIX (FUSE/NFS) mounts over an EXISTING empty dir, so
+    # the leaf is still pre-created on darwin/linux.
+    monkeypatch.setattr(mounts_mod.sys, "platform", plat)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    assert not mounts_mod.os.path.exists(mp)
+    assert mounts_mod.attach_mount(c) is None
+    assert mounts_mod.os.path.isdir(mp)
 
 
 def test_unmount_calls_rc(home, rcd):

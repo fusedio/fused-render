@@ -3290,7 +3290,24 @@ def attach_mount(m: dict) -> str | None:
     # per-mount mountpoint, so the marker is in place the moment the mount goes
     # live and Spotlight never gets a chance to scan it.
     ensure_mounts_dir()
-    os.makedirs(mp, exist_ok=True)
+    # Mountpoint-leaf semantics diverge by platform. POSIX backends (FUSE, and
+    # the macOS loopback NFS mount) attach OVER an existing empty directory, so
+    # we pre-create the leaf. WinFsp — rclone's Windows mount backend — is the
+    # exact opposite: it creates the mountpoint itself and REFUSES to mount when
+    # the leaf already exists, so a pre-created directory makes mount/mount fail
+    # outright. Hence on win32 we must NOT create the leaf; we only clear a stale
+    # EMPTY leaf a previous mount left behind (os.rmdir succeeds only when empty)
+    # and refuse a non-empty leaf rather than delete a user's files. If the leaf
+    # is already a live mount we leave it for the adopt/reconcile path below.
+    if sys.platform == "win32":
+        if os.path.isdir(mp) and not os.path.ismount(mp):
+            try:
+                os.rmdir(mp)
+            except OSError:
+                return (f"mountpoint {mp} already exists and is not empty — "
+                        f"remove it before mounting")
+    else:
+        os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
         # deleted mount of the same name would otherwise pass for the
