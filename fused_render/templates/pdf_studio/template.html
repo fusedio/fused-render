@@ -680,8 +680,19 @@ async function renderAll() {
   const gen = ++renderGen;
   if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
   showRenderSkeleton();
-  const data = await loadPdfBytes();
-  const pdf = await pdfjs.getDocument({ data }).promise;
+  let data, pdf;
+  try {
+    data = await loadPdfBytes();
+    pdf = await pdfjs.getDocument({ data }).promise;
+  } catch (err) {
+    // Only wipe the skeleton if this call is still the current one — a
+    // superseded request's skeleton belongs to whatever newer renderAll()
+    // already repainted #pages/#thumbs. Callers already try/catch renderAll()
+    // and toast the error; this just stops the placeholder from shimmering
+    // forever with nothing behind it.
+    if (gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
+    throw err;
+  }
   if (gen !== renderGen) { pdf.destroy(); return; }
   state.pdf = pdf;
   const shown = Math.min(pdf.numPages, MAX_PAGES);

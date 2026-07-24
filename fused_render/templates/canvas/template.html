@@ -349,10 +349,17 @@
   // directory is mount-backed and list its siblings over HTTP instead of a
   // kernel os.listdir that could enumerate a huge S3 prefix and drop the mount.
   function rawURL(f) { return location.origin + "/api/fs/raw?path=" + encodeURIComponent(f); }
-  // No try/catch: a reader rejection carries a `.traceback` and the runtime's
-  // unhandledrejection overlay shows it (SPEC §28). Header is already painted.
-  var data = await fused.runPython("./reader.py", { file: file, src: rawURL(file) });
-  if (skeletonRAF) { cancelAnimationFrame(skeletonRAF); skeletonRAF = null; }
+  // try/finally, no catch: a reader rejection still needs the skeleton's rAF
+  // loop stopped, or it repaints the placeholder forever behind the overlay.
+  // The finally clause only stops the loop — the rejection itself propagates
+  // untouched to the runtime's unhandledrejection overlay (SPEC §28). Header
+  // is already painted.
+  var data;
+  try {
+    data = await fused.runPython("./reader.py", { file: file, src: rawURL(file) });
+  } finally {
+    if (skeletonRAF) { cancelAnimationFrame(skeletonRAF); skeletonRAF = null; }
+  }
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
   var folders = Array.isArray(data.folders) ? data.folders : [];
