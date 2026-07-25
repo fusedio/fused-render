@@ -2125,7 +2125,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   record ≤ ~32 KiB. Truncation is **marked** in the record (`truncated`,
   `params_truncated`), never silently grown, and text is capped at the **tail**
   — the end of a traceback is the exception. Never stored: file contents (a
-  write records its byte count only), request headers.
+  write records its byte count only), request headers. **Null-valued keys are
+  omitted on write**: a narrow record (a `stat`, a raw read) was otherwise
+  mostly `null`s, and — because generic log viewers infer a level by sniffing
+  the raw line for level words — the field NAME `"error": null` made every
+  healthy call render as ERROR in `log_studio`, which the registry offers for
+  this file. Absent-means-null is safe for every consumer here (all read through
+  `.get()`), and matches the sidecar's additive-records posture (HV-6).
 - **CL-3** **Attribution is by header, exclusion by construction.**
   `runtime.js` sends `X-Fused-Page` (the page's own path), `X-Fused-Target`
   (`_file`, when the page is a template) and `X-Fused-Call` (a per-call id) on
@@ -2166,11 +2172,18 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   have, so the report reliably arrives before its record is written. A mark is
   consumed once, so an id can never reclassify a second record. The report is
   batched per macrotask and flushed on `pagehide`. **Known gap:** a closed tab or
-  a reload is not reported by anyone and still records as `ok` — closing that
-  needs server-side disconnect detection (`request.is_disconnected()`), which is
-  also the hook for actually killing the abandoned subprocess. Today the run
-  completes in full: `runPython`'s cancellation frees the browser's connection,
-  not the compute.
+  a reload is not reported by anyone and still records as `ok`. Server-side
+  detection is **not available under this app's shape**, verified twice rather
+  than assumed: from a route, `BaseHTTPMiddleware` wraps the downstream
+  `receive` so `request.is_disconnected()` never observes `http.disconnect`;
+  from the middleware it does observe it, but `is_disconnected()` peeks by
+  *consuming* a message off the receive channel, so polling it starves the
+  downstream route of its `http.request` body and every request with a body
+  hangs (a body-less spike hides this entirely). Closing the gap means
+  converting that middleware to pure ASGI so it can tee the receive channel —
+  its own change to the server's hottest path. The abandoned run also completes
+  in full either way: `runPython`'s cancellation frees the browser's connection,
+  not the compute, and killing it needs the executor to expose its Popen.
 - **CL-6** **`page-error` records: the record for when NO call happened.** A
   page whose JS throws before it reaches `runPython` is, in the log, identical
   to a page nobody opened — so `runtime.js` reports uncaught errors and
@@ -2269,6 +2282,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the agent that is the main consumer of this surface. `--follow` blocks until
   new records appear, so "open the page and I'll check" is one round trip
   rather than two.
+- **CL-14a** **Preference reads are snapshot-cached for 1 s.** `enabled()` and
+  the param-redaction mode are consulted per call, and each was opening and
+  parsing `prefs.json` — measured ~2.8 ms per run, most of the feature's
+  overhead (now ~1.0 ms, 2.4%). The prefs endpoint invalidates the snapshot on
+  write, so a toggle still applies to the very next call and CT-5's no-restart
+  rule holds. `FUSED_RENDER_CALLS` remains the process-level override that beats
+  the pref entirely.
 - **CL-15** **Preferences** (§20) carries capture on/off (default **on** — a
   diagnostic you must enable before the thing you wanted to diagnose is
   worthless), the param redaction mode (`full` default / `keys` / `off`), and

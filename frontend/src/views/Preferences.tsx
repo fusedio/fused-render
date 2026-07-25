@@ -22,7 +22,7 @@ import {
   revealPath,
 } from "../lib/api";
 import type { CallsParamsMode, Prefs } from "../lib/api";
-import { navigateUrl } from "../lib/router";
+import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -265,9 +265,18 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       <p className="deploy-muted">
         Stored at <code>{calls.dir}</code>.
       </p>
-      <button type="button" onClick={() => revealPath(calls.dir).catch((e) => setError(e.message))}>
-        Open call log location
-      </button>
+      <div className="prefs-actions">
+        {/* Navigate IN-APP rather than revealing in the OS file manager: the
+            explorer is how you reach the Calls view — open the folder, click a
+            .calls.jsonl, and it renders in the same viewer the mode switcher
+            offers. Revealing in Finder/Explorer only gets you raw text. */}
+        <button type="button" onClick={() => navigate(calls.dir, { isDir: true })}>
+          Browse call logs
+        </button>
+        <button type="button" onClick={() => revealPath(calls.dir).catch((e) => setError(e.message))}>
+          Reveal in file manager
+        </button>
+      </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );

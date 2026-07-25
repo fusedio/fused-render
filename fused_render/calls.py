@@ -88,6 +88,10 @@ QUEUE_MAX = 2_048
 # continuously at RATE_PER_MIN/60 per second up to RATE_BURST.
 RATE_PER_MIN = 600
 RATE_BURST = 200
+# Above this many tracked pages, evict the ones whose bucket has fully refilled
+# (see _rate_ok) — the dict is keyed by page path and would otherwise grow for
+# the whole life of a long browsing session.
+BUCKETS_MAX = 512
 
 # Retention: age first, then a directory-size backstop. D68 chose the system
 # temp dir for the app log precisely because "nothing prunes the directory";
@@ -189,9 +193,42 @@ def retention_days() -> int:
             return max(0, int(raw))
         except ValueError:
             pass
+    return _prefs_snapshot()[2]
+
+
+# The prefs store is read per call — three times, between `enabled()` and the
+# param-redaction mode — and each read opens and parses prefs.json. On the hot
+# path that measured ~2.8 ms per run, most of the logging overhead and all of it
+# avoidable. A 1 s TTL keeps the repo's no-restart posture (CT-5: a preference
+# change applies to the next run, not the next launch) while making the common
+# case a dict lookup. Deliberately not a permanent cache: the switch must still
+# take effect on its own.
+_PREFS_TTL_S = 1.0
+_prefs_cache: tuple[float, bool, str, int] | None = None
+_prefs_cache_lock = threading.Lock()
+
+
+def _prefs_snapshot() -> tuple[bool, str, int]:
+    """(enabled, params_mode, retention_days), re-read at most once a second."""
+    global _prefs_cache
+    now = time.monotonic()
+    with _prefs_cache_lock:
+        if _prefs_cache is not None and now - _prefs_cache[0] < _PREFS_TTL_S:
+            return _prefs_cache[1], _prefs_cache[2], _prefs_cache[3]
     from fused_render.shell import prefs as shell_prefs
 
-    return shell_prefs.calls_retention_days()
+    snapshot = (shell_prefs.calls_enabled(), shell_prefs.calls_params_mode(),
+                shell_prefs.calls_retention_days())
+    with _prefs_cache_lock:
+        _prefs_cache = (now, *snapshot)
+    return snapshot
+
+
+def invalidate_prefs_cache() -> None:
+    """Drop the cached snapshot — called when the prefs endpoint writes."""
+    global _prefs_cache
+    with _prefs_cache_lock:
+        _prefs_cache = None
 
 
 def enabled() -> bool:
@@ -201,9 +238,7 @@ def enabled() -> bool:
     raw = os.environ.get(DISABLE_ENV)
     if raw is not None:
         return raw.strip().lower() not in ("0", "false", "no", "off")
-    from fused_render.shell import prefs as shell_prefs
-
-    return shell_prefs.calls_enabled()
+    return _prefs_snapshot()[0]
 
 
 # ---------------------------------------------------------------------- caps
@@ -235,9 +270,7 @@ def _cap_params(params) -> tuple[object, bool]:
     """
     if not isinstance(params, dict) or not params:
         return None, False
-    from fused_render.shell import prefs as shell_prefs
-
-    mode = shell_prefs.calls_params_mode()
+    mode = _prefs_snapshot()[1]
     if mode == "off":
         return None, False
     if mode == "keys":
@@ -287,6 +320,9 @@ def _result_shape(result) -> dict:
 
 # --------------------------------------------------------------- attribution
 
+_templates_dirs_cache: tuple[str, tuple[str, ...]] | None = None
+
+
 def _templates_dirs() -> tuple[str, ...]:
     """Every directory a TEMPLATE page can be served from.
 
@@ -296,15 +332,25 @@ def _templates_dirs() -> tuple[str, ...]:
     template's calls as the user's own work, which is exactly backwards for the
     "My pages" filter.
     """
-    package = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
-    user = os.path.join(storage.home_dir(), "templates")
+    # Cached, keyed by the shell home (which a test or FUSED_RENDER_HOME can
+    # change): resolving these per call cost three realpath() syscalls on the
+    # hot path for values that never move within a process.
+    global _templates_dirs_cache
+    home = storage.home_dir()
+    if _templates_dirs_cache is not None and _templates_dirs_cache[0] == home:
+        return _templates_dirs_cache[1]
+    package = os.path.realpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
+    user = os.path.realpath(os.path.join(home, "templates"))
+    dirs: tuple[str, ...]
     try:
         from fused_render.core_templates import core_templates_dir
 
-        staged = core_templates_dir()
+        dirs = (package, user, os.path.realpath(core_templates_dir()))
     except (ImportError, OSError):
-        return package, user
-    return package, user, staged
+        dirs = (package, user)
+    _templates_dirs_cache = (home, dirs)
+    return dirs
 
 
 def _is_self_read(resolved: str | None) -> bool:
@@ -342,7 +388,7 @@ def is_first_party(page: str | None) -> bool:
         return False
     for base in _templates_dirs():
         try:
-            if os.path.commonpath([real, os.path.realpath(base)]) == os.path.realpath(base):
+            if os.path.commonpath([real, base]) == base:
                 return True
         except (OSError, ValueError):
             continue
@@ -410,6 +456,27 @@ def _rate_ok(page: str) -> bool:
     with _buckets_lock:
         tokens, last = _buckets.get(page, (float(RATE_BURST), now))
         tokens = min(float(RATE_BURST), tokens + (now - last) * (RATE_PER_MIN / 60.0))
+        # Bounded: one entry per page visited, so a long session browsing many
+        # files would otherwise grow it for the life of the process.
+        #
+        # Preference order matters. A bucket idle long enough to have refilled
+        # completely carries no state worth keeping — dropping it is equivalent
+        # to never having seen that page — so those go first and the cap costs
+        # nothing. But a BURST of many distinct pages has no idle buckets at all
+        # (the first version of this evicted nothing and grew unbounded anyway),
+        # so past the cap the least-recently-seen entries go too. That can only
+        # ever hand a page MORE budget than it had, never less, so a page cannot
+        # be silenced by another page's churn.
+        if len(_buckets) > BUCKETS_MAX:
+            full_after = RATE_BURST / (RATE_PER_MIN / 60.0)
+            for known, (_, seen) in list(_buckets.items()):
+                if now - seen > full_after and known != page:
+                    del _buckets[known]
+            if len(_buckets) > BUCKETS_MAX:
+                stale_first = sorted(_buckets.items(), key=lambda kv: kv[1][1])
+                for known, _ in stale_first[: len(_buckets) - BUCKETS_MAX]:
+                    if known != page:
+                        del _buckets[known]
         if tokens < 1.0:
             _buckets[page] = (tokens, now)
             return False
@@ -473,13 +540,34 @@ def _writer_loop(q: queue.Queue) -> None:
             last_sweep = time.monotonic()
 
 
+def _prune(rec: dict) -> dict:
+    """Drop null-valued keys before serializing.
+
+    A record carries every field the widest call could need, so a narrow one (a
+    `stat`, a raw read) was mostly `null`s — wasteful, and unreadable when the
+    raw JSONL is what you are looking at.
+
+    It also stops a *successful* record from containing the literal text
+    `error`. Generic log viewers infer a level by sniffing for level words
+    anywhere in the line, so the field NAME `"error": null` made every healthy
+    call render as ERROR in `log_studio` (which the registry offers for this
+    file). With nulls dropped, only a record that really failed carries the
+    word, and the inference is right by accident rather than wrong by accident.
+
+    Absent-means-null is safe for every consumer here: the reader, the CLI and
+    the template all read through `.get()`/`?? undefined`, and the sidecar
+    precedent (HV-6) already says writers may grow records additively.
+    """
+    return {key: value for key, value in rec.items() if value is not None}
+
+
 def _append(records: list[dict]) -> None:
     path = current_file()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = []
     for rec in records:
         try:
-            line = json.dumps(rec, default=str)
+            line = json.dumps(_prune(rec), default=str)
         except (TypeError, ValueError) as e:  # pragma: no cover - default=str is total
             logger.warning("call log: unserializable record dropped: %s", e)
             continue
@@ -749,6 +837,8 @@ def finish(call: dict | None, *, status: int | None, elapsed_ms: float,
         # only the outcome changes.
         outcome = "superseded"
     if outcome:
+        # Beats whatever the handler enriched: "nobody saw this result" is the
+        # truer fact about the call than ok/error, and the error detail is kept.
         call["outcome"] = outcome
     elif call.get("outcome") is None:
         call["outcome"] = "error" if (status is None or status >= 400) else "ok"

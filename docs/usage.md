@@ -114,6 +114,11 @@ experienced as one. A large stale count next to a small ok count is the sign a
 page is re-running Python far more than it needs to (a slider with no debounce,
 or an `onChange` handler that retriggers itself).
 
+**Getting to it from Preferences.** **Browse call logs** opens the store in the
+explorer, which is how you reach the viewer: click any `.calls.jsonl` and it
+renders in the same Calls view. (**Reveal in file manager** is beside it if you
+want the raw files in Finder/Explorer.)
+
 **Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
 per day per server process, rolled to a new part every 32 MB. Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),

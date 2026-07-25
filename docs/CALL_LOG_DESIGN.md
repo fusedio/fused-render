@@ -778,6 +778,22 @@ each individually correct and individually tested. None would have been found by
 more unit tests of either side; three of the four needed a real browser or a
 real socket, and the fourth needed a benchmark.
 
+Two more from the follow-up round (D136), both the same shape as the first four:
+
+- **A field name that reads as data.** Every *successful* record rendered as
+  ERROR in `log_studio`, because a generic log viewer infers a level by sniffing
+  the raw line for level words and the record carried `"error": null`. The
+  record was right; the thing displaying it was fooled by a key name. Fixed by
+  omitting null keys, which also shrank records ~20%.
+- **A green spike that hid the failure case, twice.** Client-disconnect
+  detection was verified with a body-less route, worked, and then hung every
+  real request — `is_disconnected()` peeks by *consuming* a receive-channel
+  message, starving the route of its body. The first round's lesson was "test
+  the producer, not just the consumer"; this one's is **spike the negative
+  case** — the request that should still succeed — not only the one you are
+  trying to make work. The regression guard for it is kept in the suite because
+  the trap is re-approachable.
+
 ## 10. Other uses this unlocks
 
 Ordered by value-per-unit-of-work, from the same store.

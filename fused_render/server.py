@@ -29,6 +29,7 @@ import tempfile
 from types import SimpleNamespace
 import time
 import traceback
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -2875,12 +2876,20 @@ def create_app(start_dir: str) -> FastAPI:
         # `Open logs` gives the full story. Log with the request line so a
         # noisy log still pins the failure to a URL.
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        # The id the middleware already stamped onto this request's call record
+        # (it runs first, then re-raises past us). Echoing it here is what makes
+        # `err_id` in the call log an actual join key rather than a dead field:
+        # a screenshot of this 500 and the record in the log name each other.
+        err_id = getattr(request.state, "fused_err_id", None)
         logger.error(
-            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
+            "unhandled error on %s %s%s\n%s", request.method, request.url.path,
+            f" [err_id {err_id}]" if err_id else "", tb
         )
         return _error(
             f"fused-render internal error on {request.method} "
-            f"{request.url.path}:\n\n{tb}",
+            f"{request.url.path}"
+            + (f" (err_id {err_id})" if err_id else "")
+            + f":\n\n{tb}",
             status=500,
         )
 
@@ -2913,6 +2922,29 @@ def create_app(start_dir: str) -> FastAPI:
     # rotating file and push the interesting lines out. The request flow that
     # matters (/view, /render, /api/*) is everything else.
     _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+    # NOT IMPLEMENTED: detecting that the client hung up mid-request, which would
+    # let an abandoned run be recorded as `disconnected` instead of a served
+    # request (SPEC CL-5a's named gap). Both obvious approaches are dead ends
+    # under this app's shape, verified rather than assumed:
+    #
+    #   * From a ROUTE: `BaseHTTPMiddleware` (which `@app.middleware("http")`
+    #     builds) wraps the downstream `receive`, so `request.is_disconnected()`
+    #     inside a handler never observes `http.disconnect` — a watcher there
+    #     waits forever. Without the middleware in front it fires immediately,
+    #     which is what makes this easy to "verify" wrongly.
+    #   * From HERE: the middleware's own request CAN see the disconnect, but
+    #     `is_disconnected()` peeks by CONSUMING a message off the receive
+    #     channel (starlette.requests, an immediately-cancelled CancelScope
+    #     around `_receive()`). Polling it steals the `http.request` body message
+    #     the downstream route is waiting for, so every request with a body —
+    #     /api/run included — hangs. A body-less spike hides this completely.
+    #
+    # Doing it properly means converting this middleware to pure ASGI so it can
+    # tee the receive channel instead of racing the route for it. That is a
+    # change to the hottest path in the server and belongs in its own commit,
+    # not riding along with the call log. Meanwhile a supersession IS reported by
+    # the page (CL-5a), which covers the common slider case; a closed tab or
+    # reload still records as `ok`.
 
     @app.middleware("http")
     async def no_cache_and_log(request, call_next):
@@ -2956,10 +2988,14 @@ def create_app(start_dir: str) -> FastAPI:
             # An unhandled exception escapes call_next: @app.exception_handler
             # runs in ServerErrorMiddleware, OUTSIDE user middleware, so this
             # except branch is the only place the record can be closed out.
+            # Mint the correlation id here (we run before the handler) and stash
+            # it so the handler can echo the same id into the 500 body.
+            err_id = uuid.uuid4().hex[:12]
+            request.state.fused_err_id = err_id
             if call is not None:
                 shell_calls.finish(
                     call, status=500, elapsed_ms=(time.monotonic() - start) * 1000,
-                    outcome="error",
+                    outcome="error", err_id=err_id,
                 )
             raise
         if logged:
@@ -3835,15 +3871,18 @@ def create_app(start_dir: str) -> FastAPI:
         if engine_used == "fused":
             from fused_render import engine as _engine
 
-            result = await _engine.run_python(resolved, params)
+            work = _engine.run_python(resolved, params)
         else:
             # The built-in executor blocks on a subprocess; keep the event
             # loop free (the endpoint is async now for the engine's sake).
-            result = await asyncio.to_thread(run_python, resolved, params)
+            work = asyncio.to_thread(run_python, resolved, params)
+        result = await work
         # Hand the run's detail to the in-flight call record (calls.py): the
         # resolved .py, the params, the engine, and — on failure — the
         # traceback and output tails a user has since clicked away from. The
-        # handler enriches; the middleware writes.
+        # handler enriches; the middleware writes. (Whether the client hung up
+        # mid-run is decided by the middleware — a route CANNOT see it, see
+        # _watch_client_gone.)
         shell_calls.enrich_run(
             getattr(request.state, "fused_call", None),
             resolved=resolved, params=params, engine=engine_used, result=result,

@@ -37,6 +37,11 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_CALLS", "1")
     monkeypatch.setattr(calls, "_buckets", {})
     monkeypatch.setattr(calls, "_dropped", 0)
+    # The hot-path prefs snapshot and the templates-dir cache are keyed to a
+    # home dir this fixture just moved — a warm entry from a previous test would
+    # answer for the wrong store (and would ignore a monkeypatched pref).
+    monkeypatch.setattr(calls, "_prefs_cache", None)
+    monkeypatch.setattr(calls, "_templates_dirs_cache", None)
     return calls.store_dir()
 
 
@@ -746,3 +751,198 @@ def test_a_file_without_a_trailing_newline_is_fully_read(store):
     with open(path, "w") as fh:
         fh.write(json.dumps(rec(call_id="a")) + "\n" + json.dumps(rec(call_id="b")))
     assert [r["call_id"] for r in calls._iter_records([path])] == ["b", "a"]
+
+
+# ---------------------------- client disconnect (a real socket, real uvicorn)
+
+@pytest.fixture
+def live_server(tmp_path, store):
+    """A REAL uvicorn server on a loopback port.
+
+    TestClient cannot express this test: its transport is in-process, so there is
+    no socket to close, and a closed socket is the entire subject. Every
+    disconnect defect in this feature slipped past a green suite for exactly that
+    reason.
+    """
+    import threading
+
+    import uvicorn
+
+    d = tmp_path / "work"
+    d.mkdir()
+    (d / "slow.py").write_text("import time\ndef main():\n    time.sleep(2.5)\n    return [1]\n")
+    (d / "p.html").write_text("<html><head></head><body></body></html>")
+
+    app = create_app(str(d))
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if server.started and server.servers and server.servers[0].sockets:
+            break
+        time.sleep(0.05)
+    assert server.started, "uvicorn did not start"
+    port = server.servers[0].sockets[0].getsockname()[1]
+    yield f"http://127.0.0.1:{port}", d
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def _post_run_and_hang_up(base: str, d, call_id: str, after: float):
+    """Start a run, then close the socket — a closed tab, mid-flight."""
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base)
+    body = json.dumps({"py": str(d / "slow.py"), "html": str(d / "p.html")}).encode()
+    sock = socket.create_connection((parts.hostname, parts.port))
+    sock.sendall(
+        b"POST /api/run HTTP/1.1\r\nHost: localhost\r\n"
+        b"Content-Type: application/json\r\nX-Fused: 1\r\n"
+        b"X-Fused-Page: " + str(d / "p.html").encode() + b"\r\n"
+        b"X-Fused-Call: " + call_id.encode() + b"\r\n"
+        b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+    time.sleep(after)
+    sock.close()
+
+
+def test_a_run_with_a_body_completes_under_the_middleware(live_server):
+    """Regression guard for a hang this feature nearly shipped.
+
+    Detecting a client hang-up (SPEC CL-5a's gap) tempts you to poll
+    `request.is_disconnected()` from the middleware. That call PEEKS by
+    CONSUMING a message off the receive channel, so polling it steals the
+    `http.request` body message the downstream route is waiting for, and every
+    request with a body hangs forever. A body-less spike hides this completely —
+    which is exactly how it got as far as it did.
+
+    So: a real POST with a body, over a real socket, must return promptly. If
+    receive-channel polling is ever re-added to the middleware, this fails.
+    """
+    import urllib.request
+
+    base, d = live_server
+    req = urllib.request.Request(
+        base + "/api/run",
+        data=json.dumps({"py": str(d / "slow.py"), "html": str(d / "p.html")}).encode(),
+        headers={"Content-Type": "application/json", "X-Fused": "1",
+                 "X-Fused-Page": str(d / "p.html"), "X-Fused-Call": "patient"},
+    )
+    started = time.monotonic()
+    with urllib.request.urlopen(req, timeout=20) as res:
+        assert json.load(res)["ok"] is True
+    # The run sleeps 2.5s; anything near the timeout means the body was starved.
+    assert time.monotonic() - started < 15
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and calls.detail("patient") is None:
+        time.sleep(0.2)
+    assert calls.detail("patient")["outcome"] == "ok"
+
+
+def test_an_abandoned_run_is_still_recorded(live_server):
+    """A hung-up run must not vanish from the log — it is recorded, just with
+    the wrong outcome until CL-5a's gap is closed. This pins today's behaviour
+    so the day it changes, a test says so."""
+    base, d = live_server
+    _post_run_and_hang_up(base, d, "hung-up", after=0.4)
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline and calls.detail("hung-up") is None:
+        time.sleep(0.2)
+    got = calls.detail("hung-up")
+    assert got is not None, "the abandoned run was never recorded at all"
+    # KNOWN GAP (CL-5a): nobody reports a closed tab, so it reads as served. A
+    # supersession, which the page DOES report, is marked correctly — see
+    # test_an_abandoned_call_is_marked_superseded.
+    assert got["outcome"] == "ok"
+    assert got["server_ms"] >= 2000, "the run itself still ran to completion"
+
+
+# ------------------------------------------------------- err_id as a join key
+
+def test_a_500_puts_the_same_err_id_in_the_body_and_the_record(app_client, monkeypatch):
+    """`err_id` was a dead field: documented as the join key to the failure, never
+    set. A screenshot of the 500 and the record must now name each other."""
+    from fused_render import server as server_mod
+
+    def boom(*a, **kw):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(server_mod, "run_python", boom)
+    client, d = app_client
+    # TestClient re-raises server exceptions by default; we want the 500 body a
+    # browser would actually receive.
+    client = TestClient(client.app, raise_server_exceptions=False)
+    res = client.post("/api/run",
+                      json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                      headers=app_headers(d / "p.html", **{"X-Fused-Call": "boom-1"}),
+                      )
+    assert res.status_code == 500
+    assert drain()
+    got = calls.detail("boom-1")
+    assert got["outcome"] == "error" and got["status"] == 500
+    assert got["err_id"], "the record must carry the correlation id"
+    assert got["err_id"] in res.json()["error"], "the 500 body must echo the same id"
+
+
+# ------------------------------------------------------------- bounded buckets
+
+def test_rate_buckets_do_not_grow_without_bound(store, monkeypatch):
+    """One entry per page visited would otherwise live for the whole process."""
+    landed = []
+    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
+    monkeypatch.setattr(calls, "BUCKETS_MAX", 8)
+    for i in range(200):
+        calls.record(rec(page=f"/app/p{i}.html"))
+    assert len(calls._buckets) <= 9, f"buckets grew to {len(calls._buckets)}"
+    assert len(landed) == 200, "eviction must not cost anyone their record"
+
+
+# ---------------------------------------------------- hot-path prefs snapshot
+
+def test_toggling_capture_takes_effect_on_the_next_call(app_client, monkeypatch):
+    """The prefs snapshot is cached for a second to keep prefs.json off the hot
+    path (it cost ~2.8 ms/run, most of the logging overhead). A write through the
+    prefs endpoint must still be visible immediately — CT-5's no-restart rule."""
+    client, d = app_client
+    # FUSED_RENDER_CALLS is the PROCESS-level override and beats the pref by
+    # design, so the pref cannot be exercised while the fixture sets it.
+    monkeypatch.delenv("FUSED_RENDER_CALLS", raising=False)
+    assert client.put("/api/prefs", json={"calls_enabled": False},
+                      headers={"X-Fused": "1"}).status_code == 200
+    client.post("/api/run", json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "while-off"}))
+    time.sleep(0.5)
+    assert calls.detail("while-off") is None, "capture stayed on past the toggle"
+
+    client.put("/api/prefs", json={"calls_enabled": True}, headers={"X-Fused": "1"})
+    client.post("/api/run", json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "while-on"}))
+    assert drain()
+    assert calls.detail("while-on") is not None, "capture stayed off past the toggle"
+
+
+def test_null_fields_are_not_written(store):
+    """A narrow record (a stat, a raw read) was mostly nulls — wasteful, and the
+    field NAME `"error": null` made every healthy call render as ERROR in
+    log_studio, which infers a level by sniffing the raw line for level words."""
+    write_records([rec(call_id="thin", error=None, stdout_tail=None, params=None,
+                       stderr_tail=None, err_id=None, result_rows=None)])
+    line = open(calls.store_files()[0], encoding="utf-8").read().strip()
+    assert "error" not in line, "a successful record must not contain the word 'error'"
+    assert "null" not in line
+    stored = json.loads(line)
+    assert stored["call_id"] == "thin"
+    assert "error" not in stored and stored.get("error") is None  # absent reads as null
+
+
+def test_a_real_error_still_carries_its_detail(store):
+    """Pruning must not strip a record that genuinely failed."""
+    write_records([rec(call_id="failed", outcome="error",
+                       error={"type": "ValueError", "message": "bad", "traceback": "tb"})])
+    got = calls.detail("failed")
+    assert got["error"]["type"] == "ValueError"
+    line = open(calls.store_files()[0], encoding="utf-8").read()
+    assert "error" in line, "a failed record SHOULD read as an error to a log viewer"

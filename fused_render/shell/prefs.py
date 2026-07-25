@@ -256,6 +256,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    # The call log caches this snapshot for a second to keep prefs.json off its
+    # hot path; drop it so a toggle here is visible on the very next call.
+    from fused_render import calls as _calls
+
+    _calls.invalidate_prefs_cache()
     # The new state, so the page re-renders from the response (the engine pref
     # is persisted even while FUSED_RENDER_ENGINE forces — it applies once the
     # override is removed; the response's forced_by says so).
