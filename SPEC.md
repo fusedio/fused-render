@@ -2286,7 +2286,15 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   `condition.py` gating on "this file has records", so a page nobody has run
   grows no dead mode and the mode joins the switcher in the background the
   moment it does. The gate reads a bounded tail of the newest files with an
-  early exit (never a full scan).
+  early exit (never a full scan). Because the gate must run as a standalone copy
+  in the user template dir, it **duplicates** the store-path resolution rather
+  than importing it — including `_branch`'s sanitisation, the default-branch
+  baseline opt-out, and the build-time baked ref. A duplicate that drifts sends
+  the probe to a directory nothing writes to, and the gate then fails closed on a
+  page with plenty of history, so the duplication is **pinned by a test that
+  compares the gate's dir to `store_dir()` across a table of refs** rather than
+  left to match by inspection (the same shape the `zarr_aoi` daemon's inlined
+  copy already had).
 - **CL-12** **The reader pre-aggregates; the template draws.** Ops mirror
   `log_studio/reader.py`: `overview`, `page` (cursor-paged), `series`
   (bucketed points), `targets` (per-entrypoint rollup), `detail`, `config`.

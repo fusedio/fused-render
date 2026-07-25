@@ -20,6 +20,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import time
 
 import pytest
@@ -2037,3 +2038,95 @@ def test_the_prefs_snapshot_still_caches_when_nothing_invalidates(store):
     calls.invalidate_prefs_cache()
     calls._prefs_snapshot()
     assert calls._prefs_cache is not None, "an uncontended read is still cached"
+
+
+# ------ the gate must probe the dir the writer writes to (11th review)
+
+# Every rule the raw env value gets wrong, plus the plain cases as controls.
+BRANCH_REFS = [
+    "",                                     # explicit baseline opt-out
+    "main", "MAIN", "master", "head",       # default branches -> baseline, NOT nested
+    "Feature_X",                            # case + separator normalisation
+    "claude/fused-api-call-logging-d97w88",  # truncation, and a '/' that would nest
+    "release/2.0",
+    "---",                                  # collapses to nothing -> baseline
+    "x" * 40,                               # long ref -> truncated
+    "feature-x",                            # already canonical (must not change)
+]
+
+
+@pytest.mark.parametrize("ref", BRANCH_REFS)
+def test_the_gate_resolves_the_same_store_dir_as_the_writer(tmp_path, monkeypatch, ref):
+    """The gate's copy of the path rules must agree with the real resolver.
+
+    `condition.py` is deliberately standalone (a user may copy the template dir),
+    so it duplicates the branch resolution instead of importing it — and the
+    duplicate had drifted to "join the raw env value", which is wrong for
+    default-branch refs, for anything needing sanitising, and for anything longer
+    than 12 chars. Each case sends the probe to a directory that never receives
+    records, so the gate fails closed and the Calls mode never appears on a page
+    with plenty of history.
+
+    This is the invariant worth testing rather than any single rule: whatever the
+    ref, the two dirs are the same dir. A duplicate that is pinned is fine; one
+    that is only hoped to match is what produced the bug.
+    """
+    from fused_render import _branch
+    from fused_render.templates.calls import condition
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", ref)
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)  # resolved once per process
+
+    assert condition._store_dir() == calls.store_dir()
+
+
+def test_the_gate_follows_a_baked_branch_ref_like_the_writer(tmp_path, monkeypatch):
+    """With no env var, the ref baked in at build time still decides the store.
+
+    This is the case the gate's standalone-copy rule exists for — a packaged app,
+    where the baked module is the only source of the ref — so reading it is not
+    optional. Skipping it would leave a packaged branch build gating against the
+    baseline store.
+    """
+    import types
+
+    import fused_render
+    from fused_render import _branch
+    from fused_render.templates.calls import condition
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    baked = types.ModuleType("fused_render._baked_branch")
+    baked._BAKED_REF = "Release/9.9"  # unsanitised on purpose
+    monkeypatch.setitem(sys.modules, "fused_render._baked_branch", baked)
+    monkeypatch.setattr(fused_render, "_baked_branch", baked, raising=False)
+
+    assert condition._store_dir() == calls.store_dir()
+    assert os.path.join("branches", "release-9-9") in condition._store_dir(), (
+        "the baked ref must be sanitised, not joined raw")
+
+
+def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
+        tmp_path, monkeypatch):
+    """The end-to-end shape of the bug: records exist, the gate said no.
+
+    `FUSED_RENDER_BRANCH=main` is a baseline opt-out, so the writer appends to
+    `~/.fused-render/calls` — while the gate probed `branches/main/calls`, found
+    nothing, and failed closed.
+    """
+    from fused_render import _branch
+    from fused_render.templates.calls import condition
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "main")
+    monkeypatch.setenv("FUSED_RENDER_CALLS", "1")
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+
+    page = str(tmp_path / "mine.html")
+    os.makedirs(calls.store_dir(), exist_ok=True)
+    with open(calls.current_file(), "w") as fh:
+        fh.write(json.dumps(calls._prune(rec(page=page))) + "\n")
+
+    assert condition.main(page) is True, "the page has records in the baseline store"

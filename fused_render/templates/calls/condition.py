@@ -28,11 +28,14 @@ parsing every line as JSON to be exact would cost far more on the hot path than
 the mistake it prevents. A missing/unreadable store fails closed (not offered),
 matching CT-12's posture.
 
-Stdlib only, and no import of `fused_render` — a user may copy this template
-folder to ~/.fused-render/templates/calls/, where it runs as a subprocess.
+Stdlib only, and no *required* import of `fused_render` — a user may copy this
+template folder to ~/.fused-render/templates/calls/, where it runs as a
+subprocess. (The build-time baked branch ref is read through one guarded
+import that degrades to "no ref" when the package is not importable.)
 """
 import json
 import os
+import re
 
 # Per-file tail budget. A record is ~400-900 bytes, so this covers the last
 # ~100+ calls in each file — far more than "was this page active recently".
@@ -45,17 +48,74 @@ MAX_FILES = 3
 SUFFIX = ".calls.jsonl"
 
 
-def _store_dir() -> str:
-    """~/.fused-render/calls, honouring the same overrides shell/storage does.
+# Mirrors fused_render._branch. Duplicated rather than imported so this file
+# works as a standalone copy in the user template dir — and pinned to the real
+# resolver by a test that compares the two dirs across a table of refs, because
+# a duplicate that drifts sends the gate to a directory nothing writes to.
+_REF_MAX_LEN = 12
+_DEFAULT_REFS = ("main", "master", "head")
+_BRANCHES_SUBDIR = "branches"
 
-    Duplicated rather than imported so this file works as a standalone copy in
-    the user template dir. FUSED_RENDER_BRANCH nesting is mirrored too, so a
-    branch checkout gates against its own store and not the baseline one.
+
+def _sanitize_ref(ref: str) -> str:
+    """Lowercase, collapse non-[a-z0-9] runs to one '-', trim, truncate.
+
+    The raw env value is NOT the directory name, and using it as one missed
+    every rule here:
+
+    * a ref naming a **default** branch is the baseline, not a nested dir, so
+      ``FUSED_RENDER_BRANCH=main`` writes to ``~/.fused-render/calls`` while the
+      gate looked under ``branches/main/``;
+    * case and separators are normalised (``Feature_X`` -> ``feature-x``);
+    * refs are truncated to 12 chars, and a real branch name is usually longer —
+      ``claude/fused-api-…`` is ``claude-fused``, and joining the raw value even
+      nests an extra level on the ``/``.
+
+    Each one puts the probe in a directory that never receives records, so the
+    gate fails closed and the Calls mode silently never appears.
+    """
+    if not ref:
+        return ""
+    lowered = ref.lower()
+    if lowered in _DEFAULT_REFS:
+        return ""
+    collapsed = re.sub(r"[^a-z0-9]+", "-", lowered)
+    return collapsed.strip("-")[:_REF_MAX_LEN].rstrip("-")
+
+
+def _branch_ref() -> str:
+    """The active ref, by the package's own priority: the env var if present (an
+    empty value is a deliberate baseline opt-out and still wins), else the ref
+    baked in at build time, else baseline.
+
+    The baked ref is read rather than skipped because the invariant that matters
+    is "the gate probes the dir the writer writes to", and the writer resolves it
+    this way — not because any particular run is known to reach it (the packaged
+    supervisor sets the env var to "" explicitly, which wins). Matching the
+    writer's priority is cheap; guessing which arm it takes is how this drifted.
+    The module is gitignored and absent from a source checkout, and
+    `fused_render/__init__.py` holds nothing but a version string, so the guarded
+    import costs an ImportError in dev and ~0.1 ms in a build.
+    """
+    if "FUSED_RENDER_BRANCH" in os.environ:
+        return _sanitize_ref(os.environ["FUSED_RENDER_BRANCH"])
+    try:
+        from fused_render import _baked_branch
+    except ImportError:
+        return ""
+    return _sanitize_ref(getattr(_baked_branch, "_BAKED_REF", ""))
+
+
+def _store_dir() -> str:
+    """~/.fused-render/calls, resolved exactly as `calls.store_dir()` resolves it.
+
+    Same overrides, same branch nesting: a branch run gates against its own
+    store, and a baseline run against the baseline one.
     """
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    ref = os.environ.get("FUSED_RENDER_BRANCH")
+    ref = _branch_ref()
     if ref:
-        base = os.path.join(base, "branches", ref)
+        base = os.path.join(base, _BRANCHES_SUBDIR, ref)
     return os.path.join(base, "calls")
 
 

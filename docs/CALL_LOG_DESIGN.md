@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects ten rounds of review
-found are in §9.5, with D136–D143 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects eleven rounds of review
+found are in §9.5, with D136–D144 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -853,6 +853,28 @@ seeking walk had simply hit its scan budget without reaching the cursor. A valid
 deep cursor read as a dead one, and the skipped gap went unmentioned.
 `scan_truncated` now separates the guess from the proof.
 
+An eleventh round found one, and it is about **duplication**, which is a different
+failure mode from every round before it. `condition.py` has to work as a standalone
+copy in the user template dir, so it re-implements the branch-aware store path
+instead of importing it — and it re-implemented it *wrong*, joining the raw
+`FUSED_RENDER_BRANCH` value. That is wrong three ways at once: a default-branch ref
+(`main`) is a baseline opt-out and must not nest at all; refs are sanitised; refs are
+truncated to 12 characters. This very branch writes to `branches/claude-fused/` while
+the gate probed `branches/claude/fused-api-call-logging-d97w88/`. Every case sends the
+probe somewhere nothing writes, so the gate fails closed and the Calls mode never
+appears on a page full of records.
+
+Two things worth keeping. First, the correct version already existed **one template
+folder over** — `zarr_aoi/tile_server.py` inlines the same resolution and its docstring
+says to keep it in lockstep with `_branch.sanitize`, a precedent from an earlier review
+round that I never looked for while writing the second copy. **When you deliberately
+duplicate a rule, the first question is who else already duplicated it.** Second, and
+more durable: a duplicate justified by a *comment* is a duplicate that will drift. The
+fix is not a better comment, it is a test asserting the two implementations agree —
+`condition._store_dir() == calls.store_dir()` over a table of refs. That test, not the
+three individual rules, is the deliverable. Which cases did the raw join get right?
+Baseline, and an already-canonical ref: exactly the two anyone would try by hand.
+
 A tenth round found two, and the first is the ninth round's own promise breaking one
 branch over. D142 added "a lost cursor is never silent" — and `--follow`'s timeout
 branch returns before *both* output sites, so the flag reached the caller only when
@@ -936,8 +958,9 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all ten rounds the pattern never changed: each defect lived in a seam
-between individually-correct, individually-tested parts. What did change is where
+Across all eleven rounds the pattern never changed: each defect lived in a seam
+between individually-correct, individually-tested parts — the last one in a seam
+between a rule and its own copy. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".
 
