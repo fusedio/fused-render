@@ -336,7 +336,10 @@ def _run_calls(args: argparse.Namespace) -> None:
                 where += f":{rec['line']}"
             print(f"  {error.get('type', 'Error')}: {error.get('message', '')}  ({where})")
 
-    print(f"\ncursor: {page['cursor']}   (pass to --since-cursor for only what is new)")
+    # None when nothing matched the filters at all — there is no id to resume
+    # from, and printing "cursor: None" would invite passing it back verbatim.
+    if page.get("cursor"):
+        print(f"\ncursor: {page['cursor']}   (pass to --since-cursor for only what is new)")
 
 
 def main() -> None:

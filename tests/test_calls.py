@@ -1457,3 +1457,93 @@ def test_prune_is_idempotent(store):
     twice = calls._prune(once)
     assert list(twice) == list(once)
     assert twice == once
+
+
+# ------------------------ the cursor must be an id you were shown (5th review)
+
+def test_the_cursor_is_the_newest_matching_record_not_the_newest_record(store):
+    """Taken before the filter, the cursor was an id the caller was never shown.
+
+    That breaks the one thing a cursor is for. `--follow --page X` woke on
+    unrelated traffic and then reported nothing for X — an agent waiting to
+    verify the page it just wrote concludes it never ran.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    mine, other = "/app/mine.html", "/app/other.html"
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("mine-1", now - 100, page=mine) + "\n")
+        fh.write(appended("other-1", now - 50, page=other) + "\n")  # newest overall
+
+    got = calls.query(limit=5, page=mine)
+    assert [r["call_id"] for r in got["records"]] == ["mine-1"]
+    assert got["cursor"] == "mine-1", "an id in the caller's own stream"
+
+
+def test_unrelated_traffic_does_not_move_a_filtered_cursor(store):
+    """The wake check `--follow` performs is `query(limit=1, **filters)["cursor"]`,
+    so a cursor that tracks the whole store makes every other page's call a
+    spurious wake."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    mine, other = "/app/mine.html", "/app/other.html"
+    path = calls.current_file()
+    with open(path, "w") as fh:
+        fh.write(appended("mine-1", now - 100, page=mine) + "\n")
+
+    baseline = calls.query(limit=1, page=mine)["cursor"]
+    with open(path, "a") as fh:  # someone else's page runs
+        fh.write(appended("other-1", time.time(), page=other) + "\n")
+    assert calls.query(limit=1, page=mine)["cursor"] == baseline, "must not wake"
+
+    with open(path, "a") as fh:  # now MY page runs
+        fh.write(appended("mine-2", time.time(), page=mine) + "\n")
+    assert calls.query(limit=1, page=mine)["cursor"] == "mine-2", "must wake"
+
+
+def test_a_filtered_read_with_nothing_new_keeps_the_callers_cursor(store):
+    """Returning None would read as "start over" and answer with an unbounded
+    newest page, losing the caller's position."""
+    os.makedirs(store, exist_ok=True)
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("mine-1", time.time() - 10, page="/app/mine.html") + "\n")
+    got = calls.query(limit=5, cursor="mine-1", page="/app/mine.html")
+    assert got["records"] == []
+    assert got["cursor"] == "mine-1", "unchanged, not None"
+    assert got["cursor_missing"] is False
+
+
+def test_a_page_with_no_history_has_no_cursor(store):
+    """No matching record means there is no id to resume from — None, so a
+    follower's baseline moves the moment that page's first call lands."""
+    os.makedirs(store, exist_ok=True)
+    path = calls.current_file()
+    with open(path, "w") as fh:
+        fh.write(appended("other-1", time.time() - 10, page="/app/other.html") + "\n")
+    assert calls.query(limit=1, page="/app/mine.html")["cursor"] is None
+    with open(path, "a") as fh:
+        fh.write(appended("mine-1", time.time(), page="/app/mine.html") + "\n")
+    assert calls.query(limit=1, page="/app/mine.html")["cursor"] == "mine-1"
+
+
+def test_a_cursor_outside_the_filter_still_stops_the_walk(store):
+    """The stop is by identity, checked before `_matches`, so an old cursor that
+    no longer matches the current filters must not read as purged."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("other-1", now - 100, page="/app/other.html") + "\n")
+        fh.write(appended("mine-1", now - 50, page="/app/mine.html") + "\n")
+    got = calls.query(limit=5, cursor="other-1", page="/app/mine.html")
+    assert got["cursor_missing"] is False, "found it, it just did not match"
+    assert [r["call_id"] for r in got["records"]] == ["mine-1"]
+
+
+def test_the_cli_omits_the_cursor_line_when_there_is_none(store, monkeypatch, capsys):
+    """`cursor: None` invites passing it back verbatim."""
+    os.makedirs(store, exist_ok=True)
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("other-1", time.time() - 10, page="/app/other.html") + "\n")
+    out = run_cli(monkeypatch, capsys, "--page", "/app/mine.html")
+    assert "cursor:" not in out
+    assert "None" not in out

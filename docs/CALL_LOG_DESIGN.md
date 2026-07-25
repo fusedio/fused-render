@@ -821,9 +821,23 @@ code stated the very fact that the code next to it ignored.
   belongs at the chokepoint every path passes through, and if there are two exits,
   the test has to take both.
 
-Across all four rounds the pattern never changed: each defect lived in a seam
+And one from the fifth round, which is the third distinct way the same primitive
+broke:
+
+- **A key computed from the wrong scope.** `query` took its returned cursor from
+  the first record in the store walk, *before* applying the caller's filters — so
+  the cursor was the newest id in the store rather than the newest id the caller
+  was shown. `--follow --page X` therefore woke on another page's traffic and
+  then reported no calls for X. Note what this shares with the two rounds before
+  it: three separate defects (append-vs-start time, file-vs-merge order, and now
+  store-vs-filter scope) all surfaced as *the follower reporting no activity when
+  there was activity*. The lesson is that a false negative in a verification tool
+  is a single symptom with many causes, and finding one cause is no evidence the
+  others are absent — after fixing the first two I did not go looking for a third.
+
+Across all five rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
-the seams were — the last two were *inside* code I had already reviewed and
+the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".
 
 ## 10. Other uses this unlocks

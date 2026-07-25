@@ -2323,7 +2323,18 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-13** **A cursor, not a wall-clock guess.** `query` accepts a
   `call_id` cursor and returns the newest id with every page, so a caller —
   usually an agent verifying a page it just wrote — asks for "everything since
-  I last looked" instead of guessing how long the human took to open it.
+  I last looked" instead of guessing how long the human took to open it. The
+  returned cursor is always an id the caller was **shown**: the newest record
+  that passed the filters, never merely the newest in the store. A cursor drawn
+  from outside the filtered stream advances on traffic the caller cannot see, so
+  `--follow --page X` woke on another page's calls and then reported none for X —
+  the same false negative the feature exists to prevent. When nothing newer
+  matched, the caller's own cursor is returned unchanged (returning `None` would
+  read as "start over" and answer with an unbounded newest page); with no matches
+  at all it is `None`, and the CLI omits the cursor line rather than printing one
+  that cannot be passed back. The walk still stops at the cursor by **identity**,
+  checked before the filters, so a cursor that no longer matches them ends the
+  walk correctly instead of reading as purged.
 - **CL-14** **CLI.** `fused-render calls [--page P] [--since 1h] [--failed]
   [--entrypoint E] [--since-cursor ID] [--json] [--verbose] [--follow]` reads
   the store directly off disk (no server needed). **Digest by default**: the

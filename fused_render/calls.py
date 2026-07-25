@@ -1214,6 +1214,13 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
     this batch. That is what makes an agent's read "everything since I last
     looked" rather than a wall-clock guess about how long the human took
     (design §9.2b).
+
+    The returned cursor is always an id the caller was SHOWN — the newest record
+    that passed the filters, never merely the newest in the store. A cursor from
+    outside the filtered stream is worse than useless: it advances on traffic the
+    caller cannot see, so a follower wakes on someone else's calls and then finds
+    nothing of its own. When nothing newer matched, the caller's own cursor comes
+    back unchanged; with no filter matches at all it is ``None``.
     """
     limit = max(1, min(int(limit), 1_000))
     out: list[dict] = []
@@ -1233,14 +1240,21 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
     skipped = 0
     for rec in _iter_records(store_files(), since=hint):
         scanned += 1
-        if newest is None:
-            newest = rec.get("call_id")
         if seeking and rec.get("call_id") == cursor:
             # Everything newer than the cursor is what the caller has not seen;
-            # stop as soon as we reach the cursor itself.
+            # stop as soon as we reach the cursor itself. Deliberately checked
+            # BEFORE `_matches`: the stop is by identity, so a cursor that no
+            # longer matches the current filters still ends the walk correctly.
             found_cursor = True
             break
         if _matches(rec, **filters):
+            # The cursor is the newest MATCHING record, not the newest record in
+            # the store. Taking it before the filter made it an id the caller was
+            # never shown, which broke the one thing a cursor is for: `--follow
+            # --page X` woke on unrelated traffic, then reported no calls for X —
+            # an agent waiting to verify its own page concluded nothing ran.
+            if newest is None:
+                newest = rec.get("call_id")
             if len(out) < limit:
                 out.append(rec)
             else:
@@ -1260,7 +1274,10 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
             break
     return {
         "records": out,
-        "cursor": newest,
+        # Nothing newer matched, so the caller's position is unchanged — hand its
+        # own cursor back rather than None, which it would read as "start over"
+        # and answer with an unbounded newest page.
+        "cursor": newest if newest is not None else cursor,
         "count": len(out),
         # Not found anywhere we looked — purged by retention, or never real.
         # Because a seeking walk does NOT stop at the page limit (above), running
