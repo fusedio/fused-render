@@ -1111,23 +1111,38 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
     out: list[dict] = []
     newest: str | None = None
     seeking = cursor is not None
+    found_cursor = False
     # No `since` hint while seeking a cursor: the walk has to reach the cursor
     # record itself, which may sit outside the caller's time window.
     hint = None if seeking else filters.get("since")
     for rec in _iter_records(store_files(), since=hint):
         if newest is None:
             newest = rec.get("call_id")
-        if seeking:
+        if seeking and rec.get("call_id") == cursor:
             # Everything newer than the cursor is what the caller has not seen;
             # stop as soon as we reach the cursor itself.
-            if rec.get("call_id") == cursor:
-                break
+            found_cursor = True
+            break
         if not _matches(rec, **filters):
             continue
         out.append(rec)
-        if len(out) >= limit and not seeking:
+        # The limit binds even while seeking. A cursor whose record has been
+        # purged by retention — or was never real — would otherwise never end
+        # the walk, and the "page" would be every matching record in a store
+        # that can be 200 MB. Capping also gives correct paging for a caller
+        # who has been away longer than one page: it gets the newest `limit`
+        # and resumes from the fresh cursor.
+        if len(out) >= limit:
             break
-    return {"records": out, "cursor": newest, "count": len(out)}
+    return {
+        "records": out,
+        "cursor": newest,
+        "count": len(out),
+        # True when the caller's cursor was not found: it is stale (purged) or
+        # wrong, so `records` is the newest page rather than "everything since".
+        # Say so instead of letting a bounded page look like a complete answer.
+        "cursor_missing": bool(seeking and not found_cursor),
+    }
 
 
 def overview(**filters) -> dict:

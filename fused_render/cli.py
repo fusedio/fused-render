@@ -200,6 +200,8 @@ def _run_calls(args: argparse.Namespace) -> None:
         "failed": args.failed,
     }
 
+    cursor = args.since_cursor or None
+    timed_out = False
     if args.follow:
         # Wait for something new rather than making the caller guess how long
         # the human took to open the page (design §9.2d). Polls the store: it is
@@ -207,15 +209,34 @@ def _run_calls(args: argparse.Namespace) -> None:
         # server this command deliberately does not require.
         deadline = time.monotonic() + max(1.0, args.timeout)
         baseline = call_log.query(limit=1, **filters)["cursor"]
+        # Report only what ARRIVES, by resuming from the pre-wait cursor. Without
+        # this, following printed the ordinary digest of pre-existing records —
+        # so an agent that waited for activity, got none, and read a pile of
+        # historical calls could take stale data for a successful verification.
+        # That is the exact trap --follow exists to close.
+        cursor = cursor or baseline
+        timed_out = True
         while time.monotonic() < deadline:
             time.sleep(1.0)
             if call_log.query(limit=1, **filters)["cursor"] != baseline:
+                timed_out = False
                 break
-        else:
-            if not args.as_json:
-                print(f"no new calls within {args.timeout:g}s")
 
-    page = call_log.query(limit=args.limit, cursor=args.since_cursor or None, **filters)
+    if timed_out:
+        # Say nothing happened, in both modes, and show no records — an empty
+        # answer is the truthful one and cannot be mistaken for fresh activity.
+        if args.as_json:
+            print(_json.dumps({
+                "followed": True, "timed_out": True, "waited_s": args.timeout,
+                "cursor": call_log.query(limit=1, **filters)["cursor"],
+                "overview": call_log.overview(**filters), "targets": [],
+                "records": [], "page_errors": [], "records_omitted": 0,
+            }, indent=2, default=str))
+        else:
+            print(f"no new calls within {args.timeout:g}s")
+        return
+
+    page = call_log.query(limit=args.limit, cursor=cursor, **filters)
     overview = call_log.overview(**filters)
     targets = call_log.targets(**filters)["targets"]
     records = page["records"]
@@ -227,12 +248,24 @@ def _run_calls(args: argparse.Namespace) -> None:
                 if r.get("outcome") in ("error", "conflict") and r.get("kind") != "page-error"]
 
     if args.as_json:
+        shown = records if args.verbose else failures
         print(_json.dumps({
             "overview": overview,
             "targets": targets,
             "cursor": page["cursor"],
-            "records": records if args.verbose else failures,
-            "records_omitted": 0 if args.verbose else len(records) - len(failures),
+            # A stale/unknown --since-cursor means `records` is the newest page,
+            # not "everything since" — the caller has to be able to tell.
+            "cursor_missing": page.get("cursor_missing", False),
+            "followed": bool(args.follow),
+            "timed_out": False,
+            "records": shown,
+            # ALWAYS, not just under --verbose: a page error is the highest-value
+            # signal there is ("the JS died before any call happened"), and it is
+            # excluded from `failures` by construction because it is not a call
+            # failure. Omitting it from the default machine-readable output hid
+            # it from the very consumer that surface exists for.
+            "page_errors": page_errors,
+            "records_omitted": max(0, len(records) - len(shown) - len(page_errors)),
         }, indent=2, default=str))
         return
 
@@ -244,6 +277,10 @@ def _run_calls(args: argparse.Namespace) -> None:
               + ("" if call_log.enabled() else "  (capture is OFF)"))
         return
 
+    if page.get("cursor_missing"):
+        print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
+              "retention, or wrong) — showing the newest page instead of only what "
+              "is new")
     print(f"{overview['total']} record(s) · " + " · ".join(
         f"{name} {count}" for name, count in sorted(outcomes.items())))
     if overview.get("dropped"):

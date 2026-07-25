@@ -1062,3 +1062,94 @@ def test_the_calls_view_stops_auto_reload_while_following(store):
                             "template.html")
     src = open(template, encoding="utf-8").read()
     assert "fused.autoReload(!state.follow)" in src
+
+
+# ------------------------------------------------ the CLI (Bugbot #283 review)
+
+def run_cli(monkeypatch, capsys, *argv):
+    """Invoke `fused-render calls …` in-process and return its stdout."""
+    from fused_render import cli
+
+    monkeypatch.setattr("sys.argv", ["fused-render", "calls", *argv])
+    try:
+        cli.main()
+    except SystemExit as exit_code:  # argparse/--since validation
+        assert exit_code.code in (0, None), exit_code
+    return capsys.readouterr().out
+
+
+def test_follow_timeout_shows_no_records_at_all(store, monkeypatch, capsys):
+    """The trap --follow exists to close: an agent waits for activity, gets none,
+    and is handed the ordinary digest of PRE-EXISTING records — which reads
+    exactly like a successful verification."""
+    write_records([rec(call_id="historical", entrypoint="/app/old.py",
+                       entrypoint_name="old.py")])
+    out = run_cli(monkeypatch, capsys, "--follow", "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out
+    assert "historical" not in out and "old.py" not in out
+
+
+def test_follow_timeout_is_explicit_in_json(store, monkeypatch, capsys):
+    write_records([rec(call_id="historical")])
+    body = json.loads(run_cli(monkeypatch, capsys,
+                              "--follow", "--timeout", "1", "--json", "--since", "all"))
+    assert body["timed_out"] is True and body["followed"] is True
+    assert body["records"] == [] and body["page_errors"] == []
+
+
+def test_follow_reports_only_what_arrived(store, monkeypatch, capsys):
+    """When something DOES arrive, the digest is what is new — not the history
+    that was already there when the wait began."""
+    import threading
+
+    write_records([rec(call_id="historical")])
+
+    def append_later():
+        time.sleep(1.5)
+        write_records([rec(call_id="fresh", outcome="error",
+                           error={"type": "ValueError", "message": "boom",
+                                  "traceback": "tb"})])
+
+    thread = threading.Thread(target=append_later, daemon=True)
+    thread.start()
+    body = json.loads(run_cli(monkeypatch, capsys,
+                              "--follow", "--timeout", "15", "--json", "--since", "all"))
+    thread.join(timeout=5)
+    assert body["timed_out"] is False
+    assert [r["call_id"] for r in body["records"]] == ["fresh"]
+
+
+def test_json_always_carries_page_errors(store, monkeypatch, capsys):
+    """`failures` excludes page errors by construction (they are not call
+    failures), so the default machine-readable output was hiding the single most
+    informative record from the consumer that surface exists for."""
+    write_records([
+        rec(call_id="fine", outcome="ok"),
+        rec(call_id="js-died", kind="page-error", outcome="error", route=None,
+            entrypoint=None, entrypoint_name=None,
+            error={"type": "TypeError", "message": "freq is not defined",
+                   "traceback": "at draw"}),
+    ])
+    body = json.loads(run_cli(monkeypatch, capsys, "--json", "--since", "all"))
+    assert [r["call_id"] for r in body["page_errors"]] == ["js-died"]
+    assert body["page_errors"][0]["error"]["type"] == "TypeError"
+    # Without --verbose the healthy call is still summarised, not dumped.
+    assert "fine" not in [r["call_id"] for r in body["records"]]
+    body = json.loads(run_cli(monkeypatch, capsys, "--json", "--verbose", "--since", "all"))
+    assert {"fine", "js-died"} <= {r["call_id"] for r in body["records"]}
+
+
+def test_a_stale_cursor_is_bounded_and_reported(store, monkeypatch, capsys):
+    """A cursor purged by retention (or simply wrong) never matched, so the walk
+    never ended and the "page" was every matching record in the store."""
+    write_records([rec(call_id=f"c{i}") for i in range(50)])
+    page = calls.query(limit=5, cursor="long-since-purged")
+    assert len(page["records"]) == 5, "the limit must bind while seeking"
+    assert page["cursor_missing"] is True
+
+    found = calls.query(limit=5, cursor="c49")  # the newest record
+    assert found["cursor_missing"] is False
+
+    out = run_cli(monkeypatch, capsys, "--since-cursor", "long-since-purged",
+                  "--since", "all")
+    assert "was not found" in out
