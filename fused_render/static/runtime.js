@@ -620,6 +620,28 @@
     return !!(mountsRoot && p && p.indexOf(mountsRoot + "/") === 0);
   }
 
+  // A call-log file (fused_render/calls.py) is excluded from the watch set for a
+  // sharper reason than mount-backed files: viewing one APPENDS TO IT, because
+  // reading it is itself a logged API call. A watcher would therefore reload,
+  // re-read, append, and reload again — forever, on any viewer that doesn't opt
+  // out (log_studio only does with Tail on; duckdb and tree not at all). Killing
+  // the watch removes the loop at its source instead of suppressing the records,
+  // and costs nothing: the viewers that want live updates poll, and they already
+  // turn auto-reload off while doing so precisely so a reload cannot rebuild the
+  // frame mid-poll. Prefix + suffix come from /api/config, so generic templates
+  // need to know nothing about the call log.
+  let callsDir = null;
+  let callsSuffix = ".calls.jsonl";
+  function isCallLog(p) {
+    if (!p) return false;
+    if (callsSuffix && p.slice(-callsSuffix.length) === callsSuffix) return true;
+    return !!(callsDir && p.indexOf(callsDir + "/") === 0);
+  }
+
+  function isUnwatchable(p) {
+    return isMountBacked(p) || isCallLog(p);
+  }
+
   function resubscribe() {
     // A reconnect timer may be pending (onclose below); a direct call must
     // cancel it or the stale timer would close and reopen the fresh socket.
@@ -666,7 +688,7 @@
     if (!p || watched.has(p)) return;
     // Never watch mount-backed data files (see mountsRoot): read-only remote
     // bytes don't change, and the poll traffic is the mount-killing hazard.
-    if (isMountBacked(p)) return;
+    if (isUnwatchable(p)) return;
     watched.add(p);
     if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
@@ -701,19 +723,21 @@
     const begin = () => {
       // Drop anything mount-backed that accumulated before we knew the root.
       for (const p of [...watched]) {
-        if (isMountBacked(p)) watched.delete(p);
+        if (isUnwatchable(p)) watched.delete(p);
       }
       const params = new URLSearchParams(window.location.search);
       const own = params.get("path");
-      if (own && !isMountBacked(own)) watched.add(own);
+      if (own && !isUnwatchable(own)) watched.add(own);
       const file = params.get("_file");
-      if (file && !isMountBacked(file)) watched.add(file);
+      if (file && !isUnwatchable(file)) watched.add(file);
       if (autoReloadEnabled) resubscribe();
     };
     fetch("/api/config")
       .then((res) => res.json())
       .then((cfg) => {
         if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
+        if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
+        if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
       })
       .catch(() => {})
       .then(begin);

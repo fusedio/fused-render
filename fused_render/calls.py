@@ -108,7 +108,8 @@ DISABLE_ENV = "FUSED_RENDER_CALLS"
 # reason; this is the call log's equivalent.
 MAX_FILE_BYTES = 32 * 1024 * 1024
 
-_SUFFIX = ".calls.jsonl"
+SUFFIX = ".calls.jsonl"
+_SUFFIX = SUFFIX  # historical private alias, used throughout this module
 
 # The calls view's own reader. Reading the log must not append to the log:
 # beyond being noise, the view POLLS while following, so each poll's four reader
@@ -356,18 +357,20 @@ def _templates_dirs() -> tuple[str, ...]:
 def is_log_file(path: str | None) -> bool:
     """True when `path` is one of the store's own files.
 
-    Reading the log must never append to the log, and the earlier
-    `_is_self_read` guard was too narrow — it only knew the `calls` reader. But
-    the store is an ordinary `.jsonl`, so ANY viewer opens it: `log_studio`
-    (a `runPython` on its own reader), `code` (a `fused.readFile`), `duckdb`,
-    `tree`. Each of those is an attributed app call, so viewing the live file
-    appended a record TO the file being viewed — and because auto-reload watches
-    the previewed `_file` (LR-1), that append reloaded the page, which read
-    again, which appended again. A permanent reload loop, and a log filling with
-    records about looking at the log.
+    Reads of the log ARE recorded like any other call — what a viewer costs to
+    open a big log is worth knowing, and a blanket exclusion would be a special
+    case in the record contract. What makes that safe is that the runtime never
+    *watches* a call-log file (`calls_dir`/`calls_suffix` in /api/config, applied
+    beside the existing mount-backed exclusion): viewing the file appends to it,
+    so a watcher would reload, re-read, append and reload forever. Removing the
+    watch kills the loop at its source rather than by suppressing the data, and
+    it costs nothing — the viewers that want live updates (log_studio's Tail, the
+    calls view's Follow) poll, and both already switch auto-reload off while
+    engaged so a reload cannot rebuild the frame mid-poll.
 
     Matched by suffix and by containment in the store, so a renamed file inside
-    the store is covered too.
+    the store is covered too. Still used server-side by the config payload's
+    suffix and by tests; the enforcement itself is client-side.
     """
     if not path:
         return False
@@ -777,12 +780,6 @@ def begin(request: Request) -> dict | None:
     # the stat-in-a-loop bug actually shows up in. /api/run and /api/fs/write
     # overwrite it with their resolved target when they enrich.
     touched = request.query_params.get("path") if request.method == "GET" else None
-    # Viewing the log is not an app call worth logging (see is_log_file). Both
-    # signals matter: `_file` covers a template previewing the store (log_studio,
-    # code, duckdb, tree — the shell always passes it), and the `path` query
-    # param covers a direct read of it (`fused.readFile`, a raw fetch).
-    if is_log_file(request.headers.get(TARGET_HEADER)) or is_log_file(touched):
-        return None
     return {
         "version": RECORD_VERSION,
         "call_id": request.headers.get(CALL_HEADER) or uuid.uuid4().hex,

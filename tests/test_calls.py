@@ -950,32 +950,50 @@ def test_a_real_error_still_carries_its_detail(store):
 
 # ---------------------------------------- viewing the log must not grow the log
 
-def test_viewing_the_log_in_another_template_appends_nothing(app_client):
-    """The reload loop: the store is an ordinary .jsonl, so log_studio/code/
-    duckdb all open it — each via an attributed app call, which appended a record
-    TO the file being viewed. Auto-reload watches the previewed `_file` (LR-1),
-    so that append reloaded the page, which read again, which appended again.
+def test_viewing_the_log_is_recorded_like_any_other_call(app_client):
+    """Reads of the store are ordinary calls — what a viewer costs to open a big
+    log is worth knowing, and excluding them would be a special case in the
+    record contract. What makes it safe is that nothing WATCHES a log file, so
+    the read cannot trigger a reload that reads again (see the two tests below).
     """
     client, d = app_client
     write_records([rec(call_id="seed")])
     log = calls.store_files()[0]
-    before = os.path.getsize(log)
 
-    # A template previewing the store: `_file` is the log (log_studio, code, …).
     client.get(f"/api/fs/raw?path={log}",
                headers={"X-Fused-Page": "/x/log_studio/template.html",
                         "X-Fused-Target": log})
-    # Its reader, run through /api/run the way log_studio's does.
-    client.post("/api/run",
-                json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
-                headers=app_headers("/x/log_studio/template.html",
-                                    **{"X-Fused-Target": log}))
-    # And a direct read of the file, with no template involved (code's readFile).
-    client.get(f"/api/fs/raw?path={log}", headers={"X-Fused-Page": str(d / "p.html")})
-    time.sleep(0.6)
+    assert drain()
+    ids = [r["call_id"] for r in calls.query(limit=10)["records"]]
+    assert "seed" in ids
+    assert len(ids) == 2, "the read of the log should itself be recorded"
+    read = next(r for r in calls.query(limit=10)["records"] if r["call_id"] != "seed")
+    assert read["route"] == "/api/fs/raw"
+    assert calls.is_log_file(read["entrypoint"])
 
-    assert os.path.getsize(log) == before, "reading the log appended to the log"
-    assert [r["call_id"] for r in calls.query(limit=10)["records"]] == ["seed"]
+
+def test_the_runtime_never_watches_a_call_log_file(store):
+    """The loop is killed at its source: a page watching a log file would reload
+    on the append its own read caused. Excluded in the runtime beside the
+    existing mount-backed exclusion, so generic templates (code, duckdb, tree —
+    none of which opt out of auto-reload) need to know nothing about it."""
+    runtime = os.path.join(os.path.dirname(calls.__file__), "static", "runtime.js")
+    src = open(runtime, encoding="utf-8").read()
+    assert "function isCallLog(" in src
+    assert "isMountBacked(p) || isCallLog(p)" in src
+    # Every site that used to consult the mount exclusion must use the union.
+    assert "if (isUnwatchable(p)) return;" in src
+    assert "if (own && !isUnwatchable(own)) watched.add(own);" in src
+    assert "if (file && !isUnwatchable(file)) watched.add(file);" in src
+
+
+def test_config_publishes_the_store_so_the_runtime_can_skip_it(app_client):
+    """The runtime learns the prefix/suffix from the server, like mounts_root —
+    templates stay ignorant of the call log."""
+    client, _ = app_client
+    cfg = client.get("/api/config").json()
+    assert cfg["calls_dir"] == os.path.abspath(calls.store_dir())
+    assert cfg["calls_suffix"] == calls.SUFFIX
 
 
 def test_a_normal_page_is_still_logged_while_the_log_is_open(app_client):

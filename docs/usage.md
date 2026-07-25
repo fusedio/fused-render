@@ -124,10 +124,12 @@ these files too — level facets, filtering, and its volume-by-level histogram.
 Its Tail button and the Calls view's Follow both switch auto-reload off while
 engaged, so watching a live file polls instead of reloading.
 
-Opening a log file in any view is safe: reads of the store are never themselves
-recorded, so looking at the live file does not make it grow (and does not send
-the page into a reload loop). It still refreshes when *other* pages make calls —
-that is a live tail, not a loop.
+Opening a log file in any view is safe. Nothing watches a log file for changes,
+so a view of one never reloads itself — which matters because reading a log *is*
+a recorded call, and a watcher would reload, re-read and append forever. The
+reads themselves are kept (what a viewer costs on a big log is worth seeing);
+the Calls view's own polling is the one thing excluded, since it would otherwise
+inflate the numbers you are reading.
 
 **Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
 per day per server process, rolled to a new part every 32 MB. Records are capped
