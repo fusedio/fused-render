@@ -2282,8 +2282,16 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   per bucket, never 100k records. Reads are also bounded by the **window**, not
   just by the response size: files are read backwards from the tail, a file
   whose mtime predates the window is skipped whole (for an append-only file its
-  mtime IS its newest record), and within a file the first record older than the
-  window ends it. Files are skipped but never stopped at, because same-day files
+  mtime IS its newest record), and within a file the first record **appended**
+  before the window ends it. The early stop compares `recorded_at` (append time,
+  stamped at write) and **not** `occurred_at` (call start, stamped in `begin()`):
+  the file is ordered by COMPLETION, so a long call sits at the tail carrying an
+  old start time, and stopping on `occurred_at` skipped newer short calls
+  appended before it — a short window over ordinary overlapping traffic could
+  return nothing at all. Since `occurred_at <= recorded_at` always, a record
+  appended before the window cannot have started inside it, which makes the stop
+  exact rather than merely conservative; a record without `recorded_at` never
+  stops the walk. Files are skipped but never stopped at, because same-day files
   from different processes interleave in time. Without this a one-hour question
   parsed the entire retention window. `calls/reader.py` is on
   `INPROCESS_HELPERS` (D72): it is first-party, never imports or executes user

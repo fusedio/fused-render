@@ -720,16 +720,21 @@ def test_reads_skip_files_outside_the_window(store, monkeypatch):
 
 
 def test_reads_stop_at_the_window_inside_a_file(store):
-    """Within a file, records are append-ordered, so the first one older than the
-    window ends it — the rest are older still."""
+    """Within a file, records are append-ordered, so the first one APPENDED before
+    the window ends it — everything further back was appended earlier still.
+
+    The stop key is `recorded_at` (append time), not `occurred_at` (call start),
+    so the fixtures carry a real append stamp exactly as production writes them.
+    """
     os.makedirs(store, exist_ok=True)
     path = calls.current_file()
+    stale = time.time() - 86_400
     with open(path, "w") as fh:
-        for i in range(200):  # older half, written first
-            fh.write(json.dumps(rec(call_id=f"old-{i}",
-                                    occurred_at="2020-01-01T00:00:00.000Z")) + "\n")
+        for i in range(200):  # appended a day ago, written first
+            fh.write(json.dumps(dict(calls._prune(rec(call_id=f"old-{i}")),
+                                     recorded_at=stale)) + "\n")
         for i in range(3):
-            fh.write(json.dumps(rec(call_id=f"new-{i}")) + "\n")
+            fh.write(json.dumps(calls._prune(rec(call_id=f"new-{i}"))) + "\n")
     seen = list(calls._iter_records([path], since=time.time() - 3600))
     assert [r["call_id"] for r in seen] == ["new-2", "new-1", "new-0"]
 
@@ -1216,3 +1221,51 @@ def test_a_cursor_bounded_digest_summarises_only_new_records(store, monkeypatch,
     assert body["bounded_by_cursor"] is True
     assert body["overview"]["total"] == 1, "the digest must not include the history"
     assert [t["name"] for t in body["targets"]] == ["new.py"]
+
+
+# ------------------------- append order vs call-start order (3rd Bugbot review)
+
+def test_a_window_does_not_miss_calls_hidden_behind_a_long_one(store):
+    """The file is ordered by COMPLETION, not by call start: `occurred_at` is
+    stamped in begin() while the line is appended in finish(), so a long call
+    sits at the tail carrying an old start time. Breaking the reverse walk on
+    `occurred_at` stopped there and skipped newer short calls appended before it
+    — a 15s window over ordinary overlapping traffic returned NOTHING.
+    """
+    def iso(offset):
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(time.time() + offset, timezone.utc).isoformat(
+            timespec="milliseconds").replace("+00:00", "Z")
+
+    # Two appends, so the slow call really does land after the fast one.
+    write_records([rec(call_id="fast", occurred_at=iso(-5), server_ms=20)])
+    write_records([rec(call_id="slow", occurred_at=iso(-40), server_ms=40_000)])
+
+    window = time.time() - 15
+    assert [r["call_id"] for r in calls.query(limit=10, since=window)["records"]] == ["fast"]
+    # The aggregates read through the same walk, so they under-reported too.
+    assert calls.overview(since=window)["total"] == 1
+    assert calls.series(bucket_ms=60_000, since=window)["points"][0]["count_ok"] == 1
+    # `slow` started outside the window, so excluding it is correct — it is only
+    # the EARLY STOP that must not be driven by its stamp.
+    assert {r["call_id"] for r in calls.query(limit=10)["records"]} == {"fast", "slow"}
+
+
+def test_records_carry_their_append_time(store):
+    before = time.time()
+    write_records([rec(call_id="stamped", occurred_at="2020-01-01T00:00:00.000Z")])
+    got = calls.detail("stamped")
+    assert got["recorded_at"] >= before, "the append time, not the call's start"
+    assert got["occurred_at"] == "2020-01-01T00:00:00.000Z", "the start time is preserved"
+
+
+def test_a_legacy_record_without_an_append_time_never_stops_the_walk(store):
+    """Correctness over speed on a store written before `recorded_at` existed."""
+    os.makedirs(store, exist_ok=True)
+    path = calls.current_file()
+    old = dict(rec(call_id="legacy", occurred_at="2020-01-01T00:00:00.000Z"))
+    fresh = calls._prune(rec(call_id="fresh"))
+    with open(path, "w") as fh:  # legacy line first, so a break would hide `fresh`
+        fh.write(json.dumps(old) + "\n" + json.dumps(fresh) + "\n")
+    seen = [r["call_id"] for r in calls._iter_records([path], since=time.time() - 3600)]
+    assert "fresh" in seen and "legacy" in seen

@@ -590,6 +590,13 @@ def _prune(rec: dict) -> dict:
     A `level` is also stamped here — see _level_for.
     """
     pruned = {key: value for key, value in rec.items() if value is not None}
+    # When the line was APPENDED, which is not when the call started:
+    # `occurred_at` is stamped in begin() and the record is written in finish(),
+    # so the two differ by the call's whole duration. The file is ordered by THIS
+    # stamp, and it is what the reader's early stop must compare against — see
+    # _iter_records. Seconds, matching the sidecar's server-stamp convention
+    # (D83/D84).
+    pruned.setdefault("recorded_at", time.time())
     # Emitted EARLY (right after the identity fields) because a generic viewer
     # takes the FIRST level word it finds in the line: putting it ahead of the
     # page path, params and traceback means a path like /x/error-demo.html or an
@@ -1015,8 +1022,20 @@ def _iter_records(paths: list[str], since: float | None = None):
       * a file whose mtime predates the window is skipped whole — its last
         append is older than anything asked for, and for an append-only file
         mtime IS its newest record;
-      * within a file, the first record older than the window ends that file —
-        everything further back is older still.
+      * within a file, the first record **appended** before the window ends that
+        file — everything further back was appended earlier still.
+
+    The early stop compares ``recorded_at`` (append time), NOT ``occurred_at``
+    (call start). That distinction is load-bearing: `occurred_at` is stamped in
+    begin() while the line is written in finish(), so the file is ordered by
+    COMPLETION and a long call sits at the tail carrying an old start time.
+    Breaking on `occurred_at` therefore stopped at that record and skipped newer
+    short calls appended before it — a 15 s window over ordinary overlapping
+    traffic could return nothing at all. Since `occurred_at <= recorded_at`
+    always, a record appended before the window cannot have started inside it,
+    which makes stopping on `recorded_at` exact rather than merely conservative.
+    A record with no `recorded_at` (written before this field existed) never
+    stops the walk — correctness over speed on a legacy store.
 
     Files are only skipped, never stopped at, because same-day files from
     different processes interleave in time; the per-file bound is exact.
@@ -1040,9 +1059,9 @@ def _iter_records(paths: list[str], since: float | None = None):
                 if not isinstance(rec, dict):
                     continue
                 if since is not None:
-                    stamp = _epoch(rec.get("occurred_at"))
-                    if stamp is not None and stamp < since:
-                        break  # rest of this file is older
+                    appended = rec.get("recorded_at")
+                    if isinstance(appended, (int, float)) and appended < since:
+                        break  # everything further back was appended earlier
                 yield rec
         except OSError:
             continue
