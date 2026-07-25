@@ -2279,3 +2279,58 @@ def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsy
                                     entrypoint="/app/d.py", entrypoint_name="d.py"))])
     out = run_cli(monkeypatch, capsys, "--page", "/app/p.html", "--since", "all")
     assert "d.py" in out
+
+
+# -- override resolvers: set vs in force (Bugbot #283 review, D148) ------------
+
+
+def test_retention_days_override_reports_only_values_it_honours(monkeypatch):
+    """`retention_days_override()` is the one answer to "is the env var in
+    force" — None whenever `retention_days()` falls back to the pref.
+
+    `0` is in the honoured set on purpose: it is a real override (age pruning
+    off, size cap only), and the empty string next to it is the case a truthiness
+    check conflates it with.
+    """
+    for raw, expected in (("7", 7), ("0", 0), ("-5", 0), ("  9 ", 9)):
+        monkeypatch.setenv(calls.RETENTION_DAYS_ENV, raw)
+        assert calls.retention_days_override() == expected, raw
+
+    for raw in ("", "abc", "-", "3.5", "  ", "1d"):
+        monkeypatch.setenv(calls.RETENTION_DAYS_ENV, raw)
+        assert calls.retention_days_override() is None, raw
+
+    monkeypatch.delenv(calls.RETENTION_DAYS_ENV, raising=False)
+    assert calls.retention_days_override() is None
+
+
+def test_retention_days_is_the_override_or_the_pref(monkeypatch, tmp_path):
+    """The resolver and the getter cannot disagree: `retention_days()` returns
+    the override when there is one and the stored pref when there is not."""
+    from fused_render.shell import prefs
+
+    monkeypatch.setattr(prefs.storage, "home_dir", lambda: str(tmp_path))
+    prefs.storage.write_json(prefs._path(), {"calls_retention_days": 30})
+
+    for raw in ("7", "0", "", "abc"):
+        monkeypatch.setenv(calls.RETENTION_DAYS_ENV, raw)
+        calls.invalidate_prefs_cache()
+        override = calls.retention_days_override()
+        assert calls.retention_days() == (30 if override is None else override), raw
+
+
+def test_enabled_override_is_none_only_when_the_var_is_unset(monkeypatch):
+    """Capture's variable differs from retention's: every set value decides
+    something, so presence and force coincide. Pinned so the shared `forced_by`
+    plumbing has a stated contract on both vars rather than one by accident.
+    """
+    for raw in ("0", "false", "no", "off", "OFF", " 0 "):
+        monkeypatch.setenv(calls.DISABLE_ENV, raw)
+        assert calls.enabled_override() is False, raw
+
+    for raw in ("1", "yes", "", "garbage"):
+        monkeypatch.setenv(calls.DISABLE_ENV, raw)
+        assert calls.enabled_override() is True, raw
+
+    monkeypatch.delenv(calls.DISABLE_ENV, raising=False)
+    assert calls.enabled_override() is None

@@ -403,3 +403,71 @@ def test_calls_params_mode_gets_no_forced_by_pair(tmp_path, monkeypatch):
     assert "params" in calls
     assert "params_forced_by" not in calls
     assert "effective_params" not in calls
+
+
+# -- forced_by means "in force", not "set" (Bugbot #283 review, D148) ----------
+
+
+def test_retention_forced_by_is_null_when_the_env_value_is_not_honoured(tmp_path, monkeypatch):
+    """The bug: any *set* FUSED_RENDER_CALLS_RETENTION_DAYS was reported as
+    forcing, but `retention_days()` honours only a non-empty integer.
+
+    An empty or non-numeric value left the writer on the stored pref while the
+    page disabled the retention control and blamed the variable — a control the
+    user then could not change from the page, and a variable whose value was
+    never in force. `forced_by` must answer "is this in force", not "is this
+    set", so each spelling below reports null and the stored window stands.
+    """
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"calls_retention_days": 30}, headers=FUSED)
+
+    for raw in ("", "abc", "-", "3.5", "  "):
+        monkeypatch.setenv("FUSED_RENDER_CALLS_RETENTION_DAYS", raw)
+        call_log.invalidate_prefs_cache()
+        calls = client.get("/api/prefs").json()["calls"]
+        assert calls["retention_forced_by"] is None, raw
+        assert calls["effective_retention_days"] == call_log.retention_days() == 30, raw
+
+
+def test_retention_forced_by_is_reported_when_the_env_value_wins(tmp_path, monkeypatch):
+    """The other side of the same rule: a value the resolver does honour — `0`
+    included, which is a real override (it disables age pruning) and must not be
+    mistaken for the falsy empty string — is reported and does lock the UI."""
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"calls_retention_days": 30}, headers=FUSED)
+
+    for raw, expected in (("7", 7), ("0", 0), ("-5", 0)):
+        monkeypatch.setenv("FUSED_RENDER_CALLS_RETENTION_DAYS", raw)
+        call_log.invalidate_prefs_cache()
+        calls = client.get("/api/prefs").json()["calls"]
+        assert calls["retention_forced_by"] == raw
+        assert calls["effective_retention_days"] == call_log.retention_days() == expected
+        assert calls["retention_days"] == 30, "the stored choice stands"
+
+
+def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypatch):
+    """Pins both `*_forced_by` flags to `calls.*_override()` — the same
+    ask-the-writer discipline the `effective_*` values follow (D147).
+
+    Presence and force coincide for capture (every set value decides something)
+    but not for retention, so a presence check would look right on one control
+    and be wrong on the other. Asserting against the resolvers keeps the two in
+    step whichever way a future rule change moves.
+    """
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    for capture, retention in (("0", "7"), ("", "abc"), ("1", ""), ("no", "0")):
+        monkeypatch.setenv("FUSED_RENDER_CALLS", capture)
+        monkeypatch.setenv("FUSED_RENDER_CALLS_RETENTION_DAYS", retention)
+        call_log.invalidate_prefs_cache()
+        calls = client.get("/api/prefs").json()["calls"]
+
+        expected_capture = capture if call_log.enabled_override() is not None else None
+        expected_retention = retention if call_log.retention_days_override() is not None else None
+        assert calls["enabled_forced_by"] == expected_capture, (capture, retention)
+        assert calls["retention_forced_by"] == expected_retention, (capture, retention)

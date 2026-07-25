@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects fourteen rounds of review
-found are in §9.5, with D136–D147 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects fifteen rounds of review
+found are in §9.5, with D136–D148 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -1009,7 +1009,26 @@ after. Second, **an existing pattern in the same file is the cheapest
 correctness check available, and I hadn't looked** — the question "does anything
 here already solve this?" would have found `engine_state()` in one grep.
 
-Across all fourteen rounds the pattern never changed: each defect lived in a seam
+**Fixing half of a function (D148).** The fifteenth round found the *other half*
+of D147, in the function D147 had just written. The `effective_*` values were
+taken from the writer's resolvers, exactly as intended — and the `*_forced_by`
+flags beside them were `os.environ.get(...)`, a presence check, which is the same
+second copy of the precedence rule the paragraph above is about. It survived
+review because presence and force coincide for `FUSED_RENDER_CALLS`, where every
+set value decides something, so half the payload was right by luck. For retention
+they diverge: `retention_days()` honours only an integer, so `=abc` or `=` left
+the writer on the stored 30-day pref while the page greyed out the retention
+select and captioned it *locked by `FUSED_RENDER_CALLS_RETENTION_DAYS=abc`* — a
+window the user could then change neither from the page nor by editing a variable
+that was never in force. The question "does this variable win?" now has one owner,
+`calls.retention_days_override()`, with `retention_days()` expressed in terms of
+it, and one reader, prefs' `_forced_by`. The lesson is narrower than D147's and
+sharper: **when a fix is "ask the writer instead of re-deriving", it has to be
+applied to every value in the function, not the one the bug report named.** A
+report is evidence of a class, not an inventory of it — D145 taught that about
+call sites and this taught it about the lines of a single return statement.
+
+Across all fifteen rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts — a rule and its own
 copy, two spellings of one value, two directories with different lifetimes, a
 stored setting and the effective one. What

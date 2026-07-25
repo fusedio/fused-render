@@ -195,14 +195,29 @@ def store_files() -> list[str]:
     return [os.path.join(store_dir(), n) for n in names]
 
 
-def retention_days() -> int:
+def retention_days_override() -> int | None:
+    """The window ``FUSED_RENDER_CALLS_RETENTION_DAYS`` actually imposes, or None
+    when it imposes nothing — unset, empty, or not an integer.
+
+    Unlike DISABLE_ENV, a *set* value here does not necessarily win: there is no
+    sensible reading of ``=abc`` as a number of days, so the pref keeps deciding.
+    That makes "is the variable set" and "is the variable in force" two different
+    questions, and anything reporting an override to the user has to ask the
+    second one — hence this resolver rather than a presence check at the caller
+    (D148; the Preferences page's `retention_forced_by` goes through it).
+    """
     raw = os.environ.get(RETENTION_DAYS_ENV)
-    if raw:
-        try:
-            return max(0, int(raw))
-        except ValueError:
-            pass
-    return _prefs_snapshot()[2]
+    if not raw:
+        return None
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return None
+
+
+def retention_days() -> int:
+    override = retention_days_override()
+    return _prefs_snapshot()[2] if override is None else override
 
 
 # The prefs store is read per call — three times, between `enabled()` and the
@@ -261,14 +276,27 @@ def invalidate_prefs_cache() -> None:
         _prefs_generation += 1
 
 
+def enabled_override() -> bool | None:
+    """What ``FUSED_RENDER_CALLS`` decides, or None when it is unset.
+
+    Every set value decides something — the off-words switch capture off and
+    anything else (including the empty string) switches it on — so unlike
+    `retention_days_override`, presence and force coincide here. Stated as a
+    resolver anyway so the Preferences page derives both `*_forced_by` flags the
+    same way and neither can drift into a second copy of the rule (D148).
+    """
+    raw = os.environ.get(DISABLE_ENV)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 def enabled() -> bool:
     """Whether capture is on. ``FUSED_RENDER_CALLS=0`` is the process-level
     off switch (tests, a user who wants nothing recorded); otherwise the pref
     decides, defaulting to on."""
-    raw = os.environ.get(DISABLE_ENV)
-    if raw is not None:
-        return raw.strip().lower() not in ("0", "false", "no", "off")
-    return _prefs_snapshot()[0]
+    override = enabled_override()
+    return _prefs_snapshot()[0] if override is None else override
 
 
 # ---------------------------------------------------------------------- caps

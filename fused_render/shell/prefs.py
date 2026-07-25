@@ -222,7 +222,8 @@ def _calls_effective() -> dict:
     payload. Same treatment here: `effective_*` comes from **the resolvers the
     writer itself calls**, never a second copy of the precedence rule, so the
     page cannot report a state the log isn't in; `*_forced_by` carries the raw
-    env value (None when unset) so the UI can name what is overriding.
+    env value so the UI can name what is overriding — and is null unless that
+    value is genuinely in force, which is not the same as being set (`_forced_by`).
 
     Only these two are overridable — the param-redaction mode has no env var, so
     it gets no pair rather than a misleading always-null one.
@@ -233,10 +234,27 @@ def _calls_effective() -> dict:
 
     return {
         "effective_enabled": calls.enabled(),
-        "enabled_forced_by": os.environ.get(calls.DISABLE_ENV),
+        "enabled_forced_by": _forced_by(calls.DISABLE_ENV, calls.enabled_override()),
         "effective_retention_days": calls.retention_days(),
-        "retention_forced_by": os.environ.get(calls.RETENTION_DAYS_ENV),
+        "retention_forced_by": _forced_by(
+            calls.RETENTION_DAYS_ENV, calls.retention_days_override()
+        ),
     }
+
+
+def _forced_by(env_name: str, override) -> str | None:
+    """The raw value of `env_name` when it is what's actually in force, else None.
+
+    Gated on the writer's override resolver rather than on the variable merely
+    being *set*, because for retention those differ: `calls.retention_days()`
+    ignores an empty or non-numeric FUSED_RENDER_CALLS_RETENTION_DAYS and keeps
+    using the pref. A `forced_by` derived from presence alone then disables the
+    UI control and blames the variable for a window it is not setting — leaving
+    the user unable to change retention from the page and unable to fix it by
+    editing a variable that was never in force (D148). Same shape as the
+    `effective_*` values above: ask the writer, don't re-derive.
+    """
+    return os.environ.get(env_name) if override is not None else None
 
 
 @router.get("/api/prefs")

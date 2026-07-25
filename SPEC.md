@@ -2433,7 +2433,16 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   `effective_enabled` / `effective_retention_days` — taken from
   `calls.enabled()` / `calls.retention_days()`, **the same resolvers the writer
   calls**, never a second copy of the precedence rule — plus
-  `enabled_forced_by` / `retention_forced_by`, the raw env value or null. The
+  `enabled_forced_by` / `retention_forced_by`, the raw env value when it is
+  genuinely **in force** and null otherwise. In force is not the same as set:
+  every set `FUSED_RENDER_CALLS` value decides something, but
+  `FUSED_RENDER_CALLS_RETENTION_DAYS` is honoured only as an integer, so an
+  empty or non-numeric one leaves the pref deciding and must report null — a
+  presence check there disables the retention control and blames a variable
+  that is setting nothing. Both flags therefore come from
+  `calls.enabled_override()` / `calls.retention_days_override()`, the writer's
+  own answer to "does this win", on the same ask-the-writer discipline as the
+  `effective_*` pair. The
   controls bind to the stored prefs (a PUT round-trips, and the choice applies
   once the override is removed) while a muted line states what is actually in
   force and names the variable, exactly as the engine block's

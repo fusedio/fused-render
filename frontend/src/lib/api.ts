@@ -803,8 +803,11 @@ export interface CallsPrefs {
   dir_exists: boolean;
   // What capture and retention are ACTUALLY doing (from the resolvers the
   // writer calls) versus the stored prefs above, which differ whenever a
-  // process env var wins. `*_forced_by` is that raw env value, or null.
-  // Only these two are overridable; the param mode has no env var.
+  // process env var wins. `*_forced_by` is that raw env value when the variable
+  // is genuinely in force, else null — a set-but-ignored value (an empty or
+  // non-numeric retention window) reports null, because the writer keeps using
+  // the pref and a control locked against a variable setting nothing is a dead
+  // end. Only these two are overridable; the param mode has no env var.
   effective_enabled: boolean;
   enabled_forced_by: string | null;
   effective_retention_days: number;

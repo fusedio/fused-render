@@ -203,6 +203,11 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   const calls = prefs.calls;
   // Same shape as the Engine section's `locked`: a non-null raw env value means
   // the process overrides the pref, so the control is shown but not actionable.
+  // Non-null is the server's assertion that the variable is actually IN FORCE,
+  // not merely set — it withholds the value when the writer ignores it (an empty
+  // or non-numeric retention window, say). So never re-derive this from the
+  // value's shape here: a client-side "is it a number?" check is the second copy
+  // of a rule the writer already owns, and lockout is what it costs to get wrong.
   const enabledLocked = calls.enabled_forced_by !== null;
   const retentionLocked = calls.retention_forced_by !== null;
 
