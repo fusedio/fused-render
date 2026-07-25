@@ -1112,10 +1112,19 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
     newest: str | None = None
     seeking = cursor is not None
     found_cursor = False
+    # Once the page is full we keep scanning — without collecting — just far
+    # enough to learn whether the cursor is still in the store. Without that,
+    # "your page filled up first" and "your cursor is gone" are indistinguishable,
+    # and reporting the wrong one sends the caller down the wrong path entirely.
+    scan_budget = max(limit * 50, 5_000)
+    scanned = 0
+    exhausted_budget = False
     # No `since` hint while seeking a cursor: the walk has to reach the cursor
     # record itself, which may sit outside the caller's time window.
     hint = None if seeking else filters.get("since")
+    skipped = 0
     for rec in _iter_records(store_files(), since=hint):
+        scanned += 1
         if newest is None:
             newest = rec.get("call_id")
         if seeking and rec.get("call_id") == cursor:
@@ -1123,38 +1132,67 @@ def query(limit: int = 100, cursor: str | None = None, **filters) -> dict:
             # stop as soon as we reach the cursor itself.
             found_cursor = True
             break
-        if not _matches(rec, **filters):
-            continue
-        out.append(rec)
-        # The limit binds even while seeking. A cursor whose record has been
-        # purged by retention — or was never real — would otherwise never end
-        # the walk, and the "page" would be every matching record in a store
-        # that can be 200 MB. Capping also gives correct paging for a caller
-        # who has been away longer than one page: it gets the newest `limit`
-        # and resumes from the fresh cursor.
-        if len(out) >= limit:
+        if _matches(rec, **filters):
+            if len(out) < limit:
+                out.append(rec)
+            else:
+                # Matching, but the page is full. Counted rather than dropped
+                # silently: this is the difference between "here is everything
+                # new" and "here is a slice of it".
+                skipped += 1
+        # Not seeking: a full page is the whole answer, nothing left to learn.
+        # Seeking: keep walking (collecting nothing more) so we can still find
+        # out whether the cursor is in the store at all — otherwise "your page
+        # filled up first" is indistinguishable from "your cursor is gone", and
+        # reporting the wrong one sends the caller down the wrong path.
+        if len(out) >= limit and not seeking:
+            break
+        if scanned >= scan_budget:
+            exhausted_budget = True
             break
     return {
         "records": out,
         "cursor": newest,
         "count": len(out),
-        # True when the caller's cursor was not found: it is stale (purged) or
-        # wrong, so `records` is the newest page rather than "everything since".
-        # Say so instead of letting a bounded page look like a complete answer.
+        # Not found anywhere we looked — purged by retention, or never real.
+        # Because a seeking walk does NOT stop at the page limit (above), running
+        # out of page is no longer a reason to miss the cursor: the only ways to
+        # end without finding it are reaching the end of the store or blowing the
+        # scan budget. So this is exactly "absent", not "absent or paged past".
         "cursor_missing": bool(seeking and not found_cursor),
+        # …with one caveat: if the budget ran out we stopped early, so `absent`
+        # is a strong guess rather than a proof. Rare (it needs a store deeper
+        # than scan_budget records), and worth distinguishing from certainty.
+        "scan_truncated": exhausted_budget,
+        # The new range was bigger than this page. NOT the same as a missing
+        # cursor: the cursor is fine, there is simply more than `limit` of it.
+        # Reported because `cursor` advances to the newest record either way, so
+        # a caller that ignored this would skip these records permanently.
+        "skipped": skipped,
+        "more_available": skipped > 0,
     }
 
 
-def overview(**filters) -> dict:
+def overview(records: list[dict] | None = None, **filters) -> dict:
     """Counts and span across the whole (filtered) store — the digest an agent
-    should read before it reads any records."""
+    should read before it reads any records.
+
+    ``records`` summarises exactly that list instead of scanning. A caller whose
+    read is bounded by a cursor (or by `--follow`) needs the aggregates to
+    describe the SAME set as its records: a window-wide overview beside a
+    cursor-bounded record list reports historical activity as though it were the
+    new activity being waited for — the precise trap those callers exist to
+    avoid.
+    """
     outcomes: dict[str, int] = {}
     kinds: dict[str, int] = {}
     pages: dict[str, int] = {}
     first = last = None
     total = 0
-    for rec in _iter_records(store_files(), since=filters.get("since")):
-        if not _matches(rec, **filters):
+    source = (records if records is not None
+              else _iter_records(store_files(), since=filters.get("since")))
+    for rec in source:
+        if records is None and not _matches(rec, **filters):
             continue
         total += 1
         outcomes[rec.get("outcome") or "unknown"] = outcomes.get(rec.get("outcome") or "unknown", 0) + 1
@@ -1205,15 +1243,19 @@ def _durations(rec: dict) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def targets(**filters) -> dict:
+def targets(records: list[dict] | None = None, **filters) -> dict:
     """Per-entrypoint rollup: count, percentiles, error rate, bytes.
+
+    ``records`` rolls up exactly that list instead of scanning (see overview).
 
     The highest-value view in the feature and the one a human reads first —
     "which of my .py files carries this page, and which one is slow".
     """
     acc: dict[str, dict] = {}
-    for rec in _iter_records(store_files(), since=filters.get("since")):
-        if not _matches(rec, **filters):
+    source = (records if records is not None
+              else _iter_records(store_files(), since=filters.get("since")))
+    for rec in source:
+        if records is None and not _matches(rec, **filters):
             continue
         # A page-error has no target — it is what happened INSTEAD of a call —
         # so it would only add an "(unknown)" row here. The overview's `kinds`

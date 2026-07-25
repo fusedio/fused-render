@@ -226,20 +226,29 @@ def _run_calls(args: argparse.Namespace) -> None:
         # Say nothing happened, in both modes, and show no records — an empty
         # answer is the truthful one and cannot be mistaken for fresh activity.
         if args.as_json:
+            # Aggregates over the EMPTY set, not over the window: a historical
+            # overview beside "records": [] reads as fresh activity, which is the
+            # very confusion --follow exists to prevent.
             print(_json.dumps({
                 "followed": True, "timed_out": True, "waited_s": args.timeout,
                 "cursor": call_log.query(limit=1, **filters)["cursor"],
-                "overview": call_log.overview(**filters), "targets": [],
+                "overview": call_log.overview(records=[]), "targets": [],
                 "records": [], "page_errors": [], "records_omitted": 0,
+                "skipped": 0, "more_available": False, "cursor_missing": False,
             }, indent=2, default=str))
         else:
             print(f"no new calls within {args.timeout:g}s")
         return
 
     page = call_log.query(limit=args.limit, cursor=cursor, **filters)
-    overview = call_log.overview(**filters)
-    targets = call_log.targets(**filters)["targets"]
     records = page["records"]
+    # A cursor-bounded read (--follow, or an explicit --since-cursor) is asking
+    # "what is new". Its aggregates have to cover the same records, or the digest
+    # reports the window's whole history as though it were the new activity.
+    bounded = cursor is not None
+    overview = call_log.overview(records=records) if bounded else call_log.overview(**filters)
+    targets = (call_log.targets(records=records) if bounded
+               else call_log.targets(**filters))["targets"]
     page_errors = [r for r in records if r.get("kind") == "page-error"]
     # Page errors are reported in their own section below (they are not call
     # failures — they are what happened instead of a call), so keep them out of
@@ -256,6 +265,11 @@ def _run_calls(args: argparse.Namespace) -> None:
             # A stale/unknown --since-cursor means `records` is the newest page,
             # not "everything since" — the caller has to be able to tell.
             "cursor_missing": page.get("cursor_missing", False),
+            # Newer records than the cursor that did not fit this page. `cursor`
+            # advances regardless, so ignoring this loses them.
+            "skipped": page.get("skipped", 0),
+            "more_available": page.get("more_available", False),
+            "bounded_by_cursor": bounded,
             "followed": bool(args.follow),
             "timed_out": False,
             "records": shown,
@@ -277,6 +291,10 @@ def _run_calls(args: argparse.Namespace) -> None:
               + ("" if call_log.enabled() else "  (capture is OFF)"))
         return
 
+    if page.get("skipped"):
+        print(f"note: {page['skipped']} newer record(s) did not fit this page — "
+              f"raise --limit (currently {args.limit}) to see them; the cursor "
+              "below has already moved past them")
     if page.get("cursor_missing"):
         print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
               "retention, or wrong) — showing the newest page instead of only what "

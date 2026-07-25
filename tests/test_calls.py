@@ -1153,3 +1153,66 @@ def test_a_stale_cursor_is_bounded_and_reported(store, monkeypatch, capsys):
     out = run_cli(monkeypatch, capsys, "--since-cursor", "long-since-purged",
                   "--since", "all")
     assert "was not found" in out
+
+
+# --------------------------------- cursor paging + bounded digests (2nd review)
+
+def test_a_cursor_beyond_the_page_is_not_reported_as_missing(store):
+    """Bugbot's second-pass catch, and a regression from the first fix: with more
+    newer records than `limit`, the walk filled the page before reaching the
+    cursor, called the cursor missing (it was not), and advanced the cursor past
+    every record in between — losing them silently and permanently."""
+    write_records([rec(call_id=f"c{i:02d}") for i in range(40)])
+    page = calls.query(limit=5, cursor="c00")  # 39 records are newer than c00
+    assert len(page["records"]) == 5
+    assert page["cursor_missing"] is False, "the cursor exists — it is just beyond the page"
+    # The loss is now stated instead of silent, so a caller can raise its limit.
+    assert page["skipped"] == 34 and page["more_available"] is True
+
+    whole = calls.query(limit=100, cursor="c00")
+    assert len(whole["records"]) == 39 and whole["skipped"] == 0
+    assert whole["more_available"] is False
+
+
+def test_a_genuinely_absent_cursor_is_still_reported(store):
+    write_records([rec(call_id=f"c{i}") for i in range(10)])
+    page = calls.query(limit=5, cursor="never-existed")
+    assert page["cursor_missing"] is True
+    assert page["scan_truncated"] is False, "a small store is walked exhaustively"
+    assert len(page["records"]) == 5, "still bounded"
+
+
+def test_aggregates_can_describe_a_given_record_set(store):
+    """A cursor-bounded read needs its overview/targets to cover the SAME records,
+    or the digest reports the window's history as though it were the new activity."""
+    write_records([rec(call_id="old", entrypoint="/a/old.py", entrypoint_name="old.py")
+                   for _ in range(5)])
+    write_records([rec(call_id="new", entrypoint="/a/new.py", entrypoint_name="new.py")])
+
+    assert calls.overview()["total"] == 6           # whole store
+    fresh = calls.query(limit=10)["records"][:1]
+    assert calls.overview(records=fresh)["total"] == 1
+    assert [t["name"] for t in calls.targets(records=fresh)["targets"]] == ["new.py"]
+
+
+def test_follow_timeout_json_aggregates_are_empty_too(store, monkeypatch, capsys):
+    """A historical `overview` beside "records": [] reads as fresh activity."""
+    write_records([rec(call_id="historical") for _ in range(4)])
+    body = json.loads(run_cli(monkeypatch, capsys,
+                              "--follow", "--timeout", "1", "--json", "--since", "all"))
+    assert body["timed_out"] is True
+    assert body["overview"]["total"] == 0, "aggregates must cover the empty answer"
+    assert body["targets"] == [] and body["records"] == []
+
+
+def test_a_cursor_bounded_digest_summarises_only_new_records(store, monkeypatch, capsys):
+    write_records([rec(call_id=f"old{i}", entrypoint="/a/old.py",
+                       entrypoint_name="old.py") for i in range(5)])
+    first = calls.query(limit=1)["cursor"]
+    write_records([rec(call_id="fresh", entrypoint="/a/new.py", entrypoint_name="new.py")])
+
+    body = json.loads(run_cli(monkeypatch, capsys, "--json", "--since", "all",
+                              "--since-cursor", first))
+    assert body["bounded_by_cursor"] is True
+    assert body["overview"]["total"] == 1, "the digest must not include the history"
+    assert [t["name"] for t in body["targets"]] == ["new.py"]
