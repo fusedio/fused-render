@@ -2428,7 +2428,18 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   /api/prefs` must not create storage, and the lazy create is also what keeps
   an empty store from appearing for someone who never records a call. (The
   `log.dir` beside it needs no such flag: logging creates its directory at
-  startup, which is exactly why the two differ.)
+  startup, which is exactly why the two differ.) Capture and retention are both
+  **overridable per process**, so the payload additionally reports
+  `effective_enabled` / `effective_retention_days` — taken from
+  `calls.enabled()` / `calls.retention_days()`, **the same resolvers the writer
+  calls**, never a second copy of the precedence rule — plus
+  `enabled_forced_by` / `retention_forced_by`, the raw env value or null. The
+  controls bind to the stored prefs (a PUT round-trips, and the choice applies
+  once the override is removed) while a muted line states what is actually in
+  force and names the variable, exactly as the engine block's
+  `selected`/`effective`/`forced_by` does — a page must never report capture as
+  on while the process has it off. The param-redaction mode has no env override
+  and so gets no such pair, rather than an always-null one implying otherwise.
 - **CL-16** **Template readers are apps too.** Previewing a parquet really does
   make the `duckdb` template call Python, so those calls are real records
   attributed to the template's own `template.html`. Correct, but "my app's

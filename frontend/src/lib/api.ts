@@ -801,6 +801,14 @@ export interface CallsPrefs {
   // lazily, so `dir` names a path that may not exist yet. Browsing it before
   // then lands the explorer on a stat error, so the affordance waits.
   dir_exists: boolean;
+  // What capture and retention are ACTUALLY doing (from the resolvers the
+  // writer calls) versus the stored prefs above, which differ whenever a
+  // process env var wins. `*_forced_by` is that raw env value, or null.
+  // Only these two are overridable; the param mode has no env var.
+  effective_enabled: boolean;
+  enabled_forced_by: string | null;
+  effective_retention_days: number;
+  retention_forced_by: string | null;
 }
 
 export function getPrefs(): Promise<Prefs> {

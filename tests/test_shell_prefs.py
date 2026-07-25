@@ -323,3 +323,83 @@ def test_calls_dir_exists_flips_once_a_record_lands(tmp_path, monkeypatch):
     body = client.get("/api/prefs").json()["calls"]
     assert body["dir_exists"] is True
     assert os.path.isdir(body["dir"])
+
+
+# -- env overrides are surfaced, not hidden (Bugbot #283 review, D147) ---------
+
+
+def test_calls_effective_state_matches_the_stored_prefs_when_unforced(tmp_path, monkeypatch):
+    """The common case: nothing forced, so `effective_*` echoes the stored prefs
+    and `*_forced_by` is null. Asserted so a future change can't quietly make
+    the effective pair diverge from the writer when no override is present."""
+    monkeypatch.delenv("FUSED_RENDER_CALLS", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_CALLS_RETENTION_DAYS", raising=False)
+    client, _ = _client(tmp_path, monkeypatch)
+
+    calls = client.get("/api/prefs").json()["calls"]
+    assert calls["effective_enabled"] == calls["enabled"]
+    assert calls["effective_retention_days"] == calls["retention_days"]
+    assert calls["enabled_forced_by"] is None
+    assert calls["retention_forced_by"] is None
+
+
+def test_calls_env_overrides_are_reported_against_the_stored_prefs(tmp_path, monkeypatch):
+    """The bug: the page showed capture on and 90-day retention while the
+    process had capture off and a 1-day window.
+
+    Both halves are asserted — the stored prefs still say what the user chose
+    (a PUT must round-trip, and the choice applies once the var is removed),
+    and `effective_*` says what is actually happening.
+    """
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"calls_enabled": True}, headers=FUSED)
+    client.put("/api/prefs", json={"calls_retention_days": 90}, headers=FUSED)
+
+    monkeypatch.setenv("FUSED_RENDER_CALLS", "0")
+    monkeypatch.setenv("FUSED_RENDER_CALLS_RETENTION_DAYS", "1")
+    call_log.invalidate_prefs_cache()
+
+    calls = client.get("/api/prefs").json()["calls"]
+    assert calls["enabled"] is True and calls["retention_days"] == 90, "the stored choice stands"
+    assert calls["effective_enabled"] is False
+    assert calls["effective_retention_days"] == 1
+    assert calls["enabled_forced_by"] == "0"
+    assert calls["retention_forced_by"] == "1"
+
+
+def test_calls_effective_state_comes_from_the_writers_own_resolvers(tmp_path, monkeypatch):
+    """Pins the effective pair to `calls.enabled()`/`calls.retention_days()` —
+    the functions the writer itself calls — rather than to a second copy of the
+    precedence rule in the prefs layer, which is how the two would drift.
+
+    The env var here is deliberately a spelling only the real resolver accepts
+    (`enabled()` treats any non-false-ish value as on, so "off" is off but
+    "anything" is on); a reimplementation checking `== "0"` would disagree.
+    """
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    for raw in ("off", "no", "false", "0"):
+        monkeypatch.setenv("FUSED_RENDER_CALLS", raw)
+        call_log.invalidate_prefs_cache()
+        body = client.get("/api/prefs").json()["calls"]
+        assert body["effective_enabled"] is call_log.enabled(), raw
+        assert body["effective_enabled"] is False, raw
+
+    monkeypatch.setenv("FUSED_RENDER_CALLS", "1")
+    call_log.invalidate_prefs_cache()
+    body = client.get("/api/prefs").json()["calls"]
+    assert body["effective_enabled"] is call_log.enabled() is True
+
+
+def test_calls_params_mode_gets_no_forced_by_pair(tmp_path, monkeypatch):
+    """Only capture and retention have env overrides. The param mode gets no
+    pair rather than an always-null one that would imply an override exists."""
+    client, _ = _client(tmp_path, monkeypatch)
+    calls = client.get("/api/prefs").json()["calls"]
+
+    assert "params" in calls
+    assert "params_forced_by" not in calls
+    assert "effective_params" not in calls

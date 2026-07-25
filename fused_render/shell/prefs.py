@@ -180,10 +180,14 @@ def _prefs_response() -> dict:
         # `dir` lets the page reveal the store through the existing
         # /api/fs/reveal, exactly as `log.path` does.
         "calls": {
+            # The STORED prefs — what a PUT round-trips, and what applies once
+            # any process override is removed. What is actually in force is the
+            # `effective_*` pair below; they differ whenever an env var wins.
             "enabled": calls_enabled(),
             "params": calls_params_mode(),
             "retention_days": calls_retention_days(),
             **_calls_store(),
+            **_calls_effective(),
         },
     }
 
@@ -206,6 +210,33 @@ def _calls_store() -> dict:
 
     path = calls.store_dir()
     return {"dir": path, "dir_exists": os.path.isdir(path)}
+
+
+def _calls_effective() -> dict:
+    """What capture and retention are *actually* doing, and what forced them.
+
+    `FUSED_RENDER_CALLS` and `FUSED_RENDER_CALLS_RETENTION_DAYS` beat the stored
+    prefs inside `calls.enabled()`/`calls.retention_days()`, so reporting only
+    the stored values lets the page show capture as on while the process has it
+    off — the exact failure `engine_state()` exists to prevent, in the same
+    payload. Same treatment here: `effective_*` comes from **the resolvers the
+    writer itself calls**, never a second copy of the precedence rule, so the
+    page cannot report a state the log isn't in; `*_forced_by` carries the raw
+    env value (None when unset) so the UI can name what is overriding.
+
+    Only these two are overridable — the param-redaction mode has no env var, so
+    it gets no pair rather than a misleading always-null one.
+    """
+    # Imported lazily: calls.py imports this module, so a module-scope import
+    # here would be a cycle.
+    from fused_render import calls
+
+    return {
+        "effective_enabled": calls.enabled(),
+        "enabled_forced_by": os.environ.get(calls.DISABLE_ENV),
+        "effective_retention_days": calls.retention_days(),
+        "retention_forced_by": os.environ.get(calls.RETENTION_DAYS_ENV),
+    }
 
 
 @router.get("/api/prefs")

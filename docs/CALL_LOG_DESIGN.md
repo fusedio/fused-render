@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects thirteen rounds of review
-found are in §9.5, with D136–D146 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects fourteen rounds of review
+found are in §9.5, with D136–D147 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -992,9 +992,27 @@ asymmetry it explains rather than hides: `log.dir` sits two lines above
 directory at startup. Two paths in one payload with two different lifetimes, and
 the UI had been treating them as one kind of thing.
 
-Across all thirteen rounds the pattern never changed: each defect lived in a seam
+**Reporting the stored value instead of the effective one (D147).** The
+fourteenth round is the same class as D146 — a payload telling the UI something
+other than what the system is doing — but the precedent was sitting two lines
+above it. `FUSED_RENDER_CALLS` and `FUSED_RENDER_CALLS_RETENTION_DAYS` beat the
+stored prefs inside the resolvers, so Preferences showed *capture on, keep 90
+days* while the process had *capture off, keep 1 day*. The engine block
+immediately above in the same payload exists to prevent exactly this and says so
+in its docstring: "the SAME resolver the server's dispatch uses, so the page
+never reports a different running engine." Two things to keep. First, the fix is
+a **call, not a copy** — `effective_*` comes from `calls.enabled()` /
+`calls.retention_days()`, and a test pins it across the spellings the real
+resolver accepts (`off`/`no`/`false`/`0`), which a re-derived `== "0"` check
+would fail; that is D144/D145's lesson applied before the drift rather than
+after. Second, **an existing pattern in the same file is the cheapest
+correctness check available, and I hadn't looked** — the question "does anything
+here already solve this?" would have found `engine_state()` in one grep.
+
+Across all fourteen rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts — a rule and its own
-copy, two spellings of one value, two directories with different lifetimes. What
+copy, two spellings of one value, two directories with different lifetimes, a
+stored setting and the effective one. What
 did change is where the seams were — the later ones were *inside* code I had
 already reviewed and documented, which is the argument for adversarial review
 outliving "done".

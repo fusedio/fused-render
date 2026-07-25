@@ -190,10 +190,21 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
+// The retention window as the "Currently keeping ..." line says it, matching
+// the select's own option labels so the forced value reads like a choice.
+function describeRetention(days: number): string {
+  if (days === 0) return "until the size cap";
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
 function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const calls = prefs.calls;
+  // Same shape as the Engine section's `locked`: a non-null raw env value means
+  // the process overrides the pref, so the control is shown but not actionable.
+  const enabledLocked = calls.enabled_forced_by !== null;
+  const retentionLocked = calls.retention_forced_by !== null;
 
   const apply = async (fn: () => Promise<Prefs>) => {
     setBusy(true);
@@ -216,23 +227,41 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
         any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
         a per-target breakdown; <code>fused-render calls</code> reads the same log from a terminal.
       </p>
+      {/* The checkbox shows the STORED pref and the muted line below shows what
+          is actually in force, exactly as the Engine section does: the control
+          reflects the choice you made (and what a PUT round-trips), the line
+          reports reality. They diverge whenever FUSED_RENDER_CALLS wins, and
+          the control is disabled then so the discrepancy can't be acted on. */}
       <label className="prefs-radio">
         <input
           type="checkbox"
           checked={calls.enabled}
-          disabled={busy}
+          disabled={busy || enabledLocked}
           onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
         />
         <span>
           <b>Record API calls</b> made by pages rendered in this app.
         </span>
       </label>
+      <div className="deploy-muted">
+        Currently <b>{calls.effective_enabled ? "recording" : "not recording"}</b>
+        {enabledLocked && (
+          <>
+            {" "}
+            — locked by <code>FUSED_RENDER_CALLS={calls.enabled_forced_by}</code> for this process;
+            the checkbox applies once the variable is removed.
+          </>
+        )}
+      </div>
       <div className="prefs-field">
         <label>
           Parameters{" "}
+          {/* Gated on what is actually recording, not on the stored pref —
+              otherwise an env-forced off state leaves these live, and an
+              env-forced on state greys them out while calls are landing. */}
           <select
             value={calls.params}
-            disabled={busy || !calls.enabled}
+            disabled={busy || !calls.effective_enabled}
             onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
           >
             <option value="full">Record values</option>
@@ -251,7 +280,7 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
           Keep for{" "}
           <select
             value={String(calls.retention_days)}
-            disabled={busy || !calls.enabled}
+            disabled={busy || !calls.effective_enabled || retentionLocked}
             onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
           >
             <option value="1">1 day</option>
@@ -261,6 +290,13 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
             <option value="0">Until the size cap</option>
           </select>
         </label>
+        {retentionLocked && (
+          <p className="deploy-muted">
+            Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked by{" "}
+            <code>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</code> for this
+            process; the choice above applies once the variable is removed.
+          </p>
+        )}
       </div>
       <p className="deploy-muted">
         Stored at <code>{calls.dir}</code>
