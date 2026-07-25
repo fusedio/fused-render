@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects eight rounds of review
-found are in §9.5, with D136–D141 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects nine rounds of review
+found are in §9.5, with D136–D142 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -853,6 +853,22 @@ seeking walk had simply hit its scan budget without reaching the cursor. A valid
 deep cursor read as a dead one, and the skipped gap went unmentioned.
 `scan_truncated` now separates the guess from the proof.
 
+A ninth round found two more, and the first completes a pattern worth naming: for
+three rounds running, the state that broke was one my *previous fix had just made
+reachable*. D141 correctly sent an unfindable cursor to the wait — and the post-wait
+read then used that ghost id, which `query` answers with "the newest page", so a
+follow that waited *successfully* reported history as arrivals. The timeout path was
+already empty and correct, which is why it read as done. **When a change makes a
+previously-unreachable path reachable, that path is the one to test.** Fixed by
+resuming from the pre-wait baseline, which is exactly "everything up to the moment
+the wait began". The round's second finding was the feature's first real concurrency
+bug: `_prefs_snapshot` reads `prefs.json` outside its lock (deliberately — holding a
+lock across file I/O would serialize every logged call behind one disk read) and then
+stored the result unconditionally, so an invalidation landing mid-read was overwritten
+and the pre-toggle snapshot served for the whole 1 s TTL. A generation counter closes
+it. The 1 s window looks benign until you notice it is exactly the window a user
+toggling the preference is watching.
+
 An eighth round found a **regression in the D139 fix itself**, and it is the
 sharpest lesson of the lot. I had written that "a careless version of this fix
 answers instantly for every follow and quietly deletes the feature", and tested two
@@ -891,7 +907,7 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all eight rounds the pattern never changed: each defect lived in a seam
+Across all nine rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".

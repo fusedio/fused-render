@@ -214,29 +214,50 @@ def retention_days() -> int:
 _PREFS_TTL_S = 1.0
 _prefs_cache: tuple[float, bool, str, int] | None = None
 _prefs_cache_lock = threading.Lock()
+# Bumped by every invalidation, so a snapshot read that was already in flight
+# cannot store a value the write has since superseded (see _prefs_snapshot).
+_prefs_generation = 0
 
 
 def _prefs_snapshot() -> tuple[bool, str, int]:
-    """(enabled, params_mode, retention_days), re-read at most once a second."""
+    """(enabled, params_mode, retention_days), re-read at most once a second.
+
+    The prefs.json read happens OUTSIDE the lock (it is file I/O, and holding a
+    lock across it would serialize every logged call behind one disk read), which
+    means an invalidation can land while it is in flight. Storing the result
+    unconditionally would then repopulate the cache with the pre-write snapshot
+    and keep serving it for the whole TTL — so a capture on/off toggle appeared
+    not to take effect, defeating CL-14a's invalidate-on-write guarantee. A
+    generation counter closes it: the result is only cached if no invalidation
+    happened since the read began. This call may still RETURN the value it read
+    (it was true when read), but it will not outlive the request.
+    """
     global _prefs_cache
     now = time.monotonic()
     with _prefs_cache_lock:
         if _prefs_cache is not None and now - _prefs_cache[0] < _PREFS_TTL_S:
             return _prefs_cache[1], _prefs_cache[2], _prefs_cache[3]
+        generation = _prefs_generation
     from fused_render.shell import prefs as shell_prefs
 
     snapshot = (shell_prefs.calls_enabled(), shell_prefs.calls_params_mode(),
                 shell_prefs.calls_retention_days())
     with _prefs_cache_lock:
-        _prefs_cache = (now, *snapshot)
+        if generation == _prefs_generation:
+            _prefs_cache = (now, *snapshot)
     return snapshot
 
 
 def invalidate_prefs_cache() -> None:
-    """Drop the cached snapshot — called when the prefs endpoint writes."""
-    global _prefs_cache
+    """Drop the cached snapshot — called when the prefs endpoint writes.
+
+    Bumps the generation as well as clearing, so a read already in flight cannot
+    re-cache the value it fetched before this write (see _prefs_snapshot).
+    """
+    global _prefs_cache, _prefs_generation
     with _prefs_cache_lock:
         _prefs_cache = None
+        _prefs_generation += 1
 
 
 def enabled() -> bool:

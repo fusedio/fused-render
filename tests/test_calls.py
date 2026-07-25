@@ -1774,3 +1774,81 @@ def test_follow_waits_when_the_cursor_cannot_be_found(store, monkeypatch, capsys
     out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "ghost",
                   "--page", "/app/mine.html", "--timeout", "1", "--since", "all")
     assert "no new calls within 1s" in out
+
+
+# ----------- a lost cursor must not resurface as history (9th review)
+
+def test_follow_after_a_lost_cursor_reports_only_what_arrived(
+        store, monkeypatch, capsys):
+    """An unfindable cursor made the post-wait read fall back to "the newest
+    page", which the bounded digest then summarised as what arrived — the trap
+    `--follow` exists to close, reached by waiting SUCCESSFULLY rather than by
+    timing out (the timeout path was already empty and correct)."""
+    import threading
+
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:
+        for i in range(4):
+            fh.write(appended(f"history-{i}", now - 500 + i,
+                              entrypoint="/app/old.py", entrypoint_name="old.py") + "\n")
+
+    def append_later():
+        time.sleep(1.5)
+        write_records([rec(call_id="arrived", entrypoint="/app/new.py",
+                           entrypoint_name="new.py")])
+
+    worker = threading.Thread(target=append_later)
+    worker.start()
+    try:
+        out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "ghost",
+                      "--timeout", "20", "--since", "all", "--verbose")
+    finally:
+        worker.join()
+
+    assert "1 record(s)" in out, "only the arrival, not the 4 historical records"
+    assert "new.py" in out and "old.py" not in out
+    assert "was not found" in out, "the caller still learns its cursor was unusable"
+
+
+def test_a_lost_cursor_is_still_reported_in_json(store, monkeypatch, capsys):
+    """Resuming from the baseline must not hide that the cursor was unusable."""
+    os.makedirs(store, exist_ok=True)
+    write_records([rec(call_id="only")])
+    body = json.loads(run_cli(monkeypatch, capsys, "--follow", "--since-cursor",
+                              "ghost", "--timeout", "1", "--json", "--since", "all"))
+    assert body["timed_out"] is True  # nothing arrived, so this path is the empty one
+    body = json.loads(run_cli(monkeypatch, capsys, "--since-cursor", "ghost",
+                              "--json", "--since", "all"))
+    assert body["cursor_missing"] is True
+
+
+# ------------- the prefs snapshot must honour a concurrent invalidation
+
+def test_an_invalidation_during_a_prefs_read_is_not_lost(store, monkeypatch):
+    """The prefs.json read happens outside the lock, so an invalidation can land
+    mid-read. Storing the result unconditionally repopulated the cache with the
+    PRE-write snapshot and served it for the whole TTL — so a capture toggle
+    appeared not to take effect, defeating CL-14a's invalidate-on-write rule.
+    """
+    from fused_render.shell import prefs as shell_prefs
+
+    calls.invalidate_prefs_cache()
+    real_enabled = shell_prefs.calls_enabled
+
+    def slow_enabled():
+        value = real_enabled()
+        # The prefs endpoint writes and invalidates while this read is in flight.
+        calls.invalidate_prefs_cache()
+        return value
+
+    monkeypatch.setattr(shell_prefs, "calls_enabled", slow_enabled)
+    calls._prefs_snapshot()
+    assert calls._prefs_cache is None, "the superseded read must not be cached"
+
+
+def test_the_prefs_snapshot_still_caches_when_nothing_invalidates(store):
+    """The negative case: the generation guard must not disable caching."""
+    calls.invalidate_prefs_cache()
+    calls._prefs_snapshot()
+    assert calls._prefs_cache is not None, "an uncontended read is still cached"

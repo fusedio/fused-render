@@ -2347,7 +2347,10 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   narrower one, so comparing ids made `--follow --page X` with a global cursor
   skip the wait entirely and report nothing. A cursor that cannot be found is not
   treated as "already new": absence proves nothing about what arrived, so it falls
-  through to the wait. And because the seeking
+  through to the wait — and when that happens the follow resumes from the
+  **baseline**, not from the ghost id: keeping it made the post-wait read fall
+  back to "the newest page", which the bounded digest then reported as what
+  arrived. `cursor_missing` still reaches the caller either way. And because the seeking
   walk gives up after a bounded scan, `cursor_missing` on its own cannot tell
   "purged" from "never reached" — `scan_truncated` says which, is carried into the
   CLI's JSON, and switches the text note from a confident "purged by retention, or
@@ -2366,7 +2369,12 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   parsing `prefs.json` — measured ~2.8 ms per run, most of the feature's
   overhead (now ~1.0 ms, 2.4%). The prefs endpoint invalidates the snapshot on
   write, so a toggle still applies to the very next call and CT-5's no-restart
-  rule holds. `FUSED_RENDER_CALLS` remains the process-level override that beats
+  rule holds. The invalidation carries a **generation counter**, because the
+  `prefs.json` read deliberately happens outside the cache lock (holding it
+  across file I/O would serialize every logged call behind one disk read): a read
+  already in flight when the write lands must not store its now-superseded
+  result, or the stale snapshot would be served for the whole TTL and the toggle
+  would look ignored. `FUSED_RENDER_CALLS` remains the process-level override that beats
   the pref entirely.
 - **CL-15** **Preferences** (§20) carries capture on/off (default **on** — a
   diagnostic you must enable before the thing you wanted to diagnose is

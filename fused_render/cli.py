@@ -202,6 +202,9 @@ def _run_calls(args: argparse.Namespace) -> None:
 
     cursor = args.since_cursor or None
     timed_out = False
+    # Set when a --since-cursor could not be located, so the report can say so
+    # even after the follow path resumes from the pre-wait baseline instead.
+    cursor_lost = False
     if args.follow:
         # Wait for something new rather than making the caller guess how long
         # the human took to open the page (design §9.2d). Polls the store: it is
@@ -230,6 +233,7 @@ def _run_calls(args: argparse.Namespace) -> None:
         if cursor is not None:
             probe = call_log.query(limit=1, cursor=cursor, **filters)
             already_new = bool(probe["records"]) and not probe.get("cursor_missing")
+            cursor_lost = bool(probe.get("cursor_missing"))
         if already_new:
             timed_out = False
         else:
@@ -238,7 +242,15 @@ def _run_calls(args: argparse.Namespace) -> None:
             # records — so an agent that waited for activity, got none, and read a
             # pile of historical calls could take stale data for a successful
             # verification. That is the exact trap --follow exists to close.
-            cursor = cursor or baseline
+            #
+            # An UNFINDABLE cursor must be replaced by the baseline, not kept: a
+            # ghost id makes the post-wait read fall back to "the newest page",
+            # which the bounded digest then summarises as though it were what
+            # arrived — the same trap, reached by waiting successfully instead of
+            # timing out. The baseline IS "everything up to the moment the wait
+            # started", which is what a follower wants. `cursor_lost` still
+            # reaches the output, so the caller learns its cursor was unusable.
+            cursor = baseline if cursor_lost else (cursor or baseline)
             timed_out = True
             while time.monotonic() < deadline:
                 time.sleep(1.0)
@@ -288,7 +300,11 @@ def _run_calls(args: argparse.Namespace) -> None:
             "cursor": page["cursor"],
             # A stale/unknown --since-cursor means `records` is the newest page,
             # not "everything since" — the caller has to be able to tell.
-            "cursor_missing": page.get("cursor_missing", False),
+            # True when EITHER this read could not locate the cursor, or the
+            # follow path already discovered it was unusable and resumed from the
+            # pre-wait baseline instead. Both mean the same thing to the caller:
+            # "the cursor you gave me could not anchor this answer".
+            "cursor_missing": bool(page.get("cursor_missing")) or cursor_lost,
             # …and whether "missing" is a PROOF or a guess. The seeking walk gives
             # up after a bounded scan, so on a store deeper than the budget a
             # perfectly valid cursor reports missing. Without this flag the caller
@@ -325,6 +341,13 @@ def _run_calls(args: argparse.Namespace) -> None:
         print(f"note: {page['skipped']} newer record(s) did not fit this page — "
               f"raise --limit (currently {args.limit}) to see them; the cursor "
               "below has already moved past them")
+    if cursor_lost and not page.get("cursor_missing"):
+        # Located neither before nor during the wait, but the follow resumed from
+        # the baseline, so what follows IS only what arrived — say both halves.
+        print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
+              "retention, or wrong) — following resumed from the newest record at "
+              "the time the wait began, so the records below are what arrived "
+              "during the wait")
     if page.get("cursor_missing"):
         if page.get("scan_truncated"):
             # Not a proof of absence: the walk gave up before reaching the end of
