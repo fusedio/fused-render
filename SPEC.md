@@ -2386,6 +2386,19 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the agent that is the main consumer of this surface. `--follow` blocks until
   new records appear, so "open the page and I'll check" is one round trip
   rather than two.
+- **CL-14b** **One path form in the store: the shell's canonical form.** Every
+  path-valued field (`page`, `target_file`, `entrypoint`) is written
+  forward-slashed, via `_view_url_codec.canonical_fs_path`, at the single write
+  point (`record()`). That is the form a path already has everywhere above the
+  OS — what a `/view` URL decodes to and what the runtime sends as
+  `X-Fused-Page` — but not what `os.path` returns on Windows, where
+  `normpath`/`abspath`/`join` answer with backslashes. Enforced at the writer
+  rather than per producer because one backslashed field is enough to make an
+  exact-match filter miss a record forever; readers may then compare with `==`,
+  which is what CL-10's three-role match assumes. `--page`/`--entrypoint` are
+  canonicalized the same way on the way in. Normalization applies **only** to
+  drive-letter paths: on POSIX a backslash is a legal filename character and
+  must round-trip untouched.
 - **CL-14a** **Preference reads are snapshot-cached for 1 s.** `enabled()` and
   the param-redaction mode are consulted per call, and each was opening and
   parsing `prefs.json` — measured ~2.8 ms per run, most of the feature's

@@ -2130,3 +2130,152 @@ def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
         fh.write(json.dumps(calls._prune(rec(page=page))) + "\n")
 
     assert condition.main(page) is True, "the page has records in the baseline store"
+
+
+# ------------------------- Windows path forms (Bugbot #283 review, D145)
+#
+# Windows is simulated with `ntpath` and with literal drive-shaped strings
+# rather than skipped behind a sys.platform guard: the bug is a disagreement
+# between two *string* forms of a path, so it reproduces and stays fixed on
+# any host. A platform guard here would mean the regression only ever ran on
+# the one CI leg that does not exist for this suite.
+
+WIN_PAGE = "C:/Users/foo/app/mine.html"      # X-Fused-Page: shell canonical
+WIN_PY = "C:/Users/foo/app/sine.py"          # the same, for the .py target
+
+
+def _run_resolved(html: str, py: str) -> str:
+    """What /api/run computes for a relative `py` (server.py), on Windows."""
+    import ntpath
+    return ntpath.normpath(ntpath.join(ntpath.dirname(html), py))
+
+
+def test_run_resolved_target_is_stored_canonically(store, monkeypatch):
+    """The producer this whole finding turns on.
+
+    /api/run builds its target with os.path.normpath, which on Windows answers
+    with backslashes, while every other field arrives forward-slashed from a
+    header. record() is the single write point, so it is where the store is
+    made to hold one form.
+    """
+    backslashed = _run_resolved(WIN_PAGE, "sine.py")
+    assert "\\" in backslashed, "precondition: normpath gives the OS-native form"
+
+    landed = []
+    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
+    calls.record(rec(page=WIN_PAGE, entrypoint=backslashed))
+
+    assert landed[0]["entrypoint"] == WIN_PY
+    assert "\\" not in landed[0]["entrypoint"]
+
+
+def test_every_path_field_is_canonicalized_on_write(store, monkeypatch):
+    """All three fields _matches compares, not just the one that was reported."""
+    landed = []
+    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
+    calls.record(rec(page="C:\\Users\\foo\\app\\mine.html",
+                     target_file="C:\\Users\\foo\\data\\t.parquet",
+                     entrypoint="C:\\Users\\foo\\app\\sine.py"))
+
+    got = landed[0]
+    assert got["page"] == WIN_PAGE
+    assert got["target_file"] == "C:/Users/foo/data/t.parquet"
+    assert got["entrypoint"] == WIN_PY
+
+
+def test_a_posix_backslash_filename_is_not_mangled(store, monkeypatch):
+    """The negative case that forbids an unconditional replace.
+
+    On POSIX a backslash is a legal filename character. Canonicalizing it would
+    silently rewrite the page's identity — the record would name a file that
+    does not exist, and the page's own filter would then miss it.
+    """
+    odd = "/app/we\\ird.html"
+    landed = []
+    monkeypatch.setattr(calls, "_ensure_writer", lambda: _CollectingQueue(landed))
+    calls.record(rec(page=odd, entrypoint="/app/d.py"))
+
+    assert landed[0]["page"] == odd
+    assert calls._matches(landed[0], page=odd) is True
+
+
+def log_a_windows_run(call_id="win"):
+    """Log one record through the REAL write path, shaped the way /api/run
+    shapes it on Windows: a canonical page from the header, a backslashed
+    target from normpath.
+
+    Deliberately `record()` + `drain()` rather than the `write_records`
+    shortcut — the shortcut appends straight to disk, which would put the
+    canonicalization under test on the wrong side of the seam and let these
+    read-side assertions pass on the broken parent commit.
+    """
+    calls.record(rec(call_id=call_id, page=WIN_PAGE,
+                     entrypoint=_run_resolved(WIN_PAGE, "sine.py"),
+                     entrypoint_name="sine.py"))
+    assert drain(), "the writer did not land the record"
+
+
+def test_windows_page_filter_finds_its_records(store):
+    """The user-visible failure: on Windows `calls --page` matched nothing at
+    all — not even the page the caller was standing on — because the CLI's
+    abspath answered with backslashes and the store held forward slashes."""
+    import ntpath
+
+    from fused_render._view_url_codec import canonical_fs_path
+
+    log_a_windows_run()
+
+    # Exactly the expression cli.py computes, with ntpath standing in for
+    # Windows' os.path.
+    cli_filter = canonical_fs_path(ntpath.abspath(WIN_PAGE))
+    assert cli_filter == WIN_PAGE
+
+    got = calls.query(limit=10, page=cli_filter)["records"]
+    assert [r["call_id"] for r in got] == ["win"]
+
+    # …and the raw abspath, which is what shipped, finds nothing. Asserted so
+    # the regression is pinned to the cause and not just to the symptom.
+    assert calls.query(limit=10, page=ntpath.abspath(WIN_PAGE))["records"] == []
+
+
+def test_windows_calls_view_on_a_py_finds_its_runs(store):
+    """A `.py` is never a `page`; the Calls view matches it via `entrypoint`.
+    With the target stored backslashed, the view on a data file that the gate
+    had just confirmed has history rendered empty."""
+    log_a_windows_run("run")
+
+    got = calls.query(limit=10, page=WIN_PY)["records"]
+    assert [r["call_id"] for r in got] == ["run"]
+
+
+def test_windows_entrypoint_substring_filter_matches(store):
+    """`--entrypoint` is a substring filter: a full drive path is canonicalized
+    to match the store, and a bare fragment still works untouched."""
+    from fused_render._view_url_codec import canonical_fs_path
+
+    log_a_windows_run("run")
+
+    full = canonical_fs_path("C:\\Users\\foo\\app\\sine.py")
+    assert [r["call_id"] for r in calls.query(limit=10, entrypoint=full)["records"]] == ["run"]
+    assert [r["call_id"] for r in calls.query(limit=10, entrypoint="sine.py")["records"]] == ["run"]
+
+
+def test_windows_gate_finds_a_run_only_target(store, monkeypatch):
+    """The third reported site, fixed transitively rather than by a fourth copy
+    of the rule: the gate's needle is the canonical path it was handed, so once
+    the store is canonical the substring probe hits. No mirrored normalizer in
+    condition.py means nothing there to drift (the D144 lesson)."""
+    from fused_render.templates.calls import condition
+
+    log_a_windows_run()
+
+    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
+    assert condition.main(WIN_PY) is True
+
+
+def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsys):
+    """Guard on the ordinary path: the canonicalization must be a no-op here."""
+    write_records([calls._prune(rec(call_id="posix", page="/app/p.html",
+                                    entrypoint="/app/d.py", entrypoint_name="d.py"))])
+    out = run_cli(monkeypatch, capsys, "--page", "/app/p.html", "--since", "all")
+    assert "d.py" in out

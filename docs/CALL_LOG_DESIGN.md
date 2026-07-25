@@ -12,7 +12,7 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
 of CL-5 rather than a refinement of it (D135; the defects eleven rounds of review
-found are in §9.5, with D136–D144 the follow-up rounds). Deviations from the
+found are in §9.5, with D136–D145 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -752,7 +752,7 @@ From building it:
 
 ## 9.5 What review revealed, after "done"
 
-The four defects found by asking "what doesn't work?" of a feature whose tests
+The defects found by asking "what doesn't work?" of a feature whose tests
 were green. Recorded because the *shape* of each is more instructive than the
 fix:
 
@@ -958,11 +958,32 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all eleven rounds the pattern never changed: each defect lived in a seam
-between individually-correct, individually-tested parts — the last one in a seam
-between a rule and its own copy. What did change is where
-the seams were — the later ones were *inside* code I had already reviewed and
-documented, which is the argument for adversarial review outliving "done".
+**Two spellings of the same path (D145).** The twelfth round is the eleventh's
+class of bug one layer down. D144 was two spellings of a *directory*; this is two
+spellings of a *file path*: on Windows the store held `page` forward-slashed
+(headers, and what a `/view` URL decodes to) and `entrypoint` backslashed for a
+relative `/api/run` target (`os.path.normpath`), while the CLI's `--page` filter
+ran through `os.path.abspath` and came back backslashed as well. Exact-match
+filters then matched nothing — `calls --page` found not even the page the caller
+was standing on. Two lessons beyond the fix. First, **the fix belonged at the
+boundary, not at the three reported call sites**: there was one broken writer and
+one broken filter, and canonicalizing in `record()` repaired the third reader —
+the gate — without touching it, where patching each reader would have left the
+store holding two forms and the next reader broken by default. Second, and
+sharper: **the platform I do not run on is the one the invariant breaks on.** The
+two forms are identical on POSIX, so every test and every manual check was blind
+to this by construction — which is why the regressions simulate Windows with
+`ntpath` and drive-shaped literals instead of sitting behind a `sys.platform`
+guard that would only ever run where the bug cannot happen. After D144 I had
+verified the gate and the writer agreed about the *directory*; I never asked
+whether they agreed about the *paths inside it*.
+
+Across all twelve rounds the pattern never changed: each defect lived in a seam
+between individually-correct, individually-tested parts — the last two in a seam
+between a rule and its own copy, and between two spellings of one value. What did
+change is where the seams were — the later ones were *inside* code I had already
+reviewed and documented, which is the argument for adversarial review outliving
+"done".
 
 ## 10. Other uses this unlocks
 

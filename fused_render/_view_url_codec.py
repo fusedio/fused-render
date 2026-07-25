@@ -23,9 +23,27 @@ def _is_drive_path(fs_path: str) -> bool:
     return p.drive.endswith(":") and bool(p.root)
 
 
+def canonical_fs_path(fs_path: str) -> str:
+    """The shell's canonical form of an absolute fs path: forward slashes.
+
+    This is the form a path has *everywhere above the OS* — what a /view URL
+    decodes to (router.ts `rootedFsPath`: "the shell's canonical form keeps
+    forward slashes"), what the runtime sends as ``X-Fused-Page``, and what
+    therefore must be stored and compared. Anything built with ``os.path`` on
+    Windows (``normpath``, ``abspath``, ``join``) comes back backslashed and
+    has to be brought back to this form before it meets a canonical value.
+
+    Only a drive-letter path is normalized — on POSIX a backslash is a legal
+    filename character and must round-trip untouched, which is why this is not
+    an unconditional ``.replace``. Idempotent: canonical input is returned
+    unchanged.
+    """
+    return fs_path.replace("\\", "/") if _is_drive_path(fs_path) else fs_path
+
+
 def view_url_path(fs_path: str) -> str:
     """/view URL path (no host/port) for an absolute fs path."""
-    norm = fs_path.replace("\\", "/") if _is_drive_path(fs_path) else fs_path
+    norm = canonical_fs_path(fs_path)
     if fs_path.lower().endswith(".bookmark"):
         return "/view/_bookmark?file=" + quote(norm, safe="")
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]

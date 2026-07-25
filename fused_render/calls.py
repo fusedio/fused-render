@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Header, Request
 from fastapi.responses import JSONResponse
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -715,9 +716,32 @@ def _shrink(rec: dict) -> dict:
     return out
 
 
+# The path-valued fields, all three of which a reader compares against a
+# caller-supplied path (see _matches: "this file" is any of the three roles).
+_PATH_FIELDS = ("page", "target_file", "entrypoint")
+
+
+def _canonicalize_paths(rec: dict) -> None:
+    """Bring every path field to the shell's canonical form, in place.
+
+    Enforced here rather than at each producer because the producers disagree
+    on Windows: `page`/`target_file` arrive from headers and the read routes'
+    `path` param already canonical, but /api/run's relative-`py` branch builds
+    its target with `os.path.normpath` and gets backslashes back. One
+    backslashed field is enough to make an exact-match filter miss a record
+    forever, so the store holds ONE form by construction — a reader can then
+    compare with `==` and be right, which is the property `_matches` assumes.
+    """
+    for field in _PATH_FIELDS:
+        value = rec.get(field)
+        if isinstance(value, str) and value:
+            rec[field] = canonical_fs_path(value)
+
+
 def record(rec: dict) -> None:
     """Queue one record. Never raises, never blocks, never touches the disk."""
     global _dropped
+    _canonicalize_paths(rec)
     page = rec.get("page") or ""
     if page and not _rate_ok(page):
         _dropped += 1

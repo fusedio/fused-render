@@ -191,11 +191,18 @@ def _run_calls(args: argparse.Namespace) -> None:
     import json as _json
 
     from fused_render import calls as call_log
+    from fused_render._view_url_codec import canonical_fs_path
 
     since = _parse_age(args.since)
+    # abspath resolves a relative argument, then the result is brought back to
+    # the shell's canonical form: on Windows abspath answers with backslashes
+    # and the store holds forward slashes, so the raw abspath matched nothing
+    # at all there — not even the page the caller was standing on. --entrypoint
+    # is a substring filter, so a bare fragment ("sine.py", no drive) is left
+    # alone by canonical_fs_path and keeps working.
     filters = {
-        "page": os.path.abspath(os.path.expanduser(args.page)) if args.page else None,
-        "entrypoint": args.entrypoint or None,
+        "page": canonical_fs_path(os.path.abspath(os.path.expanduser(args.page))) if args.page else None,
+        "entrypoint": canonical_fs_path(args.entrypoint) if args.entrypoint else None,
         "since": (time.time() - since) if since else None,
         "failed": args.failed,
     }
