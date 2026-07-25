@@ -1308,6 +1308,16 @@ def overview(records: list[dict] | None = None, **filters) -> dict:
     cursor-bounded record list reports historical activity as though it were the
     new activity being waited for — the precise trap those callers exist to
     avoid.
+
+    ``dropped`` counts records this PROCESS dropped (rate cap, full queue) and is
+    not derived from the store, so it is populated for the in-server reader — the
+    `calls` view runs in-process (D72) and sees the server's own counter — and is
+    always 0 from the `fused-render calls` CLI, which is a separate process. The
+    CLI therefore cannot tell "nothing ran" from "the rate cap ate it": a fourth
+    way a follower can under-report, and the only one still open, because the
+    count exists nowhere on disk. Persisting a periodic drop marker would close
+    it; that adds a record kind and is deliberately not smuggled into a review
+    fix (design §9.5).
     """
     outcomes: dict[str, int] = {}
     kinds: dict[str, int] = {}

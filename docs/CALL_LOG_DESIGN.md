@@ -835,6 +835,16 @@ broke:
   is a single symptom with many causes, and finding one cause is no evidence the
   others are absent — after fixing the first two I did not go looking for a third.
 
+Sweeping the *symptom* rather than the line — the thing the round above says to do
+— turned up a fourth cause, still open and now documented at `overview()`:
+`dropped` counts what the **calling process** dropped to the rate cap or a full
+queue, so the in-server view reports it (the reader runs in-process, D72) while
+the CLI, a separate process, always reads 0. An agent that follows, times out and
+sees `dropped: 0` cannot distinguish "nothing ran" from "the rate cap ate it".
+Closing it means persisting a periodic drop marker into the store, which adds a
+record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
+than smuggled in.
+
 Across all five rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
