@@ -797,6 +797,10 @@ export interface CallsPrefs {
   params: CallsParamsMode;
   retention_days: number;
   dir: string;
+  // False until the first call is recorded: the writer creates the store
+  // lazily, so `dir` names a path that may not exist yet. Browsing it before
+  // then lands the explorer on a stat error, so the affordance waits.
+  dir_exists: boolean;
 }
 
 export function getPrefs(): Promise<Prefs> {

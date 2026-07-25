@@ -263,12 +263,23 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
         </label>
       </div>
       <p className="deploy-muted">
-        Stored at <code>{calls.dir}</code>.
+        Stored at <code>{calls.dir}</code>
+        {calls.dir_exists ? "." : " — no calls recorded yet, so the folder does not exist."}
       </p>
       {/* Navigates IN-APP, not to the OS file manager: the explorer is how you
           reach the Calls view — open the folder, click a .calls.jsonl, and it
-          renders in the same viewer the mode switcher offers. */}
-      <button type="button" onClick={() => navigate(calls.dir, { isDir: true })}>
+          renders in the same viewer the mode switcher offers.
+
+          Disabled until the store exists: the writer creates it on its first
+          append, so browsing beforehand navigates to a path that fails to stat
+          — an error card where the answer is simply "nothing has run yet",
+          which is also the answer to "why has no page got a Calls mode?". */}
+      <button
+        type="button"
+        disabled={!calls.dir_exists}
+        title={calls.dir_exists ? undefined : "No calls have been recorded yet"}
+        onClick={() => navigate(calls.dir, { isDir: true })}
+      >
         Browse call logs
       </button>
       {error && <ErrorBanner>{error}</ErrorBanner>}

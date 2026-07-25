@@ -2419,7 +2419,16 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   recorded by default as the same named trade-off the serve spec makes — they
   are the inputs the author's own code already received, usually the whole
   repro, and already visible in the URL — with `keys` one click away for a
-  page that passes a secret.
+  page that passes a secret. The payload also reports the store's location as
+  `dir` **and whether it is there yet** as `dir_exists`: the writer creates the
+  directory on its first append (CL-7), so between "capture on" and "a page
+  actually called something" `dir` names a path that does not exist, and
+  `Browse call logs` waits on the flag rather than sending the explorer to a
+  path that fails to stat. Reported, never provisioned by the read — `GET
+  /api/prefs` must not create storage, and the lazy create is also what keeps
+  an empty store from appearing for someone who never records a call. (The
+  `log.dir` beside it needs no such flag: logging creates its directory at
+  startup, which is exactly why the two differ.)
 - **CL-16** **Template readers are apps too.** Previewing a parquet really does
   make the `duckdb` template call Python, so those calls are real records
   attributed to the template's own `template.html`. Correct, but "my app's

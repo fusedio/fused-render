@@ -7,6 +7,7 @@ FUSED_RENDER_HOME is redirected to a tmp dir and FUSED_RENDER_ENGINE cleared
 so no test reads the real prefs or a developer's env override.
 """
 import json
+import os
 
 from fastapi.testclient import TestClient
 
@@ -290,3 +291,35 @@ def test_registry_view_override_is_case_insensitive(tmp_path, monkeypatch):
     assert csv_rows[0]["resolvedSource"] == "user"
     assert csv_rows[0]["overridesCore"] is True
     assert _names(csv_rows[0]) == ["code"]
+
+
+# -- the call store's existence (Bugbot #283 review, D146) ----------------------
+
+
+def test_calls_dir_exists_is_false_before_the_first_record(tmp_path, monkeypatch):
+    """The `Browse call logs` affordance is gated on this flag.
+
+    The writer creates the store on its first append, so between "capture on"
+    and "a page actually called something" `dir` names a path that is not
+    there. Reported rather than created here: this is a GET, and a read that
+    provisions storage puts the side effect in the wrong place.
+    """
+    client, _ = _client(tmp_path, monkeypatch)
+    calls = client.get("/api/prefs").json()["calls"]
+
+    assert calls["dir_exists"] is False
+    assert not os.path.exists(calls["dir"]), "a GET of the prefs must not create the store"
+
+
+def test_calls_dir_exists_flips_once_a_record_lands(tmp_path, monkeypatch):
+    from fused_render import calls as call_log
+
+    client, _ = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["calls"]["dir_exists"] is False
+
+    call_log._append([{"version": 1, "call_id": "c1", "kind": "call",
+                       "occurred_at": call_log._now_iso(), "page": "/app/p.html"}])
+
+    body = client.get("/api/prefs").json()["calls"]
+    assert body["dir_exists"] is True
+    assert os.path.isdir(body["dir"])

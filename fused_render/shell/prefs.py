@@ -183,17 +183,29 @@ def _prefs_response() -> dict:
             "enabled": calls_enabled(),
             "params": calls_params_mode(),
             "retention_days": calls_retention_days(),
-            "dir": _calls_dir(),
+            **_calls_store(),
         },
     }
 
 
-def _calls_dir() -> str:
+def _calls_store() -> dict:
+    """Where the call store is, and whether it is there yet.
+
+    The writer creates the directory on its first append, so between "capture
+    on" and "a page actually called something" the path in `dir` does not
+    exist. `dir_exists` is reported rather than papered over by creating it
+    here: this is a GET, and a read that provisions storage is a side effect in
+    the wrong place — the lazy create belongs to the writer (`_append`), which
+    is also what keeps an empty store from appearing for someone who never
+    records a call. The UI uses the flag to say "nothing recorded yet" instead
+    of sending the explorer to a path that will fail to stat.
+    """
     # Imported lazily: calls.py imports this module (for the prefs above), so a
     # module-scope import here would be a cycle.
     from fused_render import calls
 
-    return calls.store_dir()
+    path = calls.store_dir()
+    return {"dir": path, "dir_exists": os.path.isdir(path)}
 
 
 @router.get("/api/prefs")

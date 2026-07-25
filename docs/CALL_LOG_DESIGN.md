@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects eleven rounds of review
-found are in §9.5, with D136–D145 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects thirteen rounds of review
+found are in §9.5, with D136–D146 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -978,12 +978,26 @@ guard that would only ever run where the bug cannot happen. After D144 I had
 verified the gate and the writer agreed about the *directory*; I never asked
 whether they agreed about the *paths inside it*.
 
-Across all twelve rounds the pattern never changed: each defect lived in a seam
-between individually-correct, individually-tested parts — the last two in a seam
-between a rule and its own copy, and between two spellings of one value. What did
-change is where the seams were — the later ones were *inside* code I had already
-reviewed and documented, which is the argument for adversarial review outliving
-"done".
+**Two directories, two lifetimes (D146).** The thirteenth round is the smallest
+and the tidiest: `Browse call logs` navigated to the store directory, which the
+writer creates on its first append — so before any page had made a logged call
+the button opened a stat error. The fix worth noting is the one I did *not*
+make: `makedirs` in the prefs handler would have worked and been wrong twice, a
+read that provisions storage plus an empty store conjured for someone who never
+records a call. Reporting `dir_exists` instead keeps the lazy create where it
+belongs and lets the UI say *why* — and "no calls recorded yet" is the same
+answer as "why has no page got a Calls mode?". What makes it instructive is the
+asymmetry it explains rather than hides: `log.dir` sits two lines above
+`calls.dir` in the same payload and needs no flag, because logging creates its
+directory at startup. Two paths in one payload with two different lifetimes, and
+the UI had been treating them as one kind of thing.
+
+Across all thirteen rounds the pattern never changed: each defect lived in a seam
+between individually-correct, individually-tested parts — a rule and its own
+copy, two spellings of one value, two directories with different lifetimes. What
+did change is where the seams were — the later ones were *inside* code I had
+already reviewed and documented, which is the argument for adversarial review
+outliving "done".
 
 ## 10. Other uses this unlocks
 
