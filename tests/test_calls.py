@@ -946,3 +946,54 @@ def test_a_real_error_still_carries_its_detail(store):
     assert got["error"]["type"] == "ValueError"
     line = open(calls.store_files()[0], encoding="utf-8").read()
     assert "error" in line, "a failed record SHOULD read as an error to a log viewer"
+
+
+# ---------------------------------------- viewing the log must not grow the log
+
+def test_viewing_the_log_in_another_template_appends_nothing(app_client):
+    """The reload loop: the store is an ordinary .jsonl, so log_studio/code/
+    duckdb all open it — each via an attributed app call, which appended a record
+    TO the file being viewed. Auto-reload watches the previewed `_file` (LR-1),
+    so that append reloaded the page, which read again, which appended again.
+    """
+    client, d = app_client
+    write_records([rec(call_id="seed")])
+    log = calls.store_files()[0]
+    before = os.path.getsize(log)
+
+    # A template previewing the store: `_file` is the log (log_studio, code, …).
+    client.get(f"/api/fs/raw?path={log}",
+               headers={"X-Fused-Page": "/x/log_studio/template.html",
+                        "X-Fused-Target": log})
+    # Its reader, run through /api/run the way log_studio's does.
+    client.post("/api/run",
+                json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers("/x/log_studio/template.html",
+                                    **{"X-Fused-Target": log}))
+    # And a direct read of the file, with no template involved (code's readFile).
+    client.get(f"/api/fs/raw?path={log}", headers={"X-Fused-Page": str(d / "p.html")})
+    time.sleep(0.6)
+
+    assert os.path.getsize(log) == before, "reading the log appended to the log"
+    assert [r["call_id"] for r in calls.query(limit=10)["records"]] == ["seed"]
+
+
+def test_a_normal_page_is_still_logged_while_the_log_is_open(app_client):
+    """The exclusion must be about the TARGET, not a blanket mute — real activity
+    still has to be recorded while you sit watching the log."""
+    client, d = app_client
+    client.post("/api/run", json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "real-work"}))
+    assert drain()
+    assert calls.detail("real-work") is not None
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("2026-07-24-1-001.calls.jsonl", True),
+    ("notes.jsonl", False),
+    ("sine.html", False),
+])
+def test_is_log_file_matches_the_stores_own_files(store, name, expected):
+    assert calls.is_log_file(os.path.join("/somewhere", name)) is expected
+    # Anything sitting IN the store counts, whatever it is named.
+    assert calls.is_log_file(os.path.join(calls.store_dir(), "renamed.txt")) is True

@@ -353,6 +353,32 @@ def _templates_dirs() -> tuple[str, ...]:
     return dirs
 
 
+def is_log_file(path: str | None) -> bool:
+    """True when `path` is one of the store's own files.
+
+    Reading the log must never append to the log, and the earlier
+    `_is_self_read` guard was too narrow — it only knew the `calls` reader. But
+    the store is an ordinary `.jsonl`, so ANY viewer opens it: `log_studio`
+    (a `runPython` on its own reader), `code` (a `fused.readFile`), `duckdb`,
+    `tree`. Each of those is an attributed app call, so viewing the live file
+    appended a record TO the file being viewed — and because auto-reload watches
+    the previewed `_file` (LR-1), that append reloaded the page, which read
+    again, which appended again. A permanent reload loop, and a log filling with
+    records about looking at the log.
+
+    Matched by suffix and by containment in the store, so a renamed file inside
+    the store is covered too.
+    """
+    if not path:
+        return False
+    if os.path.basename(path).endswith(_SUFFIX):
+        return True
+    try:
+        return os.path.dirname(os.path.abspath(path)) == os.path.abspath(store_dir())
+    except OSError:
+        return False
+
+
 def _is_self_read(resolved: str | None) -> bool:
     """True when this run IS the calls view reading the log (see _SELF_READER_*).
 
@@ -710,6 +736,12 @@ def begin(request: Request) -> dict | None:
     # the stat-in-a-loop bug actually shows up in. /api/run and /api/fs/write
     # overwrite it with their resolved target when they enrich.
     touched = request.query_params.get("path") if request.method == "GET" else None
+    # Viewing the log is not an app call worth logging (see is_log_file). Both
+    # signals matter: `_file` covers a template previewing the store (log_studio,
+    # code, duckdb, tree — the shell always passes it), and the `path` query
+    # param covers a direct read of it (`fused.readFile`, a raw fetch).
+    if is_log_file(request.headers.get(TARGET_HEADER)) or is_log_file(touched):
+        return None
     return {
         "version": RECORD_VERSION,
         "call_id": request.headers.get(CALL_HEADER) or uuid.uuid4().hex,

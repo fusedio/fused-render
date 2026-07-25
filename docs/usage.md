@@ -119,6 +119,11 @@ explorer, which is how you reach the viewer: click any `.calls.jsonl` and it
 renders in the same Calls view. (**Reveal in file manager** is beside it if you
 want the raw files in Finder/Explorer.)
 
+Opening a log file in any view is safe: reads of the store are never themselves
+recorded, so looking at the live file does not make it grow (and does not send
+the page into a reload loop). It still refreshes when *other* pages make calls —
+that is a live tail, not a loop.
+
 **Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
 per day per server process, rolled to a new part every 32 MB. Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),

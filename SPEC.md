@@ -2235,14 +2235,26 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   startup, on a day roll, and on a 24 h timer. D68 chose the temp dir for the
   app log precisely because "nothing prunes the directory"; this store is
   durable instead, so the pruning is code.
-- **CL-10** **Reading the log never appends to it.** The `calls` reader is
-  excluded from capture, matched by **shape** (`<...>/calls/reader.py`) rather
-  than one absolute path, since the same reader legitimately runs from the
-  package, the staged core copy the executor resolves (`core_templates.py`),
-  or a user's fork. Without this the view's own polling feeds itself: each
-  poll's reader calls appear in the next poll's results, inflating the counts
-  it reports and making the viewer the busiest "target" in every rollup. The
-  `/api/calls*` routes are likewise never logged.
+- **CL-10** **Reading the log never appends to it**, by two rules that cover
+  different holes. (a) The `calls` reader is excluded from capture, matched by
+  **shape** (`<...>/calls/reader.py`) rather than one absolute path, since the
+  same reader legitimately runs from the package, the staged core copy the
+  executor resolves (`core_templates.py`), or a user's fork. Without it the
+  view's own polling feeds itself: each poll's reader calls appear in the next
+  poll's results, inflating the counts it reports and making the viewer the
+  busiest "target" in every rollup. (b) A call whose **target** is a store file
+  is never logged at all (`is_log_file` — by `.calls.jsonl` suffix or
+  containment in the store, checked against both `X-Fused-Target` and a `path`
+  query param). Rule (a) alone was not enough: the store is an ordinary
+  `.jsonl`, so every viewer opens it — `log_studio` via a `runPython` on its own
+  reader, `code` via `fused.readFile`, `duckdb`, `tree` — and each of those is
+  an attributed app call that appended a record TO the file being viewed. Since
+  auto-reload watches the previewed `_file` (LR-1), that append reloaded the
+  page, which read again, which appended again: a permanent reload loop, and a
+  log filling with records about looking at the log. The `/api/calls*` routes
+  are likewise never logged. The exclusion is about the **target**, not a
+  blanket mute — real activity on other pages is still recorded while you sit
+  watching the log, which is what makes it a live tail.
 - **CL-11** **The view is an ordinary template** —
   `fused_render/templates/calls/` (`template.html` + `reader.py` +
   `condition.py` + `icon.svg`), containment per HV-1/D78: no shell code, and a
