@@ -116,8 +116,13 @@ or an `onChange` handler that retriggers itself).
 
 **Getting to it from Preferences.** **Browse call logs** opens the store in the
 explorer, which is how you reach the viewer: click any `.calls.jsonl` and it
-renders in the same Calls view. (**Reveal in file manager** is beside it if you
-want the raw files in Finder/Explorer.)
+renders in the same Calls view.
+
+Records also carry a normal log `level` (INFO for a healthy call, ERROR for a
+failure, DEBUG for a superseded one), so the generic **Log studio** view works on
+these files too — level facets, filtering, and its volume-by-level histogram.
+Its Tail button and the Calls view's Follow both switch auto-reload off while
+engaged, so watching a live file polls instead of reloading.
 
 Opening a log file in any view is safe: reads of the store are never themselves
 recorded, so looking at the live file does not make it grow (and does not send

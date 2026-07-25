@@ -3801,14 +3801,6 @@ select.field-control:has(option[value=""]:checked) {
   cursor: default;
 }
 
-/* A row of sibling buttons inside a prefs section (Call log's browse/reveal
-   pair) — the section itself is a column flex, so they need their own row. */
-.prefs-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* Registry table: pattern -> template chips (+ source badge). */
 .prefs-registry-table {
   border-collapse: collapse;

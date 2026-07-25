@@ -265,18 +265,12 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
       <p className="deploy-muted">
         Stored at <code>{calls.dir}</code>.
       </p>
-      <div className="prefs-actions">
-        {/* Navigate IN-APP rather than revealing in the OS file manager: the
-            explorer is how you reach the Calls view — open the folder, click a
-            .calls.jsonl, and it renders in the same viewer the mode switcher
-            offers. Revealing in Finder/Explorer only gets you raw text. */}
-        <button type="button" onClick={() => navigate(calls.dir, { isDir: true })}>
-          Browse call logs
-        </button>
-        <button type="button" onClick={() => revealPath(calls.dir).catch((e) => setError(e.message))}>
-          Reveal in file manager
-        </button>
-      </div>
+      {/* Navigates IN-APP, not to the OS file manager: the explorer is how you
+          reach the Calls view — open the folder, click a .calls.jsonl, and it
+          renders in the same viewer the mode switcher offers. */}
+      <button type="button" onClick={() => navigate(calls.dir, { isDir: true })}>
+        Browse call logs
+      </button>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );

@@ -997,3 +997,50 @@ def test_is_log_file_matches_the_stores_own_files(store, name, expected):
     assert calls.is_log_file(os.path.join("/somewhere", name)) is expected
     # Anything sitting IN the store counts, whatever it is named.
     assert calls.is_log_file(os.path.join(calls.store_dir(), "renamed.txt")) is True
+
+
+# ------------------------------------------------- a conventional level (CL-2)
+
+@pytest.mark.parametrize("record,level", [
+    ({"outcome": "ok"}, "INFO"),
+    ({"outcome": "error"}, "ERROR"),
+    ({"outcome": "conflict"}, "ERROR"),
+    ({"outcome": "readonly"}, "WARN"),
+    # Work thrown away by latest-wins cancellation is normal for a slider, not a
+    # warning — its significance is in aggregate, which the calls view shows.
+    ({"outcome": "superseded"}, "DEBUG"),
+    ({"outcome": "disconnected"}, "DEBUG"),
+    ({"kind": "page-error", "outcome": "error"}, "ERROR"),
+])
+def test_records_carry_a_conventional_level(store, record, level):
+    write_records([rec(**record)])
+    assert calls.detail(calls.query(limit=1)["records"][0]["call_id"])["level"] == level
+
+
+def test_a_generic_log_viewer_reads_the_level_not_the_payload(store):
+    """`level` exists so an ordinary log viewer is useful on this file. It must be
+    emitted EARLY, because such a viewer takes the FIRST level word in the line —
+    otherwise a path like /x/error-demo.html outvotes the real severity."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(calls.__file__), "templates", "log_studio",
+                        "reader.py")
+    spec = importlib.util.spec_from_file_location("ls", path)
+    log_studio = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(log_studio)
+
+    healthy = json.dumps(calls._prune(rec(outcome="ok", page="/x/error-demo.html")))
+    failed = json.dumps(calls._prune(
+        rec(outcome="error", error={"type": "ValueError", "message": "m", "traceback": "tb"})))
+    assert log_studio._level(healthy) == "INFO", "a healthy call must not read as an error"
+    assert log_studio._level(failed) == "ERROR"
+
+
+def test_the_calls_view_stops_auto_reload_while_following(store):
+    """Two live-update mechanisms must not fight: auto-reload rebuilds the frame
+    on a file change, which would interrupt the poll. log_studio makes the same
+    trade for its Tail button."""
+    template = os.path.join(os.path.dirname(calls.__file__), "templates", "calls",
+                            "template.html")
+    src = open(template, encoding="utf-8").read()
+    assert "fused.autoReload(!state.follow)" in src

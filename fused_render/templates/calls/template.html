@@ -648,6 +648,12 @@ $("follow").addEventListener("click", () => {
   state.follow = !state.follow;
   syncControls();
   clearInterval(timer);
+  // Two live-update mechanisms must not fight: auto-reload rebuilds the whole
+  // frame on a file change, which would interrupt a poll and reset scroll. So
+  // while following, opt out and let the poll own it — the same trade log_studio
+  // makes for its Tail button (its template.html does
+  // `fused.autoReload(!state.tail && …)`).
+  fused.autoReload(!state.follow);
   // Follow is a poll, not a push: the reader is allowlisted for in-process
   // execution (D72), so a 2s poll costs a bounded local file read, not a
   // subprocess spawn. Deliberately not a WebSocket — one fewer moving part.

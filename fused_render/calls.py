@@ -583,8 +583,49 @@ def _prune(rec: dict) -> dict:
     Absent-means-null is safe for every consumer here: the reader, the CLI and
     the template all read through `.get()`/`?? undefined`, and the sidecar
     precedent (HV-6) already says writers may grow records additively.
+
+    A `level` is also stamped here — see _level_for.
     """
-    return {key: value for key, value in rec.items() if value is not None}
+    pruned = {key: value for key, value in rec.items() if value is not None}
+    # Emitted EARLY (right after the identity fields) because a generic viewer
+    # takes the FIRST level word it finds in the line: putting it ahead of the
+    # page path, params and traceback means a path like /x/error-demo.html or an
+    # "INFO" inside stdout cannot outvote the record's real severity.
+    head = {}
+    for key in ("version", "call_id", "kind"):
+        if key in pruned:
+            head[key] = pruned.pop(key)
+    head["level"] = _level_for(rec)
+    head.update(pruned)
+    return head
+
+
+def _level_for(rec: dict) -> str:
+    """A conventional severity for the record, derived from its outcome.
+
+    `outcome` is the domain fact (ok / superseded / conflict / …); `level` is the
+    generic severity every log format carries, and having one is what lets an
+    ordinary log viewer be useful on this file at all. Without it a healthy
+    record contains no level word, so `log_studio` — which the registry offers
+    for `.calls.jsonl` and which infers severity by sniffing the raw line —
+    bucketed *everything* as OTHER, with its level facets and volume-by-level
+    histogram empty. (Before null-pruning it was worse: the field NAME
+    `"error": null` made every successful call read as ERROR.)
+
+    Superseded/disconnected calls are DEBUG rather than WARN on purpose: work
+    thrown away by latest-wins cancellation is normal for a slider, not a
+    warning. Their significance is in aggregate, which is the `calls` view's job.
+    """
+    if rec.get("kind") == "page-error":
+        return "ERROR"
+    outcome = rec.get("outcome")
+    if outcome in ("error", "conflict"):
+        return "ERROR"
+    if outcome == "readonly":
+        return "WARN"
+    if outcome in ("superseded", "disconnected", "aborted"):
+        return "DEBUG"
+    return "INFO"
 
 
 def _append(records: list[dict]) -> None:

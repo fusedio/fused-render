@@ -2125,8 +2125,15 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   record ≤ ~32 KiB. Truncation is **marked** in the record (`truncated`,
   `params_truncated`), never silently grown, and text is capped at the **tail**
   — the end of a traceback is the exception. Never stored: file contents (a
-  write records its byte count only), request headers. **Null-valued keys are
-  omitted on write**: a narrow record (a `stat`, a raw read) was otherwise
+  write records its byte count only), request headers. Each record also carries a
+  conventional **`level`** (`INFO` for ok, `ERROR` for error/conflict and a
+  page-error, `WARN` for readonly, `DEBUG` for the stale outcomes — thrown-away
+  work is normal for a slider, not a warning), emitted **early** in the object
+  because a generic log viewer takes the FIRST level word in the line: ahead of
+  the page path, params and traceback, so `/x/error-demo.html` or an "INFO" in
+  stdout cannot outvote the real severity. Without it a healthy record contained
+  no level word at all and `log_studio` bucketed everything as **OTHER**, its
+  level facets empty. **Null-valued keys are omitted on write**: a narrow record (a `stat`, a raw read) was otherwise
   mostly `null`s, and — because generic log viewers infer a level by sniffing
   the raw line for level words — the field NAME `"error": null` made every
   healthy call render as ERROR in `log_studio`, which the registry offers for
