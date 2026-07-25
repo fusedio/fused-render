@@ -2217,8 +2217,11 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   of one pid sort in order, which the oldest-first size trim depends on. Name
   order is date, then pid, then part — and only the **date** segment orders
   records in time. The pid segment does not (it is arbitrary, and compared
-  lexically, so pid 8000 sorts after pid 12345), which is why the reader may not
-  treat "last file by name" as "newest records" (CL-12). Not the `<file>.json`
+  lexically, so pid 8000 sorts after pid 12345), which is why NO reader may treat
+  "last file by name" as "newest records" — not the store walk (CL-12) and not the
+  `condition.py` gate, whose bounded newest-first probe orders by **mtime**; on
+  reverse name order its whole window could be stale same-day files, and the Calls
+  mode then never appeared on a page that had records. Not the `<file>.json`
   sidecar (§21, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not

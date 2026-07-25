@@ -753,10 +753,19 @@ def sweep(now: float | None = None) -> int:
     for path in files:
         try:
             size = os.path.getsize(path)
+            stamp = os.path.getmtime(path)
         except OSError:
             continue
-        sizes.append((path, size))
+        sizes.append((stamp, path, size))
         total += size
+    # Oldest LAST-APPEND first, not oldest name. Name order ranks records only by
+    # the date segment — the pid segment is arbitrary and compared lexically — so
+    # "name-sorted is oldest-first" held only at day granularity, and within a
+    # day the trim picked an arbitrary pid. Harmless there (same-day files are
+    # the same age, and today's are excluded below), but the belief is the one
+    # that produced two real defects elsewhere, so it does not get to survive
+    # here as a comment. mtime is exact and costs one stat we already do.
+    sizes.sort(key=lambda row: row[0])
 
     # A file dated TODAY may be open for append — by this process or by another
     # server on another port — and deleting it would silently discard the whole
@@ -764,7 +773,7 @@ def sweep(now: float | None = None) -> int:
     # whole-file, so today's files are simply not candidates; MAX_FILE_BYTES is
     # what bounds growth inside a day.
     today = day_stamp(now if now is not None else time.time())
-    for path, size in sizes:  # oldest first (store_files is name-sorted)
+    for _, path, size in sizes:  # oldest last-append first
         if total <= DEFAULT_MAX_BYTES:
             break
         if os.path.basename(path).startswith(today):

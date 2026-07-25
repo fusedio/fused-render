@@ -38,7 +38,8 @@ import os
 # ~100+ calls in each file — far more than "was this page active recently".
 TAIL_BYTES = 96 * 1024
 # Newest files first; a page with nothing in this many files is treated as
-# having no history rather than scanning a whole retention window.
+# having no history rather than scanning a whole retention window. "Newest" is
+# by mtime, not by name — see _newest_first.
 MAX_FILES = 3
 
 SUFFIX = ".calls.jsonl"
@@ -70,6 +71,31 @@ def _tail(path: str, limit: int) -> str:
         return fh.read(limit).decode("utf-8", "replace")
 
 
+def _newest_first(store: str, names: list[str]) -> list[str]:
+    """Store files ordered by last append, newest first.
+
+    NOT reverse name order. A store name orders records only by its DATE
+    segment: the pid segment is arbitrary and compared lexically, so
+    ``…-8000-000`` sorts after ``…-12345-000``. With two live servers, or a few
+    within-day rolls, reverse name order can hand back MAX_FILES stale files and
+    never reach the one being written — and the gate then reports "no history"
+    for a page with plenty, so the Calls mode silently never appears. Same
+    mistake the reader made before it merged same-day files on append time.
+
+    mtime is the file's last append, which for an append-only file IS its newest
+    record — the same fact the reader's file-skip relies on.
+    """
+    stamped = []
+    for name in names:
+        try:
+            stamped.append((os.path.getmtime(os.path.join(store, name)), name))
+        except OSError:
+            continue  # vanished between listdir and stat
+    # Stable, so equal mtimes keep the incoming name order (deterministic).
+    stamped.sort(key=lambda pair: pair[0], reverse=True)
+    return [name for _, name in stamped]
+
+
 def main(path: str) -> bool:
     if not path:
         return False
@@ -83,7 +109,7 @@ def main(path: str) -> bool:
         return False  # no store yet / unreadable -> fail closed
 
     needle = json.dumps(path)[1:-1]  # JSON-escaped, without the quotes
-    for name in list(reversed(names))[:MAX_FILES]:
+    for name in _newest_first(store, names)[:MAX_FILES]:
         try:
             text = _tail(os.path.join(store, name), TAIL_BYTES)
         except OSError:

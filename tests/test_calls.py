@@ -1637,3 +1637,85 @@ def test_a_genuinely_absent_cursor_still_says_purged(store, monkeypatch, capsys)
     body = json.loads(run_cli(monkeypatch, capsys, "--since-cursor", "ghost",
                               "--json", "--since", "all"))
     assert body["cursor_missing"] is True and body["scan_truncated"] is False
+
+
+# ------- the gate must not mistake name order for time order (7th review)
+
+def test_the_gate_probes_the_live_file_not_the_lexically_last(store, tmp_path):
+    """`reversed(names)[:MAX_FILES]` is not "the newest files".
+
+    A store name ranks records only by its DATE segment; the pid segment is
+    arbitrary and compared lexically, so `…-8000-000` sorts after `…-12345-000`.
+    With a few same-day files the reverse-name window can be entirely stale, and
+    the gate then reports no history for a page with records — so the Calls mode
+    silently never appears on it. Same mistake `_iter_records` made before it
+    merged same-day files on append time; this is the second place it lived.
+    """
+    from fused_render.templates.calls import condition
+
+    os.makedirs(store, exist_ok=True)
+    day = calls.day_stamp()
+    page = str(tmp_path / "mine.html")
+    # Three stale files whose pids sort lexically AFTER the live one.
+    for pid, age in (("8000", 900), ("9000", 800), ("9500", 700)):
+        path = os.path.join(store, f"{day}-{pid}-000.calls.jsonl")
+        with open(path, "w") as fh:
+            fh.write(appended("other", time.time() - age, page="/app/other.html") + "\n")
+        os.utime(path, (time.time() - age,) * 2)
+    # The live file sorts FIRST by name (1 < 8) and so fell outside the window.
+    with open(os.path.join(store, f"{day}-12345-000.calls.jsonl"), "w") as fh:
+        fh.write(appended("mine", time.time(), page=page) + "\n")
+
+    assert condition.main(page) is True, "the page has records in the live file"
+
+
+def test_the_gate_still_bounds_how_many_files_it_reads(store, tmp_path, monkeypatch):
+    """The negative case: ordering by mtime must not turn the bounded probe into
+    a whole-store scan."""
+    from fused_render.templates.calls import condition
+
+    os.makedirs(store, exist_ok=True)
+    day = calls.day_stamp()
+    for i in range(8):
+        path = os.path.join(store, f"{day}-{1000 + i}-000.calls.jsonl")
+        with open(path, "w") as fh:
+            fh.write(appended(f"c{i}", time.time() - i, page="/app/other.html") + "\n")
+        os.utime(path, (time.time() - i,) * 2)
+
+    read = []
+    real_tail = condition._tail
+
+    def spy(path, limit):
+        read.append(os.path.basename(path))
+        return real_tail(path, limit)
+
+    monkeypatch.setattr(condition, "_tail", spy)
+    assert condition.main(str(tmp_path / "absent.html")) is False
+    assert len(read) == condition.MAX_FILES, "still capped, just ordered correctly"
+
+
+def test_the_size_trim_drops_the_oldest_append_first(store):
+    """The trim iterated in name order and called it oldest-first — true only at
+    day granularity. mtime is exact."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    big = "x" * 300_000
+    paths = {}
+    # Yesterday, two pids: the lexically-EARLIER name is the OLDER append.
+    for pid, age in (("12345", 100_000), ("8000", 90_000)):
+        path = os.path.join(store, f"{calls.day_stamp(now - 86_400)}-{pid}-000.calls.jsonl")
+        with open(path, "w") as fh:
+            fh.write(appended(f"p{pid}", now - age, stdout_tail=big) + "\n")
+        os.utime(path, (now - age,) * 2)
+        paths[pid] = path
+
+    monkey = 400_000  # forces exactly one file to be trimmed
+    original = calls.DEFAULT_MAX_BYTES
+    try:
+        calls.DEFAULT_MAX_BYTES = monkey
+        calls.sweep(now=now)
+    finally:
+        calls.DEFAULT_MAX_BYTES = original
+
+    assert not os.path.exists(paths["12345"]), "the older APPEND goes first"
+    assert os.path.exists(paths["8000"]), "the newer append survives"

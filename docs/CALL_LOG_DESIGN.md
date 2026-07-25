@@ -12,7 +12,7 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
 of CL-5 rather than a refinement of it (D135; the defects six rounds of review
-found are in §9.5, with D136–D139 the follow-up rounds). Deviations from the
+found are in §9.5, with D136–D140 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -853,6 +853,19 @@ seeking walk had simply hit its scan budget without reaching the cursor. A valid
 deep cursor read as a dead one, and the skipped gap went unmentioned.
 `scan_truncated` now separates the guess from the proof.
 
+A seventh round then found the *same* name-order belief in a second place: the
+`condition.py` gate's bounded "newest files" probe was also reverse-name order, so
+with a few same-day files its whole window could be stale and the Calls mode never
+appeared on a page that had records (reproduced: gate `False` with the page's
+records sitting in the live file). Both now order by mtime. Three rounds running,
+the finding has been *the fix was not propagated widely enough* — first across the
+layer, then across the symptom, now across the codebase. The cheap habit that would
+have caught all three: after fixing a wrong belief, grep for the belief, not for the
+bug. Doing that here also turned up the size trim asserting "name-sorted is
+oldest-first" in a comment — harmless in practice, since same-day files are the same
+age and today's are excluded, but it was the same false belief written down as
+justification, so it is now mtime too.
+
 Sweeping the *symptom* rather than the line — the thing that round says to do —
 also turned up a cause that is still open, now documented at `overview()`:
 `dropped` counts what the **calling process** dropped to the rate cap or a full
@@ -863,7 +876,7 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all six rounds the pattern never changed: each defect lived in a seam
+Across all seven rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".
