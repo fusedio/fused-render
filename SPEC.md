@@ -2334,7 +2334,16 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   at all it is `None`, and the CLI omits the cursor line rather than printing one
   that cannot be passed back. The walk still stops at the cursor by **identity**,
   checked before the filters, so a cursor that no longer matches them ends the
-  walk correctly instead of reading as purged.
+  walk correctly instead of reading as purged. A caller that passes a cursor is
+  telling you what it has already seen, so `--follow` **waits only when that
+  cursor is at the tip**: records that landed between the caller's last read and
+  this command are already the answer, and waiting for the tip to move past them
+  timed out holding exactly what was being waited for. And because the seeking
+  walk gives up after a bounded scan, `cursor_missing` on its own cannot tell
+  "purged" from "never reached" — `scan_truncated` says which, is carried into the
+  CLI's JSON, and switches the text note from a confident "purged by retention, or
+  wrong" to a statement that the store is deeper than this read and the gap is not
+  shown. Claiming absence the walk never verified is the error to avoid.
 - **CL-14** **CLI.** `fused-render calls [--page P] [--since 1h] [--failed]
   [--entrypoint E] [--since-cursor ID] [--json] [--verbose] [--follow]` reads
   the store directly off disk (no server needed). **Digest by default**: the

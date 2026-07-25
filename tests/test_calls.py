@@ -1547,3 +1547,93 @@ def test_the_cli_omits_the_cursor_line_when_there_is_none(store, monkeypatch, ca
     out = run_cli(monkeypatch, capsys, "--page", "/app/mine.html")
     assert "cursor:" not in out
     assert "None" not in out
+
+
+# ----------- follow must not wait out records already on disk (6th review)
+
+def test_follow_answers_immediately_when_the_cursor_already_has_records(
+        store, monkeypatch, capsys):
+    """The normal race for an agent: it asks a human to open a page, the calls
+    land, and only THEN does it run `--follow --since-cursor C`.
+
+    Waiting for the store tip to move past the pre-wait baseline times out while
+    holding the very records it was waiting for, and answers "nothing ran" — the
+    fourth distinct cause of that one false negative.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("seen-1", now - 300) + "\n")
+        fh.write(appended("arrived-a", now - 20) + "\n")  # already on disk
+        fh.write(appended("arrived-b", now - 10) + "\n")
+
+    started = time.monotonic()
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "seen-1",
+                  "--timeout", "30", "--since", "all", "--verbose")
+    assert time.monotonic() - started < 5, "must not wait; the records are already here"
+    assert "no new calls" not in out
+    assert "2 record(s)" in out
+    assert "cursor: arrived-b" in out
+
+
+def test_follow_still_waits_when_the_caller_is_up_to_date(store, monkeypatch, capsys):
+    """The negative case for the fix above: a cursor AT the tip means the caller
+    has seen everything, so following must still wait rather than return at once."""
+    os.makedirs(store, exist_ok=True)
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("tip", time.time() - 60) + "\n")
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "tip",
+                  "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out
+    assert "tip" not in out.replace("--since-cursor tip", "")
+
+
+def test_follow_without_a_cursor_still_waits(store, monkeypatch, capsys):
+    """And the plain case keeps waiting too — the early answer is gated on an
+    explicit cursor, which is the only thing that says what the caller has seen."""
+    os.makedirs(store, exist_ok=True)
+    write_records([rec(call_id="historical")])
+    out = run_cli(monkeypatch, capsys, "--follow", "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out
+
+
+# ------------- a deep cursor is not a missing cursor (6th review, finding 2)
+
+def test_a_cursor_deeper_than_the_scan_budget_is_reported_as_such(
+        store, monkeypatch, capsys):
+    """`cursor_missing` alone cannot tell "purged" from "never reached".
+
+    The seeking walk gives up after a bounded scan, so a perfectly valid cursor
+    in a deep store reports missing. Claiming "purged by retention, or wrong"
+    there is a confident statement about something that was never checked — and
+    it hides that the records between the cursor and this page were skipped.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:  # deeper than the 5000 budget
+        for i in range(5200):
+            fh.write(appended(f"c{i:05d}", now - 5200 + i) + "\n")
+
+    body = json.loads(run_cli(monkeypatch, capsys, "--since-cursor", "c00000",
+                              "--limit", "5", "--json", "--since", "all"))
+    assert body["cursor_missing"] is True
+    assert body["scan_truncated"] is True, "absence here is a guess, not a proof"
+    assert body["more_available"] is True and body["skipped"] > 0
+
+    out = run_cli(monkeypatch, capsys, "--since-cursor", "c00000",
+                  "--limit", "5", "--since", "all")
+    assert "was not reached within the scan budget" in out
+    assert "purged by retention" not in out, "must not claim what it did not check"
+
+
+def test_a_genuinely_absent_cursor_still_says_purged(store, monkeypatch, capsys):
+    """The negative case: in a store small enough to walk to the end, absence IS
+    a proof, and the message should stay the confident one."""
+    os.makedirs(store, exist_ok=True)
+    write_records([rec(call_id="only")])
+    out = run_cli(monkeypatch, capsys, "--since-cursor", "ghost", "--since", "all")
+    assert "purged by retention" in out
+    assert "scan budget" not in out
+    body = json.loads(run_cli(monkeypatch, capsys, "--since-cursor", "ghost",
+                              "--json", "--since", "all"))
+    assert body["cursor_missing"] is True and body["scan_truncated"] is False

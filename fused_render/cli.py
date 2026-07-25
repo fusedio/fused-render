@@ -209,18 +209,28 @@ def _run_calls(args: argparse.Namespace) -> None:
         # server this command deliberately does not require.
         deadline = time.monotonic() + max(1.0, args.timeout)
         baseline = call_log.query(limit=1, **filters)["cursor"]
-        # Report only what ARRIVES, by resuming from the pre-wait cursor. Without
-        # this, following printed the ordinary digest of pre-existing records —
-        # so an agent that waited for activity, got none, and read a pile of
-        # historical calls could take stale data for a successful verification.
-        # That is the exact trap --follow exists to close.
-        cursor = cursor or baseline
-        timed_out = True
-        while time.monotonic() < deadline:
-            time.sleep(1.0)
-            if call_log.query(limit=1, **filters)["cursor"] != baseline:
-                timed_out = False
-                break
+        # An explicit --since-cursor may ALREADY have unseen records behind it:
+        # the activity happened between the caller's last read and this command.
+        # That is the NORMAL race for an agent that asked a human to open a page
+        # — by the time it gets to follow, the calls have landed. Waiting for the
+        # tip to move past `baseline` then times out holding the very records it
+        # was waiting for, and answers "nothing ran". Wait only when the caller
+        # is actually up to date.
+        if cursor is not None and baseline != cursor:
+            timed_out = False
+        else:
+            # Report only what ARRIVES, by resuming from the pre-wait cursor.
+            # Without this, following printed the ordinary digest of pre-existing
+            # records — so an agent that waited for activity, got none, and read a
+            # pile of historical calls could take stale data for a successful
+            # verification. That is the exact trap --follow exists to close.
+            cursor = cursor or baseline
+            timed_out = True
+            while time.monotonic() < deadline:
+                time.sleep(1.0)
+                if call_log.query(limit=1, **filters)["cursor"] != baseline:
+                    timed_out = False
+                    break
 
     if timed_out:
         # Say nothing happened, in both modes, and show no records — an empty
@@ -265,6 +275,12 @@ def _run_calls(args: argparse.Namespace) -> None:
             # A stale/unknown --since-cursor means `records` is the newest page,
             # not "everything since" — the caller has to be able to tell.
             "cursor_missing": page.get("cursor_missing", False),
+            # …and whether "missing" is a PROOF or a guess. The seeking walk gives
+            # up after a bounded scan, so on a store deeper than the budget a
+            # perfectly valid cursor reports missing. Without this flag the caller
+            # cannot distinguish "purged" from "too deep to reach", and treating
+            # the second as the first silently skips the gap.
+            "scan_truncated": page.get("scan_truncated", False),
             # Newer records than the cursor that did not fit this page. `cursor`
             # advances regardless, so ignoring this loses them.
             "skipped": page.get("skipped", 0),
@@ -296,9 +312,19 @@ def _run_calls(args: argparse.Namespace) -> None:
               f"raise --limit (currently {args.limit}) to see them; the cursor "
               "below has already moved past them")
     if page.get("cursor_missing"):
-        print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
-              "retention, or wrong) — showing the newest page instead of only what "
-              "is new")
+        if page.get("scan_truncated"):
+            # Not a proof of absence: the walk gave up before reaching the end of
+            # the store, so the cursor may be perfectly valid and simply deeper
+            # than the scan budget. Saying "purged or wrong" here would be a
+            # confident claim about something that was never checked.
+            print(f"note: --since-cursor {args.since_cursor} was not reached within "
+                  "the scan budget — the store is deeper than this read, so records "
+                  "between it and the page below are NOT shown; narrow with --since "
+                  "or a --page filter")
+        else:
+            print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
+                  "retention, or wrong) — showing the newest page instead of only what "
+                  "is new")
     print(f"{overview['total']} record(s) · " + " · ".join(
         f"{name} {count}" for name, count in sorted(outcomes.items())))
     if overview.get("dropped"):

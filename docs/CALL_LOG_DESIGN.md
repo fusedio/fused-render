@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects four rounds of review
-found are in §9.5, with D136 and D137 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects six rounds of review
+found are in §9.5, with D136–D139 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -835,8 +835,26 @@ broke:
   is a single symptom with many causes, and finding one cause is no evidence the
   others are absent — after fixing the first two I did not go looking for a third.
 
-Sweeping the *symptom* rather than the line — the thing the round above says to do
-— turned up a fourth cause, still open and now documented at `overview()`:
+Then a sixth round found the **fourth** cause of that same false negative, in the
+one place I had not looked — not the store or the read, but the CLI's *wait
+condition*. `--follow` waited for the store tip to move past the pre-wait
+baseline even when an explicit `--since-cursor` already had unseen records behind
+it. That is the normal agent race: ask a human to open a page, the calls land, and
+only then run follow — which then timed out holding exactly the records it was
+waiting for. Reproduced with two records sitting on disk and a 6 s timeout fully
+consumed. So the sweep I had just prescribed, I then performed too narrowly:
+I re-audited the store and read paths and never questioned the predicate that
+decides whether to wait at all. Knowing the right method is not the same as
+applying it widely enough.
+
+The same round also found a **confident claim about something never checked**:
+`cursor_missing` was reported as "purged by retention, or wrong" even when the
+seeking walk had simply hit its scan budget without reaching the cursor. A valid
+deep cursor read as a dead one, and the skipped gap went unmentioned.
+`scan_truncated` now separates the guess from the proof.
+
+Sweeping the *symptom* rather than the line — the thing that round says to do —
+also turned up a cause that is still open, now documented at `overview()`:
 `dropped` counts what the **calling process** dropped to the rate cap or a full
 queue, so the in-server view reports it (the reader runs in-process, D72) while
 the CLI, a separate process, always reads 0. An agent that follows, times out and
@@ -845,7 +863,7 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all five rounds the pattern never changed: each defect lived in a seam
+Across all six rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".
