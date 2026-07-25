@@ -44,10 +44,12 @@ X-Fused guard is duplicated locally like shell/bookmarks.py's is.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -144,6 +146,11 @@ def day_stamp(when: float | None = None) -> str:
     """The UTC date segment that names a file: ``YYYY-MM-DD``."""
     stamp = datetime.fromtimestamp(when if when is not None else time.time(), timezone.utc)
     return stamp.strftime("%Y-%m-%d")
+
+
+# The day segment of a store file name, used to group files that can interleave
+# in time (same day, different pids) — see _day_groups.
+_DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 
 def day_file(when: float | None = None, part: int = 1) -> str:
@@ -644,12 +651,22 @@ def _append(records: list[dict]) -> None:
     lines = []
     for rec in records:
         try:
-            line = json.dumps(_prune(rec), default=str)
+            pruned = _prune(rec)
+            line = json.dumps(pruned, default=str)
+            if len(line.encode("utf-8", "replace")) > RECORD_CAP:
+                # Prune AGAIN, and from the already-pruned dict: `_shrink` marks
+                # the fields it drops by setting them to None, so without a
+                # second prune the oversized path wrote them back as explicit
+                # nulls and skipped `level`/`recorded_at` entirely — reviving,
+                # on exactly these records, the `"error": null` field-name match
+                # that made a generic viewer read every healthy call as ERROR.
+                # `_prune` is idempotent (it recomputes `level` to the same value
+                # and `setdefault`s the existing `recorded_at`), so re-running it
+                # is safe and keeps one append stamp per record.
+                line = json.dumps(_prune(_shrink(pruned)), default=str)
         except (TypeError, ValueError) as e:  # pragma: no cover - default=str is total
             logger.warning("call log: unserializable record dropped: %s", e)
             continue
-        if len(line.encode("utf-8", "replace")) > RECORD_CAP:
-            line = json.dumps(_shrink(rec), default=str)
         lines.append(line)
     if not lines:
         return
@@ -660,7 +677,12 @@ def _append(records: list[dict]) -> None:
 def _shrink(rec: dict) -> dict:
     """Last-resort trim for a record that is still over RECORD_CAP after the
     per-field caps — drop the big optional text, keep the skeleton, and say so.
-    A record that names its own truncation is worth far more than none."""
+    A record that names its own truncation is worth far more than none.
+
+    Dropped fields are set to None rather than deleted, so the result MUST go
+    back through `_prune` (which is what actually removes them) before it is
+    serialized — see the caller.
+    """
     out = dict(rec)
     for key in ("stdout_tail", "stderr_tail", "params"):
         out[key] = None
@@ -1040,31 +1062,98 @@ def _iter_records(paths: list[str], since: float | None = None):
     Files are only skipped, never stopped at, because same-day files from
     different processes interleave in time; the per-file bound is exact.
 
+    That interleaving is also why same-day files are **merged** rather than read
+    one after another. Names sort by date, then pid, then part — and pid order is
+    meaningless in time (worse, it is LEXICAL, so pid 8000 sorts after pid
+    12345). Draining one file before the next therefore returned a stale
+    process's tail as "newest": with two live servers, the very case per-pid
+    files exist for, `query`'s cursor stuck on the lexically-later pid and
+    `--follow` never woke, because writes from the live server sorted first and
+    were only reached after the stale file ran out.
+
+    Different days cannot interleave — a file only receives appends while the
+    UTC date still matches its name — so the merge is per day, and days are
+    walked newest-first. That bounds how many files are open at once to one day's
+    worth and keeps the walk lazy: a `limit` satisfied by today never opens last
+    week's files.
+
     A corrupt line (a torn tail of a file being appended right now) is skipped,
     not fatal.
     """
-    for path in reversed(paths):
-        if since is not None:
-            try:
-                if os.path.getmtime(path) < since:
-                    continue
-            except OSError:
-                continue
-        try:
-            for line in _iter_lines_reverse(path):
+    for group in reversed(_day_groups(paths)):
+        streams = []
+        for path in group:
+            if since is not None:
                 try:
-                    rec = json.loads(line)
-                except ValueError:
+                    if os.path.getmtime(path) < since:
+                        continue
+                except OSError:
                     continue
-                if not isinstance(rec, dict):
-                    continue
-                if since is not None:
-                    appended = rec.get("recorded_at")
-                    if isinstance(appended, (int, float)) and appended < since:
-                        break  # everything further back was appended earlier
-                yield rec
-        except OSError:
+            streams.append(_file_records(path, since))
+        if not streams:
             continue
+        if len(streams) == 1:  # the common case: one server, one part
+            yield from streams[0]
+            continue
+        try:
+            yield from heapq.merge(*streams, key=_append_key, reverse=True)
+        finally:
+            # Abandoned mid-merge (a full page, an exhausted budget) leaves the
+            # rest of the day's files open until GC; close them deterministically.
+            for stream in streams:
+                stream.close()
+
+
+def _file_records(path: str, since: float | None):
+    """One store file's records, newest first, with the exact per-file stop.
+
+    Kept a separate generator so the same bound applies whether the day has one
+    file or several being merged.
+    """
+    try:
+        for line in _iter_lines_reverse(path):
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if since is not None:
+                appended = rec.get("recorded_at")
+                if isinstance(appended, (int, float)) and appended < since:
+                    return  # everything further back was appended earlier
+            yield rec
+    except OSError:
+        return
+
+
+def _append_key(rec: dict) -> float:
+    """Sort key for merging same-day files: when the record was appended.
+
+    Ordering only — inclusion is still decided by each file's own `since` stop,
+    so a store with out-of-order stamps loses nothing, it just comes back in a
+    slightly odd order. A record predating `recorded_at` falls back to its start
+    time, and one with neither sorts oldest within its day.
+    """
+    stamp = rec.get("recorded_at")
+    if isinstance(stamp, (int, float)):
+        return float(stamp)
+    return _epoch(rec.get("occurred_at")) or 0.0
+
+
+def _day_groups(paths: list[str]) -> list[list[str]]:
+    """Store files bucketed by the day their name carries, oldest day first.
+
+    A name that does not start with a date gets its own bucket keyed by the name
+    itself, so an unrecognised file keeps its plain name-sort position instead of
+    being merged into a day it may not belong to.
+    """
+    groups: dict[str, list[str]] = {}
+    for path in paths:
+        name = os.path.basename(path)
+        match = _DAY_RE.match(name)
+        groups.setdefault(match.group(1) if match else name, []).append(path)
+    return [groups[key] for key in sorted(groups)]
 
 
 def _matches(rec: dict, *, page=None, entrypoint=None, route=None, outcome=None,

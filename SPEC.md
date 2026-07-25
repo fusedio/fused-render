@@ -2138,7 +2138,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   the raw line for level words — the field NAME `"error": null` made every
   healthy call render as ERROR in `log_studio`, which the registry offers for
   this file. Absent-means-null is safe for every consumer here (all read through
-  `.get()`), and matches the sidecar's additive-records posture (HV-6).
+  `.get()`), and matches the sidecar's additive-records posture (HV-6). The
+  last-resort shrink for a record still over ~32 KiB after the per-field caps
+  **marks** the fields it drops by setting them to `None`, so its result goes
+  back through the same prune before serialization — writing it directly emitted
+  those fields as explicit nulls and omitted `level` and `recorded_at`,
+  reinstating the `"error": null` ERROR misread on precisely the records most
+  likely to be worth reading.
 - **CL-3** **Attribution is by header, exclusion by construction.**
   `runtime.js` sends `X-Fused-Page` (the page's own path), `X-Fused-Target`
   (`_file`, when the page is a template) and `X-Fused-Call` (a per-call id) on
@@ -2206,10 +2212,13 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-7** **Store.** `~/.fused-render/calls/<date>-<pid>-<part>.calls.jsonl` —
   append-only JSONL under the branch-aware shell home, one file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
-  interleave lines, and the reader globs the day anyway), rolled to the next
-  `part` past `MAX_FILE_BYTES` (CL-9). `part` is zero-padded so a plain name sort
-  stays chronological — date, then pid, then part — which the oldest-first size
-  trim depends on. Not the `<file>.json`
+  interleave lines, and the reader merges the day back together, CL-12), rolled
+  to the next `part` past `MAX_FILE_BYTES` (CL-9). `part` is zero-padded so parts
+  of one pid sort in order, which the oldest-first size trim depends on. Name
+  order is date, then pid, then part — and only the **date** segment orders
+  records in time. The pid segment does not (it is arbitrary, and compared
+  lexically, so pid 8000 sorts after pid 12345), which is why the reader may not
+  treat "last file by name" as "newest records" (CL-12). Not the `<file>.json`
   sidecar (§21, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
@@ -2293,7 +2302,17 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   exact rather than merely conservative; a record without `recorded_at` never
   stops the walk. Files are skipped but never stopped at, because same-day files
   from different processes interleave in time. Without this a one-hour question
-  parsed the entire retention window. `calls/reader.py` is on
+  parsed the entire retention window. For the same reason that interleaving
+  forbids stopping at a file, same-day files are **merged** on `recorded_at`
+  rather than read one after another: pid order is not time order (CL-7), so
+  draining one file before the next returned a stale process's tail as the newest
+  records — with two live servers, `query`'s cursor stuck on the lexically-later
+  pid and `--follow` never woke, because the live server's writes sorted first
+  and were reached only after the stale file ran out. The merge is **per day**
+  (whole days cannot interleave — a file only takes appends while the UTC date
+  still matches its name), which bounds open handles to one day's files and keeps
+  the walk lazy: a `limit` satisfied by today never opens last week's.
+  `calls/reader.py` is on
   `INPROCESS_HELPERS` (D72): it is first-party, never imports or executes user
   code, and its reads are bounded, so following polls a local file read rather
   than a ~700 ms subprocess spawn. Charts are hand-rolled `<canvas>` with no

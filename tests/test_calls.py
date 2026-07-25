@@ -14,6 +14,7 @@ Four things must hold, in priority order:
 4. **Honest statistics.** Superseded calls are counted but excluded from every
    latency percentile.
 """
+import itertools
 import json
 import os
 import queue
@@ -1269,3 +1270,190 @@ def test_a_legacy_record_without_an_append_time_never_stops_the_walk(store):
         fh.write(json.dumps(old) + "\n" + json.dumps(fresh) + "\n")
     seen = [r["call_id"] for r in calls._iter_records([path], since=time.time() - 3600)]
     assert "fresh" in seen and "legacy" in seen
+
+
+# ------------------ merging same-day files by append time (4th Bugbot review)
+
+def same_day(pid, part=0, when=None):
+    """A store file named for TODAY under an arbitrary pid — the shape two live
+    servers (or a restart) produce, and which name order cannot rank in time."""
+    return os.path.join(calls.store_dir(),
+                        f"{calls.day_stamp(when)}-{pid}-{part:03d}.calls.jsonl")
+
+
+def appended(cid, when, **over):
+    """A production-shaped line carrying an explicit append stamp."""
+    return json.dumps(dict(calls._prune(rec(call_id=cid, **over)), recorded_at=when))
+
+
+def test_same_day_files_from_two_servers_merge_newest_first(store):
+    """Name order is date, then pid, then part — and pid order says NOTHING about
+    time. Worse, it is lexical, so pid 8000 sorts AFTER pid 12345. Reading one
+    file out before the next therefore returned a stale process's tail as
+    "newest"; the day's files have to be merged on append time instead.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(same_day(8000), "w") as fh:  # sorts LAST, holds the OLDEST records
+        fh.write(appended("stale-1", now - 600) + "\n")
+        fh.write(appended("stale-2", now - 590) + "\n")
+    with open(same_day(12345), "w") as fh:  # sorts first, holds the newest
+        fh.write(appended("fresh-1", now - 5) + "\n")
+        fh.write(appended("fresh-2", now - 1) + "\n")
+
+    order = [r["call_id"] for r in calls._iter_records(calls.store_files())]
+    assert order == ["fresh-2", "fresh-1", "stale-2", "stale-1"]
+    assert calls.query(limit=1)["cursor"] == "fresh-2", "the globally newest call"
+    assert [r["call_id"] for r in calls.query(limit=3)["records"]] == \
+        ["fresh-2", "fresh-1", "stale-2"]
+
+
+def test_follow_sees_a_write_to_a_lower_sorting_pid_file(store):
+    """`--follow` waits for `query(limit=1)["cursor"]` to change. While same-day
+    files were read one after another, a write from the lexically-earlier pid was
+    reached only after the other file ran out — so the cursor never moved and
+    following a live server waited out its whole timeout with activity in front
+    of it.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(same_day(8000), "w") as fh:  # a stale server that sorts last
+        fh.write(appended("stale", now - 600) + "\n")
+    live = same_day(12345)
+    with open(live, "w") as fh:
+        fh.write(appended("seen", now - 10) + "\n")
+
+    baseline = calls.query(limit=1)["cursor"]
+    assert baseline == "seen"
+    with open(live, "a") as fh:  # the live server logs another call
+        fh.write(appended("arrived", time.time()) + "\n")
+    assert calls.query(limit=1)["cursor"] == "arrived", "follow must wake on this"
+
+
+def test_days_stay_newest_first_across_the_merge(store):
+    """Merging is per day: a day's files interleave, whole days do not."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    yesterday = now - 86_400
+    with open(same_day(8000, when=yesterday), "w") as fh:
+        fh.write(appended("y-1", yesterday) + "\n")
+    with open(same_day(12345, when=yesterday), "w") as fh:
+        fh.write(appended("y-2", yesterday + 60) + "\n")
+    with open(same_day(999), "w") as fh:
+        fh.write(appended("t-1", now - 5) + "\n")
+
+    order = [r["call_id"] for r in calls._iter_records(calls.store_files())]
+    assert order == ["t-1", "y-2", "y-1"], "today's day-group first, then yesterday's"
+
+
+def test_a_page_satisfied_by_today_never_opens_an_older_day(store, monkeypatch):
+    """Grouping by day keeps the walk lazy — merging the whole store at once
+    would open every file up front to answer a question today already covers."""
+    os.makedirs(store, exist_ok=True)
+    old = same_day(1, when=time.time() - 86_400)
+    with open(old, "w") as fh:
+        fh.write(appended("old", time.time() - 86_400) + "\n")
+    with open(same_day(2), "w") as fh:
+        for i in range(50):
+            fh.write(appended(f"t-{i}", time.time() - 50 + i) + "\n")
+
+    opened = []
+    real = calls._iter_lines_reverse
+
+    def spy(path, *a, **kw):
+        opened.append(os.path.basename(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(calls, "_iter_lines_reverse", spy)
+    got = list(itertools.islice(calls._iter_records(calls.store_files()), 3))
+    assert [r["call_id"] for r in got] == ["t-49", "t-48", "t-47"]
+    assert os.path.basename(old) not in opened, "yesterday must stay unopened"
+
+
+def test_an_abandoned_merge_closes_the_day_s_files(store):
+    """A full page or an exhausted budget abandons the walk mid-merge; the day's
+    other file handles must not be left to the garbage collector."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    for pid in (8000, 12345, 999):
+        with open(same_day(pid), "w") as fh:
+            for i in range(40):
+                fh.write(appended(f"c-{pid}-{i}", now - 100 + i) + "\n")
+
+    def fds():
+        return len(os.listdir("/proc/self/fd"))
+
+    before = fds()
+    walk = calls._iter_records(calls.store_files())
+    next(walk)  # opens all three of the day's files to merge them
+    assert fds() > before, "the merge really does hold several files open"
+    walk.close()
+    assert fds() == before, "closing the walk closes every stream it opened"
+
+
+def test_a_legacy_record_still_appears_when_a_day_is_merged(store):
+    """A record from before `recorded_at` existed has no merge key of its own;
+    it falls back to its start time rather than dropping out of the order."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(same_day(8000), "w") as fh:
+        fh.write(json.dumps(rec(call_id="legacy",
+                                occurred_at="2020-01-01T00:00:00.000Z")) + "\n")
+    with open(same_day(12345), "w") as fh:
+        fh.write(appended("modern", now - 1) + "\n")
+
+    order = [r["call_id"] for r in calls._iter_records(calls.store_files())]
+    assert order == ["modern", "legacy"], "the stampless record sorts oldest, not gone"
+
+
+def test_an_unrecognised_file_name_keeps_its_place(store):
+    """A name that carries no date gets its own group rather than being merged
+    into a day it may not belong to."""
+    os.makedirs(store, exist_ok=True)
+    odd = os.path.join(store, "stray.calls.jsonl")
+    with open(odd, "w") as fh:
+        fh.write(appended("stray", time.time() - 10) + "\n")
+    with open(same_day(1), "w") as fh:
+        fh.write(appended("dated", time.time() - 5) + "\n")
+    ids = [r["call_id"] for r in calls._iter_records(calls.store_files())]
+    assert sorted(ids) == ["dated", "stray"], "both are read"
+
+
+# --------------------------- the oversized path (4th Bugbot review, finding 1)
+
+def test_an_oversized_record_is_still_pruned_and_levelled(store):
+    """`_shrink` marks dropped fields by setting them to None, so its result has
+    to go back through `_prune`. Serializing it directly wrote those fields as
+    explicit nulls and omitted `level`/`recorded_at` — reviving, on exactly the
+    records most likely to matter, the `"error": null` field-name match that made
+    a generic log viewer read every healthy call as ERROR.
+    """
+    write_records([rec(call_id="huge", error=None, params=None, stderr_tail=None,
+                       stdout_tail="x" * (calls.RECORD_CAP + 100))])
+    line = open(calls.current_file()).read().strip()
+    assert len(line.encode()) < calls.RECORD_CAP, "the shrink actually shrank it"
+    got = json.loads(line)
+    assert [k for k, v in got.items() if v is None] == [], "no null-valued keys"
+    assert got["level"] == "INFO", "a healthy oversized call is not an error"
+    assert got["truncated"] is True and "stdout_tail" not in got
+    assert isinstance(got["recorded_at"], (int, float)), "the walk can stop on it"
+
+
+def test_an_oversized_failure_keeps_its_error_level(store):
+    """Shrinking must not cost the record its severity."""
+    write_records([rec(call_id="huge-fail", outcome="error",
+                       error={"type": "ValueError", "message": "boom",
+                              "traceback": "T" * (calls.RECORD_CAP + 100)})])
+    got = json.loads(open(calls.current_file()).read().strip())
+    assert got["level"] == "ERROR" and got["outcome"] == "error"
+    assert got["truncated"] is True
+    assert got["error"]["message"] == "boom", "the skeleton of the error survives"
+
+
+def test_prune_is_idempotent(store):
+    """The oversized path prunes twice; a second pass must not reorder the head
+    fields or recompute `level` differently."""
+    once = calls._prune(rec(call_id="x", outcome="error", error=None))
+    twice = calls._prune(once)
+    assert list(twice) == list(once)
+    assert twice == once

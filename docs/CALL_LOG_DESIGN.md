@@ -11,8 +11,9 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the four defects review found are
-in §9.5). Deviations from the design as written are marked **[shipped]** inline.
+of CL-5 rather than a refinement of it (D135; the defects four rounds of review
+found are in §9.5, with D136 and D137 the follow-up rounds). Deviations from the
+design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
 > **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
@@ -793,6 +794,37 @@ Two more from the follow-up round (D136), both the same shape as the first four:
   case** — the request that should still succeed — not only the one you are
   trying to make work. The regression guard for it is kept in the suite because
   the trap is re-approachable.
+
+Two more from the fourth round, and both are the sharpest kind: a comment in the
+code stated the very fact that the code next to it ignored.
+
+- **The right fact, applied in one place out of two.** `_iter_records` carried
+  the note *"files are only skipped, never stopped at, because same-day files
+  from different processes interleave in time"* — correct, and load-bearing for
+  the `since` bound. But the same interleaving makes "the last file by name" not
+  "the newest records", and the walk still drained one file before the next. With
+  two live servers — the case per-pid files exist for — `query` returned a stale
+  process's tail as the newest page, and `--follow` waited out its full timeout
+  with the live server writing in front of it. Compounded by pid order being
+  *lexical*: pid 8000 sorts after pid 12345, so it needs no restart and no
+  wraparound, just two servers whose pids differ in digit count. Fixed by merging
+  each day's files on append time. The lesson: when you write down *why* a bound
+  is shaped a certain way, go re-audit every other place that fact bears on —
+  the comment is evidence you understood the hazard and stopped one line short of
+  it.
+- **A repair that skipped its own repair path.** The oversized-record shrink
+  serialized its output directly instead of re-running the prune, so records over
+  the cap still carried explicit nulls and no `level` or `recorded_at` — the
+  `"error": null` ERROR misread from the round above, alive again on exactly the
+  records most likely to be worth reading (a huge payload usually means something
+  went wrong). Two fixes, one applied on the main path only. The lesson: a fix
+  belongs at the chokepoint every path passes through, and if there are two exits,
+  the test has to take both.
+
+Across all four rounds the pattern never changed: each defect lived in a seam
+between individually-correct, individually-tested parts. What did change is where
+the seams were — the last two were *inside* code I had already reviewed and
+documented, which is the argument for adversarial review outliving "done".
 
 ## 10. Other uses this unlocks
 
