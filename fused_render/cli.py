@@ -205,6 +205,11 @@ def _run_calls(args: argparse.Namespace) -> None:
     # Set when a --since-cursor could not be located, so the report can say so
     # even after the follow path resumes from the pre-wait baseline instead.
     cursor_lost = False
+    # …and whether that failure to locate it is a PROOF or a guess (the probe's
+    # own scan budget ran out). Tracked separately from the post-wait read's
+    # flag, because once the cursor is replaced by the baseline that read is no
+    # longer looking for the caller's cursor at all.
+    cursor_lost_deep = False
     if args.follow:
         # Wait for something new rather than making the caller guess how long
         # the human took to open the page (design §9.2d). Polls the store: it is
@@ -234,6 +239,7 @@ def _run_calls(args: argparse.Namespace) -> None:
             probe = call_log.query(limit=1, cursor=cursor, **filters)
             already_new = bool(probe["records"]) and not probe.get("cursor_missing")
             cursor_lost = bool(probe.get("cursor_missing"))
+            cursor_lost_deep = bool(probe.get("scan_truncated"))
         if already_new:
             timed_out = False
         else:
@@ -258,9 +264,33 @@ def _run_calls(args: argparse.Namespace) -> None:
                     timed_out = False
                     break
 
+    def _lost_cursor_reason() -> str:
+        """Why the caller's cursor could not anchor the answer.
+
+        Split because "missing" is sometimes a PROOF and sometimes a guess: the
+        seeking walk gives up after a bounded scan, so on a store deeper than
+        the budget a perfectly valid cursor reports missing. Claiming "purged or
+        wrong" for that case is a confident statement about something that was
+        never checked.
+        """
+        if cursor_lost_deep:
+            return (f"--since-cursor {args.since_cursor} was not reached within "
+                    "the scan budget (the store is deeper than this read)")
+        return (f"--since-cursor {args.since_cursor} was not found (purged by "
+                "retention, or wrong)")
+
     if timed_out:
         # Say nothing happened, in both modes, and show no records — an empty
         # answer is the truthful one and cannot be mistaken for fresh activity.
+        #
+        # A lost cursor is still reported here. Timing out does not make it
+        # findable, and this path is the LIKELIER one for a wrong cursor: an
+        # agent that passes a ghost id usually has nothing arriving either. The
+        # first version of this branch hardcoded `cursor_missing: False` and
+        # printed only "no new calls", so the caller learned that its cursor was
+        # unusable exactly when activity happened to save it — which turns
+        # D142's "a lost cursor is never silent" into "unless it also went
+        # quiet", the least useful possible time to withhold it.
         if args.as_json:
             # Aggregates over the EMPTY set, not over the window: a historical
             # overview beside "records": [] reads as fresh activity, which is the
@@ -270,9 +300,14 @@ def _run_calls(args: argparse.Namespace) -> None:
                 "cursor": call_log.query(limit=1, **filters)["cursor"],
                 "overview": call_log.overview(records=[]), "targets": [],
                 "records": [], "page_errors": [], "records_omitted": 0,
-                "skipped": 0, "more_available": False, "cursor_missing": False,
+                "skipped": 0, "more_available": False,
+                "cursor_missing": cursor_lost,
+                "scan_truncated": cursor_lost_deep,
             }, indent=2, default=str))
         else:
+            if cursor_lost:
+                print(f"note: {_lost_cursor_reason()} — the wait ran from the "
+                      "newest record at the time it began, and nothing arrived")
             print(f"no new calls within {args.timeout:g}s")
         return
 
@@ -310,7 +345,7 @@ def _run_calls(args: argparse.Namespace) -> None:
             # perfectly valid cursor reports missing. Without this flag the caller
             # cannot distinguish "purged" from "too deep to reach", and treating
             # the second as the first silently skips the gap.
-            "scan_truncated": page.get("scan_truncated", False),
+            "scan_truncated": bool(page.get("scan_truncated")) or cursor_lost_deep,
             # Newer records than the cursor that did not fit this page. `cursor`
             # advances regardless, so ignoring this loses them.
             "skipped": page.get("skipped", 0),
@@ -344,10 +379,9 @@ def _run_calls(args: argparse.Namespace) -> None:
     if cursor_lost and not page.get("cursor_missing"):
         # Located neither before nor during the wait, but the follow resumed from
         # the baseline, so what follows IS only what arrived — say both halves.
-        print(f"note: --since-cursor {args.since_cursor} was not found (purged by "
-              "retention, or wrong) — following resumed from the newest record at "
-              "the time the wait began, so the records below are what arrived "
-              "during the wait")
+        print(f"note: {_lost_cursor_reason()} — following resumed from the newest "
+              "record at the time the wait began, so the records below are what "
+              "arrived during the wait")
     if page.get("cursor_missing"):
         if page.get("scan_truncated"):
             # Not a proof of absence: the walk gave up before reaching the end of

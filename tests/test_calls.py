@@ -18,6 +18,8 @@ import itertools
 import json
 import os
 import queue
+import shutil
+import subprocess
 import time
 
 import pytest
@@ -1818,9 +1820,192 @@ def test_a_lost_cursor_is_still_reported_in_json(store, monkeypatch, capsys):
     body = json.loads(run_cli(monkeypatch, capsys, "--follow", "--since-cursor",
                               "ghost", "--timeout", "1", "--json", "--since", "all"))
     assert body["timed_out"] is True  # nothing arrived, so this path is the empty one
+    assert body["cursor_missing"] is True, "the timeout path must report it too"
     body = json.loads(run_cli(monkeypatch, capsys, "--since-cursor", "ghost",
                               "--json", "--since", "all"))
     assert body["cursor_missing"] is True
+
+
+# ----------- a timeout must not swallow the lost cursor (10th review, finding 1)
+
+def test_a_timeout_after_a_lost_cursor_says_so_in_text(store, monkeypatch, capsys):
+    """Timing out does not make the cursor findable.
+
+    The timeout branch returns before both output sites, so the fix that plumbed
+    `cursor_lost` through reached the caller only when activity happened to
+    arrive — i.e. a wrong cursor was reported when it mattered least and stayed
+    silent in the case that actually needs explaining ("nothing ran" vs "I could
+    not tell you what is new"). This is the same D142 promise, on the branch that
+    the assertion for it did not cover.
+    """
+    os.makedirs(store, exist_ok=True)
+    write_records([rec(call_id="only")])
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "ghost",
+                  "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out
+    assert "was not found" in out, "a lost cursor is never silent — including here"
+    assert "purged by retention" in out
+
+
+def test_a_timeout_with_a_usable_cursor_claims_nothing_about_it(
+        store, monkeypatch, capsys):
+    """The negative case: an ordinary quiet wait must stay a bare "nothing ran".
+    Reporting a lost cursor unconditionally would make every timeout look like a
+    caller error."""
+    os.makedirs(store, exist_ok=True)
+    write_records([rec(call_id="tip")])
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "tip",
+                  "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out
+    assert "was not found" not in out and "scan budget" not in out
+    body = json.loads(run_cli(monkeypatch, capsys, "--follow", "--since-cursor",
+                              "tip", "--timeout", "1", "--json", "--since", "all"))
+    assert body["timed_out"] is True
+    assert body["cursor_missing"] is False and body["scan_truncated"] is False
+
+
+def test_a_deep_cursor_is_not_called_purged_on_the_follow_path(
+        store, monkeypatch, capsys):
+    """The proof/guess split has to hold wherever the reason is stated.
+
+    The follow path learns "missing" from its own probe, not from the post-wait
+    read — which by then is anchored on the baseline and is no longer looking for
+    the caller's cursor at all. So the probe's `scan_truncated` has to be carried
+    separately, or a valid-but-deep cursor gets the confident "purged" wording on
+    every follow.
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:  # deeper than the 5000 budget
+        for i in range(5200):
+            fh.write(appended(f"c{i:05d}", now - 5200 + i) + "\n")
+
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "c00000",
+                  "--timeout", "1", "--since", "all")
+    assert "was not reached within the scan budget" in out
+    assert "purged by retention" not in out, "must not claim what it did not check"
+    body = json.loads(run_cli(monkeypatch, capsys, "--follow", "--since-cursor",
+                              "c00000", "--timeout", "1", "--json", "--since", "all"))
+    assert body["cursor_missing"] is True and body["scan_truncated"] is True
+
+
+# --------- the view must not drop an overlapping reload (10th review, finding 2)
+
+def _calls_template_src():
+    return open(os.path.join(os.path.dirname(calls.__file__), "templates", "calls",
+                             "template.html"), encoding="utf-8").read()
+
+
+def _js_block(src, header):
+    """Return `header` plus its brace-balanced body, verbatim from the template.
+
+    Extracted rather than copied so this exercises the shipping source: a copy
+    would keep passing after the real function regressed, which is the one thing
+    a test of a single-flight guard must not do. A reformat that breaks the
+    extraction fails loudly here instead of silently passing.
+    """
+    start = src.index(header)
+    open_brace = src.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+    raise AssertionError(f"unbalanced braces after {header!r}")
+
+
+def test_a_filter_change_during_a_read_is_not_dropped(tmp_path):
+    """`if (inflight) return;` silently discarded the newer request.
+
+    The in-flight read is already committed to the filters it started with, so a
+    scope/window/query/Failed change mid-read rendered the PREVIOUS filters and
+    then never caught up — the controls and the URL said one thing, the table
+    showed another, until the user hit Refresh. The fix has to hold both halves:
+    the change is honoured, AND concurrency stays bounded (a burst of clicks must
+    coalesce to one re-run, not queue N reads).
+    """
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - node is preinstalled on the CI runners
+        pytest.skip("node is required to drive the template's JS")
+
+    src = _calls_template_src()
+    harness = tmp_path / "load.mjs"
+    harness.write_text(
+        "let inflight = false, pending = false;\n"
+        "const state = { since: 0 };\n"
+        # Each op captures the filters live at the moment it was issued, which is
+        # exactly what the real runPython call does.
+        "let live = 'a', reads = 0, waiting = [], rendered = [];\n"
+        "function bucketFor() { return 1000; }\n"
+        "function esc(s) { return s; }\n"
+        "function $() { return {}; }\n"
+        "function op() { reads++; const at = live;"
+        " return new Promise((res) => waiting.push(() => res(at))); }\n"
+        "function render(p) { rendered.push(p.overview); }\n"
+        + _js_block(src, "async function load()") + "\n"
+        "const flush = () => new Promise((r) => setTimeout(r, 0));\n"
+        "const settle = async () => { const w = waiting; waiting = [];"
+        " w.forEach((f) => f()); await flush(); };\n"
+        "load();\n"                      # read 1 goes out with filters 'a'
+        "live = 'b';\n"
+        "load(); load(); load();\n"      # three changes land mid-read
+        "await settle();\n"              # read 1 finishes -> one re-run, filters 'b'
+        "await settle();\n"              # read 2 finishes
+        "console.log(JSON.stringify({ rendered, reads, pending, inflight }));\n",
+        encoding="utf-8")
+
+    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
+                         timeout=30)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["rendered"] == ["a", "b"], (
+        "the mid-read change must render, and exactly once")
+    assert result["reads"] == 8, "4 ops per read, two reads — not one, not four"
+    assert result["inflight"] is False and result["pending"] is False
+
+
+def test_the_calls_view_reloads_after_a_failed_read(tmp_path):
+    """The re-run lives in `finally`, so a transient reader error cannot leave the
+    view stuck on the error card while the controls say something else."""
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - node is preinstalled on the CI runners
+        pytest.skip("node is required to drive the template's JS")
+
+    src = _calls_template_src()
+    harness = tmp_path / "load_err.mjs"
+    harness.write_text(
+        "let inflight = false, pending = false;\n"
+        "const state = { since: 0 };\n"
+        "let fail = true, reads = 0, waiting = [], rendered = [], errors = 0;\n"
+        "function bucketFor() { return 1000; }\n"
+        "function esc(s) { return s; }\n"
+        "function $() { return { set innerHTML(v) { errors++; } }; }\n"
+        "function op() { reads++; const bad = fail;"
+        " return new Promise((res, rej) => waiting.push(() =>"
+        " bad ? rej(new Error('reader died')) : res('ok'))); }\n"
+        "function render(p) { rendered.push(p.overview); }\n"
+        + _js_block(src, "async function load()") + "\n"
+        "const flush = () => new Promise((r) => setTimeout(r, 0));\n"
+        "const settle = async () => { const w = waiting; waiting = [];"
+        " w.forEach((f) => f()); await flush(); };\n"
+        "load();\n"
+        "fail = false;\n"
+        "load();\n"                      # queued behind the read that is about to fail
+        "await settle();\n"
+        "await settle();\n"
+        "console.log(JSON.stringify({ rendered, errors, pending, inflight }));\n",
+        encoding="utf-8")
+
+    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
+                         timeout=30)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result["errors"] >= 1, "the failure still reports itself"
+    assert result["rendered"] == ["ok"], "and the queued reload still runs"
+    assert result["inflight"] is False and result["pending"] is False
 
 
 # ------------- the prefs snapshot must honour a concurrent invalidation

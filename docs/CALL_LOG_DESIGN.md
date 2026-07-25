@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects nine rounds of review
-found are in §9.5, with D136–D142 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects ten rounds of review
+found are in §9.5, with D136–D143 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -853,6 +853,35 @@ seeking walk had simply hit its scan budget without reaching the cursor. A valid
 deep cursor read as a dead one, and the skipped gap went unmentioned.
 `scan_truncated` now separates the guess from the proof.
 
+A tenth round found two, and the first is the ninth round's own promise breaking one
+branch over. D142 added "a lost cursor is never silent" — and `--follow`'s timeout
+branch returns before *both* output sites, so the flag reached the caller only when
+records happened to arrive. It hardcoded `"cursor_missing": False` and printed a bare
+"no new calls within Ns". That withholds the flag in exactly the case it explains: an
+agent holding a ghost id usually has nothing arriving either, and "nothing ran" and
+"I could not tell you what is new" are different answers to act on. **A flag that is
+only reported when it does not matter is worse than an absent one, because its
+silence reads as "fine".** The test I wrote for D142 called this very path and
+asserted only `timed_out is True`. The habit that catches this class: when you add a
+value, check every *exit* that consumes it, not just the one you were looking at.
+Carrying `scan_truncated` alongside it needed the same care — on the follow path it
+has to come from the probe, because once the cursor is replaced by the baseline the
+post-wait read is no longer looking for the caller's id at all, so a valid-but-deep
+cursor was getting the confident "purged" wording on every follow.
+
+The round's second finding was the feature's first UI-concurrency bug, and it needed
+a harness the repo did not have. The Calls view's `load()` was single-flight by
+`if (inflight) return;` — which *drops* the newer request. The in-flight read is
+already committed to the filters it started with, so changing scope, window, query or
+Failed mid-read rendered the previous filters while the controls and the URL showed
+the new ones, and nothing reloaded until the user pressed Refresh. A pending flag with
+the re-run in `finally` fixes it and keeps the property that mattered (one re-run, so
+a burst of clicks costs two reads rather than N). The template's JS had only
+source-grep assertions until now; this is tested by **extracting the real `load()`
+from `template.html`** and driving it under node with stubbed ops. Extracted rather
+than copied on purpose — a copied function keeps passing after the shipping one
+regresses, which is the single thing a test of a concurrency guard must not do.
+
 A ninth round found two more, and the first completes a pattern worth naming: for
 three rounds running, the state that broke was one my *previous fix had just made
 reachable*. D141 correctly sent an unfindable cursor to the wait — and the post-wait
@@ -907,7 +936,7 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all nine rounds the pattern never changed: each defect lived in a seam
+Across all ten rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".

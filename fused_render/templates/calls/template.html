@@ -169,6 +169,12 @@ const state = {
 
 let timer = null;
 let inflight = false;
+// A load() that arrives while one is in flight is REMEMBERED, not dropped: the
+// in-flight read is already committed to the filters it started with, so the
+// caller's change (a new window, scope, query, or Failed toggle) would render as
+// the previous filters and then never catch up. Coalesced to one re-run, so the
+// single-flight property holds — a burst of clicks costs two reads, not N.
+let pending = false;
 
 // ---- params <-> URL -------------------------------------------------------
 // Every filter lives in the URL, so a bookmarked call view restores exactly
@@ -222,8 +228,12 @@ function op(name, extra) {
 }
 
 async function load() {
-  if (inflight) return;
+  if (inflight) {
+    pending = true;
+    return;
+  }
   inflight = true;
+  pending = false;
   try {
     const [overview, series, targets, page] = await Promise.all([
       op("overview"), op("series", { bucket_ms: bucketFor(state.since) }),
@@ -237,6 +247,11 @@ async function load() {
       '<div class="empty err-text">Could not read the call log: ' + esc(e.message) + "</div>";
   } finally {
     inflight = false;
+    // Re-run for whatever changed mid-read — including after a failure, so a
+    // transient reader error does not leave the view stuck on the error card
+    // while the controls say something else. Not awaited: this is the tail of
+    // the previous read, and load() handles its own errors.
+    if (pending) load();
   }
 }
 

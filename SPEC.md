@@ -2322,7 +2322,14 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   dependency (the `log_studio` precedent, ARCHITECTURE §10): call volume
   stacked by outcome, duration as p50/p95 over a per-call scatter (a mean
   hides the one cold run that made the page look broken), response size, and
-  the per-target table. Every filter lives in the URL (PR-1).
+  the per-target table. Every filter lives in the URL (PR-1). The view's reload is
+  **single-flight with a pending re-run**, not single-flight alone: an in-flight
+  read is already committed to the filters it started with, so a scope/window/query
+  toggle mid-read has to be remembered and re-run at the end (dropping it left the
+  controls and the URL saying one thing and the table showing another until the user
+  pressed Refresh). Coalesced to one re-run, so a burst of clicks costs two reads
+  rather than N, and the re-run lives in `finally` so a transient reader error
+  cannot strand the view on its error card.
 - **CL-13** **A cursor, not a wall-clock guess.** `query` accepts a
   `call_id` cursor and returns the newest id with every page, so a caller —
   usually an agent verifying a page it just wrote — asks for "everything since
@@ -2350,12 +2357,19 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   through to the wait — and when that happens the follow resumes from the
   **baseline**, not from the ghost id: keeping it made the post-wait read fall
   back to "the newest page", which the bounded digest then reported as what
-  arrived. `cursor_missing` still reaches the caller either way. And because the seeking
+  arrived. `cursor_missing` reaches the caller on **every** exit — including the
+  timeout, which is the likelier one for a bad cursor (an agent holding a ghost id
+  usually has nothing arriving either) and which reported it only once activity
+  happened to save it, i.e. never when it was the whole explanation for an empty
+  answer. And because the seeking
   walk gives up after a bounded scan, `cursor_missing` on its own cannot tell
   "purged" from "never reached" — `scan_truncated` says which, is carried into the
   CLI's JSON, and switches the text note from a confident "purged by retention, or
   wrong" to a statement that the store is deeper than this read and the gap is not
-  shown. Claiming absence the walk never verified is the error to avoid.
+  shown. Claiming absence the walk never verified is the error to avoid. On the
+  follow path that flag comes from the **probe**, not from the post-wait read: once
+  the cursor is replaced by the baseline that read is no longer looking for the
+  caller's id, so its `scan_truncated` says nothing about the caller's cursor.
 - **CL-14** **CLI.** `fused-render calls [--page P] [--since 1h] [--failed]
   [--entrypoint E] [--since-cursor ID] [--json] [--verbose] [--follow]` reads
   the store directly off disk (no server needed). **Digest by default**: the
