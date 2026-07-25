@@ -2339,9 +2339,15 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   checked before the filters, so a cursor that no longer matches them ends the
   walk correctly instead of reading as purged. A caller that passes a cursor is
   telling you what it has already seen, so `--follow` **waits only when that
-  cursor is at the tip**: records that landed between the caller's last read and
-  this command are already the answer, and waiting for the tip to move past them
-  timed out holding exactly what was being waited for. And because the seeking
+  cursor already has matching records behind it**: those landed between the
+  caller's last read and this command and are already the answer, and waiting for
+  the tip to move past them timed out holding exactly what was being waited for.
+  That test is a **bounded read, not an id comparison** — `cursor != tip` answers
+  a different question, and a cursor from a broader read is not the tip of a
+  narrower one, so comparing ids made `--follow --page X` with a global cursor
+  skip the wait entirely and report nothing. A cursor that cannot be found is not
+  treated as "already new": absence proves nothing about what arrived, so it falls
+  through to the wait. And because the seeking
   walk gives up after a bounded scan, `cursor_missing` on its own cannot tell
   "purged" from "never reached" — `scan_truncated` says which, is carried into the
   CLI's JSON, and switches the text note from a confident "purged by retention, or

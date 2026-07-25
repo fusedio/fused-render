@@ -1719,3 +1719,58 @@ def test_the_size_trim_drops_the_oldest_append_first(store):
 
     assert not os.path.exists(paths["12345"]), "the older APPEND goes first"
     assert os.path.exists(paths["8000"]), "the newer append survives"
+
+
+# --- a cursor from a BROADER read is not the tip of a narrower one (8th review)
+
+def test_follow_waits_when_a_foreign_cursor_has_no_matching_records(
+        store, monkeypatch, capsys):
+    """Regression in the D139 fix, found by the 8th review pass.
+
+    Comparing `cursor != baseline` answers "is this the current tip", and a
+    cursor from a BROADER read is not the tip of a narrower one. So the ordinary
+    agent pattern — take a global cursor from `calls --json`, then
+    `--follow --page X` — skipped the wait entirely, matched nothing, and
+    reported "no calls recorded". The test has to be a real bounded read: are any
+    MATCHING records newer than the cursor?
+    """
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("mine-1", now - 300, page="/app/mine.html") + "\n")
+        fh.write(appended("other-5", now - 60, page="/app/other.html") + "\n")
+
+    started = time.monotonic()
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "other-5",
+                  "--page", "/app/mine.html", "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out, "must wait, not answer at once"
+    assert time.monotonic() - started >= 1.0, "the wait really happened"
+
+
+def test_follow_answers_at_once_when_a_foreign_cursor_does_have_records(
+        store, monkeypatch, capsys):
+    """The other half: a broader cursor with matching records behind it is still
+    the D139 case and must be answered immediately, not waited out."""
+    os.makedirs(store, exist_ok=True)
+    now = time.time()
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("other-5", now - 300, page="/app/other.html") + "\n")
+        fh.write(appended("mine-9", now - 30, page="/app/mine.html") + "\n")
+
+    started = time.monotonic()
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "other-5",
+                  "--page", "/app/mine.html", "--timeout", "30", "--since", "all")
+    assert time.monotonic() - started < 5, "mine-9 is newer than the cursor"
+    assert "no new calls" not in out
+    assert "1 record(s)" in out
+
+
+def test_follow_waits_when_the_cursor_cannot_be_found(store, monkeypatch, capsys):
+    """A cursor that is not in the store proves nothing about what arrived, so it
+    must fall through to the wait rather than count as "already new"."""
+    os.makedirs(store, exist_ok=True)
+    with open(calls.current_file(), "w") as fh:
+        fh.write(appended("only", time.time() - 60, page="/app/mine.html") + "\n")
+    out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "ghost",
+                  "--page", "/app/mine.html", "--timeout", "1", "--since", "all")
+    assert "no new calls within 1s" in out

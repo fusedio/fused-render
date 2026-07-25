@@ -214,9 +214,23 @@ def _run_calls(args: argparse.Namespace) -> None:
         # That is the NORMAL race for an agent that asked a human to open a page
         # — by the time it gets to follow, the calls have landed. Waiting for the
         # tip to move past `baseline` then times out holding the very records it
-        # was waiting for, and answers "nothing ran". Wait only when the caller
-        # is actually up to date.
-        if cursor is not None and baseline != cursor:
+        # was waiting for, and answers "nothing ran".
+        #
+        # The test is a real bounded read, NOT `cursor != baseline`. Comparing ids
+        # answers "is the caller's cursor the current tip", and a cursor from a
+        # BROADER read is not the tip of a narrower one — so `calls --json` for a
+        # global cursor followed by `--follow --page X` (the ordinary agent
+        # pattern) skipped the wait, matched nothing, and reported "no calls
+        # recorded" without waiting at all. Asking whether any MATCHING record is
+        # newer than the cursor is the actual question, and it costs one bounded
+        # read (~1 ms). A cursor that was not found is deliberately NOT treated as
+        # "already new": absence proves nothing about what arrived, so it falls
+        # through to the wait, which is what --follow was asked to do.
+        already_new = False
+        if cursor is not None:
+            probe = call_log.query(limit=1, cursor=cursor, **filters)
+            already_new = bool(probe["records"]) and not probe.get("cursor_missing")
+        if already_new:
             timed_out = False
         else:
             # Report only what ARRIVES, by resuming from the pre-wait cursor.

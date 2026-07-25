@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects six rounds of review
-found are in §9.5, with D136–D140 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D135; the defects eight rounds of review
+found are in §9.5, with D136–D141 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -853,6 +853,21 @@ seeking walk had simply hit its scan budget without reaching the cursor. A valid
 deep cursor read as a dead one, and the skipped gap went unmentioned.
 `scan_truncated` now separates the guess from the proof.
 
+An eighth round found a **regression in the D139 fix itself**, and it is the
+sharpest lesson of the lot. I had written that "a careless version of this fix
+answers instantly for every follow and quietly deletes the feature", and tested two
+cursor shapes against exactly that — a cursor at the tip, and no cursor. I did not
+test a **third** shape: a cursor from a *different* read. Because the early-answer
+test was `cursor != baseline`, which asks "is this the current tip", a cursor from a
+broader read (the ordinary agent pattern: take a global cursor from `calls --json`,
+then `--follow --page X`) is never the narrower tip — so follow skipped the wait,
+matched nothing, and reported "no calls recorded" in 1 s of a 5 s timeout. Fixed by
+asking the actual question with a bounded read: *are any matching records newer than
+this cursor?* The lesson is about the shape of negative-case testing: I enumerated
+the negative cases I had thought of while writing the fix, which is the same
+blind spot as testing the consumer you just wrote. Enumerate the *input space* —
+here, "where did this cursor come from" had three answers and I covered two.
+
 A seventh round then found the *same* name-order belief in a second place: the
 `condition.py` gate's bounded "newest files" probe was also reverse-name order, so
 with a few same-day files its whole window could be stale and the Calls mode never
@@ -876,7 +891,7 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-Across all seven rounds the pattern never changed: each defect lived in a seam
+Across all eight rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts. What did change is where
 the seams were — the later ones were *inside* code I had already reviewed and
 documented, which is the argument for adversarial review outliving "done".
