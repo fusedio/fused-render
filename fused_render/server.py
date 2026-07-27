@@ -3707,7 +3707,7 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/render")
     def render(path: str):
-        if not os.path.isfile(path):
+        if not _is_file_mount_safe(path):
             return _error(f"no such file: {path}", status=404)
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
