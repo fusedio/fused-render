@@ -460,8 +460,7 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     except OSError:
-        # Windows raises a bare OSError (WinError 6 invalid handle / WinError 87
-        # invalid parameter) for a dead pid instead of ProcessLookupError.
+        # Windows raises a bare OSError for a dead pid, not ProcessLookupError.
         return False
     return True
 
@@ -960,8 +959,7 @@ def _kill_current_rcd() -> None:
         raise RuntimeError(
             f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
         )
-    # SIGKILL doesn't exist on Windows; there SIGTERM already maps to
-    # TerminateProcess, so it is sufficient on its own.
+    # SIGKILL is absent on Windows; SIGTERM there maps to TerminateProcess.
     sigs = (signal.SIGTERM,) if sys.platform == "win32" else (signal.SIGTERM, signal.SIGKILL)
     for sig in sigs:
         try:
@@ -969,8 +967,7 @@ def _kill_current_rcd() -> None:
         except ProcessLookupError:
             return  # raced us and exited between the check and the signal
         except OSError as e:
-            # Windows reports the same race as a bare OSError, not
-            # ProcessLookupError — re-check liveness before failing.
+            # Windows signals the same race as a bare OSError, not ProcessLookupError.
             if not _pid_alive(pid):
                 return
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e

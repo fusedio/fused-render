@@ -365,16 +365,13 @@ def test_mount_win32_uses_disk_mode_mountopt(home, rcd, monkeypatch):
     c = mounts_mod.add_mount("data", "remote:bucket")
     assert mounts_mod.attach_mount(c) is None
     [(_, body)] = [x for x in rcd.calls if x[0] == "mount/mount"]
-    # The bundled Windows rclone is a cmount-only build; "mount" (native FUSE)
-    # is rejected with "mount option ... is not registered, or is invalid".
+    # bundled Windows rclone is cmount-only; native "mount" is rejected.
     assert body["mountType"] == "cmount"
     assert body["mountOpt"] == {"NetworkMode": False}
 
 
 def test_pid_alive_false_on_windows_oserror(monkeypatch):
-    # On Windows os.kill(pid, 0) against a dead pid raises a bare OSError
-    # (WinError 6 invalid handle / 87 invalid parameter), not ProcessLookupError;
-    # _pid_alive must treat that as not-alive rather than propagate it.
+    # os.kill raises a bare OSError for a dead pid on Windows, not ProcessLookupError.
     def raise_oserror(pid, sig):
         raise OSError(6, "The handle is invalid")
     monkeypatch.setattr(mounts_mod.os, "kill", raise_oserror)
@@ -382,13 +379,12 @@ def test_pid_alive_false_on_windows_oserror(monkeypatch):
 
 
 def test_kill_current_rcd_no_sigkill_on_win32(home, monkeypatch):
-    # SIGKILL is absent on Windows; _kill_current_rcd must escalate with SIGTERM
-    # only there (it maps to TerminateProcess). Guards against AttributeError.
+    # win32 escalates with SIGTERM only (no SIGKILL to reference).
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
     mounts_mod.storage.write_json(mounts_mod._rcd_state_path(), {"pid": 4321, "port": 5572})
     monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda entry: True)
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
-    alive = iter([True])  # alive for the pre-kill check, gone during the poll
+    alive = iter([True])
     monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: next(alive, False))
     sent = []
     monkeypatch.setattr(mounts_mod.os, "kill", lambda pid, sig: sent.append(sig))
@@ -397,14 +393,12 @@ def test_kill_current_rcd_no_sigkill_on_win32(home, monkeypatch):
 
 
 def test_kill_current_rcd_win32_pid_gone_mid_signal(home, monkeypatch):
-    # A pid that exits between the alive-check and os.kill raises a bare
-    # OSError on Windows (not ProcessLookupError); that race must return
-    # cleanly, not RuntimeError.
+    # a pid dying mid-signal (bare OSError on win32) must return cleanly.
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
     mounts_mod.storage.write_json(mounts_mod._rcd_state_path(), {"pid": 4321, "port": 5572})
     monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda entry: True)
     monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
-    alive = iter([True])  # alive for the pre-kill check, gone by the re-check
+    alive = iter([True])
     monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: next(alive, False))
 
     def raise_oserror(pid, sig):
