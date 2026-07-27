@@ -1045,19 +1045,23 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, log: {path, dir}, deploy: {enabled}}`. `PUT /api/prefs`
-  (X-Fused) applies a **partial** update — any of `{engine}` and/or
-  `{deploy_enabled}` present, so each control PUTs only its own field — and
+  fused_available}, deploy: {enabled}, reader: {enabled}, calls: {…}}` — and no
+  `log` block (PF-5). `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `engine`, `deploy_enabled`,
+  `reader_enabled`, `calls_enabled`, `calls_params` or `calls_retention_days`
+  present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value, a non-boolean
   `deploy_enabled`, or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
-- **PF-1a** The page renders its sections in this order: **Template registry**,
-  **Logs**, **Execution engine**, **Deploy to Fused account** (the spec subsection
-  numbering below is organizational, not the visual order).
+- **PF-1a** The page renders its sections in this order: **Appearance**,
+  **Execution engine**, **Call log**, **Deploy to Fused account**,
+  **Accessibility**, **Tour** (the spec subsection numbering below is
+  organizational, not the visual order).
 - **PF-2** The page is a thin client over existing backends everywhere else:
-  logs reveal via `POST /api/fs/reveal`, deployments via `GET
-  /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
-  /api/deploy/revoke`, registry via `GET /api/templates/registry`.
+  deployments via `GET /api/deploy/config` + `GET /api/deploy/shares`,
+  revocation via `POST /api/deploy/revoke`, registry via `GET
+  /api/templates/registry`, the call store's in-app browse via ordinary
+  navigation.
 
 ### 20.2 Execution engine switch
 
@@ -1094,10 +1098,15 @@ never imports server).
 
 ### 20.3 Logs
 
-- **PF-5** The page names this process's log file (`logs.log_path`, from
-  `GET /api/prefs`) and "Open logs location" reveals it in the OS file
-  manager through the existing reveal endpoint — the web-UI twin of the
-  menu-bar app's "Open logs".
+- **PF-5** **The app's own log is NOT on this page**, and `GET /api/prefs`
+  carries no `log` block. It used to: a heading naming `logs.log_path` with an
+  "Open logs location" reveal button. Removed because the app log is
+  disposable temp-dir output (D68) whose only affordance was that reveal —
+  which the desktop tray's "Open logs" already provides on every platform that
+  has a tray — and because once the call store moved to `~/.fused-render/logs`
+  (CL-7), a second "Logs" heading beside the Call log section read as the call
+  log's own settings. The durable log a user has settings for is the call log
+  (§31); the disposable one belongs to the process, not to preferences.
 
 ### 20.4 Deploy to Fused account
 

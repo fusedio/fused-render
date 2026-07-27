@@ -55,19 +55,21 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
-- **Logs** — the path to this run's log file, with an action to reveal it. The
-  server writes this log for debugging: when something goes wrong (an "Internal
-  Server Error" in the browser, or a misbehaving file-open) it has the traceback.
-  Each run writes its own file in your system temp directory (the CLI also prints
-  the path on startup; the packaged app reveals it from **menu bar → Open
-  logs**). It's disposable — it rotates so it can't grow without bound, and
-  living in temp means the OS reclaims it; set `FUSED_RENDER_LOG_DIR` to keep
-  logs somewhere persistent instead.
 - **Call log** — whether the app records the API calls your pages make, how
   much of each run's parameters it keeps, and how long records are kept. See
   [Call log](#call-log) below.
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your own overrides), read-only.
+
+The **server's own log** is not a preference, so it is not on that page. It
+exists for debugging: when something goes wrong (an "Internal Server Error" in
+the browser, or a misbehaving file-open) it has the traceback. Each run writes
+its own file in your system temp directory — the CLI prints the path on
+startup, and the packaged app reveals it from **menu bar → Open logs**. It's
+disposable: it rotates so it can't grow without bound, and living in temp means
+the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
+persistent instead. (Not to be confused with the **call log** below, which is
+durable, has settings, and lives in `~/.fused-render/logs/`.)
 
 ## Export for hosted serving
 
@@ -139,7 +141,7 @@ one directory per app (named for the page's folder, e.g. `sine-3f9a1c2b8d7e6f50`
 with `index.json` at the root mapping names back to folders), one file per day
 per server process inside it, rolled to a new part every 32 MB. (This is not
 the app's own log: that one is disposable diagnostic output and lives in the
-system temp dir — **Preferences → Logs** points at it. `~/.fused-render/logs/`
+system temp dir, reached from **menu bar → Open logs**. `~/.fused-render/logs/`
 holds only the durable call records described here.) Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),
 rate-limited per page, and pruned after 14 days or once the store passes

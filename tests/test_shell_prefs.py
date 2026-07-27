@@ -1,5 +1,5 @@
 """Tests for the Preferences backend (SPEC §20): GET/PUT /api/prefs
-(shell/prefs.py — the persisted engine preference + log location), the
+(shell/prefs.py — the persisted engine/deploy/reader/call-log preferences), the
 per-request engine dispatch it drives in /api/run, and the merged
 extension→templates registry view (GET /api/templates/registry).
 
@@ -36,7 +36,9 @@ def test_defaults_builtin_unforced(tmp_path, monkeypatch):
     assert body["engine"]["effective"] == "builtin"
     assert body["engine"]["forced_by"] is None
     assert isinstance(body["engine"]["fused_available"], bool)
-    assert body["log"]["path"].endswith(".log")
+    # The app's own log left this payload with its Preferences section
+    # (PF-5): absence asserted so it cannot quietly come back.
+    assert "log" not in body
 
 
 def test_put_persists_and_degrades_while_fused_unavailable(tmp_path, monkeypatch):

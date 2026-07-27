@@ -1,9 +1,12 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Logs, Execution engine, Call log (capture/redaction/
-//     retention for fused_render/calls.py), Deploy to Fused account (the
-//     opt-in Deploy-button toggle), Tour. Always present; the default
-//     (clean URL).
+//   Render preferences — Appearance, Execution engine, Call log (capture/
+//     redaction/retention for fused_render/calls.py), Deploy to Fused account
+//     (the opt-in Deploy-button toggle), Accessibility, Tour. Always present;
+//     the default (clean URL). The app's OWN log is not here: it is disposable
+//     temp-dir output (D68) reached from the desktop tray's "Open logs", and a
+//     second "Logs" heading next to the Call log section only ever read as the
+//     call log's own settings.
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
@@ -20,7 +23,6 @@ import {
   putDeployEnabled,
   putEnginePref,
   putReaderEnabled,
-  revealPath,
 } from "../lib/api";
 import type { CallsParamsMode, Prefs } from "../lib/api";
 import { navigate, navigateUrl } from "../lib/router";
@@ -96,32 +98,6 @@ function TourSection() {
       <button type="button" onClick={() => startTour()}>
         Start tour
       </button>
-    </section>
-  );
-}
-
-function LogsSection({ prefs }: { prefs: Prefs }) {
-  const [error, setError] = useState<string | null>(null);
-  const reveal = async () => {
-    setError(null);
-    try {
-      await revealPath(prefs.log.path);
-    } catch (e) {
-      // e.g. the file rotated away, or an unsupported platform.
-      setError((e as Error).message);
-    }
-  };
-  return (
-    <section className="prefs-section">
-      <h2>Logs</h2>
-      <p className="deploy-muted">
-        This server writes its log to <code>{prefs.log.path}</code> (a file per run; set{" "}
-        <code>FUSED_RENDER_LOG_DIR</code> to keep logs somewhere persistent).
-      </p>
-      <button type="button" onClick={reveal}>
-        Open logs location
-      </button>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
@@ -514,7 +490,6 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
-                <LogsSection prefs={prefs} />
                 <EngineSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection

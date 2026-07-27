@@ -2,8 +2,13 @@
 
 The Preferences page's backend (SPEC §20): a tiny persisted preference store
 (shell/storage, beside bookmarks.json/deployments.json) plus the derived,
-read-only facts the page shows next to it (log location, engine
-availability/forcing).
+read-only facts the page shows next to it (engine availability/forcing).
+
+The app's own log is deliberately NOT in this payload: it is disposable
+temp-dir output (D68) whose only affordance was a reveal button, and the
+desktop tray's "Open logs" already covers that. Since the call store moved to
+~/.fused-render/logs, a second "Logs" heading here read as the call log's
+settings rather than as a separate thing.
 
 Three preferences are persisted: **deploy_enabled** (whether the preview-header
 Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
@@ -36,7 +41,6 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.logs import log_dir, log_path
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -187,9 +191,6 @@ def engine_state() -> dict:
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
-        # Where this process is logging (logs.py): the page's "open the logs
-        # location" action reveals `path` via the existing /api/fs/reveal.
-        "log": {"path": log_path(), "dir": log_dir()},
         # Whether the preview-header Deploy affordance is shown (opt-in).
         "deploy": {"enabled": deploy_enabled()},
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).

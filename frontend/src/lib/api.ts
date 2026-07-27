@@ -780,7 +780,6 @@ export interface EnginePrefs {
 
 export interface Prefs {
   engine: EnginePrefs;
-  log: { path: string; dir: string };
   // Whether the preview-header Deploy button is shown (opt-in, default off).
   deploy: { enabled: boolean };
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
