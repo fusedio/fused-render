@@ -2273,7 +2273,9 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-3** **Attribution is by header, exclusion by construction.**
   `runtime.js` sends `X-Fused-Page` (the page's own path), `X-Fused-Target`
   (`_file`, when the page is a template) and `X-Fused-Call` (a per-call id) on
-  every call it issues. `X-Fused-Page` is the whole test for "is this an app
+  every call it issues, plus `X-Fused-Supersedes` (comma-separated ids this call
+  abandoned, CL-5a) on the request that caused a supersession.
+  `X-Fused-Page` is the whole test for "is this an app
   call": the shell's own `/api/fs/list`, the conditions probe, and any other
   caller carry none and are therefore never logged — no endpoint blocklist to
   drift. Like `X-Fused` these force a CORS preflight; this is attribution, not
@@ -2302,14 +2304,24 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   for what the user experienced as one request.
 - **CL-5a** **The page reports supersession; the server cannot infer it.**
   Aborting a `fetch` does **not** raise into the handler — the run completes and
-  the middleware would record an ordinary success — so `runtime.js` posts the
-  abandoned `call_id`s to `POST /api/calls/event` (`kind: "superseded"`) at abort
-  time and `finish()` stamps the outcome from a short-TTL, hard-bounded set of
-  pending marks. The ordering is what makes this work without mutating an
-  append-only file: the superseded run keeps executing for as long as it would
-  have, so the report reliably arrives before its record is written. A mark is
-  consumed once, so an id can never reclassify a second record. The report is
-  batched per macrotask and flushed on `pagehide`. **Known gap:** a closed tab or
+  the middleware would record an ordinary success — so the page names the
+  abandoned `call_id`s and `finish()` stamps the outcome from a short-TTL,
+  hard-bounded set of pending marks. Because the store is append-only and the
+  outcome is stamped in place, the mark has to arrive **before** the abandoned
+  call's record is written, which makes the transport a correctness question and
+  not a detail: it rides the **`X-Fused-Supersedes` header on the superseding
+  request**. A supersession only ever happens because the page is issuing a new
+  call on the same channel, and that request leaves in the same synchronous task
+  as the abort, so the server takes the mark in `begin()` — the earliest point it
+  sees the request. The separate `POST /api/calls/event` (`kind: "superseded"`)
+  remains as the **unload backstop**, where there is no request left to carry the
+  ids; it is no longer the primary path, because deferring it by one macrotask
+  put it ~19 ms after the abort (measured), and every abandoned call that
+  finished inside that window was written `ok` and averaged into the percentiles
+  — the failure this rule exists to prevent, reachable by any in-process helper
+  (D72). A mark is consumed once, so an id can never reclassify a second record,
+  and the header path *takes* the queued ids rather than copying them so a
+  duplicate cannot arrive after the record was written. **Known gap:** a closed tab or
   a reload is not reported by anyone and still records as `ok`. Server-side
   detection is **not available under this app's shape**, verified twice rather
   than assumed: from a route, `BaseHTTPMiddleware` wraps the downstream

@@ -699,6 +699,70 @@ def test_an_abandoned_call_is_marked_superseded(app_client):
     assert got["status"] == 200, "the run itself still succeeded; only the label differs"
 
 
+def test_the_superseding_request_carries_the_mark_itself(app_client):
+    """The mark rides the request that CAUSED it, so it cannot arrive late.
+
+    Reported by Bugbot: the report was a separate POST deferred by
+    `setTimeout(0)`, and `finish()` only stamps `superseded` if the mark is
+    already there. Measured in Chromium against a local server, that POST landed
+    ~19 ms after the abort — so any abandoned call whose handler finished inside
+    that window was written as `ok` and counted in the latency percentiles,
+    which is precisely what CL-5 exists to prevent. In-process helpers (D72)
+    finish that fast routinely.
+
+    A supersession only ever happens because the page is issuing a new call on
+    the same channel, and that request leaves in the same synchronous task as
+    the abort — so it carries the ids, and the server takes them in `begin()`,
+    before it can write anything for the call being abandoned.
+
+    Here the abandoned run is recorded AFTER the superseding request, with no
+    prior /api/calls/event at all: only the header can produce this outcome.
+    """
+    client, d = app_client
+    client.post("/api/run",
+                json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{
+                    "X-Fused-Call": "keeper",
+                    "X-Fused-Supersedes": "ditched-1,ditched-2",
+                }))
+    for call_id in ("ditched-1", "ditched-2"):
+        client.post("/api/run",
+                    json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                    headers=app_headers(d / "p.html", **{"X-Fused-Call": call_id}))
+    assert drain()
+
+    for call_id in ("ditched-1", "ditched-2"):
+        assert calls.detail(call_id)["outcome"] == "superseded", call_id
+    assert calls.detail("keeper")["outcome"] == "ok", \
+        "the call that did the superseding is not itself superseded"
+
+
+def test_a_mark_is_consumed_once_so_a_duplicate_cannot_mislabel_a_later_call(app_client):
+    """Why the runtime hands the ids to the header INSTEAD of also posting them.
+
+    `finish()` consumes a mark. A duplicate arriving afterwards would linger in
+    the server's map for its whole TTL, and any later call that happened to
+    reuse the id would be mislabelled. Ids are random so the second half is
+    theoretical, but "sent twice" is a state the client should not create — the
+    runtime splices the queue when the header takes it.
+    """
+    client, d = app_client
+    client.post("/api/run", json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "keeper",
+                                                     "X-Fused-Supersedes": "once"}))
+    client.post("/api/run", json={"py": str(d / "ok.py"), "html": str(d / "p.html")},
+                headers=app_headers(d / "p.html", **{"X-Fused-Call": "once"}))
+    assert drain()
+    assert calls.detail("once")["outcome"] == "superseded"
+    assert calls._take_superseded("once") is False, "the mark is gone after one use"
+
+    runtime = open(os.path.join(os.path.dirname(calls.__file__), "static", "runtime.js"),
+                   encoding="utf-8").read()
+    assert "function takePendingSupersedes()" in runtime
+    assert "supersededIds.splice(0, supersededIds.length).join(\",\")" in runtime, \
+        "the header must TAKE the ids, not copy them"
+
+
 def test_a_superseded_run_is_excluded_from_the_percentiles_end_to_end(app_client):
     """One drag: several abandoned calls plus the one the user waited for. The
     chart must report the kept call's latency, not the drag's."""

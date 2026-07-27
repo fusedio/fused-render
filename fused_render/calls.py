@@ -76,6 +76,12 @@ RECORD_VERSION = 1
 PAGE_HEADER = "x-fused-page"
 CALL_HEADER = "x-fused-call"
 TARGET_HEADER = "x-fused-target"
+# Comma-separated call ids the page abandoned to make THIS call (CL-5). Carried
+# on the superseding request because that request leaves in the same task as the
+# abort, so the mark lands before the abandoned call's record is written — a
+# separate POST measured ~19 ms later, and anything that finished inside that
+# window was recorded `ok`. The POST still exists for the unload path.
+SUPERSEDES_HEADER = "x-fused-supersedes"
 
 # Caps, verbatim from the serve plane's error record (the fused repo's
 # spec/serve/error-reporting.md §1.2) so a local record and a deployed one carry
@@ -1030,6 +1036,13 @@ def begin(request: Request) -> dict | None:
         return None
     if not enabled():
         return None
+    # Before anything else: this request may be the one that abandoned another,
+    # and that other call's record can be written at any moment. Taking the mark
+    # here — the earliest point the server sees this request — is what makes the
+    # header path beat the POST it replaced.
+    abandoned = request.headers.get(SUPERSEDES_HEADER)
+    if abandoned:
+        mark_superseded([i for i in abandoned.split(",") if i][:64])
     # A read route names the file it touched in its `path` query param
     # (/api/fs/stat, /api/fs/raw). Seeding `entrypoint` from it means the
     # per-target rollup can say "this page stat'd that file 400 times" instead

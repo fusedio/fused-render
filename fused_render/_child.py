@@ -76,7 +76,16 @@ def run():
         # 'fused_render'" that reached the user said nothing about which
         # interpreter looked, or where. Name the environment so the next report
         # is conclusive instead of a guess about how it was installed.
-        if isinstance(e, ImportError) and (e.name or "").split(".")[0] == "fused_render":
+        #
+        # EXACT name, not its first segment: when the package itself is missing
+        # Python reports `name` as the top-level package even for a submodule
+        # import (`import fused_render.calls` -> name='fused_render'), whereas a
+        # missing submodule under a package that IS importable reports the full
+        # dotted path ('fused_render.calls'). Matching the first segment
+        # therefore attached a bootstrap diagnosis — executable, PYTHONPATH,
+        # sys.path — to a plain typo in a submodule name, pointing the reader at
+        # an environment that is fine.
+        if isinstance(e, ImportError) and e.name == "fused_render":
             message += (
                 f" [worker could not see the fused_render package: "
                 f"executable={sys.executable}, "

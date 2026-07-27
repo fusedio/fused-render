@@ -456,6 +456,10 @@
     // A caller-supplied id lets the abort path name the call it cancelled
     // (see reportSuperseded); anything else gets a fresh one.
     headers["X-Fused-Call"] = callId || newCallId();
+    // Supersessions ride the request that CAUSED them, when there is one — see
+    // takePendingSupersedes.
+    const abandoned = takePendingSupersedes();
+    if (abandoned) headers["X-Fused-Supersedes"] = abandoned;
     return headers;
   }
 
@@ -466,9 +470,26 @@
   // requests and put their durations into the latency percentiles. Only the page
   // knows, so it says so, keyed by the X-Fused-Call id it already sent.
   //
-  // The superseded run keeps executing for as long as it would have, so this
-  // report reliably lands before the record is written — which is what lets the
-  // server stamp the outcome in place instead of patching an append-only file.
+  // The mark has to reach the server BEFORE the superseded call's record is
+  // written, because the store is append-only and finish() stamps the outcome in
+  // place rather than patching a line after the fact.
+  //
+  // So it rides the request that caused it. A supersession only ever happens
+  // because the page is issuing a NEW call on the same channel, and that request
+  // leaves in the same synchronous task as the abort — so `X-Fused-Supersedes`
+  // on it reaches the server as early as anything can, with no extra round trip.
+  //
+  // The separate POST below used to be the only path, deferred by setTimeout(0)
+  // to batch. Measured in Chromium against a local server, that landed ~19 ms
+  // after the abort — and any superseded call whose handler finished inside that
+  // window was written as `ok` and counted in the latency percentiles, which is
+  // the exact failure CL-5 exists to prevent. In-process helpers (D72) routinely
+  // finish that fast, so a template re-querying per keystroke hit it often.
+  // Reported by Bugbot; the header closes the gap for every supersession that
+  // has a causing request, which is all of them.
+  //
+  // The POST survives as the unload backstop: pagehide has ids with no request
+  // left to carry them.
   const supersededIds = [];
   let supersededQueued = false;
 
@@ -477,11 +498,19 @@
     supersededIds.push(callId);
     if (supersededQueued) return;
     supersededQueued = true;
-    // Next macrotask — batches only the ids produced by this one task (several
-    // runPython calls fired from a single handler), which is the whole realistic
-    // burst: a slider tick supersedes exactly one call. A timed window would buy
-    // nothing and could land after a short run's record was already written.
+    // Backstop only — the header normally drains this first (see
+    // takePendingSupersedes), leaving the flush a no-op.
     setTimeout(flushSuperseded, 0);
+  }
+
+  // Hand the pending ids to the outgoing request, and take them out of the
+  // queue so the backstop POST does not re-send what the server already has.
+  // Re-sending is not harmless: `finish()` CONSUMES a mark, so a duplicate
+  // arriving after the record was written would sit in the server's map until
+  // its TTL instead of matching anything.
+  function takePendingSupersedes() {
+    if (!supersededIds.length) return "";
+    return supersededIds.splice(0, supersededIds.length).join(",");
   }
 
   function flushSuperseded() {
