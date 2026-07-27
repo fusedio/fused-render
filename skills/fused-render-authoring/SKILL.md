@@ -242,7 +242,7 @@ What the record count tells you, before you read anything else:
 
 The same data is in the **Calls** view mode on any page that has records
 (charts + the per-target table), and the raw store is JSONL under
-`~/.fused-render/logs/` if you want to `jq` it. Parameters are recorded by
+`~/.fused-render/logs/<app>/` (one directory per app; whole-store queries glob `logs/*/*.calls.jsonl`) if you want to `jq` it. Parameters are recorded by
 default, so treat the log as containing whatever your page passes around.
 
 ## Long-running work and the 60 s timeout

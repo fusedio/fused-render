@@ -349,6 +349,92 @@ a deliberate filter, not an accident. Two additions handle it:
   `templates/` dir, or under `~/.fused-render/templates/`) so the default view
   can show *your* pages and let template calls be one toggle away.
 
+### 4.7 Partitioning the store by app **[shipped, second PR]**
+
+The flat directory of §4.1 had three problems, in increasing severity: a quiet
+app's reads paid for a chatty app's volume (every walk tails every file); the
+size cap let one app evict another's history (trimming was oldest-first across
+the whole store); and the gate produced **false negatives** — its bounded probe
+(`MAX_FILES` newest files) filled up with the busy app's files, so a quiet
+page's Calls mode silently never appeared. The third is the same defect class
+as D140–D144 (a verification tool reporting no activity when there was
+activity), with the flat layout as a fourth cause.
+
+**The partition is the page's containing directory.** An app is an `.html`
+plus its sibling `.py` files, so the folder is the unit that makes both the
+page's and the data file's lookups land in the same place — which the `.py`
+case requires, because a `.py` is never a record's `page` (D139/D147) and any
+per-page scheme would strand it.
+
+```
+~/.fused-render/logs/
+  index.json                          # advisory: partition dir -> app dir
+  sine-3f9a1c2b8d7e6f50/              # <slug ≤24>-<blake2b-16hex of the app dir>
+    2026-07-27-41234-001.calls.jsonl  # file naming unchanged (CL-7)
+  _unattributed/                      # records with no resolvable page
+```
+
+Decisions, and what was rejected:
+
+- **One resolver owns the name.** `partition_name(app_dir)` hashes
+  `canonical_fs_path(normcase(realpath(app_dir)))` — symlinks resolved, case
+  folded where the platform folds it, one separator form (D147's lesson,
+  applied before the bug this time). The gate duplicates it (stdlib-only
+  standalone copy, like `_store_dir`) and a test pins the two across a table of
+  paths. The slug is for the human running `jq`; the hash is the identity.
+  `realpath` costs a syscall chain on the hot path, so it sits behind a small
+  LRU — a symlink retargeted mid-process keeps its old partition until restart,
+  accepted and documented.
+- **Cursors stay bare `call_id`s, and D140–D146 semantics carry over
+  verbatim.** The tempting design was a composite `<time>:<id>` cursor so each
+  partition could stop independently — rejected as solving a problem the read
+  path does not have. The walk stays **merged**: `store_files()` collects
+  every partition's files and `_day_groups` merges them by append time exactly
+  as before, so the identity stop, the shown-id guarantee, `cursor_missing`,
+  and the scan budget all behave identically. Partitioning changes where files
+  LIVE, never how the walk works.
+- **`query()` does NOT narrow to a partition — implementation proved it must
+  not.** The tempting second win was `query(page=X)` reading only
+  `partition(dirname(X))`. The existing filter test failed immediately, and it
+  was right: "this file" is a THREE-role match (`page` or `target_file` or
+  `entrypoint`, D139/CL-16), and a template rendering your file records under
+  the *template's* partition with `target_file` pointing at yours — the exact
+  activity the Calls view on a data file exists to show. Any partition-narrowed
+  walk silently loses it, and no candidate-set scheme closes the hole (the
+  test's "template" page is not even under a templates dir). So the read path
+  stays global-merged; its cost was already bounded by the window file-skip and
+  the cursor's identity stop (D140), which is what made this cheap to give up.
+  The gate is different: its probe was always a bounded *heuristic* with misses,
+  so partition-first-then-global-fallback strictly improves it — the fallback
+  IS the flat behaviour. The known blind spot stays only there: a `.py` borrowed
+  by an app in another folder logs under the borrower, and the borrowed file's
+  gate finds it only through the fallback window, as before.
+- **The size cap trims the largest partition first.** Age-based deletion stays
+  per-file; while the store exceeds the global cap, the oldest non-today file
+  of the currently-largest partition goes. This is what stops the chatty app
+  evicting the quiet one, and the chatty app's own tail is the least
+  informative data in the store. Rejected: per-partition quotas (`cap / N`) —
+  they waste the cap in the common case of one active app.
+- **`sweep()` reaps.** A partition whose files have all aged out is an empty
+  directory forever otherwise; the sweep removes empty partition dirs and
+  their `index.json` entries. `index.json` itself is advisory and rebuildable —
+  written only when a partition is *created* (never per record: a whole-file
+  read-merge-write on the hot path is what §4.1 rejected the sidecar for), and
+  a lost or corrupt index costs the slug lookup, nothing else.
+- **Renames truncate.** Moving an app's folder changes its partition; the old
+  history sits under the old name until retention reaps it. Accepted by the
+  owner over a rename-chain in the index — the chain is bookkeeping that can
+  drift, for an event (renaming a live app mid-investigation) that is rare.
+- **No migration.** A flat store cannot be partitioned by moving files — a day
+  file interleaves every app's records — and the call log has never shipped,
+  so the only flat stores are development ones. The reader ignores any stray
+  root-level `*.calls.jsonl`.
+
+What deliberately does **not** change: the record shape, the `.calls.jsonl`
+suffix (the registry binding, CT-3), the per-pid-per-day file naming, the
+bare-id cursor contract, and the CLI surface. `duckdb` whole-store queries now
+need a two-level glob (`logs/*/*.calls.jsonl`), noted in usage.md.
+
 ---
 
 ## 5. Reading it back

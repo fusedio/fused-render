@@ -134,16 +134,22 @@ reads themselves are kept (what a viewer costs on a big log is worth seeing);
 the Calls view's own polling is the one thing excluded, since it would otherwise
 inflate the numbers you are reading.
 
-**Where it lives.** `~/.fused-render/logs/` as newline-delimited JSON, one file
-per day per server process, rolled to a new part every 32 MB. (This is not the
-app's own log: that one is disposable diagnostic output and lives in the system
-temp dir — **Preferences → Logs** points at it. `~/.fused-render/logs/` holds
-only the durable call records described here.) Records are capped
+**Where it lives.** `~/.fused-render/logs/<app>/` as newline-delimited JSON —
+one directory per app (named for the page's folder, e.g. `sine-3f9a1c2b8d7e6f50`,
+with `index.json` at the root mapping names back to folders), one file per day
+per server process inside it, rolled to a new part every 32 MB. (This is not
+the app's own log: that one is disposable diagnostic output and lives in the
+system temp dir — **Preferences → Logs** points at it. `~/.fused-render/logs/`
+holds only the durable call records described here.) Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),
-rate-limited per page, and pruned after 14 days or once the directory passes
-200 MB — whichever comes first. Today's files are never pruned, since a running
-server is appending to them. The files are ordinary JSONL, so `tail`, `jq`, and
-the built-in `duckdb` view all work on them.
+rate-limited per page, and pruned after 14 days or once the store passes
+200 MB — whichever comes first, with the largest app's oldest files trimmed
+first so a chatty app cannot evict a quiet one's history. Today's files are
+never pruned, since a running server is appending to them. Renaming or moving
+an app's folder starts a fresh directory; the old one ages out on its own. The
+files are ordinary JSONL, so `tail`, `jq` (one app's history is one
+directory), and the built-in `duckdb` view all work on them — a whole-store
+query globs `logs/*/*.calls.jsonl`.
 
 **A note on parameters.** A run's parameters are recorded by default: they are
 usually the whole reproduction, and they are already visible in the URL. If a

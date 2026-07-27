@@ -2288,11 +2288,12 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   runPython failure the page did not catch is NOT re-reported here — the
   server already recorded it against the `/api/run` call, with the real
   traceback.
-- **CL-7** **Store.** `~/.fused-render/logs/<date>-<pid>-<part>.calls.jsonl` —
-  append-only JSONL under the branch-aware shell home. The directory is `logs/`,
-  which is NOT where `logs.py` writes: the app log is disposable and lives in the
-  system temp dir (D68), while this store is durable and pruned by code (CL-10),
-  so the two never share a directory despite both being called logs in the UI.
+- **CL-7** **Store.** `~/.fused-render/logs/<partition>/<date>-<pid>-<part>.calls.jsonl`
+  — append-only JSONL under the branch-aware shell home, partitioned per app
+  (CL-18). The root is `logs/`, which is NOT where `logs.py` writes: the app log
+  is disposable and lives in the system temp dir (D68), while this store is
+  durable and pruned by code (CL-10), so the two never share a directory despite
+  both being called logs in the UI.
   One file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
   interleave lines, and the reader merges the day back together, CL-12), rolled
@@ -2542,3 +2543,27 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
 - **CL-17** Not a security or audit log. D3 stands — this is a local
   single-user diagnostic, not an attestation, and nothing may be built on it
   as if it were tamper-evident.
+- **CL-18** **The store is partitioned per app** (D151; design §4.7). A
+  record lives under `<slug>-<hash>/`, where the identity is the page's
+  containing directory — an app being an `.html` plus its sibling `.py`s, the
+  folder is the unit that lets both the page's and a data file's lookups land
+  in one place. `partition_name()` is the ONE resolver of that name
+  (`canonical_fs_path(normcase(realpath(dir)))` hashed, slug ≤24 chars for the
+  human), duplicated standalone in the gate exactly as `_store_dir` is and
+  pinned to the writer by a test. Records with no resolvable page go to
+  `_unattributed/`. Reads stay MERGED — `store_files()` spans every partition
+  and the day-merge (CL-12) is unchanged — so the bare-`call_id` cursor
+  contract (CL-13, D140–D146) carries over verbatim, and `query()` deliberately
+  does NOT narrow to a partition: "this file" is a three-role match (CL-10,
+  CL-16), and a template's record about your file lives under the *template's*
+  partition, so a narrowed walk silently loses designed behaviour (a test
+  proved it). Only the gate narrows — its probe was always a bounded heuristic,
+  so partition-first with the old global scan as fallback strictly improves
+  it. The size cap trims the **largest** partition's oldest
+  non-today file first (a chatty app must not evict a quiet one), the sweep
+  reaps emptied partition dirs, and `index.json` at the root is an advisory
+  partition→app-dir map written only on partition creation, rebuildable, never
+  load-bearing. A renamed app folder is a NEW partition; the old history ages
+  out unclaimed (owner-accepted over a rename chain). A `.py` borrowed by a
+  page in another folder logs under the borrower — the borrowed file's own
+  Calls view shows its home app only.
