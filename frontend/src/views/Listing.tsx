@@ -32,6 +32,7 @@ import {
   copyToClipboard,
   clearClipboardIfDeleted,
   remapClipboardPath,
+  pruneDescendantPaths,
   trashEntry,
   resolveOpenWithModes,
   buildOpenWithItems,
@@ -58,6 +59,14 @@ interface RowCtx {
   name: string;
   isDir: boolean;
   parentDir: string;
+}
+
+// Row-shaped pruneDescendantPaths, for the batch row ops (Trash, Delete): a
+// search selection can hold a folder row and rows from inside it, and removing
+// the folder already removes those. Same input order.
+function pruneDescendantRows(rows: RowCtx[]): RowCtx[] {
+  const kept = new Set(pruneDescendantPaths(rows.map((r) => r.path)));
+  return rows.filter((r) => kept.has(r.path));
 }
 
 // The target folder for a New File / Paste against a row: INTO a directory row,
@@ -1212,7 +1221,14 @@ export default function Listing({
     const clip = getClipboard();
     if (!clip || clip.paths.length === 0 || pasteInFlight.current) return;
     const target = normDir(dir); // "" (root) → "/", and join avoids "//name"
-    const { paths, op } = clip;
+    const { op } = clip;
+    // A clipboard filled from search results can hold a folder AND entries
+    // inside it (the hit list is a flat recursive walk). Paste the outermost
+    // ancestors only: the folder's move/copy carries its contents, so a
+    // descendant entry would either 404 on a source the parent already moved
+    // (killing the rest of the batch) or, for a copy, drop a stray second copy
+    // of the inner entry at the top of the target.
+    const paths = pruneDescendantPaths(clip.paths);
     const label = paths.length === 1 ? basename(paths[0]) : `${paths.length} items`;
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
@@ -1248,10 +1264,20 @@ export default function Listing({
         // hasn't moved yet and let run() toast the error — without this the user
         // would have to re-cut before retrying. Skip the restore if the user
         // cut/copied something newer mid-flight.
+        // Restoring from the PRUNED list (not clip.paths) is what keeps the
+        // retry viable: a descendant of an already-moved folder is gone from
+        // its old location, so putting it back on the clipboard would make
+        // every retry fail on the same dead source.
         if (op === "cut" && getClipboard() === null) {
           const left = paths.filter((p) => !pasted.includes(p));
           if (left.length) setClipboard({ paths: left, op: "cut" });
         }
+        // A multi-path paste can move/copy some entries before throwing. run()
+        // only refetches when the whole callback resolves, so refresh here or
+        // the listing keeps showing rows that are already gone (or misses the
+        // ones already written) until the 300 ms dir-watch catches up. The
+        // rethrow is preserved so run() still toasts the failure.
+        if (pasted.length) refetch();
         throw e;
       }
       // Re-anchor onto the last thing written, if it lands in this view.
@@ -1275,10 +1301,18 @@ export default function Listing({
     duplicateInFlight.current = true;
     run(async () => {
       let last: string | null = null;
-      for (const row of rows) {
-        const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
-        await copyEntry(row.path, dst);
-        last = dst;
+      try {
+        for (const row of rows) {
+          const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
+          await copyEntry(row.path, dst);
+          last = dst;
+        }
+      } catch (e) {
+        // Same partial-batch refresh as doPaste: run() refetches only on full
+        // success, so copies already written would stay invisible here until
+        // the dir-watch update. Rethrown so the error toast still shows.
+        if (last !== null) refetch();
+        throw e;
       }
       if (last !== null) pendingSelectRef.current = last; // select the new copy
     }, { verb: "duplicate", name: batchLabel(rows) }).finally(() => {
@@ -1368,7 +1402,13 @@ export default function Listing({
 
   // Hard delete, confirmed. Plural-aware: one row still names it (and says
   // whether it's a folder), several are counted.
-  const startDelete = (rows: RowCtx[]) => {
+  const startDelete = (allRows: RowCtx[]) => {
+    // Drop rows contained by another selected folder before anything else, so
+    // the confirm dialog counts what will actually be deleted and the loop below
+    // never calls deleteEntry on a path the parent's recursive delete just took
+    // (that 404 would abort the batch and toast a failure for a delete that in
+    // fact removed everything asked for).
+    const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     const many = rows.length > 1;
     setDialog({
@@ -1384,9 +1424,19 @@ export default function Listing({
       // recursive=true for a directory (its contents were named in the message).
       onConfirm: () =>
         run(async () => {
-          for (const row of rows) {
-            await deleteEntry(row.path, row.isDir);
-            clearClipboardIfDeleted(row.path);
+          let deleted = 0;
+          try {
+            for (const row of rows) {
+              await deleteEntry(row.path, row.isDir);
+              clearClipboardIfDeleted(row.path);
+              deleted++;
+            }
+          } catch (e) {
+            // Partial batch: run() refetches only on full success, so without
+            // this the already-deleted rows linger in the listing until the
+            // dir-watch update. Rethrown so run() still toasts the failure.
+            if (deleted) refetch();
+            throw e;
           }
         }, { verb: "delete", name: batchLabel(rows) }),
     });
@@ -1397,7 +1447,12 @@ export default function Listing({
   // trash (non-macOS → "unsupported") those rows fall back to the existing
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
   // warning. Success shows a low-key, count-aware info toast.
-  const doTrash = (rows: RowCtx[]) => {
+  const doTrash = (allRows: RowCtx[]) => {
+    // As in startDelete: trashing a folder takes everything inside it, so a
+    // selection that also holds rows from within that folder must not trash them
+    // individually — the second call would hit a vanished path and be counted as
+    // a real failure, replacing the "Moved to Bin" toast with a bogus error.
+    const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     void (async () => {
       const trashed: RowCtx[] = [];

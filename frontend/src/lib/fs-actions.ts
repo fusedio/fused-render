@@ -159,6 +159,21 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+// Drop every path that lives INSIDE another path of the same set, keeping the
+// outermost ancestors (input order preserved).
+// Needed because a search result list is a flat, recursive walk of the subtree:
+// one shift-click / Cmd+A can select a folder AND entries inside it. A batch op
+// that then walks the set entry by entry breaks on the descendants — the move or
+// delete of the ancestor already took them, so the next call hits a path that no
+// longer exists and reports a failure for work that actually succeeded.
+// Acting on the ancestor alone is also the correct intent: moving/copying/
+// removing a folder carries its contents along.
+// Prefix + "/" is the same containment test clearClipboardIfDeleted uses; the
+// self-comparison guard keeps a path from pruning itself.
+export function pruneDescendantPaths(paths: string[]): string[] {
+  return paths.filter((p) => !paths.some((other) => other !== p && p.startsWith(other + "/")));
+}
+
 // After a successful delete/trash, drop the module clipboard if it points at
 // the removed entry — either the exact path, or something inside it when a
 // directory was deleted (prefix + separator). Otherwise a later Paste of that
