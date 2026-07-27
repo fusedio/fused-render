@@ -1,35 +1,64 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>CSV preview</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --border-cell: #24262b;
+    --skel-base: #1d1f24;
+    --skel-shine: #292c32;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --border-cell: #e6e8eb;
+    --skel-base: #eceef1;
+    --skel-shine: #e0e2e7;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
   }
   #bar {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 8px 12px;
-    border-bottom: 1px solid #2a2d33;
-    background: #1b1d21;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
     position: sticky;
     top: 0;
   }
   #bar button {
     font: inherit;
     padding: 4px 10px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #131417;
-    color: #e8eaed;
+    background: var(--bg);
+    color: var(--fg);
     cursor: pointer;
   }
   #bar button:disabled {
@@ -37,7 +66,7 @@
     cursor: default;
   }
   #rowcount {
-    color: #9aa0a6;
+    color: var(--fg-muted);
   }
   table {
     border-collapse: collapse;
@@ -45,7 +74,7 @@
   }
   th, td {
     padding: 5px 10px;
-    border-bottom: 1px solid #24262b;
+    border-bottom: 1px solid var(--border-cell);
     text-align: left;
     white-space: nowrap;
     max-width: 320px;
@@ -53,17 +82,17 @@
     text-overflow: ellipsis;
   }
   th {
-    background: #1b1d21;
+    background: var(--bg-alt);
     position: sticky;
     top: 37px;
     font-weight: 600;
   }
   #status {
     padding: 24px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
   }
   #status.error {
-    color: #ff6b6b;
+    color: var(--error);
   }
   /* Skeleton table shown while a page of rows is in flight (first load and
      every subsequent Prev/Next/param-driven reload). Mirrors the real
@@ -73,7 +102,7 @@
     height: 0.9em;
     min-width: 2.5em;
     border-radius: 3px;
-    background: linear-gradient(90deg, #1d1f24 25%, #292c32 50%, #1d1f24 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
     vertical-align: middle;

@@ -146,6 +146,42 @@ def test_runtime_never_remounts_or_reloads_to_apply_a_theme():
     assert "location.reload" not in theme_section
 
 
+# ---------------------------------------------------------------- tier 1
+
+
+@pytest.mark.parametrize("name", TIER_ONE_TEMPLATES)
+def test_tier_one_template_opts_in(name):
+    html = read_template(name)
+    open_tag = re.search(r"<html\b[^>]*>", html, re.I)
+    assert open_tag, f"{name}: no <html> tag"
+    assert OPT_IN_ATTR in open_tag.group(0), (
+        f"{name}: the opt-in must sit on <html> — runtime.js runs from the top "
+        "of <head>, before a <meta> further down has been parsed"
+    )
+
+
+@pytest.mark.parametrize("name", TIER_ONE_TEMPLATES)
+def test_tier_one_template_declares_both_palettes(name):
+    dark, light = palette_blocks(read_template(name))
+    assert dark.pop("color-scheme", None) == "dark", f"{name}: dark :root"
+    assert light.pop("color-scheme", None) == "light", f"{name}: light :root"
+    assert dark, f"{name}: the dark :root must define palette tokens"
+    assert set(dark) == set(light), (
+        f"{name}: dark/light token sets differ — "
+        f"dark-only {sorted(set(dark) - set(light))}, "
+        f"light-only {sorted(set(light) - set(dark))}"
+    )
+
+
+@pytest.mark.parametrize("name", TIER_ONE_TEMPLATES)
+def test_tier_one_template_has_no_colour_literals_outside_its_palettes(name):
+    literals = style_color_literals(read_template(name))
+    assert not literals, (
+        f"{name}: colours outside the palette blocks cannot follow the theme — "
+        f"found {sorted(set(literals))}"
+    )
+
+
 # ---------------------------------------------------------------- untouched
 
 
