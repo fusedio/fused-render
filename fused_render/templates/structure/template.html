@@ -121,6 +121,17 @@
     margin-top: 8px; border: 1px solid var(--data-border); border-radius: 6px;
     background: var(--data-bg); padding: 8px 10px;
   }
+  /* A row group's column boxes are built on expand, never upfront: a 1000-group
+     × 30-column file would otherwise ship ~180 000 elements into this one tab.
+     <details> buys the collapse for free — but a flex <summary> drops the native
+     disclosure triangle in Chrome, so .caret below draws our own. */
+  details.rg > summary { cursor: pointer; list-style: none; }
+  details.rg > summary::-webkit-details-marker { display: none; }
+  .caret {
+    display: inline-block; color: var(--fg-dim); font-size: 10px; margin-right: 4px;
+    transition: transform 0.12s;
+  }
+  details[open] > summary .caret { transform: rotate(90deg); }
 
   /* ---- Metadata view ---- */
   .meta-section { margin-bottom: 20px; }
@@ -149,9 +160,16 @@
     cursor: pointer; padding: 8px 10px; color: var(--fg-soft); font-weight: 600;
     display: flex; gap: 12px; align-items: baseline;
   }
+  details.rgd > summary { list-style: none; }
+  details.rgd > summary::-webkit-details-marker { display: none; }
   details.rgd > summary .muted { color: var(--fg-muted); font-weight: 400; }
   details.rgd[open] > summary { border-bottom: 1px solid var(--border-cell); }
   details.rgd .rgd-body { padding: 4px 6px 8px; overflow-x: auto; }
+  /* One-line status inside a lazily-filled row-group body (loading / failed /
+     nothing to show) — it stands in for the chunk table, so it lives where the
+     table would. */
+  .rgd-note { color: var(--fg-muted); padding: 8px 6px; }
+  .rgd-note.error { color: var(--error); }
   code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--mono-fg); }
 
   /* ---- Grid view: whole-file storage profile ---- */
@@ -177,6 +195,21 @@
   }
   .g-size .muted { color: var(--fg-dim); }
   .grid-note { max-width: 700px; margin: 16px 0 0; color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
+
+  /* ---- "Show more": the visible half of every render cap ----
+     Grid rows, Layout groups, Metadata groups and the legend all render a
+     bounded slice; this strip states how much of the whole is on screen and
+     reveals the next slice, so a truncated list is never silently truncated. */
+  .more-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin: 12px 0; color: var(--fg-muted); font-size: 12px;
+  }
+  .more-row b { color: var(--fg-soft); font-weight: 600; }
+  .more-btn {
+    font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--fg-soft); cursor: pointer;
+  }
+  .more-btn:hover { border-color: var(--tab-active-border); color: var(--tab-active-fg); }
 
   /* ---- Loading skeleton ----
      Shimmering placeholders shaped like whichever tab is about to render
@@ -227,6 +260,29 @@
     const summaryEl = el("summary");
     let data = null;
 
+    // ---- render caps -------------------------------------------------------
+    // The overview payload is O(row_groups × columns) numbers, which is cheap to
+    // hold but ruinous to render all at once: 1000 row groups × 30 columns is
+    // 30 000 column chunks, and one DOM node per chunk freezes (or kills) the
+    // tab. Every list that grows with row-group count therefore renders a
+    // bounded slice, with a "Show more" strip that names the cap (see .more-row).
+    const RG_CAP = 300;      // row-group rows per paint, per tab
+    const LEGEND_CAP = 32;   // legend entries before the rest collapse into one
+    const SEG_MIN_PCT = 0.4; // a bar segment thinner than this merges into "other"
+    const SEG_MAX = 40;      // …and at most this many segments survive per bar
+    const SHOW_ALL_MAX = 5000; // offer "Show all" only when that can't itself hang
+
+    // How many row groups each tab currently shows, and whether the Grid legend
+    // is fully expanded. Reset per file load (see load()), kept across tab
+    // switches so "Show more" doesn't undo itself when you glance at another tab.
+    const rgLimit = { grid: RG_CAP, layout: RG_CAP, metadata: RG_CAP };
+    let legendAll = false;
+
+    // Per-row-group chunk detail fetched lazily by the Metadata tab, keyed by row
+    // group index: {ok:true, detail} or {ok:false, type, message}. Cleared on file
+    // change so a re-opened <details> can never show the previous file's chunks.
+    const rgDetail = new Map();
+
     const esc = (s) => String(s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     const n = (x) => (x == null ? "—" : Number(x).toLocaleString());
@@ -242,6 +298,8 @@
 
     // Stable-ish colour per column so a column keeps its hue across row groups.
     function colColor(i) { return `hsl(${(i * 47) % 360} 45% 45%)`; }
+    // Deliberately hueless, so the merged "other" bucket never reads as a column.
+    const OTHER_COLOR = "hsl(0 0% 42%)";
 
     function currentTab() {
       const t = fused.params.get("view");
@@ -262,39 +320,83 @@
         .join(`<span class="sep">·</span>`);
     }
 
-    function renderLayout() {
-      const f = data.file;
-      const parts = [];
-      for (const r of data.layout) {
-        if (r.kind === "header" || r.kind === "footer") {
-          parts.push(`<div class="box magic">
-            <div class="box-head">
-              <span class="box-title">${esc(r.label)}<span class="muted">${r.kind}</span></span>
-              <span class="box-range">start <b>${n(r.start)}</b><br>bytes <b>${n(r.bytes)}</b><br>end <b>${n(r.end)}</b></span>
-            </div></div>`);
-        } else if (r.kind === "row_group") {
-          const cols = r.columns.map((c, i) => `
+    // The "Show more" strip for a capped list. `which` names the counter in
+    // rgLimit (or "legend"); `total` is the untruncated length, so the copy can
+    // say exactly what is being held back. Returns "" when nothing is hidden.
+    function moreControl(which, shown, total, noun) {
+      if (shown >= total) return "";
+      const next = Math.min(RG_CAP, total - shown);
+      const all = total <= SHOW_ALL_MAX
+        ? `<button class="more-btn" data-more="${esc(which)}" data-all="1">Show all ${n(total)}</button>`
+        : "";
+      return `<div class="more-row">
+        <span>Showing the first <b>${n(shown)}</b> of <b>${n(total)}</b> ${esc(noun)}.</span>
+        <button class="more-btn" data-more="${esc(which)}">Show ${n(next)} more</button>${all}
+      </div>`;
+    }
+
+    // Layout: the file as nested byte-range boxes — magic header, one box per row
+    // group, and inside an expanded row group one box per column chunk with its
+    // own Data box. Row groups render COLLAPSED (summary line only) and build
+    // their column boxes on first expand from row_groups[i].chunk_starts /
+    // chunk_bytes + schema[j].path — the overview payload already carries those,
+    // so expanding costs no fetch, only the ~6 elements per column it draws.
+    function layoutColsHtml(i) {
+      const rg = data.row_groups[i];
+      if (!rg) return `<div class="rgd-note">No column offsets for this row group.</div>`;
+      const starts = rg.chunk_starts || [];
+      const bytes = rg.chunk_bytes || [];
+      // Row-group chunk order is schema leaf order, but stay defensive about a
+      // short array rather than printing "NaN" for a column the reader omitted.
+      const cols = data.schema.map((s, j) => {
+        const b = bytes[j], st = starts[j];
+        const end = (st == null || b == null) ? null : st + b;
+        return `
             <div class="box col">
               <div class="box-head">
-                <span class="box-title">Column <code class="mono">${esc(c.path)}</code></span>
-                <span class="box-range">bytes <b>${n(c.bytes)}</b></span>
+                <span class="box-title">Column <code class="mono">${esc(s.path)}</code></span>
+                <span class="box-range">bytes <b>${n(b)}</b></span>
               </div>
               <div class="data">
                 <div class="box-head">
                   <span class="box-title" style="font-weight:400;color:var(--fg-muted)">Data</span>
-                  <span class="box-range">start <b>${n(c.start)}</b><br>bytes <b>${n(c.bytes)}</b><br>end <b>${n(c.end)}</b></span>
+                  <span class="box-range">start <b>${n(st)}</b><br>bytes <b>${n(b)}</b><br>end <b>${n(end)}</b></span>
                 </div>
               </div>
-            </div>`).join("");
-          parts.push(`<div class="box rg">
+            </div>`;
+      }).join("");
+      return `<div class="cols">${cols}</div>`;
+    }
+
+    function renderLayout() {
+      const total = data.layout.reduce((s, r) => s + (r.kind === "row_group" ? 1 : 0), 0);
+      const limit = rgLimit.layout;
+      const parts = [];
+      let seen = 0, truncatedAt = -1;
+      for (const r of data.layout) {
+        if (r.kind === "header" || r.kind === "footer") {
+          parts.push(`<div class="box magic">
             <div class="box-head">
-              <span class="box-title">RowGroup ${r.index}<span class="muted">${n(r.num_rows)} rows</span></span>
+              <span class="box-title">${esc(r.label)}<span class="muted">${esc(r.kind)}</span></span>
+              <span class="box-range">start <b>${n(r.start)}</b><br>bytes <b>${n(r.bytes)}</b><br>end <b>${n(r.end)}</b></span>
+            </div></div>`);
+        } else if (r.kind === "row_group") {
+          // Past the cap the groups are skipped, and the strip is spliced in
+          // where they stopped — so the footer box still closes the file.
+          if (seen >= limit) {
+            if (truncatedAt < 0) { truncatedAt = parts.length; parts.push(""); }
+            continue;
+          }
+          seen++;
+          parts.push(`<details class="box rg" data-rg="${r.index}">
+            <summary><div class="box-head">
+              <span class="box-title"><span class="caret">&#9654;</span>RowGroup ${esc(r.index)}<span class="muted">${n(r.num_rows)} rows</span></span>
               <span class="box-range">bytes <b>${n(r.bytes)}</b></span>
-            </div>
-            <div class="cols">${cols}</div>
-          </div>`);
+            </div></summary>
+          </details>`);
         }
       }
+      if (truncatedAt >= 0) parts[truncatedAt] = moreControl("layout", seen, total, "row groups");
       content.innerHTML = `<div class="lay">${parts.join("")}</div>`;
     }
 
@@ -318,33 +420,24 @@
         <td class="num">${c.max_def}</td>
         <td class="num">${c.max_rep}</td></tr>`).join("");
 
-      const rgDetails = data.row_groups.map((rg) => {
-        const chunkRows = rg.columns.map((c) => {
-          const st = c.stats || {};
-          const mm = (st.min == null && st.max == null) ? "—"
-            : `${esc(String(st.min))} … ${esc(String(st.max))}`;
-          return `<tr>
-            <td><code class="mono">${esc(c.path)}</code></td>
-            <td>${esc(c.physical_type)}</td>
-            <td>${esc(c.compression)}</td>
-            <td>${esc(c.encodings.join(", "))}</td>
-            <td class="num">${n(c.num_values)}</td>
-            <td class="num">${humanBytes(c.compressed_size)}</td>
-            <td class="num">${humanBytes(c.uncompressed_size)}</td>
-            <td class="num">${n(c.start)}</td>
-            <td>${mm}</td>
-            <td class="num">${st.nulls == null ? "—" : n(st.nulls)}</td></tr>`;
-        }).join("");
-        return `<details class="rgd">
-          <summary>RowGroup ${rg.index}
+      // Row groups: SUMMARY ROWS ONLY. Everything a summary shows (index, rows,
+      // compressed, raw) is in the overview payload; the chunk table behind it is
+      // fetched per row group on first expand (see loadRgDetail). Building them
+      // upfront cost ~300 000 table cells on a 1000-group file for content that
+      // sits inside a collapsed <details> and is never seen.
+      const total = data.row_groups.length;
+      const shown = Math.min(total, rgLimit.metadata);
+      const rgDetails = [];
+      for (let i = 0; i < shown; i++) {
+        const rg = data.row_groups[i];
+        rgDetails.push(`<details class="rgd" data-rg="${esc(rg.index)}">
+          <summary><span class="caret">&#9654;</span>RowGroup ${esc(rg.index)}
             <span class="muted">${n(rg.num_rows)} rows · ${humanBytes(rg.compressed_size)} compressed · ${humanBytes(rg.total_byte_size)} raw</span>
           </summary>
-          <div class="rgd-body"><table><thead><tr>
-            <th>Column</th><th>Type</th><th>Codec</th><th>Encodings</th><th>Values</th>
-            <th>Compressed</th><th>Uncompressed</th><th>Offset</th><th>Min … Max</th><th>Nulls</th>
-          </tr></thead><tbody>${chunkRows}</tbody></table></div>
-        </details>`;
-      }).join("");
+          <div class="rgd-body"></div>
+        </details>`);
+      }
+      rgDetails.push(moreControl("metadata", shown, total, "row groups"));
 
       content.innerHTML = `
         <div class="meta-section"><h3>File</h3><dl class="kv">${fileRows}</dl></div>
@@ -352,7 +445,73 @@
           <table><thead><tr><th>Column</th><th>Physical type</th><th>Logical type</th>
           <th class="num">Max def</th><th class="num">Max rep</th></tr></thead>
           <tbody>${schemaRows}</tbody></table></div>
-        <div class="meta-section"><h3>Row groups</h3>${rgDetails}</div>`;
+        <div class="meta-section"><h3>Row groups</h3>${rgDetails.join("")}</div>`;
+    }
+
+    // ---- lazy per-row-group chunk detail (Metadata tab) ---------------------
+    // A row group's chunk table is only built when its <details> is opened, from
+    // a reader.py call scoped to that one group. The detail is cached forever
+    // (per file), so collapsing and re-opening repaints without refetching.
+    const CHUNK_HEAD = `<thead><tr>
+      <th>Column</th><th>Type</th><th>Codec</th><th>Encodings</th><th>Values</th>
+      <th>Compressed</th><th>Uncompressed</th><th>Offset</th><th>Min … Max</th><th>Nulls</th>
+    </tr></thead>`;
+
+    function chunkTable(detail) {
+      const cols = detail.columns || [];
+      if (!cols.length) return `<div class="rgd-note">No column chunks in this row group.</div>`;
+      const rows = cols.map((c) => {
+        const st = c.stats || {};
+        const mm = (st.min == null && st.max == null) ? "—"
+          : `${esc(String(st.min))} … ${esc(String(st.max))}`;
+        return `<tr>
+          <td><code class="mono">${esc(c.path)}</code></td>
+          <td>${esc(c.physical_type)}</td>
+          <td>${esc(c.compression)}</td>
+          <td>${esc((c.encodings || []).join(", "))}</td>
+          <td class="num">${n(c.num_values)}</td>
+          <td class="num">${humanBytes(c.compressed_size)}</td>
+          <td class="num">${humanBytes(c.uncompressed_size)}</td>
+          <td class="num">${n(c.start)}</td>
+          <td>${mm}</td>
+          <td class="num">${st.nulls == null ? "—" : n(st.nulls)}</td></tr>`;
+      }).join("");
+      return `<table>${CHUNK_HEAD}<tbody>${rows}</tbody></table>`;
+    }
+
+    // Write into the live body for row group `i`, if it is still on screen — the
+    // tab may have been re-rendered (or switched away from) while we awaited.
+    function paintRgBody(i, html) {
+      const body = content.querySelector(`details.rgd[data-rg="${i}"] > .rgd-body`);
+      if (body) body.innerHTML = html;
+    }
+
+    function rgBodyHtml(entry) {
+      if (entry.ok) return chunkTable(entry.detail);
+      return `<div class="rgd-note error"><strong>${esc(entry.type)}</strong>: ${esc(entry.message)}</div>`;
+    }
+
+    async function loadRgDetail(i) {
+      const cached = rgDetail.get(i);
+      if (cached) { paintRgBody(i, rgBodyHtml(cached)); return; }
+      const seq = loadSeq;      // same stale-guard as the overview load
+      const file = fused.params.get("_file");
+      paintRgBody(i, skeletonChunkTable(4));
+      let entry;
+      try {
+        // The distinct `key` is REQUIRED. runPython's default latest-wins channel
+        // is the .py path, so an unkeyed call here would abort the overview load
+        // and every sibling row group's in-flight detail call.
+        const detail = await fused.runPython("./reader.py", { file, row_group: i }, { key: "rg-" + i });
+        entry = { ok: true, detail };
+      } catch (err) {
+        entry = { ok: false, type: (err && err.type) || "Error", message: (err && err.message) || String(err) };
+      }
+      if (seq !== loadSeq) return; // a newer file load superseded this one
+      // Only successes are cached: a failure should be retried by re-opening,
+      // not remembered as this row group's permanent answer.
+      if (entry.ok) rgDetail.set(i, entry);
+      paintRgBody(i, rgBodyHtml(entry));
     }
 
     // Grid: the whole file's storage profile at a glance. One row per row group;
@@ -367,40 +526,96 @@
       // not from row group 0 — so the legend and totals cover every column even
       // if some row group happens to hold fewer chunks.
       const cols = data.schema.map((s) => s.path);
-      const maxRg = Math.max(...rgs.map((r) => r.compressed_size), 1);
+      // reduce, not Math.max(...rgs.map(…)): spreading an array into a call puts
+      // one argument per element on the stack, so a file with ~100 k row groups
+      // threw RangeError before the tab drew anything.
+      const maxRg = rgs.reduce((m, r) => (r.compressed_size > m ? r.compressed_size : m), 1);
 
-      // File-wide bytes per column, summed across every row group (biggest first).
-      const totals = cols.map((path, i) => ({
-        path, i,
-        bytes: rgs.reduce((s, r) => s + (r.columns[i] ? r.columns[i].compressed_size : 0), 0),
-      }));
+      // File-wide bytes per column, summed across every row group. O(groups ×
+      // columns) arithmetic over the numeric chunk_bytes arrays — no objects.
+      const totals = cols.map((path, i) => ({ path, i, bytes: 0 }));
+      for (const r of rgs) {
+        const cb = r.chunk_bytes || [];
+        for (let i = 0; i < totals.length; i++) totals[i].bytes += cb[i] || 0;
+      }
       const grand = totals.reduce((s, c) => s + c.bytes, 0) || 1;
-      const legend = [...totals].sort((a, b) => b.bytes - a.bytes).map((c) => `
+
+      // Legend: biggest column first, capped — a wide file would otherwise print
+      // a swatch per column above a chart you can no longer see. The tail folds
+      // into one "+N more columns" entry until "Show all" is clicked.
+      const byBytes = totals.slice().sort((a, b) => b.bytes - a.bytes);
+      const legShown = legendAll ? byBytes.length : Math.min(byBytes.length, LEGEND_CAP);
+      const legItems = byBytes.slice(0, legShown).map((c) => `
         <span class="leg-item" title="${esc(c.path)}: ${humanBytes(c.bytes)}">
           <span class="swatch" style="background:${colColor(c.i)}"></span>
           <code class="mono">${esc(c.path)}</code>
           <span class="leg-pct">${humanBytes(c.bytes)} · ${(c.bytes / grand * 100).toFixed(0)}%</span>
-        </span>`).join("");
+        </span>`);
+      if (legShown < byBytes.length) {
+        const rest = byBytes.slice(legShown).reduce((s, c) => s + c.bytes, 0);
+        legItems.push(`
+        <span class="leg-item">
+          <span class="swatch" style="background:${OTHER_COLOR}"></span>
+          <span class="leg-pct">+${n(byBytes.length - legShown)} more columns · ${humanBytes(rest)}
+            · ${(rest / grand * 100).toFixed(0)}%</span>
+          <button class="more-btn" data-more="legend">Show all</button>
+        </span>`);
+      }
 
-      const rows = rgs.map((r) => {
-        const rgTotal = r.columns.reduce((s, c) => s + c.compressed_size, 0) || 1;
-        const seg = r.columns.map((c, i) =>
-          `<span class="g-seg" title="${esc(c.path)}: ${humanBytes(c.compressed_size)} (${(c.compressed_size / rgTotal * 100).toFixed(1)}% of group)"
-                 style="width:${(c.compressed_size / rgTotal * 100).toFixed(3)}%;background:${colColor(i)}"></span>`).join("");
-        return `<div class="g-row">
-          <span class="g-label" title="RowGroup ${r.index}">RG ${r.index}</span>
+      // One row per row group, capped at RG_CAP per paint. Within a bar, any
+      // column thinner than SEG_MIN_PCT (and everything past the SEG_MAX widest)
+      // merges into a single grey "other" segment: a sub-pixel span is invisible
+      // yet still costs a DOM node, which is where 34 000 <span> came from.
+      const shownRgs = Math.min(rgs.length, rgLimit.grid);
+      const rows = [];
+      for (let k = 0; k < shownRgs; k++) {
+        const r = rgs[k];
+        const cb = r.chunk_bytes || [];
+        let rgTotal = 0;
+        for (let i = 0; i < cols.length; i++) rgTotal += cb[i] || 0;
+        if (!rgTotal) rgTotal = 1;
+
+        let keep = [];
+        for (let i = 0; i < cols.length; i++) {
+          const b = cb[i] || 0;
+          if (b / rgTotal * 100 >= SEG_MIN_PCT) keep.push({ i, b });
+        }
+        if (keep.length > SEG_MAX) {
+          keep = keep.sort((a, b) => b.b - a.b).slice(0, SEG_MAX).sort((a, b) => a.i - b.i);
+        }
+        const kept = new Set(keep.map((k2) => k2.i));
+
+        const segs = [];
+        let other = 0, otherCols = 0;
+        for (let i = 0; i < cols.length; i++) {
+          const b = cb[i] || 0;
+          if (!kept.has(i)) { other += b; if (b) otherCols++; continue; }
+          const pct = b / rgTotal * 100;
+          segs.push(`<span class="g-seg" title="${esc(cols[i])}: ${humanBytes(b)} (${pct.toFixed(1)}% of group)"
+                 style="width:${pct.toFixed(3)}%;background:${colColor(i)}"></span>`);
+        }
+        if (other) {
+          const pct = other / rgTotal * 100;
+          segs.push(`<span class="g-seg" title="${n(otherCols)} smaller columns: ${humanBytes(other)} (${pct.toFixed(1)}% of group)"
+                 style="width:${pct.toFixed(3)}%;background:${OTHER_COLOR}"></span>`);
+        }
+        rows.push(`<div class="g-row">
+          <span class="g-label" title="RowGroup ${esc(r.index)}">RG ${esc(r.index)}</span>
           <span class="g-track">
-            <span class="g-bar" style="width:${(r.compressed_size / maxRg * 100).toFixed(3)}%">${seg}</span>
+            <span class="g-bar" style="width:${(r.compressed_size / maxRg * 100).toFixed(3)}%">${segs.join("")}</span>
           </span>
           <span class="g-size">${humanBytes(r.compressed_size)}<span class="muted"> · ${n(r.num_rows)} rows</span></span>
-        </div>`;
-      }).join("");
+        </div>`);
+      }
 
       content.innerHTML = `
-        <div class="grid-legend">${legend}</div>
-        <div class="grid-chart">${rows}</div>
+        <div class="grid-legend">${legItems.join("")}</div>
+        <div class="grid-chart">${rows.join("")}</div>
+        ${moreControl("grid", shownRgs, rgs.length, "row groups")}
         <p class="grid-note">Bar length is each row group's compressed size on disk, relative to the largest group.
-        Segments show how those bytes split across columns — hover any segment for exact sizes.</p>`;
+        Segments show how those bytes split across columns — hover any segment for exact sizes.
+        Columns holding under ${SEG_MIN_PCT}% of a group (and anything past its ${n(SEG_MAX)} widest)
+        are merged into one grey “other” segment.</p>`;
     }
 
     // ---- Loading skeletons: same-shaped stand-ins for renderSummary/renderGrid/
@@ -426,35 +641,32 @@
       return `<div class="grid-legend">${legend}</div><div class="grid-chart">${rows}</div>`;
     }
 
+    // Mirrors the real Layout tab, which now lands as COLLAPSED row-group boxes —
+    // so the skeleton is a magic box plus a stack of summary-only rg boxes.
     function skeletonLayout() {
-      const col = () => `
-        <div class="box col">
-          <div class="box-head">
-            <span class="box-title">${skelText(120)}</span>
-            <span class="box-range">${skelText(70)}</span>
-          </div>
-          <div class="data">
-            <div class="box-head">
-              <span class="box-title">${skelText(40)}</span>
-              <span class="box-range">${skelText(90)}</span>
-            </div>
-          </div>
-        </div>`;
-      const rg = (n) => `
-        <div class="box rg">
-          <div class="box-head">
-            <span class="box-title">${skelText(100)}</span>
-            <span class="box-range">${skelText(60)}</span>
-          </div>
-          <div class="cols">${Array.from({ length: n }, col).join("")}</div>
-        </div>`;
-      return `<div class="lay">
+      const magic = () => `
         <div class="box magic"><div class="box-head">
           <span class="box-title">${skelText(90)}</span>
           <span class="box-range">${skelText(100)}</span>
-        </div></div>
-        ${rg(2)}${rg(3)}
-      </div>`;
+        </div></div>`;
+      const rg = () => `
+        <div class="box rg">
+          <div class="box-head">
+            <span class="box-title"><span class="caret">&#9654;</span>${skelText(100)}</span>
+            <span class="box-range">${skelText(60)}</span>
+          </div>
+        </div>`;
+      return `<div class="lay">${magic()}${Array.from({ length: 5 }, rg).join("")}</div>`;
+    }
+
+    // The stand-in painted inside a row group's body while its chunk detail is
+    // in flight — same 10-column table the real detail lands as.
+    function skeletonChunkTable(rows) {
+      const chunkRow = () => `<tr>
+        <td>${skelText(100)}</td><td>${skelText(50)}</td><td>${skelText(50)}</td><td>${skelText(70)}</td>
+        <td class="num">${skelText(40)}</td><td class="num">${skelText(50)}</td><td class="num">${skelText(50)}</td>
+        <td class="num">${skelText(40)}</td><td>${skelText(80)}</td><td class="num">${skelText(24)}</td></tr>`;
+      return `<table>${CHUNK_HEAD}<tbody>${Array.from({ length: rows }, chunkRow).join("")}</tbody></table>`;
     }
 
     function skeletonMetadata() {
@@ -463,16 +675,10 @@
       const schemaRows = [110, 95, 80, 120, 90].map((w) => `<tr>
         <td>${skelText(w)}</td><td>${skelText(60)}</td><td>${skelText(70)}</td>
         <td class="num">${skelText(16)}</td><td class="num">${skelText(16)}</td></tr>`).join("");
-      const chunkRow = () => `<tr>
-        <td>${skelText(100)}</td><td>${skelText(50)}</td><td>${skelText(50)}</td><td>${skelText(70)}</td>
-        <td class="num">${skelText(40)}</td><td class="num">${skelText(50)}</td><td class="num">${skelText(50)}</td>
-        <td class="num">${skelText(40)}</td><td>${skelText(80)}</td><td class="num">${skelText(24)}</td></tr>`;
-      const rgSkel = [3, 2].map((n) => `<details class="rgd" open>
-          <summary>${skelText(90)}<span class="muted">${skelText(150)}</span></summary>
-          <div class="rgd-body"><table><thead><tr>
-            <th>Column</th><th>Type</th><th>Codec</th><th>Encodings</th><th>Values</th>
-            <th>Compressed</th><th>Uncompressed</th><th>Offset</th><th>Min … Max</th><th>Nulls</th>
-          </tr></thead><tbody>${Array.from({ length: n }, chunkRow).join("")}</tbody></table></div>
+      // Row groups arrive collapsed now (their chunk tables are fetched on
+      // expand), so the skeleton is a stack of closed summary rows.
+      const rgSkel = Array.from({ length: 5 }, () => `<details class="rgd">
+          <summary><span class="caret">&#9654;</span>${skelText(90)}<span class="muted">${skelText(190)}</span></summary>
         </details>`).join("");
       return `
         <div class="meta-section"><h3>File</h3><dl class="kv">${kv}</dl></div>
@@ -507,6 +713,11 @@
       // Drop any prior file's data up front so a tab switch mid-load (or after
       // a failure) can't repaint stale layout/metadata for the wrong file.
       data = null;
+      // Same reason the per-row-group chunk cache and the render caps reset: they
+      // are all keyed to the file that is going away.
+      rgDetail.clear();
+      rgLimit.grid = rgLimit.layout = rgLimit.metadata = RG_CAP;
+      legendAll = false;
       summaryEl.innerHTML = skeletonSummary();
       content.innerHTML = skeletonMarkup(currentTab());
       if (!file) {
@@ -525,6 +736,37 @@
         content.innerHTML = `<div id="status" class="error"><strong>${esc(err.type || "Error")}</strong>: ${esc(err.message || "")}</div>`;
       }
     }
+
+    // Both lazy tabs hang off one delegated `toggle` listener on #content, which
+    // survives every innerHTML repaint. It is registered in the CAPTURE phase
+    // because `toggle` does not bubble — capture still reaches the <details>.
+    content.addEventListener("toggle", (ev) => {
+      const d = ev.target;
+      if (!data || !d || d.tagName !== "DETAILS" || !d.open) return;
+      const i = Number(d.dataset.rg);
+      if (!Number.isInteger(i)) return;
+      if (d.classList.contains("rgd")) {
+        loadRgDetail(i); // Metadata: fetch this group's chunk table
+      } else if (d.classList.contains("rg") && !d.dataset.built) {
+        d.dataset.built = "1"; // Layout: build column boxes once, from the overview
+        d.insertAdjacentHTML("beforeend", layoutColsHtml(i));
+      }
+    }, true);
+
+    // "Show more" / "Show all" for any capped list. Raising a cap only changes how
+    // much of `data` is drawn, so re-rendering the tab is the whole action.
+    content.addEventListener("click", (ev) => {
+      const btn = ev.target.closest ? ev.target.closest("button[data-more]") : null;
+      if (!btn || !data) return;
+      const which = btn.dataset.more;
+      if (which === "legend") { legendAll = true; renderTab(); return; }
+      if (!(which in rgLimit)) return;
+      const total = which === "layout"
+        ? data.layout.reduce((s, r) => s + (r.kind === "row_group" ? 1 : 0), 0)
+        : data.row_groups.length;
+      rgLimit[which] = btn.dataset.all ? total : rgLimit[which] + RG_CAP;
+      renderTab();
+    });
 
     el("tab-layout").addEventListener("click", () => fused.params.set("view", "layout"));
     el("tab-grid").addEventListener("click", () => fused.params.set("view", "grid"));
