@@ -1,113 +1,182 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Parquet structure</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --fg-soft: #cfd3d7;
+    --fg-dim: #6b7076;
+    --sep: #3a3d44;
+    --border-cell: #24262b;
+    --tab-active-bg: #23324a;
+    --tab-active-border: #35507a;
+    --tab-active-fg: #eaf1ff;
+    --box-bg: #191b1f;
+    --box-border: #2f333b;
+    --magic-bg: #16181c;
+    --rg-bg: #1a1d24;
+    --rg-border: #3a4152;
+    --col-bg: #1e2128;
+    --col-border: #333844;
+    --data-bg: #23262e;
+    --data-border: #2c313b;
+    --th-bg: #23262c;
+    --td-fg: #c2c7cd;
+    --row-hover-bg: #1d2025;
+    --mono-fg: #b7c0cb;
+    --track-bg: #17181c;
+    --skel-base: #1c1f24;
+    --skel-shine: #2b2f37;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --fg-soft: #3f4348;
+    --fg-dim: #7b8088;
+    --sep: #c9ccd2;
+    --border-cell: #e6e8eb;
+    --tab-active-bg: #e5eefc;
+    --tab-active-border: #9dbdea;
+    --tab-active-fg: #17427a;
+    --box-bg: #f7f8f9;
+    --box-border: #d5d8de;
+    --magic-bg: #eceef1;
+    --rg-bg: #f2f4f7;
+    --rg-border: #c2c8d2;
+    --col-bg: #eceff3;
+    --col-border: #cbd0d8;
+    --data-bg: #e6e8ed;
+    --data-border: #d2d6dd;
+    --th-bg: #e4e7eb;
+    --td-fg: #45494f;
+    --row-hover-bg: #eef0f3;
+    --mono-fg: #3d4550;
+    --track-bg: #eceef1;
+    --skel-base: #e9ebee;
+    --skel-shine: #dadde3;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    font-size: 13px; color: #e8eaed; background: #131417;
+    font-size: 13px; color: var(--fg); background: var(--bg);
   }
   /* Top bar: file summary on the left, the Layout/Metadata toggle on the right. */
   #bar {
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 12px; border-bottom: 1px solid #2a2d33; background: #1b1d21;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-alt);
     position: sticky; top: 0; z-index: 3; flex-wrap: wrap;
   }
-  #summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #9aa0a6; }
+  #summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--fg-muted); }
   #summary .stat { white-space: nowrap; }
-  #summary .stat b { color: #e8eaed; font-weight: 600; }
-  #summary .sep { color: #3a3d44; }
+  #summary .stat b { color: var(--fg); font-weight: 600; }
+  #summary .sep { color: var(--sep); }
   #tabs { margin-left: auto; display: flex; gap: 4px; }
   #tabs button {
-    font: inherit; padding: 4px 12px; border: 1px solid #2a2d33; border-radius: 6px;
-    background: #131417; color: #cfd3d7; cursor: pointer;
+    font: inherit; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg-soft); cursor: pointer;
   }
-  #tabs button.active { background: #23324a; border-color: #35507a; color: #eaf1ff; }
+  #tabs button.active { background: var(--tab-active-bg); border-color: var(--tab-active-border); color: var(--tab-active-fg); }
   #content { padding: 14px; }
-  #status { padding: 24px; color: #9aa0a6; }
-  #status.error { color: #ff6b6b; }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); }
 
   /* ---- Layout view: nested byte-range boxes ---- */
   .lay { display: flex; flex-direction: column; gap: 10px; max-width: 760px; }
   .box {
-    border: 1px solid #2f333b; border-radius: 8px; background: #191b1f;
+    border: 1px solid var(--box-border); border-radius: 8px; background: var(--box-bg);
     padding: 10px 12px;
   }
   .box-head {
     display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
   }
   .box-title { font-weight: 600; }
-  .box-title .muted { color: #9aa0a6; font-weight: 400; margin-left: 6px; }
-  .box-range { color: #9aa0a6; font-size: 12px; text-align: right; white-space: nowrap; line-height: 1.35; }
-  .box-range b { color: #cfd3d7; font-weight: 600; }
-  .magic { background: #16181c; border-style: dashed; }
-  .rg { border-color: #3a4152; background: #1a1d24; }
+  .box-title .muted { color: var(--fg-muted); font-weight: 400; margin-left: 6px; }
+  .box-range { color: var(--fg-muted); font-size: 12px; text-align: right; white-space: nowrap; line-height: 1.35; }
+  .box-range b { color: var(--fg-soft); font-weight: 600; }
+  .magic { background: var(--magic-bg); border-style: dashed; }
+  .rg { border-color: var(--rg-border); background: var(--rg-bg); }
   .rg > .cols { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-  .col { border-color: #333844; background: #1e2128; }
+  .col { border-color: var(--col-border); background: var(--col-bg); }
   .col > .data {
-    margin-top: 8px; border: 1px solid #2c313b; border-radius: 6px;
-    background: #23262e; padding: 8px 10px;
+    margin-top: 8px; border: 1px solid var(--data-border); border-radius: 6px;
+    background: var(--data-bg); padding: 8px 10px;
   }
 
   /* ---- Metadata view ---- */
   .meta-section { margin-bottom: 20px; }
-  .meta-section h3 { margin: 0 0 8px; font-size: 13px; color: #cfd3d7; }
+  .meta-section h3 { margin: 0 0 8px; font-size: 13px; color: var(--fg-soft); }
   table { border-collapse: collapse; width: 100%; max-width: 900px; }
   th, td {
-    padding: 5px 10px; border-bottom: 1px solid #24262b; text-align: left;
+    padding: 5px 10px; border-bottom: 1px solid var(--border-cell); text-align: left;
     vertical-align: top; white-space: nowrap;
   }
   /* Header sits slightly lifted above the body with a crisp divider, so it
      reads as a header rather than another data row (shared by the Schema table
      and the per-row-group chunk tables). */
   th {
-    background: #23262c; color: #cfd3d7; font-weight: 600;
-    border-bottom: 1px solid #3a3d44;
+    background: var(--th-bg); color: var(--fg-soft); font-weight: 600;
+    border-bottom: 1px solid var(--sep);
   }
-  td { color: #c2c7cd; }
-  tbody tr:hover td { background: #1d2025; }
+  td { color: var(--td-fg); }
+  tbody tr:hover td { background: var(--row-hover-bg); }
   tbody tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; max-width: 720px; }
-  .kv dt { color: #9aa0a6; }
-  .kv dd { margin: 0; color: #e8eaed; font-variant-numeric: tabular-nums; }
-  details.rgd { border: 1px solid #2a2d33; border-radius: 6px; margin-bottom: 8px; background: #191b1f; }
+  .kv dt { color: var(--fg-muted); }
+  .kv dd { margin: 0; color: var(--fg); font-variant-numeric: tabular-nums; }
+  details.rgd { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; background: var(--box-bg); }
   details.rgd > summary {
-    cursor: pointer; padding: 8px 10px; color: #cfd3d7; font-weight: 600;
+    cursor: pointer; padding: 8px 10px; color: var(--fg-soft); font-weight: 600;
     display: flex; gap: 12px; align-items: baseline;
   }
-  details.rgd > summary .muted { color: #9aa0a6; font-weight: 400; }
-  details.rgd[open] > summary { border-bottom: 1px solid #24262b; }
+  details.rgd > summary .muted { color: var(--fg-muted); font-weight: 400; }
+  details.rgd[open] > summary { border-bottom: 1px solid var(--border-cell); }
   details.rgd .rgd-body { padding: 4px 6px 8px; overflow-x: auto; }
-  code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b7c0cb; }
+  code.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--mono-fg); }
 
   /* ---- Grid view: whole-file storage profile ---- */
   .grid-legend {
     display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 16px;
-    padding-bottom: 12px; border-bottom: 1px solid #24262b;
+    padding-bottom: 12px; border-bottom: 1px solid var(--border-cell);
   }
   .leg-item { display: inline-flex; align-items: center; gap: 6px; }
   .leg-item .swatch { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
-  .leg-pct { color: #9aa0a6; font-size: 12px; }
+  .leg-pct { color: var(--fg-muted); font-size: 12px; }
   .grid-chart { display: flex; flex-direction: column; gap: 6px; max-width: 1000px; }
   .g-row { display: flex; align-items: center; gap: 10px; }
   .g-label {
-    flex: 0 0 46px; text-align: right; color: #9aa0a6; font-variant-numeric: tabular-nums;
+    flex: 0 0 46px; text-align: right; color: var(--fg-muted); font-variant-numeric: tabular-nums;
   }
-  .g-track { flex: 1 1 auto; min-width: 0; background: #17181c; border-radius: 4px; height: 22px; overflow: hidden; }
+  .g-track { flex: 1 1 auto; min-width: 0; background: var(--track-bg); border-radius: 4px; height: 22px; overflow: hidden; }
   .g-bar { display: flex; height: 100%; min-width: 2px; }
   .g-seg { height: 100%; transition: filter 0.08s; }
   .g-seg:hover { filter: brightness(1.35); }
   .g-size {
-    flex: 0 0 auto; color: #cfd3d7; font-variant-numeric: tabular-nums; font-size: 12px;
+    flex: 0 0 auto; color: var(--fg-soft); font-variant-numeric: tabular-nums; font-size: 12px;
     white-space: nowrap; min-width: 120px;
   }
-  .g-size .muted { color: #6b7076; }
-  .grid-note { max-width: 700px; margin: 16px 0 0; color: #9aa0a6; font-size: 12px; line-height: 1.5; }
+  .g-size .muted { color: var(--fg-dim); }
+  .grid-note { max-width: 700px; margin: 16px 0 0; color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
 
   /* ---- Loading skeleton ----
      Shimmering placeholders shaped like whichever tab is about to render
@@ -115,7 +184,7 @@
      layout instead of a bare "Loading…" line. One shimmer sweep reused
      everywhere: a gradient dragged across background-position. */
   .skel {
-    background: linear-gradient(90deg, #1c1f24 25%, #2b2f37 50%, #1c1f24 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
     border-radius: 4px;
@@ -212,7 +281,7 @@
               </div>
               <div class="data">
                 <div class="box-head">
-                  <span class="box-title" style="font-weight:400;color:#9aa0a6">Data</span>
+                  <span class="box-title" style="font-weight:400;color:var(--fg-muted)">Data</span>
                   <span class="box-range">start <b>${n(c.start)}</b><br>bytes <b>${n(c.bytes)}</b><br>end <b>${n(c.end)}</b></span>
                 </div>
               </div>
@@ -237,8 +306,8 @@
         ["Path", esc(f.path)],
         ["Format version", esc(f.format_version)],
         ["Created by", esc(f.created_by || "—")],
-        ["Compressed", `${humanBytes(f.total_compressed)} <span style="color:#9aa0a6">(${n(f.total_compressed)} bytes)</span>`],
-        ["Uncompressed", `${humanBytes(f.total_uncompressed)} <span style="color:#9aa0a6">(${n(f.total_uncompressed)} bytes)</span>`],
+        ["Compressed", `${humanBytes(f.total_compressed)} <span style="color:var(--fg-muted)">(${n(f.total_compressed)} bytes)</span>`],
+        ["Uncompressed", `${humanBytes(f.total_uncompressed)} <span style="color:var(--fg-muted)">(${n(f.total_uncompressed)} bytes)</span>`],
         ["Footer size", `${n(f.serialized_size)} bytes`],
       ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
 
