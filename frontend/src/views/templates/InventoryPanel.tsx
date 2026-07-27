@@ -56,7 +56,8 @@ export function InventoryPanel({
   const openClaude = async (name: string) => {
     setError(null);
     try {
-      await openTemplateInClaude(name);
+      const { url } = await openTemplateInClaude(name);
+      window.location.href = url;
     } catch (e) {
       setError((e as Error).message);
     }
@@ -391,7 +392,7 @@ function InventoryRow({
             type="button"
             className="templates-ghost-btn"
             onClick={onOpenInClaude}
-            title="Open Claude Code in this template's folder (Terminal, macOS only)"
+            title="Open Claude Code in this template's folder"
           >
             Open in Claude
           </button>

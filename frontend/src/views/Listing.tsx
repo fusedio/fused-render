@@ -36,6 +36,7 @@ import {
   resolveOpenWithModes,
   buildOpenWithItems,
   friendlyFsError,
+  claudeDeepLink,
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
 import { formatSize, formatMtime, basename } from "../lib/format";
@@ -1086,6 +1087,13 @@ export default function Listing({
     });
   };
 
+  // Open Claude Code via its claude-cli:// scheme handler — a dir cwd's into
+  // itself, a file cwd's into its parent and pre-fills an @-mention prompt.
+  // Setting location.href to a custom scheme does not navigate the SPA away.
+  const doOpenInClaude = (path: string, isDir: boolean, name: string, parentDir: string) => {
+    window.location.href = claudeDeepLink(path, isDir, name, parentDir);
+  };
+
   const startNewFile = (dir: string) =>
     setDialog({
       kind: "prompt",
@@ -1203,6 +1211,11 @@ export default function Listing({
       "separator",
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
+      {
+        label: "Open in Claude Code",
+        icon: MenuIcons.openWith,
+        onClick: () => doOpenInClaude(row.path, row.isDir, row.name, row.parentDir),
+      },
     ];
   };
 
@@ -1216,6 +1229,11 @@ export default function Listing({
     "separator",
     { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
+    {
+      label: "Open in Claude Code",
+      icon: MenuIcons.openWith,
+      onClick: () => doOpenInClaude(normDir(base), true, "", normDir(base)),
+    },
   ];
 
   const openRowMenu = (e: React.MouseEvent, row: RowCtx) => {
