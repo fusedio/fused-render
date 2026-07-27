@@ -1317,7 +1317,7 @@ def test_open_in_claude_success(ctx):
     ctx.make_template("myview")
     resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
     assert resp.status_code == 200
-    expected = "claude-cli://open?cwd=" + urllib.parse.quote(str((ctx.udir / "myview").resolve()))
+    expected = "claude-cli://open?cwd=" + urllib.parse.quote(os.path.abspath(str(ctx.udir / "myview")))
     assert resp.json() == {"url": expected}
 
 

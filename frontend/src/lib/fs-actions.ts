@@ -142,7 +142,7 @@ export function claudeDeepLink(path: string, isDir: boolean, name: string, paren
     return "claude-cli://open?cwd=" + encodeURIComponent(path) + "&q=" + encodeURIComponent(q);
   }
   const q = `This is a fused-render project — load its skills first, then read @${name}.\n\n`;
-  return "claude-cli://open?cwd=" + encodeURIComponent(parentDir) + "&q=" + encodeURIComponent(q);
+  return "claude-cli://open?cwd=" + encodeURIComponent(normDir(parentDir)) + "&q=" + encodeURIComponent(q);
 }
 
 // Write text to the system clipboard; resolves true on success, false when the
