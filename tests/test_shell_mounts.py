@@ -35,6 +35,10 @@ def _warm_https_opener():
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    # The live/dead rcd-probe cache is module-global and keyed on (port, pid);
+    # stub servers reuse OS ports across tests, so a cached verdict from a
+    # previous test's daemon must never leak into this one.
+    monkeypatch.setattr(mounts_mod, "_live_port_cache", None)
     return home
 
 
@@ -424,11 +428,112 @@ def test_mount_surfaces_rc_error(home, rcd):
     assert err is not None and "mount helper failed" in err
 
 
+# -- _live_rcd_port dead-probe cache -----------------------------------------
+
+
+def test_live_rcd_port_caches_dead_probe(home, monkeypatch):
+    # On Windows a loopback connect to a port nothing listens on can take ~2s
+    # to fail, and a stale rcd.json is exactly what every server boot starts
+    # with — so a failed probe must be cached: un-cached, every status call
+    # (/api/config's learn_mount_ready per UI poll) re-paid that stall and
+    # starved the desktop readiness probe into "did not become ready".
+    mounts_mod.write_rcd_state(59999, 4321)
+    probes = []
+
+    def failing_rc(port, method, params=None, timeout=30):
+        probes.append(method)
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(mounts_mod, "_rc", failing_rc)
+    assert mounts_mod._live_rcd_port() is None
+    assert mounts_mod._live_rcd_port() is None
+    assert len(probes) == 1  # second call within _DEAD_PORT_TTL_S: cached miss
+    # The spawn path must re-probe past the cached miss: trusting it there
+    # would spawn a duplicate daemon over a live one whose probe merely
+    # timed out (see _ensure_rcd_locked).
+    assert mounts_mod._live_rcd_port(trust_dead_cache=False) is None
+    assert len(probes) == 2
+
+
+def test_live_rcd_port_dead_cache_never_masks_new_daemon(home, monkeypatch):
+    # The cache is keyed on the recorded (port, pid): a fresh spawn writes a
+    # NEW state, so a cached miss for the old daemon never hides the new one.
+    mounts_mod.write_rcd_state(59999, 4321)
+    probes = []
+
+    def failing_rc(port, method, params=None, timeout=30):
+        probes.append(port)
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(mounts_mod, "_rc", failing_rc)
+    assert mounts_mod._live_rcd_port() is None
+    mounts_mod.write_rcd_state(58888, 4322)
+    assert mounts_mod._live_rcd_port() is None
+    assert probes == [59999, 58888]
+
+
 # -- Windows (WinFsp) mount semantics ------------------------------------------
 # The whole win32 mount path is exercised here with sys.platform patched to
 # "win32" (real rclone/WinFsp is never invoked). WinFsp differs from the POSIX
 # backends in two ways the code must special-case: the mountpoint leaf must NOT
 # pre-exist, and there is no `umount` to force a detach.
+
+
+def test_ismount_detects_winfsp_reparse_mount(monkeypatch):
+    # os.path.ismount is False for EVERY live WinFsp directory mount:
+    # GetVolumePathName resolves the mountpoint to its \\?\GLOBALROOT volume
+    # device instead of echoing the path back, so ntpath's self-comparison
+    # fails while the mount lists and reads fine. _ismount must recognize the
+    # mount-point reparse tag whose target is a volume device.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+
+    class St:
+        st_reparse_tag = mounts_mod._IO_REPARSE_TAG_MOUNT_POINT
+
+    monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
+    monkeypatch.setattr(mounts_mod.os, "readlink",
+                        lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
+    assert mounts_mod._ismount("/mounts/learn") is True
+
+
+def test_ismount_plain_junction_is_not_a_mount(monkeypatch):
+    # A directory junction shares the mount-point reparse tag but points at a
+    # regular path, not a volume device — it must stay a non-mount so a user's
+    # junction under the mounts dir is never mistaken for a live mount.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+
+    class St:
+        st_reparse_tag = mounts_mod._IO_REPARSE_TAG_MOUNT_POINT
+
+    monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
+    monkeypatch.setattr(mounts_mod.os, "readlink",
+                        lambda p: "\\\\?\\C:\\Users\\someone\\target")
+    assert mounts_mod._ismount("/mounts/junction") is False
+
+
+def test_ismount_plain_dir_and_missing_path(tmp_path, monkeypatch):
+    # A regular directory (no reparse point) and a missing path both stay
+    # non-mounts; real os.lstat is exercised, so this also covers the POSIX
+    # runner where st_reparse_tag does not exist at all.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._ismount(str(tmp_path)) is False
+    assert mounts_mod._ismount(str(tmp_path / "gone")) is False
+
+
+def test_ismount_posix_short_circuits_to_os_path_ismount(monkeypatch):
+    # Off Windows the answer IS os.path.ismount; the reparse fallback must not
+    # even stat the path.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+
+    def boom(p):
+        raise AssertionError("lstat must not run on POSIX")
+
+    monkeypatch.setattr(mounts_mod.os, "lstat", boom)
+    assert mounts_mod._ismount("/mounts/data") is False
 
 
 def test_attach_win32_does_not_create_leaf_mountpoint(home, rcd, monkeypatch):
@@ -2269,7 +2374,7 @@ def test_reconnect_stale_unmounts_rcd_entry_before_remounting(home, rcd, monkeyp
 
 def test_ensure_rcd_spawn_has_log_file_and_records_path(home, monkeypatch):
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
-    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)  # force a spawn
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda **k: None)  # force a spawn
     argvs = []
 
     class FakePopen:
