@@ -94,9 +94,10 @@ def test_compressed_tabular_routes_to_duckdb():
 
 def test_duckdb_database_files_route_to_duckdb():
     # .duckdb/.ddb open in the tabular grid; .db stays with the sqlite viewer.
-    assert modes("/x/warehouse.duckdb") == (["duckdb"], None)
-    assert modes("/x/warehouse.ddb") == (["duckdb"], None)
-    assert modes("/x/legacy.db") == (["sqlite"], None)
+    # db_console rides along as the secondary SQL-console mode on all of them.
+    assert modes("/x/warehouse.duckdb") == (["duckdb", "db_console"], None)
+    assert modes("/x/warehouse.ddb") == (["duckdb", "db_console"], None)
+    assert modes("/x/legacy.db") == (["sqlite", "db_console"], None)
 
 
 def test_builtin_zarr_directory_key():
