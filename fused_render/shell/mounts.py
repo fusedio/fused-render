@@ -302,7 +302,9 @@ def _path() -> str:
 
 
 def mounts_dir() -> str:
-    return os.path.join(storage.home_dir(), "mounts")
+    # normpath: expanduser("~/...") on Windows keeps its forward slash, and a
+    # mixed-separator mountpoint never string-matches rcd's normalized paths.
+    return os.path.normpath(os.path.join(storage.home_dir(), "mounts"))
 
 
 def ensure_mounts_dir() -> str:
@@ -1111,7 +1113,10 @@ def rcd_mount_map() -> dict:
         listed = _rc(port, "mount/listmounts").get("mountPoints", [])
     except RuntimeError:
         return {}
-    return {m.get("MountPoint"): m.get("Fs") for m in listed if isinstance(m, dict)}
+    # normpath the keys so membership tests against mountpoint() compare like
+    # with like whatever separator form rclone reports.
+    return {os.path.normpath(m["MountPoint"]): m.get("Fs")
+            for m in listed if isinstance(m, dict) and m.get("MountPoint")}
 
 
 def mounted_paths() -> set:
