@@ -139,7 +139,8 @@ export function NewTemplateModal({
     setOpening(true);
     setOpenError(null);
     try {
-      await openTemplateInClaude(templateName);
+      const { url } = await openTemplateInClaude(templateName);
+      window.location.href = url;
       if (alive.current) onClose();
     } catch (e) {
       if (alive.current) setOpenError((e as Error).message);

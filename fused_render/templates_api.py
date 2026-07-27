@@ -28,12 +28,10 @@ import json
 import os
 import re
 import secrets
-import shlex
 import shutil
 import stat as stat_mod
-import subprocess
-import sys
 import time
+import urllib.parse
 import zipfile
 
 from fastapi import APIRouter, Body, File, Header, Query, UploadFile
@@ -1178,42 +1176,15 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     return {"ok": True, "name": name, "path": dest, "bindings": keys}
 
 
-def _claude_bin() -> str:
-    """Locate the `claude` CLI. Mirrors templates/claude/agent.py:_claude_bin —
-    replicated here rather than imported, since a template folder is not an
-    import root (and templates_api must not depend on a template's internals)."""
-    found = shutil.which("claude")
-    if found:
-        return found
-    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
-        candidate = os.path.expanduser(candidate)
-        if os.path.exists(candidate):
-            return candidate
-    raise FileNotFoundError(
-        "claude CLI not found — install Claude Code or put `claude` on the PATH "
-        "of the environment that launched fused-render"
-    )
-
-
-def _applescript_str(s: str) -> str:
-    """Quote a Python string as an AppleScript double-quoted literal (escape
-    backslash then double-quote)."""
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 @router.post("/api/templates/open-in-claude")
 def api_open_in_claude(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    # Open Terminal.app in a user template's folder and start `claude` there so
-    # the author can iterate on the template with the CLI. macOS-only for now.
+    # Build a claude-cli:// deep link into a user template's folder. Claude
+    # Code registers this URL scheme OS-wide; the frontend navigates to it
+    # (window.location.href) and the OS hands it to the CLI's own handler —
+    # no subprocess/osascript needed here, and it works cross-platform.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-
-    if sys.platform != "darwin":
-        return _error(
-            "Open in Claude is only supported on macOS (it spawns Terminal.app).",
-            status=400,
-        )
 
     name = body.get("name")
     if not isinstance(name, str) or not name:
@@ -1227,19 +1198,5 @@ def api_open_in_claude(body: dict = Body(...), x_fused: str | None = Header(defa
     if os.path.islink(folder) or not os.path.isdir(folder):
         return _error(f"no user template named {name!r}", status=404)
 
-    try:
-        claude_bin = _claude_bin()
-    except FileNotFoundError as exc:
-        return _error(str(exc))
-
-    # shlex.quote makes the paths safe for the shell that `do script` runs;
-    # _applescript_str then escapes that command for the AppleScript literal.
-    shell_cmd = f"cd {shlex.quote(folder)} && {shlex.quote(claude_bin)}"
-    open_script = 'tell application "Terminal" to do script ' + _applescript_str(shell_cmd)
-    activate_script = 'tell application "Terminal" to activate'
-    try:
-        subprocess.run(["osascript", "-e", open_script, "-e", activate_script], check=True)
-    except (subprocess.CalledProcessError, OSError) as exc:
-        return _error(f"failed to open Terminal: {exc}", status=500)
-
-    return {"ok": True}
+    url = "claude-cli://open?cwd=" + urllib.parse.quote(os.path.abspath(folder))
+    return {"url": url}

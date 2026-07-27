@@ -1258,7 +1258,9 @@ export function createTemplate(name: string, extensions: string[]): Promise<NewT
   return postJson<NewTemplateResult>("/api/templates/new", { name, extensions });
 }
 
-// Open Claude Code in Terminal.app in a user template's folder (macOS only).
-export function openTemplateInClaude(name: string): Promise<{ ok: true }> {
-  return postJson<{ ok: true }>("/api/templates/open-in-claude", { name });
+// Resolve a claude-cli:// deep link into a user template's folder. The
+// caller navigates to the returned URL (window.location.href) so the OS
+// hands it to Claude Code's registered scheme handler.
+export function openTemplateInClaude(name: string): Promise<{ url: string }> {
+  return postJson<{ url: string }>("/api/templates/open-in-claude", { name });
 }
