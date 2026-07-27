@@ -129,6 +129,17 @@ export async function freePastePath(parentDir: string, name: string, isDir: bool
   return join(dir, candidate);
 }
 
+// claude-cli:// deep link for a listing entry — Claude Code registers this
+// scheme OS-wide (see templates_api.api_open_in_claude, which builds the same
+// shape for a template folder). A dir opens with its own path as cwd; a file
+// opens with its parent as cwd and pre-fills a prompt that @-mentions the file
+// (not auto-sent — the user still hits enter).
+export function claudeDeepLink(path: string, isDir: boolean, name: string, parentDir: string): string {
+  if (isDir) return "claude-cli://open?cwd=" + encodeURIComponent(path);
+  const q = encodeURIComponent("@" + name + " ");
+  return "claude-cli://open?cwd=" + encodeURIComponent(parentDir) + "&q=" + q;
+}
+
 // Write text to the system clipboard; resolves true on success, false when the
 // Clipboard API is missing or the write is denied. Callers decide whether to
 // toast (a failure stays silent — the path is still reachable via Reveal).

@@ -392,7 +392,7 @@ function InventoryRow({
             type="button"
             className="templates-ghost-btn"
             onClick={onOpenInClaude}
-            title="Open Claude Code in this template's folder (Terminal, macOS only)"
+            title="Open Claude Code in this template's folder"
           >
             Open in Claude
           </button>
