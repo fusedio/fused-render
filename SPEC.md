@@ -2095,3 +2095,78 @@ lists the last files opened in the app, each carrying the params it last had.
   DOES notify (hrefs/click targets must stay fresh per RC-3) but re-renders
   the row's attributes in place — zero movement — and a refresh that changes
   nothing visible triggers no re-render at all.
+
+---
+
+## 30. Appearance — System / Light / Dark (D134)
+
+Goal: the app opens in the appearance the user's desktop already asked for, and
+they can pin Light or Dark if they'd rather. fused-render was dark by constant,
+not by choice.
+
+- **AP-1** One preference with three values — **System** (default), **Light**,
+  **Dark** — persisted per **browser profile** in `localStorage` under
+  `fused-render:theme`, using the best-effort read/write posture of
+  `lib/viewstate.ts` / `lib/sidebarstate.ts` (silent on failure, never
+  blocking). A browser profile and the desktop app window legitimately hold
+  different choices. **There is no server-side store, endpoint, config file or
+  machine-wide syncing** (deliberately — D134).
+- **AP-2** The **resolved** theme (`light` | `dark`) is `System` →
+  `prefers-color-scheme`, otherwise the pinned value. It lives in exactly one
+  place: `data-theme` on the document's `<html>`. Dark is the CSS default, so a
+  document with no attribute renders exactly as it always did.
+- **AP-3** **No flash.** The resolution runs in an **inline** `<head>` script in
+  `frontend/index.html`, ahead of every stylesheet — the attribute is on the
+  document before first paint, not after React hydrates. That script duplicates
+  the key and the resolution rule because nothing importable exists that early;
+  a test pins the spellings together (`tests/test_theme.py`).
+- **AP-4** While the setting is **System**, an OS appearance change mid-session
+  — including macOS's automatic sunset switch — restyles the shell and every
+  open opted-in view **live**, with no reload. When pinned, the OS change is
+  ignored.
+- **AP-5** Shell chrome is fully tokenized: **every** colour in `shell.css`
+  comes from a palette token, and `:root[data-theme="light"]` redefines the
+  whole set. Translucent washes ride an `rgba(var(--tint), a)` triple that flips
+  white→black, since the originals assumed a dark backdrop. Dark is unchanged
+  value-for-value; this is not a redesign.
+- **AP-6** The setting's surface is a **menu in the sidebar brand row** (beside
+  the collapse chevron — the footer stays three equal columns, D125), showing
+  the active choice and offering all three.
+- **AP-7** **Views are pushed to, never re-mounted.** View documents are
+  iframes, and a React re-render must never touch a live iframe (§14, D45). The
+  injected runtime (`static/runtime.js`) instead resolves the same key in the
+  view's own document and writes `data-theme` there. Cross-window convergence
+  rides the `storage` event; a System-mode OS flip rides each document's own
+  `matchMedia`. No reload, no remount, no lost scroll/selection/unsaved edits.
+- **AP-8** That push is **opt-in**: only a document whose `<html>` carries
+  `data-fused-theme` is touched. The attribute must be on `<html>`, not a
+  `<meta>` — `runtime.js` is injected at the top of `<head>` and is
+  parser-blocking, so it runs before the rest of the head is parsed (which is
+  also why the view has no flash either).
+- **AP-9** **Tier 1** — views with a real light palette authored: `code`,
+  `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
+  `vector`, `structure`, `tree`. Each carries the identical structure: a `:root`
+  dark palette, a `:root[data-theme="light"]` twin defining the same token set,
+  and the AP-8 opt-in.
+- **AP-10** **Light by design** — always light, ignore the setting entirely, no
+  opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
+  `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
+  text/code group.)
+- **AP-11** **Self-toggling, untouched**: `excel`, `log_studio` and `tableau`
+  keep their own in-view theme buttons and private storage keys (e.g.
+  `excel-theme`). Not migrated, not overridden.
+- **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
+  today's appearance in both modes until a later pass: `image`, `photos`,
+  `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
+  `netcdf`, `las`, `annotate`, `geometry_editor`, `history`, `preview`, `zip`,
+  `tar`. Accepted consequence: in Light mode these render dark inside a light
+  shell.
+- **AP-13** **User-authored `.html` views get no theme signal at all.** Their
+  CSS stays entirely theirs; nothing is written into their document.
+- **AP-14** The four lists above (AP-9..AP-12) are **exhaustive** over
+  `fused_render/templates/`, and a test asserts it — a newly added template
+  cannot quietly skip classification.
+- **AP-15** The native macOS menubar popover (`menubar_pin.py`) keeps following
+  `prefers-color-scheme` on its own and does **not** honour an in-app pin. The
+  Linux tray icon likewise follows the *desktop's* preference, not this setting
+  (D135) — the two are independent.
