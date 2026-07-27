@@ -658,10 +658,16 @@
   // Intl.Segmenter is the primary path; a lookbehind split is the fallback.
   // Each chunk keeps its `start` offset within the block text so onboundary
   // charIndex maps back to an exact range in the rendered text node.
-  const segmenter =
-    (typeof Intl !== "undefined" && Intl.Segmenter)
-      ? new Intl.Segmenter("en", { granularity: "sentence" })
-      : null;
+  // Locale follows the UI language (same signal voice curation uses) so
+  // non-English documents get their own sentence rules, not English ones.
+  const segmenter = (() => {
+    if (typeof Intl === "undefined" || !Intl.Segmenter) return null;
+    try {
+      return new Intl.Segmenter(navigator.language || "en", { granularity: "sentence" });
+    } catch (e) {
+      return new Intl.Segmenter("en", { granularity: "sentence" });
+    }
+  })();
   function chunkSentences(text) {
     const out = [];
     if (!text) return out;
@@ -1246,7 +1252,13 @@
       const viewport = page.getViewport({ scale: scale * dpr });
       const ctx = canvas.getContext("2d");
       await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-    } catch (e) { /* blank canvas is fine — text still plays */ }
+    } catch (e) {
+      // Un-mark so the next intersection retries — leaving the page marked
+      // rendered would pin a permanent blank canvas (text still plays).
+      canvas.remove();
+      pdfCanvasRendered.delete(n);
+      return;
+    }
     // If the page we just rendered holds the current sentence, repaint it so the
     // highlight lands now that geometry is on screen.
     if (blocks[pos] && blocks[pos].page === n) paintSentenceOriginal();
