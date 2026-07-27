@@ -2129,9 +2129,11 @@ not by choice.
   whole set. Translucent washes ride an `rgba(var(--tint), a)` triple that flips
   white→black, since the originals assumed a dark backdrop. Dark is unchanged
   value-for-value; this is not a redesign.
-- **AP-6** The setting's surface is a **menu in the sidebar brand row** (beside
-  the collapse chevron — the footer stays three equal columns, D125), showing
-  the active choice and offering all three.
+- **AP-6** The setting's surface is an **Appearance section on the Preferences
+  page** (`/view/_prefs`, §20) — a three-way radio group, one option per choice,
+  sitting above the server-backed sections. It is the one section there that is
+  *not* server-backed (AP-1): it writes `localStorage` synchronously and needs no
+  busy/error plumbing. There is no picker in the sidebar.
 - **AP-7** **Views are pushed to, never re-mounted.** View documents are
   iframes, and a React re-render must never touch a live iframe (§14, D45). The
   injected runtime (`static/runtime.js`) instead resolves the same key in the

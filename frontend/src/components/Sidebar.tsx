@@ -28,7 +28,6 @@ import {
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
 import IconPicker from "./IconPicker";
-import ThemeMenu from "./ThemeMenu";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
 import { loadRecents, displayRecents, setRecentsCollapsed } from "../lib/recents";
@@ -1064,10 +1063,6 @@ export default function Sidebar({ config }: SidebarProps) {
         </span>{" "}
         <span className="brand-title">fused-render</span>
         <span className="brand-version">v{config.version}</span>
-        {/* Appearance switch (SPEC §30) — System/Light/Dark. In the brand row,
-            not the footer: the footer is three equal columns by decision
-            (D125). `margin-left: auto` on the group starts here. */}
-        <ThemeMenu />
         <button
           type="button"
           className="icon-btn sidebar-collapse-btn"

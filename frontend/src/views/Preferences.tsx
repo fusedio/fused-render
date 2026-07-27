@@ -17,9 +17,63 @@ import { navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
 type PrefsTab = "render" | "account";
+
+// The one section on this page that is deliberately NOT server-backed. Every
+// other control here round-trips /api/prefs (shell/prefs.py); Appearance is
+// per-browser-profile localStorage["fused-render:theme"] by decision — SPEC §30
+// AP-1 / D134 — so a browser tab and the desktop window can legitimately hold
+// different choices, and there is no server store to keep in sync. Writes are
+// synchronous, hence no busy/locked/error plumbing.
+function AppearanceSection() {
+  const [pref, setPref] = useThemePref();
+  return (
+    <section className="prefs-section">
+      <h2>Appearance</h2>
+      <p className="deploy-muted">
+        Light or dark for this app. Stored in this browser profile, so each browser and the
+        desktop window remember their own choice. Applies immediately.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "system"}
+          onChange={() => setPref("system")}
+        />
+        <span>
+          <b>System</b> — follows your desktop appearance, including a scheduled day/night
+          switch.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "light"}
+          onChange={() => setPref("light")}
+        />
+        <span>
+          <b>Light</b> — always light, whatever your desktop is set to.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "dark"}
+          onChange={() => setPref("dark")}
+        />
+        <span>
+          <b>Dark</b> — always dark, whatever your desktop is set to.
+        </span>
+      </label>
+    </section>
+  );
+}
 
 function TourSection() {
   return (
@@ -311,6 +365,7 @@ export default function Preferences() {
           <div className="prefs-tabpanel">
             {tab === "render" && (
               <>
+                <AppearanceSection />
                 <LogsSection prefs={prefs} />
                 <EngineSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
