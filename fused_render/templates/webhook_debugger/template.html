@@ -479,7 +479,6 @@
   }
 
   function renderEndpoints(s) {
-    const active = activeMethods(s);
     endpointList.innerHTML = endpoints.map((ep) => {
       const on = (s.path_prefix || "") === (ep.path || "");
       return `<button class="endpoint ${on ? "active" : ""}" type="button" data-path="${escapeHtml(ep.path || "")}">
