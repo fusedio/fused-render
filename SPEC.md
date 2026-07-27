@@ -1070,9 +1070,13 @@ never imports server).
   `deploy_enabled`, or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
 - **PF-1a** The page renders its sections in this order: **Appearance**,
-  **Execution engine**, **Call log**, **Deploy to Fused account**,
-  **Accessibility**, **Tour** (the spec subsection numbering below is
-  organizational, not the visual order).
+  **Call log**, **Deploy to Fused account**, **Accessibility**, and last
+  **Execution engine** — last because it is the setting a user is least likely
+  to have come here to change (builtin suits almost everyone, and an env var
+  pins it where it matters). There is **no Tour button**: the tour still runs
+  itself on a first visit (`maybeAutoStartTour`), because it is onboarding
+  rather than a preference. (The spec subsection numbering below is
+  organizational, not the visual order.)
 - **PF-2** The page is a thin client over existing backends everywhere else:
   deployments via `GET /api/deploy/config` + `GET /api/deploy/shares`,
   revocation via `POST /api/deploy/revoke`, registry via `GET
@@ -1118,7 +1122,7 @@ never imports server).
   carries no `log` block. It used to: a heading naming `logs.log_path` with an
   "Open logs location" reveal button. Removed because the app log is
   disposable temp-dir output (D68) whose only affordance was that reveal —
-  which the desktop tray's "Open logs" already provides on every platform that
+  which the desktop tray's "Open app logs" already provides on every platform that
   has a tray — and because once the call store moved to `~/.fused-render/logs`
   (CL-7), a second "Logs" heading beside the Call log section read as the call
   log's own settings. The durable log a user has settings for is the call log
@@ -1703,8 +1707,9 @@ SPEC DM-7); the CLI/browser experience is unchanged.
 - **PV-3** Header row (native NSButtons above the webview, in the popover):
   **Open in Browser** (home tab, same pending-queue semantics as before
   readiness), **Copy URL**, **Pin…** (NSOpenPanel; becomes **Change…** when a
-  pin is set), **Unpin** (hidden when nothing is pinned), **Logs** (reveal in
-  Finder), **Quit**. Native, not web chrome: the header must work when the
+  pin is set), **Unpin** (hidden when nothing is pinned), **Open app logs**
+  (reveal in Finder — "app" because the call log, §31, is the other thing a user
+  could mean and is the durable one with settings), **Quit**. Native, not web chrome: the header must work when the
   server is dead — a web-based Quit would die with it.
 - **PV-4** Popover: `NSPopover`, transient behavior (click-away dismisses),
   default content 420×450 — a square 420×420 webview over the 30 px bar —
@@ -1729,7 +1734,7 @@ SPEC DM-7); the CLI/browser experience is unchanged.
 - **PV-7** New AppKit code lives in `fused_render/menubar_pin.py` (popover +
   click routing controller) and the pure-python pin store in
   `fused_render/pin_store.py` (unit-tested; AppKit code is not CI-testable).
-- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open logs /
+- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open app logs /
   Quit) is still built but never attached while the popover controller is
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
@@ -2563,8 +2568,14 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   attributed to the template's own `template.html`. Correct, but "my app's
   calls" then needs a deliberate filter: records carry `target_file` (for a
   template, the identity that matters) and `first_party` (the page lives under
-  the packaged, staged-core, or user template dir), and the view's Scope
-  control defaults to the file being viewed.
+  the packaged, staged-core, or user template dir). The reader still accepts
+  `scope: mine|templates`, but the view offers **no Scope control**: the store
+  is partitioned per app (CL-18) and the view is opened ON a page, so it is
+  "this application's calls" — a page or `.py` filters to itself, and a
+  `.calls.jsonl` opened directly shows what it contains. Cross-app views are a
+  different axis and are deferred to their own change; the `scope` URL param is
+  deliberately NOT read back, since honouring a bookmarked cross-app scope with
+  no control to see or clear it is an invisible filter.
 - **CL-17** Not a security or audit log. D3 stands — this is a local
   single-user diagnostic, not an attestation, and nothing may be built on it
   as if it were tamper-evident.

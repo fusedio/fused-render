@@ -70,11 +70,24 @@ def run():
             ) from None
         out = {"ok": True, "result": result}
     except BaseException as e:  # noqa: BLE001 — includes SystemExit from user code
+        message = str(e)
+        # A helper that cannot see `fused_render` is a worker-bootstrap problem,
+        # not a problem with the helper — and the bare "No module named
+        # 'fused_render'" that reached the user said nothing about which
+        # interpreter looked, or where. Name the environment so the next report
+        # is conclusive instead of a guess about how it was installed.
+        if isinstance(e, ImportError) and (e.name or "").split(".")[0] == "fused_render":
+            message += (
+                f" [worker could not see the fused_render package: "
+                f"executable={sys.executable}, "
+                f"PYTHONPATH={os.environ.get('PYTHONPATH') or '(unset)'}, "
+                f"sys.path[:3]={sys.path[:3]}]"
+            )
         out = {
             "ok": False,
             "error": {
                 "type": type(e).__name__,
-                "message": str(e),
+                "message": message,
                 "traceback": traceback.format_exc(),
             },
         }

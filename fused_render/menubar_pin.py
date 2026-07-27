@@ -468,7 +468,7 @@ class PinController:
         if self._pinned_path is not None:
             add("Change Pinned File…", b"pinFile:")
         menu.addItem_(NSMenuItem.separatorItem())
-        add("Open Logs", b"openLogs:")
+        add("Open app logs", b"openLogs:")
         add("Quit fused-render", b"quitApp:")
         menu.popUpMenuPositioningItem_atLocation_inView_(
             None, NSMakePoint(0, sender.bounds().size.height + 4), sender

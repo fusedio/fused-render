@@ -148,6 +148,33 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
     }
 
 
+def _child_env() -> dict:
+    """The worker's environment, with THIS package's location on PYTHONPATH.
+
+    The worker is spawned as a script, so its `sys.path[0]` is the package
+    directory rather than its parent, and `import fused_render` resolves there
+    only when the package happens to be pip-installed into `sys.executable`.
+    A first-party helper that delegates to the package (the call-log reader
+    reads the store through `fused_render.calls`) otherwise fails with
+    *No module named 'fused_render'* — reported from the Calls view, while
+    log_studio's stdlib-only reader was unaffected.
+
+    Handing the path down from the PARENT rather than deriving it in the child
+    is the load-bearing part: this process IS the package, so it knows where the
+    package is even when the child's own `__file__` arithmetic cannot say (a
+    frozen or relocated layout), and it applies to a worker script that has not
+    itself been updated. `_child.py` keeps its own fallback for direct
+    invocation, but this is the path that has to be right.
+
+    Prepended, so the child imports the same code the server is running; the
+    user's own module directory still wins, since `run()` puts it at sys.path[0].
+    """
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    existing = os.environ.get("PYTHONPATH") or ""
+    return {**os.environ,
+            "PYTHONPATH": parent + (os.pathsep + existing if existing else "")}
+
+
 def _is_builtin_helper(path: str) -> bool:
     """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
     csv/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
@@ -260,6 +287,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_child_env(),
             # close_fds=False forces CPython to spawn via posix_spawn instead of
             # fork()+exec (verified: the default close_fds=True takes the fork
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy

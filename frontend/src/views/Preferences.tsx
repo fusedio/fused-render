@@ -1,10 +1,12 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Appearance, Execution engine, Call log (capture/
-//     redaction/retention for fused_render/calls.py), Deploy to Fused account
-//     (the opt-in Deploy-button toggle), Accessibility, Tour. Always present;
-//     the default (clean URL). The app's OWN log is not here: it is disposable
-//     temp-dir output (D68) reached from the desktop tray's "Open logs", and a
+//   Render preferences — Appearance, Call log (capture/redaction/retention for
+//     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
+//     toggle), Accessibility, and last Execution engine. Always present; the
+//     default (clean URL). No Tour button — the tour still runs itself on a
+//     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
+//     preference. The app's OWN log is not here either: it is disposable
+//     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
 //   Fused account       — the account/sign-in/environments panel (formerly
@@ -27,7 +29,6 @@ import {
 import type { CallsParamsMode, Prefs } from "../lib/api";
 import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
-import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
@@ -83,21 +84,6 @@ function AppearanceSection() {
           <b>Dark</b> — always dark, whatever your desktop is set to.
         </span>
       </label>
-    </section>
-  );
-}
-
-function TourSection() {
-  return (
-    <section className="prefs-section">
-      <h2>Tour</h2>
-      <p className="deploy-muted">
-        A short guided walkthrough of the interface. It also runs automatically on your first
-        visit.
-      </p>
-      <button type="button" onClick={() => startTour()}>
-        Start tour
-      </button>
     </section>
   );
 }
@@ -490,7 +476,6 @@ export default function Preferences() {
             {tab === "render" && (
               <>
                 <AppearanceSection />
-                <EngineSection prefs={prefs} onChange={setPrefs} />
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}
@@ -498,7 +483,11 @@ export default function Preferences() {
                   onOpenAccount={() => setTab("account")}
                 />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
-                <TourSection />
+                {/* Last: the engine is the setting a user is least likely to
+                    come here to change (builtin is right for almost everyone,
+                    and an env var pins it in the cases that matter), so it does
+                    not deserve the position above the ones they do. */}
+                <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}

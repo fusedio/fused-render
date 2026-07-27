@@ -49,10 +49,6 @@ The gear at the sidebar's bottom-left opens **Preferences**:
 - **Appearance** — System (follows your desktop), Light or Dark. Applies
   immediately, and is remembered per browser profile (so a browser tab and the
   desktop window each keep their own choice).
-- **Execution engine** — switch `fused.runPython` between the built-in
-  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
-  requirements in cached venvs). Applied to the next run, no restart; setting
-  `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
@@ -60,12 +56,19 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   [Call log](#call-log) below.
 - **Template registry** — the merged extension → templates bindings (built-in
   plus your own overrides), read-only.
+- **Execution engine** — switch `fused.runPython` between the built-in
+  executor (fresh subprocess per call) and the fused engine (PEP 723 inline
+  requirements in cached venvs). Applied to the next run, no restart; setting
+  `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
+
+Execution engine sits last, since builtin suits almost everyone. The guided tour
+is not on this page — it runs itself the first time you open the app.
 
 The **server's own log** is not a preference, so it is not on that page. It
 exists for debugging: when something goes wrong (an "Internal Server Error" in
 the browser, or a misbehaving file-open) it has the traceback. Each run writes
 its own file in your system temp directory — the CLI prints the path on
-startup, and the packaged app reveals it from **menu bar → Open logs**. It's
+startup, and the packaged app reveals it from **menu bar → Open app logs**. It's
 disposable: it rotates so it can't grow without bound, and living in temp means
 the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
 persistent instead. (Not to be confused with the **call log** below, which is
@@ -93,7 +96,8 @@ the **Calls** mode from the view switcher — charts of call volume, duration
 (p50/p95 over the individual calls), and response size, a per-target table, and
 the recent calls with each one's full record a click away. The mode only appears
 for files that actually have records, so it never clutters a file you haven't
-run.
+run. The view is about the file you opened it on; opening one of the store's own
+`.calls.jsonl` files instead shows everything that file contains.
 
 **From a terminal:**
 
@@ -151,7 +155,7 @@ one directory per app (named for the page's folder, e.g. `sine-3f9a1c2b8d7e6f50`
 with `index.json` at the root mapping names back to folders), one file per day
 per server process inside it, rolled to a new part every 32 MB. (This is not
 the app's own log: that one is disposable diagnostic output and lives in the
-system temp dir, reached from **menu bar → Open logs**. `~/.fused-render/logs/`
+system temp dir, reached from **menu bar → Open app logs**. `~/.fused-render/logs/`
 holds only the durable call records described here.) Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),
 rate-limited per page, and pruned after 14 days or once the store passes

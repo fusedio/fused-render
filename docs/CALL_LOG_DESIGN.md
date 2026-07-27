@@ -14,7 +14,12 @@ deferral of client-side supersession reporting, which turned out to be the whole
 of CL-5 rather than a refinement of it (D137; the defects fifteen rounds of review
 found are in §9.5, with D138–D150 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
-Phases 2 and 3 are not started.
+Phases 2 and 3 are not started. **Also deferred:** cross-app views in the
+Calls view (a Scope control for "my pages" / "templates" / "everything").
+The reader keeps the capability (`scope: mine|templates`) — only the control
+is gone, because the store is partitioned per app (§4.7) and the view is
+opened on a page, so "this application's calls" is the axis it is organised
+around; a cross-app surface is a different one and deserves its own design.
 
 > **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
 > see what the call was, and its stdout/stderr/error/result size. Give me graphs

@@ -241,7 +241,9 @@ def test_menu_layout_structure(login_enabled):
     labels = _labels(children)
     assert "Open FusedRender" in labels
     assert "Open file..." in labels
-    assert "Open logs" in labels
+    # "app logs", not "logs": the call log (SPEC §31) is the other thing a
+    # user could mean, and it is the durable one with settings.
+    assert "Open app logs" in labels
     assert "Exit" in labels
     # Windows-only item is dropped on Linux.
     assert "Default apps..." not in labels

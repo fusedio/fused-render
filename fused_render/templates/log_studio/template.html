@@ -152,36 +152,7 @@
   .brand-mark i:nth-child(2) { width: 70%; }
   .brand-mark i:nth-child(3) { width: 88%; }
 
-  .open-file-list { display: grid; gap: 3px; }
-  .open-file {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22px;
-    align-items: center;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    background: transparent;
-  }
-
-  .open-file.active { border-color: var(--accent); background: var(--accent-dim); }
-
-  .open-file-select {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 6px 7px;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-    text-align: left;
-  }
-
-  .open-file-select:hover { background: var(--hover); }
-  .open-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .open-file.active .open-file-name { color: var(--strong); font-weight: 650; }
   .file-kind { width: 26px; flex: 0 0 26px; color: var(--faint); font: 9px ui-monospace, monospace; }
-  .close-file { width: 22px; height: 26px; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
-  .close-file:hover { color: var(--danger); }
 
   .facet-section {
     padding: 17px 13px;
@@ -734,11 +705,7 @@
         <span class="brand-label">LOG STUDIO</span>
         <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode">&#9680;</button>
       </div>
-      <div class="facets-inner">
-        <section class="facet-section">
-          <h2 class="facet-title">Open files</h2>
-          <div class="open-file-list" id="open-files"></div>
-        </section>
+      <div class="facets-inner" id="facets-inner">
         <section class="facet-section" id="file-overview">
           <h2 class="facet-title">Active file</h2>
           <div class="file-name"><span class="skel-bar" style="width:70%;height:12px"></span></div>
@@ -765,7 +732,7 @@
     <main class="workspace">
       <header class="query-header">
         <button class="button rail-collapse" id="rail-collapse" type="button" aria-pressed="false"
-                aria-controls="open-files" title="Hide the file rail">Collapse</button>
+                aria-controls="facets-inner" title="Hide the file rail">Collapse</button>
         <form class="query-form" id="query-form">
           <span class="query-prefix">q</span>
           <input id="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search text, fields, or /regex/" aria-label="Log query" />
@@ -831,7 +798,6 @@
 
   const fileOverview = document.getElementById("file-overview");
   const app = document.querySelector(".app");
-  const openFiles = document.getElementById("open-files");
   const levelList = document.getElementById("level-list");
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("query");
@@ -914,15 +880,8 @@
     const rawPage = fused.params.get("page") || "0";
     const target = fused.params.get("_file") || "";
     const file = fused.params.get("file") || target;
-    let opened = [];
-    try {
-      const parsed = JSON.parse(fused.params.get("open") || "[]");
-      if (Array.isArray(parsed)) opened = parsed.filter((value) => typeof value === "string");
-    } catch (_) {}
-    if (file && !opened.some((value) => samePath(value, file))) opened.push(file);
     return {
       file,
-      opened,
       q: fused.params.get("q") || "",
       level: fused.params.get("level") || "",
       levels: (fused.params.get("level") || "").split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
@@ -1076,37 +1035,6 @@
       min: data.from ?? data.min_time ?? data.first_timestamp ?? range.from ?? range.min ?? "",
       max: data.to ?? data.max_time ?? data.last_timestamp ?? range.to ?? range.max ?? ""
     };
-  }
-
-  function renderOpenFiles(state) {
-    openFiles.innerHTML = state.opened.map((path) => {
-      const active = samePath(path, state.file);
-      const name = basename(path);
-      const dot = name.lastIndexOf(".");
-      const kind = dot > 0 ? name.slice(dot + 1, dot + 5).toUpperCase() : "FILE";
-      return `
-        <div class="open-file ${active ? "active" : ""}" title="${escapeHtml(path)}">
-          <button class="open-file-select" type="button" data-open-file="${escapeHtml(path)}">
-            <span class="file-kind">${escapeHtml(kind)}</span>
-            <span class="open-file-name">${escapeHtml(name)}</span>
-          </button>
-          <button class="close-file" type="button" data-close-file="${escapeHtml(path)}" aria-label="Close ${escapeHtml(name)}">x</button>
-        </div>`;
-    }).join("");
-  }
-
-  function activateFile(path, opened) {
-    setParams({
-      file: path,
-      open: JSON.stringify(opened),
-      q: "",
-      level: "",
-      from: "",
-      to: "",
-      page: "0",
-      back: "",
-      tail: "0"
-    });
   }
 
   function renderOverview(data, state) {
@@ -1708,7 +1636,6 @@
     const state = currentState();
     if (!state.file) {
       renderState(state);
-      renderOpenFiles(state);
       fileOverview.innerHTML = "";
       levelList.innerHTML = "";
       resultSummary.textContent = "No file open";
@@ -1728,7 +1655,6 @@
     }
     lastTailState = state.tail;
     renderState(state);
-    renderOpenFiles(state);
     if (loadingDataKey === nextDataKey) return;
     if (dataReadyKey === nextDataKey && overviewData && overviewFile === state.file) {
       renderOverview(overviewData, state);
@@ -1787,33 +1713,6 @@
 
   railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
   themeToggle.addEventListener("click", () => setParams({ theme: currentState().theme === "light" ? "dark" : "light" }));
-
-  openFiles.addEventListener("click", (event) => {
-    const state = currentState();
-    const close = event.target.closest("[data-close-file]");
-    if (close) {
-      if (state.opened.length <= 1) return;
-      const remaining = state.opened.filter((path) => !samePath(path, close.dataset.closeFile));
-      if (samePath(close.dataset.closeFile, state.file)) activateFile(remaining[remaining.length - 1], remaining);
-      else setParams({ open: JSON.stringify(remaining) });
-      return;
-    }
-    const select = event.target.closest("[data-open-file]");
-    if (select && !samePath(select.dataset.openFile, state.file)) activateFile(select.dataset.openFile, state.opened);
-  });
-
-  tailToggle.addEventListener("click", () => {
-    const state = currentState();
-    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
-    if (!state.tail) {
-      tailEndOffset = number(size);
-      tailPageOffset = Math.max(0, tailEndOffset - 65536);
-    }
-    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
-  });
-
-  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
-  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
 
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");

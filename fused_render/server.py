@@ -2887,7 +2887,7 @@ def create_app(start_dir: str) -> FastAPI:
         # that 500s on /render or /api/run leaves nothing to report). Put the
         # traceback in the response body (local single-user tool, D3 — the
         # only reader owns the machine) AND in the log file so a later
-        # `Open logs` gives the full story. Log with the request line so a
+        # `Open app logs` gives the full story. Log with the request line so a
         # noisy log still pins the failure to a URL.
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         # The id the middleware already stamped onto this request's call record

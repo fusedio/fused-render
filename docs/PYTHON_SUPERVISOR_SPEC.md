@@ -57,7 +57,7 @@ crash), we keep Rust.
    returning the expected instance id + token; graceful shutdown via
    `POST /api/desktop/shutdown` with the token header, Job-close as the backstop.
    These already exist in `app.py` — reuse.
-4. **Tray** (`tray.rs`): Open, Open file, status/port, Open logs, Default apps,
+4. **Tray** (`tray.rs`): Open, Open file, status/port, Open app logs, Default apps,
    Start at sign in (checkbox), Exit (confirm). Candidate lib: `pystray`
    (evaluate windowless behavior + message loop). File dialog: bundled tkinter
    `filedialog` (tcl/tk is already in the payload).

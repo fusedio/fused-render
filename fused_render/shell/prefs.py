@@ -6,7 +6,7 @@ read-only facts the page shows next to it (engine availability/forcing).
 
 The app's own log is deliberately NOT in this payload: it is disposable
 temp-dir output (D68) whose only affordance was a reveal button, and the
-desktop tray's "Open logs" already covers that. Since the call store moved to
+desktop tray's "Open app logs" already covers that. Since the call store moved to
 ~/.fused-render/logs, a second "Logs" heading here read as the call log's
 settings rather than as a separate thing.
 

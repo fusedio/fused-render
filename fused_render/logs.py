@@ -52,7 +52,7 @@ def log_path() -> str:
     size rotation is not multi-process safe (when one process renames the file
     and opens a fresh one, the other's open fd keeps writing to the renamed
     file and the next rotation clobbers it). A per-pid file sidesteps both. The
-    writer always knows its own path via getpid(), so `Open logs` and the CLI's
+    writer always knows its own path via getpid(), so `Open app logs` and the CLI's
     startup print still point at the right file; `ls -t` orders sessions.
     """
     return os.path.join(log_dir(), f"{LOG_NAME_PREFIX}-{os.getpid()}.log")

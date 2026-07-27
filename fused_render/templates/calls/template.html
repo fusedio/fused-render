@@ -127,14 +127,6 @@
       <option value="0">All</option>
     </select>
   </label>
-  <label>Scope
-    <select id="scope">
-      <option value="file" selected>This file</option>
-      <option value="mine">My pages</option>
-      <option value="templates">Templates</option>
-      <option value="">Everything</option>
-    </select>
-  </label>
   <input type="search" id="q" placeholder="Filter…" />
   <button id="failed" aria-pressed="false" title="Show only errors and conflicts">Failed only</button>
   <span class="grow"></span>
@@ -157,6 +149,12 @@ const IS_STORE = /\.calls\.jsonl$/.test(FILE);
 
 const state = {
   since: 3600,
+  // Not a control any more: this view is "the calls of the app you are looking
+  // at". The store is partitioned per app (CL-18), so cross-app scoping ("my
+  // pages", "templates", "everything") is a different axis than the one the
+  // view is organised around, and it is deferred to its own change. A page or
+  // .py therefore always filters to itself; a .calls.jsonl opened directly IS
+  // the store, so it shows what it contains.
   scope: IS_STORE ? "" : "file",
   q: "",
   failed: false,
@@ -186,8 +184,6 @@ let pending = false;
 function readParams() {
   const since = fused.params.get("since");
   if (since !== undefined && since !== "") state.since = Number(since) || 0;
-  const scope = fused.params.get("scope");
-  if (scope !== undefined) state.scope = scope;
   const q = fused.params.get("q");
   if (q !== undefined) state.q = q || "";
   state.failed = fused.params.get("failed") === "1";
@@ -197,7 +193,6 @@ function readParams() {
 
 function syncControls() {
   $("since").value = String(state.since);
-  $("scope").value = state.scope;
   $("q").value = state.q;
   $("failed").setAttribute("aria-pressed", state.failed ? "true" : "false");
   $("follow").setAttribute("aria-pressed", state.follow ? "true" : "false");
@@ -214,8 +209,11 @@ function basename(p) {
 function filters() {
   const f = { since: state.since || 0, q: state.q, scope: "" };
   if (state.failed) f.failed = true;
+  // Two reachable states, since `scope` is no longer a control: a page/.py
+  // filters to itself, a store file shows everything in it. The reader still
+  // understands `scope: mine|templates` — the capability is intact for the
+  // change that brings cross-app views back, just not offered here.
   if (state.scope === "file" && FILE && !IS_STORE) f.page = FILE;
-  else if (state.scope === "mine" || state.scope === "templates") f.scope = state.scope;
   return f;
 }
 
@@ -512,7 +510,7 @@ function emptyState(o) {
         : "Open <code>" + esc(basename(FILE)) + "</code> and interact with it — every " +
           "<code>fused.runPython</code>, <code>readFile</code>, <code>stat</code> and " +
           "<code>writeFile</code> it makes is recorded here.") +
-      "<br />Widen the window, or switch Scope to Everything." +
+      "<br />Try a wider window." +
     "</div></div>";
 }
 
@@ -756,11 +754,6 @@ function drawSize(canvas, series) {
 $("since").addEventListener("change", (e) => {
   state.since = Number(e.target.value) || 0;
   fused.params.set("since", String(state.since));
-  load();
-});
-$("scope").addEventListener("change", (e) => {
-  state.scope = e.target.value;
-  fused.params.set("scope", state.scope);
   load();
 });
 let qTimer = null;
