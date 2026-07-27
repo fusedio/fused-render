@@ -52,7 +52,7 @@ from fused_render import __version__
 from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
-from fused_render.executor import run_python
+from fused_render.executor import dumps_result, run_python
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
@@ -3810,7 +3810,11 @@ def create_app(start_dir: str) -> FastAPI:
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.
         result["resolved_py"] = resolved
-        return JSONResponse(result)
+        # dumps_result, not JSONResponse: the in-process executor path already
+        # serialized the payload (it has to, to validate it), so this reuses
+        # that string instead of encoding a multi-MB result a second time. The
+        # bytes are identical to JSONResponse's for every other result.
+        return Response(content=dumps_result(result), media_type="application/json")
 
     @app.post("/api/export")
     def api_export(body: dict = Body(...), x_fused: str | None = Header(default=None)):
