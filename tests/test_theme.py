@@ -89,6 +89,26 @@ def test_shell_index_resolves_the_theme_in_an_inline_head_script():
     assert html.index("</head>") < html.index('id="root"')
 
 
+def test_the_bootstrap_still_checks_the_os_when_storage_throws():
+    # A private-mode localStorage throws on getItem. With the read and the
+    # matchMedia fallback sharing one try block, that throw skipped the OS check
+    # entirely and silently pinned dark for a light-mode user. Separate blocks
+    # keep the fallback reachable — the structure resolvedTheme() in
+    # static/runtime.js already uses.
+    html = read_repo_file("frontend/index.html")
+    boot = "\n".join(
+        body
+        for attrs, body in re.findall(r"<script\b([^>]*)>([\s\S]*?)</script>", html)
+        if "src=" not in attrs
+    )
+    blocks = re.findall(r"try\s*\{([\s\S]*?)\}\s*catch", boot)
+    assert len(blocks) >= 2, "the storage read and the OS check need their own try blocks"
+    for block in blocks:
+        assert not ("localStorage" in block and "matchMedia" in block), (
+            "a throwing localStorage must not skip the prefers-color-scheme check"
+        )
+
+
 # ---------------------------------------------------------------- one key
 
 

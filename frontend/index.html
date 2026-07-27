@@ -10,16 +10,27 @@
        preference is read. Duplicates lib/theme.ts's key + resolution rule
        because nothing importable exists this early; tests/test_theme.py pins
        the two spellings together. Falls back to dark (today's look) whenever
-       storage or matchMedia is unavailable. -->
+       storage or matchMedia is unavailable — but they get SEPARATE try blocks,
+       mirroring resolvedTheme() in static/runtime.js: sharing one meant a
+       throwing localStorage (private mode) skipped the OS check and pinned
+       dark on a light-mode desktop. -->
   <script>
     (function () {
-      var theme = "dark";
+      var pref = null;
       try {
-        var pref = localStorage.getItem("fused-render:theme");
-        if (pref === "light" || pref === "dark") theme = pref;
-        else if (!window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "light";
+        pref = localStorage.getItem("fused-render:theme");
       } catch (e) {
-        /* private mode / no matchMedia — keep the dark default */
+        /* private mode / blocked storage — fall through to the OS preference */
+      }
+      var theme;
+      if (pref === "light" || pref === "dark") {
+        theme = pref;
+      } else {
+        try {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) {
+          theme = "dark"; /* no matchMedia — keep today's appearance */
+        }
       }
       document.documentElement.setAttribute("data-theme", theme);
     })();
