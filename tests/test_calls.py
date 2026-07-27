@@ -21,6 +21,7 @@ import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -248,6 +249,50 @@ def test_sweep_removes_files_past_the_retention_window(store, monkeypatch):
     monkeypatch.setenv(calls.RETENTION_DAYS_ENV, "14")
     assert calls.sweep() == 1
     assert os.path.exists(fresh) and not os.path.exists(old)
+
+
+def test_retention_runs_while_the_writer_is_idle(store, monkeypatch):
+    """Retention has to be a real timer, not a side effect of writing.
+
+    The due-check used to sit at the BOTTOM of the writer loop, after a blocking
+    `q.get()` — so it only ever ran just after a record landed. An app left open
+    after a busy afternoon kept its expired files until something called Python
+    again, which for a store whose whole job is "don't keep my activity forever"
+    is the wrong way round: the case where nothing is happening is exactly the
+    case where nobody triggers the cleanup.
+
+    Driven through the REAL loop rather than by calling `sweep()`: what is under
+    test is that the writer wakes on its own with an empty queue. The expired
+    file is planted AFTER the loop's start-up sweep has already run against an
+    empty store, so only a later, unprompted wake can remove it.
+    """
+    monkeypatch.setattr(calls, "SWEEP_POLL_S", 0.05)
+    monkeypatch.setattr(calls, "SWEEP_INTERVAL_S", 0)  # every wake is due
+    monkeypatch.setenv(calls.RETENTION_DAYS_ENV, "14")
+
+    q = queue.Queue(maxsize=8)
+    writer = threading.Thread(target=calls._writer_loop, args=(q,), daemon=True)
+    writer.start()
+    try:
+        time.sleep(0.2)  # let the start-up sweep run against the empty store
+        expired = in_store(store, "2020-01-01-1.calls.jsonl")
+        with open(expired, "w") as fh:
+            fh.write(json.dumps(rec()) + "\n")
+        os.utime(expired, (time.time() - 40 * 86_400,) * 2)
+
+        deadline = time.monotonic() + 6.0
+        while os.path.exists(expired) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not os.path.exists(expired), (
+            "an idle writer must still prune — nothing was queued the whole time"
+        )
+    finally:
+        # Owned thread, stopped explicitly: left running it would keep waking
+        # and could sweep a LATER test's store (the store dir is resolved from
+        # the environment on every call, so it follows whichever test is live).
+        q.put(calls._STOP)
+        writer.join(timeout=5)
+        assert not writer.is_alive(), "the writer must honour the stop sentinel"
 
 
 def test_sweep_trims_oldest_first_when_over_the_size_cap(store, monkeypatch):

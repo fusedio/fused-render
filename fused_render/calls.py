@@ -114,6 +114,23 @@ DEFAULT_MAX_BYTES = 200 * 1024 * 1024
 RETENTION_DAYS_ENV = "FUSED_RENDER_CALLS_RETENTION_DAYS"
 DISABLE_ENV = "FUSED_RENDER_CALLS"
 
+# How often retention runs when the UTC date has not rolled.
+SWEEP_INTERVAL_S = 86_400
+# How long the writer waits for a record before waking to re-check whether
+# retention is due. The wake is the whole point: the check used to ride the
+# bottom of a write, so a store only got pruned just after something was
+# recorded — and an app left open after a busy afternoon kept its expired files
+# until the next call. "Nothing is happening" is precisely when nobody triggers
+# the cleanup, which for a retention window is the wrong way round. Cheap: a
+# timed condition wait, and the due-check itself is two comparisons.
+SWEEP_POLL_S = 300.0
+
+# Ends the writer loop. The real writer is a daemon and dies with the process,
+# so this exists for a caller that OWNS its writer and must not leave it running
+# — today that is the idle-retention test, whose thread would otherwise keep
+# waking and sweep whichever store the environment points at next.
+_STOP = object()
+
 # Per-FILE cap, rolled to a new part when exceeded. Without it a single day's
 # file grows without bound: the directory cap (above) can only delete whole
 # files, and it must never delete a live one — so a burst inside one day had
@@ -699,34 +716,62 @@ def _writer_loop(q: queue.Queue) -> None:
     burst costs one write rather than one per record. Every failure mode here
     is swallowed to a WARNING: this thread must never die, because a dead
     writer would silently stop logging while the caller kept queueing.
+
+    It is also the retention clock. The wait is BOUNDED (`SWEEP_POLL_S`) rather
+    than indefinite so an idle server still prunes: with a plain blocking get,
+    the due-check below only ran just after a record landed, which made
+    retention a side effect of writing — and left an app that went quiet after a
+    busy afternoon holding its expired files until something called Python
+    again. Retention still never runs on a request thread.
     """
     _sweep_safely()
     last_sweep = time.monotonic()
     last_day = day_stamp()
+
+    def sweep_if_due() -> None:
+        """Retention on a day roll or every SWEEP_INTERVAL_S, whichever first.
+
+        One copy, called from both the idle wake and the post-write path — the
+        two must not drift into different ideas of when retention is owed. A
+        server running across midnight prunes the newly-expired day promptly;
+        the roll is the natural hook, since the writer has just moved files.
+        """
+        nonlocal last_sweep, last_day
+        today = day_stamp()
+        if today == last_day and time.monotonic() - last_sweep <= SWEEP_INTERVAL_S:
+            return
+        last_day = today
+        _sweep_safely()
+        last_sweep = time.monotonic()
+
     while True:
+        stopping = False
         try:
-            first = q.get()
+            first = q.get(timeout=SWEEP_POLL_S)
+        except queue.Empty:
+            sweep_if_due()  # nothing queued — this wake is the only thing that prunes
+            continue
         except (OSError, ValueError):  # pragma: no cover - queue is process-local
+            return
+        if first is _STOP:
             return
         batch = [first]
         while len(batch) < 256:
             try:
-                batch.append(q.get_nowait())
+                item = q.get_nowait()
             except queue.Empty:
                 break
+            if item is _STOP:
+                stopping = True  # flush what is already in hand, then leave
+                break
+            batch.append(item)
         try:
             _append(batch)
         except OSError as e:
             logger.warning("call log: could not write %d record(s): %s", len(batch), e)
-        # Retention runs on the writer thread (never a request). On a day roll as
-        # well as the 24h timer: a server running across midnight should prune the
-        # newly-expired day promptly, and the roll is the natural hook — the
-        # writer has just moved to a new file.
-        today = day_stamp()
-        if today != last_day or time.monotonic() - last_sweep > 86_400:
-            last_day = today
-            _sweep_safely()
-            last_sweep = time.monotonic()
+        if stopping:
+            return
+        sweep_if_due()
 
 
 def _prune(rec: dict) -> dict:

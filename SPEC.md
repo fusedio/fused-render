@@ -2391,10 +2391,21 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   discard the whole day (the writer simply recreates it) — so within-day growth
   is bounded by the per-file roll, not by the directory cap, and a store still
   over cap with only today's files left logs a warning rather than pretending
-  the cap held. Retention runs on the writer thread, never a request — at
-  startup, on a day roll, and on a 24 h timer. D68 chose the temp dir for the
-  app log precisely because "nothing prunes the directory"; this store is
-  durable instead, so the pruning is code.
+  the cap held. **Retention runs on the writer thread, never a request**: once
+  when the thread starts, then whenever the UTC date rolls or 24 h have elapsed
+  — checked both after a write and on an idle wake, **whichever comes first**.
+  The queue wait is bounded (`SWEEP_POLL_S`) precisely so the second of those
+  exists: with an indefinite wait the due-check only ran just after a record
+  landed, which made retention a side effect of writing and left an app that
+  went quiet after a busy afternoon holding its expired files until something
+  called Python again — "nothing is happening" being exactly when nobody
+  triggers the cleanup. A busy server still sweeps at most once a day; the
+  check gates on the same interval either way. (The writer thread is started
+  lazily by the first record, so a process that records nothing at all prunes
+  nothing — accepted: such a process is also adding nothing, and the next
+  session that makes a single call clears the backlog.) D68 chose the temp dir
+  for the app log precisely because "nothing prunes the directory"; this store
+  is durable instead, so the pruning is code.
 - **CL-10** **Reads of the store are recorded like any other call; nothing
   *watches* a store file.** Everything that opens the store (`log_studio`,
   `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to open a large
