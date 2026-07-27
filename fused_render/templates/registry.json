@@ -1,4 +1,12 @@
 {
+  ".dbconn": [
+    "db_console",
+    "code"
+  ],
+  ".webhook": [
+    "webhook_debugger",
+    "code"
+  ],
   ".parquet": [
     "duckdb",
     "structure",
@@ -488,19 +496,24 @@
     "tar"
   ],
   ".sqlite": [
-    "sqlite"
+    "sqlite",
+    "db_console"
   ],
   ".sqlite3": [
-    "sqlite"
+    "sqlite",
+    "db_console"
   ],
   ".db": [
-    "sqlite"
+    "sqlite",
+    "db_console"
   ],
   ".duckdb": [
-    "duckdb"
+    "duckdb",
+    "db_console"
   ],
   ".ddb": [
-    "duckdb"
+    "duckdb",
+    "db_console"
   ],
   ".twb": [
     "tableau",
