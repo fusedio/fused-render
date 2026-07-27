@@ -198,20 +198,42 @@ def _levels_prelude():
         "function number(v, d = 0) { const n = Number(v); "
         "return Number.isFinite(n) ? n : d; }\n"
         + _js_block(src, "function overviewLevels(data)") + "\n"
+        + _js_block(src, "function facetLevels(data, selectedLevels)") + "\n"
     )
 
 
 def _facet_body(levels, selected):
-    """The facet-list filter, lifted from renderOverview so the test exercises
-    the shipping expression rather than a restatement of it."""
-    src = _src()
-    start = src.index("    const selected = new Set(state.levels);")
-    end = src.index("const active =", start)
+    """What the facet list renders, through the shipping resolver."""
     return (
-        f"const state = {{ levels: {json.dumps(selected)} }};\n"
         f"const data = {{ levels: {json.dumps(levels)} }};\n"
-        + src[start:end]
-        + "console.log(JSON.stringify(entries.map(([l, c]) => [l, c])));\n"
+        f"const entries = facetLevels(data, {json.dumps(selected)});\n"
+        "console.log(JSON.stringify(entries.map(([l, c]) => [l, c])));\n"
+    )
+
+
+def _toggle_body(levels, selected, clicked):
+    """One click on a level chip, driving the SHIPPING handler body: what lands
+    in the `level` URL param, and what the list renders afterwards.
+
+    Extracted rather than restated because this is the seam the bug lived in —
+    the handler and the list each deciding for themselves which levels exist."""
+    src = _src()
+    start = src.index("    const level = button.dataset.level;\n")
+    end = src.index("setParams({ level:", start)
+    tail = src[end:src.index("\n", end) + 1]
+    return (
+        f"const data = {{ levels: {json.dumps(levels)} }};\n"
+        "const overviewData = data;\n"
+        f"const button = {{ dataset: {{ level: {json.dumps(clicked)} }} }};\n"
+        f"function currentState() {{ return {{ levels: {json.dumps(selected)} }}; }}\n"
+        "let written = null;\n"
+        "function setParams(v) { written = v; }\n"
+        + src[start:end] + tail
+        + "// The param round-trips through the same parse currentState() uses.\n"
+        "const parsed = (written.level || '').split(',').map((s) => s.trim().toUpperCase())"
+        ".filter(Boolean);\n"
+        "const after = facetLevels(data, parsed).map(([l]) => l);\n"
+        "console.log(JSON.stringify({ level: written.level, shown: after }));\n"
     )
 
 
@@ -244,3 +266,32 @@ def test_an_empty_file_offers_no_levels(tmp_path):
               ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OTHER")}
     result = _run(_facet_body(levels, []), tmp_path, _levels_prelude())
     assert result == [], "the renderer's 'No level data' branch takes over"
+
+
+def test_deselecting_a_level_does_not_resurrect_the_absent_ones(tmp_path):
+    """The reported bug. Unchecking a level wrote every OTHER level into the URL
+    — including the five the file has none of — because the click handler
+    recomputed "which levels exist" from the unfiltered list while the facet
+    list used the filtered one. The absent levels, now "selected", came back.
+
+    Both sides go through `facetLevels` now, so what can be written is exactly
+    what is shown."""
+    levels = {"TRACE": 0, "DEBUG": 0, "INFO": 42, "WARN": 3,
+              "ERROR": 0, "FATAL": 0, "OTHER": 0}
+    result = _run(_toggle_body(levels, [], "WARN"), tmp_path, _levels_prelude())
+
+    assert result["level"] == "INFO", \
+        "only the levels the file has may be written to the URL"
+    assert result["shown"] == ["WARN", "INFO"], \
+        "the list still shows exactly the file's two levels, WARN now unchecked"
+
+
+def test_reselecting_a_level_returns_to_the_unfiltered_state(tmp_path):
+    """The other direction: checking the last unchecked level back on empties
+    the param (all levels = no filter) rather than pinning a list."""
+    levels = {"TRACE": 0, "DEBUG": 0, "INFO": 42, "WARN": 3,
+              "ERROR": 0, "FATAL": 0, "OTHER": 0}
+    result = _run(_toggle_body(levels, ["INFO"], "WARN"), tmp_path, _levels_prelude())
+
+    assert result["level"] == "", "both levels selected is the same as no filter"
+    assert result["shown"] == ["WARN", "INFO"]

@@ -1049,6 +1049,27 @@
       });
   }
 
+  // The levels this file offers as filters — the ONE answer, used by both the
+  // facet list and its click handler.
+  //
+  // They used to compute it separately, and that is exactly how deselecting a
+  // level brought the absent ones back: the list filtered zero-count levels
+  // out, the handler still worked from all seven, so unchecking WARN wrote
+  // every OTHER level into the URL — including the five the file has none of —
+  // and the list then kept them because "selected" survives the count filter.
+  // The reader seeds its count map with every level it knows (`_counts()` —
+  // right for histogram buckets, which need a zero to stack), so "which levels
+  // exist" is a question with one right answer and two former callers.
+  //
+  // A SELECTED level at zero survives on purpose: it is reachable (a narrowed
+  // window, a rotated file, a hand-edited URL), and hiding its chip would
+  // remove the only control that undoes an active constraint.
+  function facetLevels(data, selectedLevels) {
+    const selected = new Set(selectedLevels || []);
+    return overviewLevels(data).filter(
+      ([level, count]) => count > 0 || selected.has(level));
+  }
+
   function overviewRange(data) {
     const range = data.time_range || data.range || {};
     return {
@@ -1103,21 +1124,12 @@
         <dt>Last</dt><dd>${escapeHtml(range.max ? formatEpoch(range.max, false) : "-")}</dd>
       </dl>`;
 
-    // Only levels the file actually contains. The reader seeds its count map
-    // with every level it knows (`_counts()` — right for histogram buckets,
-    // which need a zero to stack), so the facet list used to offer all seven on
-    // every file: six dead filters that answer "no matching lines" on a log
-    // that only ever writes INFO.
-    //
-    // A level that is currently SELECTED survives the cut even at zero. It is
-    // reachable — a filter narrowed the window, or the file rotated — and
-    // hiding it would remove the only control that undoes an active constraint,
-    // leaving a filter the user can neither see nor clear.
-    const selected = new Set(state.levels);
-    const entries = overviewLevels(data).filter(
-      ([level, count]) => count > 0 || selected.has(level));
+    // Only levels the file actually contains (facetLevels — the same resolver
+    // the click handler below uses; see its comment for why sharing it is
+    // load-bearing rather than tidy).
+    const entries = facetLevels(data, state.levels);
     const available = entries.map(([level]) => level);
-    const active = state.levels.length ? selected : new Set(available);
+    const active = state.levels.length ? new Set(state.levels) : new Set(available);
     levelList.innerHTML = entries.length ? entries.map(([level, count]) => `
       <button class="level-option ${active.has(level) ? "active" : ""}" type="button" data-level="${escapeHtml(level)}" style="--level-color:${levelColor(level)}" aria-pressed="${active.has(level)}">
         <span class="check">${active.has(level) ? "x" : ""}</span>
@@ -1808,7 +1820,10 @@
     if (!button || !overviewData) return;
     const level = button.dataset.level;
     const state = currentState();
-    const available = overviewLevels(overviewData).map(([name]) => name);
+    // facetLevels, NOT overviewLevels: `available` decides what gets written to
+    // the URL when a level is unchecked, so an entry here that the list does
+    // not show becomes a selected-but-absent level and reappears.
+    const available = facetLevels(overviewData, state.levels).map(([name]) => name);
     const selected = new Set(state.levels.length ? state.levels : available);
     if (selected.has(level)) selected.delete(level);
     else selected.add(level);
