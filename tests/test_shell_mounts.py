@@ -445,6 +445,23 @@ def test_live_rcd_port_caches_dead_probe(home, monkeypatch):
     assert len(probes) == 2
 
 
+def test_live_rcd_port_failed_probe_never_clobbers_live_hit(home, monkeypatch):
+    # A probe that times out while a concurrent one already cached a live hit
+    # must trust that hit, not overwrite it with a dead entry that blacks out
+    # a healthy daemon for the whole dead TTL.
+    mounts_mod.write_rcd_state(59999, 4321)
+
+    def failing_rc(port, method, params=None, timeout=30):
+        # Simulate the concurrent winner: a live hit lands while we stall.
+        mounts_mod._live_port_cache = (
+            (59999, 4321), 59999, mounts_mod.time.monotonic() + 1.0)
+        raise RuntimeError("probe timed out")
+
+    monkeypatch.setattr(mounts_mod, "_rc", failing_rc)
+    assert mounts_mod._live_rcd_port() == 59999
+    assert mounts_mod._live_port_cache[1] == 59999  # live entry survived
+
+
 def test_live_rcd_port_dead_cache_never_masks_new_daemon(home, monkeypatch):
     # Cache is keyed on (port, pid), so a fresh spawn's new state isn't masked.
     mounts_mod.write_rcd_state(59999, 4321)
@@ -2188,6 +2205,7 @@ def test_run_automount_syncs_serves_after_learn_removal(home, rcd, tmp_path, mon
     with open(mounts_mod.serves_path()) as f:
         assert learn_mp in json.load(f)
 
+    zp.unlink()
     monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
     mounts_mod.run_automount()  # learn was the only mount -> list_mounts() is now empty
     with open(mounts_mod.serves_path()) as f:

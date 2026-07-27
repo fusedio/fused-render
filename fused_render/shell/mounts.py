@@ -825,6 +825,13 @@ def _live_rcd_port(*, trust_dead_cache: bool = True) -> int | None:
         _rc(state["port"], "core/pid", timeout=3)
     except RuntimeError:
         with _live_port_lock:
+            c = _live_port_cache
+            # A concurrent probe may have cached a live hit while ours timed
+            # out — trust it rather than blacking out a healthy daemon for
+            # the whole dead TTL.
+            if (c is not None and c[0] == key and c[1] is not None
+                    and c[2] > time.monotonic()):
+                return c[1]
             _live_port_cache = (key, None, now + _DEAD_PORT_TTL_S)
         return None
     with _live_port_lock:
@@ -3932,9 +3939,13 @@ def learn_zip_path() -> str | None:
     FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
     loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
     build time). Packaged (same sys.frozen check as rclone_bin) it lives at
-    Contents/Resources/learn.zip (build_dmg.sh step 4e). Existence-checked
-    either way so a stale env var or a hand-pruned bundle yields None, not a
-    mount record pointing at nothing."""
+    Contents/Resources/learn.zip (build_dmg.sh step 4e) on macOS; on the
+    Windows/Linux payload layouts it sits next to the bundled runtime
+    (payload/python/pythonw.exe -> payload/assets/learn.zip), resolved from
+    sys.executable so the server finds it without depending on the
+    supervisor-injected env var. Existence-checked either way so a stale env
+    var or a hand-pruned bundle yields None, not a mount record pointing at
+    nothing."""
     override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
     if override:
         return override if os.path.isfile(override) else None
@@ -3943,6 +3954,10 @@ def learn_zip_path() -> str | None:
         bundled = os.path.join(contents, "Resources", "learn.zip")
         if os.path.isfile(bundled):
             return bundled
+    runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    adjacent = os.path.join(runtime_root, "assets", "learn.zip")
+    if os.path.isfile(adjacent):
+        return adjacent
     return None
 
 
@@ -3955,9 +3970,11 @@ def ensure_learn_mount() -> None:
     from a user-created mount that happens to be named "learn" — that user
     mount is never touched. The remote embeds the zip's absolute path inside
     the app bundle, which changes across versions/relocations, so an existing
-    record's remote is refreshed every startup; with no zip (dev checkout,
-    downgrade) the builtin record is removed so it can't linger as a broken
-    mount in the UI. read_only_user pins the flag: the archive backend is
+    record's remote is refreshed every startup; the record is removed only
+    when the zip it points at is actually gone (uninstall, downgrade) so it
+    can't linger as a broken mount in the UI — a process that merely can't
+    RESOLVE a zip (a dev checkout sharing the real home) leaves a valid
+    record alone. read_only_user pins the flag: the archive backend is
     inherently read-only, and pinning keeps attach-time detection from ever
     reconsidering it — mount, serve, and kernel all get read-only baked in
     via the existing read_only plumbing.
@@ -3999,7 +4016,12 @@ def ensure_learn_mount() -> None:
                 (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
             )
             if path is None:
-                if builtin is not None:
+                # Removal is gated on the RECORD's zip being gone from disk,
+                # not on this process failing to resolve one: a dev-checkout
+                # server sharing the real home resolves nothing but must not
+                # delete the packaged app's perfectly valid record.
+                if builtin is not None and not os.path.isfile(
+                        builtin["remote"].partition(":archive:")[2]):
                     old_remote = builtin["remote"]
                     _write([m for m in mounts if m is not builtin])
                     detach_target = (builtin, old_remote)

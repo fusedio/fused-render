@@ -62,6 +62,21 @@ def test_learn_zip_path_packaged_bundle(tmp_path, monkeypatch):
     assert mounts_mod.learn_zip_path() == str(bundled)
 
 
+def test_learn_zip_path_runtime_adjacent(tmp_path, monkeypatch):
+    # Windows/Linux payload layout: the zip sits next to the bundled runtime
+    # (payload/python/pythonw.exe -> payload/assets/learn.zip), so the server
+    # resolves it without the supervisor-injected env var.
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP", raising=False)
+    monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
+    payload = tmp_path / "payload"
+    zp = payload / "assets" / "learn.zip"
+    zp.parent.mkdir(parents=True)
+    zp.write_text("")
+    monkeypatch.setattr(mounts_mod.sys, "executable",
+                        str(payload / "python" / "pythonw.exe"))
+    assert mounts_mod.learn_zip_path() == str(zp)
+
+
 # -- ensure_learn_mount ------------------------------------------------------
 
 
@@ -242,6 +257,7 @@ def test_forces_detach_when_zip_removed(home, learn_zip, monkeypatch):
                         lambda: {mounts_mod.mountpoint({"name": "learn"})})
     monkeypatch.setattr(mounts_mod, "detach_mount",
                         lambda m, force=False: calls.append(m["id"]))
+    learn_zip.unlink()
     monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
     monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
     mounts_mod.ensure_learn_mount()
@@ -260,15 +276,29 @@ def test_no_detach_when_nothing_live(home, learn_zip, monkeypatch):
 def test_removes_builtin_when_zip_gone(home, learn_zip, monkeypatch):
     mounts_mod.ensure_learn_mount()
     assert _learn_records()
+    learn_zip.unlink()
     monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
     monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
     mounts_mod.ensure_learn_mount()
     assert _learn_records() == []
 
 
+def test_keeps_builtin_when_zip_unresolvable_but_present(home, learn_zip, monkeypatch):
+    # A dev-checkout server sharing the real home resolves no zip of its own,
+    # but the record's zip is still on disk — it must NOT delete the packaged
+    # app's valid record (the disappearing-Learn-entry incident).
+    mounts_mod.ensure_learn_mount()
+    record = _learn_records()[0]
+    monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
+    monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
+    mounts_mod.ensure_learn_mount()
+    assert _learn_records() == [record]
+
+
 def test_removal_leaves_user_mounts(home, learn_zip, monkeypatch):
     user = mounts_mod.add_mount("mydata", "s3remote:bucket/prefix")
     mounts_mod.ensure_learn_mount()
+    learn_zip.unlink()
     monkeypatch.delenv("FUSED_RENDER_LEARN_ZIP")
     monkeypatch.setattr(mounts_mod.sys, "frozen", None, raising=False)
     mounts_mod.ensure_learn_mount()
