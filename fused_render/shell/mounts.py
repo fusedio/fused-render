@@ -360,9 +360,15 @@ _IO_REPARSE_TAG_MOUNT_POINT = getattr(stat_mod, "IO_REPARSE_TAG_MOUNT_POINT", 0x
 
 def _ismount(mp: str) -> bool:
     """os.path.ismount plus the WinFsp mounts it misses on win32: ntpath.ismount
-    resolves their reparse point to a Volume{...} device and returns False."""
-    if os.path.ismount(mp):
-        return True
+    resolves their reparse point to a Volume{...} device and returns False, or
+    raises WinError 123 when the backing device is gone (a disconnected mount) —
+    still a reparse point, so the lstat check below detects it and lets reconnect
+    heal it."""
+    try:
+        if os.path.ismount(mp):
+            return True
+    except OSError:
+        pass
     if sys.platform != "win32":
         return False
     try:

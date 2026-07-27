@@ -508,6 +508,26 @@ def test_ismount_plain_dir_and_missing_path(tmp_path, monkeypatch):
     assert mounts_mod._ismount(str(tmp_path / "gone")) is False
 
 
+def test_ismount_survives_ismount_oserror_on_disconnected_winfsp(monkeypatch):
+    # A disconnected WinFsp mount (backing device gone) makes ntpath.ismount
+    # raise WinError 123; _ismount must swallow it and fall through to the
+    # reparse check — the point is still a reparse mount reconnect can heal.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+
+    def raiser(p):
+        raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", raiser)
+
+    class St:
+        st_reparse_tag = mounts_mod._IO_REPARSE_TAG_MOUNT_POINT
+
+    monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
+    monkeypatch.setattr(mounts_mod.os, "readlink",
+                        lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
+    assert mounts_mod._ismount("/mounts/learn") is True
+
+
 def test_ismount_posix_short_circuits_to_os_path_ismount(monkeypatch):
     # Off Windows the answer IS os.path.ismount; the reparse fallback must not
     # even stat the path.
