@@ -159,15 +159,34 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+// Drop every path that lives INSIDE another path of the same set, keeping the
+// outermost ancestors (input order preserved).
+// Needed because a search result list is a flat, recursive walk of the subtree:
+// one shift-click / Cmd+A can select a folder AND entries inside it. A batch op
+// that then walks the set entry by entry breaks on the descendants — the move or
+// delete of the ancestor already took them, so the next call hits a path that no
+// longer exists and reports a failure for work that actually succeeded.
+// Acting on the ancestor alone is also the correct intent: moving/copying/
+// removing a folder carries its contents along.
+// Prefix + "/" is the same containment test clearClipboardIfDeleted uses; the
+// self-comparison guard keeps a path from pruning itself.
+export function pruneDescendantPaths(paths: string[]): string[] {
+  return paths.filter((p) => !paths.some((other) => other !== p && p.startsWith(other + "/")));
+}
+
 // After a successful delete/trash, drop the module clipboard if it points at
 // the removed entry — either the exact path, or something inside it when a
 // directory was deleted (prefix + separator). Otherwise a later Paste of that
 // cut/copy would target a source that no longer exists.
+// A multi-entry clipboard only drops the paths that were removed; it clears
+// entirely once nothing it referenced survives (the empty-list state is spelled
+// null — see the Clipboard invariant).
 export function clearClipboardIfDeleted(deleted: string): void {
   const clip = getClipboard();
-  if (clip && (clip.path === deleted || clip.path.startsWith(deleted + "/"))) {
-    setClipboard(null);
-  }
+  if (!clip) return;
+  const kept = clip.paths.filter((p) => p !== deleted && !p.startsWith(deleted + "/"));
+  if (kept.length === clip.paths.length) return;
+  setClipboard(kept.length ? { ...clip, paths: kept } : null);
 }
 
 // After a successful rename/move, repoint the module clipboard if it was
@@ -180,11 +199,19 @@ export function clearClipboardIfDeleted(deleted: string): void {
 export function remapClipboardPath(oldPath: string, newPath: string): void {
   const clip = getClipboard();
   if (!clip) return;
-  if (clip.path === oldPath) {
-    setClipboard({ ...clip, path: newPath });
-  } else if (clip.path.startsWith(oldPath + "/")) {
-    setClipboard({ ...clip, path: newPath + clip.path.slice(oldPath.length) });
-  }
+  let changed = false;
+  const paths = clip.paths.map((p) => {
+    if (p === oldPath) {
+      changed = true;
+      return newPath;
+    }
+    if (p.startsWith(oldPath + "/")) {
+      changed = true;
+      return newPath + p.slice(oldPath.length);
+    }
+    return p;
+  });
+  if (changed) setClipboard({ ...clip, paths });
 }
 
 // Turn a raw fs-action failure into a human sentence for the toast. The server

@@ -6,7 +6,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
@@ -19,6 +19,10 @@ import { useThemeSync } from "./lib/theme";
 import Sidebar from "./components/Sidebar";
 import ToastHost from "./components/ToastHost";
 import ServerStatusBanner from "./components/ServerStatusBanner";
+import ShortcutsOverlay from "./components/ShortcutsOverlay";
+import { isMod } from "./lib/platform";
+import { isOverlayOpen } from "./lib/ui-overlay";
+import { getClipboard, setClipboard } from "./lib/fs-clipboard";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -285,6 +289,64 @@ export default function App({ config }: { config: Config }) {
   // a live iframe.
   useThemeSync();
 
+  // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell
+  // (breadcrumb, history, view chords), so it has to open from any route — a
+  // preview, panel/tab mode, Preferences, or an unrecognized URL where no
+  // Listing is mounted at all. Listing therefore has NO Mod+K binding of its
+  // own, which also means the chord can't be handled twice.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Read inside the once-registered listener so it can't re-open an overlay
+  // that's already up (while open, ShortcutsOverlay's own handler owns Mod+K
+  // and closes it — a stale-closure `false` here would immediately reopen it).
+  const shortcutsOpenRef = useRef(false);
+  shortcutsOpenRef.current = shortcutsOpen;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (!isMod(e) || e.key.toLowerCase() !== "k") return;
+      if (shortcutsOpenRef.current) return; // the overlay handles its own close
+      // Don't stack the cheat sheet on a dialog, context menu, or preview that
+      // already holds the overlay lock — Esc would then close them in the wrong
+      // order.
+      if (isOverlayOpen()) return;
+      e.preventDefault(); // don't let the browser's Ctrl/Cmd+K take it
+      setShortcutsOpen(true);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Escape cancels a pending copy/cut. Owned by App, not Listing, for the same
+  // reason as Mod+K: the clipboard is a module-level store that outlives any one
+  // view, so a copy made in the listing is still pending while you sit in a
+  // preview — and there Listing isn't mounted to hear the key at all.
+  //
+  // CAPTURE phase, deliberately. Listing's own Escape branch (clear selection)
+  // must lose to this one, and bubble-phase order can't guarantee that: React
+  // flushes effects child-first, so on the initial mount Listing registers its
+  // document listener BEFORE App's, and after a navigation (StatView is keyed
+  // by epoch+fsPath, so Listing remounts) it registers AFTER — the order
+  // literally flips. A capture listener on `document` always runs before every
+  // bubble listener on `document`, because the keydown target is the focused
+  // element (body at worst), never the document itself. Listing then sees
+  // e.defaultPrevented and stands down.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.key !== "Escape") return;
+      // A dialog / context menu / cheat sheet owns Escape while it's up.
+      if (isOverlayOpen()) return;
+      // Escape inside a text field belongs to that field (the listing's search
+      // box clears the query, the crumb path editor discards the edit).
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (!getClipboard()) return;
+      e.preventDefault(); // signals "handled" to Listing's selection branch
+      setClipboard(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
+
   // First-run onboarding tour: fire once after first paint so the listing and
   // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already
   // seen). Empty deps — App mounts once for the page's lifetime.
@@ -441,6 +503,7 @@ export default function App({ config }: { config: Config }) {
       <div id="main">{main}</div>
       <ToastHost />
       {!IS_EMBED && <ServerStatusBanner />}
+      {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }
