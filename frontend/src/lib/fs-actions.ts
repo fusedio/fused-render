@@ -163,11 +163,15 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 // the removed entry — either the exact path, or something inside it when a
 // directory was deleted (prefix + separator). Otherwise a later Paste of that
 // cut/copy would target a source that no longer exists.
+// A multi-entry clipboard only drops the paths that were removed; it clears
+// entirely once nothing it referenced survives (the empty-list state is spelled
+// null — see the Clipboard invariant).
 export function clearClipboardIfDeleted(deleted: string): void {
   const clip = getClipboard();
-  if (clip && (clip.path === deleted || clip.path.startsWith(deleted + "/"))) {
-    setClipboard(null);
-  }
+  if (!clip) return;
+  const kept = clip.paths.filter((p) => p !== deleted && !p.startsWith(deleted + "/"));
+  if (kept.length === clip.paths.length) return;
+  setClipboard(kept.length ? { ...clip, paths: kept } : null);
 }
 
 // After a successful rename/move, repoint the module clipboard if it was
@@ -180,11 +184,19 @@ export function clearClipboardIfDeleted(deleted: string): void {
 export function remapClipboardPath(oldPath: string, newPath: string): void {
   const clip = getClipboard();
   if (!clip) return;
-  if (clip.path === oldPath) {
-    setClipboard({ ...clip, path: newPath });
-  } else if (clip.path.startsWith(oldPath + "/")) {
-    setClipboard({ ...clip, path: newPath + clip.path.slice(oldPath.length) });
-  }
+  let changed = false;
+  const paths = clip.paths.map((p) => {
+    if (p === oldPath) {
+      changed = true;
+      return newPath;
+    }
+    if (p.startsWith(oldPath + "/")) {
+      changed = true;
+      return newPath + p.slice(oldPath.length);
+    }
+    return p;
+  });
+  if (changed) setClipboard({ ...clip, paths });
 }
 
 // Turn a raw fs-action failure into a human sentence for the toast. The server

@@ -4,6 +4,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
+import { isMod } from "../lib/platform";
 import {
   addBookmark,
   allBookmarks,
@@ -211,7 +212,7 @@ export function Breadcrumb({
   // plan). Registered document-level, cleaned up on unmount (Listing.tsx).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "l") return;
+      if (!isMod(e) || e.key.toLowerCase() !== "l") return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       e.preventDefault();

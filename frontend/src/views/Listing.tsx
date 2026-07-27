@@ -39,6 +39,7 @@ import {
   claudeDeepLink,
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay, isOverlayOpen } from "../lib/ui-overlay";
+import { isMac, isMod } from "../lib/platform";
 import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
@@ -271,12 +272,61 @@ const IDLE_WALK: WalkState = { status: "idle" };
 // entry keyed by fsPath is enough (only one Listing is mounted at a time): it
 // bridges the scaffold→resolved swap and restores the highlight if you browse
 // back to the same folder.
-let lastSelection: { fsPath: string; path: string | null } | null = null;
-function recallSelection(fsPath: string): string | null {
-  return lastSelection && lastSelection.fsPath === fsPath ? lastSelection.path : null;
+//
+// The stash carries the WHOLE multi-selection (see Selection below), not just
+// one path, so a Shift-range built in the provisional Listing survives too.
+interface Selection {
+  // Selected row paths, in the order they entered the selection (a Shift-range
+  // enters in rendered row order). Empty = nothing selected.
+  paths: string[];
+  // Where a Shift-range extends FROM: the last row selected by a plain or
+  // Mod-click / plain arrow move. null when nothing has been selected yet.
+  anchor: string | null;
+  // The focused row: what arrows move from, what Enter opens, what F2 renames,
+  // and what a paste/new-file targets. null = no selection.
+  lead: string | null;
 }
-function rememberSelection(fsPath: string, path: string | null): void {
-  lastSelection = { fsPath, path };
+
+const EMPTY_SELECTION: Selection = { paths: [], anchor: null, lead: null };
+
+// Collapse to exactly one row — the plain-click / plain-arrow / re-anchor case.
+function oneSelected(path: string): Selection {
+  return { paths: [path], anchor: path, lead: path };
+}
+
+let lastSelection: { fsPath: string; sel: Selection } | null = null;
+function recallSelection(fsPath: string): Selection {
+  return lastSelection && lastSelection.fsPath === fsPath ? lastSelection.sel : EMPTY_SELECTION;
+}
+function rememberSelection(fsPath: string, sel: Selection): void {
+  lastSelection = { fsPath, sel };
+}
+
+// A contiguous range of rendered rows, inclusive, in row order. `rows` is the
+// live navRows order (the SORTED/rendered order, never the raw fs order).
+function rangeBetween(rows: string[], from: string, to: string): string[] {
+  const a = rows.indexOf(from);
+  const b = rows.indexOf(to);
+  if (a === -1 || b === -1) return b === -1 ? [] : [to];
+  return a <= b ? rows.slice(a, b + 1) : rows.slice(b, a + 1);
+}
+
+// How many rows a PageUp/PageDown moves: one viewport of rows minus one, so the
+// row you were on stays visible as context. Measured from the live DOM (scroller
+// height / row height) and falls back to a sane constant before first paint.
+const PAGE_ROWS_FALLBACK = 12;
+function pageRows(): number {
+  const scroller = document.querySelector(".listing-scroll") as HTMLElement | null;
+  const row = document.querySelector("table.listing-table tr.row") as HTMLElement | null;
+  const rowH = row?.offsetHeight ?? 0;
+  if (!scroller || rowH <= 0) return PAGE_ROWS_FALLBACK;
+  return Math.max(1, Math.floor(scroller.clientHeight / rowH) - 1);
+}
+
+// Plural-friendly name for a batch of rows, used both in menu labels and as the
+// `name` in a friendlyFsError context ("Couldn't duplicate \"3 items\"").
+function batchLabel(rows: { name: string }[]): string {
+  return rows.length === 1 ? rows[0].name : `${rows.length} items`;
 }
 
 export default function Listing({
@@ -342,13 +392,14 @@ export default function Listing({
   // How many result rows are revealed; grows by PAGE_SIZE when the sentinel
   // row scrolls into view, resets on every query change.
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  // Path of the keyboard-selected row (arrow-key navigation); null = none.
-  // Seeded from the cross-remount store so a selection made in the pre-stat
-  // provisional Listing survives the swap to the resolved one (see
-  // recallSelection / lastSelection above).
-  const [selectedPath, setSelectedPath] = useState<string | null>(() =>
-    recallSelection(fsPath)
-  );
+  // The selected rows (see Selection): one for a plain click / arrow move, many
+  // for a Shift-range, Mod-click toggle or Select All. Seeded from the
+  // cross-remount store so a selection made in the pre-stat provisional Listing
+  // survives the swap to the resolved one (see recallSelection / lastSelection).
+  const [sel, setSel] = useState<Selection>(() => recallSelection(fsPath));
+  // The lead row — every place that used to read `selectedPath` (scroll-into-
+  // view, reconcile, Enter/F2 targets) still works off this single path.
+  const selectedPath = sel.lead;
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
 
@@ -374,15 +425,20 @@ export default function Listing({
   // Latest ordered list of navigable row paths + the current selection, read by
   // the document keydown handler (registered once, so it can't close over them).
   const navRowsRef = useRef<string[]>([]);
-  const selectedPathRef = useRef<string | null>(null);
-  selectedPathRef.current = selectedPath;
+  // Same mirroring pattern as before, widened to the whole selection: the
+  // document handlers are registered ONCE (empty deps), so they read current
+  // selection through this ref instead of re-registering per change.
+  const selRef = useRef<Selection>(sel);
+  selRef.current = sel;
+  // Fast membership test for the row renderer (a Select All can hold thousands).
+  const selectedSet = useMemo(() => new Set(sel.paths), [sel.paths]);
   // Mirror the selection into the cross-remount store so it's already there
   // when the resolved Listing mounts (the provisional one has no unmount step
   // that would clear it). Keyed by fsPath, so a real nav to another folder
   // starts fresh.
   useEffect(() => {
-    rememberSelection(fsPath, selectedPath);
-  }, [fsPath, selectedPath]);
+    rememberSelection(fsPath, sel);
+  }, [fsPath, sel]);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (see rowCtxByPath
   // below, which assigns this each render).
@@ -415,12 +471,74 @@ export default function Listing({
   // effect clamps to this slot so selection lands on the nearest surviving row.
   const lastSelIndexRef = useRef<number>(-1);
 
+  // --- selection mutators ---------------------------------------------------
+  // Every one of these closes over nothing but setSel and navRowsRef (both
+  // stable for the component's life), so the once-registered document handlers
+  // below can safely capture them from the first render.
+
+  const selectOnly = (path: string) => setSel(oneSelected(path));
+
+  const clearSelection = () => setSel(EMPTY_SELECTION);
+
+  // Mod-click: add/remove one row, and make it the anchor a later Shift-range
+  // pivots on (Finder/Explorer both re-anchor on the toggled row).
+  const toggleSelected = (path: string) =>
+    setSel((prev) => {
+      if (!prev.paths.includes(path)) {
+        return { paths: [...prev.paths, path], anchor: path, lead: path };
+      }
+      const paths = prev.paths.filter((p) => p !== path);
+      // Deselecting the lead hands focus to whatever is left of the selection.
+      return { paths, anchor: path, lead: paths.length ? paths[paths.length - 1] : null };
+    });
+
+  // Shift-click / Shift+arrow: the selection becomes anchor..path over the
+  // RENDERED row order (navRows — the active sort or search ranking), with the
+  // anchor left in place so further extension keeps pivoting on it.
+  const extendTo = (path: string) =>
+    setSel((prev) => {
+      const anchor = prev.anchor ?? prev.lead;
+      if (anchor === null) return oneSelected(path);
+      const paths = rangeBetween(navRowsRef.current, anchor, path);
+      if (!paths.length) return prev;
+      return { paths, anchor, lead: path };
+    });
+
+  const selectAllRows = () =>
+    setSel((prev) => {
+      const rows = navRowsRef.current;
+      if (!rows.length) return prev;
+      return {
+        paths: [...rows],
+        anchor: prev.lead ?? rows[0],
+        lead: prev.lead ?? rows[rows.length - 1],
+      };
+    });
+
+  // Move the lead to `index` (clamped into the row range), either collapsing the
+  // selection onto that row or extending the range from the anchor.
+  const moveLeadTo = (index: number, extend: boolean) =>
+    setSel((prev) => {
+      const rows = navRowsRef.current;
+      if (!rows.length) return prev;
+      const next = rows[Math.max(0, Math.min(rows.length - 1, index))];
+      if (!extend) return oneSelected(next);
+      const anchor = prev.anchor ?? prev.lead ?? next;
+      return { paths: rangeBetween(rows, anchor, next), anchor, lead: next };
+    });
+
   // Keyboard navigation for the listing, whether focus is in the search box or
   // nowhere in particular:
   //   • a plain printable key focuses the search box so the character lands there;
   //   • Up/Down move the selection through the rendered rows — in the search box
-  //     too, since a single-line input doesn't need them for the caret;
-  //   • Enter opens the selection, or the top row when nothing is selected yet.
+  //     too, since a single-line input doesn't need them for the caret — and
+  //     Shift+Up/Down extend the range from the anchor instead;
+  //   • Home/End jump to the first/last row, PageUp/PageDown move a viewport
+  //     (both extend with Shift, like every list widget);
+  //   • Mod+A selects every rendered row, Escape clears the selection;
+  //   • Enter opens the lead row, or the top row when nothing is selected yet.
+  // Modifier chords that are NOT selection movement (Mod+Up/Down = parent/open)
+  // are deliberately left to the shortcut handler further down.
   // Bound to `document` so it also drives the plain listing with nothing focused.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -441,28 +559,62 @@ export default function Listing({
       const navActive =
         inSearch || !el || el === document.body || el === document.documentElement;
 
+      const rows = navRowsRef.current;
+      const leadIdx = rows.indexOf(selRef.current.lead ?? "");
+
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         if (!navActive) return;
-        const rows = navRowsRef.current;
+        // Mod+Up/Down are navigation chords (parent folder / open), owned by the
+        // shortcut handler — they must not also move the selection.
+        if (isMod(e) || e.altKey) return;
         if (!rows.length) return;
         e.preventDefault();
-        const idx = rows.indexOf(selectedPathRef.current ?? "");
+        const down = e.key === "ArrowDown";
         // Nothing selected yet: Down starts at the top, Up at the bottom.
-        let next =
-          idx === -1
-            ? e.key === "ArrowDown" ? 0 : rows.length - 1
-            : e.key === "ArrowDown" ? idx + 1 : idx - 1;
-        next = Math.max(0, Math.min(rows.length - 1, next));
-        setSelectedPath(rows[next]);
+        const next = leadIdx === -1 ? (down ? 0 : rows.length - 1) : leadIdx + (down ? 1 : -1);
+        moveLeadTo(next, e.shiftKey);
+        return;
+      }
+      if (e.key === "Home" || e.key === "End") {
+        // Unlike Up/Down, Home/End are real caret navigation in a text field, so
+        // the search box keeps them (same carve-out as Mod+A and Escape below).
+        if (!navActive || inSearch || isMod(e) || !rows.length) return;
+        e.preventDefault();
+        moveLeadTo(e.key === "Home" ? 0 : rows.length - 1, e.shiftKey);
+        return;
+      }
+      if (e.key === "PageDown" || e.key === "PageUp") {
+        if (!navActive || isMod(e) || !rows.length) return;
+        e.preventDefault();
+        const step = pageRows();
+        const down = e.key === "PageDown";
+        const next = leadIdx === -1 ? (down ? 0 : rows.length - 1) : leadIdx + (down ? step : -step);
+        moveLeadTo(next, e.shiftKey);
+        return;
+      }
+      if (isMod(e) && e.key.toLowerCase() === "a") {
+        // Select All. In the search box it must keep meaning "select the text",
+        // otherwise clearing a typed query becomes impossible.
+        if (!navActive || inSearch || !rows.length) return;
+        e.preventDefault();
+        selectAllRows();
+        return;
+      }
+      if (e.key === "Escape") {
+        // Clear the selection. The search input owns Escape while focused (it
+        // clears the query — see its onKeyDown), and the overlay/dialog guards
+        // above already stopped us if anything modal is up.
+        if (!navActive || inSearch) return;
+        if (!selRef.current.paths.length) return;
+        e.preventDefault();
+        clearSelection();
         return;
       }
       if (e.key === "Enter") {
         if (!navActive) return;
-        const rows = navRowsRef.current;
         if (!rows.length) return;
-        const idx = rows.indexOf(selectedPathRef.current ?? "");
         e.preventDefault();
-        const target = idx === -1 ? rows[0] : rows[idx];
+        const target = leadIdx === -1 ? rows[0] : rows[leadIdx];
         navigate(target, { isDir: rowCtxByPathRef.current.get(target)?.isDir });
         return;
       }
@@ -860,12 +1012,16 @@ export default function Listing({
   // selection). Only the transient `loading` status suppresses reconcile.
   const listingLoaded = searching ? true : state.status !== "loading";
 
-  // Keep the keyboard selection scrolled into view as it moves.
+  // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
+  // row (`.lead`), not merely the first selected one: extending a Shift-range
+  // downward must keep the moving end visible, and the top of the range is
+  // usually the one that would otherwise win a `.selected` query.
   useEffect(() => {
     if (!selectedPath) return;
-    document
-      .querySelector("table.listing-table tr.row.selected")
-      ?.scrollIntoView({ block: "nearest" });
+    (
+      document.querySelector("table.listing-table tr.row.lead") ??
+      document.querySelector("table.listing-table tr.row.selected")
+    )?.scrollIntoView({ block: "nearest" });
   }, [selectedPath, navRows]);
 
   // Re-anchor the selection by PATH whenever the rows change (a refetch after
@@ -885,6 +1041,9 @@ export default function Listing({
   // is gone too, the pending target is abandoned and the normal clamp runs. The
   // pending path still lands the moment it does appear (e.g. search results
   // refetching to include the renamed file), so the happy path is unchanged.
+  //   • Rows of a MULTI-selection that vanished are pruned while the lead
+  //     survives, so a batch op that partly failed doesn't leave dead paths in
+  //     the selection (and a later Cmd+C can't copy them).
   useEffect(() => {
     const rows = navRows;
     const pend = pendingSelectRef.current;
@@ -894,7 +1053,7 @@ export default function Listing({
       if (pi !== -1) {
         pendingSelectRef.current = null;
         lastSelIndexRef.current = pi;
-        if (selectedPath !== pend) setSelectedPath(pend);
+        if (selectedPath !== pend || sel.paths.length !== 1) setSel(oneSelected(pend));
         return;
       }
       // Target not here yet. Keep waiting ONLY while the current selection is
@@ -909,12 +1068,24 @@ export default function Listing({
       // abandoned (so selection never stays dead); otherwise leave it unset.
       if (!clampFallback || rows.length === 0) return;
       const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
-      setSelectedPath(rows[clamped]);
+      setSel(oneSelected(rows[clamped]));
       return;
     }
     const i = rows.indexOf(selectedPath);
     if (i !== -1) {
-      lastSelIndexRef.current = i; // selection still valid; remember its slot
+      lastSelIndexRef.current = i; // lead still valid; remember its slot
+      // Drop any other selected rows that are gone (deleted/moved/renamed).
+      if (sel.paths.length > 1) {
+        const live = new Set(rows);
+        const kept = sel.paths.filter((p) => live.has(p));
+        if (kept.length !== sel.paths.length) {
+          setSel({
+            paths: kept,
+            anchor: sel.anchor !== null && live.has(sel.anchor) ? sel.anchor : selectedPath,
+            lead: selectedPath,
+          });
+        }
+      }
       return;
     }
     // Selection isn't in the current rows. While the listing is still LOADING
@@ -925,17 +1096,21 @@ export default function Listing({
     // folder, even with the selection carried across the remount.
     if (!listingLoaded) return;
     if (rows.length === 0) {
-      setSelectedPath(null);
+      setSel(EMPTY_SELECTION);
       return;
     }
     const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
-    setSelectedPath(rows[clamped]);
-  }, [navRows, selectedPath, listingLoaded]);
+    setSel(oneSelected(rows[clamped]));
+  }, [navRows, selectedPath, sel, listingLoaded]);
 
   // --- file operations ------------------------------------------------------
 
-  // Which visible entry (if any) is the cut source — dimmed in the table.
-  const cutPath = clipboard?.op === "cut" ? clipboard.path : null;
+  // Which visible entries are cut sources — dimmed in the table. A cut can hold
+  // several paths, so this is a set rather than one path.
+  const cutSet = useMemo(
+    () => new Set(clipboard?.op === "cut" ? clipboard.paths : []),
+    [clipboard]
+  );
 
   // Map every rendered row's path to its RowCtx, so a keyboard shortcut can
   // resolve the selected path back to a full row (is_dir etc.) the same way a
@@ -965,6 +1140,18 @@ export default function Listing({
     return m;
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
+
+  // The selection as full rows, in rendered order (so a batch op processes rows
+  // top-to-bottom regardless of the order they were clicked). Paths without a
+  // rendered row — a search page not yet revealed, a row removed by a refetch
+  // before the reconcile effect ran — are dropped: an op can only act on what
+  // the user can actually see selected.
+  const selectedRows = useMemo(() => {
+    const chosen = new Set(sel.paths);
+    return navRows.filter((p) => chosen.has(p)).map((p) => rowCtxByPath.get(p)!).filter(Boolean);
+  }, [sel.paths, navRows, rowCtxByPath]);
+  // The lead row, for the single-entry operations (Rename, paste target).
+  const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
   const refetch = () => setRefresh((n) => n + 1);
 
@@ -1000,56 +1187,61 @@ export default function Listing({
 
   // Paste into `dir`: a cut moves (rename) and clears the clipboard; a copy
   // duplicates and keeps it. Same basename in the target folder either way.
+  // The TARGET is always a single folder; the SOURCE may be several paths (a
+  // multi-row cut/copy), which are processed in order — sequentially, because
+  // freePastePath resolves a name against a listing and parallel calls would
+  // both pick the same free "… copy" name.
   // Reads the clipboard synchronously (getClipboard) and consumes a cut BEFORE
   // the await, so re-entry sees an empty clipboard and no-ops.
   const doPaste = (dir: string) => {
     const clip = getClipboard();
-    if (!clip || pasteInFlight.current) return;
+    if (!clip || clip.paths.length === 0 || pasteInFlight.current) return;
     const target = normDir(dir); // "" (root) → "/", and join avoids "//name"
-    const { path: src, op } = clip;
-    const dst = join(target, basename(src));
-    // Same-folder paste (dst would collide with the source), matching Finder:
-    //   • CUT into its own folder is a no-op — the backend rename would 409 on
-    //     dst === src, so just drop the cut clipboard (nothing to move).
-    //   • COPY into its own folder makes a deduped "… copy" instead of colliding
-    //     (freeDuplicatePath, same as Duplicate), and re-anchors onto the copy.
-    if (dst === src) {
-      if (op === "cut") {
-        setClipboard(null);
-        return;
-      }
-      pasteInFlight.current = true;
-      run(async () => {
-        const { is_dir } = await statPath(src);
-        const copyDst = await freeDuplicatePath(target, basename(src), is_dir);
-        await copyEntry(src, copyDst);
-        pendingSelectRef.current = copyDst; // move selection onto the new copy
-      }, { verb: "paste", name: basename(src) }).finally(() => {
-        pasteInFlight.current = false;
-      });
-      return;
-    }
+    const { paths, op } = clip;
+    const label = paths.length === 1 ? basename(paths[0]) : `${paths.length} items`;
     if (op === "cut") setClipboard(null); // consume atomically, before any await
     pasteInFlight.current = true;
     run(async () => {
+      const pasted: string[] = [];
+      let last: string | null = null;
       try {
-        // Both ops keep the name when free and dedupe to "… copy" when taken
-        // (Finder keep-both), instead of surfacing a 409.
-        const { is_dir } = await statPath(src);
-        const pasteDst = await freePastePath(target, basename(src), is_dir);
-        if (op === "cut") await renameEntry(src, pasteDst);
-        else await copyEntry(src, pasteDst);
-        pendingSelectRef.current = pasteDst; // re-anchor if dst lands in this view
+        for (const src of paths) {
+          // Same-folder paste (dst would collide with the source), matching Finder:
+          //   • CUT into its own folder is a no-op — the backend rename would 409
+          //     on dst === src, so skip it (the clipboard is already cleared).
+          //   • COPY into its own folder makes a deduped "… copy" instead of
+          //     colliding (freeDuplicatePath, same as Duplicate).
+          const sameFolder = join(target, basename(src)) === src;
+          if (sameFolder && op === "cut") {
+            pasted.push(src);
+            continue;
+          }
+          // Both ops keep the name when free and dedupe to "… copy" when taken
+          // (Finder keep-both), instead of surfacing a 409.
+          const { is_dir } = await statPath(src);
+          const dst = sameFolder
+            ? await freeDuplicatePath(target, basename(src), is_dir)
+            : await freePastePath(target, basename(src), is_dir);
+          if (op === "cut") await renameEntry(src, dst);
+          else await copyEntry(src, dst);
+          pasted.push(src);
+          last = dst;
+        }
       } catch (e) {
         // The paste failed (e.g. a 403, or the source vanished); for a cut the
-        // pre-clear above dropped the clipboard, so re-set the same cut and
-        // let run() toast the error — without this the user would have to
-        // re-cut before retrying. Skip the restore if the user cut/copied
-        // something newer mid-flight.
-        if (op === "cut" && getClipboard() === null) setClipboard({ path: src, op: "cut" });
+        // pre-clear above dropped the clipboard, so re-set the cut for whatever
+        // hasn't moved yet and let run() toast the error — without this the user
+        // would have to re-cut before retrying. Skip the restore if the user
+        // cut/copied something newer mid-flight.
+        if (op === "cut" && getClipboard() === null) {
+          const left = paths.filter((p) => !pasted.includes(p));
+          if (left.length) setClipboard({ paths: left, op: "cut" });
+        }
         throw e;
       }
-    }, { verb: "paste", name: basename(src) }).finally(() => {
+      // Re-anchor onto the last thing written, if it lands in this view.
+      if (last !== null) pendingSelectRef.current = last;
+    }, { verb: "paste", name: label }).finally(() => {
       pasteInFlight.current = false;
     });
   };
@@ -1059,15 +1251,22 @@ export default function Listing({
   // name).
   // In-flight guard, same idea as pasteInFlight: a rapid double Cmd+D would
   // race both calls to the same free "… copy" name and 409 the second.
+  // Acts on the whole selection; the rows are duplicated one at a time for the
+  // same reason paste is sequential (each freeDuplicatePath re-reads the folder,
+  // so parallel calls would pick colliding names).
   const duplicateInFlight = useRef(false);
-  const doDuplicate = (row: RowCtx) => {
-    if (duplicateInFlight.current) return;
+  const doDuplicate = (rows: RowCtx[]) => {
+    if (!rows.length || duplicateInFlight.current) return;
     duplicateInFlight.current = true;
     run(async () => {
-      const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
-      await copyEntry(row.path, dst);
-      pendingSelectRef.current = dst; // move selection onto the new copy
-    }, { verb: "duplicate", name: row.name }).finally(() => {
+      let last: string | null = null;
+      for (const row of rows) {
+        const dst = await freeDuplicatePath(row.parentDir, row.name, row.isDir);
+        await copyEntry(row.path, dst);
+        last = dst;
+      }
+      if (last !== null) pendingSelectRef.current = last; // select the new copy
+    }, { verb: "duplicate", name: batchLabel(rows) }).finally(() => {
       duplicateInFlight.current = false;
     });
   };
@@ -1084,6 +1283,14 @@ export default function Listing({
     // Reveal in Finder.
     copyToClipboard(path).then((ok) => {
       if (ok) setToast({ msg: "Path copied", tone: "info" });
+    });
+  };
+
+  // Several paths go to the system clipboard newline-separated (what every file
+  // manager writes for a multi-selection paste into a terminal or editor).
+  const doCopyPaths = (paths: string[]) => {
+    copyToClipboard(paths.join("\n")).then((ok) => {
+      if (ok) setToast({ msg: `${paths.length} paths copied`, tone: "info" });
     });
   };
 
@@ -1144,39 +1351,72 @@ export default function Listing({
       },
     });
 
-  const startDelete = (row: RowCtx) =>
+  // Hard delete, confirmed. Plural-aware: one row still names it (and says
+  // whether it's a folder), several are counted.
+  const startDelete = (rows: RowCtx[]) => {
+    if (!rows.length) return;
+    const many = rows.length > 1;
     setDialog({
       kind: "confirm",
-      title: "Delete",
-      message: row.isDir
-        ? `Delete the folder "${row.name}" and everything inside it? This can't be undone.`
-        : `Delete "${row.name}"? This can't be undone.`,
-      confirmLabel: "Delete",
+      title: many ? `Delete ${rows.length} items` : "Delete",
+      message: many
+        ? `Delete these ${rows.length} items? Any folders among them are deleted with everything inside. This can't be undone.`
+        : rows[0].isDir
+        ? `Delete the folder "${rows[0].name}" and everything inside it? This can't be undone.`
+        : `Delete "${rows[0].name}"? This can't be undone.`,
+      confirmLabel: many ? `Delete ${rows.length} items` : "Delete",
       danger: true,
       // recursive=true for a directory (its contents were named in the message).
       onConfirm: () =>
         run(async () => {
-          await deleteEntry(row.path, row.isDir);
-          clearClipboardIfDeleted(row.path);
-        }, { verb: "delete", name: row.name }),
+          for (const row of rows) {
+            await deleteEntry(row.path, row.isDir);
+            clearClipboardIfDeleted(row.path);
+          }
+        }, { verb: "delete", name: batchLabel(rows) }),
     });
+  };
 
   // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
-  // Where the server can't trash (non-macOS → "unsupported") this falls back to
-  // the existing confirm-then-hard-delete flow, which IS irreversible and so
-  // keeps its warning. Success shows a low-key info toast.
-  const doTrash = (row: RowCtx) => {
-    trashEntry(row.path, row.isDir).then((r) => {
-      if (r.status === "trashed") {
-        setToast({ msg: "Moved to Bin", tone: "info" });
-        clearClipboardIfDeleted(row.path);
-        refetch();
-      } else if (r.status === "unsupported") {
-        startDelete(row);
-      } else {
-        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: row.name }), tone: "error" });
+  // Acts on every row passed in (the whole selection). Where the server can't
+  // trash (non-macOS → "unsupported") those rows fall back to the existing
+  // confirm-then-hard-delete flow, which IS irreversible and so keeps its
+  // warning. Success shows a low-key, count-aware info toast.
+  const doTrash = (rows: RowCtx[]) => {
+    if (!rows.length) return;
+    void (async () => {
+      const trashed: RowCtx[] = [];
+      const unsupported: RowCtx[] = [];
+      let failed: { row: RowCtx; message: string } | null = null;
+      for (const row of rows) {
+        const r = await trashEntry(row.path, row.isDir);
+        if (r.status === "trashed") {
+          trashed.push(row);
+          clearClipboardIfDeleted(row.path);
+        } else if (r.status === "unsupported") {
+          unsupported.push(row);
+        } else if (failed === null) {
+          failed = { row, message: r.message };
+        }
       }
-    });
+      if (trashed.length) {
+        setToast({
+          msg: trashed.length === 1 ? "Moved to Bin" : `Moved ${trashed.length} items to Bin`,
+          tone: "info",
+        });
+        refetch();
+      }
+      // A real failure wins the toast (it replaces the info one above); the
+      // unsupported fallback only runs when nothing errored.
+      if (failed !== null) {
+        setToast({
+          msg: friendlyFsError(failed.message, { verb: "move to Bin", name: failed.row.name }),
+          tone: "error",
+        });
+      } else if (unsupported.length) {
+        startDelete(unsupported);
+      }
+    })();
   };
 
   // Lazy loader for the Open With submenu: resolves the entry's template modes
@@ -1194,19 +1434,50 @@ export default function Listing({
   // Menu for a right-clicked row (file or dir), in macOS Finder order. Paste
   // target follows Finder: into a dir, or the parent of a file. New File/Folder
   // live only on the background menu (Finder shows them there, not on a row).
-  const rowMenu = (row: RowCtx): MenuEntry[] => {
+  // `rows` is what the menu ACTS on: just the right-clicked row normally, or the
+  // whole selection when the right-click landed inside a multi-row selection
+  // (see openRowMenu). With several rows the entries that only make sense for
+  // one — Open / Open With / Rename / Reveal / Open in Claude Code — are
+  // dropped, and the batch entries count what they'll affect.
+  const rowMenu = (row: RowCtx, rows: RowCtx[]): MenuEntry[] => {
     const dir = targetDirOf(row);
+    const n = rows.length;
+    if (n > 1) {
+      return [
+        { label: `Move ${n} items to Bin`, icon: MenuIcons.trash, onClick: () => doTrash(rows) },
+        "separator",
+        { label: `Duplicate ${n} items`, icon: MenuIcons.duplicate, onClick: () => doDuplicate(rows) },
+        "separator",
+        {
+          label: `Cut ${n} items`,
+          icon: MenuIcons.cut,
+          onClick: () => setClipboard({ paths: rows.map((r) => r.path), op: "cut" }),
+        },
+        {
+          label: `Copy ${n} items`,
+          icon: MenuIcons.copy,
+          onClick: () => setClipboard({ paths: rows.map((r) => r.path), op: "copy" }),
+        },
+        { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(dir) },
+        "separator",
+        {
+          label: `Copy ${n} Paths`,
+          icon: MenuIcons.copyPath,
+          onClick: () => doCopyPaths(rows.map((r) => r.path)),
+        },
+      ];
+    }
     return [
       { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
-      { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash(row) },
+      { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash([row]) },
       "separator",
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
-      { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate(row) },
+      { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },
       "separator",
-      { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ path: row.path, op: "cut" }) },
-      { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ path: row.path, op: "copy" }) },
+      { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
+      { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [row.path], op: "copy" }) },
       { label: "Paste", icon: MenuIcons.paste, disabled: !clipboard, onClick: () => doPaste(dir) },
       "separator",
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
@@ -1236,11 +1507,42 @@ export default function Listing({
     },
   ];
 
+  // Mouse selection on a row:
+  //   • Shift+click  — select the contiguous range anchor..row (rendered order);
+  //   • Mod+click    — toggle this row in/out and re-anchor on it;
+  //   • plain click  — select only this row AND open it, which is what a single
+  //     click has always done in this explorer (it's the primary way to browse,
+  //     so multi-select doesn't take it away; the modified clicks are the ones
+  //     that build a selection instead of navigating).
+  // preventDefault on the modified clicks keeps the row from taking focus mid-
+  // range-select. Suppressing the native text selection a Shift-click would
+  // otherwise paint is CSS's job (user-select on tr.row) — native selection
+  // begins on mousedown, so a click handler is far too late to stop it.
+  const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
+    if (e.shiftKey && !isMod(e)) {
+      e.preventDefault();
+      extendTo(path);
+      return;
+    }
+    if (isMod(e)) {
+      e.preventDefault();
+      toggleSelected(path);
+      return;
+    }
+    selectOnly(path);
+    navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
+  // the whole thing (Finder/Explorer behaviour); right-clicking anywhere else
+  // collapses the selection onto that row first.
   const openRowMenu = (e: React.MouseEvent, row: RowCtx) => {
     e.preventDefault();
     e.stopPropagation(); // don't also open the background menu
-    setSelectedPath(row.path);
-    setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row) });
+    const inSelection = sel.paths.includes(row.path);
+    const rows = inSelection && selectedRows.length > 1 ? selectedRows : [row];
+    if (!inSelection) selectOnly(row.path);
+    setMenu({ x: e.clientX, y: e.clientY, items: rowMenu(row, rows) });
   };
 
   // Fires only for the listing background (rows stopPropagation above).
@@ -1249,11 +1551,13 @@ export default function Listing({
     setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
   };
 
-  // Keyboard shortcuts scoped to the listing, active only with a row selected.
-  // Registered once (empty deps); the handler is re-assigned each render so it
-  // always reads fresh state/closures. Separate from the nav handler above —
-  // these carry a modifier (or F2), which that handler explicitly ignores, so
-  // there's no clash.
+  // Keyboard shortcuts scoped to the listing: file operations on the selection
+  // plus the folder-level navigation chords. Registered once (empty deps); the
+  // handler is re-assigned each render so it always reads fresh state/closures.
+  // Separate from the nav handler above, and non-overlapping with it by
+  // construction: everything here carries the primary modifier or is a key that
+  // handler ignores (F2, Delete, Backspace — its printable-key branch only fires
+  // for single-character keys, and its arrow branch bails when isMod(e)).
   const shortcutRef = useRef<(e: KeyboardEvent) => void>(() => {});
   shortcutRef.current = (e: KeyboardEvent) => {
     if (e.isComposing) return;
@@ -1266,34 +1570,91 @@ export default function Listing({
     const inSearch = el === searchInputRef.current;
     const navActive = inSearch || !el || el === document.body || el === document.documentElement;
     if (!navActive) return;
-    const sel = selectedPathRef.current;
-    const row = sel ? rowCtxByPath.get(sel) : undefined;
-    const mod = e.metaKey || e.ctrlKey;
+    // Every file operation acts on the WHOLE selection; the single-entry ones
+    // (Rename, and the paste target) use the lead row.
+    const rows = selectedRows;
+    const row = leadRow;
+    const mod = isMod(e);
     const key = e.key.toLowerCase();
+    // The parent folder, for Mod+Up / bare Backspace. Equal to the current
+    // folder at the filesystem (or drive) root, where there's nowhere to go.
+    const here = normDir(base);
+    const parent = dirname(here);
+    const goParent = () => {
+      if (parent !== here) navigate(parent, { isDir: true });
+    };
     // With focus in the search box, Cmd+C/X/V must keep their native text
     // clipboard meaning — only the non-text shortcuts stay live there.
     if (inSearch && mod && (key === "c" || key === "x" || key === "v")) return;
     if (mod && key === "c") {
-      if (!row) return;
+      if (!rows.length) return;
       e.preventDefault();
-      setClipboard({ path: row.path, op: "copy" });
+      setClipboard({ paths: rows.map((r) => r.path), op: "copy" });
     } else if (mod && key === "x") {
-      if (!row) return;
+      if (!rows.length) return;
       e.preventDefault();
-      setClipboard({ path: row.path, op: "cut" });
+      setClipboard({ paths: rows.map((r) => r.path), op: "cut" });
     } else if (mod && key === "v") {
       if (!clipboard) return;
       e.preventDefault();
+      // Paste is single-TARGET: into the lead row's folder (or itself, if it's a
+      // directory), else the folder being listed.
       doPaste(row ? targetDirOf(row) : base);
     } else if (mod && key === "d") {
+      if (!rows.length) return;
+      e.preventDefault();
+      doDuplicate(rows);
+    } else if (mod && e.key === "ArrowDown") {
+      // Open the lead row — the same gesture as Enter (macOS Cmd+Down).
       if (!row) return;
       e.preventDefault();
-      doDuplicate(row);
+      navigate(row.path, { isDir: row.isDir });
+    } else if (mod && e.key === "ArrowUp") {
+      e.preventDefault();
+      goParent();
+    } else if (mod && (e.key === "[" || e.key === "]")) {
+      // Back / forward. The router only ever pushes, so this drives the browser
+      // history directly — popstate is what the shell listens to anyway
+      // (useNavEpoch), so the view remounts exactly as it does for a Back click.
+      e.preventDefault();
+      if (e.key === "[") history.back();
+      else history.forward();
+    } else if (mod && e.shiftKey && key === "n") {
+      e.preventDefault();
+      startNewFolder(base);
+    } else if (mod && key === "r") {
+      // The app's own listing refresh, not a page reload — preventDefault is
+      // what stops the browser from throwing the whole SPA away.
+      e.preventDefault();
+      refetch();
     } else if (mod && e.key === "Backspace") {
-      if (!row) return;
+      // macOS trash chord. Windows/Linux use the Delete key below instead.
+      // Never while typing in the search box: Cmd+Delete is the standard macOS
+      // "clear to start of line" chord, so trashing there would be a foot-gun.
+      if (!isMac || inSearch || !rows.length) return;
       e.preventDefault();
-      doTrash(row);
+      doTrash(rows);
+      // Bare key only: because isMod() is exclusive, `!mod` alone is still true
+      // when the OTHER modifier is held (Super+Backspace on Linux), so test the
+      // raw flags instead.
+    } else if (e.key === "Backspace" && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+      // Windows/Linux: bare Backspace goes up a folder. On macOS it must stay
+      // inert — Cmd+Backspace is trash there and a bare Backspace navigating
+      // away would be a foot-gun. Never while typing in the search box.
+      if (isMac || inSearch) return;
+      e.preventDefault();
+      goParent();
+    } else if (e.key === "Delete" && !e.metaKey && !e.ctrlKey) {
+      // Windows/Linux trash key. On macOS the Delete (⌦) key is not the trash
+      // gesture — Cmd+Backspace above is. Raw-flag test rather than `!mod` so a
+      // held Super key can't slip a destructive key through (see Backspace).
+      if (isMac || inSearch || !rows.length) return;
+      e.preventDefault();
+      doTrash(rows);
     } else if (e.key === "F2") {
+      // Rename is single-entry: with several rows selected it renames the LEAD
+      // row (what Windows Explorer does — F2 edits the focused item), not a
+      // no-op and never a batch rename.
       if (!row) return;
       e.preventDefault();
       startRename(row);
@@ -1328,10 +1689,20 @@ export default function Listing({
                   key={entry.rel}
                   className={
                     "row" +
-                    (childPath === selectedPath ? " selected" : "") +
-                    (childPath === cutPath ? " cut" : "")
+                    (selectedSet.has(childPath) ? " selected" : "") +
+                    // Marker only (no styling of its own): the lead row is what
+                    // the scroll-into-view effect tracks.
+                    (childPath === selectedPath ? " lead" : "") +
+                    (cutSet.has(childPath) ? " cut" : "")
                   }
-                  onClick={() => navigate(childPath, { isDir: entry.is_dir })}
+                  onClick={(e) =>
+                    onRowClick(e, childPath, {
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
                   onContextMenu={(e) =>
                     openRowMenu(e, {
                       path: childPath,
@@ -1422,10 +1793,18 @@ export default function Listing({
           key={entry.name}
           className={
             (entry.ignored ? "row ignored" : "row") +
-            (childPath === selectedPath ? " selected" : "") +
-            (childPath === cutPath ? " cut" : "")
+            (selectedSet.has(childPath) ? " selected" : "") +
+            (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
+            (cutSet.has(childPath) ? " cut" : "")
           }
-          onClick={() => navigate(childPath, { isDir: entry.is_dir })}
+          onClick={(e) =>
+            onRowClick(e, childPath, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,
@@ -1523,6 +1902,10 @@ export default function Listing({
           <span className="listing-search-count" title={searchCountTitle}>
             {searchCount}
           </span>
+        )}
+        {/* Multi-selection readout — a single selected row needs no count. */}
+        {sel.paths.length > 1 && (
+          <span className="listing-search-count">{sel.paths.length} selected</span>
         )}
       </div>
       <div
