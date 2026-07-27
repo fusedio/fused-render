@@ -67,6 +67,34 @@ def test_shutdown_wait_timeout_propagates(monkeypatch):
     assert sec.waited
 
 
+def test_primary_shutdown_for_upgrade_reaps_payload_orphans(monkeypatch):
+    # No primary running: acquire() elects US. Detached workers (template
+    # daemons, rclone rcd) can still hold payload\ open, so the shortcut must
+    # sweep them or the installer's payload rename fails.
+    prim = instance.PrimaryInstance(None, _NAMES)
+    monkeypatch.setattr(prim, "release", lambda: None)
+    monkeypatch.setattr(instance, "acquire", lambda names: prim)
+    reaped = []
+    monkeypatch.setattr(instance, "reap_payload_processes", reaped.append)
+    core.run(protocol.ShutdownForUpgrade())
+    assert reaped == [20.0]
+
+
+def test_primary_reap_timeout_propagates(monkeypatch):
+    # A sweep that cannot clear payload\ must fail the exit code, so the
+    # installer reports "could not be stopped" instead of a rename error.
+    prim = instance.PrimaryInstance(None, _NAMES)
+    monkeypatch.setattr(prim, "release", lambda: None)
+    monkeypatch.setattr(instance, "acquire", lambda names: prim)
+
+    def boom(timeout):
+        raise TimeoutError("processes under the installed payload did not stop")
+
+    monkeypatch.setattr(instance, "reap_payload_processes", boom)
+    with pytest.raises(TimeoutError):
+        core.run(protocol.ShutdownForUpgrade())
+
+
 class _NoPaths:
     @staticmethod
     def discover():

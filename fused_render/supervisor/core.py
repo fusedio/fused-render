@@ -94,6 +94,11 @@ def run(initial: protocol.Command) -> None:
     # Primary instance.
     if isinstance(initial, protocol.ShutdownForUpgrade):
         inst.release()
+        # No primary to tear down, but detached workers (template daemons,
+        # rclone rcd) may still hold payload\ locked (win32-only hook).
+        reap = getattr(instance, "reap_payload_processes", None)
+        if reap is not None:
+            reap(20.0)
         return
 
     paths = DesktopPaths.discover()

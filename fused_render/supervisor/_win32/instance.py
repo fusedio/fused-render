@@ -285,6 +285,13 @@ def _current_user_sid() -> str:
     return win32security.ConvertSidToStringSid(sid)
 
 
+def reap_payload_processes(timeout: float) -> None:
+    """--shutdown-for-upgrade sweep for when no primary is running: detached
+    workers (template daemons, rclone rcd) outlive the app by design and would
+    hold payload\\ locked against the installer's rename."""
+    _wait_payload_gone(time.monotonic() + timeout)
+
+
 def _wait_payload_gone(deadline: float, payload: str | None = None) -> None:
     """Block until no process whose image lives under the installed payload
     directory survives — except this helper and the launcher that spawned it —
