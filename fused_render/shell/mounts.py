@@ -3361,6 +3361,27 @@ def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
         time.sleep(_MOUNT_ATTACH_POLL_S)
 
 
+def _mount_wedged(mp: str) -> bool:
+    # True when mp is a mountpoint whose backend process is gone: the kernel
+    # still holds the mount, so the path exists, but every stat on it fails.
+    try:
+        os.lstat(mp)
+    except OSError as e:
+        return e.errno in (errno.ENOTCONN, errno.EHOSTDOWN, errno.ESTALE)
+    except ValueError:
+        return False
+    return False
+
+
+def _is_mounted(mp: str) -> bool:
+    # os.path.ismount, but it also sees wedged mounts. posixpath.ismount
+    # swallows the OSError from lstat and reports False for a mountpoint whose
+    # FUSE daemon died (ENOTCONN) — precisely the state reconnect exists to
+    # repair, so the bare predicate skips the force-unmount and then crashes in
+    # attach_mount's makedirs.
+    return os.path.ismount(mp) or _mount_wedged(mp)
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     mp = mountpoint(m)
@@ -3395,6 +3416,14 @@ def attach_mount(m: dict) -> str | None:
                 # actual failure instead of misblaming it on non-emptiness.
                 return f"could not clear stale mountpoint {mp}: {e}"
     else:
+        if _mount_wedged(mp):
+            # Nothing can be mounted over a path whose stat fails: makedirs'
+            # exist_ok check can't recognise it as a directory and raises
+            # FileExistsError, violating this function's error-string contract.
+            # reconnect_mount clears this before re-attaching; anyone else
+            # (automount, a plain mount) is told to.
+            return (f"mountpoint {mp} is wedged — its backend is gone; "
+                    f"reconnect the mount to repair it")
         os.makedirs(mp, exist_ok=True)
     if os.path.ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
@@ -3592,9 +3621,13 @@ def _force_unmount(mp: str) -> str | None:
         except (OSError, subprocess.TimeoutExpired) as e:
             last = str(e)
             continue
-        if not os.path.ismount(mp):
+        # _is_mounted, not the bare predicate: a mountpoint still wedged
+        # (ENOTCONN) reads as ismount False, so plain ismount would call every
+        # failed attempt a success and let the caller remount over a path
+        # nothing can be mounted over.
+        if not _is_mounted(mp):
             return None
-    if not os.path.ismount(mp):
+    if not _is_mounted(mp):
         return None
     return f"force unmount of {mp} failed: {last or 'still mounted'}"
 
@@ -3687,7 +3720,10 @@ def reconnect_mount(m: dict) -> str | None:
             _rc(port, "mount/unmount", {"mountPoint": mp})
         except RuntimeError:
             pass  # wedged: rcd's own umount fails; the force path handles it
-    if os.path.ismount(mp):
+    # _is_mounted: a mount whose FUSE daemon died is invisible to plain ismount,
+    # and skipping the force-unmount here left the wedged path in place for
+    # attach_mount to trip over — the one state this whole function exists for.
+    if _is_mounted(mp):
         err = _force_unmount(mp)
         if err:
             return err
@@ -3745,9 +3781,15 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
 
     def probe() -> None:
         try:
-            is_mnt = os.path.ismount(mp)
+            is_mnt = _is_mounted(mp)
             served = mp in rcd_mounts
-            if not is_mnt and not served:
+            if is_mnt and _mount_wedged(mp):
+                # Backend gone, kernel mount still held: every stat ENOTCONNs.
+                # Classified here rather than left to the listdir below, so the
+                # probe_io=False caller (the health monitor) sees it too — and
+                # so plain ismount answering False can't read as "unmounted".
+                out["state"] = "disconnected"
+            elif not is_mnt and not served:
                 out["state"] = "unmounted"
             elif served and not is_mnt:
                 # rcd tracks a mount the kernel dropped (INCIDENT split-brain).
@@ -4625,7 +4667,14 @@ def reconnect_endpoint(cid: str, x_fused: str | None = Header(default=None)):
     m = get_mount(cid)
     if m is None:
         return JSONResponse({"error": "unknown mount"}, status_code=404)
-    err = reconnect_mount(m)
+    # Belt-and-braces like restart_endpoint below: reconnect_mount contracts to
+    # return an error string, but it drives kernel unmounts and stat()s on a
+    # mountpoint that is by definition broken — a surprise from down there
+    # should read as a 502 on the Mounts page, never a raw 500 traceback.
+    try:
+        err = reconnect_mount(m)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
     if err:
         return JSONResponse({"error": err}, status_code=502)
     return mount_view(m)
