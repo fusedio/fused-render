@@ -2184,9 +2184,18 @@ not by choice.
   opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
   `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
   text/code group.)
-- **AP-11** **Self-toggling, untouched**: `excel`, `log_studio` and `tableau`
-  keep their own in-view theme buttons and private storage keys (e.g.
-  `excel-theme`). Not migrated, not overridden.
+- **AP-11** **Self-toggling**: `excel`, `log_studio` and `tableau` keep their
+  own in-view theme buttons, and the shell never pushes a theme into them (no
+  `data-fused-theme` opt-in, so the runtime leaves them alone). `excel` and
+  `tableau` also keep their private storage keys and ignore the app setting
+  entirely. **`log_studio` follows the app for its INITIAL theme**: it opened
+  white inside a dark app, which is not "its own choice" but a wrong default.
+  It resolves the shell's setting itself — same `fused-render:theme` key, same
+  OS fallback, in a pre-paint inline `<head>` script so there is no flash — and
+  tracks later changes (`storage`, `matchMedia`) while unpinned. Its toggle
+  writes `?theme=`, and an explicit value always wins and stops the following.
+  Reading the key is not the same as being overridden: nothing reaches into the
+  view, and the decision stays the template's.
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,

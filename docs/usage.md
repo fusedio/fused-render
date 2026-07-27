@@ -140,7 +140,10 @@ traceback split across lines, or the request that preceded a failure). The level
 facets list only the levels the file actually contains, so a log that only writes
 INFO doesn't offer six filters that match nothing. Its Tail button and the Calls
 view's Follow both switch auto-reload off while engaged, so watching a live file
-polls instead of reloading.
+polls instead of reloading. Log studio opens in the app's current appearance —
+System, Light or Dark, whatever **Preferences → Appearance** says — and follows
+it if you change it; its own light/dark button overrides that for the view you
+are in.
 
 Opening a log file in any view is safe. Nothing watches a log file for changes,
 so a view of one never reloads itself — which matters because reading a log *is*

@@ -4,6 +4,57 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Log Studio</title>
+<script>
+  // Pre-paint theme resolution (SPEC AP-11). This view keeps its own toggle —
+  // the shell does not push a theme into it, and it carries no
+  // `data-fused-theme` opt-in — but with no signal at all it opened WHITE
+  // inside a dark app, which is not "its own choice", just a wrong default.
+  //
+  // So: an explicit `?theme=` (what the toggle writes) wins; otherwise follow
+  // the app, resolved exactly as static/runtime.js and frontend/index.html do
+  // — same localStorage key, same OS fallback. This iframe is same-origin, so
+  // the key is simply readable; nothing has to reach in.
+  //
+  // Inline, in <head>, ahead of the stylesheet below: the attribute has to land
+  // before first paint or the fix is a flash instead of a theme. The `light`
+  // literal on <html> above stays as the no-JS floor.
+  //
+  // Exposed on `window` rather than duplicated further down: the live listeners
+  // in the main script need the same answer, and this file has already been
+  // bitten by one rule with two copies.
+  window.__logStudioTheme = (function () {
+    var THEME_KEY = "fused-render:theme";
+    var DARK_QUERY = "(prefers-color-scheme: dark)";
+    function fromApp() {
+      var pref = null;
+      // Separate try blocks: a private-mode getItem THROWS, and sharing one
+      // block would skip the OS check entirely and pin a light user to dark
+      // (the bug frontend/index.html's bootstrap already had once).
+      try {
+        pref = localStorage.getItem(THEME_KEY);
+      } catch (e) { /* blocked storage — fall through to the OS preference */ }
+      if (pref === "light" || pref === "dark") return pref;
+      try {
+        return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
+      } catch (e) {
+        return "dark"; // no matchMedia — match what runtime.js keeps
+      }
+    }
+    function pinned() {
+      try {
+        var value = new URLSearchParams(location.search).get("theme");
+        return value === "light" || value === "dark" ? value : null;
+      } catch (e) {
+        return null;
+      }
+    }
+    return { KEY: THEME_KEY, QUERY: DARK_QUERY, fromApp: fromApp, pinned: pinned,
+             resolve: function () { return pinned() || fromApp(); } };
+  })();
+  try {
+    document.documentElement.setAttribute("data-theme", window.__logStudioTheme.resolve());
+  } catch (e) { /* leave the markup default */ }
+</script>
 <style>
   :root {
     color-scheme: dark;
@@ -891,7 +942,9 @@
       back: (fused.params.get("back") || "").split(",").filter((value) => /^\d+$/.test(value)),
       view: fused.params.get("view") === "patterns" ? "patterns" : "lines",
       tail: !["", "0"].includes(fused.params.get("tail") || ""),
-      theme: fused.params.get("theme") === "dark" ? "dark" : "light",
+      // Explicit choice (the toggle) wins; otherwise follow the app — the same
+      // resolution the head bootstrap already ran, not a second copy of it.
+      theme: window.__logStudioTheme.resolve(),
       facets: fused.params.get("facets") !== "0"
     };
   }
@@ -1713,6 +1766,25 @@
 
   railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
   themeToggle.addEventListener("click", () => setParams({ theme: currentState().theme === "light" ? "dark" : "light" }));
+
+  // While UNPINNED, follow the app: another window changing the setting, or the
+  // OS flipping while the setting is System (including macOS's sunset switch).
+  // Both are the same events runtime.js listens to, for the same reason — the
+  // shell writes the key, and every same-origin context including this iframe
+  // sees the `storage` event. Once the toggle has written `?theme=`, that is a
+  // deliberate per-view choice and neither event may override it.
+  function followAppTheme() {
+    if (window.__logStudioTheme.pinned()) return;
+    renderState(currentState());
+  }
+  window.addEventListener("storage", (event) => {
+    // A `clear()` reports key === null.
+    if (event.key === null || event.key === window.__logStudioTheme.KEY) followAppTheme();
+  });
+  try {
+    window.matchMedia(window.__logStudioTheme.QUERY)
+      .addEventListener("change", followAppTheme);
+  } catch (e) { /* no matchMedia — the storage path still works */ }
 
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");
