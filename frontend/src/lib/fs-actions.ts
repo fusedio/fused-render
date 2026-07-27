@@ -131,13 +131,18 @@ export async function freePastePath(parentDir: string, name: string, isDir: bool
 
 // claude-cli:// deep link for a listing entry — Claude Code registers this
 // scheme OS-wide (see templates_api.api_open_in_claude, which builds the same
-// shape for a template folder). A dir opens with its own path as cwd; a file
-// opens with its parent as cwd and pre-fills a prompt that @-mentions the file
-// (not auto-sent — the user still hits enter).
+// cwd shape for a template folder, but no starter q there). A dir opens with
+// its own path as cwd; a file opens with its parent as cwd. Both prime a
+// starter prompt telling Claude to load fused-render's skills first — a file's
+// prompt also @-mentions it — with two trailing newlines so the user's actual
+// ask lands on a fresh line below (not auto-sent — the user still hits enter).
 export function claudeDeepLink(path: string, isDir: boolean, name: string, parentDir: string): string {
-  if (isDir) return "claude-cli://open?cwd=" + encodeURIComponent(path);
-  const q = encodeURIComponent("@" + name + " ");
-  return "claude-cli://open?cwd=" + encodeURIComponent(parentDir) + "&q=" + q;
+  if (isDir) {
+    const q = "This is a fused-render project — load its skills first.\n\n";
+    return "claude-cli://open?cwd=" + encodeURIComponent(path) + "&q=" + encodeURIComponent(q);
+  }
+  const q = `This is a fused-render project — load its skills first, then read @${name}.\n\n`;
+  return "claude-cli://open?cwd=" + encodeURIComponent(parentDir) + "&q=" + encodeURIComponent(q);
 }
 
 // Write text to the system clipboard; resolves true on success, false when the
