@@ -11,7 +11,7 @@
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
-import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/api";
+import { getPrefs, putDeployEnabled, putEnginePref, putReaderEnabled, revealPath } from "../lib/api";
 import type { Prefs } from "../lib/api";
 import { navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
@@ -181,6 +181,53 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
+function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.reader.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putReaderEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
+          them aloud.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
+  );
+}
+
+function AccessibilitySection({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  return (
+    <section className="prefs-section">
+      <h2>Accessibility</h2>
+      <ReaderToggle prefs={prefs} onChange={onChange} />
+    </section>
+  );
+}
+
 function DeploymentsSection({
   prefs,
   onChange,
@@ -271,6 +318,7 @@ export default function Preferences() {
                   onChange={setPrefs}
                   onOpenAccount={() => setTab("account")}
                 />
+                <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <TourSection />
               </>
             )}

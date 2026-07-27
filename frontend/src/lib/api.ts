@@ -783,6 +783,9 @@ export interface Prefs {
   log: { path: string; dir: string };
   // Whether the preview-header Deploy button is shown (opt-in, default off).
   deploy: { enabled: boolean };
+  // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
+  // default off).
+  reader: { enabled: boolean };
 }
 
 export function getPrefs(): Promise<Prefs> {
@@ -795,6 +798,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
+}
+
+export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).

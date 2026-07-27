@@ -672,7 +672,21 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 # never stored. No background eviction — a stale entry is overwritten on the next
 # miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
 _CONDITIONS_TTL_S = 60.0
-_CONDITIONS_CACHE: dict[str, tuple[float, dict]] = {}  # path -> (inserted_monotonic, payload)
+# path -> (inserted_monotonic, prefs_mtime, payload). Gates may read the
+# preference store (the reader template's condition.py does), so a cached
+# verdict is only valid while prefs.json is unchanged — otherwise flipping a
+# Preferences toggle looks dead for a full TTL.
+_CONDITIONS_CACHE: dict[str, tuple[float, float, dict]] = {}
+
+
+def _prefs_mtime() -> float:
+    # Local import keeps module import order unchanged; shell never imports
+    # server so this direction is safe.
+    from fused_render.shell import storage
+    try:
+        return os.path.getmtime(os.path.join(storage.home_dir(), "prefs.json"))
+    except OSError:
+        return 0.0
 
 
 # /api/fs/stat on a MOUNT path goes _mount_safe_stat -> _mount_probe ->
@@ -3102,12 +3116,15 @@ def create_app(start_dir: str) -> FastAPI:
         # gate-evaluation cost, so a short check-on-read TTL cache serves a
         # recent verdict. Only success payloads (plain dicts) are cached; error
         # responses (_error -> JSONResponse) are always recomputed.
+        pm = _prefs_mtime()
         cached = _CONDITIONS_CACHE.get(path)
-        if cached is not None and time.monotonic() - cached[0] < _CONDITIONS_TTL_S:
-            return cached[1]
+        if (cached is not None
+                and time.monotonic() - cached[0] < _CONDITIONS_TTL_S
+                and cached[1] == pm):
+            return cached[2]
         result = _conditions_payload(path)
         if isinstance(result, dict):
-            _CONDITIONS_CACHE[path] = (time.monotonic(), result)
+            _CONDITIONS_CACHE[path] = (time.monotonic(), pm, result)
         return result
 
     @app.get("/api/fs/list")

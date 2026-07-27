@@ -85,6 +85,42 @@ def test_deploy_enabled_toggle_is_independent_of_engine(tmp_path, monkeypatch):
     assert body["deploy"]["enabled"] is True
 
 
+def test_reader_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off (accessibility opt-in), so the reader gate denies the mode.
+    assert client.get("/api/prefs").json()["reader"]["enabled"] is False
+    # Turn it on — persisted and reflected in the response and a fresh GET.
+    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
+    assert body["reader"]["enabled"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["reader_enabled"] is True
+    assert client.get("/api/prefs").json()["reader"]["enabled"] is True
+    # And back off.
+    assert client.put("/api/prefs", json={"reader_enabled": False}, headers=FUSED).json()[
+        "reader"
+    ]["enabled"] is False
+
+
+def test_reader_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    # A partial PUT touching only reader_enabled must not disturb the others.
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
+    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
+    assert body["engine"]["selected"] == "fused"
+    assert body["deploy"]["enabled"] is True
+    assert body["reader"]["enabled"] is True
+
+
+def test_put_rejects_bad_reader_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Non-boolean reader_enabled is rejected without a write.
+    assert (
+        client.put("/api/prefs", json={"reader_enabled": "yes"}, headers=FUSED).status_code == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_bad_deploy_enabled_and_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Non-boolean deploy_enabled …
