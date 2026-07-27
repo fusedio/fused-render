@@ -97,6 +97,29 @@ def test_theme_persistence_is_best_effort():
     assert src.count("try {") >= 2 and "catch" in src
 
 
+# ---------------------------------------------------------------- shell.css
+
+
+def test_shell_css_light_palette_redefines_every_dark_token():
+    dark, light = palette_blocks(read_repo_file("frontend/src/shell.css"))
+    assert dark, "shell.css must declare a dark :root palette"
+    assert light, 'shell.css must declare a :root[data-theme="light"] palette'
+    assert dark.pop("color-scheme", None) == "dark"
+    assert light.pop("color-scheme", None) == "light"
+    missing = sorted(set(dark) - set(light))
+    assert not missing, f"tokens with no light value: {missing}"
+    extra = sorted(set(light) - set(dark))
+    assert not extra, f"light-only tokens (no dark default): {extra}"
+
+
+def test_shell_css_has_no_colour_literals_outside_the_palettes():
+    literals = style_color_literals(read_repo_file("frontend/src/shell.css"))
+    assert not literals, (
+        "every colour in shell.css must come from a palette token, or light "
+        f"mode cannot repaint it — found: {sorted(set(literals))}"
+    )
+
+
 # ---------------------------------------------------------------- untouched
 
 
