@@ -1332,6 +1332,18 @@ def test_open_in_claude_encodes_space_in_path(ctx):
     assert " " not in url
 
 
+def test_open_in_claude_encodes_unicode_path(ctx):
+    ctx.make_template("my-view-☃")
+    resp = ctx.client.post(
+        "/api/templates/open-in-claude", json={"name": "my-view-☃"}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    url = resp.json()["url"]
+    assert url.startswith("claude-cli://open?cwd=")
+    assert "%" in url
+    assert "☃" not in url
+
+
 def test_open_in_claude_missing_template_404(ctx):
     resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "nope"}, headers=FUSED)
     assert resp.status_code == 404
