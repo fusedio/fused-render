@@ -145,129 +145,6 @@
   .brand-mark i:nth-child(3) { width: 88%; }
 
   .open-file-list { display: grid; gap: 3px; }
-  .browse-button { width: 100%; margin-top: 9px; }
-
-  .picker-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-    background: rgba(8, 11, 15, 0.55);
-  }
-
-  .picker-overlay[hidden] { display: none; }
-
-  .picker {
-    width: min(720px, 100%);
-    max-height: 82vh;
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--panel);
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
-    overflow: hidden;
-  }
-
-  .picker-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 13px 15px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .picker-title {
-    flex: 1;
-    margin: 0;
-    color: var(--strong);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .picker-close {
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--faint);
-    font-size: 20px;
-    cursor: pointer;
-  }
-
-  .picker-close:hover { color: var(--danger); background: var(--hover); }
-
-  .picker-path-form {
-    display: flex;
-    gap: 8px;
-    padding: 13px 15px;
-    border-bottom: 1px solid var(--line-soft);
-  }
-
-  #picker-path {
-    flex: 1;
-    height: 32px;
-    padding: 0 10px;
-    border: 1px solid var(--line);
-    border-radius: 3px;
-    background: var(--input);
-    color: var(--strong);
-    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
-  }
-
-  #picker-path::placeholder { color: var(--faint); }
-
-  .picker-crumbs {
-    padding: 9px 15px;
-    border-bottom: 1px solid var(--line-soft);
-    color: var(--muted);
-    font: 11px ui-monospace, monospace;
-    word-break: break-all;
-  }
-
-  .picker-crumbs a { color: var(--accent); cursor: pointer; }
-  .picker-crumbs a:hover { text-decoration: underline; }
-
-  .picker-list {
-    flex: 1;
-    min-height: 120px;
-    overflow: auto;
-    padding: 6px 0;
-  }
-
-  .picker-entry {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 7px 15px;
-    border: 0;
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-    text-align: left;
-    font-size: 12px;
-  }
-
-  .picker-entry:hover { background: var(--hover); }
-  .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .picker-size { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-  .picker-empty { padding: 14px 15px; color: var(--faint); font-size: 12px; }
-
-  .picker-error {
-    padding: 11px 15px;
-    border-top: 1px solid var(--line-soft);
-    color: var(--danger);
-    font-size: 12px;
-  }
-
-  .picker-error[hidden] { display: none; }
-
   .open-file {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 22px;
@@ -471,13 +348,38 @@
     color: var(--accent);
   }
 
+  /* Lit only while the tail is actually running. It used to be `background:
+     currentColor` unconditionally, so the button wore a filled "live" dot while
+     tail was OFF — the one part of the control that reads as state at a glance
+     said the opposite of the truth, and the pressed styling above (a border and
+     background tint) is far too quiet to correct that impression. Off is a
+     hollow ring; on is filled and pulsing, so "is it live" is answerable without
+     comparing two shades of blue. */
   .live-dot {
     width: 6px;
     height: 6px;
     display: inline-block;
     margin-right: 6px;
     border-radius: 50%;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px currentColor;
+    opacity: .55;
+  }
+
+  .tail-button[aria-pressed="true"] .live-dot {
     background: currentColor;
+    box-shadow: none;
+    opacity: 1;
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tail-button[aria-pressed="true"] .live-dot { animation: none; }
   }
 
   .canvas-panel {
@@ -602,8 +504,6 @@
   .skel-level, .skel-level:hover { background: transparent; cursor: default; }
 
   dd.skel-dd { display: flex; justify-content: flex-end; }
-
-  .skel-picker-row, .skel-picker-row:hover { background: transparent; cursor: default; }
 
   .hist-skel {
     position: absolute;
@@ -781,7 +681,6 @@
         <section class="facet-section">
           <h2 class="facet-title">Open files</h2>
           <div class="open-file-list" id="open-files"></div>
-          <button class="button browse-button" id="browse-open" type="button">Browse files&hellip;</button>
         </section>
         <section class="facet-section" id="file-overview">
           <h2 class="facet-title">Active file</h2>
@@ -858,22 +757,6 @@
     </main>
   </div>
 
-  <div class="picker-overlay" id="picker-overlay" hidden>
-    <div class="picker" role="dialog" aria-modal="true" aria-label="Open a file">
-      <div class="picker-head">
-        <h2 class="picker-title">Open a file</h2>
-        <button class="picker-close" id="picker-close" type="button" aria-label="Close">&times;</button>
-      </div>
-      <form class="picker-path-form" id="picker-path-form">
-        <input id="picker-path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a full path, e.g. C:\logs\app.log or ~/logs/app.log" aria-label="File path" />
-        <button class="button query-submit" type="submit">Open</button>
-      </form>
-      <div class="picker-crumbs" id="picker-crumbs"></div>
-      <div class="picker-list" id="picker-list"></div>
-      <div class="picker-error" id="picker-error" hidden></div>
-    </div>
-  </div>
-
 <script>
   const PAGE_LIMIT = 200;
   const LEVEL_ORDER = ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "OTHER"];
@@ -891,14 +774,6 @@
   const fileOverview = document.getElementById("file-overview");
   const app = document.querySelector(".app");
   const openFiles = document.getElementById("open-files");
-  const browseButton = document.getElementById("browse-open");
-  const pickerOverlay = document.getElementById("picker-overlay");
-  const pickerClose = document.getElementById("picker-close");
-  const pickerPathForm = document.getElementById("picker-path-form");
-  const pickerPath = document.getElementById("picker-path");
-  const pickerCrumbs = document.getElementById("picker-crumbs");
-  const pickerList = document.getElementById("picker-list");
-  const pickerError = document.getElementById("picker-error");
   const levelList = document.getElementById("level-list");
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("query");
@@ -976,15 +851,6 @@
           <span class="log-cell">${skelBar("60%")}</span>
           <span class="log-cell">${skelBar(`${width}%`)}</span>
         </div>`).join("")}</div>`;
-  }
-
-  function pickerSkeleton() {
-    const widths = [62, 44, 78, 50, 68];
-    return widths.map((width) => `
-      <div class="picker-entry skel-picker-row">
-        <span class="file-kind">${skelBar("22px", "8px")}</span>
-        <span class="picker-name">${skelBar(`${width}%`)}</span>
-      </div>`).join("");
   }
 
   function currentState() {
@@ -1150,73 +1016,6 @@
           <button class="close-file" type="button" data-close-file="${escapeHtml(path)}" aria-label="Close ${escapeHtml(name)}">x</button>
         </div>`;
     }).join("");
-  }
-
-  function crumbHtml(path) {
-    const parts = String(path).split("/").filter(Boolean);
-    const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");
-    const crumbs = winRoot ? [] : [`<a data-path="/">/</a>`];
-    parts.forEach((part, index) => {
-      const acc = (winRoot ? "" : "/") + parts.slice(0, index + 1).join("/") + (winRoot && !index ? "/" : "");
-      crumbs.push(`<a data-path="${escapeHtml(acc)}">${escapeHtml(part)}</a>`);
-    });
-    return crumbs.join(` <span style="color:var(--faint)">/</span> `);
-  }
-
-  function renderPickerDir(data) {
-    pickerCrumbs.innerHTML = crumbHtml(data.path);
-    const rows = [];
-    if (data.parent && data.parent !== data.path) {
-      rows.push(`<button class="picker-entry" type="button" data-dir="${escapeHtml(data.parent)}"><span class="file-kind">UP</span><span class="picker-name">..</span></button>`);
-    }
-    for (const entry of data.entries) {
-      const attr = entry.is_dir ? "data-dir" : "data-file";
-      rows.push(`
-        <button class="picker-entry" type="button" ${attr}="${escapeHtml(entry.path)}" title="${escapeHtml(entry.path)}">
-          <span class="file-kind">${entry.is_dir ? "DIR" : "FILE"}</span>
-          <span class="picker-name">${escapeHtml(entry.name)}</span>
-          ${entry.is_dir ? "" : `<span class="picker-size">${escapeHtml(formatBytes(entry.size))}</span>`}
-        </button>`);
-    }
-    pickerList.innerHTML = rows.length ? rows.join("") : `<div class="picker-empty">This folder is empty.</div>`;
-  }
-
-  async function loadPickerDir(path) {
-    pickerError.hidden = true;
-    pickerList.innerHTML = pickerSkeleton();
-    try {
-      // src (origin only) lets the reader route a mount-backed dir via
-      // /api/fs/list instead of a kernel scan that could drop the mount.
-      renderPickerDir(await runReader("list", currentState(), { path: path || "",
-        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }));
-    } catch (error) {
-      pickerList.innerHTML = "";
-      showPickerError(errorMessage(error));
-    }
-  }
-
-  function openPickedFile(path) {
-    const state = currentState();
-    const opened = state.opened.some((value) => samePath(value, path)) ? state.opened : [...state.opened, path];
-    closePicker();
-    activateFile(path, opened);
-  }
-
-  function showPickerError(message) {
-    pickerError.textContent = message;
-    pickerError.hidden = false;
-  }
-
-  function openPicker() {
-    pickerOverlay.hidden = false;
-    pickerPath.value = "";
-    pickerError.hidden = true;
-    loadPickerDir("");
-    pickerPath.focus();
-  }
-
-  function closePicker() {
-    pickerOverlay.hidden = true;
   }
 
   function activateFile(path, opened) {
@@ -1453,25 +1252,119 @@
       return;
     }
 
-    results.innerHTML = `<div class="log-list">${lines.map((line, index) => {
-      const fields = lineFields(line, index);
-      return `
-        <article class="log-row" data-row="${index}" style="--level-color:${levelColor(fields.level)}">
-          <span class="log-cell expand-mark">+</span>
-          <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
-          <span class="log-cell level">${escapeHtml(fields.level)}</span>
-          <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
-          <span class="log-cell message">${escapeHtml(fields.raw)}</span>
-          <div class="line-detail">
-            <pre>${escapeHtml(fields.raw)}</pre>
-            <div class="detail-actions">
-              <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
-              <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
-            </div>
-            <div class="context-lines" hidden></div>
-          </div>
-        </article>`;
-    }).join("")}</div>`;
+    reconcileLines(lines);
+  }
+
+  // The identity of a rendered log line: its byte offset in the file, plus its
+  // text. The offset alone is what makes a line a line — but logs.py ROTATES,
+  // and after a rotation byte 0 is a different line entirely, so the text has to
+  // be part of the key or a rotation would silently keep the old rows. Two lines
+  // that match on this key are byte-identical, which is why a matched row needs
+  // no update at all: reuse here means "leave that DOM alone".
+  function lineKey(fields) {
+    return fields.offset + " " + fields.raw;
+  }
+
+  function lineRow(fields) {
+    const row = document.createElement("article");
+    row.className = "log-row";
+    row.dataset.key = lineKey(fields);
+    row.dataset.offset = String(fields.offset);
+    row.style.setProperty("--level-color", levelColor(fields.level));
+    row.innerHTML = `
+      <span class="log-cell expand-mark">+</span>
+      <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
+      <span class="log-cell level">${escapeHtml(fields.level)}</span>
+      <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
+      <span class="log-cell message">${escapeHtml(fields.raw)}</span>
+      <div class="line-detail">
+        <pre>${escapeHtml(fields.raw)}</pre>
+        <div class="detail-actions">
+          <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
+          <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
+        </div>
+        <div class="context-lines" hidden></div>
+      </div>`;
+    return row;
+  }
+
+  // Update the list IN PLACE, keeping every row the new page still contains.
+  //
+  // This used to be one `results.innerHTML = ...`, which is fine for a paged
+  // read and wrong for a tail: the poll runs every 2 s, so rebuilding the list
+  // threw away the DOM the user was working in four times a sentence — scroll
+  // position, which rows were expanded, any context block they had fetched, and
+  // any text selection. Tailing a live log was therefore the one mode in which
+  // you could not read or copy a line, which is the opposite of what Tail is
+  // for. The rows themselves were keyed by ARRAY INDEX, which renumbers the
+  // moment a line arrives, so nothing could be matched up across a poll even in
+  // principle.
+  //
+  // Same rule the shell's Recents list follows (SPEC RC-6): rows are keyed by
+  // identity, a row the page still has keeps its element, and the only movement
+  // is genuinely new content arriving.
+  function reconcileLines(lines) {
+    let list = results.querySelector(".log-list");
+    if (!list) {
+      // Coming from a status card, an error, or the skeleton — nothing to keep.
+      results.innerHTML = '<div class="log-list"></div>';
+      list = results.querySelector(".log-list");
+    }
+
+    const scroll = scroller();
+    const wasPinned = atBottom(scroll);
+    const before = scroll.scrollHeight;
+
+    const keep = new Map();
+    for (const row of Array.from(list.children)) {
+      const key = row.dataset.key;
+      if (key === undefined) row.remove();          // skeleton rows
+      else keep.set(key, row);
+    }
+
+    // Walk the desired order once, moving each row into place. insertBefore on a
+    // node already in position is a no-op for the user (no re-parse, no lost
+    // selection), so a poll that only appended costs exactly the appends.
+    let cursor = list.firstChild;
+    for (let i = 0; i < lines.length; i++) {
+      const fields = lineFields(lines[i], i);
+      const key = lineKey(fields);
+      const existing = keep.get(key);
+      if (existing) {
+        keep.delete(key);
+        if (existing === cursor) {
+          cursor = cursor.nextSibling;
+          continue;
+        }
+        list.insertBefore(existing, cursor);
+      } else {
+        list.insertBefore(lineRow(fields), cursor);
+      }
+    }
+    // Whatever the new page no longer contains — the lines that scrolled out of
+    // the tail window.
+    for (const row of keep.values()) row.remove();
+
+    // A tail appends at the bottom and drops from the top, so the page height
+    // changes under the viewport. Pinned to the bottom, stay pinned (that is
+    // what following means); parked mid-history, hold the same content still
+    // rather than letting it slide by the height difference.
+    if (wasPinned) scroll.scrollTop = scroll.scrollHeight;
+    else scroll.scrollTop += scroll.scrollHeight - before;
+  }
+
+  // The document is the scroll container here: `.app` is a grid that grows, and
+  // only the file rail scrolls on its own.
+  function scroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Within a line's height of the end — "following", as opposed to having
+  // deliberately scrolled back to read something.
+  const STICK_SLOP_PX = 24;
+
+  function atBottom(el) {
+    return el.scrollHeight - el.clientHeight - el.scrollTop <= STICK_SLOP_PX;
   }
 
   function patternsFrom(data) {
@@ -1649,7 +1542,7 @@
       noticeArea.innerHTML = "";
       pager.hidden = true;
       histSkel.hidden = true;
-      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Use "Browse files..." to pick a log.</span></div>`;
+      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Open a <code>.log</code> file from the file explorer to view it here.</span></div>`;
       return;
     }
     const nextDataKey = dataKey(state);
@@ -1735,53 +1628,6 @@
     }
     const select = event.target.closest("[data-open-file]");
     if (select && !samePath(select.dataset.openFile, state.file)) activateFile(select.dataset.openFile, state.opened);
-  });
-
-  browseButton.addEventListener("click", openPicker);
-  pickerClose.addEventListener("click", closePicker);
-  pickerOverlay.addEventListener("mousedown", (event) => {
-    if (event.target === pickerOverlay) closePicker();
-  });
-
-  pickerCrumbs.addEventListener("click", (event) => {
-    const crumb = event.target.closest("[data-path]");
-    if (crumb) loadPickerDir(crumb.dataset.path);
-  });
-
-  pickerList.addEventListener("click", (event) => {
-    const dir = event.target.closest("[data-dir]");
-    if (dir) {
-      loadPickerDir(dir.dataset.dir);
-      return;
-    }
-    const file = event.target.closest("[data-file]");
-    if (file) openPickedFile(file.dataset.file);
-  });
-
-  pickerPathForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const value = pickerPath.value.trim();
-    if (!value) return;
-    pickerError.hidden = true;
-    try {
-      const info = await runReader("resolve", currentState(), { path: value });
-      if (!info.exists) {
-        showPickerError(`No such file or folder: ${info.path}`);
-        return;
-      }
-      if (info.is_dir) {
-        pickerPath.value = "";
-        loadPickerDir(info.path);
-        return;
-      }
-      openPickedFile(info.path);
-    } catch (error) {
-      showPickerError(errorMessage(error));
-    }
-  });
-
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !pickerOverlay.hidden) closePicker();
   });
 
   tailToggle.addEventListener("click", () => {

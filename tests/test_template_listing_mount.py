@@ -21,7 +21,6 @@ import pytest
 
 from fused_render.templates.map import discover as map_discover
 from fused_render.templates.photos import reader as photos
-from fused_render.templates.log_studio import reader as logstudio
 from fused_render.templates.excel import reader as excel
 from fused_render.templates.docs import docs
 from fused_render.templates.latex import engine
@@ -185,14 +184,6 @@ def test_photos_list_dir_routes_remote(fs):
     assert res["ok"] is True
     assert [i["name"] for i in res["items"]] == ["p.jpg"]
     assert [d["name"] for d in res["subdirs"]] == ["sub"]
-
-
-def test_log_studio_listdir_routes_remote(fs):
-    s = fs([_ent("logs", is_dir=True), _ent("app.log", size=42, mtime=1.0)])
-    res = logstudio._listdir("", REMOTE_DIR, src=s.src)
-    names = {e["name"]: e for e in res["entries"]}
-    assert names["logs"]["is_dir"] is True
-    assert names["app.log"]["size"] == 42
 
 
 def test_reader_unreachable_falls_back_to_kernel_local(tmp_path):
