@@ -185,8 +185,82 @@ def test_the_row_defaults_to_fields_and_keeps_the_raw_text(tmp_path):
     src = _src()
     row = _js_block(src, "function lineRow(fields)")
     assert 'data-view="structured"' in row and 'data-view="raw"' in row
-    assert "<pre hidden>" in row, "raw text is present, just hidden"
+    assert 'class="detail-raw" hidden' in row, "raw text is present, just hidden"
     assert 'data-detail-view="raw"' in row, "and reachable through a toggle"
+
+
+def test_the_raw_toggle_targets_the_raw_pre_and_not_a_nested_field_block(tmp_path):
+    """Owner-reported: the Raw JSON / Fields button "does nothing meaningful".
+
+    It did nothing on exactly the records worth reading. `fieldRows` renders a
+    multi-line or >160-char value as `<pre class="field-block">` INSIDE the
+    field table, so a record with a traceback has TWO `<pre>`s in its detail
+    body and the nested one comes first in document order. The handler looked
+    the raw text up with a bare `querySelector("pre")`, which therefore hid the
+    field table and then un-hid a block nested inside it — leaving the panel
+    blank and the button apparently inert. A record with only short values has
+    one `<pre>`, which is why it looked fine in a casual check.
+
+    Two halves, both needed: the nested `<pre>` really does come first (so the
+    hazard is real and not hypothetical), and the handler addresses the raw one
+    by a name of its own instead of by position.
+    """
+    src = _src()
+    traceback = "Traceback (most recent call last):\n  File \"a.py\", line 1\nBoom"
+    line = json.dumps({"level": "ERROR", "error": {"traceback": traceback}})
+    result = _run(
+        f"const parsed = parseStructured({json.dumps(line)});\n"
+        "console.log(JSON.stringify({ table: structuredHtml(parsed) }));\n",
+        tmp_path, _detail_prelude())
+
+    table = result["table"]
+    assert '<pre class="field-block"' in table, "the hazard: a <pre> inside the table"
+    body = f'<div class="detail-body" data-view="structured">{table}<pre class="detail-raw" hidden>raw</pre></div>'
+    assert body.index('<pre class="field-block"') < body.index('<pre class="detail-raw"'), \
+        "the nested block precedes the raw text, so 'first <pre>' picks the wrong one"
+
+    handler = _js_block(src, "results.addEventListener(\"click\"")
+    # Comments stripped first: the fix's own comment NAMES the bad selector to
+    # explain it, and a bare substring search reads that as the bug still being
+    # there — the same false positive the theme opt-in check had.
+    toggle = re.sub(r"//[^\n]*", "", handler[: handler.index("data-context")])
+    assert 'querySelector("pre")' not in toggle, \
+        "position-based lookup: picks the field block on any record with one"
+    assert '.detail-raw' in toggle, "the raw text needs a name of its own"
+
+
+def test_the_hidden_attribute_actually_hides():
+    """The other half of the same report, and the reason the toggle still looked
+    broken after the selector was fixed: setting `.hidden` did not hide.
+
+    The UA stylesheet's `[hidden] { display: none }` loses to ANY class rule that
+    sets `display`, and this template sets one on nearly every box. So
+    `.field-table` (grid) stayed fully visible in Raw view — the raw text simply
+    appeared underneath the fields — and `#pager` (flex) keeps 47px of empty
+    chrome whenever the code asks for it to go away. Measured in Chromium:
+    `el.hidden = true` left `display: flex`, height 47.
+
+    `.hist-skel[hidden]` was already carrying a one-off `display: none` for
+    exactly this, which is the tell — the trap had been hit once and patched at
+    the instance instead of at the rule. One global guard covers every element
+    that is hidden this way, including the ones not written yet.
+    """
+    src = _src()
+    style = "\n".join(re.findall(r"<style[^>]*>([\s\S]*?)</style>", src))
+    # Comments out first — the guard's own comment names the override it
+    # replaced, and a bare search reads that as the override still being there.
+    style = re.sub(r"/\*[\s\S]*?\*/", "", style)
+    guard = re.search(r"\[hidden\]\s*\{[^{}]*display\s*:\s*none\s*!important", style)
+    assert guard, (
+        "the template needs a global `[hidden] { display: none !important }` — "
+        "without it every element carrying an explicit `display` ignores the "
+        "attribute, and each one has to remember its own override"
+    )
+
+    # And the one-off it replaces is gone, so there is a single rule to reason
+    # about rather than a global plus an inconsistent set of local patches.
+    assert not re.search(r"\.hist-skel\[hidden\]", style), \
+        "the per-element override is redundant once the global guard exists"
 
 
 # ------------------------------------------------------- level facets (D153)

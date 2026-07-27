@@ -93,6 +93,15 @@
 
   * { box-sizing: border-box; }
 
+  /* The UA's `[hidden] { display: none }` loses to any class rule that sets
+     `display`, and nearly every box below sets one — so `el.hidden = true` was
+     silently a no-op on the grid/flex ones. That is how Raw view showed the raw
+     text UNDER a field table that was supposed to be gone, and how the pager
+     keeps 47px of empty chrome when the code asks it to leave. Global and
+     !important so an element added later inherits the fix instead of needing
+     its own override (which is what `.hist-skel[hidden]` used to be). */
+  [hidden] { display: none !important; }
+
   html, body { min-height: 100%; }
 
   body {
@@ -514,8 +523,6 @@
     animation: skel-shimmer 1.2s ease-in-out infinite;
     pointer-events: none;
   }
-
-  .hist-skel[hidden] { display: none; }
 
   .log-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
@@ -1385,8 +1392,8 @@
     // this exists — with the raw text one click away and never removed.
     const detailBody = parsed
       ? `<div class="detail-body" data-view="structured">${structuredHtml(parsed)}` +
-        `<pre hidden>${escapeHtml(fields.raw)}</pre></div>`
-      : `<div class="detail-body" data-view="raw"><pre>${escapeHtml(fields.raw)}</pre></div>`;
+        `<pre class="detail-raw" hidden>${escapeHtml(fields.raw)}</pre></div>`
+      : `<div class="detail-body" data-view="raw"><pre class="detail-raw">${escapeHtml(fields.raw)}</pre></div>`;
     const viewToggle = parsed
       ? `<button class="button context-button" type="button" data-detail-view="raw">Raw JSON</button>`
       : "";
@@ -1756,8 +1763,13 @@
       const body = viewButton.closest(".line-detail").querySelector(".detail-body");
       const toRaw = viewButton.dataset.detailView === "raw";
       body.dataset.view = toRaw ? "raw" : "structured";
+      // Both by CLASS, never by position. A block-text field renders as its own
+      // <pre class="field-block"> inside the table, so `querySelector("pre")`
+      // returned that one on any record with a traceback — hiding the table and
+      // un-hiding a node inside it, which left the panel blank and made the
+      // button look inert. `.detail-raw` names the one node this means.
       body.querySelector(".field-table").hidden = toRaw;
-      body.querySelector("pre").hidden = !toRaw;
+      body.querySelector(".detail-raw").hidden = !toRaw;
       viewButton.dataset.detailView = toRaw ? "structured" : "raw";
       viewButton.textContent = toRaw ? "Fields" : "Raw JSON";
       return;
