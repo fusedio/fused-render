@@ -135,7 +135,10 @@ the Calls view's own polling is the one thing excluded, since it would otherwise
 inflate the numbers you are reading.
 
 **Where it lives.** `~/.fused-render/logs/` as newline-delimited JSON, one file
-per day per server process, rolled to a new part every 32 MB. Records are capped
+per day per server process, rolled to a new part every 32 MB. (This is not the
+app's own log: that one is disposable diagnostic output and lives in the system
+temp dir — **Preferences → Logs** points at it. `~/.fused-render/logs/` holds
+only the durable call records described here.) Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),
 rate-limited per page, and pruned after 14 days or once the directory passes
 200 MB — whichever comes first. Today's files are never pruned, since a running

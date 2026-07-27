@@ -1981,6 +1981,9 @@ def test_the_calls_view_reloads_after_a_failed_read(tmp_path):
         "let inflight = false, pending = false;\n"
         "const state = { since: 0 };\n"
         "let fail = true, reads = 0, waiting = [], rendered = [], errors = 0;\n"
+        # load()'s catch resets the chart cache alongside the scaffold it
+        # replaces; modules are strict, so the name must exist here.
+        "let lastChartKey = 'stale';\n"
         "function bucketFor() { return 1000; }\n"
         "function esc(s) { return s; }\n"
         "function $() { return { set innerHTML(v) { errors++; } }; }\n"
@@ -2007,6 +2010,70 @@ def test_the_calls_view_reloads_after_a_failed_read(tmp_path):
     assert result["errors"] >= 1, "the failure still reports itself"
     assert result["rendered"] == ["ok"], "and the queued reload still runs"
     assert result["inflight"] is False and result["pending"] is False
+
+
+def test_the_follow_poll_reuses_row_elements_instead_of_rebuilding(tmp_path):
+    """Follow polls every 2 s, and the render used to replace the pane's
+    innerHTML wholesale — scroll, the open detail row, and any text selection
+    died four times a sentence, making Follow the one mode in which the log
+    could not be read. The reconcile must therefore REUSE the element for every
+    record the new page still holds: identity is tracked here by stamping each
+    created element with a serial, so a rebuild that produces equal-LOOKING rows
+    still fails.
+    """
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - node is preinstalled on the CI runners
+        pytest.skip("node is required to drive the template's JS")
+
+    src = _calls_template_src()
+    harness = tmp_path / "reconcile.mjs"
+    harness.write_text(
+        # A tbody with just the DOM surface reconcile touches. `rowFrom` is
+        # overridden (the real one needs <template> parsing) but keeps its
+        # contract: fresh element, key + source stamped.
+        "let serial = 0;\n"
+        "function rowFrom(key, html) {\n"
+        "  return { dataset: { key }, _src: html, id: ++serial, parent: null,\n"
+        "    remove() { const c = this.parent.children;\n"
+        "      const i = c.indexOf(this); if (i >= 0) c.splice(i, 1); },\n"
+        "    get nextSibling() { const c = this.parent.children;\n"
+        "      return c[c.indexOf(this) + 1] || null; } };\n"
+        "}\n"
+        "const tbody = { children: [],\n"
+        "  get firstChild() { return this.children[0] || null; },\n"
+        "  insertBefore(el, ref) { const c = this.children;\n"
+        "    const i = c.indexOf(el); if (i >= 0) c.splice(i, 1);\n"
+        "    let j = ref ? c.indexOf(ref) : c.length; if (j < 0) j = c.length;\n"
+        "    c.splice(j, 0, el); el.parent = this; } };\n"
+        + _js_block(src, "function reconcile(tbody, desired)") + "\n"
+        "const snap = () => tbody.children.map((el) => el.dataset.key + '#' + el.id);\n"
+        "const out = [];\n"
+        "reconcile(tbody, [['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
+        "out.push(snap());\n"
+        "reconcile(tbody, [['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
+        "out.push(snap());\n"
+        "reconcile(tbody, [['n', 'N'], ['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
+        "out.push(snap());\n"
+        "reconcile(tbody, [['n', 'N'], ['a', 'A2'], ['b', 'B']]);\n"
+        "out.push(snap());\n"
+        "reconcile(tbody, [['b', 'B'], ['n', 'N']]);\n"
+        "out.push(snap());\n"
+        "console.log(JSON.stringify(out));\n",
+        encoding="utf-8")
+
+    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
+                         timeout=30)
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+    assert result[0] == ["a#1", "b#2", "c#3"]
+    assert result[1] == ["a#1", "b#2", "c#3"], \
+        "an identical poll must not touch a single element"
+    assert result[2] == ["n#4", "a#1", "b#2", "c#3"], \
+        "a new record on top reuses every existing row"
+    assert result[3] == ["n#4", "a#5", "b#2"], \
+        "changed content replaces its own row; ageing out removes; others stay"
+    assert result[4] == ["b#2", "n#4"], \
+        "a reorder moves elements, never rebuilds them"
 
 
 # ------------- the prefs snapshot must honour a concurrent invalidation

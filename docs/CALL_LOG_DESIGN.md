@@ -1028,7 +1028,27 @@ applied to every value in the function, not the one the bug report named.** A
 report is evidence of a class, not an inventory of it — D147 taught that about
 call sites and this taught it about the lines of a single return statement.
 
-Across all fifteen rounds the pattern never changed: each defect lived in a seam
+**A fix has a class, and the class has other members in the same diff (Follow's
+rebuild).** The sixteenth defect was reported by the owner, not Bugbot: while
+Following, the whole view refreshed on every 2 s poll. The render was one
+`innerHTML` replacement — scroll position, the open detail row, and any text
+selection thrown away four times a sentence, in exactly the mode whose purpose
+is *reading the log as it grows*. What stings is that I had just fixed this
+precise bug in log_studio's Tail, in the same working session, and did not turn
+around and ask which other template polls and rebuilds — this one, two files
+away, written by me, with rows keyed by array index so nothing could be matched
+across a poll even in principle. The view even contained both halves of the
+lesson already: the row-click path refused to redraw the charts "for no
+reason", and the Follow handler disabled auto-reload specifically to protect
+scroll — then reset scroll itself. The fix is the same shape as log_studio's
+(keyed in-place reconcile, charts only on changed data, scroll pinned-or-held),
+with one difference worth noting: records already carry identity (`call_id`),
+so no synthetic key was needed. D145 taught that a report names an instance of
+a class, not its inventory, about call sites; D150 taught it about the lines of
+one function; this round teaches it about *templates* — when a fix lands in one
+template, grep the others for the pattern before calling it done.
+
+Across all sixteen rounds the pattern never changed: each defect lived in a seam
 between individually-correct, individually-tested parts — a rule and its own
 copy, two spellings of one value, two directories with different lifetimes, a
 stored setting and the effective one. What

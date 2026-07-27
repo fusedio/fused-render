@@ -245,6 +245,7 @@ async function load() {
     // this view IS the diagnostics surface, so it should explain its own break.
     $("body").innerHTML =
       '<div class="empty err-text">Could not read the call log: ' + esc(e.message) + "</div>";
+    lastChartKey = null; // scaffold replaced — recovery must rebuild + redraw
   } finally {
     inflight = false;
     // Re-run for whatever changed mid-read — including after a failure, so a
@@ -302,16 +303,61 @@ function fmtTime(iso) {
   return isNaN(d.getTime()) ? iso : d.toLocaleTimeString();
 }
 
+// What the previous render put on screen, so the next one can be DIFFED
+// against it instead of replacing the DOM. Follow polls load() every 2 s, and
+// the old wholesale `$("body").innerHTML = …` threw away the DOM the user was
+// working in on every poll — scroll position, the detail row they had open,
+// their text selection — which made Follow the one mode in which the log could
+// not actually be read. The same bug, for the same reason, as log_studio's
+// Tail before its reconcile; this is that fix with the keys the records
+// already carry (`call_id`; `entrypoint` for the per-target rollup).
+let lastRecords = [];
+let lastSeries = null;
+let lastChartKey = null;
+let lastStatsHtml = null;
+
 function render(data) {
   renderStats(data.overview);
   const records = (data.page && data.page.records) || [];
   const targets = (data.targets && data.targets.targets) || [];
+  lastRecords = records;
+  lastSeries = data.series;
 
   if (!records.length && !targets.length) {
     $("body").innerHTML = emptyState(data.overview);
+    lastChartKey = null; // scaffold gone — the next data render rebuilds + redraws
     return;
   }
 
+  const rebuilt = ensureScaffold();
+  renderTargets(targets);
+  renderRows(records);
+
+  // Charts redraw only when their data changed. While following, most polls
+  // return an identical window, and repainting three canvases on each one is
+  // exactly the flash the row-click path already refuses to cause ("redrawing
+  // the charts on a row click would flash them for no reason" — the same
+  // reason, four times as often). Records are immutable once written, so their
+  // ids stand in for the duration scatter's inputs.
+  const chartKey = JSON.stringify(data.series) + "|" +
+    records.map((r) => r.call_id).join(",");
+  if (rebuilt || chartKey !== lastChartKey) {
+    lastChartKey = chartKey;
+    drawCharts();
+  }
+}
+
+function drawCharts() {
+  drawVolume($("c-volume"), lastSeries);
+  drawDuration($("c-dur"), lastSeries, lastRecords);
+  drawSize($("c-size"), lastSeries);
+}
+
+// The static frame: charts + the two table cards, with empty tbodies the
+// renderers reconcile into. Built once (and again after an empty/error state
+// replaced it); everything inside it updates in place.
+function ensureScaffold() {
+  if ($("body").querySelector(".charts")) return false;
   $("body").innerHTML =
     '<div class="charts">' +
       chartCard("Calls over time", "c-volume",
@@ -322,18 +368,110 @@ function render(data) {
       chartCard("Response size", "c-size", "bytes returned per bucket") +
     "</div>" +
     '<div class="card" style="margin-bottom:14px">' +
-      '<h2>Per target <span class="legend">' + targets.length + " target(s)</span></h2>" +
-      targetsTable(targets) +
+      '<h2>Per target <span class="legend" id="targets-n"></span></h2>' +
+      '<table class="targets"><thead><tr id="targets-head"></tr></thead>' +
+      '<tbody id="targets-body"></tbody></table>' +
     "</div>" +
     '<div class="card">' +
       '<h2>Recent calls <span class="legend">newest first · click a row for detail</span></h2>' +
-      rowsTable(records) +
+      '<table class="rows"><thead><tr>' +
+        "<th>Time</th><th>Outcome</th><th>Route</th><th>Target</th>" +
+        '<th class="num">Duration</th><th class="num">Size</th><th class="num">Rows</th><th>Params</th>' +
+      "</tr></thead><tbody id=\"rows-body\"></tbody></table>" +
     "</div>";
+  return true;
+}
 
-  drawVolume($("c-volume"), data.series);
-  drawDuration($("c-dur"), data.series, records);
-  drawSize($("c-size"), data.series);
-  wireTables(targets, records);
+// Keyed tbody reconcile: bring the children to `desired` = [key, html] order,
+// touching only what changed. A matched key with identical source html is left
+// entirely alone — that is what preserves selection and open details — and
+// `insertBefore` on a node already in position is a no-op, so a poll that
+// changed nothing costs nothing. Same rule as the shell's Recents list (RC-6):
+// rows are keyed by identity, and the only movement is real change.
+const _rowTemplate = document.createElement("template");
+
+function rowFrom(key, html) {
+  _rowTemplate.innerHTML = html;
+  const el = _rowTemplate.content.firstElementChild;
+  el.dataset.key = key;
+  el._src = html;
+  return el;
+}
+
+function reconcile(tbody, desired) {
+  const keep = new Map();
+  for (const el of Array.from(tbody.children)) keep.set(el.dataset.key, el);
+  let cursor = tbody.firstChild;
+  for (const [key, html] of desired) {
+    const existing = keep.get(key);
+    if (existing && existing._src === html) {
+      keep.delete(key);
+      if (existing === cursor) { cursor = cursor.nextSibling; continue; }
+      tbody.insertBefore(existing, cursor);
+      continue;
+    }
+    if (existing) { // same identity, new content (a target's aggregates moved)
+      keep.delete(key);
+      if (existing === cursor) cursor = cursor.nextSibling;
+      existing.remove();
+    }
+    tbody.insertBefore(rowFrom(key, html), cursor);
+  }
+  for (const el of keep.values()) el.remove(); // aged out of the window
+}
+
+function renderTargets(targets) {
+  $("targets-n").textContent = targets.length + " target(s)";
+  const head = TARGET_COLS.map(([key, label, num]) =>
+    '<th class="sortable' + (num ? " num" : "") + '" data-sort="' + key + '">' + label +
+    (state.sort === key ? (state.desc ? " ↓" : " ↑") : "") + "</th>").join("");
+  const headRow = $("targets-head");
+  if (headRow._src !== head) { headRow.innerHTML = head; headRow._src = head; }
+  const rows = targets.slice().sort((a, b) => {
+    const av = a[state.sort], bv = b[state.sort];
+    if (typeof av === "string" || typeof bv === "string") {
+      return (state.desc ? -1 : 1) * String(av).localeCompare(String(bv));
+    }
+    return (state.desc ? -1 : 1) * ((av === null ? -1 : av) - (bv === null ? -1 : bv));
+  });
+  reconcile($("targets-body"),
+            rows.map((t) => ["t:" + (t.entrypoint || t.name), targetRowHtml(t)]));
+}
+
+function renderRows(records) {
+  const desired = [];
+  for (const r of records) {
+    desired.push(["r:" + r.call_id, mainRowHtml(r)]);
+    // The open detail is a sibling row keyed to its record, so it survives a
+    // poll exactly as long as its record does and travels with it if rows
+    // arrive above.
+    if (state.openId === r.call_id) desired.push(["d:" + r.call_id, detailRow(r)]);
+  }
+
+  // New rows arrive at the TOP (newest first), which shifts everything below
+  // them. Pinned to the top of the pane, that is the point — the newest call
+  // appears where you are looking. Scrolled down into the table reading
+  // something, hold that something still instead of letting it slide by the
+  // height of whatever arrived. Anchor = the first row still on screen;
+  // measured through the pane because a tr's offsetTop is relative to its
+  // table, which insertions above the table would not move.
+  const pane = $("body");
+  const paneTop = pane.getBoundingClientRect().top;
+  const body = $("rows-body");
+  let anchor = null;
+  if (pane.scrollTop > 24 && body && body.getBoundingClientRect().top < paneTop) {
+    for (const el of body.children) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > paneTop) { anchor = { el, top: r.top }; break; }
+    }
+  }
+
+  reconcile($("rows-body"), desired);
+
+  if (anchor && anchor.el.isConnected) {
+    const dy = anchor.el.getBoundingClientRect().top - anchor.top;
+    if (dy) pane.scrollTop += dy;
+  }
 }
 
 function chartCard(title, id, legend) {
@@ -356,9 +494,12 @@ function renderStats(o) {
     ["last", fmtWhen(o.last_at), ""],
   ];
   if (o.dropped) cells.push(["dropped", o.dropped, "dim"]);
-  $("stats").innerHTML = cells.map(([k, v, cls]) =>
+  const html = cells.map(([k, v, cls]) =>
     '<div class="stat"><div class="k">' + k + '</div><div class="v ' + cls + '">' + esc(v) + "</div></div>"
   ).join("");
+  // Unchanged stats are left alone for the same reason as the tables below —
+  // the "last" cell keeps this honest, since its ago-label ticks on its own.
+  if (html !== lastStatsHtml) { lastStatsHtml = html; $("stats").innerHTML = html; }
 }
 
 function emptyState(o) {
@@ -388,60 +529,36 @@ const TARGET_COLS = [
   ["last_at", "Last", true],
 ];
 
-function targetsTable(targets) {
-  const rows = targets.slice().sort((a, b) => {
-    const av = a[state.sort], bv = b[state.sort];
-    if (typeof av === "string" || typeof bv === "string") {
-      return (state.desc ? -1 : 1) * String(av).localeCompare(String(bv));
-    }
-    return (state.desc ? -1 : 1) * ((av === null ? -1 : av) - (bv === null ? -1 : bv));
-  });
-  return "<table><thead><tr>" +
-    TARGET_COLS.map(([key, label, num]) =>
-      '<th class="sortable' + (num ? " num" : "") + '" data-sort="' + key + '">' + label +
-      (state.sort === key ? (state.desc ? " ↓" : " ↑") : "") + "</th>").join("") +
-    "</tr></thead><tbody>" +
-    rows.map((t) =>
-      "<tr>" +
-      '<td class="mono" title="' + esc(t.entrypoint) + '">' + esc(t.name) + "</td>" +
-      '<td class="num">' + t.count + "</td>" +
-      '<td class="num">' + fmtMs(t.p50) + "</td>" +
-      '<td class="num">' + fmtMs(t.p95) + "</td>" +
-      '<td class="num">' + fmtMs(t.max) + "</td>" +
-      '<td class="num' + (t.errors ? " err-text" : "") + '">' +
-        (t.errors ? t.errors + " (" + Math.round(t.error_rate * 100) + "%)" : "—") + "</td>" +
-      '<td class="num">' + fmtBytes(t.bytes) + "</td>" +
-      '<td class="num">' + (t.superseded || "—") + "</td>" +
-      '<td class="num">' + fmtWhen(t.last_at) + "</td>" +
-      "</tr>").join("") +
-    "</tbody></table>";
+function targetRowHtml(t) {
+  return "<tr>" +
+    '<td class="mono" title="' + esc(t.entrypoint) + '">' + esc(t.name) + "</td>" +
+    '<td class="num">' + t.count + "</td>" +
+    '<td class="num">' + fmtMs(t.p50) + "</td>" +
+    '<td class="num">' + fmtMs(t.p95) + "</td>" +
+    '<td class="num">' + fmtMs(t.max) + "</td>" +
+    '<td class="num' + (t.errors ? " err-text" : "") + '">' +
+      (t.errors ? t.errors + " (" + Math.round(t.error_rate * 100) + "%)" : "—") + "</td>" +
+    '<td class="num">' + fmtBytes(t.bytes) + "</td>" +
+    '<td class="num">' + (t.superseded || "—") + "</td>" +
+    '<td class="num">' + fmtWhen(t.last_at) + "</td>" +
+    "</tr>";
 }
 
-function rowsTable(records) {
-  return '<table class="rows"><thead><tr>' +
-    "<th>Time</th><th>Outcome</th><th>Route</th><th>Target</th>" +
-    '<th class="num">Duration</th><th class="num">Size</th><th class="num">Rows</th><th>Params</th>' +
-    "</tr></thead><tbody>" +
-    records.map((r, i) => {
-      const isOpen = state.openId === r.call_id;
-      const params = r.params === null || r.params === undefined
-        ? "—"
-        : (Array.isArray(r.params) ? r.params.join(", ") : compactParams(r.params));
-      const main =
-        '<tr data-i="' + i + '" class="' + (r.kind === "page-error" ? "kind-page-error" : "") + '">' +
-        "<td>" + fmtTime(r.occurred_at) + "</td>" +
-        '<td><span class="pill ' + esc(r.outcome) + '">' + esc(r.outcome || "—") + "</span></td>" +
-        '<td class="mono">' + esc(r.kind === "page-error" ? "page error" : r.route || "—") + "</td>" +
-        '<td class="mono" title="' + esc(r.entrypoint || "") + '">' +
-          esc(r.entrypoint_name || basename(r.target_file) || "—") + "</td>" +
-        '<td class="num">' + fmtMs(r.run_ms !== undefined && r.run_ms !== null ? r.run_ms : r.server_ms) + "</td>" +
-        '<td class="num">' + fmtBytes(r.result_bytes) + "</td>" +
-        '<td class="num">' + (r.result_rows === null || r.result_rows === undefined ? "—" : r.result_rows) + "</td>" +
-        '<td class="mono">' + esc(params) + "</td>" +
-        "</tr>";
-      return isOpen ? main + detailRow(r) : main;
-    }).join("") +
-    "</tbody></table>";
+function mainRowHtml(r) {
+  const params = r.params === null || r.params === undefined
+    ? "—"
+    : (Array.isArray(r.params) ? r.params.join(", ") : compactParams(r.params));
+  return '<tr class="' + (r.kind === "page-error" ? "kind-page-error" : "") + '">' +
+    "<td>" + fmtTime(r.occurred_at) + "</td>" +
+    '<td><span class="pill ' + esc(r.outcome) + '">' + esc(r.outcome || "—") + "</span></td>" +
+    '<td class="mono">' + esc(r.kind === "page-error" ? "page error" : r.route || "—") + "</td>" +
+    '<td class="mono" title="' + esc(r.entrypoint || "") + '">' +
+      esc(r.entrypoint_name || basename(r.target_file) || "—") + "</td>" +
+    '<td class="num">' + fmtMs(r.run_ms !== undefined && r.run_ms !== null ? r.run_ms : r.server_ms) + "</td>" +
+    '<td class="num">' + fmtBytes(r.result_bytes) + "</td>" +
+    '<td class="num">' + (r.result_rows === null || r.result_rows === undefined ? "—" : r.result_rows) + "</td>" +
+    '<td class="mono">' + esc(params) + "</td>" +
+    "</tr>";
 }
 
 function compactParams(obj) {
@@ -480,28 +597,28 @@ function detailRow(r) {
   return '<tr class="detail"><td colspan="8">' + blocks.join("") + "</td></tr>";
 }
 
-function wireTables(targets, records) {
-  document.querySelectorAll("th.sortable").forEach((th) => {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (state.sort === key) state.desc = !state.desc;
-      else { state.sort = key; state.desc = true; }
-      fused.params.set("sort", state.sort);
-      load();
-    });
-  });
-  document.querySelectorAll(".rows tbody tr[data-i]").forEach((tr) => {
-    tr.addEventListener("click", () => {
-      const rec = records[Number(tr.dataset.i)];
-      state.openId = state.openId === rec.call_id ? null : rec.call_id;
-      // Re-render only the rows table: redrawing the charts on a row click
-      // would flash them for no reason.
-      const card = tr.closest(".card");
-      card.querySelector("table").outerHTML = rowsTable(records);
-      wireTables(targets, records);
-    });
-  });
-}
+// One delegated listener instead of per-row wiring: rows now persist across
+// polls, so re-attaching listeners per render would stack duplicates, and a
+// listener on the pane survives the occasional scaffold rebuild.
+$("body").addEventListener("click", (e) => {
+  const th = e.target.closest("th.sortable");
+  if (th) {
+    const key = th.dataset.sort;
+    if (state.sort === key) state.desc = !state.desc;
+    else { state.sort = key; state.desc = true; }
+    fused.params.set("sort", state.sort);
+    load();
+    return;
+  }
+  const tr = e.target.closest("tr[data-key]");
+  if (!tr || !tr.dataset.key.startsWith("r:")) return; // detail rows don't toggle
+  const id = tr.dataset.key.slice(2);
+  state.openId = state.openId === id ? null : id;
+  // Reconcile only the rows table: the charts and targets are untouched, which
+  // is the old "redrawing the charts on a row click would flash them for no
+  // reason" rule falling out of the structure instead of being a special case.
+  renderRows(lastRecords);
+});
 
 // ---- charts (hand-rolled canvas, no dependencies — ARCHITECTURE §10) ------
 function prep(canvas) {
@@ -681,9 +798,13 @@ fused.params.onChange(() => { readParams(); syncControls(); load(); });
 // This page reads a log that the act of reading does not change, so the
 // auto-reload watcher would only add churn — but its own reader edits during
 // development should still reload it, so leave auto-reload alone.
+//
+// A resize redraws the charts from the data already in hand rather than
+// re-fetching: the canvases need new pixel dimensions, not new records, and a
+// re-fetch here used to defeat the chart-key guard (same data, full repaint).
 window.addEventListener("resize", () => {
   clearTimeout(window._callsResize);
-  window._callsResize = setTimeout(load, 150);
+  window._callsResize = setTimeout(() => { if (lastChartKey !== null) drawCharts(); }, 150);
 });
 
 readParams();

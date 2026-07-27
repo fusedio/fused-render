@@ -11,6 +11,11 @@ These tests stand up a threaded localhost HTTP server for /api/fs/stat +
 while the fake server reports it as a remote directory. Any accidental kernel
 fallback would fail to find the path (empty/NotADirectory) instead of returning
 the HTTP-served entries — so a silent-fallback regression fails loudly.
+
+log_studio is deliberately absent: its Browse-files picker (the only thing that
+listed directories from that template) was removed, and its reader's `list`/
+`resolve` ops went with it. If a directory listing ever returns to that reader,
+it must come back mount-routed and regain a case here.
 """
 import json
 import threading
