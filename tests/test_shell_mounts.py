@@ -5,7 +5,9 @@ rclone is never invoked), and the /api/mounts endpoints.
 FUSED_RENDER_HOME is redirected per test so no test touches the real
 ~/.fused-render or a real mount.
 """
+import errno
 import json
+import posixpath
 import stat
 import threading
 import time
@@ -1739,6 +1741,70 @@ def _make_mount(home, rcd, name="data", remote="remote:bucket", served=True):
     return c, mp
 
 
+# The wedged-mount variant of the above, and the reason it needs its own
+# scaffolding: when a FUSE backend dies the kernel keeps the mount, so the path
+# is still in mountinfo, but EVERY stat on it fails ENOTCONN — and
+# posixpath.ismount swallows that OSError and answers False. The `rcd` fixture
+# replaces os.path.ismount with a lookup in the stub's mount table, so no other
+# test in this file ever runs the real predicate; these must, or the swallowed
+# OSError (the whole bug) stays invisible.
+def _wedge(monkeypatch, mp, *, also_mounted=None):
+    """Make `mp` stat like a mount whose backend process is gone. Restores the
+    genuine os.path.ismount (optionally OR'd with the stub rcd's mount table, so
+    a remount later in the same test can still be seen) and fails lstat/stat on
+    `mp` alone. Returns a {"v": True} flag a test flips to un-wedge the path
+    once its umount has "succeeded"."""
+    # Bound before patching: os.path IS posixpath, so a lambda that referenced
+    # posixpath.ismount by attribute would call the patched name — itself.
+    real_ismount = posixpath.ismount
+    monkeypatch.setattr(
+        mounts_mod.os.path, "ismount",
+        real_ismount if also_mounted is None
+        else lambda p: real_ismount(p) or p in also_mounted)
+    wedged = {"v": True}
+
+    def stub(real):
+        def probe(path, *a, **kw):
+            if wedged["v"] and path == mp:
+                raise OSError(errno.ENOTCONN,
+                              "Transport endpoint is not connected")
+            return real(path, *a, **kw)
+        return probe
+
+    # Patched on the os module itself so posixpath.ismount (which looks up
+    # os.lstat at call time) sees the wedge exactly as it would in production.
+    monkeypatch.setattr(mounts_mod.os, "lstat", stub(_os.lstat))
+    monkeypatch.setattr(mounts_mod.os, "stat", stub(_os.stat))
+    return wedged
+
+
+def test_mount_wedged_detects_enotconn(tmp_path, monkeypatch):
+    mp = str(tmp_path / "mnt")
+    _os.makedirs(mp)
+    _wedge(monkeypatch, mp)
+    assert mounts_mod._mount_wedged(mp) is True
+    # ...and _is_mounted sees it even though the bare predicate does not.
+    assert mounts_mod.os.path.ismount(mp) is False
+    assert mounts_mod._is_mounted(mp) is True
+
+
+def test_mount_wedged_false_for_missing_and_healthy_paths(tmp_path, monkeypatch):
+    missing = str(tmp_path / "gone")
+    healthy = str(tmp_path / "plain")
+    _os.makedirs(healthy)
+    _wedge(monkeypatch, str(tmp_path / "mnt"))  # wedges a DIFFERENT path
+    for p in (missing, healthy):
+        assert mounts_mod._mount_wedged(p) is False
+        assert mounts_mod._is_mounted(p) is False
+
+
+def test_is_mounted_true_for_a_healthy_real_mount(monkeypatch):
+    # A genuine mount that is NOT wedged: _is_mounted must still be ismount.
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", posixpath.ismount)
+    assert mounts_mod._mount_wedged("/") is False
+    assert mounts_mod._is_mounted("/") is True
+
+
 def test_state_mounted_when_served_and_listable(home, rcd, monkeypatch):
     c, mp = _make_mount(home, rcd)
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
@@ -1783,6 +1849,18 @@ def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
 def test_state_unmounted_when_nothing_there(home, rcd):
     c, mp = _make_mount(home, rcd, served=False)
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "unmounted"
+
+
+@pytest.mark.parametrize("served", [True, False])
+def test_state_disconnected_when_stat_returns_enotconn(home, rcd, monkeypatch,
+                                                      served):
+    # The dead-FUSE-backend wedge: ismount answers False (it swallows the
+    # ENOTCONN), so the state used to come out "unmounted"/"stale" and the UI
+    # offered "Mount" instead of "Reconnect". Both rcd views must read
+    # "disconnected" — the mount exists, it just isn't serving.
+    c, mp = _make_mount(home, rcd, served=served)
+    _wedge(monkeypatch, mp)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
 
 
 # -- broken_mount_error: expired detected credentials ----------------------
@@ -1906,6 +1984,73 @@ def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatc
     assert mounts_mod.reconnect_mount(c) is None
     assert forced and forced[0][:1] == ["umount"]
     assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_reconnect_force_unmounts_enotconn_mount_that_ismount_cannot_see(
+        home, rcd, monkeypatch):
+    # Same repair as the test above, but through the REAL os.path.ismount on a
+    # mount whose FUSE daemon died: ismount says False, so reconnect skipped the
+    # force-unmount entirely and then attach_mount's makedirs raised
+    # FileExistsError (its exist_ok check calls isdir, which also ENOTCONNs) —
+    # a raw 500 traceback out of /reconnect instead of a repaired mount.
+    c, mp = _make_mount(home, rcd, served=False)
+    rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
+    wedged = _wedge(monkeypatch, mp, also_mounted=rcd.mounted)
+    forced = []
+
+    def fake_run(cmd, **kw):
+        forced.append(cmd)
+        wedged["v"] = False  # umount succeeded: mp is a plain empty dir again
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    assert mounts_mod.reconnect_mount(c) is None
+    assert forced and forced[0][:1] == ["umount"]
+    assert any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_attach_refuses_wedged_mountpoint_instead_of_raising(home, rcd, monkeypatch):
+    # attach_mount's contract is an error string, never an exception — but
+    # os.makedirs(exist_ok=True) over a wedged mountpoint re-raises
+    # FileExistsError because isdir() can't confirm the path is a directory.
+    c, mp = _make_mount(home, rcd, served=False)
+    _wedge(monkeypatch, mp)
+    err = mounts_mod.attach_mount(c)  # must not raise FileExistsError
+    assert err is not None
+    assert "wedged" in err and "reconnect" in err
+    assert not any(m == "mount/mount" for m, _ in rcd.calls)
+
+
+def test_force_unmount_reports_failure_when_path_still_wedged(tmp_path, monkeypatch):
+    # POSIX ladder (the three tests above are win32-only): every umount attempt
+    # "succeeds" but the mount stays wedged. The success checks are ismount-based
+    # and were vacuously true for a wedged path, so this reported None — reconnect
+    # then walked on into attach_mount with the mountpoint still unusable.
+    mp = str(tmp_path / "mnt")
+    _os.makedirs(mp)
+    _wedge(monkeypatch, mp)
+    ran = []
+
+    def fake_run(cmd, **kw):
+        ran.append(cmd)
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+    err = mounts_mod._force_unmount(mp)
+    assert ran and ran[0][:1] == ["umount"]
+    assert err is not None and "force unmount" in err
 
 
 def test_reconnect_stops_serve_so_it_rebinds_to_fresh_vfs(home, rcd):
