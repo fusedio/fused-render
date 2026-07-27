@@ -15,6 +15,7 @@ import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
 import { useMountHealth } from "./lib/mountHealth";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
+import { useThemeSync } from "./lib/theme";
 import Sidebar from "./components/Sidebar";
 import ToastHost from "./components/ToastHost";
 import ServerStatusBanner from "./components/ServerStatusBanner";
@@ -273,6 +274,16 @@ export default function App({ config }: { config: Config }) {
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via ToastHost.
   useMountHealth();
+
+  // Keep <html data-theme> in step with the appearance preference for the
+  // page's lifetime (SPEC §30): another window's override, and — while the
+  // setting is System — the OS flipping mid-session, including macOS's
+  // automatic sunset switch. Mounted in embed too: every pane's embed shell is
+  // its own document and has to repaint with the rest. The FIRST application
+  // already happened in index.html's pre-paint bootstrap, so this can never
+  // cause a flash, and it only ever writes an attribute — no re-render reaches
+  // a live iframe.
+  useThemeSync();
 
   // First-run onboarding tour: fire once after first paint so the listing and
   // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already

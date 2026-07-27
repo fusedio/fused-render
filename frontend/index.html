@@ -4,6 +4,26 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fused Render</title>
+  <!-- Pre-paint theme bootstrap (SPEC §30, D134). Inline and ahead of every
+       stylesheet/script on purpose: the resolved appearance must be on <html>
+       BEFORE the first paint, or a light-mode user sees a dark flash while the
+       preference is read. Duplicates lib/theme.ts's key + resolution rule
+       because nothing importable exists this early; tests/test_theme.py pins
+       the two spellings together. Falls back to dark (today's look) whenever
+       storage or matchMedia is unavailable. -->
+  <script>
+    (function () {
+      var theme = "dark";
+      try {
+        var pref = localStorage.getItem("fused-render:theme");
+        if (pref === "light" || pref === "dark") theme = pref;
+        else if (!window.matchMedia("(prefers-color-scheme: dark)").matches) theme = "light";
+      } catch (e) {
+        /* private mode / no matchMedia — keep the dark default */
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>
