@@ -1,6 +1,5 @@
 /* Event-stream studio chrome — the reusable pieces behind an "arrivals over
- * time + filterable, paged, expandable rows" view. Built first for
- * webhook_debugger; log_studio is the intended second adopter (a later task).
+ * time + filterable, paged, expandable rows" view (webhook_debugger).
  * Framework-free, no deps, served from /template-shared/ like ro-badge.js.
  *
  * Load:  <script src="/template-shared/event-stream.js"></script>
@@ -24,9 +23,9 @@
     return Number.isFinite(parsed) ? parsed : (fallback === undefined ? 0 : fallback);
   }
 
-  // Ported from log_studio/reader.py _query_matcher (lines 174-183): a plain
-  // substring (case-insensitive), an `re:...` prefix, or a `/regex/` wrap.
-  // Throws on a bad pattern so callers can surface it; substring never throws.
+  // Same grammar as log_studio/reader.py _query_matcher: a plain substring
+  // (case-insensitive), an `re:...` prefix, or a `/regex/` wrap. Throws on a
+  // bad pattern so callers can surface it; substring never throws.
   function matcher(q) {
     q = String(q == null ? "" : q).trim();
     if (q.indexOf("re:") === 0) {
