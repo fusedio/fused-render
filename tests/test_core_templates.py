@@ -16,9 +16,11 @@ to mutate the source) PACKAGE_TEMPLATES_DIR at a tiny fake tree, so the real
 import os
 
 import pytest
+from fastapi.testclient import TestClient
 
 from fused_render import core_templates
 from fused_render.core_templates import ensure_core_templates
+from fused_render.server import create_app
 
 
 @pytest.fixture
@@ -115,3 +117,67 @@ def test_the_override_env_still_short_circuits(staged, monkeypatch):
     monkeypatch.setenv(core_templates._OVERRIDE_ENV, str(staged.package))
     assert ensure_core_templates() == str(staged.package)
     assert not os.path.exists(staged.core)
+
+
+# ------------------------------------------------------------------ end to end
+
+
+@pytest.fixture
+def upgraded_install(tmp_path, monkeypatch):
+    """A home staged by a PREVIOUS release, then re-entered by this one.
+
+    This is the state every real install was in: `.core-templates/` holds the
+    pre-theme templates under a bare-version `.version` marker, and the app
+    starts again on the same version. Reproducing it is the whole point — the
+    session's conftest home is staged fresh from the current package, so it can
+    never show a staleness bug.
+
+    Yields the core dir the server should read after `ensure_core_templates()`
+    has had its say; `server.TEMPLATES_DIR` is repointed at it (the same
+    module-constant seam test_templates_api.py uses for USER_TEMPLATES_DIR).
+    """
+    from fused_render import __version__, server
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(core_templates._OVERRIDE_ENV, raising=False)
+    core = ensure_core_templates()
+
+    # Age the staged copy back to before the appearance work: strip the opt-in
+    # attribute from every template, and leave a bare-version marker behind.
+    for name in os.listdir(core):
+        page = os.path.join(core, name, "template.html")
+        if not os.path.isfile(page):
+            continue
+        with open(page, encoding="utf-8") as f:
+            old = f.read()
+        with open(page, "w", encoding="utf-8") as f:
+            f.write(old.replace("data-fused-theme", "data-pre-theme"))
+    with open(os.path.join(core, ".version"), "w", encoding="utf-8") as f:
+        f.write(__version__)
+
+    monkeypatch.setattr(server, "USER_TEMPLATES_DIR", str(tmp_path / "no-overrides"))
+    monkeypatch.setattr(server, "TEMPLATES_DIR", ensure_core_templates())
+    return server.TEMPLATES_DIR
+
+
+@pytest.mark.parametrize("template", ["csv", "code"])
+def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_install, template):
+    """The one test that reads what the server actually SENDS.
+
+    Everything else about the appearance work (tests/test_theme.py) parses repo
+    files, which is why a staging layer serving last release's copies went
+    unnoticed. This goes through the real _resolve_name path and then /render,
+    so it fails whenever the staged copy is stale.
+    """
+    from fused_render import server
+
+    path, error = server._resolve_name(template)
+    assert error is None, error
+    assert path.startswith(upgraded_install), (
+        f"{template} must resolve to the staged core copy, not a user override"
+    )
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/render", params={"path": path}).text
+    assert '<script src="/static/runtime.js"></script>' in body
+    assert "data-fused-theme" in body

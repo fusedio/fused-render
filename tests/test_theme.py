@@ -1,10 +1,19 @@
 """Appearance — System / Light / Dark (SPEC §30, D134).
 
-The theme is entirely browser-side: there is no endpoint, no server-side store
-and no Python code path to exercise (deliberately — D134). What this suite
-guards instead are the source-level invariants the feature is built on, each of
-which is easy to break silently and impossible to notice from a unit test of
-something else:
+The theme is entirely browser-side: there is no endpoint and no server-side
+store (deliberately — D134). What this suite guards are the source-level
+invariants the feature is built on, each of which is easy to break silently and
+impossible to notice from a unit test of something else.
+
+Source-level is NOT the whole story, though, and assuming it was is what let
+this feature ship broken. Every assertion below reads a *repo* file, but the
+server serves built-in templates from a staged copy under
+`~/.fused-render/.core-templates` (fused_render/core_templates.py). A retheme'd
+template can therefore be perfect in the repo and never reach a browser. The
+delivery half of the contract — that `/render` actually sends a theme-aware
+template — is pinned in tests/test_core_templates.py; keep the two together.
+
+What this suite pins:
 
 * the resolved theme is applied by an **inline** script in the shell's
   `index.html`, i.e. before first paint — the no-flash requirement;

@@ -4,6 +4,12 @@ Source-level parsing only: reads repo files and pulls the two palette blocks
 (`:root` and `:root[data-theme="light"]`) plus any colour literal that escaped
 them out of a stylesheet. Deliberately naive about CSS in general — it only
 needs to be exact about the shapes this project actually writes.
+
+TEMPLATES_DIR below is the *repo* tree on purpose: these are authoring
+invariants, and they should fail on the file a developer edits. It is NOT what
+the server serves — built-in templates reach a browser via the staged copy at
+~/.fused-render/.core-templates (fused_render/core_templates.py). Nothing here
+can observe a stale stage; tests/test_core_templates.py does that.
 """
 import os
 import re
