@@ -969,6 +969,10 @@ def _kill_current_rcd() -> None:
         except ProcessLookupError:
             return  # raced us and exited between the check and the signal
         except OSError as e:
+            # Windows reports the same race as a bare OSError, not
+            # ProcessLookupError — re-check liveness before failing.
+            if not _pid_alive(pid):
+                return
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
         deadline = time.time() + _KILL_TIMEOUT_S
         while time.time() < deadline:

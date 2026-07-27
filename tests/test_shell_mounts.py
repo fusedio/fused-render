@@ -396,6 +396,23 @@ def test_kill_current_rcd_no_sigkill_on_win32(home, monkeypatch):
     assert sent == [mounts_mod.signal.SIGTERM]
 
 
+def test_kill_current_rcd_win32_pid_gone_mid_signal(home, monkeypatch):
+    # A pid that exits between the alive-check and os.kill raises a bare
+    # OSError on Windows (not ProcessLookupError); that race must return
+    # cleanly, not RuntimeError.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    mounts_mod.storage.write_json(mounts_mod._rcd_state_path(), {"pid": 4321, "port": 5572})
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda entry: True)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    alive = iter([True])  # alive for the pre-kill check, gone by the re-check
+    monkeypatch.setattr(mounts_mod, "_pid_alive", lambda pid: next(alive, False))
+
+    def raise_oserror(pid, sig):
+        raise OSError(87, "The parameter is incorrect")
+    monkeypatch.setattr(mounts_mod.os, "kill", raise_oserror)
+    mounts_mod._kill_current_rcd()
+
+
 def test_mount_linux_passes_no_mountopt(home, rcd, monkeypatch):
     # Linux FUSE needs neither the darwin NFS tuning nor the win32 disk-mode flag.
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
