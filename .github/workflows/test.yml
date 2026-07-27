@@ -267,6 +267,13 @@ jobs:
         # Step-gated to desktop/packaging changes: it's minutes of toolchain
         # downloads, pointless on a server-only PR.
         if: needs.detect-changes.outputs.linux_desktop == 'true'
+        env:
+          # The default (level 22, release.yml doesn't set this so it keeps
+          # getting the smallest real download) took ~4 of this job's ~5
+          # minutes compressing the sci-stack-heavy payload with mksquashfs —
+          # CPU the smoke build throws away seconds later. This artifact is
+          # never shipped, so trade compression ratio for speed.
+          FUSED_RENDER_APPIMAGE_COMPRESSION_LEVEL: "3"
         run: bash scripts/build_linux_appimage.sh
 
   # Windows desktop supervisor (docs/PYTHON_SUPERVISOR_SPEC.md). The _win32
