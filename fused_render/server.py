@@ -3720,8 +3720,8 @@ def create_app(start_dir: str) -> FastAPI:
                 e.close()
                 return _error(f"cannot read {path}: HTTP {e.code}",
                               status=404 if e.code == 404 else 400)
-            except OSError as e:
-                return _error(f"cannot read {path}: {e}", status=400)
+            except OSError:
+                return _error("mount serve unavailable", status=503)
         elif shell_mounts.is_mount_backed(path):
             return _error("mount serve unavailable", status=503)
         else:

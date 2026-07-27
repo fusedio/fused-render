@@ -195,7 +195,7 @@ end;
 
 procedure KillPayloadStragglers();
 var
-  WMI, Results: Variant;
+  Locator, WMI, Results: Variant;
   Pattern: String;
   I: Integer;
 begin
@@ -206,7 +206,8 @@ begin
   try
     Pattern := ExpandConstant('{app}\');
     StringChangeEx(Pattern, '\', '\\', True);
-    WMI := CreateOleObject('WbemScripting.SWbemLocator').ConnectServer('.', 'root\CIMV2');
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    WMI := Locator.ConnectServer('.', 'root\CIMV2');
     Results := WMI.ExecQuery(Format(
       'SELECT * FROM Win32_Process WHERE ExecutablePath LIKE ''%s%%''', [Pattern]));
     for I := 0 to Results.Count - 1 do
