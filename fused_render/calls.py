@@ -4,7 +4,8 @@ A page's calls through the injected runtime (`fused.runPython`, `stat`,
 `readFile`, `writeFile`) are invisible today — a failure flashes the D17
 overlay, `print()` lands in the browser console, and nothing accumulates. This
 module is the durable half: an append-only JSONL store under
-``~/.fused-render/logs/`` holding one bounded record per call, so "why is this
+``~/.fused-render/logs/<app-partition>/`` (one directory per app — the page's
+folder — CL-18) holding one bounded record per call, so "why is this
 page slow", "what did my app just do", and "did it error when the user opened
 it" have answers that survive a reload. Read back by the `calls` view template
 (templates/calls/) and the ``fused-render calls`` CLI; see
@@ -44,6 +45,8 @@ X-Fused guard is duplicated locally like shell/bookmarks.py's is.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import heapq
 import json
 import logging
@@ -139,8 +142,105 @@ SKIP_PREFIXES = ("/api/calls",)
 # --------------------------------------------------------------- store layout
 
 def store_dir() -> str:
-    """Directory holding the JSONL files, under the branch-aware shell home."""
+    """Root of the store, under the branch-aware shell home. Records live one
+    level down, in per-app partition directories (CL-18, design §4.7)."""
     return os.path.join(storage.home_dir(), "logs")
+
+
+# Partition for records whose page cannot be resolved (no page at all, or an
+# empty dirname). A named bucket rather than the root, so the root stays "one
+# directory per app plus index.json" and a two-level walk is the whole layout.
+UNATTRIBUTED = "_unattributed"
+
+# The advisory partition -> app-dir map at the store root. Written only when a
+# partition is CREATED (a whole-file read-merge-write per record is what the
+# design rejected the sidecar for), read by nothing load-bearing: the hash in
+# the partition name is the identity, the index just tells a human which app a
+# directory belongs to without opening a record. Lost or corrupt costs exactly
+# that convenience.
+INDEX_NAME = "index.json"
+
+_SLUG_MAX = 24  # bounded so the layout's extra depth stays inside Windows MAX_PATH
+
+
+def partition_name(app_dir: str) -> str:
+    """The ONE resolver of a partition's directory name (CL-18).
+
+    Identity is `canonical_fs_path(normcase(realpath(app_dir)))`, hashed —
+    symlinks resolved and case folded where the platform folds it BEFORE two
+    spellings of one folder can become two partitions (D147's bug class, with a
+    worse failure mode here: a split partition is structural, not a filter
+    miss). The slug prefix is for the human running `jq` in the store; the hash
+    is the identity. The gate carries a standalone duplicate of this function
+    (like `_store_dir`), pinned to this one by a test.
+    """
+    if not app_dir:
+        return UNATTRIBUTED
+    return _partition_name_cached(app_dir)
+
+
+@functools.lru_cache(maxsize=512)
+def _partition_name_cached(app_dir: str) -> str:
+    # realpath costs a syscall chain and this runs on the record() hot path, so
+    # it sits behind an LRU. A symlink retargeted mid-process keeps its old
+    # partition until restart — accepted (design §4.7).
+    resolved = canonical_fs_path(os.path.normcase(os.path.realpath(app_dir)))
+    digest = hashlib.blake2b(resolved.encode("utf-8", "replace"),
+                             digest_size=8).hexdigest()
+    # Slug from the RESOLVED path, not the input: the hash already folds a
+    # symlinked spelling into one identity, and a slug taken from the raw
+    # basename would split it right back into two directory names.
+    slug = re.sub(r"[^a-z0-9]+", "-",
+                  os.path.basename(resolved.rstrip("/\\")).lower()).strip("-")
+    slug = slug[:_SLUG_MAX].rstrip("-")
+    return f"{slug}-{digest}" if slug else digest
+
+
+def _partition_for_record(rec: dict) -> str:
+    """Where a record lives: its page's folder. `page` is already canonical
+    here (record() canonicalizes before queueing), so dirname is stable."""
+    page = rec.get("page")
+    if not isinstance(page, str) or not page:
+        return UNATTRIBUTED
+    return partition_name(os.path.dirname(page))
+
+
+def _index_read() -> dict:
+    data = storage.read_json(os.path.join(store_dir(), INDEX_NAME))
+    parts = data.get("partitions") if isinstance(data, dict) else None
+    return parts if isinstance(parts, dict) else {}
+
+
+def _index_write(partitions: dict) -> None:
+    storage.write_json(os.path.join(store_dir(), INDEX_NAME),
+                       {"version": 1, "partitions": partitions})
+
+
+def _index_add(partition: str, app_dir: str) -> None:
+    """Record which app dir a partition names. Called only on partition
+    CREATION (writer thread), so this whole-file rewrite is off the per-record
+    path. Advisory: every failure is swallowed."""
+    try:
+        parts = _index_read()
+        if parts.get(partition) == app_dir:
+            return
+        parts[partition] = app_dir
+        _index_write(parts)
+    except OSError:  # pragma: no cover - storage.write_json is already tolerant
+        pass
+
+
+def _index_drop(partitions: set[str]) -> None:
+    """Forget reaped partitions. Same advisory posture as _index_add."""
+    if not partitions:
+        return
+    try:
+        parts = _index_read()
+        kept = {k: v for k, v in parts.items() if k not in partitions}
+        if kept != parts:
+            _index_write(kept)
+    except OSError:  # pragma: no cover
+        pass
 
 
 def day_stamp(when: float | None = None) -> str:
@@ -154,8 +254,9 @@ def day_stamp(when: float | None = None) -> str:
 _DAY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
 
 
-def day_file(when: float | None = None, part: int = 1) -> str:
-    """This process's file: ``<date>-<pid>-<part>.calls.jsonl``.
+def day_file(when: float | None = None, part: int = 1,
+             partition: str = UNATTRIBUTED) -> str:
+    """This process's file: ``<partition>/<date>-<pid>-<part>.calls.jsonl``.
 
     Per-pid like logs.py's log_path(), and for the same reason: two live
     servers (two ports, or the desktop app beside a CLI) would otherwise
@@ -168,31 +269,56 @@ def day_file(when: float | None = None, part: int = 1) -> str:
     what the template registry binds (CT-3 specificity beats a bare ``.jsonl``).
     """
     return os.path.join(
-        store_dir(), f"{day_stamp(when)}-{os.getpid()}-{part:03d}{_SUFFIX}")
+        store_dir(), partition,
+        f"{day_stamp(when)}-{os.getpid()}-{part:03d}{_SUFFIX}")
 
 
-def current_file() -> str:
-    """The file to append to now: the highest existing part for today+pid, rolled
-    to the next part once it passes MAX_FILE_BYTES."""
+def current_file(partition: str = UNATTRIBUTED) -> str:
+    """The partition's file to append to now: the highest existing part for
+    today+pid, rolled to the next part once it passes MAX_FILE_BYTES."""
     part = 1
     while part < 1000:
-        path = day_file(part=part)
+        path = day_file(part=part, partition=partition)
         try:
             if os.path.getsize(path) < MAX_FILE_BYTES:
                 return path
         except OSError:
             return path  # absent -> this is the one to create
         part += 1
-    return day_file(part=999)  # pathological; keep writing rather than lose records
+    # pathological; keep writing rather than lose records
+    return day_file(part=999, partition=partition)
+
+
+def partition_files(partition: str) -> list[str]:
+    """One partition's JSONL files, oldest name first (so date order)."""
+    directory = os.path.join(store_dir(), partition)
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.endswith(_SUFFIX))
+    except OSError:
+        return []
+    return [os.path.join(directory, n) for n in names]
+
+
+def partition_dirs() -> list[str]:
+    """The store's partition directory NAMES, sorted."""
+    try:
+        return sorted(n for n in os.listdir(store_dir())
+                      if os.path.isdir(os.path.join(store_dir(), n)))
+    except OSError:
+        return []
 
 
 def store_files() -> list[str]:
-    """Every JSONL file in the store, oldest name first (so date order)."""
-    try:
-        names = sorted(n for n in os.listdir(store_dir()) if n.endswith(_SUFFIX))
-    except OSError:
-        return []
-    return [os.path.join(store_dir(), n) for n in names]
+    """Every JSONL file across every partition, oldest basename first (so date
+    order — `_day_groups` merges same-day files by append time regardless of
+    which partition they sit in). Stray files at the ROOT are ignored: records
+    live one level down by construction, and a pre-partitioning dev store is
+    not migrated (design §4.7)."""
+    out: list[str] = []
+    for part in partition_dirs():
+        out.extend(partition_files(part))
+    out.sort(key=os.path.basename)
+    return out
 
 
 def retention_days_override() -> int | None:
@@ -434,7 +560,11 @@ def is_log_file(path: str | None) -> bool:
     if os.path.basename(path).endswith(_SUFFIX):
         return True
     try:
-        return os.path.dirname(os.path.abspath(path)) == os.path.abspath(store_dir())
+        parent = os.path.dirname(os.path.abspath(path))
+        root = os.path.abspath(store_dir())
+        # Directly at the root (index.json, a renamed stray) or one level down
+        # inside a partition (CL-18) — both are the store's own files.
+        return parent == root or os.path.dirname(parent) == root
     except OSError:
         return False
 
@@ -696,8 +826,33 @@ def _level_for(rec: dict) -> str:
 
 
 def _append(records: list[dict]) -> None:
-    path = current_file()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """Route a drained batch to its partitions, one open/append/close each.
+
+    Grouped so a mixed batch does not reopen the same file per record; a batch
+    is overwhelmingly one page's burst, so the common case is still a single
+    append. Partition routing lives HERE, not in record(): the queue carries
+    plain records, and the writer thread is the only code that knows the store's
+    layout — the same single-writer property the flat store had.
+    """
+    by_partition: dict[str, list[dict]] = {}
+    for rec in records:
+        by_partition.setdefault(_partition_for_record(rec), []).append(rec)
+    for partition, recs in by_partition.items():
+        _append_to(partition, recs)
+
+
+def _append_to(partition: str, records: list[dict]) -> None:
+    path = current_file(partition)
+    directory = os.path.dirname(path)
+    created = not os.path.isdir(directory)
+    os.makedirs(directory, exist_ok=True)
+    if created and partition != UNATTRIBUTED:
+        # First record for this app: note which folder the partition names.
+        # The raw canonical dirname (not the realpath'd/normcased hash input) is
+        # what the user recognises. Advisory — failures cost the lookup only.
+        page = next((r.get("page") for r in records if r.get("page")), "")
+        if page:
+            _index_add(partition, os.path.dirname(page))
     lines = []
     for rec in records:
         try:
@@ -799,70 +954,94 @@ def _sweep_safely() -> None:
 
 
 def sweep(now: float | None = None) -> int:
-    """Delete files older than the retention window, then trim oldest-first
-    while the directory exceeds the size cap. Returns the number removed.
+    """Retention: age per file, size per store — trimming the LARGEST partition
+    first — then reap emptied partition directories. Returns files removed.
 
     Two independent bounds on purpose: age answers "don't keep my activity
     forever", size answers "don't fill my disk today" — one busy afternoon can
-    breach the second without coming near the first.
+    breach the second without coming near the first. The size trim picks the
+    largest partition's oldest file rather than the store's oldest file because
+    the flat rule let one chatty app evict a quiet app's whole history (CL-18):
+    the biggest partition's own tail is both the bulk of the problem and the
+    least informative data in the store.
     """
-    files = store_files()
-    if not files:
-        return 0
+    stamp_now = now if now is not None else time.time()
     removed = 0
     days = retention_days()
-    if days > 0:
-        cutoff = (now if now is not None else time.time()) - days * 86_400
-        for path in list(files):
+    cutoff = stamp_now - days * 86_400 if days > 0 else None
+
+    # One walk collects everything the two passes need. Age is enforced during
+    # the walk; survivors are kept per-partition, oldest LAST-APPEND first (the
+    # pid segment of a name is arbitrary, so name order only ranks days — the
+    # same mtime-not-name rule as CL-12's merge and the gate's probe).
+    per: dict[str, list[tuple[float, str, int]]] = {}
+    totals: dict[str, int] = {}
+    total = 0
+    for partition in partition_dirs():
+        for path in partition_files(partition):
             try:
-                if os.path.getmtime(path) < cutoff:
+                mtime = os.path.getmtime(path)
+                if cutoff is not None and mtime < cutoff:
                     os.unlink(path)
-                    files.remove(path)
                     removed += 1
+                    continue
+                size = os.path.getsize(path)
             except OSError:
                 continue
-    total = 0
-    sizes = []
-    for path in files:
-        try:
-            size = os.path.getsize(path)
-            stamp = os.path.getmtime(path)
-        except OSError:
-            continue
-        sizes.append((stamp, path, size))
-        total += size
-    # Oldest LAST-APPEND first, not oldest name. Name order ranks records only by
-    # the date segment — the pid segment is arbitrary and compared lexically — so
-    # "name-sorted is oldest-first" held only at day granularity, and within a
-    # day the trim picked an arbitrary pid. Harmless there (same-day files are
-    # the same age, and today's are excluded below), but the belief is the one
-    # that produced two real defects elsewhere, so it does not get to survive
-    # here as a comment. mtime is exact and costs one stat we already do.
-    sizes.sort(key=lambda row: row[0])
+            per.setdefault(partition, []).append((mtime, path, size))
+            totals[partition] = totals.get(partition, 0) + size
+            total += size
+    for rows in per.values():
+        rows.sort()
 
     # A file dated TODAY may be open for append — by this process or by another
     # server on another port — and deleting it would silently discard the whole
-    # day's records (the writer just recreates it on its next batch). Trimming is
-    # whole-file, so today's files are simply not candidates; MAX_FILE_BYTES is
-    # what bounds growth inside a day.
-    today = day_stamp(now if now is not None else time.time())
-    for _, path, size in sizes:  # oldest last-append first
-        if total <= DEFAULT_MAX_BYTES:
+    # day's records (the writer just recreates it on its next batch). Trimming
+    # is whole-file, so today's files are simply not candidates; MAX_FILE_BYTES
+    # is what bounds growth inside a day.
+    today = day_stamp(stamp_now)
+    while total > DEFAULT_MAX_BYTES:
+        best = None  # (partition, row): largest partition with a deletable file
+        for partition, rows in per.items():
+            row = next((r for r in rows
+                        if not os.path.basename(r[1]).startswith(today)), None)
+            if row is not None and (best is None or
+                                    totals[partition] > totals[best[0]]):
+                best = (partition, row)
+        if best is None:
+            # Everything left is today's. Say so rather than pretend the cap held.
+            logger.warning(
+                "call log: %.1f MB exceeds the %.0f MB cap but only today's "
+                "files remain (live; not deleted) — per-file rolling caps each "
+                "at %.0f MB", total / 1e6, DEFAULT_MAX_BYTES / 1e6,
+                MAX_FILE_BYTES / 1e6)
             break
-        if os.path.basename(path).startswith(today):
-            continue
+        partition, row = best
+        per[partition].remove(row)
         try:
-            os.unlink(path)
+            os.unlink(row[1])
+        except OSError:
+            continue  # dropped from `per`, so the loop cannot spin on it
+        totals[partition] -= row[2]
+        total -= row[2]
+        removed += 1
+
+    # Reap: a partition whose files have all aged out is an empty directory
+    # forever otherwise. Only a truly empty dir goes (a stray foreign file
+    # blocks the rmdir, which is the right refusal), and the advisory index
+    # forgets whatever was reaped.
+    reaped: set[str] = set()
+    for partition in partition_dirs():
+        if per.get(partition):
+            continue
+        directory = os.path.join(store_dir(), partition)
+        try:
+            if not os.listdir(directory):
+                os.rmdir(directory)
+                reaped.add(partition)
         except OSError:
             continue
-        total -= size
-        removed += 1
-    if total > DEFAULT_MAX_BYTES:
-        # Everything left is today's. Say so rather than pretending the cap held.
-        logger.warning(
-            "call log: %.1f MB exceeds the %.0f MB cap but only today's files "
-            "remain (live; not deleted) — per-file rolling caps each at %.0f MB",
-            total / 1e6, DEFAULT_MAX_BYTES / 1e6, MAX_FILE_BYTES / 1e6)
+    _index_drop(reaped)
     return removed
 
 
@@ -1586,7 +1765,8 @@ def api_calls_config():
 
     return {
         "dir": store_dir(),
-        "today": day_file(),
+        # No `today` path: with per-app partitions (CL-18) there is one live
+        # file per partition, so a single "today's file" stopped being a fact.
         "suffix": _SUFFIX,
         "enabled": enabled(),
         "params_mode": shell_prefs.calls_params_mode(),

@@ -33,9 +33,11 @@ template folder to ~/.fused-render/templates/calls/, where it runs as a
 subprocess. (The build-time baked branch ref is read through one guarded
 import that degrades to "no ref" when the package is not importable.)
 """
+import hashlib
 import json
 import os
 import re
+from pathlib import PureWindowsPath
 
 # Per-file tail budget. A record is ~400-900 bytes, so this covers the last
 # ~100+ calls in each file — far more than "was this page active recently".
@@ -119,6 +121,36 @@ def _store_dir() -> str:
     return os.path.join(base, "logs")
 
 
+# Mirrors calls.partition_name / _partition_name_cached — duplicated for the
+# same standalone reason as _store_dir above, and pinned to the writer's copy
+# by the same kind of test (a duplicate that is only hoped to match is what
+# produced the D144 drift). The identity is the app's FOLDER: symlinks
+# resolved, case folded where the platform folds it, one separator form —
+# hashed, with a bounded human-readable slug in front.
+_SLUG_MAX = 24
+
+
+def _canonical_fs_path(fs_path: str) -> str:
+    # Mirrors _view_url_codec.canonical_fs_path VERBATIM (drive-letter paths
+    # only — on POSIX a backslash is a legal filename character).
+    p = PureWindowsPath(fs_path)
+    return fs_path.replace("\\", "/") if p.drive.endswith(":") and p.root else fs_path
+
+
+def _partition_name(app_dir: str) -> str:
+    if not app_dir:
+        return "_unattributed"
+    resolved = _canonical_fs_path(os.path.normcase(os.path.realpath(app_dir)))
+    digest = hashlib.blake2b(resolved.encode("utf-8", "replace"),
+                             digest_size=8).hexdigest()
+    # Slug from the RESOLVED path, exactly as the writer's copy does — a slug
+    # from the raw basename would split a symlinked spelling into two names.
+    slug = re.sub(r"[^a-z0-9]+", "-",
+                  os.path.basename(resolved.rstrip("/\\")).lower()).strip("-")
+    slug = slug[:_SLUG_MAX].rstrip("-")
+    return f"{slug}-{digest}" if slug else digest
+
+
 def _tail(path: str, limit: int) -> str:
     """The last `limit` bytes of a file as text (errors replaced)."""
     with open(path, "rb") as fh:
@@ -131,7 +163,7 @@ def _tail(path: str, limit: int) -> str:
         return fh.read(limit).decode("utf-8", "replace")
 
 
-def _newest_first(store: str, names: list[str]) -> list[str]:
+def _newest_first(paths: list[str]) -> list[str]:
     """Store files ordered by last append, newest first.
 
     NOT reverse name order. A store name orders records only by its DATE
@@ -146,14 +178,35 @@ def _newest_first(store: str, names: list[str]) -> list[str]:
     record — the same fact the reader's file-skip relies on.
     """
     stamped = []
-    for name in names:
+    for path in paths:
         try:
-            stamped.append((os.path.getmtime(os.path.join(store, name)), name))
+            stamped.append((os.path.getmtime(path), path))
         except OSError:
             continue  # vanished between listdir and stat
     # Stable, so equal mtimes keep the incoming name order (deterministic).
     stamped.sort(key=lambda pair: pair[0], reverse=True)
-    return [name for _, name in stamped]
+    return [path for _, path in stamped]
+
+
+def _files_in(directory: str) -> list[str]:
+    try:
+        return sorted(os.path.join(directory, n) for n in os.listdir(directory)
+                      if n.endswith(SUFFIX))
+    except OSError:
+        return []  # absent / unreadable -> nothing to probe (fail closed)
+
+
+def _probe(paths: list[str], path: str) -> bool:
+    """Tail the newest MAX_FILES of `paths` for a mention of `path`."""
+    needle = json.dumps(path)[1:-1]  # JSON-escaped, without the quotes
+    for candidate in _newest_first(paths)[:MAX_FILES]:
+        try:
+            text = _tail(candidate, TAIL_BYTES)
+        except OSError:
+            continue
+        if needle in text or path in text:
+            return True
+    return False
 
 
 def main(path: str) -> bool:
@@ -163,17 +216,27 @@ def main(path: str) -> bool:
         return True  # the store itself — nothing to check
 
     store = _store_dir()
+    # The page's own partition first (CL-18): the app's folder is the partition
+    # for the page AND its sibling data files, so the common case is an exact,
+    # O(one app) probe — a busy neighbour can no longer crowd a quiet page's
+    # history out of the bounded window, which was the flat store's fourth way
+    # of producing a false "no history".
+    partition = os.path.join(store, _partition_name(os.path.dirname(path)))
+    if _probe(_files_in(partition), path):
+        return True
+
+    # Fallback: the newest MAX_FILES across the WHOLE store — the borrowed-file
+    # case (a page in another folder called this file, so the records live
+    # under that page's partition). Bounded exactly as the flat probe was, and
+    # never BETTER than it: a miss here is the pre-partitioning behaviour, not
+    # a new failure mode.
+    everything: list[str] = []
     try:
-        names = sorted(n for n in os.listdir(store) if n.endswith(SUFFIX))
+        entries = os.listdir(store)
     except OSError:
         return False  # no store yet / unreadable -> fail closed
-
-    needle = json.dumps(path)[1:-1]  # JSON-escaped, without the quotes
-    for name in _newest_first(store, names)[:MAX_FILES]:
-        try:
-            text = _tail(os.path.join(store, name), TAIL_BYTES)
-        except OSError:
-            continue
-        if needle in text or path in text:
-            return True
-    return False
+    for name in entries:
+        child = os.path.join(store, name)
+        if os.path.isdir(child) and child != partition:
+            everything.extend(_files_in(child))
+    return _probe(everything, path)

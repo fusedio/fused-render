@@ -18,6 +18,7 @@ import itertools
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -64,6 +65,27 @@ def rec(**over):
     }
     base.update(over)
     return base
+
+
+def app_current_file():
+    """The file the writer would append to next for the default test app.
+
+    Hand-composed store files must live inside a partition (CL-18) — the root
+    holds only partition dirs and index.json — so this is `current_file` for
+    the partition of `/app` (the dirname of `rec()`'s default page), with the
+    directory created the way the writer's first append would.
+    """
+    path = calls.current_file(calls.partition_name("/app"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    return path
+
+
+def in_store(store, name):
+    """A hand-placed store file: inside the default app's partition (CL-18 —
+    the root holds only partition dirs and index.json), directory created."""
+    directory = os.path.join(store, calls.partition_name("/app"))
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, name)
 
 
 def drain(timeout=6.0):
@@ -217,8 +239,8 @@ def test_a_record_over_the_whole_cap_is_shrunk_not_dropped(store):
 
 def test_sweep_removes_files_past_the_retention_window(store, monkeypatch):
     os.makedirs(store, exist_ok=True)
-    old = os.path.join(store, "2020-01-01-1.calls.jsonl")
-    fresh = os.path.join(store, "2026-07-24-1.calls.jsonl")
+    old = in_store(store, "2020-01-01-1.calls.jsonl")
+    fresh = in_store(store, "2026-07-24-1.calls.jsonl")
     for path in (old, fresh):
         with open(path, "w") as fh:
             fh.write(json.dumps(rec()) + "\n")
@@ -230,7 +252,7 @@ def test_sweep_removes_files_past_the_retention_window(store, monkeypatch):
 
 def test_sweep_trims_oldest_first_when_over_the_size_cap(store, monkeypatch):
     os.makedirs(store, exist_ok=True)
-    paths = [os.path.join(store, f"2026-07-2{i}-1.calls.jsonl") for i in range(1, 4)]
+    paths = [in_store(store, f"2026-07-2{i}-1.calls.jsonl") for i in range(1, 4)]
     for path in paths:
         with open(path, "w") as fh:
             fh.write("x" * 1_000)
@@ -416,7 +438,7 @@ def test_filters_narrow_by_page_target_and_failure(store):
 
 def test_a_corrupt_line_is_skipped_not_fatal(store):
     os.makedirs(store, exist_ok=True)
-    path = os.path.join(store, "2026-07-24-1.calls.jsonl")
+    path = in_store(store, "2026-07-24-1.calls.jsonl")
     with open(path, "w") as fh:
         fh.write(json.dumps(rec(call_id="good")) + "\n")
         fh.write('{"partial": tru\n')  # a torn tail from an in-flight append
@@ -462,7 +484,10 @@ def test_config_reports_the_store_location(app_client):
     client, _ = app_client
     body = client.get("/api/calls/config").json()
     assert body["dir"] == calls.store_dir()
-    assert body["today"].endswith(".calls.jsonl")
+    # No `today` key: with per-app partitions (CL-18) there is one live file
+    # per partition, so a single "today's file" stopped being a fact — its
+    # absence is asserted so it cannot half-return.
+    assert "today" not in body
     assert body["enabled"] is True
     assert body["retention_days"] == 14
 
@@ -481,10 +506,10 @@ def test_appends_roll_to_a_new_part_past_the_file_cap(store, monkeypatch):
     """Without a per-file cap a single day's file grows unbounded: the directory
     cap can only delete whole files and must never delete a live one."""
     monkeypatch.setattr(calls, "MAX_FILE_BYTES", 400)
-    first = calls.current_file()
+    first = app_current_file()
     write_records([rec() for _ in range(4)])
     assert os.path.getsize(first) >= 400
-    second = calls.current_file()
+    second = app_current_file()
     assert second != first and second.endswith("-002.calls.jsonl")
     write_records([rec(call_id="rolled")])
     assert os.path.exists(second)
@@ -497,7 +522,7 @@ def test_size_trim_never_deletes_a_live_file(store, monkeypatch):
     process OR another server) are not candidates — deleting one silently
     discarded the whole day, since the writer just recreates it."""
     os.makedirs(store, exist_ok=True)
-    live = calls.current_file()
+    live = app_current_file()
     with open(live, "w") as fh:
         fh.write("x" * 3000)
     monkeypatch.setattr(calls, "DEFAULT_MAX_BYTES", 1000)
@@ -506,7 +531,7 @@ def test_size_trim_never_deletes_a_live_file(store, monkeypatch):
     assert os.path.exists(live), "the live file must survive an over-cap sweep"
 
     # An older file IS fair game, and the live one still survives.
-    old = os.path.join(store, "2020-01-02-1-001.calls.jsonl")
+    old = in_store(store, "2020-01-02-1-001.calls.jsonl")
     with open(old, "w") as fh:
         fh.write("y" * 3000)
     os.utime(old, (time.time() - 2 * 86400,) * 2)  # inside the age window
@@ -703,7 +728,7 @@ def test_this_file_scope_works_for_a_py_target(store):
 def test_reads_skip_files_outside_the_window(store, monkeypatch):
     """A one-hour question must not parse a fortnight of records."""
     os.makedirs(store, exist_ok=True)
-    old_path = os.path.join(store, "2020-01-01-1-001.calls.jsonl")
+    old_path = in_store(store, "2020-01-01-1-001.calls.jsonl")
     with open(old_path, "w") as fh:
         for i in range(500):
             fh.write(json.dumps(rec(call_id=f"old-{i}",
@@ -731,7 +756,7 @@ def test_reads_stop_at_the_window_inside_a_file(store):
     so the fixtures carry a real append stamp exactly as production writes them.
     """
     os.makedirs(store, exist_ok=True)
-    path = calls.current_file()
+    path = app_current_file()
     stale = time.time() - 86_400
     with open(path, "w") as fh:
         for i in range(200):  # appended a day ago, written first
@@ -746,7 +771,7 @@ def test_reads_stop_at_the_window_inside_a_file(store):
 def test_reverse_line_reader_handles_block_boundaries(store):
     """A line straddling the read-block boundary must not be split or lost."""
     os.makedirs(store, exist_ok=True)
-    path = os.path.join(store, "2026-07-24-1-001.calls.jsonl")
+    path = in_store(store, "2026-07-24-1-001.calls.jsonl")
     payloads = [json.dumps(rec(call_id=f"c-{i}", stdout_tail="x" * 97)) for i in range(200)]
     with open(path, "w") as fh:
         fh.write("\n".join(payloads) + "\n")
@@ -756,7 +781,7 @@ def test_reverse_line_reader_handles_block_boundaries(store):
 
 def test_a_file_without_a_trailing_newline_is_fully_read(store):
     os.makedirs(store, exist_ok=True)
-    path = os.path.join(store, "2026-07-24-2-001.calls.jsonl")
+    path = in_store(store, "2026-07-24-2-001.calls.jsonl")
     with open(path, "w") as fh:
         fh.write(json.dumps(rec(call_id="a")) + "\n" + json.dumps(rec(call_id="b")))
     assert [r["call_id"] for r in calls._iter_records([path])] == ["b", "a"]
@@ -1266,7 +1291,7 @@ def test_records_carry_their_append_time(store):
 def test_a_legacy_record_without_an_append_time_never_stops_the_walk(store):
     """Correctness over speed on a store written before `recorded_at` existed."""
     os.makedirs(store, exist_ok=True)
-    path = calls.current_file()
+    path = app_current_file()
     old = dict(rec(call_id="legacy", occurred_at="2020-01-01T00:00:00.000Z"))
     fresh = calls._prune(rec(call_id="fresh"))
     with open(path, "w") as fh:  # legacy line first, so a break would hide `fresh`
@@ -1280,8 +1305,8 @@ def test_a_legacy_record_without_an_append_time_never_stops_the_walk(store):
 def same_day(pid, part=0, when=None):
     """A store file named for TODAY under an arbitrary pid — the shape two live
     servers (or a restart) produce, and which name order cannot rank in time."""
-    return os.path.join(calls.store_dir(),
-                        f"{calls.day_stamp(when)}-{pid}-{part:03d}.calls.jsonl")
+    return in_store(calls.store_dir(),
+                    f"{calls.day_stamp(when)}-{pid}-{part:03d}.calls.jsonl")
 
 
 def appended(cid, when, **over):
@@ -1413,7 +1438,7 @@ def test_an_unrecognised_file_name_keeps_its_place(store):
     """A name that carries no date gets its own group rather than being merged
     into a day it may not belong to."""
     os.makedirs(store, exist_ok=True)
-    odd = os.path.join(store, "stray.calls.jsonl")
+    odd = in_store(store, "stray.calls.jsonl")
     with open(odd, "w") as fh:
         fh.write(appended("stray", time.time() - 10) + "\n")
     with open(same_day(1), "w") as fh:
@@ -1433,7 +1458,7 @@ def test_an_oversized_record_is_still_pruned_and_levelled(store):
     """
     write_records([rec(call_id="huge", error=None, params=None, stderr_tail=None,
                        stdout_tail="x" * (calls.RECORD_CAP + 100))])
-    line = open(calls.current_file()).read().strip()
+    line = open(app_current_file()).read().strip()
     assert len(line.encode()) < calls.RECORD_CAP, "the shrink actually shrank it"
     got = json.loads(line)
     assert [k for k, v in got.items() if v is None] == [], "no null-valued keys"
@@ -1447,7 +1472,7 @@ def test_an_oversized_failure_keeps_its_error_level(store):
     write_records([rec(call_id="huge-fail", outcome="error",
                        error={"type": "ValueError", "message": "boom",
                               "traceback": "T" * (calls.RECORD_CAP + 100)})])
-    got = json.loads(open(calls.current_file()).read().strip())
+    got = json.loads(open(app_current_file()).read().strip())
     assert got["level"] == "ERROR" and got["outcome"] == "error"
     assert got["truncated"] is True
     assert got["error"]["message"] == "boom", "the skeleton of the error survives"
@@ -1474,7 +1499,7 @@ def test_the_cursor_is_the_newest_matching_record_not_the_newest_record(store):
     os.makedirs(store, exist_ok=True)
     now = time.time()
     mine, other = "/app/mine.html", "/app/other.html"
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("mine-1", now - 100, page=mine) + "\n")
         fh.write(appended("other-1", now - 50, page=other) + "\n")  # newest overall
 
@@ -1490,7 +1515,7 @@ def test_unrelated_traffic_does_not_move_a_filtered_cursor(store):
     os.makedirs(store, exist_ok=True)
     now = time.time()
     mine, other = "/app/mine.html", "/app/other.html"
-    path = calls.current_file()
+    path = app_current_file()
     with open(path, "w") as fh:
         fh.write(appended("mine-1", now - 100, page=mine) + "\n")
 
@@ -1508,7 +1533,7 @@ def test_a_filtered_read_with_nothing_new_keeps_the_callers_cursor(store):
     """Returning None would read as "start over" and answer with an unbounded
     newest page, losing the caller's position."""
     os.makedirs(store, exist_ok=True)
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("mine-1", time.time() - 10, page="/app/mine.html") + "\n")
     got = calls.query(limit=5, cursor="mine-1", page="/app/mine.html")
     assert got["records"] == []
@@ -1520,7 +1545,7 @@ def test_a_page_with_no_history_has_no_cursor(store):
     """No matching record means there is no id to resume from — None, so a
     follower's baseline moves the moment that page's first call lands."""
     os.makedirs(store, exist_ok=True)
-    path = calls.current_file()
+    path = app_current_file()
     with open(path, "w") as fh:
         fh.write(appended("other-1", time.time() - 10, page="/app/other.html") + "\n")
     assert calls.query(limit=1, page="/app/mine.html")["cursor"] is None
@@ -1534,7 +1559,7 @@ def test_a_cursor_outside_the_filter_still_stops_the_walk(store):
     no longer matches the current filters must not read as purged."""
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("other-1", now - 100, page="/app/other.html") + "\n")
         fh.write(appended("mine-1", now - 50, page="/app/mine.html") + "\n")
     got = calls.query(limit=5, cursor="other-1", page="/app/mine.html")
@@ -1545,7 +1570,7 @@ def test_a_cursor_outside_the_filter_still_stops_the_walk(store):
 def test_the_cli_omits_the_cursor_line_when_there_is_none(store, monkeypatch, capsys):
     """`cursor: None` invites passing it back verbatim."""
     os.makedirs(store, exist_ok=True)
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("other-1", time.time() - 10, page="/app/other.html") + "\n")
     out = run_cli(monkeypatch, capsys, "--page", "/app/mine.html")
     assert "cursor:" not in out
@@ -1565,7 +1590,7 @@ def test_follow_answers_immediately_when_the_cursor_already_has_records(
     """
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("seen-1", now - 300) + "\n")
         fh.write(appended("arrived-a", now - 20) + "\n")  # already on disk
         fh.write(appended("arrived-b", now - 10) + "\n")
@@ -1583,7 +1608,7 @@ def test_follow_still_waits_when_the_caller_is_up_to_date(store, monkeypatch, ca
     """The negative case for the fix above: a cursor AT the tip means the caller
     has seen everything, so following must still wait rather than return at once."""
     os.makedirs(store, exist_ok=True)
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("tip", time.time() - 60) + "\n")
     out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "tip",
                   "--timeout", "1", "--since", "all")
@@ -1613,7 +1638,7 @@ def test_a_cursor_deeper_than_the_scan_budget_is_reported_as_such(
     """
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:  # deeper than the 5000 budget
+    with open(app_current_file(), "w") as fh:  # deeper than the 5000 budget
         for i in range(5200):
             fh.write(appended(f"c{i:05d}", now - 5200 + i) + "\n")
 
@@ -1661,12 +1686,12 @@ def test_the_gate_probes_the_live_file_not_the_lexically_last(store, tmp_path):
     page = str(tmp_path / "mine.html")
     # Three stale files whose pids sort lexically AFTER the live one.
     for pid, age in (("8000", 900), ("9000", 800), ("9500", 700)):
-        path = os.path.join(store, f"{day}-{pid}-000.calls.jsonl")
+        path = in_store(store, f"{day}-{pid}-000.calls.jsonl")
         with open(path, "w") as fh:
             fh.write(appended("other", time.time() - age, page="/app/other.html") + "\n")
         os.utime(path, (time.time() - age,) * 2)
     # The live file sorts FIRST by name (1 < 8) and so fell outside the window.
-    with open(os.path.join(store, f"{day}-12345-000.calls.jsonl"), "w") as fh:
+    with open(in_store(store, f"{day}-12345-000.calls.jsonl"), "w") as fh:
         fh.write(appended("mine", time.time(), page=page) + "\n")
 
     assert condition.main(page) is True, "the page has records in the live file"
@@ -1680,7 +1705,7 @@ def test_the_gate_still_bounds_how_many_files_it_reads(store, tmp_path, monkeypa
     os.makedirs(store, exist_ok=True)
     day = calls.day_stamp()
     for i in range(8):
-        path = os.path.join(store, f"{day}-{1000 + i}-000.calls.jsonl")
+        path = in_store(store, f"{day}-{1000 + i}-000.calls.jsonl")
         with open(path, "w") as fh:
             fh.write(appended(f"c{i}", time.time() - i, page="/app/other.html") + "\n")
         os.utime(path, (time.time() - i,) * 2)
@@ -1706,7 +1731,7 @@ def test_the_size_trim_drops_the_oldest_append_first(store):
     paths = {}
     # Yesterday, two pids: the lexically-EARLIER name is the OLDER append.
     for pid, age in (("12345", 100_000), ("8000", 90_000)):
-        path = os.path.join(store, f"{calls.day_stamp(now - 86_400)}-{pid}-000.calls.jsonl")
+        path = in_store(store, f"{calls.day_stamp(now - 86_400)}-{pid}-000.calls.jsonl")
         with open(path, "w") as fh:
             fh.write(appended(f"p{pid}", now - age, stdout_tail=big) + "\n")
         os.utime(path, (now - age,) * 2)
@@ -1739,7 +1764,7 @@ def test_follow_waits_when_a_foreign_cursor_has_no_matching_records(
     """
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("mine-1", now - 300, page="/app/mine.html") + "\n")
         fh.write(appended("other-5", now - 60, page="/app/other.html") + "\n")
 
@@ -1756,7 +1781,7 @@ def test_follow_answers_at_once_when_a_foreign_cursor_does_have_records(
     the D141 case and must be answered immediately, not waited out."""
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("other-5", now - 300, page="/app/other.html") + "\n")
         fh.write(appended("mine-9", now - 30, page="/app/mine.html") + "\n")
 
@@ -1772,7 +1797,7 @@ def test_follow_waits_when_the_cursor_cannot_be_found(store, monkeypatch, capsys
     """A cursor that is not in the store proves nothing about what arrived, so it
     must fall through to the wait rather than count as "already new"."""
     os.makedirs(store, exist_ok=True)
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(appended("only", time.time() - 60, page="/app/mine.html") + "\n")
     out = run_cli(monkeypatch, capsys, "--follow", "--since-cursor", "ghost",
                   "--page", "/app/mine.html", "--timeout", "1", "--since", "all")
@@ -1791,7 +1816,7 @@ def test_follow_after_a_lost_cursor_reports_only_what_arrived(
 
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         for i in range(4):
             fh.write(appended(f"history-{i}", now - 500 + i,
                               entrypoint="/app/old.py", entrypoint_name="old.py") + "\n")
@@ -1877,7 +1902,7 @@ def test_a_deep_cursor_is_not_called_purged_on_the_follow_path(
     """
     os.makedirs(store, exist_ok=True)
     now = time.time()
-    with open(calls.current_file(), "w") as fh:  # deeper than the 5000 budget
+    with open(app_current_file(), "w") as fh:  # deeper than the 5000 budget
         for i in range(5200):
             fh.write(appended(f"c{i:05d}", now - 5200 + i) + "\n")
 
@@ -2215,7 +2240,7 @@ def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
 
     page = str(tmp_path / "mine.html")
     os.makedirs(calls.store_dir(), exist_ok=True)
-    with open(calls.current_file(), "w") as fh:
+    with open(app_current_file(), "w") as fh:
         fh.write(json.dumps(calls._prune(rec(page=page))) + "\n")
 
     assert condition.main(page) is True, "the page has records in the baseline store"
@@ -2423,3 +2448,209 @@ def test_enabled_override_is_none_only_when_the_var_is_unset(monkeypatch):
 
     monkeypatch.delenv(calls.DISABLE_ENV, raising=False)
     assert calls.enabled_override() is None
+
+
+# ------------------------- per-app partitioning (CL-18, D151) ----------------
+
+def test_records_land_in_their_apps_partition(store):
+    """Two apps' records go to two directories, each named `<slug>-<hash>`, and
+    the root holds nothing but partition dirs and the index."""
+    write_records([rec(page="/apps/sine/page.html"),
+                   rec(page="/apps/wave/page.html")])
+
+    dirs = calls.partition_dirs()
+    assert calls.partition_name("/apps/sine") in dirs
+    assert calls.partition_name("/apps/wave") in dirs
+    assert all(d.startswith(("sine-", "wave-")) for d in dirs)
+    root_files = [n for n in os.listdir(store) if os.path.isfile(os.path.join(store, n))]
+    assert root_files == ["index.json"]
+
+
+def test_a_record_with_no_page_goes_to_the_unattributed_partition(store):
+    write_records([rec(page="", call_id="orphan")])
+    assert calls.partition_files(calls.UNATTRIBUTED), "orphan records still land"
+    got = [r["call_id"] for r in calls.query(limit=5)["records"]]
+    assert got == ["orphan"], "and the merged walk still reads them"
+
+
+def test_partition_name_is_bounded_and_filesystem_safe(store):
+    """A hostile or merely long folder name must not leak into the layout: the
+    slug is sanitised and capped (Windows MAX_PATH is why the cap exists), and
+    the hash carries the identity when the slug contributes nothing."""
+    ugly = "/x/" + "Wei rd&Name!" * 8
+    name = calls.partition_name(ugly)
+    slug, _, digest = name.rpartition("-")
+    assert len(slug) <= calls._SLUG_MAX
+    assert re.fullmatch(r"[a-z0-9-]+", slug)
+    assert len(digest) == 16
+    assert calls.partition_name("/x/....") == calls.partition_name("/x/....").lower()
+    # No slug at all: the hash alone is the name.
+    assert re.fullmatch(r"[0-9a-f]{16}", calls.partition_name("/x/...."))
+
+
+def test_two_spellings_of_one_folder_share_a_partition(store, tmp_path):
+    """The D147 bug class one layer up: a symlinked spelling of an app's folder
+    must not split its history into a second partition — a split here is
+    structural (the gate and any per-partition tooling would miss half the
+    records), not a mere filter miss."""
+    real = tmp_path / "realapp"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    os.symlink(real, alias)
+
+    assert calls.partition_name(str(alias)) == calls.partition_name(str(real))
+    write_records([rec(page=str(real / "p.html"), call_id="via-real"),
+                   rec(page=str(alias / "p.html"), call_id="via-alias")])
+    files = calls.partition_files(calls.partition_name(str(real)))
+    text = "".join(open(f, encoding="utf-8").read() for f in files)
+    assert "via-real" in text and "via-alias" in text
+    assert len(calls.partition_dirs()) == 1
+
+
+def test_the_gate_partition_resolver_matches_the_writers(tmp_path):
+    """The gate's standalone duplicate of partition_name, pinned to the real
+    one — a duplicate that is only hoped to match is what produced the D144
+    drift, so this one is not allowed to be hopeful. The table covers the
+    spellings that each rule in the resolver exists for."""
+    from fused_render.templates.calls import condition
+
+    real = tmp_path / "anapp"
+    real.mkdir()
+    alias = tmp_path / "sym"
+    os.symlink(real, alias)
+
+    cases = [
+        str(real),
+        str(alias),                       # realpath folding
+        str(real) + "/",                  # trailing separator
+        "/plain/posix/app",
+        "C:/Users/foo/My App",            # drive-shaped (canonical form)
+        "",                               # no page at all
+        "/x/" + "very-long-name" * 6,     # slug cap
+    ]
+    for case in cases:
+        assert condition._partition_name(case) == calls.partition_name(case), case
+
+
+def test_the_size_trim_takes_the_largest_partition_first(store, monkeypatch):
+    """The flat store's trim was oldest-first across everything, so one chatty
+    app evicted a quiet app's whole history. Now the chatty app pays its own
+    bill: while the store is over cap, the largest partition loses its oldest
+    file — and the quiet partition's history survives untouched."""
+    chatty = calls.partition_name("/apps/chatty")
+    quiet = calls.partition_name("/apps/quiet")
+    day = calls.day_stamp(time.time() - 86_400)  # yesterday: trimmable
+    for i in range(4):
+        path = os.path.join(store, chatty, f"{day}-1-{i:03d}.calls.jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("x" * 400 + "\n")
+        os.utime(path, (time.time() - 3_600 - i,) * 2)
+    quiet_path = os.path.join(store, quiet, f"{day}-1-001.calls.jsonl")
+    os.makedirs(os.path.dirname(quiet_path), exist_ok=True)
+    with open(quiet_path, "w") as fh:
+        fh.write("y" * 100 + "\n")
+    os.utime(quiet_path, (time.time() - 90_000,) * 2)  # OLDEST file in the store
+
+    monkeypatch.setattr(calls, "DEFAULT_MAX_BYTES", 1_000)
+    removed = calls.sweep()
+
+    assert removed >= 1
+    assert os.path.exists(quiet_path), \
+        "the store's oldest file survives because its partition is not the problem"
+    assert len(calls.partition_files(chatty)) < 4
+
+
+def test_sweep_reaps_an_emptied_partition_and_its_index_entry(store, monkeypatch):
+    """A partition whose files all aged out must not survive as an empty dir
+    (months of browsing would strew hundreds of them), and the advisory index
+    forgets it in the same pass."""
+    write_records([rec(page="/apps/old/p.html"), rec(page="/apps/live/p.html")])
+    old = calls.partition_name("/apps/old")
+    for path in calls.partition_files(old):
+        os.utime(path, (time.time() - 40 * 86_400,) * 2)
+    monkeypatch.setenv(calls.RETENTION_DAYS_ENV, "14")
+
+    calls.sweep()
+
+    assert old not in calls.partition_dirs()
+    assert old not in calls._index_read()
+    assert calls.partition_name("/apps/live") in calls._index_read()
+
+
+def test_the_index_is_advisory_a_corrupt_one_never_blocks_a_write(store):
+    """index.json is a convenience map, not a load-bearing structure: garbage in
+    it must cost the slug lookup and nothing else."""
+    os.makedirs(store, exist_ok=True)
+    with open(os.path.join(store, "index.json"), "w") as fh:
+        fh.write("{ not json")
+
+    write_records([rec(page="/apps/fine/p.html", call_id="ok-1")])
+
+    assert [r["call_id"] for r in calls.query(limit=5)["records"]] == ["ok-1"]
+    # And the write path healed the index rather than propagating the garbage.
+    assert calls.partition_name("/apps/fine") in calls._index_read()
+
+
+def test_the_index_maps_partitions_to_the_folders_they_name(store):
+    write_records([rec(page="/apps/sine/p.html")])
+    assert calls._index_read()[calls.partition_name("/apps/sine")] == "/apps/sine"
+
+
+def test_a_busy_neighbour_cannot_crowd_a_quiet_page_out_of_the_gate(store, monkeypatch):
+    """THE false negative partitioning exists to kill (CL-18): the gate reads a
+    bounded number of newest files, and under the flat layout a chatty app's
+    files filled that window, so a quiet page with plenty of history reported
+    "no history" and its Calls mode silently never appeared. With the quiet
+    app's records in their own partition, the probe is exact however loud the
+    neighbours are."""
+    from fused_render.templates.calls import condition
+
+    quiet_page = "/apps/quiet/mine.html"
+    write_records([rec(page=quiet_page, call_id="mine")])
+    # A neighbour with more fresh files than the gate's whole probe window.
+    chatty = calls.partition_name("/apps/chatty")
+    os.makedirs(os.path.join(store, chatty), exist_ok=True)
+    for i in range(condition.MAX_FILES + 2):
+        path = os.path.join(store, chatty, f"{calls.day_stamp()}-1-{i:03d}.calls.jsonl")
+        with open(path, "w") as fh:
+            fh.write(json.dumps(calls._prune(rec(page="/apps/chatty/p.html"))) + "\n")
+        os.utime(path, (time.time() + 10 + i,) * 2)  # newer than the quiet file
+
+    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
+    assert condition.main(quiet_page) is True
+
+
+def test_the_gate_falls_back_to_the_whole_store_for_a_borrowed_file(store, monkeypatch):
+    """A page in another folder ran this file, so the records live under the
+    BORROWER's partition (records live where their `page` lives). The borrowed
+    file's own partition is empty; the gate's bounded global fallback — the
+    pre-partitioning behaviour — is what still finds it."""
+    from fused_render.templates.calls import condition
+
+    borrowed = "/elsewhere/shared.py"
+    write_records([rec(page="/apps/borrower/p.html", entrypoint=borrowed,
+                       target_file="/apps/borrower/p.html")])
+
+    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
+    assert condition.main(borrowed) is True
+
+
+def test_is_log_file_covers_files_inside_a_partition(store):
+    write_records([rec(page="/apps/sine/p.html")])
+    stored = calls.store_files()[0]
+    assert calls.is_log_file(stored) is True
+    assert calls.is_log_file(os.path.join(os.path.dirname(stored), "renamed.txt")) is True
+    assert calls.is_log_file(os.path.join(store, "index.json")) is True
+    assert calls.is_log_file("/somewhere/else.txt") is False
+
+
+def test_stray_root_files_are_ignored_by_the_walk(store):
+    """A pre-partitioning dev store is not migrated (design §4.7): a root-level
+    file is invisible to the reader rather than half-visible."""
+    os.makedirs(store, exist_ok=True)
+    with open(os.path.join(store, "2026-01-01-1-001.calls.jsonl"), "w") as fh:
+        fh.write(json.dumps(calls._prune(rec(call_id="stray"))) + "\n")
+    write_records([rec(page="/apps/sine/p.html", call_id="real")])
+
+    assert [r["call_id"] for r in calls.query(limit=10)["records"]] == ["real"]
