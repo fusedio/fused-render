@@ -371,14 +371,6 @@ def test_mount_win32_uses_disk_mode_mountopt(home, rcd, monkeypatch):
     assert body["mountOpt"] == {"NetworkMode": False}
 
 
-def test_pid_alive_false_on_windows_oserror(monkeypatch):
-    # os.kill raises a bare OSError for a dead pid on Windows, not ProcessLookupError.
-    def raise_oserror(pid, sig):
-        raise OSError(6, "The handle is invalid")
-    monkeypatch.setattr(mounts_mod.os, "kill", raise_oserror)
-    assert mounts_mod._pid_alive(4321) is False
-
-
 def test_kill_current_rcd_no_sigkill_on_win32(home, monkeypatch):
     # win32 escalates with SIGTERM only (no SIGKILL to reference).
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")

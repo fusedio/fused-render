@@ -354,7 +354,8 @@ def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
 
-_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # stat's constant is win32-only
+# stat exposes this only on Windows builds; fall back to the winnt.h literal.
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat_mod, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 
 def _ismount(mp: str) -> bool:
