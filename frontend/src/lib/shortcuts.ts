@@ -67,12 +67,17 @@ export function shortcutGroups(): ShortcutGroup[] {
     { group: "Selection", keys: [SHIFT_LABEL, "PageDown"], label: "Extend selection down a page" },
     { group: "Selection", keys: [SHIFT_LABEL, "Click"], label: "Select range" },
     { group: "Selection", keys: [MOD_LABEL, "Click"], label: "Add or remove from selection" },
-    { group: "Selection", keys: ["Esc"], label: "Clear selection" },
+    // Escape is ranked: App's capture-phase handler cancels a pending copy/cut
+    // first (and only then does Listing's branch clear the selection), so the
+    // two entries are listed with that precedence spelled out rather than as a
+    // single "Clear selection" that silently loses to the clipboard.
+    { group: "Selection", keys: ["Esc"], label: "Clear selection (once nothing is on the clipboard)" },
 
     // ---- File operations -------------------------------------------------
     { group: "File operations", keys: [MOD_LABEL, "C"], label: "Copy" },
     { group: "File operations", keys: [MOD_LABEL, "X"], label: "Cut" },
     { group: "File operations", keys: [MOD_LABEL, "V"], label: "Paste" },
+    { group: "File operations", keys: ["Esc"], label: "Cancel a pending copy or cut" },
     { group: "File operations", keys: [MOD_LABEL, "D"], label: "Duplicate" },
     { group: "File operations", keys: ["F2"], label: "Rename" },
     {

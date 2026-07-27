@@ -16,6 +16,7 @@ import {
   splitBookmarkUrl,
 } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { useClipboard } from "../lib/fs-clipboard";
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
 import { SplitRightIcon, SplitDownIcon } from "./SplitIcons";
@@ -90,6 +91,30 @@ function RevealButton({ fsPath }: { fsPath: string }) {
   );
 }
 
+// Pending copy/cut readout. The listing marks its own rows, but that marking is
+// path-matched against RENDERED rows: step into another folder, or open a file
+// in Preview, and a pending clipboard becomes invisible even though Mod+V still
+// works. The breadcrumb is the one piece of chrome every view renders, so the
+// chip is what makes the pending state survive navigation.
+//
+// Display-only by design — a <span>, no click target, no ✕. Escape is the sole
+// cancel gesture (the user's explicit choice), and `title` is what keeps that
+// discoverable, which is also why this does NOT get `pointer-events: none`:
+// that would suppress the native tooltip and take the affordance with it. A
+// span with no tabindex and no handler still isn't focusable or clickable.
+function ClipboardChip() {
+  const clipboard = useClipboard();
+  if (!clipboard) return null;
+  // "1 copied" / "3 cut" — the count carries the plural, so there's no noun to
+  // inflect.
+  const label = clipboard.paths.length + (clipboard.op === "cut" ? " cut" : " copied");
+  return (
+    <span className="crumb-clipboard" title="Press Esc to cancel">
+      {label}
+    </span>
+  );
+}
+
 function CrumbActions({ name, onSplit }: CrumbActionsProps) {
   const urlVersion = useUrlVersion();
   const bookmarksVersion = useBookmarksVersion();
@@ -111,6 +136,7 @@ function CrumbActions({ name, onSplit }: CrumbActionsProps) {
 
   return (
     <div className="crumb-actions">
+      <ClipboardChip />
       {showUpdate && (
         <button
           id="update-bookmark-btn"

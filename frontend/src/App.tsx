@@ -22,6 +22,7 @@ import ServerStatusBanner from "./components/ServerStatusBanner";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
 import { isMod } from "./lib/platform";
 import { isOverlayOpen } from "./lib/ui-overlay";
+import { getClipboard, setClipboard } from "./lib/fs-clipboard";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -313,6 +314,37 @@ export default function App({ config }: { config: Config }) {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Escape cancels a pending copy/cut. Owned by App, not Listing, for the same
+  // reason as Mod+K: the clipboard is a module-level store that outlives any one
+  // view, so a copy made in the listing is still pending while you sit in a
+  // preview — and there Listing isn't mounted to hear the key at all.
+  //
+  // CAPTURE phase, deliberately. Listing's own Escape branch (clear selection)
+  // must lose to this one, and bubble-phase order can't guarantee that: React
+  // flushes effects child-first, so on the initial mount Listing registers its
+  // document listener BEFORE App's, and after a navigation (StatView is keyed
+  // by epoch+fsPath, so Listing remounts) it registers AFTER — the order
+  // literally flips. A capture listener on `document` always runs before every
+  // bubble listener on `document`, because the keydown target is the focused
+  // element (body at worst), never the document itself. Listing then sees
+  // e.defaultPrevented and stands down.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.key !== "Escape") return;
+      // A dialog / context menu / cheat sheet owns Escape while it's up.
+      if (isOverlayOpen()) return;
+      // Escape inside a text field belongs to that field (the listing's search
+      // box clears the query, the crumb path editor discards the edit).
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (!getClipboard()) return;
+      e.preventDefault(); // signals "handled" to Listing's selection branch
+      setClipboard(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
   // First-run onboarding tour: fire once after first paint so the listing and

@@ -984,6 +984,25 @@ a.bookmark-name::after {
   background: rgba(var(--accent-rgb), 0.13);
 }
 
+/* Pending copy/cut chip ("3 copied"), leftmost in the crumb action cluster.
+   Same 12-ish muted type and hairline chrome as its .star-btn neighbours, but
+   pill-shaped and washed in the accent so it reads as STATE, not a control —
+   it isn't one (Breadcrumb.tsx: Esc is the only cancel). Both palettes come out
+   of the tokens: --accent is the deep olive-lime in light mode, so the wash
+   stays a tint of the same hue over --bg either way. */
+.crumb-clipboard {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--accent-rgb), 0.13);
+  color: var(--fg-muted);
+  cursor: default;
+  user-select: none;
+}
+
 #content {
   flex: 1 1 auto;
   min-width: 0;
@@ -1201,6 +1220,32 @@ table.listing-table tr.row.cut {
 }
 table.listing-table tr.row.cut:hover {
   opacity: 1;
+}
+
+/* A row whose entry is on the clipboard as a COPY. Dimming would be wrong here
+   (nothing is leaving), so a copy is marked positively: an accent bar down the
+   row's left edge plus a faint accent wash.
+ *
+ * Coexistence with .selected / :hover is by construction, not by luck:
+ *   • the wash is on the ROW background, which .selected also owns, so it is
+ *     scoped `:not(.selected)` — a selected+copied row keeps --sel and still
+ *     reads as selected. The :not() also lifts specificity to (0,4,2), above
+ *     `tr.row:hover` at (0,3,2), so hovering an unselected copied row deepens
+ *     the accent wash (its own :hover rule below) instead of flattening it to
+ *     --bg-alt.
+ *   • the edge bar is an inset shadow on the first CELL, a surface neither the
+ *     row background nor the hover/selected rules touch — so the mark survives
+ *     every combination, including selected+copied.
+ * Both colours are token-derived (rgba(var(--accent-rgb), …) / var(--accent)),
+ * so they follow the light palette's olive-lime accent as-is. */
+table.listing-table tr.row.copied:not(.selected) {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+table.listing-table tr.row.copied:not(.selected):hover {
+  background: rgba(var(--accent-rgb), 0.18);
+}
+table.listing-table tr.row.copied > td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 table.listing-table td.name {

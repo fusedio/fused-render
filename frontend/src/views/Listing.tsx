@@ -604,6 +604,13 @@ export default function Listing({
         // Clear the selection. The search input owns Escape while focused (it
         // clears the query — see its onKeyDown), and the overlay/dialog guards
         // above already stopped us if anything modal is up.
+        //
+        // A pending copy/cut outranks the selection: App's capture-phase Escape
+        // handler cancels the clipboard and calls preventDefault(), so one press
+        // never does both. Reading defaultPrevented keeps that precedence here
+        // without a second copy of the clipboard logic (which would also be
+        // wrong — the cancel has to work from Preview, where no Listing exists).
+        if (e.defaultPrevented) return;
         if (!navActive || inSearch) return;
         if (!selRef.current.paths.length) return;
         e.preventDefault();
@@ -1109,6 +1116,14 @@ export default function Listing({
   // several paths, so this is a set rather than one path.
   const cutSet = useMemo(
     () => new Set(clipboard?.op === "cut" ? clipboard.paths : []),
+    [clipboard]
+  );
+
+  // The copy counterpart: marked with an accent edge + wash rather than dimmed
+  // (a copy doesn't remove anything, so fading the source would lie). Exactly
+  // one of cutSet/copiedSet is ever non-empty — the clipboard holds one op.
+  const copiedSet = useMemo(
+    () => new Set(clipboard?.op === "copy" ? clipboard.paths : []),
     [clipboard]
   );
 
@@ -1693,7 +1708,8 @@ export default function Listing({
                     // Marker only (no styling of its own): the lead row is what
                     // the scroll-into-view effect tracks.
                     (childPath === selectedPath ? " lead" : "") +
-                    (cutSet.has(childPath) ? " cut" : "")
+                    (cutSet.has(childPath) ? " cut" : "") +
+                    (copiedSet.has(childPath) ? " copied" : "")
                   }
                   onClick={(e) =>
                     onRowClick(e, childPath, {
@@ -1795,7 +1811,8 @@ export default function Listing({
             (entry.ignored ? "row ignored" : "row") +
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
-            (cutSet.has(childPath) ? " cut" : "")
+            (cutSet.has(childPath) ? " cut" : "") +
+            (copiedSet.has(childPath) ? " copied" : "")
           }
           onClick={(e) =>
             onRowClick(e, childPath, {
