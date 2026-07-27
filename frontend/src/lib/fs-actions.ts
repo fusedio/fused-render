@@ -134,14 +134,15 @@ export async function freePastePath(parentDir: string, name: string, isDir: bool
 // cwd shape for a template folder, but no starter q there). A dir opens with
 // its own path as cwd; a file opens with its parent as cwd. Both prime a
 // starter prompt telling Claude to load fused-render's skills first — a file's
-// prompt also @-mentions it — with two trailing newlines so the user's actual
-// ask lands on a fresh line below (not auto-sent — the user still hits enter).
+// prompt names it in quotes (not @-mention: names with spaces don't parse as
+// one mention) — with two trailing newlines so the user's actual ask lands on
+// a fresh line below (not auto-sent — the user still hits enter).
 export function claudeDeepLink(path: string, isDir: boolean, name: string, parentDir: string): string {
   if (isDir) {
     const q = "This is a fused-render project — load its skills first.\n\n";
     return "claude-cli://open?cwd=" + encodeURIComponent(path) + "&q=" + encodeURIComponent(q);
   }
-  const q = `This is a fused-render project — load its skills first, then read @${name}.\n\n`;
+  const q = `This is a fused-render project — load its skills first, then read "${name}".\n\n`;
   return "claude-cli://open?cwd=" + encodeURIComponent(normDir(parentDir)) + "&q=" + encodeURIComponent(q);
 }
 
