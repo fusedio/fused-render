@@ -64,8 +64,19 @@ DEFAULT_TIMEOUT = 60.0
 # the way a spawned interpreter would. They stay first-party and touch only the
 # single file passed in; a batch is applied atomically (temp+os.replace for
 # flat files, one transaction for SQLite) so a failure leaves the file intact.
+_BUNDLED_TEMPLATES_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
+
 INPROCESS_HELPERS = frozenset(
-    os.path.realpath(os.path.join(_TEMPLATES_DIR, *parts))
+    os.path.realpath(os.path.join(base, *parts))
+    # BOTH the staged copy (what normally runs) and the bundled original. They
+    # are the same first-party file, and listing only the staged one meant a run
+    # served from the package directory fell to the subprocess path silently —
+    # a per-poll spawn for the readers, and outright failure for a helper that
+    # imports the package. A user FORK under ~/.fused-render/templates/ is
+    # deliberately not here: once the user can edit it, it is user code and
+    # keeps the subprocess timeout and isolation.
+    for base in (_TEMPLATES_DIR, _BUNDLED_TEMPLATES_DIR)
     for parts in (
         ("duckdb", "reader.py"),
         ("duckdb", "writer.py"),

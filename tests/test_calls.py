@@ -615,14 +615,84 @@ def test_calls_reader_is_allowlisted_for_in_process_execution():
     """The view polls while following; ~700 ms of subprocess spawn per poll is
     the difference between a live tail and a slideshow (D72).
 
-    Resolved against the STAGED core-templates dir, not the package dir: that is
-    where the executor actually reads built-in helpers from (core_templates.py).
+    BOTH copies are asserted. The staged core-templates dir is where the
+    executor normally reads built-in helpers from (core_templates.py), but the
+    bundled original is the same first-party file, and listing only one meant a
+    run served from the other fell to the subprocess path silently.
     """
     from fused_render import executor
     from fused_render.core_templates import core_templates_dir
 
-    reader = os.path.realpath(os.path.join(core_templates_dir(), "calls", "reader.py"))
-    assert reader in executor.INPROCESS_HELPERS
+    staged = os.path.realpath(os.path.join(core_templates_dir(), "calls", "reader.py"))
+    bundled = os.path.realpath(os.path.join(os.path.dirname(calls.__file__),
+                                            "templates", "calls", "reader.py"))
+    assert staged in executor.INPROCESS_HELPERS
+    assert bundled in executor.INPROCESS_HELPERS
+
+
+def test_a_user_fork_of_the_reader_is_never_allowlisted(tmp_path, monkeypatch):
+    """The one copy that must stay on the subprocess path: once the file lives
+    under ~/.fused-render/templates/ the user can edit it, so it is user code
+    and keeps the timeout and process isolation. It still WORKS there — the
+    child bootstraps the package (see below) — just without the in-process
+    shortcut."""
+    from fused_render import executor
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    fork = tmp_path / "templates" / "calls" / "reader.py"
+    fork.parent.mkdir(parents=True)
+    fork.write_text("def main(**kw):\n    return {}\n", encoding="utf-8")
+    assert executor._is_builtin_helper(str(fork)) is False
+
+
+def test_the_child_can_import_the_package_without_it_being_installed(tmp_path):
+    """The bug behind "Could not read the call log: No module named
+    'fused_render'".
+
+    `_child.py` is spawned as a standalone SCRIPT, so sys.path[0] is the package
+    directory — not its parent — and `import fused_render` resolves only when
+    the package happens to be pip-installed into that interpreter. Any helper
+    that delegates to the package therefore failed in the child, which is why
+    the call-log reader broke while log_studio's stdlib-only reader was fine:
+    the symptom pointed at the call log, the cause was the child's bootstrap.
+
+    Driven through the REAL child with the package's parent stripped from
+    sys.path, so the assertion is about the bootstrap and not about however this
+    checkout happens to be installed.
+    """
+    node_free_helper = tmp_path / "probe.py"
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(calls.__file__)))
+    node_free_helper.write_text(
+        "import sys\n"
+        "def main(**kw):\n"
+        "    import fused_render.calls as c\n"
+        f"    return {{'parent_on_path': {parent!r} in sys.path,\n"
+        "            'store': bool(c.store_dir())}\n",
+        encoding="utf-8")
+
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    # Strip exactly the path an editable install contributes, leaving
+    # site-packages intact: an interpreter with the dependencies but not the
+    # package — the packaged app's helper python, or a source run with no install.
+    (shim / "sitecustomize.py").write_text(
+        "import sys\n"
+        f"sys.path[:] = [p for p in sys.path if p.rstrip('/\\\\') != {parent!r}]\n",
+        encoding="utf-8")
+
+    child = os.path.join(os.path.dirname(os.path.abspath(calls.__file__)), "_child.py")
+    out = subprocess.run(
+        [sys.executable, child],
+        input=json.dumps({"path": str(node_free_helper), "params": {}}),
+        capture_output=True, text=True, timeout=60,
+        cwd=str(tmp_path),  # nothing importable next to the helper
+        env={**os.environ, "PYTHONPATH": str(shim)})
+    assert out.returncode == 0, out.stderr
+    body = json.loads(out.stdout)
+    assert body["ok"] is True, body.get("error")
+    assert body["result"]["parent_on_path"] is True, \
+        "the child must put the package's parent on sys.path itself"
+    assert body["result"]["store"] is True
 
 
 # ------------------------------------------------- superseded reporting (CL-5)
