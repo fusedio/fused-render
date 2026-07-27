@@ -1113,12 +1113,21 @@ def enrich_run(call: dict | None, *, resolved: str, params: dict, engine: str,
 
 
 def enrich_write(call: dict | None, *, path: str, content: str | None,
-                 status: int) -> None:
+                 status: int, unauthorized: bool = False) -> None:
     """Add /api/fs/write's detail: what was written and how big.
 
     The path and the byte count only — never the content. "What did my app just
     overwrite" is a real question; keeping a copy of every save is not an
     answer to it.
+
+    ``unauthorized`` distinguishes the TWO refusals that both answer 403: a
+    read-only target, and the X-Fused guard turning the caller away. Only the
+    first is `readonly`; blaming the file for what was actually a rejected
+    request would send a reader looking at permissions that are fine. The guard
+    case falls through to `finish()`, which labels any >=400 as `error`.
+    (Not reachable from static/runtime.js, which always sends the header — but
+    the record contract should not depend on the only current caller being
+    well-behaved.)
     """
     if call is None:
         return
@@ -1127,7 +1136,7 @@ def enrich_write(call: dict | None, *, path: str, content: str | None,
     call["bytes_written"] = len(content.encode("utf-8", "replace")) if isinstance(content, str) else None
     if status == 409:
         call["outcome"] = "conflict"
-    elif status == 403:
+    elif status == 403 and not unauthorized:
         call["outcome"] = "readonly"
 
 

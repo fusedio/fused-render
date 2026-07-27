@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import calls
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 
 
@@ -334,6 +335,44 @@ def test_a_write_records_size_and_conflict_outcome_but_never_content(app_client)
     assert "abcd" not in json.dumps(got), "file content must never be stored"
 
 
+def test_a_rejected_write_is_not_blamed_on_a_readonly_file(app_client):
+    """Two different refusals answer 403 on this route — a read-only target, and
+    the X-Fused guard turning the caller away — and mapping the status alone
+    called both `readonly`. That points a reader at file permissions that are
+    perfectly fine, for a request that never got past the door.
+
+    Not reachable from static/runtime.js (it always sends the header), which is
+    exactly why it would have gone unnoticed: the record contract should not
+    rely on the only current caller being well-behaved.
+    """
+    client, d = app_client
+    target = d / "guarded.txt"
+    # Attribution present (so a record IS opened), authorization absent.
+    response = client.post(
+        "/api/fs/write", json={"path": str(target), "content": "x"},
+        headers={"X-Fused-Page": str(d / "p.html")})
+    assert response.status_code == 403
+    assert drain()
+
+    got = calls.query(limit=10)["records"][0]
+    assert got["route"] == "/api/fs/write"
+    assert got["status"] == 403
+    assert got["outcome"] == "error", (
+        "a refused request is an error, not a read-only file — `readonly` is "
+        "reserved for the refusal that really is about the target"
+    )
+    assert got["level"] == "ERROR", "and the severity follows the outcome"
+
+
+def test_a_readonly_target_still_reports_readonly(app_client, monkeypatch):
+    """The other side of the same rule: the refusal that IS about the target
+    keeps its own outcome, so narrowing the 403 mapping did not just delete it."""
+    call = {"truncated": False}
+    calls.enrich_write(call, path="/data/locked.txt", content="x", status=403)
+    assert call["outcome"] == "readonly"
+    assert calls._level_for(call) == "WARN", "readonly is a warning, not an error"
+
+
 # ---------------------------------------------------------------- params modes
 
 @pytest.mark.parametrize("mode,expected", [
@@ -594,6 +633,47 @@ def test_the_child_can_import_the_package_without_it_being_installed(tmp_path):
     assert body["result"]["parent_on_path"] is True, \
         "the child must put the package's parent on sys.path itself"
     assert body["result"]["store"] is True
+
+
+def test_the_worker_env_appends_the_package_path_and_never_shadows_the_caller(
+        tmp_path, monkeypatch):
+    """The parent half of the same fix must not outrank the caller's PYTHONPATH.
+
+    It originally PREPENDED, on the reasoning that the user's own module folder
+    still wins from `sys.path[0]`. True, but the wrong axis: what it displaced
+    was PYTHONPATH, and on an installed layout the value being prepended IS
+    site-packages — in front of PYTHONPATH that reverses the one override
+    PYTHONPATH exists to provide, for every module, not just this package.
+    Appending fixes the missing import just as well: the entry has to be
+    reachable, not first.
+
+    Also pinned: `_child.py` appends too, so the two halves cannot drift into
+    disagreeing about precedence, and a value already present is not re-added
+    (a nested run would otherwise grow the variable one copy per level).
+    """
+    from fused_render import executor
+
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(calls.__file__)))
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    entries = executor._child_env()["PYTHONPATH"].split(os.pathsep)
+
+    assert parent in entries, "the package must still be reachable in the child"
+    assert entries.index(str(tmp_path)) < entries.index(parent), \
+        "the caller's PYTHONPATH must keep its precedence"
+
+    # Idempotent: already-present is left alone rather than duplicated.
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(tmp_path), parent]))
+    again = executor._child_env()["PYTHONPATH"].split(os.pathsep)
+    assert again.count(parent) == 1, "a nested run must not grow the variable"
+
+    # Empty to start with: no stray separator, and still just the one entry.
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    assert executor._child_env()["PYTHONPATH"] == parent
+
+    child_src = open(os.path.join(os.path.dirname(calls.__file__), "_child.py"),
+                     encoding="utf-8").read()
+    assert "sys.path.append(_PACKAGE_PARENT)" in child_src, \
+        "the child's own half appends; the two must agree"
 
 
 # ------------------------------------------------- superseded reporting (CL-5)
@@ -997,8 +1077,28 @@ def test_config_publishes_the_store_so_the_runtime_can_skip_it(app_client):
     templates stay ignorant of the call log."""
     client, _ = app_client
     cfg = client.get("/api/config").json()
-    assert cfg["calls_dir"] == os.path.abspath(calls.store_dir())
+    assert cfg["calls_dir"] == canonical_fs_path(os.path.abspath(calls.store_dir()))
     assert cfg["calls_suffix"] == calls.SUFFIX
+
+
+def test_the_published_store_path_is_canonical():
+    """`abspath` is backslashed on Windows; every path the runtime holds is
+    forward-slashed. Handing the raw form over would make `isCallLog`'s prefix
+    test dead code there — a call-log file whose name was changed would be
+    watched, and viewing it appends to the store, which is the reload loop the
+    exclusion exists to prevent. (The suffix half still covers every file the
+    writer names itself, which is why this is quiet rather than obvious.)
+
+    Asserted against the CODEC rather than against a hardcoded expectation, so
+    this says "canonicalized" on every platform instead of "unchanged" on POSIX.
+    """
+    server_py = os.path.join(os.path.dirname(calls.__file__), "server.py")
+    src = open(server_py, encoding="utf-8").read()
+    line = next(ln for ln in src.splitlines() if '"calls_dir"' in ln)
+    assert "canonical_fs_path(" in line, (
+        "the published path must go through the codec — os.path.abspath alone "
+        "is the Windows-backslash form the runtime can never match"
+    )
 
 
 def test_a_normal_page_is_still_logged_while_the_log_is_open(app_client):

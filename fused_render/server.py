@@ -51,6 +51,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render import __version__
 from fused_render import calls as shell_calls
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
@@ -3150,11 +3151,18 @@ def create_app(start_dir: str) -> FastAPI:
             # for a sharper reason: a call-log file is APPENDED TO by the act of
             # viewing it, so a page watching one reloads, re-reads, appends, and
             # reloads again. Watching it is never useful either — the viewers that
-            # want live updates (log_studio's Tail, the calls view's Follow) poll
-            # instead, precisely so a reload cannot rebuild the frame mid-poll.
-            # Keyed off this prefix + suffix so generic templates (code, duckdb,
-            # tree) need to know nothing about the call log.
-            "calls_dir": os.path.abspath(shell_calls.store_dir()),
+            # want live updates (log_studio's Tail) poll instead, precisely so a
+            # reload cannot rebuild the frame mid-poll. Keyed off this prefix +
+            # suffix so generic templates (code, duckdb, tree) need to know
+            # nothing about the call log.
+            #
+            # Canonicalized on the way out: `abspath` is backslashed on Windows
+            # while every path the runtime holds is forward-slashed, so the
+            # prefix test in `isCallLog` would never fire there. (`mounts_root`
+            # above has the same shape and is deliberately left alone — changing
+            # it would newly ENABLE an exclusion on Windows, which is a mount
+            # behaviour change and belongs with the mount code, not here.)
+            "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
             "calls_suffix": shell_calls.SUFFIX,
         }
         if instance := desktop_instance():
@@ -3788,6 +3796,10 @@ def create_app(start_dir: str) -> FastAPI:
             path=body.get("path") if isinstance(body.get("path"), str) else "",
             content=body.get("content"),
             status=getattr(result, "status_code", 200),
+            # Both refusals are 403; only a read-only target is `readonly`.
+            # Re-asking the guard rather than re-spelling `x_fused != "1"` here,
+            # so there is still one rule (it allocates nothing when it passes).
+            unauthorized=_require_fused(x_fused) is not None,
         )
         return result
 
@@ -3908,8 +3920,8 @@ def create_app(start_dir: str) -> FastAPI:
         # resolved .py, the params, the engine, and — on failure — the
         # traceback and output tails a user has since clicked away from. The
         # handler enriches; the middleware writes. (Whether the client hung up
-        # mid-run is decided by the middleware — a route CANNOT see it, see
-        # _watch_client_gone.)
+        # mid-run is decided by the middleware — a route CANNOT see it; the
+        # NOT IMPLEMENTED note above `no_cache_and_log` says why.)
         shell_calls.enrich_run(
             getattr(request.state, "fused_call", None),
             resolved=resolved, params=params, engine=engine_used, result=result,

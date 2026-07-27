@@ -160,13 +160,26 @@ def _child_env() -> dict:
     itself been updated. `_child.py` keeps its own fallback for direct
     invocation, but this is the path that has to be right.
 
-    Prepended, so the child imports the same code the server is running; the
-    user's own module directory still wins, since `run()` puts it at sys.path[0].
+    APPENDED, matching `_child.py`'s own `sys.path.append` of the same value —
+    the two halves of this fix must not disagree about precedence. Prepending
+    looked harmless because `run()` still puts the user's module directory at
+    `sys.path[0]`, but it shadows the user's *PYTHONPATH* rather than their
+    script's folder, and on an installed layout `parent` IS site-packages: in
+    front of PYTHONPATH that reverses the one override PYTHONPATH exists to
+    provide, for every module, not just this package. Appending fixes the
+    missing import just as well — the entry only has to be reachable, not first
+    — and can no longer displace anything the caller already had.
+
+    Skipped entirely when the caller already has it, so a nested run cannot
+    grow the variable one copy per level.
     """
     parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     existing = os.environ.get("PYTHONPATH") or ""
+    entries = existing.split(os.pathsep) if existing else []
+    if parent in entries:
+        return {**os.environ}
     return {**os.environ,
-            "PYTHONPATH": parent + (os.pathsep + existing if existing else "")}
+            "PYTHONPATH": (existing + os.pathsep if existing else "") + parent}
 
 
 def _is_builtin_helper(path: str) -> bool:
