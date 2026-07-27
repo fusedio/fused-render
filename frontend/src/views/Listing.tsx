@@ -1529,10 +1529,7 @@ export default function Listing({
   //     click has always done in this explorer (it's the primary way to browse,
   //     so multi-select doesn't take it away; the modified clicks are the ones
   //     that build a selection instead of navigating).
-  // preventDefault on the modified clicks keeps the row from taking focus mid-
-  // range-select. Suppressing the native text selection a Shift-click would
-  // otherwise paint is CSS's job (user-select on tr.row) — native selection
-  // begins on mousedown, so a click handler is far too late to stop it.
+  // Native text selection is suppressed in onRowMouseDown, not here — see there.
   const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
     if (e.shiftKey && !isMod(e)) {
       e.preventDefault();
@@ -1546,6 +1543,24 @@ export default function Listing({
     }
     selectOnly(path);
     navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
+  // the only moment early enough. `user-select: none` on tr.row (shell.css) is
+  // necessary but NOT sufficient: it makes the row's own text unselectable, yet
+  // a Shift+click still sets a selection ENDPOINT, so the browser happily paints
+  // a range anchored at whatever selectable text was last clicked (a crumb, the
+  // search box, anything outside the table) straight across the listing. So:
+  // preventDefault stops a selection from being started or extended, and the
+  // removeAllRanges collapses one that already existed before the gesture.
+  // preventDefault on mousedown does not cancel the subsequent click, so
+  // onRowClick still runs; rows aren't focusable, so the suppressed focus
+  // side-effect costs nothing.
+  const onRowMouseDown = (e: React.MouseEvent) => {
+    if (!e.shiftKey && !isMod(e)) return;
+    e.preventDefault();
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) sel.removeAllRanges();
   };
 
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
@@ -1719,6 +1734,7 @@ export default function Listing({
                       parentDir: dirname(childPath),
                     })
                   }
+                  onMouseDown={onRowMouseDown}
                   onContextMenu={(e) =>
                     openRowMenu(e, {
                       path: childPath,
@@ -1822,6 +1838,7 @@ export default function Listing({
               parentDir: base,
             })
           }
+          onMouseDown={onRowMouseDown}
           onContextMenu={(e) =>
             openRowMenu(e, {
               path: childPath,

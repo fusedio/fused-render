@@ -1188,9 +1188,11 @@ table.listing-table td {
 
 table.listing-table tr.row {
   cursor: pointer;
-  /* Shift+click extends the row selection, so the browser must not also paint a
-     native text selection across the rows. Has to be CSS, not preventDefault on
-     click: native selection starts on mousedown, well before click fires. */
+  /* Rows are a selection widget, not prose — don't let a drag paint a text
+     highlight over them. Necessary but not sufficient on its own: this stops the
+     rows' own text being selectable, but a Shift+click can still set a selection
+     ENDPOINT here and have the browser paint a range anchored somewhere outside
+     the table. Listing.tsx's onRowMouseDown handles that half. */
   user-select: none;
 }
 
