@@ -14,7 +14,7 @@ def captured_popen(monkeypatch):
     """Force the spawn path and capture the Popen kwargs without execing rclone."""
     calls = {}
 
-    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda *a, **k: None)
     monkeypatch.setattr(mounts_mod, "reap_stale_rcd", lambda: None)
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/fake/rclone")
     monkeypatch.setattr(mounts_mod, "_rotate_rcd_log", lambda: "/fake/rcd.log")

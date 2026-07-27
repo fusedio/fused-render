@@ -35,10 +35,7 @@ def _warm_https_opener():
 def home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
-    # The live/dead rcd-probe cache is module-global and keyed on (port, pid);
-    # stub servers reuse OS ports across tests, so a cached verdict from a
-    # previous test's daemon must never leak into this one.
-    monkeypatch.setattr(mounts_mod, "_live_port_cache", None)
+    monkeypatch.setattr(mounts_mod, "_live_port_cache", None)  # no cross-test leak
     return home
 
 
@@ -411,6 +408,13 @@ def test_kill_current_rcd_win32_pid_gone_mid_signal(home, monkeypatch):
     mounts_mod._kill_current_rcd()
 
 
+def test_pid_alive_current_process_and_dead_pid():
+    # Exercises the real win32 GetExitCodeProcess path (os.kill on POSIX): an
+    # exited pid whose handle lingers must read as dead, not STILL_ACTIVE.
+    assert mounts_mod._pid_alive(mounts_mod.os.getpid()) is True
+    assert mounts_mod._pid_alive(2_000_000_000) is False
+
+
 def test_mount_linux_passes_no_mountopt(home, rcd, monkeypatch):
     # Linux FUSE needs neither the darwin NFS tuning nor the win32 disk-mode flag.
     monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
@@ -432,11 +436,7 @@ def test_mount_surfaces_rc_error(home, rcd):
 
 
 def test_live_rcd_port_caches_dead_probe(home, monkeypatch):
-    # On Windows a loopback connect to a port nothing listens on can take ~2s
-    # to fail, and a stale rcd.json is exactly what every server boot starts
-    # with — so a failed probe must be cached: un-cached, every status call
-    # (/api/config's learn_mount_ready per UI poll) re-paid that stall and
-    # starved the desktop readiness probe into "did not become ready".
+    # A failed probe is cached so a stale rcd.json doesn't re-stall every call.
     mounts_mod.write_rcd_state(59999, 4321)
     probes = []
 
@@ -447,17 +447,14 @@ def test_live_rcd_port_caches_dead_probe(home, monkeypatch):
     monkeypatch.setattr(mounts_mod, "_rc", failing_rc)
     assert mounts_mod._live_rcd_port() is None
     assert mounts_mod._live_rcd_port() is None
-    assert len(probes) == 1  # second call within _DEAD_PORT_TTL_S: cached miss
-    # The spawn path must re-probe past the cached miss: trusting it there
-    # would spawn a duplicate daemon over a live one whose probe merely
-    # timed out (see _ensure_rcd_locked).
+    assert len(probes) == 1  # cached miss within _DEAD_PORT_TTL_S
+    # the spawn path re-probes past the miss (never spawns over a live daemon)
     assert mounts_mod._live_rcd_port(trust_dead_cache=False) is None
     assert len(probes) == 2
 
 
 def test_live_rcd_port_dead_cache_never_masks_new_daemon(home, monkeypatch):
-    # The cache is keyed on the recorded (port, pid): a fresh spawn writes a
-    # NEW state, so a cached miss for the old daemon never hides the new one.
+    # Cache is keyed on (port, pid), so a fresh spawn's new state isn't masked.
     mounts_mod.write_rcd_state(59999, 4321)
     probes = []
 
@@ -480,11 +477,8 @@ def test_live_rcd_port_dead_cache_never_masks_new_daemon(home, monkeypatch):
 
 
 def test_ismount_detects_winfsp_reparse_mount(monkeypatch):
-    # os.path.ismount is False for EVERY live WinFsp directory mount:
-    # GetVolumePathName resolves the mountpoint to its \\?\GLOBALROOT volume
-    # device instead of echoing the path back, so ntpath's self-comparison
-    # fails while the mount lists and reads fine. _ismount must recognize the
-    # mount-point reparse tag whose target is a volume device.
+    # A live WinFsp mount is a reparse point to a volume device; _ismount must
+    # recognize it even though os.path.ismount returns False for the shape.
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
 
@@ -498,9 +492,8 @@ def test_ismount_detects_winfsp_reparse_mount(monkeypatch):
 
 
 def test_ismount_plain_junction_is_not_a_mount(monkeypatch):
-    # A directory junction shares the mount-point reparse tag but points at a
-    # regular path, not a volume device — it must stay a non-mount so a user's
-    # junction under the mounts dir is never mistaken for a live mount.
+    # A directory junction shares the reparse tag but targets a regular path,
+    # not a volume device — it must not be treated as a mount.
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
 

@@ -354,20 +354,12 @@ def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
 
 
-# stat.IO_REPARSE_TAG_MOUNT_POINT comes from the C _stat module and only
-# exists on Windows builds, so spell the value out for cross-platform import.
-_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+_IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003  # stat's constant is win32-only
 
 
 def _ismount(mp: str) -> bool:
-    """os.path.ismount, plus the WinFsp mounts it misses on Windows.
-
-    ntpath.ismount (GetVolumePathNameW) resolves a WinFsp mount's reparse point
-    to a ``\\\\?\\GLOBALROOT\\Device\\Volume{...}`` path instead of the mount
-    path, so it reports False for every live WinFsp mount — and every win32
-    detection path here leans on it. Recognize that shape directly: a
-    mount-point reparse tag whose target is a volume device. POSIX
-    short-circuits on the real ismount; st_reparse_tag is Windows-only."""
+    """os.path.ismount plus the WinFsp mounts it misses on win32: ntpath.ismount
+    resolves their reparse point to a Volume{...} device and returns False."""
     if os.path.ismount(mp):
         return True
     if sys.platform != "win32":
@@ -479,19 +471,30 @@ def _register_rcd(pid: int, port: int) -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """True if a process with `pid` currently exists. Signal 0 probes without
-    delivering anything; EPERM means it exists but is owned by someone else."""
+    """True if `pid` names a running process."""
     if not pid or pid <= 0:
         return False
+    if sys.platform == "win32":
+        # os.kill(pid, 0) (OpenProcess) keeps succeeding for an exited process
+        # whose handle is still held (e.g. the supervisor Job Object), so read
+        # the exit code instead: 259 == STILL_ACTIVE means running.
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
-    except OSError:
-        # Windows raises a bare OSError for a dead pid, not ProcessLookupError.
-        return False
     return True
 
 
@@ -781,13 +784,9 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
 # daemon writes a new state (different key) and is picked up at once, while a
 # burst of calls within the window shares one probe. The short TTL keeps
 # liveness detection: a daemon that dies is noticed within _LIVE_PORT_TTL_S.
-#
-# A FAILED probe is cached too (port None, longer TTL): on Windows a loopback
-# connect to a dead port can burn ~2s before failing, and a stale rcd.json is
-# the state every boot starts in — un-cached, every /api/config status call
-# re-paid that stall and starved the desktop readiness probe into "did not
-# become ready". The miss can't mask a daemon coming up: a fresh spawn is a new
-# (port, pid) key, and the spawn path re-probes (trust_dead_cache=False).
+# Failed probes are cached too (longer TTL): a Windows connect to a dead port
+# stalls ~2s and a stale rcd.json starts every boot, which un-cached starved the
+# readiness probe into "did not become ready"; the spawn path re-probes.
 _LIVE_PORT_TTL_S = 1.0
 _DEAD_PORT_TTL_S = 5.0
 _live_port_lock = threading.Lock()
