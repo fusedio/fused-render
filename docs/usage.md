@@ -126,8 +126,18 @@ renders in the same Calls view.
 Records also carry a normal log `level` (INFO for a healthy call, ERROR for a
 failure, DEBUG for a superseded one), so the generic **Log studio** view works on
 these files too — level facets, filtering, and its volume-by-level histogram.
-Its Tail button and the Calls view's Follow both switch auto-reload off while
-engaged, so watching a live file polls instead of reloading.
+Expanding a row there shows the record as **fields** rather than one long line of
+JSON: nested objects indented under their key, a traceback or output tail kept as
+a block so its newlines survive, and any value clickable to filter the log by it.
+**Raw JSON** switches that row back to the exact text on disk. A plain-text log
+line is untouched — it still shows as itself. **Show context** fetches the lines
+immediately before and after that one straight from the file, which is how you
+see a line's neighbours when a query or a level filter has hidden them (a
+traceback split across lines, or the request that preceded a failure). The level
+facets list only the levels the file actually contains, so a log that only writes
+INFO doesn't offer six filters that match nothing. Its Tail button and the Calls
+view's Follow both switch auto-reload off while engaged, so watching a live file
+polls instead of reloading.
 
 Opening a log file in any view is safe. Nothing watches a log file for changes,
 so a view of one never reloads itself — which matters because reading a log *is*

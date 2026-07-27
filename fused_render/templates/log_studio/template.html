@@ -583,6 +583,57 @@
   .context-button { min-height: 27px; font-size: 11px; }
   .detail-meta { color: var(--faint); font-size: 10px; }
 
+  /* Structured detail: a two-column field list, not a table element, so a
+     nested object's rows align with their parent's instead of starting a new
+     grid. `--depth` indents the key; the value column stays flush left so a
+     column of values is scannable however deep the nesting goes. */
+  .field-table {
+    display: grid;
+    grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--context);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .field-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+  .field-row + .field-row { border-top: 1px solid var(--line-soft); }
+  .field-row:hover { background: var(--hover); }
+
+  .field-key {
+    padding: 4px 8px 4px calc(8px + var(--depth, 0) * 12px);
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+
+  .field-value, .field-null, .field-boolean, .field-number, .field-nested, .field-empty {
+    padding: 4px 8px;
+    overflow-wrap: anywhere;
+  }
+
+  .field-value { color: var(--text); cursor: pointer; }
+  .field-value:hover { color: var(--accent); text-decoration: underline; }
+  .field-null, .field-empty { color: var(--faint); font-style: italic; }
+  .field-boolean { color: #e6b450; }
+  .field-number { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .field-nested { color: var(--faint); }
+
+  /* A traceback or an output tail: its newlines are the content, so it spans
+     both columns as a block rather than being crushed into a value cell. */
+  .field-block {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 6px 8px 8px 20px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 320px;
+    overflow: auto;
+  }
+
   .context-lines {
     display: grid;
     margin-top: 10px;
@@ -1052,9 +1103,21 @@
         <dt>Last</dt><dd>${escapeHtml(range.max ? formatEpoch(range.max, false) : "-")}</dd>
       </dl>`;
 
-    const entries = overviewLevels(data);
+    // Only levels the file actually contains. The reader seeds its count map
+    // with every level it knows (`_counts()` — right for histogram buckets,
+    // which need a zero to stack), so the facet list used to offer all seven on
+    // every file: six dead filters that answer "no matching lines" on a log
+    // that only ever writes INFO.
+    //
+    // A level that is currently SELECTED survives the cut even at zero. It is
+    // reachable — a filter narrowed the window, or the file rotated — and
+    // hiding it would remove the only control that undoes an active constraint,
+    // leaving a filter the user can neither see nor clear.
+    const selected = new Set(state.levels);
+    const entries = overviewLevels(data).filter(
+      ([level, count]) => count > 0 || selected.has(level));
     const available = entries.map(([level]) => level);
-    const active = state.levels.length ? new Set(state.levels) : new Set(available);
+    const active = state.levels.length ? selected : new Set(available);
     levelList.innerHTML = entries.length ? entries.map(([level, count]) => `
       <button class="level-option ${active.has(level) ? "active" : ""}" type="button" data-level="${escapeHtml(level)}" style="--level-color:${levelColor(level)}" aria-pressed="${active.has(level)}">
         <span class="check">${active.has(level) ? "x" : ""}</span>
@@ -1270,12 +1333,107 @@
     return fields.offset + " " + fields.raw;
   }
 
+  // ---- structured detail ---------------------------------------------------
+  // A structured log line is a JSON object, and showing it as one long escaped
+  // string is the worst of both worlds: too wide to read, and the field you
+  // want is somewhere in the middle. The expanded row renders the object as
+  // fields instead — nested objects indented under their key, multi-line
+  // strings (a traceback, a stdout tail) kept as blocks so their newlines
+  // survive, and scalars clickable to filter the log by that value.
+  //
+  // A plain-text line still gets the raw <pre> it always got: this is an
+  // addition for lines that ARE structured, never a reinterpretation of lines
+  // that are not.
+
+  // Leading text + trailing JSON object, e.g.
+  // `2026-07-27 10:11:12 INFO {"event": "run", ...}`. Returns the parsed object
+  // and whatever preceded it (never dropped — it is shown as its own field).
+  function parseStructured(raw) {
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return null;
+    const brace = text.indexOf("{");
+    if (brace < 0 || !text.endsWith("}")) return null;
+    try {
+      const value = JSON.parse(text.slice(brace));
+      // Arrays and scalars are not field sets; only an object earns this view.
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      return { value, prefix: text.slice(0, brace).trim() };
+    } catch {
+      return null;
+    }
+  }
+
+  // Multi-line, or long enough that a table cell would be unreadable.
+  function isBlockText(value) {
+    return typeof value === "string" && (value.includes("\n") || value.length > 160);
+  }
+
+  function scalarHtml(value) {
+    if (value === null) return '<span class="field-null">null</span>';
+    const type = typeof value;
+    if (type === "boolean" || type === "number") {
+      return `<span class="field-${type}">${escapeHtml(String(value))}</span>`;
+    }
+    // Clickable to filter: the same [data-query] contract the patterns view
+    // uses, so the delegated handler already routes it (and, being handled
+    // before the row toggle, a click here does not collapse the row).
+    const text = String(value);
+    return `<span class="field-value" data-query="${escapeHtml(text)}"` +
+      ` title="Filter the log by this value">${escapeHtml(text)}</span>`;
+  }
+
+  function fieldRows(value, depth) {
+    if (depth > 6) {
+      return `<div class="field-row"><span class="field-key"></span>${scalarHtml("\u2026")}</div>`;
+    }
+    const entries = Array.isArray(value)
+      ? value.map((item, index) => [String(index), item])
+      : Object.entries(value);
+    if (!entries.length) {
+      return `<div class="field-row"><span class="field-key"></span>` +
+        `<span class="field-empty">${Array.isArray(value) ? "empty list" : "no fields"}</span></div>`;
+    }
+    return entries.map(([key, item]) => {
+      const label = `<span class="field-key" style="--depth:${depth}">${escapeHtml(key)}</span>`;
+      if (item && typeof item === "object") {
+        const count = Array.isArray(item) ? `${item.length} item(s)` : `${Object.keys(item).length} field(s)`;
+        return `<div class="field-row">${label}<span class="field-nested">${count}</span></div>` +
+          fieldRows(item, depth + 1);
+      }
+      if (isBlockText(item)) {
+        return `<div class="field-row">${label}<span class="field-nested">${item.length} chars</span></div>` +
+          `<pre class="field-block">${escapeHtml(item)}</pre>`;
+      }
+      return `<div class="field-row">${label}${scalarHtml(item)}</div>`;
+    }).join("");
+  }
+
+  function structuredHtml(parsed) {
+    // The text before the JSON is part of the line, so it is shown rather than
+    // silently discarded — as a field, marked as not being one.
+    const prefix = parsed.prefix
+      ? `<div class="field-row"><span class="field-key" style="--depth:0">(line prefix)</span>` +
+        `${scalarHtml(parsed.prefix)}</div>`
+      : "";
+    return `<div class="field-table">${prefix}${fieldRows(parsed.value, 0)}</div>`;
+  }
+
   function lineRow(fields) {
     const row = document.createElement("article");
     row.className = "log-row";
     row.dataset.key = lineKey(fields);
     row.dataset.offset = String(fields.offset);
     row.style.setProperty("--level-color", levelColor(fields.level));
+    const parsed = parseStructured(fields.raw);
+    // Structured by default when the line is structured — that is the reason
+    // this exists — with the raw text one click away and never removed.
+    const detailBody = parsed
+      ? `<div class="detail-body" data-view="structured">${structuredHtml(parsed)}` +
+        `<pre hidden>${escapeHtml(fields.raw)}</pre></div>`
+      : `<div class="detail-body" data-view="raw"><pre>${escapeHtml(fields.raw)}</pre></div>`;
+    const viewToggle = parsed
+      ? `<button class="button context-button" type="button" data-detail-view="raw">Raw JSON</button>`
+      : "";
     row.innerHTML = `
       <span class="log-cell expand-mark">+</span>
       <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
@@ -1283,9 +1441,10 @@
       <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
       <span class="log-cell message">${escapeHtml(fields.raw)}</span>
       <div class="line-detail">
-        <pre>${escapeHtml(fields.raw)}</pre>
+        ${detailBody}
         <div class="detail-actions">
           <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
+          ${viewToggle}
           <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
         </div>
         <div class="context-lines" hidden></div>
@@ -1658,6 +1817,20 @@
   });
 
   results.addEventListener("click", async (event) => {
+    // Structured <-> raw, per row. Rows persist across polls now, so this
+    // stays put until the record leaves the window.
+    const viewButton = event.target.closest("[data-detail-view]");
+    if (viewButton) {
+      event.stopPropagation();
+      const body = viewButton.closest(".line-detail").querySelector(".detail-body");
+      const toRaw = viewButton.dataset.detailView === "raw";
+      body.dataset.view = toRaw ? "raw" : "structured";
+      body.querySelector(".field-table").hidden = toRaw;
+      body.querySelector("pre").hidden = !toRaw;
+      viewButton.dataset.detailView = toRaw ? "structured" : "raw";
+      viewButton.textContent = toRaw ? "Fields" : "Raw JSON";
+      return;
+    }
     const contextButton = event.target.closest("[data-context]");
     if (contextButton) {
       event.stopPropagation();
