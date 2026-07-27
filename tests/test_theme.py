@@ -24,7 +24,7 @@ What this suite pins:
   (the tokenization is what makes light mode possible at all);
 * pushing the theme into a view document is **opt-in** — user-authored `.html`
   views must receive no theme signal;
-* all twelve tier-1 templates carry the identical dual-palette structure, and
+* all thirteen tier-1 templates carry the identical dual-palette structure, and
   the exempt / self-toggling / deferred templates carry none of it.
 
 The four template lists below are exhaustive over `fused_render/templates/`,
@@ -115,6 +115,9 @@ def test_the_bootstrap_still_checks_the_os_when_storage_throws():
 def test_the_storage_key_is_spelled_identically_everywhere():
     # Three independent readers, no shared module between them (the bootstrap
     # is inline in the HTML, and runtime.js ships into a different document).
+    # Deliberately three and not more: a template that wants the theme opts in
+    # with `data-fused-theme` and lets runtime.js resolve it, rather than
+    # becoming a fourth place this key is spelled.
     for path in (
         "frontend/src/lib/theme.ts",
         "frontend/index.html",
@@ -219,6 +222,15 @@ def test_tier_one_template_has_no_colour_literals_outside_its_palettes(name):
 )
 def test_non_tier_one_templates_do_not_opt_in(name):
     # Light-by-design views ignore the setting entirely; excel/log_studio/
-    # tableau keep their own in-view toggle and private storage keys; the
-    # deferred groups keep today's appearance until a later pass.
-    assert OPT_IN_ATTR not in read_template(name)
+    # tableau keep their own in-view toggle; the deferred groups keep today's
+    # appearance until a later pass.
+    #
+    # Checked on the <html> TAG, mirroring test_tier_one_template_opts_in — the
+    # opt-in is only an opt-in there (AP-8: runtime.js runs from the top of
+    # <head>). A bare substring search over the file also matched the attribute
+    # NAMED in a comment, which is how log_studio's own explanation of why it
+    # does not opt in read as opting in.
+    html = read_template(name)
+    open_tag = re.search(r"<html\b[^>]*>", html, re.I)
+    assert open_tag, f"{name}: no <html> tag"
+    assert OPT_IN_ATTR not in open_tag.group(0)

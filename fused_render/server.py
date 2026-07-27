@@ -29,6 +29,7 @@ import tempfile
 from types import SimpleNamespace
 import time
 import traceback
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -49,6 +50,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render import __version__
+from fused_render import calls as shell_calls
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.account import router as account_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
@@ -2885,15 +2888,23 @@ def create_app(start_dir: str) -> FastAPI:
         # that 500s on /render or /api/run leaves nothing to report). Put the
         # traceback in the response body (local single-user tool, D3 — the
         # only reader owns the machine) AND in the log file so a later
-        # `Open logs` gives the full story. Log with the request line so a
+        # `Open app logs` gives the full story. Log with the request line so a
         # noisy log still pins the failure to a URL.
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        # The id the middleware already stamped onto this request's call record
+        # (it runs first, then re-raises past us). Echoing it here is what makes
+        # `err_id` in the call log an actual join key rather than a dead field:
+        # a screenshot of this 500 and the record in the log name each other.
+        err_id = getattr(request.state, "fused_err_id", None)
         logger.error(
-            "unhandled error on %s %s\n%s", request.method, request.url.path, tb
+            "unhandled error on %s %s%s\n%s", request.method, request.url.path,
+            f" [err_id {err_id}]" if err_id else "", tb
         )
         return _error(
             f"fused-render internal error on {request.method} "
-            f"{request.url.path}:\n\n{tb}",
+            f"{request.url.path}"
+            + (f" (err_id {err_id})" if err_id else "")
+            + f":\n\n{tb}",
             status=500,
         )
 
@@ -2926,9 +2937,40 @@ def create_app(start_dir: str) -> FastAPI:
     # rotating file and push the interesting lines out. The request flow that
     # matters (/view, /render, /api/*) is everything else.
     _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
+    # NOT IMPLEMENTED: detecting that the client hung up mid-request, which would
+    # let an abandoned run be recorded as `disconnected` instead of a served
+    # request (SPEC CL-5a's named gap). Both obvious approaches are dead ends
+    # under this app's shape, verified rather than assumed:
+    #
+    #   * From a ROUTE: `BaseHTTPMiddleware` (which `@app.middleware("http")`
+    #     builds) wraps the downstream `receive`, so `request.is_disconnected()`
+    #     inside a handler never observes `http.disconnect` — a watcher there
+    #     waits forever. Without the middleware in front it fires immediately,
+    #     which is what makes this easy to "verify" wrongly.
+    #   * From HERE: the middleware's own request CAN see the disconnect, but
+    #     `is_disconnected()` peeks by CONSUMING a message off the receive
+    #     channel (starlette.requests, an immediately-cancelled CancelScope
+    #     around `_receive()`). Polling it steals the `http.request` body message
+    #     the downstream route is waiting for, so every request with a body —
+    #     /api/run included — hangs. A body-less spike hides this completely.
+    #
+    # Doing it properly means converting this middleware to pure ASGI so it can
+    # tee the receive channel instead of racing the route for it. That is a
+    # change to the hottest path in the server and belongs in its own commit,
+    # not riding along with the call log. Meanwhile a supersession IS reported by
+    # the page (CL-5a), which covers the common slider case; a closed tab or
+    # reload still records as `ok`.
 
     @app.middleware("http")
     async def no_cache_and_log(request, call_next):
+        # The app call log's single write point (calls.py, design §4.5). begin()
+        # returns a record only for a request carrying runtime.js's
+        # X-Fused-Page header — so the shell's own /api/fs/list, the conditions
+        # probe, and every non-page caller are excluded by construction rather
+        # than by an endpoint blocklist that would drift. Route handlers enrich
+        # the same dict through request.state.fused_call; only finish() writes.
+        call = shell_calls.begin(request)
+        request.state.fused_call = call
         # App code changes between restarts and user files change on disk;
         # stale browser caches of shell/runtime JS cause confusing half-old UIs.
         # Also the browser request log (SPEC SV-3): one INFO line per request
@@ -2942,15 +2984,46 @@ def create_app(start_dir: str) -> FastAPI:
         start = time.monotonic()
         try:
             response = await call_next(request)
+        except asyncio.CancelledError:
+            # The client went away mid-request — overwhelmingly a runPython
+            # superseded by a newer call for the same .py (D114/RH-9) or a
+            # closed tab. Recorded as its own outcome and kept out of every
+            # latency statistic: a slider scrub would otherwise report dozens
+            # of "slow" calls for what the user experienced as one request.
+            if call is not None:
+                shell_calls.finish(
+                    call, status=None, elapsed_ms=(time.monotonic() - start) * 1000,
+                    outcome="disconnected",
+                )
+            raise
         except Exception:
             if logged:
                 dur = (time.monotonic() - start) * 1000
                 logger.info("%s %s -> 500 (%.0f ms)", request.method, path, dur)
+            # An unhandled exception escapes call_next: @app.exception_handler
+            # runs in ServerErrorMiddleware, OUTSIDE user middleware, so this
+            # except branch is the only place the record can be closed out.
+            # Mint the correlation id here (we run before the handler) and stash
+            # it so the handler can echo the same id into the 500 body.
+            err_id = uuid.uuid4().hex[:12]
+            request.state.fused_err_id = err_id
+            if call is not None:
+                shell_calls.finish(
+                    call, status=500, elapsed_ms=(time.monotonic() - start) * 1000,
+                    outcome="error", err_id=err_id,
+                )
             raise
         if logged:
             dur = (time.monotonic() - start) * 1000
             logger.info(
                 "%s %s -> %s (%.0f ms)", request.method, path, response.status_code, dur
+            )
+        if call is not None:
+            shell_calls.finish(
+                call,
+                status=response.status_code,
+                elapsed_ms=(time.monotonic() - start) * 1000,
+                content_length=response.headers.get("content-length"),
             )
         response.headers["Cache-Control"] = "no-cache"
         return response
@@ -2984,6 +3057,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(bookmarks_router)
     app.include_router(prefs_router)
     app.include_router(recents_router)
+    # The app call log (calls.py): GET /api/calls/config + the page-error
+    # event POST. The records themselves are written by the middleware above.
+    app.include_router(shell_calls.router)
     # Mounts: remote storage mounted as local paths via rclone rcd
     # (shell/mounts.py). startup() remounts every mount in a background
     # thread; mounts deliberately survive server restarts.
@@ -3071,6 +3147,23 @@ def create_app(start_dir: str) -> FastAPI:
             # background automount thread upserts the record on a packaged
             # run, would otherwise show a link to a path that doesn't exist).
             "learn_mount_ready": shell_mounts.learn_mount_ready(),
+            # The call-log store (calls.py). Same job as `mounts_root` above and
+            # for a sharper reason: a call-log file is APPENDED TO by the act of
+            # viewing it, so a page watching one reloads, re-reads, appends, and
+            # reloads again. Watching it is never useful either — the viewers that
+            # want live updates (log_studio's Tail) poll instead, precisely so a
+            # reload cannot rebuild the frame mid-poll. Keyed off this prefix +
+            # suffix so generic templates (code, duckdb, tree) need to know
+            # nothing about the call log.
+            #
+            # Canonicalized on the way out: `abspath` is backslashed on Windows
+            # while every path the runtime holds is forward-slashed, so the
+            # prefix test in `isCallLog` would never fire there. (`mounts_root`
+            # above has the same shape and is deliberately left alone — changing
+            # it would newly ENABLE an exclusion on Windows, which is a mount
+            # behaviour change and belongs with the mount code, not here.)
+            "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
+            "calls_suffix": shell_calls.SUFFIX,
         }
         if instance := desktop_instance():
             config["desktop_instance"] = {"id": instance[0]}
@@ -3691,9 +3784,23 @@ def create_app(start_dir: str) -> FastAPI:
     # cache accepts for out-of-band changes — and the editor navigates top-down,
     # so it re-lists the parent (fresh) before it would re-stat a vanished child.
     @app.post("/api/fs/write")
-    def api_fs_write(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    def api_fs_write(request: Request, body: dict = Body(...),
+                     x_fused: str | None = Header(default=None)):
         result = _fs_write(body, x_fused)
         _invalidate_stat_cache(body.get("path"))
+        # What the app wrote and how big — never the content (calls.py).
+        # `_fs_write` returns a stat payload on success and a JSONResponse on
+        # every refusal, so the status has to come off the response object.
+        shell_calls.enrich_write(
+            getattr(request.state, "fused_call", None),
+            path=body.get("path") if isinstance(body.get("path"), str) else "",
+            content=body.get("content"),
+            status=getattr(result, "status_code", 200),
+            # Both refusals are 403; only a read-only target is `readonly`.
+            # Re-asking the guard rather than re-spelling `x_fused != "1"` here,
+            # so there is still one rule (it allocates nothing when it passes).
+            unauthorized=_require_fused(x_fused) is not None,
+        )
         return result
 
     @app.post("/api/fs/mkdir")
@@ -3744,7 +3851,8 @@ def create_app(start_dir: str) -> FastAPI:
         return HTMLResponse(html)
 
     @app.post("/api/run")
-    async def api_run(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    async def api_run(request: Request, body: dict = Body(...),
+                      x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
@@ -3798,14 +3906,26 @@ def create_app(start_dir: str) -> FastAPI:
         # engine adds stderr/duration_ms), so pages never see which ran.
         # Resolved per request: the Preferences switch applies to the next
         # run, no restart (a set FUSED_RENDER_ENGINE pins it instead).
-        if current_engine() == "fused":
+        engine_used = current_engine()
+        if engine_used == "fused":
             from fused_render import engine as _engine
 
-            result = await _engine.run_python(resolved, params)
+            work = _engine.run_python(resolved, params)
         else:
             # The built-in executor blocks on a subprocess; keep the event
             # loop free (the endpoint is async now for the engine's sake).
-            result = await asyncio.to_thread(run_python, resolved, params)
+            work = asyncio.to_thread(run_python, resolved, params)
+        result = await work
+        # Hand the run's detail to the in-flight call record (calls.py): the
+        # resolved .py, the params, the engine, and — on failure — the
+        # traceback and output tails a user has since clicked away from. The
+        # handler enriches; the middleware writes. (Whether the client hung up
+        # mid-run is decided by the middleware — a route CANNOT see it; the
+        # NOT IMPLEMENTED note above `no_cache_and_log` says why.)
+        shell_calls.enrich_run(
+            getattr(request.state, "fused_call", None),
+            resolved=resolved, params=params, engine=engine_used, result=result,
+        )
         # Tell the runtime which absolute file actually ran so it can watch it
         # for auto-reload (LR-2). Set on failed runs too, so a broken py that
         # gets fixed still triggers a reload.

@@ -298,7 +298,7 @@ def _safe_open(port: int, command: protocol.Command, paths: DesktopPaths) -> boo
 
 
 def _safe_call(paths: DesktopPaths, action) -> None:
-    """Run a tray action (Open logs, Default apps, ...) without letting an
+    """Run a tray action (Open app logs, Default apps, ...) without letting an
     `OSError` from `os.startfile` unwind `run()` — a routine tray click must
     never tear down the already-running Job-owned server (same rule as
     `_safe_open`, generalized to actions that aren't a browser open)."""
@@ -345,7 +345,7 @@ def _spawn_update_check(paths: DesktopPaths) -> None:
 
 
 def _spawn_call(paths: DesktopPaths, action) -> None:
-    """Run a tray action (Open logs, Default apps, ...) on a dedicated thread
+    """Run a tray action (Open app logs, Default apps, ...) on a dedicated thread
     (same idiom as `_spawn_open`). These land on the loop thread that services
     tray actions AND pipe_requests, so they must not block it: on Linux
     `ui.open_path` -> `_xdg_open` waits up to `_XDG_OPEN_WAIT_S` on the child, so

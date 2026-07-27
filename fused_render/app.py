@@ -358,7 +358,7 @@ def main() -> None:
             # if the controller fails to construct (PV-8) — the app must never
             # be left unquittable.
             super().__init__("fused-render", icon=icon_path, template=True, quit_button=None)
-            self.menu = ["Open in browser", "Copy URL", "Open logs", "Quit"]
+            self.menu = ["Open in browser", "Copy URL", "Open app logs", "Quit"]
 
         @rumps.clicked("Open in browser")
         def open_browser(self, _sender):
@@ -368,7 +368,7 @@ def main() -> None:
         def copy_url(self, _sender):
             _copy_url()
 
-        @rumps.clicked("Open logs")
+        @rumps.clicked("Open app logs")
         def open_logs(self, _sender):
             _open_logs()
 

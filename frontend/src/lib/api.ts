@@ -780,12 +780,40 @@ export interface EnginePrefs {
 
 export interface Prefs {
   engine: EnginePrefs;
-  log: { path: string; dir: string };
   // Whether the preview-header Deploy button is shown (opt-in, default off).
   deploy: { enabled: boolean };
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // The app call log (fused_render/calls.py): capture state, how much of a
+  // run's params is kept, retention window, and where the store lives.
+  calls: CallsPrefs;
+}
+
+export type CallsParamsMode = "full" | "keys" | "off";
+
+export interface CallsPrefs {
+  // On by default: a diagnostic you have to switch on before the thing you
+  // wanted to diagnose is worthless — the interesting call already happened.
+  enabled: boolean;
+  params: CallsParamsMode;
+  retention_days: number;
+  dir: string;
+  // False until the first call is recorded: the writer creates the store
+  // lazily, so `dir` names a path that may not exist yet. Browsing it before
+  // then lands the explorer on a stat error, so the affordance waits.
+  dir_exists: boolean;
+  // What capture and retention are ACTUALLY doing (from the resolvers the
+  // writer calls) versus the stored prefs above, which differ whenever a
+  // process env var wins. `*_forced_by` is that raw env value when the variable
+  // is genuinely in force, else null — a set-but-ignored value (an empty or
+  // non-numeric retention window) reports null, because the writer keeps using
+  // the pref and a control locked against a variable setting nothing is a dead
+  // end. Only these two are overridable; the param mode has no env var.
+  effective_enabled: boolean;
+  enabled_forced_by: string | null;
+  effective_retention_days: number;
+  retention_forced_by: string | null;
 }
 
 export function getPrefs(): Promise<Prefs> {
@@ -802,6 +830,18 @@ export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_enabled: enabled });
+}
+
+export function putCallsParamsMode(mode: CallsParamsMode): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_params: mode });
+}
+
+export function putCallsRetentionDays(days: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { calls_retention_days: days });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -31,6 +31,21 @@
     --fatal: #ed64a6;
     --grid: #252c35;
     --axis: #687281;
+    /* Component colours that used to be literals. Tokenised so light mode can
+       answer for them: a filled teal button, a floating tooltip and the
+       truncation notice each need their own value on a light ground, not the
+       dark one showing through. */
+    --submit: #287e97;
+    --submit-hover: #3190aa;
+    --submit-border: #318da7;
+    --submit-text: #ffffff;
+    --tooltip-bg: rgba(13, 16, 21, 0.96);
+    --tooltip-border: #404957;
+    --tooltip-text: #dbe1e8;
+    --tooltip-shadow: rgba(0, 0, 0, 0.35);
+    --notice-bg: rgba(230, 180, 80, 0.08);
+    --notice-border: #665322;
+    --notice-text: #d9bf7b;
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
@@ -54,9 +69,38 @@
     --accent-dim: rgba(20, 125, 153, 0.11);
     --grid: #dce1e7;
     --axis: #687586;
+    /* Level accents: the dark palette's values are pale (they are chosen
+       against #101318) and unreadable on #f7f8fa, so light mode takes the
+       darker end of the same hue rather than inheriting. */
+    --danger: #c53030;
+    --fatal: #b83280;
+    --info: #2b6cb0;
+    --warn: #b7791f;
+    --debug: #6b46c1;
+    --trace: #4a5568;
+    --submit: #147d99;
+    --submit-hover: #10697f;
+    --submit-border: #11748d;
+    --submit-text: #ffffff;
+    --tooltip-bg: #ffffff;
+    --tooltip-border: #cfd5dd;
+    --tooltip-text: #202733;
+    --tooltip-shadow: rgba(16, 23, 34, 0.16);
+    --notice-bg: rgba(183, 121, 31, 0.10);
+    --notice-border: #e0c48a;
+    --notice-text: #7a5a12;
   }
 
   * { box-sizing: border-box; }
+
+  /* The UA's `[hidden] { display: none }` loses to any class rule that sets
+     `display`, and nearly every box below sets one — so `el.hidden = true` was
+     silently a no-op on the grid/flex ones. That is how Raw view showed the raw
+     text UNDER a field table that was supposed to be gone, and how the pager
+     keeps 47px of empty chrome when the code asks it to leave. Global and
+     !important so an element added later inherits the fix instead of needing
+     its own override (which is what `.hist-skel[hidden]` used to be). */
+  [hidden] { display: none !important; }
 
   html, body { min-height: 100%; }
 
@@ -82,12 +126,15 @@
     grid-template-columns: 240px minmax(0, 1fr);
   }
 
-  .app.facets-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
-  .app.focus-mode { grid-template-columns: minmax(0, 1fr); }
-  .app.focus-mode .facets { display: none; }
-  .app.facets-collapsed .facets-inner, .app.facets-collapsed .brand-label, .app.facets-collapsed .theme-toggle { display: none; }
-  .app.facets-collapsed .brand { justify-content: center; padding: 0; }
-  .app.focus-mode .canvas-panel { display: none; }
+  /* Collapsed hides the rail outright. It kept a 44px strip while the theme
+     toggle lived in its header row and had nowhere else to be; with the theme
+     now coming from the shell (AP-9) that control is gone, and a strip holding
+     only a logo is width the log could be using. The Collapse button in the
+     query header is always visible, so nothing becomes unreachable.
+     (`focus-mode`, which hid the rail AND the histogram together, went with the
+     Focus button: one collapse control, one thing collapsed.) */
+  .app.facets-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app.facets-collapsed .facets { display: none; }
 
   .facets {
     position: sticky;
@@ -113,19 +160,9 @@
 
   .brand-label { flex: 1; white-space: nowrap; }
 
-  .rail-toggle, .theme-toggle {
-    display: grid;
-    place-items: center;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-  }
-
-  .rail-toggle { width: 22px; height: 28px; }
-  .theme-toggle { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 4px; font-size: 15px; }
-  .rail-toggle:hover, .theme-toggle:hover { color: var(--accent); background: var(--accent-dim); }
+  /* First control in the header, so "hide the rail" reads left-to-right with the
+     rail it hides rather than sitting at the end of the filter controls. */
+  .rail-collapse { flex: 0 0 auto; }
 
   .brand-mark {
     width: 17px;
@@ -144,159 +181,7 @@
   .brand-mark i:nth-child(2) { width: 70%; }
   .brand-mark i:nth-child(3) { width: 88%; }
 
-  .open-file-list { display: grid; gap: 3px; }
-  .browse-button { width: 100%; margin-top: 9px; }
-
-  .picker-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-    background: rgba(8, 11, 15, 0.55);
-  }
-
-  .picker-overlay[hidden] { display: none; }
-
-  .picker {
-    width: min(720px, 100%);
-    max-height: 82vh;
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--panel);
-    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
-    overflow: hidden;
-  }
-
-  .picker-head {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 13px 15px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .picker-title {
-    flex: 1;
-    margin: 0;
-    color: var(--strong);
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .picker-close {
-    width: 28px;
-    height: 28px;
-    border: 0;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--faint);
-    font-size: 20px;
-    cursor: pointer;
-  }
-
-  .picker-close:hover { color: var(--danger); background: var(--hover); }
-
-  .picker-path-form {
-    display: flex;
-    gap: 8px;
-    padding: 13px 15px;
-    border-bottom: 1px solid var(--line-soft);
-  }
-
-  #picker-path {
-    flex: 1;
-    height: 32px;
-    padding: 0 10px;
-    border: 1px solid var(--line);
-    border-radius: 3px;
-    background: var(--input);
-    color: var(--strong);
-    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
-  }
-
-  #picker-path::placeholder { color: var(--faint); }
-
-  .picker-crumbs {
-    padding: 9px 15px;
-    border-bottom: 1px solid var(--line-soft);
-    color: var(--muted);
-    font: 11px ui-monospace, monospace;
-    word-break: break-all;
-  }
-
-  .picker-crumbs a { color: var(--accent); cursor: pointer; }
-  .picker-crumbs a:hover { text-decoration: underline; }
-
-  .picker-list {
-    flex: 1;
-    min-height: 120px;
-    overflow: auto;
-    padding: 6px 0;
-  }
-
-  .picker-entry {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 7px 15px;
-    border: 0;
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-    text-align: left;
-    font-size: 12px;
-  }
-
-  .picker-entry:hover { background: var(--hover); }
-  .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .picker-size { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
-  .picker-empty { padding: 14px 15px; color: var(--faint); font-size: 12px; }
-
-  .picker-error {
-    padding: 11px 15px;
-    border-top: 1px solid var(--line-soft);
-    color: var(--danger);
-    font-size: 12px;
-  }
-
-  .picker-error[hidden] { display: none; }
-
-  .open-file {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 22px;
-    align-items: center;
-    border: 1px solid transparent;
-    border-radius: 4px;
-    background: transparent;
-  }
-
-  .open-file.active { border-color: var(--accent); background: var(--accent-dim); }
-
-  .open-file-select {
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 6px 7px;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-    text-align: left;
-  }
-
-  .open-file-select:hover { background: var(--hover); }
-  .open-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .open-file.active .open-file-name { color: var(--strong); font-weight: 650; }
   .file-kind { width: 26px; flex: 0 0 26px; color: var(--faint); font: 9px ui-monospace, monospace; }
-  .close-file { width: 22px; height: 26px; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
-  .close-file:hover { color: var(--danger); }
 
   .facet-section {
     padding: 17px 13px;
@@ -451,33 +336,58 @@
   .query-submit {
     border-left: 0;
     border-radius: 0 3px 3px 0;
-    border-color: #318da7;
-    background: #287e97;
-    color: white;
+    border-color: var(--submit-border);
+    background: var(--submit);
+    color: var(--submit-text);
     font-weight: 600;
   }
 
-  .query-submit:hover { background: #3190aa; }
+  .query-submit:hover { background: var(--submit-hover); }
 
   .tail-button[aria-pressed="true"] {
-    border-color: #3da5c2;
-    background: var(--accent-dim);
-    color: var(--accent);
-  }
-
-  #focus-toggle[aria-pressed="true"], #rail-toggle[aria-pressed="true"] {
     border-color: var(--accent);
     background: var(--accent-dim);
     color: var(--accent);
   }
 
+  #rail-collapse[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  /* Lit only while the tail is actually running. It used to be `background:
+     currentColor` unconditionally, so the button wore a filled "live" dot while
+     tail was OFF — the one part of the control that reads as state at a glance
+     said the opposite of the truth, and the pressed styling above (a border and
+     background tint) is far too quiet to correct that impression. Off is a
+     hollow ring; on is filled and pulsing, so "is it live" is answerable without
+     comparing two shades of blue. */
   .live-dot {
     width: 6px;
     height: 6px;
     display: inline-block;
     margin-right: 6px;
     border-radius: 50%;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px currentColor;
+    opacity: .55;
+  }
+
+  .tail-button[aria-pressed="true"] .live-dot {
     background: currentColor;
+    box-shadow: none;
+    opacity: 1;
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tail-button[aria-pressed="true"] .live-dot { animation: none; }
   }
 
   .canvas-panel {
@@ -520,14 +430,14 @@
     display: none;
     max-width: 220px;
     padding: 6px 8px;
-    border: 1px solid #404957;
+    border: 1px solid var(--tooltip-border);
     border-radius: 3px;
-    background: rgba(13, 16, 21, 0.96);
-    color: #dbe1e8;
+    background: var(--tooltip-bg);
+    color: var(--tooltip-text);
     font-size: 11px;
     line-height: 1.45;
     pointer-events: none;
-    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 5px 18px var(--tooltip-shadow);
   }
 
   .view-bar {
@@ -564,10 +474,10 @@
   .notice {
     margin: 10px 12px 0;
     padding: 8px 10px;
-    border: 1px solid #665322;
+    border: 1px solid var(--notice-border);
     border-radius: 3px;
-    background: rgba(230, 180, 80, 0.08);
-    color: #d9bf7b;
+    background: var(--notice-bg);
+    color: var(--notice-text);
     font-size: 11px;
   }
 
@@ -581,7 +491,7 @@
     text-align: center;
   }
 
-  .status.error { color: #f18c8c; }
+  .status.error { color: var(--danger); }
 
   .skel-bar {
     display: inline-block;
@@ -603,8 +513,6 @@
 
   dd.skel-dd { display: flex; justify-content: flex-end; }
 
-  .skel-picker-row, .skel-picker-row:hover { background: transparent; cursor: default; }
-
   .hist-skel {
     position: absolute;
     z-index: 2;
@@ -615,8 +523,6 @@
     animation: skel-shimmer 1.2s ease-in-out infinite;
     pointer-events: none;
   }
-
-  .hist-skel[hidden] { display: none; }
 
   .log-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
@@ -674,6 +580,57 @@
   .detail-actions { display: flex; align-items: center; gap: 10px; }
   .context-button { min-height: 27px; font-size: 11px; }
   .detail-meta { color: var(--faint); font-size: 10px; }
+
+  /* Structured detail: a two-column field list, not a table element, so a
+     nested object's rows align with their parent's instead of starting a new
+     grid. `--depth` indents the key; the value column stays flush left so a
+     column of values is scannable however deep the nesting goes. */
+  .field-table {
+    display: grid;
+    grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--context);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .field-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+  .field-row + .field-row { border-top: 1px solid var(--line-soft); }
+  .field-row:hover { background: var(--hover); }
+
+  .field-key {
+    padding: 4px 8px 4px calc(8px + var(--depth, 0) * 12px);
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+
+  .field-value, .field-null, .field-boolean, .field-number, .field-nested, .field-empty {
+    padding: 4px 8px;
+    overflow-wrap: anywhere;
+  }
+
+  .field-value { color: var(--text); cursor: pointer; }
+  .field-value:hover { color: var(--accent); text-decoration: underline; }
+  .field-null, .field-empty { color: var(--faint); font-style: italic; }
+  .field-boolean { color: var(--warn); }
+  .field-number { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .field-nested { color: var(--faint); }
+
+  /* A traceback or an output tail: its newlines are the content, so it spans
+     both columns as a block rather than being crushed into a value cell. */
+  .field-block {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 6px 8px 8px 20px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 320px;
+    overflow: auto;
+  }
 
   .context-lines {
     display: grid;
@@ -771,18 +728,10 @@
   <div class="app">
     <aside class="facets">
       <div class="brand">
-        <button class="rail-toggle" id="rail-toggle" type="button" title="Collapse file rail" aria-label="Collapse file rail" aria-pressed="false">
-          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        </button>
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="brand-label">LOG STUDIO</span>
-        <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode">&#9680;</button>
       </div>
-      <div class="facets-inner">
-        <section class="facet-section">
-          <h2 class="facet-title">Open files</h2>
-          <div class="open-file-list" id="open-files"></div>
-          <button class="button browse-button" id="browse-open" type="button">Browse files&hellip;</button>
-        </section>
+      <div class="facets-inner" id="facets-inner">
         <section class="facet-section" id="file-overview">
           <h2 class="facet-title">Active file</h2>
           <div class="file-name"><span class="skel-bar" style="width:70%;height:12px"></span></div>
@@ -808,12 +757,13 @@
 
     <main class="workspace">
       <header class="query-header">
+        <button class="button rail-collapse" id="rail-collapse" type="button" aria-pressed="false"
+                aria-controls="facets-inner" title="Hide the file rail">Collapse</button>
         <form class="query-form" id="query-form">
           <span class="query-prefix">q</span>
           <input id="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search text, fields, or /regex/" aria-label="Log query" />
           <button class="button query-submit" type="submit">Search</button>
         </form>
-        <button class="button" id="focus-toggle" type="button" aria-pressed="false">Focus</button>
         <button class="button" id="clear-range" type="button">Clear time</button>
         <button class="button tail-button" id="tail-toggle" type="button" aria-pressed="false"><span class="live-dot"></span>Tail</button>
       </header>
@@ -858,22 +808,6 @@
     </main>
   </div>
 
-  <div class="picker-overlay" id="picker-overlay" hidden>
-    <div class="picker" role="dialog" aria-modal="true" aria-label="Open a file">
-      <div class="picker-head">
-        <h2 class="picker-title">Open a file</h2>
-        <button class="picker-close" id="picker-close" type="button" aria-label="Close">&times;</button>
-      </div>
-      <form class="picker-path-form" id="picker-path-form">
-        <input id="picker-path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a full path, e.g. C:\logs\app.log or ~/logs/app.log" aria-label="File path" />
-        <button class="button query-submit" type="submit">Open</button>
-      </form>
-      <div class="picker-crumbs" id="picker-crumbs"></div>
-      <div class="picker-list" id="picker-list"></div>
-      <div class="picker-error" id="picker-error" hidden></div>
-    </div>
-  </div>
-
 <script>
   const PAGE_LIMIT = 200;
   const LEVEL_ORDER = ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "OTHER"];
@@ -890,23 +824,12 @@
 
   const fileOverview = document.getElementById("file-overview");
   const app = document.querySelector(".app");
-  const openFiles = document.getElementById("open-files");
-  const browseButton = document.getElementById("browse-open");
-  const pickerOverlay = document.getElementById("picker-overlay");
-  const pickerClose = document.getElementById("picker-close");
-  const pickerPathForm = document.getElementById("picker-path-form");
-  const pickerPath = document.getElementById("picker-path");
-  const pickerCrumbs = document.getElementById("picker-crumbs");
-  const pickerList = document.getElementById("picker-list");
-  const pickerError = document.getElementById("picker-error");
   const levelList = document.getElementById("level-list");
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("query");
   const clearRange = document.getElementById("clear-range");
   const tailToggle = document.getElementById("tail-toggle");
-  const railToggle = document.getElementById("rail-toggle");
-  const focusToggle = document.getElementById("focus-toggle");
-  const themeToggle = document.getElementById("theme-toggle");
+  const railCollapse = document.getElementById("rail-collapse");
   const linesTab = document.getElementById("lines-tab");
   const patternsTab = document.getElementById("patterns-tab");
   const resultSummary = document.getElementById("result-summary");
@@ -944,7 +867,6 @@
   let fileWatchTimer = null;
   let watchedFile = "";
   let watchedSignature = "";
-  let lastTheme = "light";
   const pathAliases = new Map();
 
   function escapeHtml(value) {
@@ -978,28 +900,12 @@
         </div>`).join("")}</div>`;
   }
 
-  function pickerSkeleton() {
-    const widths = [62, 44, 78, 50, 68];
-    return widths.map((width) => `
-      <div class="picker-entry skel-picker-row">
-        <span class="file-kind">${skelBar("22px", "8px")}</span>
-        <span class="picker-name">${skelBar(`${width}%`)}</span>
-      </div>`).join("");
-  }
-
   function currentState() {
     const rawPage = fused.params.get("page") || "0";
     const target = fused.params.get("_file") || "";
     const file = fused.params.get("file") || target;
-    let opened = [];
-    try {
-      const parsed = JSON.parse(fused.params.get("open") || "[]");
-      if (Array.isArray(parsed)) opened = parsed.filter((value) => typeof value === "string");
-    } catch (_) {}
-    if (file && !opened.some((value) => samePath(value, file))) opened.push(file);
     return {
       file,
-      opened,
       q: fused.params.get("q") || "",
       level: fused.params.get("level") || "",
       levels: (fused.params.get("level") || "").split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
@@ -1009,9 +915,7 @@
       back: (fused.params.get("back") || "").split(",").filter((value) => /^\d+$/.test(value)),
       view: fused.params.get("view") === "patterns" ? "patterns" : "lines",
       tail: !["", "0"].includes(fused.params.get("tail") || ""),
-      theme: fused.params.get("theme") === "dark" ? "dark" : "light",
-      facets: fused.params.get("facets") !== "0",
-      focus: fused.params.get("focus") === "1"
+      facets: fused.params.get("facets") !== "0"
     };
   }
 
@@ -1127,110 +1031,33 @@
       });
   }
 
+  // The levels this file offers as filters — the ONE answer, used by both the
+  // facet list and its click handler.
+  //
+  // They used to compute it separately, and that is exactly how deselecting a
+  // level brought the absent ones back: the list filtered zero-count levels
+  // out, the handler still worked from all seven, so unchecking WARN wrote
+  // every OTHER level into the URL — including the five the file has none of —
+  // and the list then kept them because "selected" survives the count filter.
+  // The reader seeds its count map with every level it knows (`_counts()` —
+  // right for histogram buckets, which need a zero to stack), so "which levels
+  // exist" is a question with one right answer and two former callers.
+  //
+  // A SELECTED level at zero survives on purpose: it is reachable (a narrowed
+  // window, a rotated file, a hand-edited URL), and hiding its chip would
+  // remove the only control that undoes an active constraint.
+  function facetLevels(data, selectedLevels) {
+    const selected = new Set(selectedLevels || []);
+    return overviewLevels(data).filter(
+      ([level, count]) => count > 0 || selected.has(level));
+  }
+
   function overviewRange(data) {
     const range = data.time_range || data.range || {};
     return {
       min: data.from ?? data.min_time ?? data.first_timestamp ?? range.from ?? range.min ?? "",
       max: data.to ?? data.max_time ?? data.last_timestamp ?? range.to ?? range.max ?? ""
     };
-  }
-
-  function renderOpenFiles(state) {
-    openFiles.innerHTML = state.opened.map((path) => {
-      const active = samePath(path, state.file);
-      const name = basename(path);
-      const dot = name.lastIndexOf(".");
-      const kind = dot > 0 ? name.slice(dot + 1, dot + 5).toUpperCase() : "FILE";
-      return `
-        <div class="open-file ${active ? "active" : ""}" title="${escapeHtml(path)}">
-          <button class="open-file-select" type="button" data-open-file="${escapeHtml(path)}">
-            <span class="file-kind">${escapeHtml(kind)}</span>
-            <span class="open-file-name">${escapeHtml(name)}</span>
-          </button>
-          <button class="close-file" type="button" data-close-file="${escapeHtml(path)}" aria-label="Close ${escapeHtml(name)}">x</button>
-        </div>`;
-    }).join("");
-  }
-
-  function crumbHtml(path) {
-    const parts = String(path).split("/").filter(Boolean);
-    const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");
-    const crumbs = winRoot ? [] : [`<a data-path="/">/</a>`];
-    parts.forEach((part, index) => {
-      const acc = (winRoot ? "" : "/") + parts.slice(0, index + 1).join("/") + (winRoot && !index ? "/" : "");
-      crumbs.push(`<a data-path="${escapeHtml(acc)}">${escapeHtml(part)}</a>`);
-    });
-    return crumbs.join(` <span style="color:var(--faint)">/</span> `);
-  }
-
-  function renderPickerDir(data) {
-    pickerCrumbs.innerHTML = crumbHtml(data.path);
-    const rows = [];
-    if (data.parent && data.parent !== data.path) {
-      rows.push(`<button class="picker-entry" type="button" data-dir="${escapeHtml(data.parent)}"><span class="file-kind">UP</span><span class="picker-name">..</span></button>`);
-    }
-    for (const entry of data.entries) {
-      const attr = entry.is_dir ? "data-dir" : "data-file";
-      rows.push(`
-        <button class="picker-entry" type="button" ${attr}="${escapeHtml(entry.path)}" title="${escapeHtml(entry.path)}">
-          <span class="file-kind">${entry.is_dir ? "DIR" : "FILE"}</span>
-          <span class="picker-name">${escapeHtml(entry.name)}</span>
-          ${entry.is_dir ? "" : `<span class="picker-size">${escapeHtml(formatBytes(entry.size))}</span>`}
-        </button>`);
-    }
-    pickerList.innerHTML = rows.length ? rows.join("") : `<div class="picker-empty">This folder is empty.</div>`;
-  }
-
-  async function loadPickerDir(path) {
-    pickerError.hidden = true;
-    pickerList.innerHTML = pickerSkeleton();
-    try {
-      // src (origin only) lets the reader route a mount-backed dir via
-      // /api/fs/list instead of a kernel scan that could drop the mount.
-      renderPickerDir(await runReader("list", currentState(), { path: path || "",
-        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }));
-    } catch (error) {
-      pickerList.innerHTML = "";
-      showPickerError(errorMessage(error));
-    }
-  }
-
-  function openPickedFile(path) {
-    const state = currentState();
-    const opened = state.opened.some((value) => samePath(value, path)) ? state.opened : [...state.opened, path];
-    closePicker();
-    activateFile(path, opened);
-  }
-
-  function showPickerError(message) {
-    pickerError.textContent = message;
-    pickerError.hidden = false;
-  }
-
-  function openPicker() {
-    pickerOverlay.hidden = false;
-    pickerPath.value = "";
-    pickerError.hidden = true;
-    loadPickerDir("");
-    pickerPath.focus();
-  }
-
-  function closePicker() {
-    pickerOverlay.hidden = true;
-  }
-
-  function activateFile(path, opened) {
-    setParams({
-      file: path,
-      open: JSON.stringify(opened),
-      q: "",
-      level: "",
-      from: "",
-      to: "",
-      page: "0",
-      back: "",
-      tail: "0"
-    });
   }
 
   function renderOverview(data, state) {
@@ -1248,7 +1075,10 @@
         <dt>Last</dt><dd>${escapeHtml(range.max ? formatEpoch(range.max, false) : "-")}</dd>
       </dl>`;
 
-    const entries = overviewLevels(data);
+    // Only levels the file actually contains (facetLevels — the same resolver
+    // the click handler below uses; see its comment for why sharing it is
+    // load-bearing rather than tidy).
+    const entries = facetLevels(data, state.levels);
     const available = entries.map(([level]) => level);
     const active = state.levels.length ? new Set(state.levels) : new Set(available);
     levelList.innerHTML = entries.length ? entries.map(([level, count]) => `
@@ -1453,25 +1283,215 @@
       return;
     }
 
-    results.innerHTML = `<div class="log-list">${lines.map((line, index) => {
-      const fields = lineFields(line, index);
-      return `
-        <article class="log-row" data-row="${index}" style="--level-color:${levelColor(fields.level)}">
-          <span class="log-cell expand-mark">+</span>
-          <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
-          <span class="log-cell level">${escapeHtml(fields.level)}</span>
-          <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
-          <span class="log-cell message">${escapeHtml(fields.raw)}</span>
-          <div class="line-detail">
-            <pre>${escapeHtml(fields.raw)}</pre>
-            <div class="detail-actions">
-              <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
-              <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
-            </div>
-            <div class="context-lines" hidden></div>
-          </div>
-        </article>`;
-    }).join("")}</div>`;
+    reconcileLines(lines);
+  }
+
+  // The identity of a rendered log line: its byte offset in the file, plus its
+  // text. The offset alone is what makes a line a line — but logs.py ROTATES,
+  // and after a rotation byte 0 is a different line entirely, so the text has to
+  // be part of the key or a rotation would silently keep the old rows. Two lines
+  // that match on this key are byte-identical, which is why a matched row needs
+  // no update at all: reuse here means "leave that DOM alone".
+  function lineKey(fields) {
+    return fields.offset + " " + fields.raw;
+  }
+
+  // ---- structured detail ---------------------------------------------------
+  // A structured log line is a JSON object, and showing it as one long escaped
+  // string is the worst of both worlds: too wide to read, and the field you
+  // want is somewhere in the middle. The expanded row renders the object as
+  // fields instead — nested objects indented under their key, multi-line
+  // strings (a traceback, a stdout tail) kept as blocks so their newlines
+  // survive, and scalars clickable to filter the log by that value.
+  //
+  // A plain-text line still gets the raw <pre> it always got: this is an
+  // addition for lines that ARE structured, never a reinterpretation of lines
+  // that are not.
+
+  // Leading text + trailing JSON object, e.g.
+  // `2026-07-27 10:11:12 INFO {"event": "run", ...}`. Returns the parsed object
+  // and whatever preceded it (never dropped — it is shown as its own field).
+  function parseStructured(raw) {
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return null;
+    const brace = text.indexOf("{");
+    if (brace < 0 || !text.endsWith("}")) return null;
+    try {
+      const value = JSON.parse(text.slice(brace));
+      // Arrays and scalars are not field sets; only an object earns this view.
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      return { value, prefix: text.slice(0, brace).trim() };
+    } catch {
+      return null;
+    }
+  }
+
+  // Multi-line, or long enough that a table cell would be unreadable.
+  function isBlockText(value) {
+    return typeof value === "string" && (value.includes("\n") || value.length > 160);
+  }
+
+  function scalarHtml(value) {
+    if (value === null) return '<span class="field-null">null</span>';
+    const type = typeof value;
+    if (type === "boolean" || type === "number") {
+      return `<span class="field-${type}">${escapeHtml(String(value))}</span>`;
+    }
+    // Clickable to filter: the same [data-query] contract the patterns view
+    // uses, so the delegated handler already routes it (and, being handled
+    // before the row toggle, a click here does not collapse the row).
+    const text = String(value);
+    return `<span class="field-value" data-query="${escapeHtml(text)}"` +
+      ` title="Filter the log by this value">${escapeHtml(text)}</span>`;
+  }
+
+  function fieldRows(value, depth) {
+    if (depth > 6) {
+      return `<div class="field-row"><span class="field-key"></span>${scalarHtml("\u2026")}</div>`;
+    }
+    const entries = Array.isArray(value)
+      ? value.map((item, index) => [String(index), item])
+      : Object.entries(value);
+    if (!entries.length) {
+      return `<div class="field-row"><span class="field-key"></span>` +
+        `<span class="field-empty">${Array.isArray(value) ? "empty list" : "no fields"}</span></div>`;
+    }
+    return entries.map(([key, item]) => {
+      const label = `<span class="field-key" style="--depth:${depth}">${escapeHtml(key)}</span>`;
+      if (item && typeof item === "object") {
+        const count = Array.isArray(item) ? `${item.length} item(s)` : `${Object.keys(item).length} field(s)`;
+        return `<div class="field-row">${label}<span class="field-nested">${count}</span></div>` +
+          fieldRows(item, depth + 1);
+      }
+      if (isBlockText(item)) {
+        return `<div class="field-row">${label}<span class="field-nested">${item.length} chars</span></div>` +
+          `<pre class="field-block">${escapeHtml(item)}</pre>`;
+      }
+      return `<div class="field-row">${label}${scalarHtml(item)}</div>`;
+    }).join("");
+  }
+
+  function structuredHtml(parsed) {
+    // The text before the JSON is part of the line, so it is shown rather than
+    // silently discarded — as a field, marked as not being one.
+    const prefix = parsed.prefix
+      ? `<div class="field-row"><span class="field-key" style="--depth:0">(line prefix)</span>` +
+        `${scalarHtml(parsed.prefix)}</div>`
+      : "";
+    return `<div class="field-table">${prefix}${fieldRows(parsed.value, 0)}</div>`;
+  }
+
+  function lineRow(fields) {
+    const row = document.createElement("article");
+    row.className = "log-row";
+    row.dataset.key = lineKey(fields);
+    row.dataset.offset = String(fields.offset);
+    row.style.setProperty("--level-color", levelColor(fields.level));
+    const parsed = parseStructured(fields.raw);
+    // Structured by default when the line is structured — that is the reason
+    // this exists — with the raw text one click away and never removed.
+    const detailBody = parsed
+      ? `<div class="detail-body" data-view="structured">${structuredHtml(parsed)}` +
+        `<pre class="detail-raw" hidden>${escapeHtml(fields.raw)}</pre></div>`
+      : `<div class="detail-body" data-view="raw"><pre class="detail-raw">${escapeHtml(fields.raw)}</pre></div>`;
+    const viewToggle = parsed
+      ? `<button class="button context-button" type="button" data-detail-view="raw">Raw JSON</button>`
+      : "";
+    row.innerHTML = `
+      <span class="log-cell expand-mark">+</span>
+      <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
+      <span class="log-cell level">${escapeHtml(fields.level)}</span>
+      <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
+      <span class="log-cell message">${escapeHtml(fields.raw)}</span>
+      <div class="line-detail">
+        ${detailBody}
+        <div class="detail-actions">
+          <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
+          ${viewToggle}
+          <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
+        </div>
+        <div class="context-lines" hidden></div>
+      </div>`;
+    return row;
+  }
+
+  // Update the list IN PLACE, keeping every row the new page still contains.
+  //
+  // This used to be one `results.innerHTML = ...`, which is fine for a paged
+  // read and wrong for a tail: the poll runs every 2 s, so rebuilding the list
+  // threw away the DOM the user was working in four times a sentence — scroll
+  // position, which rows were expanded, any context block they had fetched, and
+  // any text selection. Tailing a live log was therefore the one mode in which
+  // you could not read or copy a line, which is the opposite of what Tail is
+  // for. The rows themselves were keyed by ARRAY INDEX, which renumbers the
+  // moment a line arrives, so nothing could be matched up across a poll even in
+  // principle.
+  //
+  // Same rule the shell's Recents list follows (SPEC RC-6): rows are keyed by
+  // identity, a row the page still has keeps its element, and the only movement
+  // is genuinely new content arriving.
+  function reconcileLines(lines) {
+    let list = results.querySelector(".log-list");
+    if (!list) {
+      // Coming from a status card, an error, or the skeleton — nothing to keep.
+      results.innerHTML = '<div class="log-list"></div>';
+      list = results.querySelector(".log-list");
+    }
+
+    const scroll = scroller();
+    const wasPinned = atBottom(scroll);
+    const before = scroll.scrollHeight;
+
+    const keep = new Map();
+    for (const row of Array.from(list.children)) {
+      const key = row.dataset.key;
+      if (key === undefined) row.remove();          // skeleton rows
+      else keep.set(key, row);
+    }
+
+    // Walk the desired order once, moving each row into place. insertBefore on a
+    // node already in position is a no-op for the user (no re-parse, no lost
+    // selection), so a poll that only appended costs exactly the appends.
+    let cursor = list.firstChild;
+    for (let i = 0; i < lines.length; i++) {
+      const fields = lineFields(lines[i], i);
+      const key = lineKey(fields);
+      const existing = keep.get(key);
+      if (existing) {
+        keep.delete(key);
+        if (existing === cursor) {
+          cursor = cursor.nextSibling;
+          continue;
+        }
+        list.insertBefore(existing, cursor);
+      } else {
+        list.insertBefore(lineRow(fields), cursor);
+      }
+    }
+    // Whatever the new page no longer contains — the lines that scrolled out of
+    // the tail window.
+    for (const row of keep.values()) row.remove();
+
+    // A tail appends at the bottom and drops from the top, so the page height
+    // changes under the viewport. Pinned to the bottom, stay pinned (that is
+    // what following means); parked mid-history, hold the same content still
+    // rather than letting it slide by the height difference.
+    if (wasPinned) scroll.scrollTop = scroll.scrollHeight;
+    else scroll.scrollTop += scroll.scrollHeight - before;
+  }
+
+  // The document is the scroll container here: `.app` is a grid that grows, and
+  // only the file rail scrolls on its own.
+  function scroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Within a line's height of the end — "following", as opposed to having
+  // deliberately scrolled back to read something.
+  const STICK_SLOP_PX = 24;
+
+  function atBottom(el) {
+    return el.scrollHeight - el.clientHeight - el.scrollTop <= STICK_SLOP_PX;
   }
 
   function patternsFrom(data) {
@@ -1529,23 +1549,13 @@
   }
 
   function renderState(state) {
-    document.documentElement.dataset.theme = state.theme;
-    if (lastTheme !== state.theme) {
-      lastTheme = state.theme;
-      if (chartData) requestAnimationFrame(resizeCanvas);
-    }
     app.classList.toggle("facets-collapsed", !state.facets);
-    app.classList.toggle("focus-mode", state.focus);
     queryInput.value = state.q;
     clearRange.disabled = !state.from && !state.to;
     tailToggle.setAttribute("aria-pressed", String(state.tail));
-    railToggle.setAttribute("aria-pressed", String(!state.facets));
-    railToggle.title = state.facets ? "Collapse file rail" : "Expand file rail";
-    railToggle.setAttribute("aria-label", railToggle.title);
-    focusToggle.setAttribute("aria-pressed", String(state.focus));
-    focusToggle.textContent = state.focus ? "Exit focus" : "Focus";
-    themeToggle.title = state.theme === "light" ? "Switch to dark mode" : "Switch to light mode";
-    themeToggle.setAttribute("aria-label", themeToggle.title);
+    railCollapse.setAttribute("aria-pressed", String(!state.facets));
+    railCollapse.textContent = state.facets ? "Collapse" : "Expand";
+    railCollapse.title = state.facets ? "Hide the file rail" : "Show the file rail";
     const original = fused.params.get("_file") || "";
     fused.autoReload(!state.tail && (!original || samePath(original, state.file)));
     linesTab.classList.toggle("active", state.view === "lines");
@@ -1642,14 +1652,13 @@
     const state = currentState();
     if (!state.file) {
       renderState(state);
-      renderOpenFiles(state);
       fileOverview.innerHTML = "";
       levelList.innerHTML = "";
       resultSummary.textContent = "No file open";
       noticeArea.innerHTML = "";
       pager.hidden = true;
       histSkel.hidden = true;
-      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Use "Browse files..." to pick a log.</span></div>`;
+      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Open a <code>.log</code> file from the file explorer to view it here.</span></div>`;
       return;
     }
     const nextDataKey = dataKey(state);
@@ -1662,7 +1671,6 @@
     }
     lastTailState = state.tail;
     renderState(state);
-    renderOpenFiles(state);
     if (loadingDataKey === nextDataKey) return;
     if (dataReadyKey === nextDataKey && overviewData && overviewFile === state.file) {
       renderOverview(overviewData, state);
@@ -1719,90 +1727,26 @@
 
   clearRange.addEventListener("click", () => setParams({ from: "", to: "", page: "0", back: "" }));
 
-  railToggle.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
-  focusToggle.addEventListener("click", () => setParams({ focus: currentState().focus ? "0" : "1" }));
-  themeToggle.addEventListener("click", () => setParams({ theme: currentState().theme === "light" ? "dark" : "light" }));
-
-  openFiles.addEventListener("click", (event) => {
-    const state = currentState();
-    const close = event.target.closest("[data-close-file]");
-    if (close) {
-      if (state.opened.length <= 1) return;
-      const remaining = state.opened.filter((path) => !samePath(path, close.dataset.closeFile));
-      if (samePath(close.dataset.closeFile, state.file)) activateFile(remaining[remaining.length - 1], remaining);
-      else setParams({ open: JSON.stringify(remaining) });
-      return;
-    }
-    const select = event.target.closest("[data-open-file]");
-    if (select && !samePath(select.dataset.openFile, state.file)) activateFile(select.dataset.openFile, state.opened);
-  });
-
-  browseButton.addEventListener("click", openPicker);
-  pickerClose.addEventListener("click", closePicker);
-  pickerOverlay.addEventListener("mousedown", (event) => {
-    if (event.target === pickerOverlay) closePicker();
-  });
-
-  pickerCrumbs.addEventListener("click", (event) => {
-    const crumb = event.target.closest("[data-path]");
-    if (crumb) loadPickerDir(crumb.dataset.path);
-  });
-
-  pickerList.addEventListener("click", (event) => {
-    const dir = event.target.closest("[data-dir]");
-    if (dir) {
-      loadPickerDir(dir.dataset.dir);
-      return;
-    }
-    const file = event.target.closest("[data-file]");
-    if (file) openPickedFile(file.dataset.file);
-  });
-
-  pickerPathForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const value = pickerPath.value.trim();
-    if (!value) return;
-    pickerError.hidden = true;
-    try {
-      const info = await runReader("resolve", currentState(), { path: value });
-      if (!info.exists) {
-        showPickerError(`No such file or folder: ${info.path}`);
-        return;
-      }
-      if (info.is_dir) {
-        pickerPath.value = "";
-        loadPickerDir(info.path);
-        return;
-      }
-      openPickedFile(info.path);
-    } catch (error) {
-      showPickerError(errorMessage(error));
-    }
-  });
-
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !pickerOverlay.hidden) closePicker();
-  });
-
-  tailToggle.addEventListener("click", () => {
-    const state = currentState();
-    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
-    if (!state.tail) {
-      tailEndOffset = number(size);
-      tailPageOffset = Math.max(0, tailEndOffset - 65536);
-    }
-    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
-  });
-
-  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
-  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+  railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
+  // runtime.js owns `data-theme` now (the `data-fused-theme` opt-in above), so
+  // nothing here resolves or applies a theme. The charts still have to know:
+  // they read the palette through getComputedStyle at DRAW time, so a theme
+  // change repaints correctly only if something redraws them. Observing the
+  // attribute rather than re-listening to storage/matchMedia keeps that true
+  // whoever changes it, and leaves exactly one resolver in the codebase.
+  new MutationObserver(() => {
+    if (chartData) requestAnimationFrame(resizeCanvas);
+  }).observe(document.documentElement, { attributeFilter: ["data-theme"] });
 
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");
     if (!button || !overviewData) return;
     const level = button.dataset.level;
     const state = currentState();
-    const available = overviewLevels(overviewData).map(([name]) => name);
+    // facetLevels, NOT overviewLevels: `available` decides what gets written to
+    // the URL when a level is unchecked, so an entry here that the list does
+    // not show becomes a selected-but-absent level and reappears.
+    const available = facetLevels(overviewData, state.levels).map(([name]) => name);
     const selected = new Set(state.levels.length ? state.levels : available);
     if (selected.has(level)) selected.delete(level);
     else selected.add(level);
@@ -1811,6 +1755,25 @@
   });
 
   results.addEventListener("click", async (event) => {
+    // Structured <-> raw, per row. Rows persist across polls now, so this
+    // stays put until the record leaves the window.
+    const viewButton = event.target.closest("[data-detail-view]");
+    if (viewButton) {
+      event.stopPropagation();
+      const body = viewButton.closest(".line-detail").querySelector(".detail-body");
+      const toRaw = viewButton.dataset.detailView === "raw";
+      body.dataset.view = toRaw ? "raw" : "structured";
+      // Both by CLASS, never by position. A block-text field renders as its own
+      // <pre class="field-block"> inside the table, so `querySelector("pre")`
+      // returned that one on any record with a traceback — hiding the table and
+      // un-hiding a node inside it, which left the panel blank and made the
+      // button look inert. `.detail-raw` names the one node this means.
+      body.querySelector(".field-table").hidden = toRaw;
+      body.querySelector(".detail-raw").hidden = !toRaw;
+      viewButton.dataset.detailView = toRaw ? "structured" : "raw";
+      viewButton.textContent = toRaw ? "Fields" : "Raw JSON";
+      return;
+    }
     const contextButton = event.target.closest("[data-context]");
     if (contextButton) {
       event.stopPropagation();

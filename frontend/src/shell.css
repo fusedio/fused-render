@@ -4056,6 +4056,26 @@ select.field-control:has(option[value=""]:checked) {
   opacity: 0.65;
 }
 
+/* A labelled control plus its explanation (the Call log section's parameter
+   and retention selects). Same vertical rhythm as .prefs-radio rows, but the
+   label and its <select> sit on one line above the muted note. */
+.prefs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.prefs-field > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prefs-field select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* Registry table: pattern -> template chips (+ source badge). */
 .prefs-registry-table {
   border-collapse: collapse;

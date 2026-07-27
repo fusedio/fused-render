@@ -22,6 +22,20 @@ import traceback
 # before run() mutates sys.path, so a user module dir can't shadow it.
 from _binding import bind_params
 
+# The flip side of that same script invocation: sys.path[0] is the PACKAGE
+# directory, not its parent, so `import fused_render` does NOT resolve here
+# unless the package happens to be pip-installed into this interpreter. A helper
+# that delegates to the package therefore died in the child with "No module
+# named 'fused_render'" — which is how the call-log reader (it reads the store
+# through `fused_render.calls`) failed while log_studio's stdlib-only reader
+# worked, making a child-bootstrap bug look like a call-log bug.
+#
+# Appended rather than inserted: a real installation keeps precedence, and so
+# does the user's own module directory that run() puts at sys.path[0].
+_PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PACKAGE_PARENT not in sys.path:
+    sys.path.append(_PACKAGE_PARENT)
+
 
 def run():
     req = json.load(sys.stdin)
@@ -56,11 +70,33 @@ def run():
             ) from None
         out = {"ok": True, "result": result}
     except BaseException as e:  # noqa: BLE001 — includes SystemExit from user code
+        message = str(e)
+        # A helper that cannot see `fused_render` is a worker-bootstrap problem,
+        # not a problem with the helper — and the bare "No module named
+        # 'fused_render'" that reached the user said nothing about which
+        # interpreter looked, or where. Name the environment so the next report
+        # is conclusive instead of a guess about how it was installed.
+        #
+        # EXACT name, not its first segment: when the package itself is missing
+        # Python reports `name` as the top-level package even for a submodule
+        # import (`import fused_render.calls` -> name='fused_render'), whereas a
+        # missing submodule under a package that IS importable reports the full
+        # dotted path ('fused_render.calls'). Matching the first segment
+        # therefore attached a bootstrap diagnosis — executable, PYTHONPATH,
+        # sys.path — to a plain typo in a submodule name, pointing the reader at
+        # an environment that is fine.
+        if isinstance(e, ImportError) and e.name == "fused_render":
+            message += (
+                f" [worker could not see the fused_render package: "
+                f"executable={sys.executable}, "
+                f"PYTHONPATH={os.environ.get('PYTHONPATH') or '(unset)'}, "
+                f"sys.path[:3]={sys.path[:3]}]"
+            )
         out = {
             "ok": False,
             "error": {
                 "type": type(e).__name__,
-                "message": str(e),
+                "message": message,
                 "traceback": traceback.format_exc(),
             },
         }

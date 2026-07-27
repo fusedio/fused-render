@@ -178,6 +178,22 @@ def main(city: str = "oslo", limit: int = 100):
 ### 5.3 Execution environment
 
 - **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
+- **PY-6a** The subprocess worker (`_child.py`) **bootstraps the package onto
+  its own `sys.path`**. It is spawned as a standalone script, so `sys.path[0]`
+  is the package directory rather than its parent and `import fused_render`
+  resolves only when the package is pip-installed into that interpreter — so a
+  first-party helper that delegates to the package (the call-log reader reads
+  the store through `fused_render.calls`) failed there with *No module named
+  'fused_render'*, while a stdlib-only helper worked. The allowlist (D72) hid
+  this for the built-in copies; a user FORK of such a helper under
+  `~/.fused-render/templates/` is user code, correctly stays on the subprocess
+  path, and must still work. The parent is APPENDED, so a real installation and
+  the user's own module directory both keep precedence.
+- **PY-6b** The allowlist covers **both** the staged core-templates copy and the
+  bundled original of each helper. They are the same first-party file; listing
+  only one made a run served from the other fall to the subprocess path
+  silently — a per-poll spawn for the readers, and (before PY-6a) an outright
+  failure for one that imports the package.
 - **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
 - **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.
@@ -1045,19 +1061,27 @@ never imports server).
 ### 20.1 Store & endpoints
 
 - **PF-1** `GET /api/prefs` → `{engine: {selected, effective, forced_by,
-  fused_available}, log: {path, dir}, deploy: {enabled}}`. `PUT /api/prefs`
-  (X-Fused) applies a **partial** update — any of `{engine}` and/or
-  `{deploy_enabled}` present, so each control PUTs only its own field — and
+  fused_available}, deploy: {enabled}, reader: {enabled}, calls: {…}}` — and no
+  `log` block (PF-5). `PUT /api/prefs`
+  (X-Fused) applies a **partial** update — any of `engine`, `deploy_enabled`,
+  `reader_enabled`, `calls_enabled`, `calls_params` or `calls_retention_days`
+  present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value, a non-boolean
   `deploy_enabled`, or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
-- **PF-1a** The page renders its sections in this order: **Template registry**,
-  **Logs**, **Execution engine**, **Deploy to Fused account** (the spec subsection
-  numbering below is organizational, not the visual order).
+- **PF-1a** The page renders its sections in this order: **Appearance**,
+  **Call log**, **Deploy to Fused account**, **Accessibility**, and last
+  **Execution engine** — last because it is the setting a user is least likely
+  to have come here to change (builtin suits almost everyone, and an env var
+  pins it where it matters). There is **no Tour button**: the tour still runs
+  itself on a first visit (`maybeAutoStartTour`), because it is onboarding
+  rather than a preference. (The spec subsection numbering below is
+  organizational, not the visual order.)
 - **PF-2** The page is a thin client over existing backends everywhere else:
-  logs reveal via `POST /api/fs/reveal`, deployments via `GET
-  /api/deploy/config` + `GET /api/deploy/shares`, revocation via `POST
-  /api/deploy/revoke`, registry via `GET /api/templates/registry`.
+  deployments via `GET /api/deploy/config` + `GET /api/deploy/shares`,
+  revocation via `POST /api/deploy/revoke`, registry via `GET
+  /api/templates/registry`, the call store's in-app browse via ordinary
+  navigation.
 
 ### 20.2 Execution engine switch
 
@@ -1094,10 +1118,15 @@ never imports server).
 
 ### 20.3 Logs
 
-- **PF-5** The page names this process's log file (`logs.log_path`, from
-  `GET /api/prefs`) and "Open logs location" reveals it in the OS file
-  manager through the existing reveal endpoint — the web-UI twin of the
-  menu-bar app's "Open logs".
+- **PF-5** **The app's own log is NOT on this page**, and `GET /api/prefs`
+  carries no `log` block. It used to: a heading naming `logs.log_path` with an
+  "Open logs location" reveal button. Removed because the app log is
+  disposable temp-dir output (D68) whose only affordance was that reveal —
+  which the desktop tray's "Open app logs" already provides on every platform that
+  has a tray — and because once the call store moved to `~/.fused-render/logs`
+  (CL-7), a second "Logs" heading beside the Call log section read as the call
+  log's own settings. The durable log a user has settings for is the call log
+  (§31); the disposable one belongs to the process, not to preferences.
 
 ### 20.4 Deploy to Fused account
 
@@ -1678,8 +1707,9 @@ SPEC DM-7); the CLI/browser experience is unchanged.
 - **PV-3** Header row (native NSButtons above the webview, in the popover):
   **Open in Browser** (home tab, same pending-queue semantics as before
   readiness), **Copy URL**, **Pin…** (NSOpenPanel; becomes **Change…** when a
-  pin is set), **Unpin** (hidden when nothing is pinned), **Logs** (reveal in
-  Finder), **Quit**. Native, not web chrome: the header must work when the
+  pin is set), **Unpin** (hidden when nothing is pinned), **Open app logs**
+  (reveal in Finder — "app" because the call log, §31, is the other thing a user
+  could mean and is the durable one with settings), **Quit**. Native, not web chrome: the header must work when the
   server is dead — a web-based Quit would die with it.
 - **PV-4** Popover: `NSPopover`, transient behavior (click-away dismisses),
   default content 420×450 — a square 420×420 webview over the 30 px bar —
@@ -1704,7 +1734,7 @@ SPEC DM-7); the CLI/browser experience is unchanged.
 - **PV-7** New AppKit code lives in `fused_render/menubar_pin.py` (popover +
   click routing controller) and the pure-python pin store in
   `fused_render/pin_store.py` (unit-tested; AppKit code is not CI-testable).
-- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open logs /
+- **PV-8** Fallback: the rumps menu (Open in browser / Copy URL / Open app logs /
   Quit) is still built but never attached while the popover controller is
   alive. If `menubar_pin` fails to import or construct (e.g. missing WebKit
   framework), the menu is attached as before — the app is never left
@@ -2147,24 +2177,40 @@ not by choice.
   also why the view has no flash either).
 - **AP-9** **Tier 1** — views with a real light palette authored: `code`,
   `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
-  `vector`, `structure`, `tree`. Each carries the identical structure: a `:root`
-  dark palette, a `:root[data-theme="light"]` twin defining the same token set,
-  and the AP-8 opt-in.
+  `vector`, `structure`, `tree`, `log_studio`. Each carries the identical
+  structure: a `:root` dark palette, a `:root[data-theme="light"]` twin defining
+  the same token set, and the AP-8 opt-in — and **nothing else**: no `data-theme`
+  literal on `<html>` (dark is the CSS default, AP-2, and the runtime overwrites
+  the attribute before first paint anyway), no reading of the storage key, no
+  private theme param. A tier-1 view whose canvas/JS colours are sampled at draw
+  time re-reads them from a `MutationObserver` on `data-theme` (`code`
+  reconfigures CodeMirror this way; `log_studio` redraws its charts).
 - **AP-10** **Light by design** — always light, ignore the setting entirely, no
   opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
   `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
   text/code group.)
-- **AP-11** **Self-toggling, untouched**: `excel`, `log_studio` and `tableau`
-  keep their own in-view theme buttons and private storage keys (e.g.
-  `excel-theme`). Not migrated, not overridden.
+- **AP-11** **Self-toggling**: `excel` and `tableau` keep their own in-view
+  theme buttons and their private storage keys, ignore the app setting entirely,
+  and the shell never pushes a theme into them (no `data-fused-theme` opt-in, so
+  the runtime leaves them alone). **A built-in view does not get both**: either
+  it opts in and the shell's setting is the whole answer (AP-9), or it owns its
+  appearance completely (here) — a view that opts in *and* keeps a switch has
+  two resolvers for one question, and the switch is the one that loses, because
+  every `storage`/`matchMedia` change re-applies over it. (`log_studio` was on
+  this list; its button is gone and it is tier-1 — D154.)
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
   `netcdf`, `las`, `annotate`, `geometry_editor`, `history`, `preview`, `zip`,
   `tar`. Accepted consequence: in Light mode these render dark inside a light
   shell.
-- **AP-13** **User-authored `.html` views get no theme signal at all.** Their
-  CSS stays entirely theirs; nothing is written into their document.
+- **AP-13** **User-authored `.html` views get no theme signal at all** — by
+  default. Their CSS stays entirely theirs and nothing is written into their
+  document. The AP-8 opt-in is a property of the *document*, not of who wrote
+  it, so a user view that sets `data-fused-theme` itself is asking for the
+  attribute and gets it on the same terms as a built-in; that is documented in
+  the authoring skill as the way to match the app. What must never happen is a
+  view being themed without having asked.
 - **AP-14** The four lists above (AP-9..AP-12) are **exhaustive** over
   `fused_render/templates/`, and a test asserts it — a newly added template
   cannot quietly skip classification.
@@ -2172,3 +2218,405 @@ not by choice.
   `prefers-color-scheme` on its own and does **not** honour an in-app pin. The
   Linux tray icon likewise follows the *desktop's* preference, not this setting
   (D135) — the two are independent.
+
+---
+
+## 31. Call Log — What API Calls a Page Made (D136)
+
+Goal: a page's API calls stop being invisible. Every call a rendered page makes
+through the injected runtime is recorded — with its duration, result size,
+output and any traceback — so "why is this page slow", "what did my app just
+do", and "did it error when the user opened it" have answers that survive a
+reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
+
+- **CL-1** **What is a call.** Every request `static/runtime.js` issues on a
+  page's behalf: `runPython` (`POST /api/run`), `writeFile`
+  (`POST /api/fs/write`), `stat` (`GET /api/fs/stat`), `readFile`
+  (`GET /api/fs/raw`). NOT in the log: requests the shell makes for itself
+  (they carry no attribution, CL-3), a page's own `fetch()` to a third party,
+  the sci templates' loopback tile daemons (outside the server by design,
+  D122), and `rawUrl()` used as an element `src` — a synchronous URL string
+  has nowhere to carry a header, and adding a query param would change every
+  raw URL (cache keys, and the hosted runtime's bundle-key resolution). The
+  log is honest about what it sees; it does not claim to be complete.
+- **CL-2** **The record** (`calls.py`, `version: 1`) is the serve plane's
+  error record (the `fused` repo's `spec/serve/error-reporting.md` §1)
+  **widened to successes** — same field names, units, and caps, additive under
+  `version` — so a page's local numbers and its deployed ones are comparable
+  and render in one viewer. Adds `outcome`, `result_bytes`/`result_kind`/
+  `result_rows`, `server_ms`/`run_ms`, `page`/`target_file`/`first_party`,
+  `route`, `engine`, `call_id`. Caps verbatim from that spec: `error` ≤ 16 KiB,
+  `stdout_tail`/`stderr_tail` ≤ 4 KiB each, `params` ≤ 2 KiB serialized, whole
+  record ≤ ~32 KiB. Truncation is **marked** in the record (`truncated`,
+  `params_truncated`), never silently grown, and text is capped at the **tail**
+  — the end of a traceback is the exception. Never stored: file contents (a
+  write records its byte count only), request headers. Each record also carries a
+  conventional **`level`** (`INFO` for ok, `ERROR` for error/conflict and a
+  page-error, `WARN` for readonly, `DEBUG` for the stale outcomes — thrown-away
+  work is normal for a slider, not a warning), emitted **early** in the object
+  because a generic log viewer takes the FIRST level word in the line: ahead of
+  the page path, params and traceback, so `/x/error-demo.html` or an "INFO" in
+  stdout cannot outvote the real severity. Without it a healthy record contained
+  no level word at all and `log_studio` bucketed everything as **OTHER**, its
+  level facets empty. **Null-valued keys are omitted on write**: a narrow record (a `stat`, a raw read) was otherwise
+  mostly `null`s, and — because generic log viewers infer a level by sniffing
+  the raw line for level words — the field NAME `"error": null` made every
+  healthy call render as ERROR in `log_studio`, which the registry offers for
+  this file. Absent-means-null is safe for every consumer here (all read through
+  `.get()`), and matches the sidecar's additive-records posture (HV-6). The
+  last-resort shrink for a record still over ~32 KiB after the per-field caps
+  **marks** the fields it drops by setting them to `None`, so its result goes
+  back through the same prune before serialization — writing it directly emitted
+  those fields as explicit nulls and omitted `level` and `recorded_at`,
+  reinstating the `"error": null` ERROR misread on precisely the records most
+  likely to be worth reading.
+- **CL-3** **Attribution is by header, exclusion by construction.**
+  `runtime.js` sends `X-Fused-Page` (the page's own path), `X-Fused-Target`
+  (`_file`, when the page is a template) and `X-Fused-Call` (a per-call id) on
+  every call it issues, plus `X-Fused-Supersedes` (comma-separated ids this call
+  abandoned, CL-5a) on the request that caused a supersession.
+  `X-Fused-Page` is the whole test for "is this an app
+  call": the shell's own `/api/fs/list`, the conditions probe, and any other
+  caller carry none and are therefore never logged — no endpoint blocklist to
+  drift. Like `X-Fused` these force a CORS preflight; this is attribution, not
+  auth (D3/D36 unchanged).
+- **CL-4** **One write point.** The record is created by the ASGI middleware on
+  the way in (`request.state.fused_call`), **enriched in place** by route
+  handlers (`/api/run` adds the resolved `.py`, params, engine, output tails
+  and traceback; `/api/fs/write` adds bytes and the conflict/readonly
+  outcome), and written by the middleware on the way out — the single
+  `calls.record()` call. A handler that enriches nothing still yields a valid
+  thin record, so a new endpoint is logged by default. Because
+  `@app.exception_handler(Exception)` runs in `ServerErrorMiddleware`
+  (**outside** user middleware), a 500 is recorded from the middleware's
+  `except` branch. `server_ms` is time-to-response-**object**, not
+  time-to-last-byte (a `FileResponse`/mount proxy has not streamed yet) — the
+  same property the SV-3 access line already has; `result_bytes` for a
+  streamed route comes from `Content-Length`.
+- **CL-5** **Superseded calls are counted, never averaged.** `runPython`'s
+  latest-wins cancellation (RH-9/D114) means one slider drag issues dozens of
+  calls of which one completes. Records carry `outcome`
+  (`ok | error | conflict | readonly | superseded | aborted | disconnected`),
+  and every latency statistic — `p50`/`p95`/`max`, per bucket and per target —
+  **excludes** the stale outcomes while still counting them separately.
+  Thrown-away work is a signal worth seeing (it is the "my page is hammering
+  Python" tell); folding it into percentiles would report a dozen slow calls
+  for what the user experienced as one request.
+- **CL-5a** **The page reports supersession; the server cannot infer it.**
+  Aborting a `fetch` does **not** raise into the handler — the run completes and
+  the middleware would record an ordinary success — so the page names the
+  abandoned `call_id`s and `finish()` stamps the outcome from a short-TTL,
+  hard-bounded set of pending marks. Because the store is append-only and the
+  outcome is stamped in place, the mark has to arrive **before** the abandoned
+  call's record is written, which makes the transport a correctness question and
+  not a detail: it rides the **`X-Fused-Supersedes` header on the superseding
+  request**. A supersession only ever happens because the page is issuing a new
+  call on the same channel, and that request leaves in the same synchronous task
+  as the abort, so the server takes the mark in `begin()` — the earliest point it
+  sees the request. The separate `POST /api/calls/event` (`kind: "superseded"`)
+  remains as the **unload backstop**, where there is no request left to carry the
+  ids; it is no longer the primary path, because deferring it by one macrotask
+  put it ~19 ms after the abort (measured), and every abandoned call that
+  finished inside that window was written `ok` and averaged into the percentiles
+  — the failure this rule exists to prevent, reachable by any in-process helper
+  (D72). A mark is consumed once, so an id can never reclassify a second record,
+  and the header path *takes* the queued ids rather than copying them so a
+  duplicate cannot arrive after the record was written. **Known gap:** a closed tab or
+  a reload is not reported by anyone and still records as `ok`. Server-side
+  detection is **not available under this app's shape**, verified twice rather
+  than assumed: from a route, `BaseHTTPMiddleware` wraps the downstream
+  `receive` so `request.is_disconnected()` never observes `http.disconnect`;
+  from the middleware it does observe it, but `is_disconnected()` peeks by
+  *consuming* a message off the receive channel, so polling it starves the
+  downstream route of its `http.request` body and every request with a body
+  hangs (a body-less spike hides this entirely). Closing the gap means
+  converting that middleware to pure ASGI so it can tee the receive channel —
+  its own change to the server's hottest path. The abandoned run also completes
+  in full either way: `runPython`'s cancellation frees the browser's connection,
+  not the compute, and killing it needs the executor to expose its Popen.
+- **CL-6** **`page-error` records: the record for when NO call happened.** A
+  page whose JS throws before it reaches `runPython` is, in the log, identical
+  to a page nobody opened — so `runtime.js` reports uncaught errors and
+  non-runPython unhandled rejections to `POST /api/calls/event`
+  (`kind: "page-error"`, carrying message/source/line/col/stack), capped per
+  page load. `POST /api/calls/event` carries both page-originated kinds — this
+  one and `superseded` (CL-5a) — since both are facts only the page can know.
+  A page error is the one record that is not written by the middleware,
+  deliberately: it is not an HTTP call, it is what happened instead of one. A
+  runPython failure the page did not catch is NOT re-reported here — the
+  server already recorded it against the `/api/run` call, with the real
+  traceback.
+- **CL-7** **Store.** `~/.fused-render/logs/<partition>/<date>-<pid>-<part>.calls.jsonl`
+  — append-only JSONL under the branch-aware shell home, partitioned per app
+  (CL-18). The root is `logs/`, which is NOT where `logs.py` writes: the app log
+  is disposable and lives in the system temp dir (D68), while this store is
+  durable and pruned by code (CL-10), so the two never share a directory despite
+  both being called logs in the UI.
+  One file per day per
+  process (per-pid for the same reason `logs.py` is: two live servers must not
+  interleave lines, and the reader merges the day back together, CL-12), rolled
+  to the next `part` past `MAX_FILE_BYTES` (CL-9). `part` is zero-padded so parts
+  of one pid sort in order, which the oldest-first size trim depends on. Name
+  order is date, then pid, then part — and only the **date** segment orders
+  records in time. The pid segment does not (it is arbitrary, and compared
+  lexically, so pid 8000 sorts after pid 12345), which is why NO reader may treat
+  "last file by name" as "newest records" — not the store walk (CL-12), and not
+  any bounded newest-first probe a future gate does (CL-11), which must order by
+  **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
+  sidecar (§21, D82–D84): every writer there does a whole-file
+  read-merge-write, which at call volume is O(n²) plus a lost-update race —
+  the sidecar is right for low-frequency history, wrong for a firehose. Not
+  the app log (`logs.py`): that file is disposable by design (D68) and
+  unparseable. `.calls.jsonl` is a compound registry key, so the store opens
+  in the `calls` view by default and `.jsonl`'s `duckdb` binding still queries
+  it with no new code.
+- **CL-8** **Fail-open is normative.** Logging must never fail — or
+  meaningfully delay — the thing it observes. `record()` only does a
+  `put_nowait` onto a bounded queue; a background writer thread does the
+  append, so nothing on the request path touches the filesystem. An unwritable
+  directory, a full queue, an unserializable value, or a rate-cap hit **drops
+  the record and counts the drop** (surfaced as `dropped`); none may alter the
+  response. The writer thread swallows write errors and keeps draining — a
+  dead writer would silently stop logging while callers kept queueing.
+- **CL-9** **Four independent bounds**, because a diagnostics store that fills
+  the disk would be a worse bug than the one it exists to find: per-record caps
+  (CL-2), a **per-page token bucket** (600/min, burst 200 — a runaway render
+  loop drops its excess and cannot silence other pages), a **per-file cap**
+  (`MAX_FILE_BYTES`, 32 MB, rolled to a new part — without it a single day's
+  file grows unbounded, since the directory cap can only delete whole files),
+  and **retention by both age and directory size** (default 14 days, matching
+  the serve plane's `errors/` lifecycle rule, plus a 200 MB cap trimmed
+  oldest-first). **A file dated today is never trimmed**: it may be open for
+  append by this process or another server, and deleting it would silently
+  discard the whole day (the writer simply recreates it) — so within-day growth
+  is bounded by the per-file roll, not by the directory cap, and a store still
+  over cap with only today's files left logs a warning rather than pretending
+  the cap held. **Retention runs on the writer thread, never a request**: once
+  when the thread starts, then whenever the UTC date rolls or 24 h have elapsed
+  — checked both after a write and on an idle wake, **whichever comes first**.
+  The queue wait is bounded (`SWEEP_POLL_S`) precisely so the second of those
+  exists: with an indefinite wait the due-check only ran just after a record
+  landed, which made retention a side effect of writing and left an app that
+  went quiet after a busy afternoon holding its expired files until something
+  called Python again — "nothing is happening" being exactly when nobody
+  triggers the cleanup. A busy server still sweeps at most once a day; the
+  check gates on the same interval either way. (The writer thread is started
+  lazily by the first record, so a process that records nothing at all prunes
+  nothing — accepted: such a process is also adding nothing, and the next
+  session that makes a single call clears the backlog.) D68 chose the temp dir
+  for the app log precisely because "nothing prunes the directory"; this store
+  is durable instead, so the pruning is code.
+- **CL-10** **Reads of the store are recorded like any other call; nothing
+  *watches* a store file.** Everything that opens the store (`log_studio`,
+  `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to open a large
+  log is worth knowing, and a blanket exclusion would be a special case in the
+  record contract. The one exclusion this rule used to carry — the `calls`
+  view's own reader, matched by shape so a polling viewer's reads could not
+  inflate the numbers it was reporting — went with the view (CL-11) rather than
+  sitting unreachable, and comes back with it: a viewer that POLLS and attributes
+  its reads to the page being analysed is a feedback loop, and that is a
+  property of the viewer, not of the store. That is only safe because **the runtime never adds
+  a call-log file to its auto-reload watch set** (`calls_dir`/`calls_suffix` from
+  `/api/config`, applied beside the existing mount-backed exclusion): viewing the
+  file appends to it, so a watcher would reload, re-read, append and reload
+  forever. Removing the watch kills the loop at its source rather than by
+  withholding data, and it must live in the runtime rather than per template —
+  `code` opts out of auto-reload unconditionally, `log_studio` only while Tail is
+  on (default off), and `duckdb`/`tree` not at all, so template-side opt-outs
+  would leave the default path looping. Watching a store file was never useful
+  anyway: the viewers that want live updates poll, and both `log_studio`'s Tail
+  and the `calls` view's Follow switch auto-reload off while engaged so a reload
+  cannot rebuild the frame mid-poll. The `/api/calls*` routes are likewise never
+  logged.
+- **CL-11** **The in-app view is DEFERRED to its own change; this spec section
+  covers the store and the CLI.** A `calls` view template was written and then
+  pulled: it failed in practice (a worker could not import the package — PY-6a),
+  and rather than keep debugging a surface inside a change that is really about
+  the record and the store, it comes back on its own. Nothing is unread in the
+  meantime: `fused-render calls` (CL-13) is the agent's read surface and runs
+  in-process with no worker at all, and `.calls.jsonl` is bound to **log_studio**,
+  which renders each record as fields (records carry a conventional `level`, so
+  its facets and histogram work unchanged). When the view returns it is an
+  ordinary template per HV-1/D78 — no shell code, forkable into
+  `~/.fused-render/templates/` — bound as a **conditional peer** (CT-12), never a
+  default, with a `condition.py` gate on "this file has records" so a page nobody
+  has run grows no dead mode. That gate must duplicate the store-path resolution
+  (it runs standalone in the user template dir) and the duplicate must be
+  **pinned by a test** against `store_dir()` and `partition_name()`, not left to
+  match by inspection — the shape D144/D151 already paid for twice.
+- **CL-12** **The reader pre-aggregates; the template draws.** Ops mirror
+  `log_studio/reader.py`: `overview`, `page` (cursor-paged), `series`
+  (bucketed points), `targets` (per-entrypoint rollup), `detail`, `config`.
+  Bucketing and percentiles happen server-side — the template sees one point
+  per bucket, never 100k records. Reads are also bounded by the **window**, not
+  just by the response size: files are read backwards from the tail, a file
+  whose mtime predates the window is skipped whole (for an append-only file its
+  mtime IS its newest record), and within a file the first record **appended**
+  before the window ends it. The early stop compares `recorded_at` (append time,
+  stamped at write) and **not** `occurred_at` (call start, stamped in `begin()`):
+  the file is ordered by COMPLETION, so a long call sits at the tail carrying an
+  old start time, and stopping on `occurred_at` skipped newer short calls
+  appended before it — a short window over ordinary overlapping traffic could
+  return nothing at all. Since `occurred_at <= recorded_at` always, a record
+  appended before the window cannot have started inside it, which makes the stop
+  exact rather than merely conservative; a record without `recorded_at` never
+  stops the walk. Files are skipped but never stopped at, because same-day files
+  from different processes interleave in time. Without this a one-hour question
+  parsed the entire retention window. For the same reason that interleaving
+  forbids stopping at a file, same-day files are **merged** on `recorded_at`
+  rather than read one after another: pid order is not time order (CL-7), so
+  draining one file before the next returned a stale process's tail as the newest
+  records — with two live servers, `query`'s cursor stuck on the lexically-later
+  pid and `--follow` never woke, because the live server's writes sorted first
+  and were reached only after the stale file ran out. The merge is **per day**
+  (whole days cannot interleave — a file only takes appends while the UTC date
+  still matches its name), which bounds open handles to one day's files and keeps
+  the walk lazy: a `limit` satisfied by today never opens last week's.
+  These are the query helpers in `calls.py`; the CLI (CL-13) calls them
+  directly, and the deferred view (CL-11) will too.
+- **CL-13** **A cursor, not a wall-clock guess.** `query` accepts a
+  `call_id` cursor and returns the newest id with every page, so a caller —
+  usually an agent verifying a page it just wrote — asks for "everything since
+  I last looked" instead of guessing how long the human took to open it. The
+  returned cursor is always an id the caller was **shown**: the newest record
+  that passed the filters, never merely the newest in the store. A cursor drawn
+  from outside the filtered stream advances on traffic the caller cannot see, so
+  `--follow --page X` woke on another page's calls and then reported none for X —
+  the same false negative the feature exists to prevent. When nothing newer
+  matched, the caller's own cursor is returned unchanged (returning `None` would
+  read as "start over" and answer with an unbounded newest page); with no matches
+  at all it is `None`, and the CLI omits the cursor line rather than printing one
+  that cannot be passed back. The walk still stops at the cursor by **identity**,
+  checked before the filters, so a cursor that no longer matches them ends the
+  walk correctly instead of reading as purged. A caller that passes a cursor is
+  telling you what it has already seen, so `--follow` **waits only when that
+  cursor already has matching records behind it**: those landed between the
+  caller's last read and this command and are already the answer, and waiting for
+  the tip to move past them timed out holding exactly what was being waited for.
+  That test is a **bounded read, not an id comparison** — `cursor != tip` answers
+  a different question, and a cursor from a broader read is not the tip of a
+  narrower one, so comparing ids made `--follow --page X` with a global cursor
+  skip the wait entirely and report nothing. A cursor that cannot be found is not
+  treated as "already new": absence proves nothing about what arrived, so it falls
+  through to the wait — and when that happens the follow resumes from the
+  **baseline**, not from the ghost id: keeping it made the post-wait read fall
+  back to "the newest page", which the bounded digest then reported as what
+  arrived. `cursor_missing` reaches the caller on **every** exit — including the
+  timeout, which is the likelier one for a bad cursor (an agent holding a ghost id
+  usually has nothing arriving either) and which reported it only once activity
+  happened to save it, i.e. never when it was the whole explanation for an empty
+  answer. And because the seeking
+  walk gives up after a bounded scan, `cursor_missing` on its own cannot tell
+  "purged" from "never reached" — `scan_truncated` says which, is carried into the
+  CLI's JSON, and switches the text note from a confident "purged by retention, or
+  wrong" to a statement that the store is deeper than this read and the gap is not
+  shown. Claiming absence the walk never verified is the error to avoid. On the
+  follow path that flag comes from the **probe**, not from the post-wait read: once
+  the cursor is replaced by the baseline that read is no longer looking for the
+  caller's id, so its `scan_truncated` says nothing about the caller's cursor.
+- **CL-14** **CLI.** `fused-render calls [--page P] [--since 1h] [--failed]
+  [--entrypoint E] [--since-cursor ID] [--json] [--verbose] [--follow]` reads
+  the store directly off disk (no server needed). **Digest by default**: the
+  outcome tally, the per-target rollup, then failures in full and page errors
+  named separately — dumping hundreds of raw records would burn the context of
+  the agent that is the main consumer of this surface. `--follow` blocks until
+  new records appear, so "open the page and I'll check" is one round trip
+  rather than two.
+- **CL-14b** **One path form in the store: the shell's canonical form.** Every
+  path-valued field (`page`, `target_file`, `entrypoint`) is written
+  forward-slashed, via `_view_url_codec.canonical_fs_path`, at the single write
+  point (`record()`). That is the form a path already has everywhere above the
+  OS — what a `/view` URL decodes to and what the runtime sends as
+  `X-Fused-Page` — but not what `os.path` returns on Windows, where
+  `normpath`/`abspath`/`join` answer with backslashes. Enforced at the writer
+  rather than per producer because one backslashed field is enough to make an
+  exact-match filter miss a record forever; readers may then compare with `==`,
+  which is what CL-10's three-role match assumes. `--page`/`--entrypoint` are
+  canonicalized the same way on the way in. Normalization applies **only** to
+  drive-letter paths: on POSIX a backslash is a legal filename character and
+  must round-trip untouched.
+- **CL-14a** **Preference reads are snapshot-cached for 1 s.** `enabled()` and
+  the param-redaction mode are consulted per call, and each was opening and
+  parsing `prefs.json` — measured ~2.8 ms per run, most of the feature's
+  overhead (now ~1.0 ms, 2.4%). The prefs endpoint invalidates the snapshot on
+  write, so a toggle still applies to the very next call and CT-5's no-restart
+  rule holds. The invalidation carries a **generation counter**, because the
+  `prefs.json` read deliberately happens outside the cache lock (holding it
+  across file I/O would serialize every logged call behind one disk read): a read
+  already in flight when the write lands must not store its now-superseded
+  result, or the stale snapshot would be served for the whole TTL and the toggle
+  would look ignored. `FUSED_RENDER_CALLS` remains the process-level override that beats
+  the pref entirely.
+- **CL-15** **Preferences** (§20) carries capture on/off (default **on** — a
+  diagnostic you must enable before the thing you wanted to diagnose is
+  worthless), the param redaction mode (`full` default / `keys` / `off`), and
+  the retention window; `FUSED_RENDER_CALLS=0` is the process-level off switch
+  and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides retention. Params are
+  recorded by default as the same named trade-off the serve spec makes — they
+  are the inputs the author's own code already received, usually the whole
+  repro, and already visible in the URL — with `keys` one click away for a
+  page that passes a secret. The payload also reports the store's location as
+  `dir` **and whether it is there yet** as `dir_exists`: the writer creates the
+  directory on its first append (CL-7), so between "capture on" and "a page
+  actually called something" `dir` names a path that does not exist, and
+  `Browse call logs` waits on the flag rather than sending the explorer to a
+  path that fails to stat. Reported, never provisioned by the read — `GET
+  /api/prefs` must not create storage, and the lazy create is also what keeps
+  an empty store from appearing for someone who never records a call. (The
+  `log.dir` beside it needs no such flag: logging creates its directory at
+  startup, which is exactly why the two differ.) Capture and retention are both
+  **overridable per process**, so the payload additionally reports
+  `effective_enabled` / `effective_retention_days` — taken from
+  `calls.enabled()` / `calls.retention_days()`, **the same resolvers the writer
+  calls**, never a second copy of the precedence rule — plus
+  `enabled_forced_by` / `retention_forced_by`, the raw env value when it is
+  genuinely **in force** and null otherwise. In force is not the same as set:
+  every set `FUSED_RENDER_CALLS` value decides something, but
+  `FUSED_RENDER_CALLS_RETENTION_DAYS` is honoured only as an integer, so an
+  empty or non-numeric one leaves the pref deciding and must report null — a
+  presence check there disables the retention control and blames a variable
+  that is setting nothing. Both flags therefore come from
+  `calls.enabled_override()` / `calls.retention_days_override()`, the writer's
+  own answer to "does this win", on the same ask-the-writer discipline as the
+  `effective_*` pair. The
+  controls bind to the stored prefs (a PUT round-trips, and the choice applies
+  once the override is removed) while a muted line states what is actually in
+  force and names the variable, exactly as the engine block's
+  `selected`/`effective`/`forced_by` does — a page must never report capture as
+  on while the process has it off. The param-redaction mode has no env override
+  and so gets no such pair, rather than an always-null one implying otherwise.
+- **CL-16** **Template readers are apps too.** Previewing a parquet really does
+  make the `duckdb` template call Python, so those calls are real records
+  attributed to the template's own `template.html`. Correct, but "my app's
+  calls" then needs a deliberate filter: records carry `target_file` (for a
+  template, the identity that matters) and `first_party` (the page lives under
+  the packaged, staged-core, or user template dir). `query()` accepts
+  `scope: mine|templates` on top of those fields — the capability the returning
+  view (CL-11) needs, and what `fused-render calls` filters on today.
+- **CL-17** Not a security or audit log. D3 stands — this is a local
+  single-user diagnostic, not an attestation, and nothing may be built on it
+  as if it were tamper-evident.
+- **CL-18** **The store is partitioned per app** (D151; design §4.7). A
+  record lives under `<slug>-<hash>/`, where the identity is the page's
+  containing directory — an app being an `.html` plus its sibling `.py`s, the
+  folder is the unit that lets both the page's and a data file's lookups land
+  in one place. `partition_name()` is the ONE resolver of that name
+  (`canonical_fs_path(normcase(realpath(dir)))` hashed, slug ≤24 chars for the
+  human), duplicated standalone in the gate exactly as `_store_dir` is and
+  pinned to the writer by a test. Records with no resolvable page go to
+  `_unattributed/`. Reads stay MERGED — `store_files()` spans every partition
+  and the day-merge (CL-12) is unchanged — so the bare-`call_id` cursor
+  contract (CL-13, D140–D146) carries over verbatim, and `query()` deliberately
+  does NOT narrow to a partition: "this file" is a three-role match (CL-10,
+  CL-16), and a template's record about your file lives under the *template's*
+  partition, so a narrowed walk silently loses designed behaviour (a test
+  proved it). Only the gate narrows — its probe was always a bounded heuristic,
+  so partition-first with the old global scan as fallback strictly improves
+  it. The size cap trims the **largest** partition's oldest
+  non-today file first (a chatty app must not evict a quiet one), the sweep
+  reaps emptied partition dirs, and `index.json` at the root is an advisory
+  partition→app-dir map written only on partition creation, rebuildable, never
+  load-bearing. A renamed app folder is a NEW partition; the old history ages
+  out unclaimed (owner-accepted over a rename chain). A `.py` borrowed by a
+  page in another folder logs under the borrower, since a record lives where
+  its `page` lives.

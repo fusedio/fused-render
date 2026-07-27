@@ -241,7 +241,7 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
         _item(_ID_SEP1, {"type": "separator", "visible": True}),
         _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
         _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
-        _item(_ID_OPEN_LOGS, {"label": "Open logs", "enabled": True, "visible": True}),
+        _item(_ID_OPEN_LOGS, {"label": "Open app logs", "enabled": True, "visible": True}),
         _item(
             _ID_LOGIN,
             {

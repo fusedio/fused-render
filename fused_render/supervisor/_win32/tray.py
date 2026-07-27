@@ -88,7 +88,7 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Open FusedRender", on_open, default=True),
         pystray.MenuItem("Open file...", on_open_file),
-        pystray.MenuItem("Open logs", on_open_logs),
+        pystray.MenuItem("Open app logs", on_open_logs),
         pystray.MenuItem("Default apps...", on_default_apps),
         pystray.MenuItem(
             "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
