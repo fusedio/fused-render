@@ -5,9 +5,11 @@ The Preferences page's backend (SPEC §20): a tiny persisted preference store
 read-only facts the page shows next to it (log location, engine
 availability/forcing).
 
-Two preferences are persisted: **deploy_enabled** (whether the preview-header
-Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``) and
-the **execution engine** for /api/run:
+Three preferences are persisted: **deploy_enabled** (whether the preview-header
+Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
+**reader_enabled** (whether the Reader listen-to-files accessibility mode is
+offered — opt-in, default off; see ``reader_enabled``), and the **execution
+engine** for /api/run:
 
   * ``"builtin"`` (default) — the built-in executor: fresh subprocess per
     call, the environment that launched the server (D70's builtin-by-default
@@ -78,6 +80,20 @@ def deploy_enabled() -> bool:
     return read_prefs().get("deploy_enabled") is True
 
 
+def reader_enabled() -> bool:
+    """Whether the Reader (listen-to-files) mode is offered (default off — opt-in).
+
+    Reader is an accessibility affordance: a preview mode that reads text files
+    and PDFs aloud. It's off until the user turns it on from the Preferences
+    page, at which point the reader template's condition.py gate (SPEC CT-12)
+    starts allowing the mode on the file types it's bound to. This is a global
+    feature switch, not a per-file sniff — the gate ignores the target path and
+    consults only this value. Any non-`true` stored value (missing/legacy)
+    reads as off.
+    """
+    return read_prefs().get("reader_enabled") is True
+
+
 def fused_engine_available() -> bool:
     """Whether the fused local compute backend is importable right now.
 
@@ -140,6 +156,8 @@ def _prefs_response() -> dict:
         "log": {"path": log_path(), "dir": log_dir()},
         # Whether the preview-header Deploy affordance is shown (opt-in).
         "deploy": {"enabled": deploy_enabled()},
+        # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
+        "reader": {"enabled": reader_enabled()},
     }
 
 
@@ -172,9 +190,18 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'deploy_enabled' must be a boolean"}, status_code=400)
         prefs["deploy_enabled"] = value
         changed = True
+    if "reader_enabled" in body:
+        value = body.get("reader_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'reader_enabled' must be a boolean"}, status_code=400)
+        prefs["reader_enabled"] = value
+        changed = True
     if not changed:
         return JSONResponse(
-            {"error": "no known preference in request (expected 'engine' and/or 'deploy_enabled')"},
+            {
+                "error": "no known preference in request "
+                "(expected 'engine', 'deploy_enabled', and/or 'reader_enabled')"
+            },
             status_code=400,
         )
     storage.write_json(_path(), prefs)
