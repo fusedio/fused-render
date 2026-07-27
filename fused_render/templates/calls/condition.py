@@ -64,7 +64,7 @@ def _sanitize_ref(ref: str) -> str:
     every rule here:
 
     * a ref naming a **default** branch is the baseline, not a nested dir, so
-      ``FUSED_RENDER_BRANCH=main`` writes to ``~/.fused-render/calls`` while the
+      ``FUSED_RENDER_BRANCH=main`` writes to ``~/.fused-render/logs`` while the
       gate looked under ``branches/main/``;
     * case and separators are normalised (``Feature_X`` -> ``feature-x``);
     * refs are truncated to 12 chars, and a real branch name is usually longer —
@@ -107,7 +107,7 @@ def _branch_ref() -> str:
 
 
 def _store_dir() -> str:
-    """~/.fused-render/calls, resolved exactly as `calls.store_dir()` resolves it.
+    """~/.fused-render/logs, resolved exactly as `calls.store_dir()` resolves it.
 
     Same overrides, same branch nesting: a branch run gates against its own
     store, and a baseline run against the baseline one.
@@ -116,7 +116,7 @@ def _store_dir() -> str:
     ref = _branch_ref()
     if ref:
         base = os.path.join(base, _BRANCHES_SUBDIR, ref)
-    return os.path.join(base, "calls")
+    return os.path.join(base, "logs")
 
 
 def _tail(path: str, limit: int) -> str:

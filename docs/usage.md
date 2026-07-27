@@ -134,7 +134,7 @@ reads themselves are kept (what a viewer costs on a big log is worth seeing);
 the Calls view's own polling is the one thing excluded, since it would otherwise
 inflate the numbers you are reading.
 
-**Where it lives.** `~/.fused-render/calls/` as newline-delimited JSON, one file
+**Where it lives.** `~/.fused-render/logs/` as newline-delimited JSON, one file
 per day per server process, rolled to a new part every 32 MB. Records are capped
 (a long traceback or a big parameter is truncated, and marked as such),
 rate-limited per page, and pruned after 14 days or once the directory passes

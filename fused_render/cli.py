@@ -59,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "calls",
         help="read the app call log (what API calls your pages made)",
         description="Read the app call log written by the running server "
-                    "(~/.fused-render/calls). Prints a digest by default; use "
+                    "(~/.fused-render/logs). Prints a digest by default; use "
                     "--verbose for whole records.",
     )
     calls.add_argument("--page", default="", help="only calls made by this page (absolute path)")

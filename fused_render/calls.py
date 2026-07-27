@@ -4,7 +4,7 @@ A page's calls through the injected runtime (`fused.runPython`, `stat`,
 `readFile`, `writeFile`) are invisible today — a failure flashes the D17
 overlay, `print()` lands in the browser console, and nothing accumulates. This
 module is the durable half: an append-only JSONL store under
-``~/.fused-render/calls/`` holding one bounded record per call, so "why is this
+``~/.fused-render/logs/`` holding one bounded record per call, so "why is this
 page slow", "what did my app just do", and "did it error when the user opened
 it" have answers that survive a reload. Read back by the `calls` view template
 (templates/calls/) and the ``fused-render calls`` CLI; see
@@ -140,7 +140,7 @@ SKIP_PREFIXES = ("/api/calls",)
 
 def store_dir() -> str:
     """Directory holding the JSONL files, under the branch-aware shell home."""
-    return os.path.join(storage.home_dir(), "calls")
+    return os.path.join(storage.home_dir(), "logs")
 
 
 def day_stamp(when: float | None = None) -> str:

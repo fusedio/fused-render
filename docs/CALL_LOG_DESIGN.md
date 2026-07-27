@@ -159,7 +159,7 @@ because a page whose param is an API key exists.
 
 ### 4.1 Where it lives
 
-`~/.fused-render/calls/YYYY-MM-DD.jsonl` — one JSON object per line, append
+`~/.fused-render/logs/YYYY-MM-DD.jsonl` — one JSON object per line, append
 only, daily files, under the branch-aware `storage.home_dir()`.
 
 Why not the alternatives:
@@ -456,7 +456,7 @@ Add two conveniences:
 **6.1 Where does the per-page summary live?** The header chip (§5.4) and the
 history section (§5.3) both want "142 calls, p95 1.2s" without scanning the
 log. Options: (a) compute it on demand in the reader — simple, but a scan per
-render; (b) maintain `~/.fused-render/calls/summary.json`, a small
+render; (b) maintain `~/.fused-render/logs/summary.json`, a small
 page→counters map updated by the writer thread — fast, one more file to keep
 consistent; (c) write the summary into the page's **sidecar** under a
 `callsSummary` key — puts it exactly where `history/` already looks and travels

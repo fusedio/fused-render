@@ -2055,6 +2055,28 @@ BRANCH_REFS = [
 ]
 
 
+def test_the_store_is_the_logs_dir_under_the_shell_home(tmp_path, monkeypatch):
+    """The store's directory NAME, pinned as a literal.
+
+    Every other test here is relative to `store_dir()`, so the whole suite would
+    pass if the leaf were renamed — while every store already on disk was
+    orphaned and every page silently lost its history. The one fact worth
+    spelling out is the one an edit in a single place can change invisibly.
+
+    Both spellings are asserted: the writer's, and the gate's standalone copy of
+    the same rule (`test_the_gate_resolves_the_same_store_dir_as_the_writer`
+    proves they agree with each other, which is not the same as either being
+    right).
+    """
+    from fused_render.templates.calls import condition
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+
+    assert calls.store_dir() == os.path.join(str(tmp_path), "logs")
+    assert condition._store_dir() == os.path.join(str(tmp_path), "logs")
+
+
 @pytest.mark.parametrize("ref", BRANCH_REFS)
 def test_the_gate_resolves_the_same_store_dir_as_the_writer(tmp_path, monkeypatch, ref):
     """The gate's copy of the path rules must agree with the real resolver.
@@ -2113,7 +2135,7 @@ def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
     """The end-to-end shape of the bug: records exist, the gate said no.
 
     `FUSED_RENDER_BRANCH=main` is a baseline opt-out, so the writer appends to
-    `~/.fused-render/calls` — while the gate probed `branches/main/calls`, found
+    `~/.fused-render/logs` — while the gate probed `branches/main/logs`, found
     nothing, and failed closed.
     """
     from fused_render import _branch

@@ -2288,8 +2288,12 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   runPython failure the page did not catch is NOT re-reported here — the
   server already recorded it against the `/api/run` call, with the real
   traceback.
-- **CL-7** **Store.** `~/.fused-render/calls/<date>-<pid>-<part>.calls.jsonl` —
-  append-only JSONL under the branch-aware shell home, one file per day per
+- **CL-7** **Store.** `~/.fused-render/logs/<date>-<pid>-<part>.calls.jsonl` —
+  append-only JSONL under the branch-aware shell home. The directory is `logs/`,
+  which is NOT where `logs.py` writes: the app log is disposable and lives in the
+  system temp dir (D68), while this store is durable and pruned by code (CL-10),
+  so the two never share a directory despite both being called logs in the UI.
+  One file per day per
   process (per-pid for the same reason `logs.py` is: two live servers must not
   interleave lines, and the reader merges the day back together, CL-12), rolled
   to the next `part` past `MAX_FILE_BYTES` (CL-9). `part` is zero-padded so parts
