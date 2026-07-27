@@ -1,60 +1,9 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Log Studio</title>
-<script>
-  // Pre-paint theme resolution (SPEC AP-11). This view keeps its own toggle —
-  // the shell does not push a theme into it, and it carries no
-  // `data-fused-theme` opt-in — but with no signal at all it opened WHITE
-  // inside a dark app, which is not "its own choice", just a wrong default.
-  //
-  // So: an explicit `?theme=` (what the toggle writes) wins; otherwise follow
-  // the app, resolved exactly as static/runtime.js and frontend/index.html do
-  // — same localStorage key, same OS fallback. This iframe is same-origin, so
-  // the key is simply readable; nothing has to reach in.
-  //
-  // Inline, in <head>, ahead of the stylesheet below: the attribute has to land
-  // before first paint or the fix is a flash instead of a theme. The `light`
-  // literal on <html> above stays as the no-JS floor.
-  //
-  // Exposed on `window` rather than duplicated further down: the live listeners
-  // in the main script need the same answer, and this file has already been
-  // bitten by one rule with two copies.
-  window.__logStudioTheme = (function () {
-    var THEME_KEY = "fused-render:theme";
-    var DARK_QUERY = "(prefers-color-scheme: dark)";
-    function fromApp() {
-      var pref = null;
-      // Separate try blocks: a private-mode getItem THROWS, and sharing one
-      // block would skip the OS check entirely and pin a light user to dark
-      // (the bug frontend/index.html's bootstrap already had once).
-      try {
-        pref = localStorage.getItem(THEME_KEY);
-      } catch (e) { /* blocked storage — fall through to the OS preference */ }
-      if (pref === "light" || pref === "dark") return pref;
-      try {
-        return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
-      } catch (e) {
-        return "dark"; // no matchMedia — match what runtime.js keeps
-      }
-    }
-    function pinned() {
-      try {
-        var value = new URLSearchParams(location.search).get("theme");
-        return value === "light" || value === "dark" ? value : null;
-      } catch (e) {
-        return null;
-      }
-    }
-    return { KEY: THEME_KEY, QUERY: DARK_QUERY, fromApp: fromApp, pinned: pinned,
-             resolve: function () { return pinned() || fromApp(); } };
-  })();
-  try {
-    document.documentElement.setAttribute("data-theme", window.__logStudioTheme.resolve());
-  } catch (e) { /* leave the markup default */ }
-</script>
 <style>
   :root {
     color-scheme: dark;
@@ -82,6 +31,21 @@
     --fatal: #ed64a6;
     --grid: #252c35;
     --axis: #687281;
+    /* Component colours that used to be literals. Tokenised so light mode can
+       answer for them: a filled teal button, a floating tooltip and the
+       truncation notice each need their own value on a light ground, not the
+       dark one showing through. */
+    --submit: #287e97;
+    --submit-hover: #3190aa;
+    --submit-border: #318da7;
+    --submit-text: #ffffff;
+    --tooltip-bg: rgba(13, 16, 21, 0.96);
+    --tooltip-border: #404957;
+    --tooltip-text: #dbe1e8;
+    --tooltip-shadow: rgba(0, 0, 0, 0.35);
+    --notice-bg: rgba(230, 180, 80, 0.08);
+    --notice-border: #665322;
+    --notice-text: #d9bf7b;
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
@@ -105,6 +69,26 @@
     --accent-dim: rgba(20, 125, 153, 0.11);
     --grid: #dce1e7;
     --axis: #687586;
+    /* Level accents: the dark palette's values are pale (they are chosen
+       against #101318) and unreadable on #f7f8fa, so light mode takes the
+       darker end of the same hue rather than inheriting. */
+    --danger: #c53030;
+    --fatal: #b83280;
+    --info: #2b6cb0;
+    --warn: #b7791f;
+    --debug: #6b46c1;
+    --trace: #4a5568;
+    --submit: #147d99;
+    --submit-hover: #10697f;
+    --submit-border: #11748d;
+    --submit-text: #ffffff;
+    --tooltip-bg: #ffffff;
+    --tooltip-border: #cfd5dd;
+    --tooltip-text: #202733;
+    --tooltip-shadow: rgba(16, 23, 34, 0.16);
+    --notice-bg: rgba(183, 121, 31, 0.10);
+    --notice-border: #e0c48a;
+    --notice-text: #7a5a12;
   }
 
   * { box-sizing: border-box; }
@@ -133,17 +117,15 @@
     grid-template-columns: 240px minmax(0, 1fr);
   }
 
-  /* Collapsed keeps a 44px strip rather than going to zero, because the theme
-     toggle lives in the rail's header row and would otherwise be unreachable
-     while collapsed. The brand mark yields to it — the strip is there to hold a
-     control, not a logo. (`focus-mode`, which hid the rail AND the histogram
-     together, is gone with the Focus button: one collapse control, one thing
-     collapsed.) */
-  .app.facets-collapsed { grid-template-columns: 44px minmax(0, 1fr); }
-  .app.facets-collapsed .facets-inner,
-  .app.facets-collapsed .brand-label,
-  .app.facets-collapsed .brand-mark { display: none; }
-  .app.facets-collapsed .brand { justify-content: center; padding: 0; }
+  /* Collapsed hides the rail outright. It kept a 44px strip while the theme
+     toggle lived in its header row and had nowhere else to be; with the theme
+     now coming from the shell (AP-9) that control is gone, and a strip holding
+     only a logo is width the log could be using. The Collapse button in the
+     query header is always visible, so nothing becomes unreachable.
+     (`focus-mode`, which hid the rail AND the histogram together, went with the
+     Focus button: one collapse control, one thing collapsed.) */
+  .app.facets-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app.facets-collapsed .facets { display: none; }
 
   .facets {
     position: sticky;
@@ -172,19 +154,6 @@
   /* First control in the header, so "hide the rail" reads left-to-right with the
      rail it hides rather than sitting at the end of the filter controls. */
   .rail-collapse { flex: 0 0 auto; }
-
-  .theme-toggle {
-    display: grid;
-    place-items: center;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-  }
-
-  .theme-toggle { width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 4px; font-size: 15px; }
-  .theme-toggle:hover { color: var(--accent); background: var(--accent-dim); }
 
   .brand-mark {
     width: 17px;
@@ -358,16 +327,16 @@
   .query-submit {
     border-left: 0;
     border-radius: 0 3px 3px 0;
-    border-color: #318da7;
-    background: #287e97;
-    color: white;
+    border-color: var(--submit-border);
+    background: var(--submit);
+    color: var(--submit-text);
     font-weight: 600;
   }
 
-  .query-submit:hover { background: #3190aa; }
+  .query-submit:hover { background: var(--submit-hover); }
 
   .tail-button[aria-pressed="true"] {
-    border-color: #3da5c2;
+    border-color: var(--accent);
     background: var(--accent-dim);
     color: var(--accent);
   }
@@ -452,14 +421,14 @@
     display: none;
     max-width: 220px;
     padding: 6px 8px;
-    border: 1px solid #404957;
+    border: 1px solid var(--tooltip-border);
     border-radius: 3px;
-    background: rgba(13, 16, 21, 0.96);
-    color: #dbe1e8;
+    background: var(--tooltip-bg);
+    color: var(--tooltip-text);
     font-size: 11px;
     line-height: 1.45;
     pointer-events: none;
-    box-shadow: 0 5px 18px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 5px 18px var(--tooltip-shadow);
   }
 
   .view-bar {
@@ -496,10 +465,10 @@
   .notice {
     margin: 10px 12px 0;
     padding: 8px 10px;
-    border: 1px solid #665322;
+    border: 1px solid var(--notice-border);
     border-radius: 3px;
-    background: rgba(230, 180, 80, 0.08);
-    color: #d9bf7b;
+    background: var(--notice-bg);
+    color: var(--notice-text);
     font-size: 11px;
   }
 
@@ -513,7 +482,7 @@
     text-align: center;
   }
 
-  .status.error { color: #f18c8c; }
+  .status.error { color: var(--danger); }
 
   .skel-bar {
     display: inline-block;
@@ -637,7 +606,7 @@
   .field-value { color: var(--text); cursor: pointer; }
   .field-value:hover { color: var(--accent); text-decoration: underline; }
   .field-null, .field-empty { color: var(--faint); font-style: italic; }
-  .field-boolean { color: #e6b450; }
+  .field-boolean { color: var(--warn); }
   .field-number { color: var(--accent); font-variant-numeric: tabular-nums; }
   .field-nested { color: var(--faint); }
 
@@ -754,7 +723,6 @@
       <div class="brand">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
         <span class="brand-label">LOG STUDIO</span>
-        <button class="theme-toggle" id="theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode">&#9680;</button>
       </div>
       <div class="facets-inner" id="facets-inner">
         <section class="facet-section" id="file-overview">
@@ -855,7 +823,6 @@
   const clearRange = document.getElementById("clear-range");
   const tailToggle = document.getElementById("tail-toggle");
   const railCollapse = document.getElementById("rail-collapse");
-  const themeToggle = document.getElementById("theme-toggle");
   const linesTab = document.getElementById("lines-tab");
   const patternsTab = document.getElementById("patterns-tab");
   const resultSummary = document.getElementById("result-summary");
@@ -893,7 +860,6 @@
   let fileWatchTimer = null;
   let watchedFile = "";
   let watchedSignature = "";
-  let lastTheme = "light";
   const pathAliases = new Map();
 
   function escapeHtml(value) {
@@ -942,9 +908,6 @@
       back: (fused.params.get("back") || "").split(",").filter((value) => /^\d+$/.test(value)),
       view: fused.params.get("view") === "patterns" ? "patterns" : "lines",
       tail: !["", "0"].includes(fused.params.get("tail") || ""),
-      // Explicit choice (the toggle) wins; otherwise follow the app — the same
-      // resolution the head bootstrap already ran, not a second copy of it.
-      theme: window.__logStudioTheme.resolve(),
       facets: fused.params.get("facets") !== "0"
     };
   }
@@ -1579,11 +1542,6 @@
   }
 
   function renderState(state) {
-    document.documentElement.dataset.theme = state.theme;
-    if (lastTheme !== state.theme) {
-      lastTheme = state.theme;
-      if (chartData) requestAnimationFrame(resizeCanvas);
-    }
     app.classList.toggle("facets-collapsed", !state.facets);
     queryInput.value = state.q;
     clearRange.disabled = !state.from && !state.to;
@@ -1591,8 +1549,6 @@
     railCollapse.setAttribute("aria-pressed", String(!state.facets));
     railCollapse.textContent = state.facets ? "Collapse" : "Expand";
     railCollapse.title = state.facets ? "Hide the file rail" : "Show the file rail";
-    themeToggle.title = state.theme === "light" ? "Switch to dark mode" : "Switch to light mode";
-    themeToggle.setAttribute("aria-label", themeToggle.title);
     const original = fused.params.get("_file") || "";
     fused.autoReload(!state.tail && (!original || samePath(original, state.file)));
     linesTab.classList.toggle("active", state.view === "lines");
@@ -1765,26 +1721,15 @@
   clearRange.addEventListener("click", () => setParams({ from: "", to: "", page: "0", back: "" }));
 
   railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
-  themeToggle.addEventListener("click", () => setParams({ theme: currentState().theme === "light" ? "dark" : "light" }));
-
-  // While UNPINNED, follow the app: another window changing the setting, or the
-  // OS flipping while the setting is System (including macOS's sunset switch).
-  // Both are the same events runtime.js listens to, for the same reason — the
-  // shell writes the key, and every same-origin context including this iframe
-  // sees the `storage` event. Once the toggle has written `?theme=`, that is a
-  // deliberate per-view choice and neither event may override it.
-  function followAppTheme() {
-    if (window.__logStudioTheme.pinned()) return;
-    renderState(currentState());
-  }
-  window.addEventListener("storage", (event) => {
-    // A `clear()` reports key === null.
-    if (event.key === null || event.key === window.__logStudioTheme.KEY) followAppTheme();
-  });
-  try {
-    window.matchMedia(window.__logStudioTheme.QUERY)
-      .addEventListener("change", followAppTheme);
-  } catch (e) { /* no matchMedia — the storage path still works */ }
+  // runtime.js owns `data-theme` now (the `data-fused-theme` opt-in above), so
+  // nothing here resolves or applies a theme. The charts still have to know:
+  // they read the palette through getComputedStyle at DRAW time, so a theme
+  // change repaints correctly only if something redraws them. Observing the
+  // attribute rather than re-listening to storage/matchMedia keeps that true
+  // whoever changes it, and leaves exactly one resolver in the codebase.
+  new MutationObserver(() => {
+    if (chartData) requestAnimationFrame(resizeCanvas);
+  }).observe(document.documentElement, { attributeFilter: ["data-theme"] });
 
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");

@@ -24,7 +24,7 @@ What this suite pins:
   (the tokenization is what makes light mode possible at all);
 * pushing the theme into a view document is **opt-in** — user-authored `.html`
   views must receive no theme signal;
-* all twelve tier-1 templates carry the identical dual-palette structure, and
+* all thirteen tier-1 templates carry the identical dual-palette structure, and
   the exempt / self-toggling / deferred templates carry none of it.
 
 The four template lists below are exhaustive over `fused_render/templates/`,
@@ -113,15 +113,15 @@ def test_the_bootstrap_still_checks_the_os_when_storage_throws():
 
 
 def test_the_storage_key_is_spelled_identically_everywhere():
-    # Four independent readers, no shared module between them (two bootstraps
-    # are inline in their HTML, and runtime.js ships into a different document).
-    # log_studio is the fourth: it keeps its own toggle (AP-11) but resolves the
-    # app's setting for its initial theme, so it reads this key too.
+    # Three independent readers, no shared module between them (the bootstrap
+    # is inline in the HTML, and runtime.js ships into a different document).
+    # Deliberately three and not more: a template that wants the theme opts in
+    # with `data-fused-theme` and lets runtime.js resolve it, rather than
+    # becoming a fourth place this key is spelled.
     for path in (
         "frontend/src/lib/theme.ts",
         "frontend/index.html",
         "fused_render/static/runtime.js",
-        "fused_render/templates/log_studio/template.html",
     ):
         assert THEME_KEY in read_repo_file(path), f"{path} must use {THEME_KEY!r}"
 

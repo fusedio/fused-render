@@ -2177,33 +2177,40 @@ not by choice.
   also why the view has no flash either).
 - **AP-9** **Tier 1** — views with a real light palette authored: `code`,
   `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
-  `vector`, `structure`, `tree`. Each carries the identical structure: a `:root`
-  dark palette, a `:root[data-theme="light"]` twin defining the same token set,
-  and the AP-8 opt-in.
+  `vector`, `structure`, `tree`, `log_studio`. Each carries the identical
+  structure: a `:root` dark palette, a `:root[data-theme="light"]` twin defining
+  the same token set, and the AP-8 opt-in — and **nothing else**: no `data-theme`
+  literal on `<html>` (dark is the CSS default, AP-2, and the runtime overwrites
+  the attribute before first paint anyway), no reading of the storage key, no
+  private theme param. A tier-1 view whose canvas/JS colours are sampled at draw
+  time re-reads them from a `MutationObserver` on `data-theme` (`code`
+  reconfigures CodeMirror this way; `log_studio` redraws its charts).
 - **AP-10** **Light by design** — always light, ignore the setting entirely, no
   opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
   `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
   text/code group.)
-- **AP-11** **Self-toggling**: `excel`, `log_studio` and `tableau` keep their
-  own in-view theme buttons, and the shell never pushes a theme into them (no
-  `data-fused-theme` opt-in, so the runtime leaves them alone). `excel` and
-  `tableau` also keep their private storage keys and ignore the app setting
-  entirely. **`log_studio` follows the app for its INITIAL theme**: it opened
-  white inside a dark app, which is not "its own choice" but a wrong default.
-  It resolves the shell's setting itself — same `fused-render:theme` key, same
-  OS fallback, in a pre-paint inline `<head>` script so there is no flash — and
-  tracks later changes (`storage`, `matchMedia`) while unpinned. Its toggle
-  writes `?theme=`, and an explicit value always wins and stops the following.
-  Reading the key is not the same as being overridden: nothing reaches into the
-  view, and the decision stays the template's.
+- **AP-11** **Self-toggling**: `excel` and `tableau` keep their own in-view
+  theme buttons and their private storage keys, ignore the app setting entirely,
+  and the shell never pushes a theme into them (no `data-fused-theme` opt-in, so
+  the runtime leaves them alone). **A built-in view does not get both**: either
+  it opts in and the shell's setting is the whole answer (AP-9), or it owns its
+  appearance completely (here) — a view that opts in *and* keeps a switch has
+  two resolvers for one question, and the switch is the one that loses, because
+  every `storage`/`matchMedia` change re-applies over it. (`log_studio` was on
+  this list; its button is gone and it is tier-1 — D154.)
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
   `netcdf`, `las`, `annotate`, `geometry_editor`, `history`, `preview`, `zip`,
   `tar`. Accepted consequence: in Light mode these render dark inside a light
   shell.
-- **AP-13** **User-authored `.html` views get no theme signal at all.** Their
-  CSS stays entirely theirs; nothing is written into their document.
+- **AP-13** **User-authored `.html` views get no theme signal at all** — by
+  default. Their CSS stays entirely theirs and nothing is written into their
+  document. The AP-8 opt-in is a property of the *document*, not of who wrote
+  it, so a user view that sets `data-fused-theme` itself is asking for the
+  attribute and gets it on the same terms as a built-in; that is documented in
+  the authoring skill as the way to match the app. What must never happen is a
+  view being themed without having asked.
 - **AP-14** The four lists above (AP-9..AP-12) are **exhaustive** over
   `fused_render/templates/`, and a test asserts it — a newly added template
   cannot quietly skip classification.

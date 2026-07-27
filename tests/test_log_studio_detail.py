@@ -7,6 +7,7 @@ not do (the same `_js_block` approach `test_calls.py` uses for the calls view).
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -297,111 +298,52 @@ def test_reselecting_a_level_returns_to_the_unfiltered_state(tmp_path):
     assert result["shown"] == ["WARN", "INFO"]
 
 
-# ------------------------- initial theme follows the app (AP-11) -------------
+# ------------------------- theming is the shared mechanism (AP-9/AP-11) ------
 
-def _theme_prelude():
-    """The shipping head bootstrap, with a stub `window`/`location`/`localStorage`
-    the harness can drive. Extracted, not restated: the point is that THIS
-    resolver behaves, and a copy would keep passing after it changed."""
+def test_the_view_opts_into_the_shell_theme_rather_than_resolving_its_own():
+    """It used to hardcode `data-theme="light"` and read a `?theme=` param, so
+    it opened WHITE inside a dark app; the first fix gave it a private resolver,
+    and its toggle then silently stopped working because the param the toggle
+    wrote lives on the SHELL's URL, not the iframe's.
+
+    Both are gone. The view carries the `data-fused-theme` opt-in and runtime.js
+    resolves, applies and follows the theme — one resolver in the codebase, and
+    the reason the storage key still has exactly three readers."""
     src = _src()
-    start = src.index("  window.__logStudioTheme = (function () {")
-    end = src.index("  try {\n    document.documentElement.setAttribute", start)
-    return (
-        "globalThis.window = globalThis;\n"
-        "let store = {}, search = '', dark = false, throwOnGet = false, noMatchMedia = false;\n"
-        "globalThis.localStorage = { getItem(k) { if (throwOnGet) throw new Error('blocked');"
-        " return k in store ? store[k] : null; } };\n"
-        "Object.defineProperty(globalThis, 'location', { value: {}, writable: true });\n"
-        "Object.defineProperty(globalThis.location, 'search',"
-        " { get() { return search; } });\n"
-        "globalThis.matchMedia = (q) => { if (noMatchMedia) throw new Error('none');"
-        " return { matches: dark && q.includes('dark') }; };\n"
-        + src[start:end]
+    open_tag = re.search(r"<html\b[^>]*>", src, re.I).group(0)
+    assert "data-fused-theme" in open_tag, "the opt-in must sit on <html> (AP-8)"
+    assert "data-theme" not in open_tag.replace("data-fused-theme", ""), (
+        "no literal floor either: dark is the CSS default (AP-2) and runtime.js "
+        "overwrites the attribute before first paint, so a hardcoded value is "
+        "both dead and a difference from the other twelve tier-1 views"
     )
+    assert "fused-render:theme" not in src, "the key belongs to runtime.js, not here"
+    assert "theme-toggle" not in src, "no private toggle"
+    assert 'fused.params.get("theme")' not in src, "and no private theme param"
 
 
-def test_the_view_follows_the_app_theme_when_unpinned(tmp_path):
-    """The complaint: the log viewer opened WHITE inside a dark app. With no
-    `?theme=`, it resolves the shell's setting — the stored pin first, the OS
-    only when the setting is System."""
-    result = _run(
-        "const out = [];\n"
-        "store['fused-render:theme'] = 'dark';  out.push(window.__logStudioTheme.resolve());\n"
-        "store['fused-render:theme'] = 'light'; out.push(window.__logStudioTheme.resolve());\n"
-        "delete store['fused-render:theme'];\n"
-        # No stored pin => the setting is System, so the OS decides.
-        "dark = true;  out.push(window.__logStudioTheme.resolve());\n"
-        "dark = false; out.push(window.__logStudioTheme.resolve());\n"
-        "console.log(JSON.stringify(out));\n",
-        tmp_path, _theme_prelude())
-    assert result == ["dark", "light", "dark", "light"]
-
-
-def test_an_explicit_theme_param_always_wins(tmp_path):
-    """What the toggle writes is a deliberate per-view choice, so it overrides
-    the app in both directions — and anything else in the param is ignored
-    rather than treated as a pin."""
-    result = _run(
-        "const out = [];\n"
-        "store['fused-render:theme'] = 'dark';\n"
-        "search = '?theme=light'; out.push(window.__logStudioTheme.resolve());\n"
-        "store['fused-render:theme'] = 'light';\n"
-        "search = '?theme=dark';  out.push(window.__logStudioTheme.resolve());\n"
-        "search = '?theme=purple'; out.push(window.__logStudioTheme.resolve());\n"
-        "search = '?theme=';       out.push(window.__logStudioTheme.resolve());\n"
-        "out.push(window.__logStudioTheme.pinned());\n"
-        "console.log(JSON.stringify(out));\n",
-        tmp_path, _theme_prelude())
-    assert result == ["light", "dark", "light", "light", None], \
-        "a junk or empty theme param is not a pin — it falls back to the app"
-
-
-def test_blocked_storage_still_consults_the_os(tmp_path):
-    """Private mode makes getItem THROW. Sharing one try block with the
-    matchMedia call would skip the OS check and pin a light user to dark — the
-    bug the shell's own bootstrap had once, which is why the two reads are
-    separate here too."""
-    result = _run(
-        "throwOnGet = true; dark = true;\n"
-        "const withOs = window.__logStudioTheme.resolve();\n"
-        "noMatchMedia = true;\n"
-        "const noOs = window.__logStudioTheme.resolve();\n"
-        "console.log(JSON.stringify([withOs, noOs]));\n",
-        tmp_path, _theme_prelude())
-    assert result == ["dark", "dark"], \
-        "the OS is still consulted; with no matchMedia either, it matches runtime.js"
-
-
-def test_the_bootstrap_runs_before_the_stylesheet(tmp_path):
-    """A theme applied after first paint is a flash, not a theme. The script has
-    to be inline in <head> and ahead of the <style> it is choosing colours for."""
+def test_a_theme_change_redraws_the_charts():
+    """The one thing the opt-in does NOT do for us: the canvas reads the palette
+    through getComputedStyle at DRAW time, so flipping the attribute repaints
+    the CSS and leaves the charts in the old colours until something redraws
+    them. Observing the attribute covers every source of a change — the shell,
+    another window, the OS — without re-deriving who changed it."""
     src = _src()
-    head = src[: src.index("</head>")]
-    assert "__logStudioTheme" in head, "the resolver must be in <head>"
-    assert head.index("__logStudioTheme") < head.index("<style>"), \
-        "and ahead of the stylesheet"
-    assert 'data-theme="light"' in src[: src.index("<head>")], \
-        "the markup default stays as the no-JS floor"
+    assert "MutationObserver" in src
+    observer = src[src.index("new MutationObserver"): src.index("new MutationObserver") + 400]
+    assert 'attributeFilter: ["data-theme"]' in observer
+    assert "resizeCanvas" in observer
 
 
-def test_the_state_default_goes_through_the_resolver(tmp_path):
-    """The gap this closes: the resolver tests above drive the head bootstrap,
-    so reverting `currentState()` to the old param-only line left the view
-    opening white again with every one of them green. The wiring is the part
-    that makes the resolver matter, so it is asserted too."""
-    state = _js_block(_src(), "function currentState()")
-    assert "window.__logStudioTheme.resolve()" in state, \
-        "currentState must take its theme default from the shared resolver"
-    assert 'fused.params.get("theme")' not in state, \
-        "and must not re-derive it from the param — that is the second copy"
+def test_the_light_palette_is_complete_enough_to_be_readable():
+    """Light mode was previously reachable only through the toggle, so six level
+    accents were never given light values and inherited the dark ones — pale
+    hues chosen against #101318, sitting on #f7f8fa. Following the app makes
+    light the DEFAULT for a light-mode user, which turns that latent gap into
+    the common case."""
+    from _theme_sources import palette_blocks, read_template
 
-
-def test_following_the_app_stops_once_the_view_is_pinned(tmp_path):
-    """The storage/matchMedia listeners exist so an unpinned view tracks the
-    app. They must check `pinned()` first: an explicit toggle choice that a
-    background OS flip could overwrite is not a choice."""
-    follow = _js_block(_src(), "function followAppTheme()")
-    assert "__logStudioTheme.pinned()" in follow and "return" in follow
-    src = _src()
-    assert 'window.addEventListener("storage"' in src
-    assert "followAppTheme" in src[src.index('window.addEventListener("storage"'):]
+    dark, light = palette_blocks(read_template("log_studio"))
+    assert not set(dark) - set(light), "every dark token needs a light answer"
+    for token in ("--danger", "--fatal", "--info", "--warn", "--debug", "--trace"):
+        assert light[token] != dark[token], f"{token} must differ on a light ground"

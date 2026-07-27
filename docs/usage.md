@@ -47,8 +47,14 @@ servers) sees ordinary local paths.
 The gear at the sidebar's bottom-left opens **Preferences**:
 
 - **Appearance** — System (follows your desktop), Light or Dark. Applies
-  immediately, and is remembered per browser profile (so a browser tab and the
-  desktop window each keep their own choice).
+  immediately — to the app and to every open built-in view, with no reload —
+  and is remembered per browser profile (so a browser tab and the desktop
+  window each keep their own choice). A few built-in views are exceptions: the
+  document-like ones (maps, slides, PDF, docs) are always light, the media and
+  geospatial ones are always dark, and Excel and Tableau keep their own in-view
+  buttons. **Your own `.html` views are never touched** — their CSS stays
+  entirely yours; see the authoring skill for how to follow the desktop
+  preference if you want to.
 - **Deploy to Fused account** — the opt-in toggle for the preview header's
   Deploy button.
 - **Call log** — whether the app records the API calls your pages make, how
@@ -138,12 +144,12 @@ immediately before and after that one straight from the file, which is how you
 see a line's neighbours when a query or a level filter has hidden them (a
 traceback split across lines, or the request that preceded a failure). The level
 facets list only the levels the file actually contains, so a log that only writes
-INFO doesn't offer six filters that match nothing. Its Tail button and the Calls
-view's Follow both switch auto-reload off while engaged, so watching a live file
-polls instead of reloading. Log studio opens in the app's current appearance —
-System, Light or Dark, whatever **Preferences → Appearance** says — and follows
-it if you change it; its own light/dark button overrides that for the view you
-are in.
+INFO doesn't offer six filters that match nothing. Its Tail button switches
+auto-reload off while engaged, so watching a live file polls instead of
+reloading, and a poll updates only the lines that changed — a row you have
+expanded stays expanded and the scroll stays put. Log studio follows
+**Preferences → Appearance** like the rest of the app: System, Light or Dark,
+applied as you change it, with no button of its own.
 
 Opening a log file in any view is safe. Nothing watches a log file for changes,
 so a view of one never reloads itself — which matters because reading a log *is*

@@ -31,6 +31,7 @@ TIER_ONE_TEMPLATES = (
     "code",
     "csv",
     "duckdb",
+    "log_studio",
     "markdown",
     "plist",
     "sqlite",
@@ -54,9 +55,10 @@ EXEMPT_TEMPLATES = (
     "usd",
 )
 
-# Views that already ship their own in-view theme toggle and private storage
-# key; explicitly not migrated and not overridden.
-SELF_TOGGLING_TEMPLATES = ("excel", "log_studio", "tableau")
+# Views that ship their own in-view theme toggle and private storage key;
+# explicitly not migrated and not overridden. (log_studio was here until its
+# toggle was removed — it now uses the shared opt-in like any tier-1 view.)
+SELF_TOGGLING_TEMPLATES = ("excel", "tableau")
 
 # Media / geospatial / studio groups — keep today's appearance for now.
 DEFERRED_TEMPLATES = (
