@@ -1,4 +1,4 @@
-// In-app clipboard for the file explorer's cut/copy (single entry, like
+// In-app clipboard for the file explorer's cut/copy (one or more entries, like
 // Finder). A cut entry is shown dimmed in the listing until it's pasted.
 //
 // Deliberately a MODULE-level store, not component state: App keys each
@@ -9,8 +9,13 @@
 // browse back to the source dir). One clipboard for the whole app, like the OS.
 import { useSyncExternalStore } from "react";
 
+// One or more entries, in the order they were selected. A multi-row cut/copy is
+// a single clipboard (like the OS): pasting it moves/copies every path into the
+// one target folder, and every cut path is dimmed in the listing until pasted.
+// Invariant: a non-null clipboard always carries at least one path — callers
+// clear it to null rather than storing an empty list (see clearClipboardIfDeleted).
 export interface Clipboard {
-  path: string;
+  paths: string[];
   op: "copy" | "cut";
 }
 

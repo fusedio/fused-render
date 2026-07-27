@@ -85,6 +85,50 @@ INPROCESS_HELPERS = frozenset(
 )
 
 
+# Exactly starlette's JSONResponse.render kwargs — `dumps_result` below IS the
+# response encoding for the in-process path, so its bytes must match what
+# JSONResponse would have produced down to separators/escaping.
+_JSON_KW = {"ensure_ascii": False, "allow_nan": False, "separators": (",", ":")}
+
+
+class _PreEncodedRun(dict):
+    """A run result whose `result` payload is already serialized (D72).
+
+    The in-process path has to serialize main()'s return value anyway, to tell
+    a non-JSON-serializable result apart with a useful message. A parquet
+    structure dump is many MB, so serializing it again on the way out of
+    /api/run doubled the cost of every request. This carries that one encoded
+    string alongside the live payload: dict consumers still read
+    `result["result"]` as a real object, and `dumps_result` splices the string
+    straight into the response body instead of re-encoding it.
+    """
+
+    __slots__ = ("payload_json",)
+
+    def __init__(self, mapping: dict, payload_json: str):
+        super().__init__(mapping)
+        self.payload_json = payload_json
+
+
+def dumps_result(result: dict) -> str:
+    """Render a run result as the /api/run response body.
+
+    Byte-identical to `json.dumps(result, **_JSON_KW)` (a flat object is just
+    "key":value joined by commas), except that a `_PreEncodedRun`'s payload is
+    reused verbatim rather than serialized a second time.
+    """
+    payload_json = getattr(result, "payload_json", None)
+    if payload_json is None:
+        return json.dumps(result, **_JSON_KW)
+    return "{%s}" % ",".join(
+        "%s:%s" % (
+            json.dumps(key, **_JSON_KW),
+            payload_json if key == "result" else json.dumps(value, **_JSON_KW),
+        )
+        for key, value in result.items()
+    )
+
+
 def _error(err_type: str, message: str, detail: str = "") -> dict:
     return {
         "ok": False,
@@ -134,14 +178,23 @@ def _run_inprocess(path: str, params: dict) -> dict:
                 f"{os.path.basename(path)} does not define a callable 'main' function"
             )
         result = fn(**bind_params(fn, params))
+        # Serialize once: this pass both validates the payload (so a bad return
+        # gets the message below instead of an opaque 500 from the response
+        # encoder) and *is* the bytes /api/run sends, via dumps_result. A
+        # multi-MB structure dump used to be encoded twice per request.
         try:
-            json.dumps(result)
+            payload_json = json.dumps(result, **_JSON_KW)
         except (TypeError, ValueError):
             raise TypeError(
                 f"main() returned {type(result).__name__}, which is not JSON-serializable; "
                 "return dict/list/str/number/bool/None (e.g. df.to_dict('records'))"
             ) from None
-        return {"ok": True, "result": result, "stdout": "", "stderr": ""}
+        # Union of two sides of a merge: #290's pre-encoded payload (encode a
+        # multi-MB result once, not twice) AND the explicit empty `stderr` the
+        # call log's records rely on (in-process helpers capture no stderr, and
+        # the record contract wants the field present-and-empty, not absent).
+        return _PreEncodedRun(
+            {"ok": True, "result": result, "stdout": "", "stderr": ""}, payload_json)
     except BaseException as e:  # noqa: BLE001 — mirror the child's catch-all
         return {
             "ok": False,
