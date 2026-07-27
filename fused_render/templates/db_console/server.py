@@ -4,10 +4,11 @@ The console talks to real databases (Postgres, MySQL, MSSQL, DuckDB, SQLite,
 plus optional Snowflake/BigQuery) over SQLAlchemy. Those drivers don't live in
 the fused-render interpreter, so — like the netcdf grid daemon — this file has
 two lives: `main(action="ensure")` runs in the server's Python and only uses
-the stdlib to spawn/reuse a long-lived localhost daemon, and `--serve` runs in
-the daemon's OWN uv venv (keyed by the dep-set hash) where SQLAlchemy and the
-pure-python drivers are installed. Every data endpoint requires the per-daemon
-`?t=<TOKEN>`; the daemon binds 127.0.0.1 only.
+the stdlib to spawn/reuse a long-lived localhost daemon, and `--serve` runs
+under an interpreter with SQLAlchemy — the current one when it already imports,
+else a uv venv (keyed by the dep-set hash) provisioned with the pure-python
+drivers. Every data endpoint requires the per-daemon `?t=<TOKEN>`; the daemon
+binds 127.0.0.1 only.
 
 Connections are opaque: the browser only ever sees a `conn_id` (a sha256 of the
 normalized URL) and a password-hidden display URL. File-backed databases
@@ -29,9 +30,8 @@ import time
 DAEMON_DEPS = ["sqlalchemy>=2", "pg8000", "pymysql", "python-tds",
                "sqlalchemy-pytds", "duckdb", "duckdb_engine"]
 
-# venv is keyed by the dep set and lives in a stable cache (never under the
-# FUSED_DBCONSOLE_HOME override) so tests that redirect the state dir still
-# reuse a once-provisioned interpreter; the state/log dir honours the override.
+# venv keyed by the dep set, in a stable cache outside the FUSED_DBCONSOLE_HOME
+# override so tests that redirect the state dir still reuse a provisioned venv.
 _CACHE_ROOT = os.path.expanduser("~/.cache/fused-render-dbconsole")
 DAEMON_VENV = os.path.join(
     _CACHE_ROOT, "venv-" + hashlib.sha256(",".join(DAEMON_DEPS).encode()).hexdigest()[:8])
@@ -64,8 +64,7 @@ OPTIONAL_DRIVERS = {
     "bigquery": ("sqlalchemy-bigquery", "BigQuery needs `sqlalchemy-bigquery`."),
 }
 
-# pip package that supplies each baked backend's driver, for the missing-driver
-# hint if a venv ever lands without it.
+# pip package behind each baked backend's driver, for the missing-driver hint.
 BACKEND_PACKAGE = {"postgresql": "pg8000", "mysql": "pymysql",
                    "mssql": "sqlalchemy-pytds", "duckdb": "duckdb_engine"}
 
@@ -94,6 +93,15 @@ def _venv_python(venv):
 
 
 def _daemon_python():
+    # Reuse the running interpreter when SQLAlchemy is already importable
+    # (dev/test envs); normalize pythonw -> python so the version string matches
+    # across the ensuring parent and the windowless daemon.
+    import importlib.util
+    if importlib.util.find_spec("sqlalchemy") is not None:
+        exe = sys.executable
+        if os.name == "nt" and os.path.basename(exe).lower() == "pythonw.exe":
+            exe = os.path.join(os.path.dirname(exe), "python.exe")
+        return exe
     vp = _venv_python(DAEMON_VENV)
     if vp:
         return vp
@@ -245,8 +253,8 @@ def main(action: str = "ensure", file: str = "", readonly: bool = True):
         subprocess.Popen([exe, _me(), "--serve"],
                          stdout=lf, stderr=lf, stdin=subprocess.DEVNULL,
                          cwd=os.path.dirname(_me()), **detach)
-    # generous: the very first spawn on a machine provisions the daemon venv
-    # (uv venv + pip) before /ping answers; later spawns reuse it and are quick.
+    # generous: a first start imports SQLAlchemy cold from a freshly
+    # provisioned venv; a reused daemon answers /ping within a tick or two.
     for _ in range(2400):
         time.sleep(0.05)
         try:
@@ -288,8 +296,7 @@ def _display_url(url_str):
 
 def _missing_driver_payload(backend, detail=""):
     """The install-hint payload a connect returns when a backend's driver isn't
-    present — an optional dialect (Snowflake/BigQuery) or a baked one gone AWOL.
-    HTTP 200, never a hard failure (mirrors log_studio's optional-drain3)."""
+    importable. HTTP 200, never a hard failure."""
     pkg, hint = OPTIONAL_DRIVERS.get(
         backend, (BACKEND_PACKAGE.get(backend, backend), f"Install the `{backend}` driver."))
     return {"available": False, "dialect": backend, "missing": pkg,
@@ -793,8 +800,7 @@ def _serve():
             pass
 
         def do_OPTIONS(self):
-            # CORS preflight for the browser's application/json POSTs
-            # (/connect, /query, /cancel, /install_driver are cross-origin).
+            # CORS preflight for the browser's cross-origin JSON POSTs.
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")

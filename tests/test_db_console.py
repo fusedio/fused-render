@@ -6,9 +6,9 @@ no SQLAlchemy engine). Daemon integration tests spawn the real daemon via
 endpoints, and always tear it down with /quit — never leaking a daemon, and
 redirecting its state dir into tmp_path via FUSED_DBCONSOLE_HOME.
 
-The daemon provisions its own uv venv (SQLAlchemy + pure-python drivers) on the
-first spawn on this machine, so the integration fixture allows a generous
-timeout; the venv is cached across runs, so later runs are fast.
+The integration tests require SQLAlchemy in the current interpreter (the daemon
+then reuses it) and skip where it isn't installed — CI's `.[dev]` env doesn't
+provision the daemon's uv venv.
 """
 import importlib.util
 import json
@@ -163,6 +163,11 @@ def test_venv_python_cross_platform(tmp_path):
 
 
 # ============================================================ integration
+requires_sqlalchemy = pytest.mark.skipif(
+    importlib.util.find_spec("sqlalchemy") is None,
+    reason="daemon integration needs sqlalchemy in the current interpreter")
+
+
 def _make_sqlite(path):
     con = sqlite3.connect(path)
     con.executescript(
@@ -224,6 +229,7 @@ def sqlite_conn(tmp_path, daemon):
     return daemon, res["conn_id"], path
 
 
+@requires_sqlalchemy
 def test_token_required(daemon, tmp_path):
     path = str(tmp_path / "guard.sqlite")
     _make_sqlite(path)
@@ -236,6 +242,7 @@ def test_token_required(daemon, tmp_path):
     assert daemon.get("/ping", with_token=False)["ok"] is True
 
 
+@requires_sqlalchemy
 def test_schema_lists_tables_and_views(sqlite_conn):
     daemon, cid, _ = sqlite_conn
     data = daemon.get(f"/schema?c={cid}")
@@ -247,6 +254,7 @@ def test_schema_lists_tables_and_views(sqlite_conn):
     assert rels["artists"]["rows"] == 5
 
 
+@requires_sqlalchemy
 def test_query_fetch_and_pagination(sqlite_conn):
     daemon, cid, _ = sqlite_conn
     data = daemon.post(f"/query?c={cid}",
@@ -258,6 +266,7 @@ def test_query_fetch_and_pagination(sqlite_conn):
     assert [r[0] for r in more["rows"]] == [3, 4]
 
 
+@requires_sqlalchemy
 def test_query_error_is_typed_not_traceback(sqlite_conn):
     daemon, cid, _ = sqlite_conn
     data = daemon.post(f"/query?c={cid}", {"sql": "SELECT * FROM nope"})
@@ -265,12 +274,14 @@ def test_query_error_is_typed_not_traceback(sqlite_conn):
     assert "columns" not in data or not data.get("columns")
 
 
+@requires_sqlalchemy
 def test_cancel_returns_cleanly(sqlite_conn):
     daemon, cid, _ = sqlite_conn
     res = daemon.post(f"/cancel?c={cid}", {"query_id": "does-not-exist"})
     assert res["cancelled"] is True
 
 
+@requires_sqlalchemy
 def test_readonly_gate_on_readonly_file(daemon, tmp_path):
     path = str(tmp_path / "locked.sqlite")
     _make_sqlite(path)
@@ -283,6 +294,7 @@ def test_readonly_gate_on_readonly_file(daemon, tmp_path):
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
 
 
+@requires_sqlalchemy
 def test_writable_file_allows_writes(daemon, tmp_path):
     path = str(tmp_path / "rw.sqlite")
     _make_sqlite(path)
@@ -290,8 +302,10 @@ def test_writable_file_allows_writes(daemon, tmp_path):
     assert res["readonly"] is False
 
 
+@requires_sqlalchemy
 def test_duckdb_connect_and_query(daemon, tmp_path):
     duckdb = pytest.importorskip("duckdb")
+    pytest.importorskip("duckdb_engine")  # daemon reuses this interpreter
     path = str(tmp_path / "demo.duckdb")
     con = duckdb.connect(path)
     con.execute("CREATE TABLE t (a INTEGER, b VARCHAR)")
@@ -304,6 +318,7 @@ def test_duckdb_connect_and_query(daemon, tmp_path):
     assert data["rows"] == [[1, "x"], [2, "y"]]
 
 
+@requires_sqlalchemy
 def test_dbconn_descriptor_roundtrip(daemon, tmp_path):
     sq = str(tmp_path / "d.sqlite")
     _make_sqlite(sq)
