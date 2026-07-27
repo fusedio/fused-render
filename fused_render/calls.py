@@ -7,9 +7,10 @@ module is the durable half: an append-only JSONL store under
 ``~/.fused-render/logs/<app-partition>/`` (one directory per app — the page's
 folder — CL-18) holding one bounded record per call, so "why is this
 page slow", "what did my app just do", and "did it error when the user opened
-it" have answers that survive a reload. Read back by the `calls` view template
-(templates/calls/) and the ``fused-render calls`` CLI; see
-docs/CALL_LOG_DESIGN.md for the design and its rationale.
+it" have answers that survive a reload. Read back by the ``fused-render calls``
+CLI, and by `log_studio` opening a `.calls.jsonl` directly — a dedicated view is
+deferred to its own change (SPEC CL-11). See docs/CALL_LOG_DESIGN.md for the
+design and its rationale.
 
 **Where the write happens (design §4.5).** Six levels can see a call; the
 record is written at the ASGI middleware, enriched in place by route handlers,
@@ -116,22 +117,6 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 
 SUFFIX = ".calls.jsonl"
 _SUFFIX = SUFFIX  # historical private alias, used throughout this module
-
-# The calls view's own reader. Reading the log must not append to the log:
-# beyond being noise, the view POLLS while following, so each poll's four reader
-# calls would appear in the next poll's results — a feedback loop that inflates
-# the counts it reports forever, and makes the viewer the busiest "target" in
-# any page's rollup. Same instinct as the middleware skipping /api/calls and
-# D68's access log skipping the static mounts.
-#
-# Matched by SHAPE (`<...>/calls/reader.py`) rather than by one absolute path,
-# because the same reader legitimately runs from three places: the package dir,
-# the staged core copy the executor actually resolves
-# (~/.fused-render/.core-templates/, core_templates.py), and a user's fork under
-# ~/.fused-render/templates/. Pinning one path would silently miss the other two
-# — including the staged copy, which is the one that normally runs.
-_SELF_READER_NAME = "reader.py"
-_SELF_READER_DIR = "calls"
 
 # Never log the log's own endpoints: the page-error POST and the reader's own
 # reads would otherwise appear as app calls and (worse) a burst of them would
@@ -567,24 +552,6 @@ def is_log_file(path: str | None) -> bool:
         return parent == root or os.path.dirname(parent) == root
     except OSError:
         return False
-
-
-def _is_self_read(resolved: str | None) -> bool:
-    """True when this run IS the calls view reading the log (see _SELF_READER_*).
-
-    Shape match, so the packaged reader, the staged core copy that actually
-    runs, and a user's fork are all covered.
-    """
-    if not resolved:
-        return False
-    try:
-        real = os.path.realpath(resolved)
-    except OSError:
-        return False
-    parts = real.replace("\\", "/").split("/")
-    return (len(parts) >= 2
-            and parts[-1] == _SELF_READER_NAME
-            and parts[-2] == _SELF_READER_DIR)
 
 
 def is_first_party(page: str | None) -> bool:
@@ -1108,11 +1075,6 @@ def enrich_run(call: dict | None, *, resolved: str, params: dict, engine: str,
     """
     if call is None:
         return
-    if _is_self_read(resolved):
-        # Reading the log is not an app call worth logging (see _SELF_READER).
-        # Flagged rather than dropped here so finish() stays the single writer.
-        call["_drop"] = True
-        return
     call["entrypoint"] = resolved
     call["entrypoint_name"] = os.path.basename(resolved) if resolved else None
     call["engine"] = engine
@@ -1183,7 +1145,7 @@ def finish(call: dict | None, *, status: int | None, elapsed_ms: float,
     line has exactly this property, so this inherits a known limitation rather
     than inventing one.
     """
-    if call is None or call.get("_drop"):
+    if call is None:
         return
     call["status"] = status
     call["server_ms"] = round(elapsed_ms)

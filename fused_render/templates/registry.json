@@ -57,7 +57,6 @@
     "annotate"
   ],
   ".calls.jsonl": [
-    "calls",
     "log_studio",
     "code"
   ],
@@ -249,8 +248,7 @@
     "code",
     "api",
     "reader",
-    "annotate",
-    "calls"
+    "annotate"
   ],
   ".js": [
     "code",
@@ -392,16 +390,14 @@
     "claude",
     "reader",
     "annotate",
-    "history",
-    "calls"
+    "history"
   ],
   ".htm": [
     "_render",
     "code",
     "claude",
     "reader",
-    "annotate",
-    "calls"
+    "annotate"
   ],
   ".tif": [
     "geotiff",

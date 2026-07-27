@@ -1,9 +1,14 @@
 # Call Log — observability for a fused-render app
 
-**Status: phase 1 implemented** (D136, SPEC §31) — `fused_render/calls.py`,
-`fused_render/templates/calls/`, the middleware write point, the runtime's
-attribution headers and `window.onerror` hook, the `fused-render calls` CLI,
-Preferences controls, `tests/test_calls.py`. This file stays the design record:
+**Status: phase 1 implemented, MINUS the in-app view** (D136, SPEC §31) —
+`fused_render/calls.py`, the middleware write point, the runtime's attribution
+headers and `window.onerror` hook, the `fused-render calls` CLI, Preferences
+controls, `tests/test_calls.py`. The `calls` view template was written and then
+pulled from the change: it failed in practice (a worker could not import the
+package, PY-6a) and a viewer is a big enough surface to deserve its own review
+rather than one wedged into the change that defines the record. Reading works
+without it — the CLI runs in-process with no worker at all, and `.calls.jsonl`
+is bound to **log_studio**, which now renders each record as fields. This file stays the design record:
 the rationale, the alternatives that were rejected, and the phases still open.
 
 Two changes of scope from the plan: the CLI moved **into** phase 1 (it is the
@@ -14,12 +19,12 @@ deferral of client-side supersession reporting, which turned out to be the whole
 of CL-5 rather than a refinement of it (D137; the defects fifteen rounds of review
 found are in §9.5, with D138–D150 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
-Phases 2 and 3 are not started. **Also deferred:** cross-app views in the
-Calls view (a Scope control for "my pages" / "templates" / "everything").
-The reader keeps the capability (`scope: mine|templates`) — only the control
-is gone, because the store is partitioned per app (§4.7) and the view is
-opened on a page, so "this application's calls" is the axis it is organised
-around; a cross-app surface is a different one and deserves its own design.
+Phases 2 and 3 are not started. **Deferred with the view:** everything in §5.1
+below (the template, its gate, its reader ops as a *view* surface) and, when it
+returns, the question of cross-app scoping — the store is partitioned per app
+(§4.7) and a view is opened on a page, so "this application's calls" is the
+axis it is organised around; a cross-app surface is a different one. `query()`
+keeps `scope: mine|templates` either way; only a control is missing.
 
 > **The ask.** "Give me a log of the API calls my app makes. Me or my agent can
 > see what the call was, and its stdout/stderr/error/result size. Give me graphs

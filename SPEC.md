@@ -2332,10 +2332,9 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   order is date, then pid, then part — and only the **date** segment orders
   records in time. The pid segment does not (it is arbitrary, and compared
   lexically, so pid 8000 sorts after pid 12345), which is why NO reader may treat
-  "last file by name" as "newest records" — not the store walk (CL-12) and not the
-  `condition.py` gate, whose bounded newest-first probe orders by **mtime**; on
-  reverse name order its whole window could be stale same-day files, and the Calls
-  mode then never appeared on a page that had records. Not the `<file>.json`
+  "last file by name" as "newest records" — not the store walk (CL-12), and not
+  any bounded newest-first probe a future gate does (CL-11), which must order by
+  **mtime**: on reverse name order its whole window can be stale same-day files. Not the `<file>.json`
   sidecar (§21, D82–D84): every writer there does a whole-file
   read-merge-write, which at call volume is O(n²) plus a lost-update race —
   the sidecar is right for low-frequency history, wrong for a firehose. Not
@@ -2369,17 +2368,15 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   app log precisely because "nothing prunes the directory"; this store is
   durable instead, so the pruning is code.
 - **CL-10** **Reads of the store are recorded like any other call; nothing
-  *watches* a store file.** Two rules, and the second is what makes the first
-  safe. (a) The **`calls` reader** is excluded from capture, matched by **shape**
-  (`<...>/calls/reader.py`) rather than one absolute path, since the same reader
-  runs from the package, the staged core copy the executor resolves
-  (`core_templates.py`), or a user's fork. That one is non-negotiable: the view
-  POLLS while following, and its records are attributed to the page being
-  analysed, so each poll's calls would appear in the next poll's results —
-  inflating the very numbers being read. (b) Everything else that opens the store
-  (`log_studio`, `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to
-  open a large log is worth knowing, and a blanket exclusion would be a special
-  case in the record contract. That is only safe because **the runtime never adds
+  *watches* a store file.** Everything that opens the store (`log_studio`,
+  `code`, `duckdb`, `tree`) **is** logged: what a viewer costs to open a large
+  log is worth knowing, and a blanket exclusion would be a special case in the
+  record contract. The one exclusion this rule used to carry — the `calls`
+  view's own reader, matched by shape so a polling viewer's reads could not
+  inflate the numbers it was reporting — went with the view (CL-11) rather than
+  sitting unreachable, and comes back with it: a viewer that POLLS and attributes
+  its reads to the page being analysed is a feedback loop, and that is a
+  property of the viewer, not of the store. That is only safe because **the runtime never adds
   a call-log file to its auto-reload watch set** (`calls_dir`/`calls_suffix` from
   `/api/config`, applied beside the existing mount-backed exclusion): viewing the
   file appends to it, so a watcher would reload, re-read, append and reload
@@ -2392,23 +2389,22 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   and the `calls` view's Follow switch auto-reload off while engaged so a reload
   cannot rebuild the frame mid-poll. The `/api/calls*` routes are likewise never
   logged.
-- **CL-11** **The view is an ordinary template** —
-  `fused_render/templates/calls/` (`template.html` + `reader.py` +
-  `condition.py` + `icon.svg`), containment per HV-1/D78: no shell code, and a
-  user can fork it into `~/.fused-render/templates/calls/`. Bound as a
-  **conditional peer** (CT-12) on `.html`/`.htm`/`.py` — never a default — with
-  `condition.py` gating on "this file has records", so a page nobody has run
-  grows no dead mode and the mode joins the switcher in the background the
-  moment it does. The gate reads a bounded tail of the newest files with an
-  early exit (never a full scan). Because the gate must run as a standalone copy
-  in the user template dir, it **duplicates** the store-path resolution rather
-  than importing it — including `_branch`'s sanitisation, the default-branch
-  baseline opt-out, and the build-time baked ref. A duplicate that drifts sends
-  the probe to a directory nothing writes to, and the gate then fails closed on a
-  page with plenty of history, so the duplication is **pinned by a test that
-  compares the gate's dir to `store_dir()` across a table of refs** rather than
-  left to match by inspection (the same shape the `zarr_aoi` daemon's inlined
-  copy already had).
+- **CL-11** **The in-app view is DEFERRED to its own change; this spec section
+  covers the store and the CLI.** A `calls` view template was written and then
+  pulled: it failed in practice (a worker could not import the package — PY-6a),
+  and rather than keep debugging a surface inside a change that is really about
+  the record and the store, it comes back on its own. Nothing is unread in the
+  meantime: `fused-render calls` (CL-13) is the agent's read surface and runs
+  in-process with no worker at all, and `.calls.jsonl` is bound to **log_studio**,
+  which renders each record as fields (records carry a conventional `level`, so
+  its facets and histogram work unchanged). When the view returns it is an
+  ordinary template per HV-1/D78 — no shell code, forkable into
+  `~/.fused-render/templates/` — bound as a **conditional peer** (CT-12), never a
+  default, with a `condition.py` gate on "this file has records" so a page nobody
+  has run grows no dead mode. That gate must duplicate the store-path resolution
+  (it runs standalone in the user template dir) and the duplicate must be
+  **pinned by a test** against `store_dir()` and `partition_name()`, not left to
+  match by inspection — the shape D144/D151 already paid for twice.
 - **CL-12** **The reader pre-aggregates; the template draws.** Ops mirror
   `log_studio/reader.py`: `overview`, `page` (cursor-paged), `series`
   (bucketed points), `targets` (per-entrypoint rollup), `detail`, `config`.
@@ -2437,21 +2433,8 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   (whole days cannot interleave — a file only takes appends while the UTC date
   still matches its name), which bounds open handles to one day's files and keeps
   the walk lazy: a `limit` satisfied by today never opens last week's.
-  `calls/reader.py` is on
-  `INPROCESS_HELPERS` (D72): it is first-party, never imports or executes user
-  code, and its reads are bounded, so following polls a local file read rather
-  than a ~700 ms subprocess spawn. Charts are hand-rolled `<canvas>` with no
-  dependency (the `log_studio` precedent, ARCHITECTURE §10): call volume
-  stacked by outcome, duration as p50/p95 over a per-call scatter (a mean
-  hides the one cold run that made the page look broken), response size, and
-  the per-target table. Every filter lives in the URL (PR-1). The view's reload is
-  **single-flight with a pending re-run**, not single-flight alone: an in-flight
-  read is already committed to the filters it started with, so a scope/window/query
-  toggle mid-read has to be remembered and re-run at the end (dropping it left the
-  controls and the URL saying one thing and the table showing another until the user
-  pressed Refresh). Coalesced to one re-run, so a burst of clicks costs two reads
-  rather than N, and the re-run lives in `finally` so a transient reader error
-  cannot strand the view on its error card.
+  These are the query helpers in `calls.py`; the CLI (CL-13) calls them
+  directly, and the deferred view (CL-11) will too.
 - **CL-13** **A cursor, not a wall-clock guess.** `query` accepts a
   `call_id` cursor and returns the newest id with every page, so a caller —
   usually an agent verifying a page it just wrote — asks for "everything since
@@ -2568,14 +2551,9 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   attributed to the template's own `template.html`. Correct, but "my app's
   calls" then needs a deliberate filter: records carry `target_file` (for a
   template, the identity that matters) and `first_party` (the page lives under
-  the packaged, staged-core, or user template dir). The reader still accepts
-  `scope: mine|templates`, but the view offers **no Scope control**: the store
-  is partitioned per app (CL-18) and the view is opened ON a page, so it is
-  "this application's calls" — a page or `.py` filters to itself, and a
-  `.calls.jsonl` opened directly shows what it contains. Cross-app views are a
-  different axis and are deferred to their own change; the `scope` URL param is
-  deliberately NOT read back, since honouring a bookmarked cross-app scope with
-  no control to see or clear it is an invisible filter.
+  the packaged, staged-core, or user template dir). `query()` accepts
+  `scope: mine|templates` on top of those fields — the capability the returning
+  view (CL-11) needs, and what `fused-render calls` filters on today.
 - **CL-17** Not a security or audit log. D3 stands — this is a local
   single-user diagnostic, not an attestation, and nothing may be built on it
   as if it were tamper-evident.
@@ -2601,5 +2579,5 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   partition→app-dir map written only on partition creation, rebuildable, never
   load-bearing. A renamed app folder is a NEW partition; the old history ages
   out unclaimed (owner-accepted over a rename chain). A `.py` borrowed by a
-  page in another folder logs under the borrower — the borrowed file's own
-  Calls view shows its home app only.
+  page in another folder logs under the borrower, since a record lives where
+  its `page` lives.

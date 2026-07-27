@@ -309,18 +309,6 @@ def test_a_failed_run_records_the_traceback(app_client):
     assert "ZeroDivisionError" in got["error"]["traceback"]
 
 
-def test_reading_the_log_does_not_append_to_the_log(app_client):
-    """Otherwise the view's own polling feeds itself: each poll's reader calls
-    would show up in the next poll's results, inflating the counts forever."""
-    client, d = app_client
-    reader = os.path.join(os.path.dirname(calls.__file__), "templates", "calls", "reader.py")
-    client.post("/api/run",
-                json={"py": reader, "html": str(d / "p.html"), "params": {"op": "overview"}},
-                headers=app_headers(d / "p.html"))
-    time.sleep(0.5)
-    assert calls.query(limit=50)["records"] == []
-
-
 def test_first_party_flags_a_template_page_not_the_users_own(store):
     """True for a template in ANY of its three homes — packaged, staged core,
     or a user fork — so the "My pages" filter shows the user's own work."""
@@ -541,105 +529,19 @@ def test_size_trim_never_deletes_a_live_file(store, monkeypatch):
 
 # ------------------------------------------------------- registry + gate wiring
 
-def test_calls_is_a_conditional_peer_on_html_and_py():
-    """It joins the switcher via condition.py (CT-12) and is never the default:
-    a page nobody has run must not grow a dead mode."""
-    from fused_render import server
-
-    for path, default in (("/x/sine.html", "_render"), ("/x/data.py", "code")):
-        entries, error = server._templates_for(path, False)
-        assert error is None
-        modes = [e["mode"] for e in entries]
-        assert modes[0] == default
-        assert "calls" in modes
-        entry = next(e for e in entries if e["mode"] == "calls")
-        assert entry["conditional"] is True
-        assert entry["path"].endswith("calls/template.html")
-        assert entry["icon"] is not None
-
-
-def test_the_store_itself_opens_in_the_calls_view():
-    """`.calls.jsonl` (2 segments) beats bare `.jsonl` (1) — CT-3 specificity."""
-    from fused_render import server
-
-    entries, error = server._templates_for("/x/2026-07-24-99.calls.jsonl", False)
-    assert error is None
-    assert [e["mode"] for e in entries] == ["calls", "log_studio", "code"]
-
-
-def test_gate_is_false_for_a_page_with_no_records(store, tmp_path):
-    from fused_render.templates.calls import condition
-
-    assert condition.main(str(tmp_path / "never-run.html")) is False
-
-
-def test_gate_turns_true_once_the_page_has_records(store, tmp_path, monkeypatch):
-    from fused_render.templates.calls import condition
-
-    page = str(tmp_path / "sine.html")
-    write_records([rec(page=page)])
-    # The gate resolves the store from the env, exactly as a standalone copy in
-    # the user template dir would.
-    assert condition.main(page) is True
-
-
-def test_gate_is_true_for_the_store_file_itself_without_touching_disk(tmp_path):
-    from fused_render.templates.calls import condition
-
-    assert condition.main(str(tmp_path / "2026-07-24-1.calls.jsonl")) is True
-
-
-def test_reader_ops_are_reachable_and_bounded(store):
-    from fused_render.templates.calls import reader
-
-    write_records([rec(page="/a/p.html", outcome="ok"),
-                   rec(page="/a/p.html", outcome="error")])
-    assert reader.main(op="overview", page="/a/p.html")["total"] == 2
-    assert len(reader.main(op="page", page="/a/p.html", limit=1)["records"]) == 1
-    assert reader.main(op="series", bucket_ms=60_000)["bucket_ms"] == 60_000
-    assert reader.main(op="targets")["targets"][0]["count"] == 2
-    assert reader.main(op="config")["enabled"] is True
-    assert "unknown op" in reader.main(op="nonsense")["error"]
-
-
-def test_reader_since_accepts_a_relative_age(store):
-    from fused_render.templates.calls import reader
-
-    write_records([rec(occurred_at="2020-01-01T00:00:00.000Z"), rec()])
-    # A small `since` is an age in seconds, so the 2020 record falls outside it.
-    assert reader.main(op="overview", since=3600)["total"] == 1
-    assert reader.main(op="overview", since=0)["total"] == 2
-
-
-def test_calls_reader_is_allowlisted_for_in_process_execution():
-    """The view polls while following; ~700 ms of subprocess spawn per poll is
-    the difference between a live tail and a slideshow (D72).
-
-    BOTH copies are asserted. The staged core-templates dir is where the
-    executor normally reads built-in helpers from (core_templates.py), but the
-    bundled original is the same first-party file, and listing only one meant a
-    run served from the other fell to the subprocess path silently.
-    """
-    from fused_render import executor
-    from fused_render.core_templates import core_templates_dir
-
-    staged = os.path.realpath(os.path.join(core_templates_dir(), "calls", "reader.py"))
-    bundled = os.path.realpath(os.path.join(os.path.dirname(calls.__file__),
-                                            "templates", "calls", "reader.py"))
-    assert staged in executor.INPROCESS_HELPERS
-    assert bundled in executor.INPROCESS_HELPERS
-
-
 def test_a_user_fork_of_the_reader_is_never_allowlisted(tmp_path, monkeypatch):
     """The one copy that must stay on the subprocess path: once the file lives
     under ~/.fused-render/templates/ the user can edit it, so it is user code
     and keeps the timeout and process isolation. It still WORKS there — the
     child bootstraps the package (see below) — just without the in-process
-    shortcut."""
+    shortcut.
+
+    `duckdb` because it IS allowlisted in its built-in copies: a fork of a
+    helper that is not allowlisted anywhere would pass this vacuously."""
     from fused_render import executor
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
-    fork = tmp_path / "templates" / "calls" / "reader.py"
+    fork = tmp_path / "templates" / "duckdb" / "reader.py"
     fork.parent.mkdir(parents=True)
     fork.write_text("def main(**kw):\n    return {}\n", encoding="utf-8")
     assert executor._is_builtin_helper(str(fork)) is False
@@ -1157,18 +1059,6 @@ def test_a_generic_log_viewer_reads_the_level_not_the_payload(store):
     assert log_studio._level(healthy) == "INFO", "a healthy call must not read as an error"
     assert log_studio._level(failed) == "ERROR"
 
-
-def test_the_calls_view_stops_auto_reload_while_following(store):
-    """Two live-update mechanisms must not fight: auto-reload rebuilds the frame
-    on a file change, which would interrupt the poll. log_studio makes the same
-    trade for its Tail button."""
-    template = os.path.join(os.path.dirname(calls.__file__), "templates", "calls",
-                            "template.html")
-    src = open(template, encoding="utf-8").read()
-    assert "fused.autoReload(!state.follow)" in src
-
-
-# ------------------------------------------------ the CLI (Bugbot #283 review)
 
 def run_cli(monkeypatch, capsys, *argv):
     """Invoke `fused-render calls …` in-process and return its stdout."""
@@ -1739,59 +1629,6 @@ def test_a_genuinely_absent_cursor_still_says_purged(store, monkeypatch, capsys)
 
 # ------- the gate must not mistake name order for time order (7th review)
 
-def test_the_gate_probes_the_live_file_not_the_lexically_last(store, tmp_path):
-    """`reversed(names)[:MAX_FILES]` is not "the newest files".
-
-    A store name ranks records only by its DATE segment; the pid segment is
-    arbitrary and compared lexically, so `…-8000-000` sorts after `…-12345-000`.
-    With a few same-day files the reverse-name window can be entirely stale, and
-    the gate then reports no history for a page with records — so the Calls mode
-    silently never appears on it. Same mistake `_iter_records` made before it
-    merged same-day files on append time; this is the second place it lived.
-    """
-    from fused_render.templates.calls import condition
-
-    os.makedirs(store, exist_ok=True)
-    day = calls.day_stamp()
-    page = str(tmp_path / "mine.html")
-    # Three stale files whose pids sort lexically AFTER the live one.
-    for pid, age in (("8000", 900), ("9000", 800), ("9500", 700)):
-        path = in_store(store, f"{day}-{pid}-000.calls.jsonl")
-        with open(path, "w") as fh:
-            fh.write(appended("other", time.time() - age, page="/app/other.html") + "\n")
-        os.utime(path, (time.time() - age,) * 2)
-    # The live file sorts FIRST by name (1 < 8) and so fell outside the window.
-    with open(in_store(store, f"{day}-12345-000.calls.jsonl"), "w") as fh:
-        fh.write(appended("mine", time.time(), page=page) + "\n")
-
-    assert condition.main(page) is True, "the page has records in the live file"
-
-
-def test_the_gate_still_bounds_how_many_files_it_reads(store, tmp_path, monkeypatch):
-    """The negative case: ordering by mtime must not turn the bounded probe into
-    a whole-store scan."""
-    from fused_render.templates.calls import condition
-
-    os.makedirs(store, exist_ok=True)
-    day = calls.day_stamp()
-    for i in range(8):
-        path = in_store(store, f"{day}-{1000 + i}-000.calls.jsonl")
-        with open(path, "w") as fh:
-            fh.write(appended(f"c{i}", time.time() - i, page="/app/other.html") + "\n")
-        os.utime(path, (time.time() - i,) * 2)
-
-    read = []
-    real_tail = condition._tail
-
-    def spy(path, limit):
-        read.append(os.path.basename(path))
-        return real_tail(path, limit)
-
-    monkeypatch.setattr(condition, "_tail", spy)
-    assert condition.main(str(tmp_path / "absent.html")) is False
-    assert len(read) == condition.MAX_FILES, "still capped, just ordered correctly"
-
-
 def test_the_size_trim_drops_the_oldest_append_first(store):
     """The trim iterated in name order and called it oldest-first — true only at
     day granularity. mtime is exact."""
@@ -1987,192 +1824,6 @@ def test_a_deep_cursor_is_not_called_purged_on_the_follow_path(
 
 # --------- the view must not drop an overlapping reload (10th review, finding 2)
 
-def _calls_template_src():
-    return open(os.path.join(os.path.dirname(calls.__file__), "templates", "calls",
-                             "template.html"), encoding="utf-8").read()
-
-
-def _js_block(src, header):
-    """Return `header` plus its brace-balanced body, verbatim from the template.
-
-    Extracted rather than copied so this exercises the shipping source: a copy
-    would keep passing after the real function regressed, which is the one thing
-    a test of a single-flight guard must not do. A reformat that breaks the
-    extraction fails loudly here instead of silently passing.
-    """
-    start = src.index(header)
-    open_brace = src.index("{", start)
-    depth = 0
-    for i in range(open_brace, len(src)):
-        if src[i] == "{":
-            depth += 1
-        elif src[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return src[start:i + 1]
-    raise AssertionError(f"unbalanced braces after {header!r}")
-
-
-def test_a_filter_change_during_a_read_is_not_dropped(tmp_path):
-    """`if (inflight) return;` silently discarded the newer request.
-
-    The in-flight read is already committed to the filters it started with, so a
-    scope/window/query/Failed change mid-read rendered the PREVIOUS filters and
-    then never caught up — the controls and the URL said one thing, the table
-    showed another, until the user hit Refresh. The fix has to hold both halves:
-    the change is honoured, AND concurrency stays bounded (a burst of clicks must
-    coalesce to one re-run, not queue N reads).
-    """
-    node = shutil.which("node")
-    if not node:  # pragma: no cover - node is preinstalled on the CI runners
-        pytest.skip("node is required to drive the template's JS")
-
-    src = _calls_template_src()
-    harness = tmp_path / "load.mjs"
-    harness.write_text(
-        "let inflight = false, pending = false;\n"
-        "const state = { since: 0 };\n"
-        # Each op captures the filters live at the moment it was issued, which is
-        # exactly what the real runPython call does.
-        "let live = 'a', reads = 0, waiting = [], rendered = [];\n"
-        "function bucketFor() { return 1000; }\n"
-        "function esc(s) { return s; }\n"
-        "function $() { return {}; }\n"
-        "function op() { reads++; const at = live;"
-        " return new Promise((res) => waiting.push(() => res(at))); }\n"
-        "function render(p) { rendered.push(p.overview); }\n"
-        + _js_block(src, "async function load()") + "\n"
-        "const flush = () => new Promise((r) => setTimeout(r, 0));\n"
-        "const settle = async () => { const w = waiting; waiting = [];"
-        " w.forEach((f) => f()); await flush(); };\n"
-        "load();\n"                      # read 1 goes out with filters 'a'
-        "live = 'b';\n"
-        "load(); load(); load();\n"      # three changes land mid-read
-        "await settle();\n"              # read 1 finishes -> one re-run, filters 'b'
-        "await settle();\n"              # read 2 finishes
-        "console.log(JSON.stringify({ rendered, reads, pending, inflight }));\n",
-        encoding="utf-8")
-
-    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
-                         timeout=30)
-    assert out.returncode == 0, out.stderr
-    result = json.loads(out.stdout)
-    assert result["rendered"] == ["a", "b"], (
-        "the mid-read change must render, and exactly once")
-    assert result["reads"] == 8, "4 ops per read, two reads — not one, not four"
-    assert result["inflight"] is False and result["pending"] is False
-
-
-def test_the_calls_view_reloads_after_a_failed_read(tmp_path):
-    """The re-run lives in `finally`, so a transient reader error cannot leave the
-    view stuck on the error card while the controls say something else."""
-    node = shutil.which("node")
-    if not node:  # pragma: no cover - node is preinstalled on the CI runners
-        pytest.skip("node is required to drive the template's JS")
-
-    src = _calls_template_src()
-    harness = tmp_path / "load_err.mjs"
-    harness.write_text(
-        "let inflight = false, pending = false;\n"
-        "const state = { since: 0 };\n"
-        "let fail = true, reads = 0, waiting = [], rendered = [], errors = 0;\n"
-        # load()'s catch resets the chart cache alongside the scaffold it
-        # replaces; modules are strict, so the name must exist here.
-        "let lastChartKey = 'stale';\n"
-        "function bucketFor() { return 1000; }\n"
-        "function esc(s) { return s; }\n"
-        "function $() { return { set innerHTML(v) { errors++; } }; }\n"
-        "function op() { reads++; const bad = fail;"
-        " return new Promise((res, rej) => waiting.push(() =>"
-        " bad ? rej(new Error('reader died')) : res('ok'))); }\n"
-        "function render(p) { rendered.push(p.overview); }\n"
-        + _js_block(src, "async function load()") + "\n"
-        "const flush = () => new Promise((r) => setTimeout(r, 0));\n"
-        "const settle = async () => { const w = waiting; waiting = [];"
-        " w.forEach((f) => f()); await flush(); };\n"
-        "load();\n"
-        "fail = false;\n"
-        "load();\n"                      # queued behind the read that is about to fail
-        "await settle();\n"
-        "await settle();\n"
-        "console.log(JSON.stringify({ rendered, errors, pending, inflight }));\n",
-        encoding="utf-8")
-
-    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
-                         timeout=30)
-    assert out.returncode == 0, out.stderr
-    result = json.loads(out.stdout)
-    assert result["errors"] >= 1, "the failure still reports itself"
-    assert result["rendered"] == ["ok"], "and the queued reload still runs"
-    assert result["inflight"] is False and result["pending"] is False
-
-
-def test_the_follow_poll_reuses_row_elements_instead_of_rebuilding(tmp_path):
-    """Follow polls every 2 s, and the render used to replace the pane's
-    innerHTML wholesale — scroll, the open detail row, and any text selection
-    died four times a sentence, making Follow the one mode in which the log
-    could not be read. The reconcile must therefore REUSE the element for every
-    record the new page still holds: identity is tracked here by stamping each
-    created element with a serial, so a rebuild that produces equal-LOOKING rows
-    still fails.
-    """
-    node = shutil.which("node")
-    if not node:  # pragma: no cover - node is preinstalled on the CI runners
-        pytest.skip("node is required to drive the template's JS")
-
-    src = _calls_template_src()
-    harness = tmp_path / "reconcile.mjs"
-    harness.write_text(
-        # A tbody with just the DOM surface reconcile touches. `rowFrom` is
-        # overridden (the real one needs <template> parsing) but keeps its
-        # contract: fresh element, key + source stamped.
-        "let serial = 0;\n"
-        "function rowFrom(key, html) {\n"
-        "  return { dataset: { key }, _src: html, id: ++serial, parent: null,\n"
-        "    remove() { const c = this.parent.children;\n"
-        "      const i = c.indexOf(this); if (i >= 0) c.splice(i, 1); },\n"
-        "    get nextSibling() { const c = this.parent.children;\n"
-        "      return c[c.indexOf(this) + 1] || null; } };\n"
-        "}\n"
-        "const tbody = { children: [],\n"
-        "  get firstChild() { return this.children[0] || null; },\n"
-        "  insertBefore(el, ref) { const c = this.children;\n"
-        "    const i = c.indexOf(el); if (i >= 0) c.splice(i, 1);\n"
-        "    let j = ref ? c.indexOf(ref) : c.length; if (j < 0) j = c.length;\n"
-        "    c.splice(j, 0, el); el.parent = this; } };\n"
-        + _js_block(src, "function reconcile(tbody, desired)") + "\n"
-        "const snap = () => tbody.children.map((el) => el.dataset.key + '#' + el.id);\n"
-        "const out = [];\n"
-        "reconcile(tbody, [['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
-        "out.push(snap());\n"
-        "reconcile(tbody, [['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
-        "out.push(snap());\n"
-        "reconcile(tbody, [['n', 'N'], ['a', 'A'], ['b', 'B'], ['c', 'C']]);\n"
-        "out.push(snap());\n"
-        "reconcile(tbody, [['n', 'N'], ['a', 'A2'], ['b', 'B']]);\n"
-        "out.push(snap());\n"
-        "reconcile(tbody, [['b', 'B'], ['n', 'N']]);\n"
-        "out.push(snap());\n"
-        "console.log(JSON.stringify(out));\n",
-        encoding="utf-8")
-
-    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
-                         timeout=30)
-    assert out.returncode == 0, out.stderr
-    result = json.loads(out.stdout)
-    assert result[0] == ["a#1", "b#2", "c#3"]
-    assert result[1] == ["a#1", "b#2", "c#3"], \
-        "an identical poll must not touch a single element"
-    assert result[2] == ["n#4", "a#1", "b#2", "c#3"], \
-        "a new record on top reuses every existing row"
-    assert result[3] == ["n#4", "a#5", "b#2"], \
-        "changed content replaces its own row; ageing out removes; others stay"
-    assert result[4] == ["b#2", "n#4"], \
-        "a reorder moves elements, never rebuilds them"
-
-
-# ------------- the prefs snapshot must honour a concurrent invalidation
-
 def test_an_invalidation_during_a_prefs_read_is_not_lost(store, monkeypatch):
     """The prefs.json read happens outside the lock, so an invalidation can land
     mid-read. Storing the result unconditionally repopulated the cache with the
@@ -2225,99 +1876,13 @@ def test_the_store_is_the_logs_dir_under_the_shell_home(tmp_path, monkeypatch):
     orphaned and every page silently lost its history. The one fact worth
     spelling out is the one an edit in a single place can change invisibly.
 
-    Both spellings are asserted: the writer's, and the gate's standalone copy of
-    the same rule (`test_the_gate_resolves_the_same_store_dir_as_the_writer`
-    proves they agree with each other, which is not the same as either being
-    right).
     """
-    from fused_render.templates.calls import condition
-
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
 
     assert calls.store_dir() == os.path.join(str(tmp_path), "logs")
-    assert condition._store_dir() == os.path.join(str(tmp_path), "logs")
 
 
-@pytest.mark.parametrize("ref", BRANCH_REFS)
-def test_the_gate_resolves_the_same_store_dir_as_the_writer(tmp_path, monkeypatch, ref):
-    """The gate's copy of the path rules must agree with the real resolver.
-
-    `condition.py` is deliberately standalone (a user may copy the template dir),
-    so it duplicates the branch resolution instead of importing it — and the
-    duplicate had drifted to "join the raw env value", which is wrong for
-    default-branch refs, for anything needing sanitising, and for anything longer
-    than 12 chars. Each case sends the probe to a directory that never receives
-    records, so the gate fails closed and the Calls mode never appears on a page
-    with plenty of history.
-
-    This is the invariant worth testing rather than any single rule: whatever the
-    ref, the two dirs are the same dir. A duplicate that is pinned is fine; one
-    that is only hoped to match is what produced the bug.
-    """
-    from fused_render import _branch
-    from fused_render.templates.calls import condition
-
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
-    monkeypatch.setenv("FUSED_RENDER_BRANCH", ref)
-    monkeypatch.setattr(_branch, "_CACHED_REF", None)  # resolved once per process
-
-    assert condition._store_dir() == calls.store_dir()
-
-
-def test_the_gate_follows_a_baked_branch_ref_like_the_writer(tmp_path, monkeypatch):
-    """With no env var, the ref baked in at build time still decides the store.
-
-    This is the case the gate's standalone-copy rule exists for — a packaged app,
-    where the baked module is the only source of the ref — so reading it is not
-    optional. Skipping it would leave a packaged branch build gating against the
-    baseline store.
-    """
-    import types
-
-    import fused_render
-    from fused_render import _branch
-    from fused_render.templates.calls import condition
-
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
-    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    monkeypatch.setattr(_branch, "_CACHED_REF", None)
-    baked = types.ModuleType("fused_render._baked_branch")
-    baked._BAKED_REF = "Release/9.9"  # unsanitised on purpose
-    monkeypatch.setitem(sys.modules, "fused_render._baked_branch", baked)
-    monkeypatch.setattr(fused_render, "_baked_branch", baked, raising=False)
-
-    assert condition._store_dir() == calls.store_dir()
-    assert os.path.join("branches", "release-9-9") in condition._store_dir(), (
-        "the baked ref must be sanitised, not joined raw")
-
-
-def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
-        tmp_path, monkeypatch):
-    """The end-to-end shape of the bug: records exist, the gate said no.
-
-    `FUSED_RENDER_BRANCH=main` is a baseline opt-out, so the writer appends to
-    `~/.fused-render/logs` — while the gate probed `branches/main/logs`, found
-    nothing, and failed closed.
-    """
-    from fused_render import _branch
-    from fused_render.templates.calls import condition
-
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
-    monkeypatch.setenv("FUSED_RENDER_BRANCH", "main")
-    monkeypatch.setenv("FUSED_RENDER_CALLS", "1")
-    monkeypatch.setattr(_branch, "_CACHED_REF", None)
-
-    page = str(tmp_path / "mine.html")
-    os.makedirs(calls.store_dir(), exist_ok=True)
-    with open(app_current_file(), "w") as fh:
-        fh.write(json.dumps(calls._prune(rec(page=page))) + "\n")
-
-    assert condition.main(page) is True, "the page has records in the baseline store"
-
-
-# ------------------------- Windows path forms (Bugbot #283 review, D147)
-#
 # Windows is simulated with `ntpath` and with literal drive-shaped strings
 # rather than skipped behind a sys.platform guard: the bug is a disagreement
 # between two *string* forms of a path, so it reproduces and stays fixed on
@@ -2444,19 +2009,6 @@ def test_windows_entrypoint_substring_filter_matches(store):
     assert [r["call_id"] for r in calls.query(limit=10, entrypoint="sine.py")["records"]] == ["run"]
 
 
-def test_windows_gate_finds_a_run_only_target(store, monkeypatch):
-    """The third reported site, fixed transitively rather than by a fourth copy
-    of the rule: the gate's needle is the canonical path it was handed, so once
-    the store is canonical the substring probe hits. No mirrored normalizer in
-    condition.py means nothing there to drift (the D146 lesson)."""
-    from fused_render.templates.calls import condition
-
-    log_a_windows_run()
-
-    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
-    assert condition.main(WIN_PY) is True
-
-
 def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsys):
     """Guard on the ordinary path: the canonicalization must be a no-op here."""
     write_records([calls._prune(rec(call_id="posix", page="/app/p.html",
@@ -2577,31 +2129,6 @@ def test_two_spellings_of_one_folder_share_a_partition(store, tmp_path):
     assert len(calls.partition_dirs()) == 1
 
 
-def test_the_gate_partition_resolver_matches_the_writers(tmp_path):
-    """The gate's standalone duplicate of partition_name, pinned to the real
-    one — a duplicate that is only hoped to match is what produced the D144
-    drift, so this one is not allowed to be hopeful. The table covers the
-    spellings that each rule in the resolver exists for."""
-    from fused_render.templates.calls import condition
-
-    real = tmp_path / "anapp"
-    real.mkdir()
-    alias = tmp_path / "sym"
-    os.symlink(real, alias)
-
-    cases = [
-        str(real),
-        str(alias),                       # realpath folding
-        str(real) + "/",                  # trailing separator
-        "/plain/posix/app",
-        "C:/Users/foo/My App",            # drive-shaped (canonical form)
-        "",                               # no page at all
-        "/x/" + "very-long-name" * 6,     # slug cap
-    ]
-    for case in cases:
-        assert condition._partition_name(case) == calls.partition_name(case), case
-
-
 def test_the_size_trim_takes_the_largest_partition_first(store, monkeypatch):
     """The flat store's trim was oldest-first across everything, so one chatty
     app evicted a quiet app's whole history. Now the chatty app pays its own
@@ -2665,45 +2192,6 @@ def test_the_index_is_advisory_a_corrupt_one_never_blocks_a_write(store):
 def test_the_index_maps_partitions_to_the_folders_they_name(store):
     write_records([rec(page="/apps/sine/p.html")])
     assert calls._index_read()[calls.partition_name("/apps/sine")] == "/apps/sine"
-
-
-def test_a_busy_neighbour_cannot_crowd_a_quiet_page_out_of_the_gate(store, monkeypatch):
-    """THE false negative partitioning exists to kill (CL-18): the gate reads a
-    bounded number of newest files, and under the flat layout a chatty app's
-    files filled that window, so a quiet page with plenty of history reported
-    "no history" and its Calls mode silently never appeared. With the quiet
-    app's records in their own partition, the probe is exact however loud the
-    neighbours are."""
-    from fused_render.templates.calls import condition
-
-    quiet_page = "/apps/quiet/mine.html"
-    write_records([rec(page=quiet_page, call_id="mine")])
-    # A neighbour with more fresh files than the gate's whole probe window.
-    chatty = calls.partition_name("/apps/chatty")
-    os.makedirs(os.path.join(store, chatty), exist_ok=True)
-    for i in range(condition.MAX_FILES + 2):
-        path = os.path.join(store, chatty, f"{calls.day_stamp()}-1-{i:03d}.calls.jsonl")
-        with open(path, "w") as fh:
-            fh.write(json.dumps(calls._prune(rec(page="/apps/chatty/p.html"))) + "\n")
-        os.utime(path, (time.time() + 10 + i,) * 2)  # newer than the quiet file
-
-    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
-    assert condition.main(quiet_page) is True
-
-
-def test_the_gate_falls_back_to_the_whole_store_for_a_borrowed_file(store, monkeypatch):
-    """A page in another folder ran this file, so the records live under the
-    BORROWER's partition (records live where their `page` lives). The borrowed
-    file's own partition is empty; the gate's bounded global fallback — the
-    pre-partitioning behaviour — is what still finds it."""
-    from fused_render.templates.calls import condition
-
-    borrowed = "/elsewhere/shared.py"
-    write_records([rec(page="/apps/borrower/p.html", entrypoint=borrowed,
-                       target_file="/apps/borrower/p.html")])
-
-    monkeypatch.setattr(condition, "_store_dir", lambda: str(store))
-    assert condition.main(borrowed) is True
 
 
 def test_is_log_file_covers_files_inside_a_partition(store):

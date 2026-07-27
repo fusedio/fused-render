@@ -91,13 +91,12 @@ otherwise: which of your `.py` files is slow, whether a run errored while you
 weren't looking, and whether the page is quietly re-running Python far more
 often than you thought.
 
-**Where to see it.** Open a page (or a `.py`) that has recorded calls and pick
-the **Calls** mode from the view switcher — charts of call volume, duration
-(p50/p95 over the individual calls), and response size, a per-target table, and
-the recent calls with each one's full record a click away. The mode only appears
-for files that actually have records, so it never clutters a file you haven't
-run. The view is about the file you opened it on; opening one of the store's own
-`.calls.jsonl` files instead shows everything that file contains.
+**Where to see it.** Two surfaces today — a dedicated in-app view is coming in a
+later release. Open any `.calls.jsonl` file from the store and it renders in
+**Log studio**: records carry a conventional log `level`, so its level facets,
+query filter and volume histogram work on them, and expanding a row shows the
+record as fields rather than a wall of JSON. For anything scripted, or for an
+agent checking its own work, use the CLI below.
 
 **From a terminal:**
 
@@ -124,12 +123,12 @@ page is re-running Python far more than it needs to (a slider with no debounce,
 or an `onChange` handler that retriggers itself).
 
 **Getting to it from Preferences.** **Browse call logs** opens the store in the
-explorer, which is how you reach the viewer: click any `.calls.jsonl` and it
-renders in the same Calls view.
+explorer: one directory per app, and clicking any `.calls.jsonl` opens it in
+**Log studio**.
 
-Records also carry a normal log `level` (INFO for a healthy call, ERROR for a
-failure, DEBUG for a superseded one), so the generic **Log studio** view works on
-these files too — level facets, filtering, and its volume-by-level histogram.
+Records carry a normal log `level` (INFO for a healthy call, ERROR for a
+failure, DEBUG for a superseded one), which is what makes Log studio a real
+viewer for them — level facets, filtering, and its volume-by-level histogram.
 Expanding a row there shows the record as **fields** rather than one long line of
 JSON: nested objects indented under their key, a traceback or output tail kept as
 a block so its newlines survive, and any value clickable to filter the log by it.
@@ -146,9 +145,7 @@ polls instead of reloading.
 Opening a log file in any view is safe. Nothing watches a log file for changes,
 so a view of one never reloads itself — which matters because reading a log *is*
 a recorded call, and a watcher would reload, re-read and append forever. The
-reads themselves are kept (what a viewer costs on a big log is worth seeing);
-the Calls view's own polling is the one thing excluded, since it would otherwise
-inflate the numbers you are reading.
+reads themselves are kept — what a viewer costs on a big log is worth seeing.
 
 **Where it lives.** `~/.fused-render/logs/<app>/` as newline-delimited JSON —
 one directory per app (named for the page's folder, e.g. `sine-3f9a1c2b8d7e6f50`,

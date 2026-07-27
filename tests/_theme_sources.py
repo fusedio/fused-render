@@ -61,11 +61,6 @@ SELF_TOGGLING_TEMPLATES = ("excel", "log_studio", "tableau")
 # Media / geospatial / studio groups — keep today's appearance for now.
 DEFERRED_TEMPLATES = (
     "annotate",
-    # `calls` (SPEC §31) landed alongside this feature with a single fixed dark
-    # palette and no opt-in attribute — deferred rather than tier-1 because the
-    # honest classification is what it actually carries today, and AP-14's
-    # exhaustiveness check exists precisely so that stays a stated choice.
-    "calls",
     "canvas",
     "geometry_editor",
     "geotiff",

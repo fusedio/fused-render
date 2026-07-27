@@ -86,12 +86,6 @@ INPROCESS_HELPERS = frozenset(
         ("sqlite", "reader.py"),
         ("sqlite", "writer.py"),
         ("api", "inspector.py"),
-        # The call-log reader: first-party, never imports or executes user code
-        # (it parses JSONL the server itself wrote), and bounded — it reads at
-        # most a page of records or one pre-aggregated pass. In-process because
-        # the calls view POLLS while following, and ~700 ms of subprocess spawn
-        # per poll is the difference between a live tail and a slideshow.
-        ("calls", "reader.py"),
     )
 )
 
