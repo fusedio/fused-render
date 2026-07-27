@@ -1,21 +1,64 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Python API</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --border-cell: #24262b;
+    --fg-soft: #b8bcc2;
+    --badge-bg: #1d3a2a;
+    --badge-fg: #6fdb8f;
+    --type-fg: #8ab4f8;
+    --run-bg: #3d7bd9;
+    --on-run: #fff;
+    --err-badge-bg: #3a1d1d;
+    --skel-base: #1c1e23;
+    --skel-shine: #262a31;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --border-cell: #e6e8eb;
+    --fg-soft: #4a4e55;
+    --badge-bg: #dff3e6;
+    --badge-fg: #17692f;
+    --type-fg: #1c5fb8;
+    --run-bg: #2f6fd0;
+    --on-run: #ffffff;
+    --err-badge-bg: #fdeaea;
+    --skel-base: #eceef0;
+    --skel-shine: #dfe2e7;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
   }
   #page { max-width: 860px; margin: 0 auto; padding: 20px 24px 60px; }
-  #status { padding: 24px; color: #9aa0a6; }
-  #status.error { color: #ff6b6b; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
   /* Skeleton placeholder — shown from first paint until inspector.py resolves,
      and again inside the response card while an execute() run is in flight.
@@ -23,7 +66,7 @@
   .skel {
     display: block;
     border-radius: 4px;
-    background: linear-gradient(90deg, #1c1e23 25%, #262a31 50%, #1c1e23 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
@@ -40,7 +83,7 @@
   #skeleton table.params .skel-cell, #skeleton table.params .skel-input { width: 100%; }
 
   .docstring {
-    color: #b8bcc2;
+    color: var(--fg-soft);
     white-space: pre-wrap;
     margin: 8px 0 0;
     line-height: 1.5;
@@ -50,16 +93,16 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px;
     padding: 2px 8px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--border);
     border-radius: 10px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
   }
 
   .card {
     margin-top: 20px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #1b1d21;
+    background: var(--bg-alt);
     overflow: hidden;
   }
   .card-head {
@@ -67,7 +110,7 @@
     align-items: center;
     gap: 10px;
     padding: 10px 14px;
-    border-bottom: 1px solid #2a2d33;
+    border-bottom: 1px solid var(--border);
   }
   .badge {
     font-size: 11px;
@@ -75,8 +118,8 @@
     letter-spacing: 0.5px;
     padding: 3px 8px;
     border-radius: 5px;
-    background: #1d3a2a;
-    color: #6fdb8f;
+    background: var(--badge-bg);
+    color: var(--badge-fg);
   }
   .fn-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
   .card-body { padding: 14px; }
@@ -84,48 +127,48 @@
   table.params { border-collapse: collapse; width: 100%; }
   table.params th, table.params td {
     padding: 8px 10px;
-    border-bottom: 1px solid #24262b;
+    border-bottom: 1px solid var(--border-cell);
     text-align: left;
     vertical-align: top;
   }
-  table.params th { color: #9aa0a6; font-weight: 600; font-size: 12px; }
+  table.params th { color: var(--fg-muted); font-weight: 600; font-size: 12px; }
   table.params tr:last-child td { border-bottom: none; }
   .pname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-  .required { color: #ff6b6b; }
+  .required { color: var(--error); }
   .ptype {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px;
-    color: #8ab4f8;
+    color: var(--type-fg);
     white-space: nowrap;
   }
-  .pdefault { color: #9aa0a6; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .pdefault { color: var(--fg-muted); font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   input[type="text"], input[type="number"], textarea {
     font: inherit;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     width: 100%;
     min-width: 180px;
     padding: 5px 8px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #131417;
-    color: #e8eaed;
+    background: var(--bg);
+    color: var(--fg);
   }
   textarea { resize: vertical; min-height: 32px; }
-  input.invalid, textarea.invalid { border-color: #ff6b6b; }
+  input.invalid, textarea.invalid { border-color: var(--error); }
 
-  #runbar { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid #2a2d33; }
+  #runbar { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--border); }
   #execute {
     font: inherit;
     font-weight: 600;
     padding: 6px 18px;
     border: none;
     border-radius: 6px;
-    background: #3d7bd9;
-    color: #fff;
+    background: var(--run-bg);
+    color: var(--on-run);
     cursor: pointer;
   }
   #execute:disabled { opacity: 0.4; cursor: default; }
-  #runmeta { color: #9aa0a6; }
+  #runmeta { color: var(--fg-muted); }
 
   #response pre {
     margin: 0;
@@ -135,12 +178,12 @@
     font-size: 12px;
     line-height: 1.5;
   }
-  #response pre.traceback { color: #ff6b6b; }
-  details { border-top: 1px solid #2a2d33; }
+  #response pre.traceback { color: var(--error); }
+  details { border-top: 1px solid var(--border); }
   details summary {
     cursor: pointer;
     padding: 8px 14px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     font-size: 12px;
     user-select: none;
   }
@@ -277,7 +320,7 @@
               <span class="badge">RUN</span>
               <span class="fn-name">result = &hellip;</span>
             </div>
-            <div class="card-body"><span style="color:#9aa0a6">Static script — assigns <code>result</code> directly, no parameters.</span></div>
+            <div class="card-body"><span style="color:var(--fg-muted)">Static script — assigns <code>result</code> directly, no parameters.</span></div>
             <div id="runbar">
               <button id="execute">Execute</button>
               <span id="runmeta"></span>
@@ -306,7 +349,7 @@
                  <thead><tr><th>Parameter</th><th>Type</th><th>Value</th></tr></thead>
                  <tbody>${fn.params.map(paramRow).join("")}</tbody>
                </table>`
-            : `<span style="color:#9aa0a6">No parameters.</span>`}
+            : `<span style="color:var(--fg-muted)">No parameters.</span>`}
         </div>
         <div id="runbar">
           <button id="execute">Execute</button>
@@ -375,7 +418,7 @@
       let html = `<div class="card" id="response">`;
       if (!data.ok) {
         const err = data.error || {};
-        html += `<div class="card-head"><span class="badge" style="background:#3a1d1d;color:#ff6b6b">ERROR</span></div>
+        html += `<div class="card-head"><span class="badge" style="background:var(--err-badge-bg);color:var(--error)">ERROR</span></div>
                  <pre class="traceback">${escapeHtml(err.traceback || err.message || "run failed")}</pre>`;
       } else {
         html += `<div class="card-head"><span class="badge">RESULT</span></div>
