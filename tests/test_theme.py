@@ -84,9 +84,13 @@ def test_shell_index_resolves_the_theme_in_an_inline_head_script():
 
 
 def test_the_storage_key_is_spelled_identically_everywhere():
-    # The bootstrap is inline in the HTML, so it cannot import the module that
-    # owns the key — the two spellings can only be pinned together by a test.
-    for path in ("frontend/src/lib/theme.ts", "frontend/index.html"):
+    # Three independent readers, no shared module between them (the bootstrap
+    # is inline in the HTML, and runtime.js ships into a different document).
+    for path in (
+        "frontend/src/lib/theme.ts",
+        "frontend/index.html",
+        "fused_render/static/runtime.js",
+    ):
         assert THEME_KEY in read_repo_file(path), f"{path} must use {THEME_KEY!r}"
 
 
@@ -118,6 +122,28 @@ def test_shell_css_has_no_colour_literals_outside_the_palettes():
         "every colour in shell.css must come from a palette token, or light "
         f"mode cannot repaint it — found: {sorted(set(literals))}"
     )
+
+
+# ---------------------------------------------------------------- runtime push
+
+
+def test_runtime_themes_only_documents_that_opt_in():
+    src = read_repo_file("fused_render/static/runtime.js")
+    assert OPT_IN_ATTR in src, (
+        f"runtime.js must gate theming on the {OPT_IN_ATTR!r} opt-in so "
+        "user-authored .html views receive no theme signal"
+    )
+    # Live follow: an OS flip and another window's override must both land.
+    assert "prefers-color-scheme" in src
+    assert '"storage"' in src
+
+
+def test_runtime_never_remounts_or_reloads_to_apply_a_theme():
+    # The standing rule (Panel.tsx / PaneModeMenu.tsx): a re-render must never
+    # touch a live iframe, so the theme is pushed as an attribute write.
+    src = read_repo_file("fused_render/static/runtime.js")
+    theme_section = src[src.index(OPT_IN_ATTR) - 2000 : src.index(OPT_IN_ATTR) + 2000]
+    assert "location.reload" not in theme_section
 
 
 # ---------------------------------------------------------------- untouched

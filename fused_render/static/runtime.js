@@ -32,9 +32,78 @@
  * page (target === window, e.g. visiting /render?path=... directly, or a
  * cross-origin ancestor) it falls back to reading/writing its own URL, treating
  * the `path` query key as reserved alongside any `_`-prefixed key.
+ *
+ * It also carries the appearance theme into OPTED-IN view documents — see the
+ * theme block at the top of the IIFE (SPEC §30, D134).
  */
 (function () {
   "use strict";
+
+  // --- Appearance (SPEC §30, D134) -----------------------------------------
+  //
+  // A built-in template that authored a light palette marks its <html> with
+  // `data-fused-theme`; this then keeps `data-theme` on that same element in
+  // step with the shell's appearance setting, which is all its
+  // `:root[data-theme="light"]` block needs. Everything else — every
+  // user-authored .html view, and every built-in view not yet converted — is
+  // left completely alone: no attribute, no signal, CSS stays theirs.
+  //
+  // The opt-in has to be an ATTRIBUTE ON <html>, not a <meta>: this script is
+  // injected at the very top of <head> (server.py `/render`) and is
+  // parser-blocking, so it runs before anything further down the head has been
+  // parsed. That ordering is also why there is no flash — the attribute lands
+  // before the document's own stylesheet, let alone its first paint.
+  //
+  // The theme is READ here rather than pushed in from the shell: reading the
+  // same localStorage key (same origin) plus this document's own matchMedia
+  // means the shell never has to reach into a view, so a theme change is never
+  // a re-render and can never remount or reload a live iframe. Cross-window
+  // convergence rides the `storage` event, which fires in every other
+  // same-origin browsing context — including this iframe — when the shell
+  // writes the key.
+  //
+  // Must stay in sync with frontend/src/lib/theme.ts and frontend/index.html;
+  // tests/test_theme.py pins the three spellings of the key together.
+  var THEME_KEY = "fused-render:theme";
+  var DARK_QUERY = "(prefers-color-scheme: dark)";
+
+  function resolvedTheme() {
+    var pref = null;
+    try {
+      pref = localStorage.getItem(THEME_KEY);
+    } catch (e) {
+      /* private mode / blocked storage — fall through to the OS preference */
+    }
+    if (pref === "light" || pref === "dark") return pref;
+    try {
+      return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
+    } catch (e) {
+      return "dark"; // no matchMedia — keep today's appearance
+    }
+  }
+
+  function startTheme() {
+    var root = document.documentElement;
+    if (!root || !root.hasAttribute("data-fused-theme")) return;
+    var apply = function () {
+      root.setAttribute("data-theme", resolvedTheme());
+    };
+    apply();
+    // Another window changed the setting (a `clear()` reports key === null).
+    window.addEventListener("storage", function (event) {
+      if (event.key === null || event.key === THEME_KEY) apply();
+    });
+    // The OS flipped while the setting is System — including macOS's automatic
+    // sunset switch. Harmless when the setting is pinned: apply() re-reads the
+    // preference, which still wins.
+    try {
+      window.matchMedia(DARK_QUERY).addEventListener("change", apply);
+    } catch (e) {
+      /* no matchMedia — a pinned Light/Dark still works */
+    }
+  }
+
+  startTheme();
 
   // Climb to the topmost same-origin ancestor (D46). Reading .location.href on
   // a cross-origin window throws, so a try/catch marks the boundary.
