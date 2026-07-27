@@ -811,22 +811,22 @@ def _winfsp_missing_error() -> str:
     """The friendly 'install WinFsp' message shared by every mount path that
     can't proceed without the driver (attach's creation path, reconnect)."""
     return ("Windows mounts require WinFsp, which isn't installed. Install "
-            f"it from {WINFSP_DOWNLOAD_URL} and try again. (WinFsp is a "
-            "kernel driver we don't bundle — see DECISIONS.md.)")
+            f"it from {WINFSP_DOWNLOAD_URL} and try again. (The FusedRender "
+            "installer offers it during setup — see DECISIONS.md.)")
 
 
 def _winfsp_available() -> bool:
     """Whether WinFsp — rclone's Windows mount backend — is installed.
 
-    WinFsp is a kernel-mode driver we deliberately do NOT bundle: its
-    GPLv3-with-exception license against this repo's intentionally-unset license
-    is unsettled (see DECISIONS.md), so — mirroring rclone's own distribution
-    stance — the user installs it from winfsp.dev. Non-win32 platforms don't use
-    WinFsp, so this is vacuously True there; on Windows we look for the system
-    DLL WinFsp installs under %ProgramFiles(x86)%\\WinFsp\\bin — winfsp-x64.dll
-    on x64, winfsp-a64.dll on ARM64 — falling back to a loader lookup for either.
-    Best-effort: a False here only downgrades the mount attempt into a friendly
-    install prompt, never a crash."""
+    WinFsp is a kernel-mode driver the Windows installer chain-installs via its
+    bundled MSI (D133), but the user can decline that elevation step (or run an
+    older install), so mounts must still detect and explain a missing driver.
+    Non-win32 platforms don't use WinFsp, so this is vacuously True there; on
+    Windows we look for the system DLL WinFsp installs under
+    %ProgramFiles(x86)%\\WinFsp\\bin — winfsp-x64.dll on x64, winfsp-a64.dll on
+    ARM64 — falling back to a loader lookup for either. Best-effort: a False
+    here only downgrades the mount attempt into a friendly install prompt,
+    never a crash."""
     if sys.platform != "win32":
         return True
     dll_names = ("winfsp-x64.dll", "winfsp-a64.dll")  # x64 and ARM64 builds
@@ -1829,7 +1829,13 @@ def _link_ttl(fs: str) -> float:
     _upstream_lock held (_remote_config / _signable_credentials take it)."""
     name = fs.partition(":")[0]
     cfg = _remote_config(name)
-    if (cfg or {}).get("session_token"):
+    if cfg is None:
+        # rcd hiccup: a session token can't be ruled out, so take the short
+        # clamp — and DON'T consult _signable_credentials, which would cache a
+        # None verdict derived without the config and sideline sign mode for a
+        # whole _CRED_TTL_S window.
+        return _SESSION_TOKEN_LINK_TTL_S
+    if cfg.get("session_token"):
         return _SESSION_TOKEN_LINK_TTL_S
     creds = _signable_credentials(name, cfg)
     if creds is not None and creds.session_token:
@@ -3176,7 +3182,16 @@ def _upstream_url_for(path: str) -> str | None:
     url = None
     if mode is None:
         cfg = _remote_config(name)
-        if _cannot_presign(cfg):
+        if cfg is None:
+            # rcd hiccup (config/get or the liveness probe failed): whatever
+            # this request settles on below is derived WITHOUT the config, so
+            # serve it best-effort but don't cache the mode — a cold racer
+            # pinning "link"/"none" here would stomp a sibling's just-validated
+            # "sign"/"gsign" and re-open the one-time validation. The next
+            # request re-derives once rcd answers (config failures aren't
+            # cached either, same rationale).
+            cache_mode = False
+        elif _cannot_presign(cfg):
             # Anonymous S3 or GCS can never presign — don't burn an rc call per
             # remote learning that from publiclink's "unsupported signer type"
             # error. CHECKED FIRST: an anonymous remote never resolves creds,

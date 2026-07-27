@@ -141,7 +141,6 @@ def paths():
 
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch):
-    monkeypatch.setattr(update, "_prompted_versions", set())
     monkeypatch.setattr(update, "_install_launched", False)
 
 
@@ -150,7 +149,6 @@ def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.
     monkeypatch.setattr(update, "__version__", current)
     monkeypatch.setattr(update, "_fetch_manifest", lambda: {"version": available, "sha256": "ok"})
     monkeypatch.setattr(update, "_download_verified", lambda manifest: installer)
-    monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")  # pre-launch re-verify passes
     monkeypatch.setattr(update, "_prompt_install", lambda version: prompts.append(version) or decision)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
     monkeypatch.setattr(update, "_launch_installer", lambda path: started.append(path) or object())
@@ -159,50 +157,40 @@ def _wire(monkeypatch, *, current, available, decision, installer="C:/tmp/setup.
 
 
 def test_auto_check_silent_when_up_to_date(monkeypatch, paths):
-    started, prompts, alerts = _wire(monkeypatch, current="9.9.9", available="0.0.1", decision=update._IDYES)
-    update._auto_check(paths)
-    assert not started and not prompts and not alerts
+    _wire(monkeypatch, current="9.9.9", available="0.0.1", decision=update._IDYES)
+    notified = []
+    update._auto_check(paths, notified.append)
+    assert not notified
 
 
-def test_auto_check_installs_when_accepted(monkeypatch, paths):
-    started, prompts, _ = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
-    update._auto_check(paths)
-    assert prompts == ["0.4.0"] and started == ["C:/tmp/setup.exe"]
+def test_auto_check_notifies_when_newer(monkeypatch, paths):
+    started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
+    notified = []
+    update._auto_check(paths, notified.append)
+    # The tray badge is set; nothing is downloaded or prompted in the background.
+    assert notified == ["0.4.0"] and not started and not prompts and not alerts
 
 
 def test_no_second_install_after_launch(monkeypatch, paths):
     started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
-    update._auto_check(paths)
+    update.check(paths)
     assert started == ["C:/tmp/setup.exe"]  # first install launched
-    # Once launched, neither a background tick nor a manual check starts a
-    # second install while the app waits for the wizard to finish.
-    update._auto_check(paths)
+    # Once launched, a second manual check must not start another setup while
+    # the app waits for the wizard to finish.
     update.check(paths)
     assert started == ["C:/tmp/setup.exe"] and any("already been started" in a for a in alerts)
 
 
-def test_auto_check_no_install_when_declined(monkeypatch, paths):
-    started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)  # IDNO
-    update._auto_check(paths)
-    assert prompts == ["0.4.0"] and not started and not alerts  # decline stays silent
-
-
-def test_auto_check_prompts_once_per_version(monkeypatch, paths):
-    _started, prompts, _ = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)
-    update._auto_check(paths)
-    update._auto_check(paths)
-    assert prompts == ["0.4.0"]  # second tick is suppressed
-
-
 def test_auto_check_silent_on_error(monkeypatch, paths):
-    _started, _prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)
+    _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)
 
     def boom():
         raise OSError("network down")
 
     monkeypatch.setattr(update, "_fetch_manifest", boom)
-    update._auto_check(paths)
-    assert not alerts and paths.logs  # logged, never a dialog
+    notified = []
+    update._auto_check(paths, notified.append)
+    assert not notified and paths.logs  # logged, never a badge or dialog
 
 
 def test_manual_check_reports_up_to_date(monkeypatch, paths):
@@ -211,13 +199,27 @@ def test_manual_check_reports_up_to_date(monkeypatch, paths):
     assert alerts and "up to date" in alerts[0]
 
 
+def test_manual_check_prompts_then_installs(monkeypatch, paths):
+    started, prompts, alerts = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=update._IDYES)
+    update.check(paths)
+    assert prompts == ["0.4.0"] and started == ["C:/tmp/setup.exe"] and not alerts
+
+
+def test_manual_check_declined_downloads_nothing(monkeypatch, paths):
+    started, prompts, _ = _wire(monkeypatch, current="0.3.7", available="0.4.0", decision=7)  # IDNO
+    downloaded = []
+    monkeypatch.setattr(update, "_download_verified", lambda manifest: downloaded.append(manifest) or "x")
+    update.check(paths)
+    # Prompt comes first — a No stages nothing.
+    assert prompts == ["0.4.0"] and not downloaded and not started
+
+
 def test_auto_check_survives_nonnumeric_version(monkeypatch, paths):
     monkeypatch.setattr(update, "__version__", "0.3.7")
     monkeypatch.setattr(update, "_fetch_manifest", lambda: {"version": "0.4.0rc1"})
-    offered = []
-    monkeypatch.setattr(update, "_offer_install", lambda *a, **k: offered.append(a))
-    update._auto_check(paths)  # a non-numeric version must not raise out and kill the loop
-    assert not offered and paths.logs
+    notified = []
+    update._auto_check(paths, notified.append)  # must not raise out and kill the loop
+    assert not notified and paths.logs
 
 
 def test_manual_check_busy_reports_in_progress(monkeypatch, paths):
@@ -247,50 +249,22 @@ def test_download_verified_rejects_non_https(monkeypatch):
         update._download_verified(manifest)
 
 
-def test_offer_install_declined_is_remembered_and_cleaned(monkeypatch, paths):
+def test_offer_install_launch_failure_discards_and_alerts(monkeypatch, paths):
     fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
     os.close(fd)
-    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
-    monkeypatch.setattr(update, "_prompt_install", lambda version: 7)  # IDNO
-    update._offer_install(paths, {"version": "0.4.0"}, announce_errors=False)
-    assert "0.4.0" in update._prompted_versions and not os.path.exists(staged)
-
-
-def test_offer_install_accept_but_launch_fails_reoffers(monkeypatch, paths):
-    fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
-    with os.fdopen(fd, "wb") as f:
-        f.write(b"installer bytes")
-    sha256 = hashlib.sha256(b"installer bytes").hexdigest()
     alerts = []
-    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
+    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
     monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
 
     def boom(path):
         raise OSError("no shell association")
 
     monkeypatch.setattr(update, "_launch_installer", boom)
-    # announce_errors=False (the background path) — a post-accept failure must
-    # still alert, since the user clicked Install.
-    update._offer_install(paths, {"version": "0.4.0", "sha256": sha256}, announce_errors=False)
-    # An accepted-but-failed launch must NOT be suppressed — it retries later.
-    assert "0.4.0" not in update._prompted_versions and not os.path.exists(staged) and alerts
-
-
-def test_offer_install_rejects_binary_swapped_during_prompt(monkeypatch, paths):
-    fd, staged = tempfile.mkstemp(prefix="FusedRenderPy-", suffix="-setup.exe")
-    with os.fdopen(fd, "wb") as f:
-        f.write(b"swapped after verify")
-    started, alerts = [], []
-    monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
-    monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
-    monkeypatch.setattr(update, "_launch_installer", lambda path: started.append(path) or object())
-    monkeypatch.setattr(update, "_watch_setup", lambda *a: None)
-    monkeypatch.setattr(update, "_alert", lambda text, icon: alerts.append(text))
-    # manifest sha256 is for different bytes → the pre-launch re-verify fails.
-    update._offer_install(paths, {"version": "0.4.0", "sha256": hashlib.sha256(b"original").hexdigest()},
-                          announce_errors=False)
-    assert not started and not os.path.exists(staged) and alerts  # refused + user told
+    update._offer_install(paths, {"version": "0.4.0"})
+    # A failed launch discards the staged file, tells the user, and stays
+    # un-latched so a later check can retry.
+    assert not os.path.exists(staged) and alerts and not update._install_launched
 
 
 def test_setup_cancel_unlatches_and_discards(monkeypatch, paths):
@@ -298,11 +272,10 @@ def test_setup_cancel_unlatches_and_discards(monkeypatch, paths):
     os.close(fd)
     exited = threading.Event()
     monkeypatch.setattr(update, "_download_verified", lambda manifest: staged)
-    monkeypatch.setattr(update, "_sha256_file", lambda path: "ok")
     monkeypatch.setattr(update, "_prompt_install", lambda version: update._IDYES)
     monkeypatch.setattr(update, "_launch_installer", lambda path: object())
     monkeypatch.setattr(update, "_wait_for_exit", lambda handle: exited.wait())
-    update._offer_install(paths, {"version": "0.4.0", "sha256": "ok"}, announce_errors=False)
+    update._offer_install(paths, {"version": "0.4.0"})
     assert update._install_launched  # wizard up → latched
     exited.set()  # wizard cancelled: setup exits while the app is still alive
     for _ in range(100):
@@ -336,4 +309,4 @@ def test_start_auto_checks_disabled_by_env(monkeypatch, paths):
         raise AssertionError("must not spawn the loop when disabled")
 
     monkeypatch.setattr(update.threading, "Thread", fail)
-    update.start_auto_checks(paths)
+    update.start_auto_checks(paths, lambda version: None)

@@ -1,9 +1,9 @@
-"""Update check (docs/PYTHON_SUPERVISOR_SPEC.md, "Software updates"). An
-automatic background loop checks and, when a newer version exists, downloads +
-verifies it silently and then prompts the user to install; the tray "Check for
-updates..." item runs the same flow on demand. Install is always user-approved
-— nothing is installed without a click. Runs on worker threads; never raises,
-so a failed check can't tear down the Job-owned server."""
+"""Update check (docs/PYTHON_SUPERVISOR_SPEC.md, "Software updates"). A silent
+background loop checks for a newer version and, when one exists, surfaces it
+only by relabeling the tray item via a `notify` callback — it never downloads
+or prompts on its own. Downloading and installing happen solely when the user
+clicks the tray item and approves the prompt. Runs on worker threads; never
+raises, so a failed check can't tear down the Job-owned server."""
 from __future__ import annotations
 
 import base64
@@ -46,15 +46,12 @@ _MB_ICONERROR = 0x10
 _MB_SETFOREGROUND = 0x0001_0000
 _IDYES = 6
 
-# One check at a time (auto vs. manual, or two auto ticks), and don't re-prompt
-# for a version the user already declined this session. Both are only touched
-# while _check_lock is held, so the set needs no separate guard.
+# One check at a time (auto vs. manual, or two auto ticks). Only touched while
+# _check_lock is held.
 _check_lock = threading.Lock()
-_prompted_versions: set[str] = set()
 # Set once an installer has been launched. The app stays up until the Inno
 # wizard finishes and --shutdown-for-upgrade fires; this latch stops a check in
-# that window from downloading again and launching a second setup. Only touched
-# under _check_lock.
+# that window from launching a second setup. Only touched under _check_lock.
 _install_launched = False
 
 
@@ -77,11 +74,12 @@ def _urlopen(url: str, timeout: float):
     return _opener.open(url, timeout=timeout)
 
 
-def start_auto_checks(paths: DesktopPaths) -> None:
+def start_auto_checks(paths: DesktopPaths, notify) -> None:
     """Spawn the background check loop: after a startup delay (so it never
-    competes with launch), check now and every _CHECK_INTERVAL_S. Silent unless
-    an update is downloaded and ready — set FUSED_RENDER_NO_AUTO_UPDATE to a
-    non-empty value to disable it entirely."""
+    competes with launch), check now and every _CHECK_INTERVAL_S. Silent — a
+    newer version is surfaced only by `notify(version)` relabeling the tray;
+    set FUSED_RENDER_NO_AUTO_UPDATE to a non-empty value to disable it
+    entirely."""
     if os.environ.get("FUSED_RENDER_NO_AUTO_UPDATE"):
         return
 
@@ -91,7 +89,7 @@ def start_auto_checks(paths: DesktopPaths) -> None:
         while True:
             try:
                 swept = swept or _sweep_stale_downloads()
-                _auto_check(paths)
+                _auto_check(paths, notify)
             except Exception as error:  # noqa: BLE001 - a tick must never kill the loop
                 paths.log(f"auto update tick failed: {error}")
             time.sleep(_CHECK_INTERVAL_S)
@@ -121,15 +119,15 @@ def check(paths: DesktopPaths) -> None:
         if not newer:
             _alert(f"FusedRender {__version__} is up to date.", _MB_ICONINFORMATION)
             return
-        _offer_install(paths, manifest, announce_errors=True)
+        _offer_install(paths, manifest)
     finally:
         _check_lock.release()
 
 
-def _auto_check(paths: DesktopPaths) -> None:
+def _auto_check(paths: DesktopPaths, notify) -> None:
     """Background tick: silent on "no update" and on transient errors (logged
-    only, never a dialog), so periodic checks don't nag. Prompts once per
-    version per session once the installer is downloaded and verified."""
+    only, never a dialog). A newer version is surfaced only through `notify`,
+    which relabels the tray item — nothing is downloaded or prompted here."""
     if not _check_lock.acquire(blocking=False):
         return
     try:
@@ -142,49 +140,33 @@ def _auto_check(paths: DesktopPaths) -> None:
         except (OSError, ValueError, http.client.HTTPException) as error:
             paths.log(f"auto update check failed: {error}")
             return
-        if manifest["version"] in _prompted_versions:
-            return
-        _offer_install(paths, manifest, announce_errors=False)
+        notify(manifest["version"])
     finally:
         _check_lock.release()
 
 
-def _offer_install(paths: DesktopPaths, manifest: dict, announce_errors: bool) -> None:
-    """Download + verify, then prompt to install. On yes, launch the installer
-    and return — its own --shutdown-for-upgrade path stops and relaunches the
-    app. A declined version is remembered so the background loop won't re-offer
-    it this session; an accepted-but-failed launch is not, so it retries. Call
-    only while _check_lock is held."""
+def _offer_install(paths: DesktopPaths, manifest: dict) -> None:
+    """Prompt, then on yes download + verify + launch the installer, whose own
+    --shutdown-for-upgrade path stops and relaunches the app. Declining stages
+    nothing. Call only while _check_lock is held."""
     global _install_launched
-    version = manifest["version"]
+    if _prompt_install(manifest["version"]) != _IDYES:
+        return
     try:
         installer = _download_verified(manifest)
     except (OSError, ValueError, http.client.HTTPException) as error:
         paths.log(f"update download failed: {error}")
-        if announce_errors:
-            _alert("The update could not be downloaded or verified.", _MB_ICONERROR)
-        return
-
-    if _prompt_install(version) != _IDYES:
-        _prompted_versions.add(version)
-        _discard(installer)
+        _alert("The update could not be downloaded or verified.", _MB_ICONERROR)
         return
     try:
-        # The file sat in %TEMP% while the prompt was open — re-hash right
-        # before launch so we never run bytes that were swapped after verify.
-        if _sha256_file(installer) != manifest["sha256"]:
-            raise ValueError("staged installer changed after verification")
         setup = _launch_installer(installer)
-    except (OSError, ValueError) as error:
+    except OSError as error:
         paths.log(f"update launch failed: {error}")
         _discard(installer)
-        # Always alert (even on the background path): the user clicked Install,
-        # so a failure here must not look like a silent no-op.
         _alert("The update could not be started.", _MB_ICONERROR)
         return
-    # Latch so no later check downloads again and launches a second setup
-    # while the wizard is up; _watch_setup unlatches if the wizard exits
-    # without installing.
+    # Latch so no later check launches a second setup while the wizard is up;
+    # _watch_setup unlatches if the wizard exits without installing.
     _install_launched = True
     _watch_setup(paths, setup, installer)
 
@@ -319,14 +301,6 @@ def _sweep_stale_downloads() -> bool:
     return True
 
 
-def _sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(_DOWNLOAD_CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _discard(path: str) -> None:
     try:
         os.unlink(path)
@@ -341,8 +315,8 @@ def _alert(text: str, icon: int) -> None:
 def _prompt_install(version: str) -> int:
     return ctypes.windll.user32.MessageBoxW(
         0,
-        f"FusedRender {version} is ready to install.\n\n"
-        "Install now? FusedRender will restart to finish.",
+        f"FusedRender {version} is available.\n\n"
+        "Download and install now? FusedRender will restart to finish.",
         "FusedRender update",
         _MB_YESNO | _MB_ICONINFORMATION | _MB_SETFOREGROUND,
     )

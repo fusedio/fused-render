@@ -28,6 +28,23 @@ from fused_render.supervisor.tray import TrayAction, TrayHandle, _State
 
 _ICON_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "fused-render.ico"
 
+_WM_RBUTTONUP = 0x0205
+
+
+class _Icon(pystray.Icon):
+    """pystray.Icon that rebuilds its menu on the icon thread, right before
+    showing it, so dynamic labels are re-evaluated at open time. The auto-update
+    daemon surfaces a discovered update by writing `_State.available_update`
+    from its own thread (TrayHandle.set_update_available); this rebuild picks
+    that up WITHOUT any cross-thread `update_menu()` — pystray's Win32 rebuild
+    DestroyMenu()s the handle a TrackPopupMenuEx on this thread may currently
+    be displaying, so only this thread may trigger it."""
+
+    def _on_notify(self, wparam, lparam):
+        if lparam == _WM_RBUTTONUP:
+            self.update_menu()
+        super()._on_notify(wparam, lparam)
+
 
 def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> None:
     actions = handle.actions
@@ -76,11 +93,15 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         pystray.MenuItem(
             "Start at sign in", on_toggle_login, checked=lambda item: state.login_enabled
         ),
-        pystray.MenuItem("Check for updates...", on_check_updates),
+        pystray.MenuItem(
+            lambda item: (f"Install update {state.available_update}..."
+                          if state.available_update else "Check for updates..."),
+            on_check_updates,
+        ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", on_exit),
     )
-    icon = pystray.Icon("FusedRender", image, f"FusedRender (port {port})", menu)
+    icon = _Icon("FusedRender", image, f"FusedRender (port {port})", menu)
     handle._current_icon.append(icon)
     try:
         if handle._stopped.is_set():
