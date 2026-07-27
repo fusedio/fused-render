@@ -1,18 +1,89 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Data preview</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --bg-sunken: #17181c;
+    --border-cell: #24262b;
+    --fg-soft: #c8ccd0;
+    --fg-dim: #6b7075;
+    --fg-bright: #fff;
+    --ok-fg: #eafff2;
+    --ok-bg: #1e5138;
+    --ok-border: #2f6f4f;
+    --danger-fg: #ffeaea;
+    --danger-bg: #511e1e;
+    --danger-border: #6f2f2f;
+    --caret: #7cc;
+    --focus-ring: #3b6ea5;
+    --focus-bg: #17233010;
+    --edited-bg: #3a3410;
+    --inserted-bg: #10281b;
+    --row-active-bg: #1c1f24;
+    --del-fg: #c9a;
+    --del-hover-border: #8a4;
+    --menu-border: #33363c;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --loadbar: #4a9eff;
+    --skel-base: #23282e;
+    --skel-shine: #2f353d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --bg-sunken: #eceef1;
+    --border-cell: #e6e8eb;
+    --fg-soft: #3f4348;
+    --fg-dim: #7b8088;
+    --fg-bright: #000000;
+    --ok-fg: #17532f;
+    --ok-bg: #e3f5ea;
+    --ok-border: #2f7d4f;
+    --danger-fg: #8f1d1d;
+    --danger-bg: #fdeaea;
+    --danger-border: #d99a9a;
+    --caret: #1a7f8f;
+    --focus-ring: #2f6fd0;
+    --focus-bg: #e8f0fd;
+    --edited-bg: #fbf3cd;
+    --inserted-bg: #e3f5ea;
+    --row-active-bg: #eef0f3;
+    --del-fg: #9a6a2a;
+    --del-hover-border: #8a7a20;
+    --menu-border: #cfd2d8;
+    --shadow: rgba(0, 0, 0, 0.18);
+    --loadbar: #2f6fd0;
+    --skel-base: #e7e9ed;
+    --skel-shine: #dbdee4;
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
     /* Flex column: toolbar pinned at top full-width, table scrolls inside its
        own pane below — so horizontal scroll never drags the toolbar sideways. */
     display: flex;
@@ -27,8 +98,8 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    border-top: 1px solid #2a2d33;
-    background: #1b1d21;
+    border-top: 1px solid var(--border);
+    background: var(--bg-alt);
     z-index: 2;
   }
   .bar-group { display: flex; align-items: center; gap: 8px; }
@@ -41,8 +112,8 @@
   #bar button, #bar select,
   #filterbar button, #filterbar select, #filterbar input {
     font: inherit; height: 28px; padding: 0 10px;
-    border: 1px solid #2a2d33; border-radius: 6px;
-    background: #131417; color: #e8eaed;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg);
   }
   #bar button, #filterbar button { cursor: pointer; white-space: nowrap; }
   /* Keep the paging group and its row count on one line, and let the table
@@ -80,16 +151,16 @@
      so a hidden Save/Discard (e.g. a read-only view) would otherwise stay
      visible — re-hide them explicitly. */
   #bar .icon-btn[hidden], #filterbar .icon-btn[hidden] { display: none; }
-  #save { border-color: #2f6f4f; position: relative; }
-  #save:not(:disabled) { background: #1e5138; color: #eafff2; }
+  #save { border-color: var(--ok-border); position: relative; }
+  #save:not(:disabled) { background: var(--ok-bg); color: var(--ok-fg); }
   /* Discard mirrors Save with a red accent — only lit while there's something
      to throw away, dimmed grey when disabled. */
-  #discard { border-color: #6f2f2f; }
-  #discard:not(:disabled) { background: #511e1e; color: #ffeaea; }
+  #discard { border-color: var(--danger-border); }
+  #discard:not(:disabled) { background: var(--danger-bg); color: var(--danger-fg); }
   /* Dirty-count badge on the Save icon; hidden while there's nothing staged. */
   .save-count {
     position: absolute; top: -6px; right: -6px; min-width: 15px; height: 15px;
-    padding: 0 3px; border-radius: 8px; background: #2f6f4f; color: #eafff2;
+    padding: 0 3px; border-radius: 8px; background: var(--ok-border); color: var(--ok-fg);
     font-size: 10px; line-height: 15px; text-align: center;
   }
   .save-count[hidden] { display: none; }
@@ -103,7 +174,7 @@
   #loadbar::before {
     content: ""; display: block; height: 100%; width: 40%;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, #4a9eff, transparent);
+    background: linear-gradient(90deg, transparent, var(--loadbar), transparent);
     transform: translateX(-100%); opacity: 0;
   }
   #loadbar.active::before {
@@ -115,7 +186,7 @@
     to { transform: translateX(350%); }
   }
   #tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  #rowcount { color: #9aa0a6; }
+  #rowcount { color: var(--fg-muted); }
   /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
   /* Filter bar — a builder above the grid: one or more conditions
      (column ▸ operator ▸ value) ANDed together and applied server-side. The
@@ -123,14 +194,14 @@
      carry Remove (−) and an "AND" label, Beekeeper-style. */
   #filterbar {
     flex: 0 0 auto; display: flex; align-items: flex-start; gap: 8px;
-    padding: 8px 12px; border-bottom: 1px solid #2a2d33; background: #17181c;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-sunken);
   }
   #filterbar[hidden] { display: none; }
   #frows { display: flex; flex: 1 1 auto; flex-direction: column; gap: 8px; min-width: 0; }
   .frow { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .fr-conj {
     flex: 0 0 auto; width: 34px; text-align: right;
-    color: #9aa0a6; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--fg-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
   }
   /* Column/operator/value all shrink on a narrow pane so the row never
      overflows into the action column beside it. */
@@ -140,14 +211,14 @@
   /* Per-row add / remove: subtle fixed-width squares. */
   .fr-add, .fr-del {
     flex: 0 0 auto; width: 28px; padding: 0;
-    font-size: 15px; line-height: 1; text-align: center; color: #c8ccd0;
+    font-size: 15px; line-height: 1; text-align: center; color: var(--fg-soft);
   }
   /* Apply: an accent button, only on the first row. Same rounded square as
      every other icon button so the chrome reads as one set. */
   #filterbar .fr-apply {
     flex: 0 0 auto; width: 28px; padding: 0; line-height: 0;
     display: inline-flex; align-items: center; justify-content: center;
-    border-color: #2f6f4f; background: #1e5138; color: #eafff2;
+    border-color: var(--ok-border); background: var(--ok-bg); color: var(--ok-fg);
   }
   /* Action column to the right of the condition rows: Apply, then a clear
      icon that only appears while a sort or filter is active. */
@@ -155,14 +226,14 @@
   #filterbar .fr-clear {
     width: 28px; padding: 0; line-height: 0;
     display: inline-flex; align-items: center; justify-content: center;
-    color: #c8ccd0;
+    color: var(--fg-soft);
   }
   #filterbar .fr-clear[hidden] { display: none; }
   table { border-collapse: collapse; width: 100%; }
   th, td {
     padding: 9px 12px;
-    border-bottom: 1px solid #24262b;
-    border-right: 1px solid #24262b;
+    border-bottom: 1px solid var(--border-cell);
+    border-right: 1px solid var(--border-cell);
     text-align: left;
     white-space: nowrap;
     max-width: 320px;
@@ -170,41 +241,41 @@
     text-overflow: ellipsis;
   }
   th {
-    background: #1b1d21; position: sticky; top: 0; font-weight: 600; z-index: 1;
+    background: var(--bg-alt); position: sticky; top: 0; font-weight: 600; z-index: 1;
   }
   /* Column type after the name — dimmer, lighter, smaller so it reads as an
      annotation rather than part of the column name. */
-  .coltype { color: #6b7075; font-weight: 400; font-size: 11px; }
+  .coltype { color: var(--fg-dim); font-weight: 400; font-size: 11px; }
   /* Header name/type/sort — the whole label is a click target that cycles the
      column's sort: none → asc → desc → none. */
   .th-name {
     display: flex; align-items: baseline; gap: 5px;
     cursor: pointer; user-select: none;
   }
-  .th-name:hover { color: #fff; }
+  .th-name:hover { color: var(--fg-bright); }
   .th-name.locked { pointer-events: none; opacity: 0.55; }
   .th-label { overflow: hidden; text-overflow: ellipsis; }
-  .sortcaret { color: #7cc; font-size: 10px; }
+  .sortcaret { color: var(--caret); font-size: 10px; }
   td[contenteditable] { cursor: text; }
-  td[contenteditable]:focus { outline: 2px solid #3b6ea5; outline-offset: -2px; background: #17233010; }
-  td.edited { background: #3a3410; }
+  td[contenteditable]:focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; background: var(--focus-bg); }
+  td.edited { background: var(--edited-bg); }
   /* Explicit SQL NULL, distinct from an empty string: the cell stays empty and
      editable, with a dim italic "(NULL)" marker drawn in via ::before (so it is
      never real text and the first keystroke replaces it). Hidden while focused
      so the caret sits in a truly empty cell. */
-  td.is-null { color: #6b7075; }
+  td.is-null { color: var(--fg-dim); }
   td.is-null::before { content: "(NULL)"; font-style: italic; }
   td.is-null:focus::before { content: ""; }
   /* Column still in flight (remote per-column parallel load): shimmer bar. */
   td.skel { color: transparent; pointer-events: none; }
-  td.load-err { color: #ff6b6b; opacity: 0.75; }
+  td.load-err { color: var(--error); opacity: 0.75; }
   td.skel::before {
     content: "";
     display: block;
     height: 0.9em;
     min-width: 3.5em;
     border-radius: 3px;
-    background: linear-gradient(90deg, #23282e 25%, #2f353d 50%, #23282e 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
@@ -214,30 +285,30 @@
   }
   /* Subtle full-row tint for the row whose cell was last clicked/focused. Set on
      the <tr> (not the <td>) so edited/inserted cell backgrounds still paint over it. */
-  tr.row-active { background: #1c1f24; }
+  tr.row-active { background: var(--row-active-bg); }
   tr.deleted td { text-decoration: line-through; opacity: 0.45; }
-  tr.inserted td { background: #10281b; }
+  tr.inserted td { background: var(--inserted-bg); }
   .rowact { width: 1%; text-align: center; padding: 0 6px; }
   .del-btn {
-    font: inherit; line-height: 1; padding: 2px 6px; border: 1px solid #2a2d33;
-    border-radius: 6px; background: #131417; color: #c9a; cursor: pointer;
+    font: inherit; line-height: 1; padding: 2px 6px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--del-fg); cursor: pointer;
   }
-  .del-btn:hover { border-color: #8a4; }
+  .del-btn:hover { border-color: var(--del-hover-border); }
   /* Right-click menu on an editable cell (currently just "Set Null"). */
   #ctxmenu {
     position: fixed; z-index: 30; min-width: 130px; padding: 4px;
-    background: #1b1d21; border: 1px solid #33363c; border-radius: 8px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    background: var(--bg-alt); border: 1px solid var(--menu-border); border-radius: 8px;
+    box-shadow: 0 8px 24px var(--shadow);
   }
   #ctxmenu[hidden] { display: none; }
   .ctx-item {
     display: block; width: 100%; text-align: left; font: inherit;
     padding: 6px 10px; border: none; border-radius: 5px;
-    background: none; color: #e8eaed; cursor: pointer;
+    background: none; color: var(--fg); cursor: pointer;
   }
-  .ctx-item:hover { background: #2a2d33; }
-  #status { padding: 24px; color: #9aa0a6; }
-  #status.error { color: #ff6b6b; white-space: pre-wrap; }
+  .ctx-item:hover { background: var(--border); }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); white-space: pre-wrap; }
 </style>
 </head>
 <body>

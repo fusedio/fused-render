@@ -1,20 +1,49 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Code editor</title>
 <script src="/template-assets/codemirror.bundle.js"></script>
 <script src="/template-shared/ro-badge.js"></script>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --skel-base: #1c1f24;
+    --skel-shine: #2a2f36;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --skel-base: #e9ebee;
+    --skel-shine: #dcdfe4;
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
     display: flex;
     flex-direction: column;
     font-family: ui-monospace, Menlo, Consolas, monospace;
-    background: #131417;
-    color: #e8eaed;
+    background: var(--bg);
+    color: var(--fg);
   }
   /* Top bar mirrors the other templates' #bar (parquet/pdf): filename left,
      status + Save right. Sans-serif to match the shell chrome. */
@@ -24,8 +53,8 @@
     align-items: center;
     gap: 12px;
     padding: 8px 12px;
-    border-bottom: 1px solid #2a2d33;
-    background: #1b1d21;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
   }
@@ -35,21 +64,21 @@
     white-space: nowrap;
   }
   #bar .grow { flex: 1 1 auto; }
-  #status-text { color: #9aa0a6; }
-  #status-text.error { color: #ff6b6b; }
+  #status-text { color: var(--fg-muted); }
+  #status-text.error { color: var(--error); }
   #conflict {
     display: none;
     align-items: center;
     gap: 8px;
-    color: #ff6b6b;
+    color: var(--error);
   }
   #bar button {
     font: inherit;
     padding: 4px 10px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #131417;
-    color: #e8eaed;
+    background: var(--bg);
+    color: var(--fg);
     cursor: pointer;
   }
   #bar button:disabled {
@@ -66,10 +95,10 @@
     padding: 24px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
   }
-  #status.error { color: #ff6b6b; }
-  #status a { color: #E5FF44; }
+  #status.error { color: var(--error); }
+  #status a { color: var(--accent); }
   /* Initial-load placeholder: shimmering line bars shaped like a code buffer
      (gutter + variable-width, variably-indented line) instead of bare text.
      Swapped out wholesale by root.innerHTML = "" once load() lands (or by an
@@ -89,7 +118,7 @@
   }
   .skel-gutter, .skel-bar {
     border-radius: 3px;
-    background: linear-gradient(90deg, #1c1f24 25%, #2a2f36 50%, #1c1f24 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
@@ -147,6 +176,8 @@
     let dirty = false;
     let saveTimer = null;  // pending autosave debounce (AS-1)
     let saving = false;    // a save() write is in flight
+    let themeObserver = null; // watches <html data-theme> (SPEC §30)
+    let themedDark = true;    // theme the live view is currently configured for
 
     function escapeHtml(s) {
       return String(s)
@@ -321,9 +352,13 @@
       }
 
       const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
+      // The editor surface follows the shell's appearance (SPEC §30). oneDark
+      // is the only theme in the vendored bundle, so light mode simply leaves
+      // it out and basicSetup's own default (light) highlight style applies.
+      const wantsDark = () => document.documentElement.getAttribute("data-theme") !== "light";
       const extensions = [
         CM.basicSetup,
-        CM.oneDark,
+        ...(wantsDark() ? [CM.oneDark] : []),
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -347,6 +382,32 @@
 
       root.innerHTML = "";
       view = new CM.EditorView({ doc: text, extensions, parent: root });
+      // A live appearance change (the shell's menu, or the OS flipping while
+      // the setting is System) reconfigures the RUNNING view — rebuilding it
+      // would throw away unsaved edits, the caret and the scroll position.
+      // The runtime writes `data-theme` on <html>, so that attribute is the
+      // signal. Best-effort: a reconfigure that somehow fails leaves the
+      // editor exactly as it is rather than breaking it.
+      themeObserver?.disconnect();
+      themeObserver = new MutationObserver(() => {
+        const next = wantsDark();
+        if (next === themedDark) return;
+        themedDark = next;
+        try {
+          view.dispatch({
+            effects: CM.StateEffect.reconfigure.of(
+              extensions.filter((e) => e !== CM.oneDark).concat(next ? [CM.oneDark] : [])
+            ),
+          });
+        } catch (err) {
+          /* keep the current editor theme — cosmetic only */
+        }
+      });
+      themedDark = wantsDark();
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
       filenameEl.textContent = file.split("/").pop();
       barEl.style.display = "flex";
       setDirty(false);

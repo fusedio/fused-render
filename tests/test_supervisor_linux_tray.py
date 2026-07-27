@@ -83,6 +83,149 @@ def test_icon_pixmap_emits_white_on_transparent():
     assert (255, 255, 255, 255) in pixels  # a fully-opaque white pixel (A,R,G,B)
 
 
+# --- desktop colour scheme → glyph tint (D135) -------------------------------
+#
+# The glyph was tinted white unconditionally, which is invisible on a LIGHT
+# panel. The tint now follows the XDG portal's org.freedesktop.appearance /
+# color-scheme setting: 0 = no preference, 1 = prefer dark, 2 = prefer light.
+# Anything that isn't a clear "prefer light" keeps today's white glyph, because
+# many desktops expose no portal at all and must see no regression.
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (0, linux_tray._TINT_WHITE),  # no preference → today's behavior
+        (1, linux_tray._TINT_WHITE),  # prefer dark panel → white glyph
+        (2, linux_tray._TINT_DARK),  # prefer light panel → dark glyph
+        (7, linux_tray._TINT_WHITE),  # value outside the spec → fall back
+        (None, linux_tray._TINT_WHITE),  # portal absent / read failed
+    ],
+)
+def test_tint_for_color_scheme(value, expected):
+    assert linux_tray._tint_for_color_scheme(value) == expected
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        (2, 2),
+        (None, 0),  # a None reply (nothing read) → no preference
+        ("light", 0),  # malformed: a string where an int belongs
+        (True, 0),  # a bool is not a colour-scheme value
+        (9, 0),  # out of the spec's 0..2 range
+    ],
+)
+def test_color_scheme_from_reply_is_defensive(reply, expected):
+    assert linux_tray._color_scheme_from_reply(reply) == expected
+
+
+def test_color_scheme_from_reply_unwraps_nested_variants():
+    # dbus-fast hands back a Variant; some portal builds nest a second one
+    # inside it. Both shapes must yield the plain int.
+    class FakeVariant:
+        def __init__(self, value):
+            self.value = value
+
+    assert linux_tray._color_scheme_from_reply(FakeVariant(2)) == 2
+    assert linux_tray._color_scheme_from_reply(FakeVariant(FakeVariant(1))) == 1
+
+
+def test_tint_dark_maps_glyph_to_the_dark_tint_preserving_alpha():
+    image = Image.new("RGBA", (1, 3))
+    image.putpixel((0, 0), (0, 0, 0, 255))
+    image.putpixel((0, 1), (0, 0, 0, 0))
+    image.putpixel((0, 2), (12, 34, 56, 128))
+
+    tinted = linux_tray._tint(image, linux_tray._TINT_DARK)
+
+    assert tinted.getpixel((0, 0)) == (*linux_tray._TINT_DARK, 255)
+    assert tinted.getpixel((0, 1))[3] == 0
+    assert tinted.getpixel((0, 2)) == (*linux_tray._TINT_DARK, 128)
+
+
+def test_icon_pixmap_dark_panel_variant_is_unchanged():
+    # The dark-panel appearance must stay byte-identical to today's: the default
+    # tint IS white, and asking for it explicitly gives the same payload.
+    assert linux_tray._icon_pixmap(linux_tray._ICON_PATH) == linux_tray._icon_pixmap(
+        linux_tray._ICON_PATH, linux_tray._TINT_WHITE
+    )
+
+
+def test_icon_pixmap_light_panel_variant_differs_and_is_dark():
+    w, h, data = linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_DARK)
+    assert (w, h) == (linux_tray._ICON_SIZE, linux_tray._ICON_SIZE)
+    assert data != linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)[2]
+
+    pixels = [tuple(data[i : i + 4]) for i in range(0, len(data), 4)]  # A, R, G, B
+    assert any(pixel[0] == 0 for pixel in pixels)  # still transparent where it was
+    assert (255, *linux_tray._TINT_DARK) in pixels  # a fully-opaque dark pixel
+
+
+def test_icon_pixmap_caches_each_tint_separately():
+    # Bring-up retries forever on a watcher-less session, so the decode must
+    # stay cached; it just can't key on the path alone any more.
+    linux_tray._icon_pixmap.cache_clear()
+    linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)
+    linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)
+    linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_DARK)
+    info = linux_tray._icon_pixmap.cache_info()
+    assert info.misses == 2, "one decode per tint"
+    assert info.hits == 1
+    assert info.currsize == 2, "both variants must fit — no eviction thrash"
+
+
+def test_apply_tint_reemits_the_icon_only_when_it_changed():
+    # SNI hosts redraw on NewIcon; emitting it needlessly makes the panel
+    # churn, and not emitting it at all leaves a stale glyph.
+    class FakeItem:
+        def __init__(self):
+            self.emitted = 0
+
+        def NewIcon(self):  # noqa: N802 - mirrors the D-Bus signal name
+            self.emitted += 1
+
+    item = FakeItem()
+    pixmap_ref = [linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)]
+
+    linux_tray._apply_tint(item, pixmap_ref, linux_tray._TINT_WHITE)
+    assert item.emitted == 0, "same tint — nothing to redraw"
+
+    linux_tray._apply_tint(item, pixmap_ref, linux_tray._TINT_DARK)
+    assert item.emitted == 1
+    assert pixmap_ref[0] == linux_tray._icon_pixmap(
+        linux_tray._ICON_PATH, linux_tray._TINT_DARK
+    )
+
+    linux_tray._apply_tint(item, pixmap_ref, linux_tray._TINT_WHITE)
+    assert item.emitted == 2
+
+
+def test_apply_tint_never_raises_when_the_signal_fails():
+    # Icon tinting is cosmetic: a bus error mid-emit must not propagate into the
+    # portal callback and take the tray's event loop with it.
+    class ExplodingItem:
+        def NewIcon(self):  # noqa: N802
+            raise RuntimeError("bus went away")
+
+    pixmap_ref = [linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)]
+    linux_tray._apply_tint(ExplodingItem(), pixmap_ref, linux_tray._TINT_DARK)
+    # The pixmap still advanced — only the redraw notification was lost.
+    assert pixmap_ref[0] == linux_tray._icon_pixmap(
+        linux_tray._ICON_PATH, linux_tray._TINT_DARK
+    )
+
+
+def test_appearance_setting_changed_only_fires_for_the_colour_scheme_key():
+    assert linux_tray._is_color_scheme_change(
+        linux_tray._APPEARANCE_NAMESPACE, linux_tray._COLOR_SCHEME_KEY
+    )
+    assert not linux_tray._is_color_scheme_change(
+        linux_tray._APPEARANCE_NAMESPACE, "accent-color"
+    )
+    assert not linux_tray._is_color_scheme_change("org.gnome.desktop.interface", "color-scheme")
+
+
 # --- _menu_layout ------------------------------------------------------------
 
 
@@ -583,6 +726,128 @@ def test_watcher_reregistration_failure_is_logged_not_raised():
         assert paths.messages  # failure logged, loop keeps running
     finally:
         loop.close()
+
+
+# --- XDG portal colour-scheme read / subscription (bus-free, D135) -----------
+
+
+class _PortalConnection:
+    """Fake dbus-fast connection exposing org.freedesktop.portal.Settings:
+    answers Read with `value` (or raises `error`), and records the
+    SettingChanged handler the subscription installs."""
+
+    def __init__(self, value=2, error=None):
+        self.value = value
+        self.error = error
+        self.reads = []
+        self.handlers = []
+
+    async def introspect(self, name, path):
+        if self.error is not None:
+            raise self.error
+        return f"introspection:{name}"
+
+    def get_proxy_object(self, name, path, introspection):
+        connection = self
+
+        class _Object:
+            def get_interface(self, interface_name):
+                class _Settings:
+                    async def call_read(self, namespace, key):
+                        connection.reads.append((namespace, key))
+                        if connection.error is not None:
+                            raise connection.error
+                        return connection.value
+
+                    def on_setting_changed(self, handler):
+                        connection.handlers.append(handler)
+
+                return _Settings()
+
+        return _Object()
+
+
+def test_read_color_scheme_reads_the_appearance_namespace():
+    import asyncio
+
+    connection = _PortalConnection(value=2)
+    assert asyncio.run(linux_tray._read_color_scheme(connection)) == 2
+    assert connection.reads == [
+        (linux_tray._APPEARANCE_NAMESPACE, linux_tray._COLOR_SCHEME_KEY)
+    ]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RuntimeError("no such interface"), TimeoutError("portal timed out")],
+)
+def test_read_color_scheme_falls_back_to_no_preference_on_any_failure(error):
+    # No portal (stock minimal WMs), a D-Bus error, or a timeout: the tray must
+    # still come up, with today's white glyph.
+    import asyncio
+
+    assert asyncio.run(linux_tray._read_color_scheme(_PortalConnection(error=error))) == 0
+
+
+def test_setting_changed_retints_and_reemits_without_reregistering():
+    import asyncio
+
+    class FakeItem:
+        def __init__(self):
+            self.emitted = 0
+
+        def NewIcon(self):  # noqa: N802
+            self.emitted += 1
+
+    connection = _PortalConnection(value=1)
+    item = FakeItem()
+    pixmap_ref = [linux_tray._icon_pixmap(linux_tray._ICON_PATH, linux_tray._TINT_WHITE)]
+    paths = _Paths()
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(
+            linux_tray._subscribe_color_scheme(connection, paths, item, pixmap_ref)
+        )
+        assert len(connection.handlers) == 1
+        handler = connection.handlers[0]
+
+        # The desktop switches to a light panel → dark glyph, one NewIcon.
+        handler(
+            linux_tray._APPEARANCE_NAMESPACE, linux_tray._COLOR_SCHEME_KEY, 2
+        )
+        assert item.emitted == 1
+        assert pixmap_ref[0] == linux_tray._icon_pixmap(
+            linux_tray._ICON_PATH, linux_tray._TINT_DARK
+        )
+
+        # An unrelated appearance key must not touch the icon at all.
+        handler(linux_tray._APPEARANCE_NAMESPACE, "accent-color", 2)
+        assert item.emitted == 1
+
+        # Back to a dark panel → white glyph again.
+        handler(linux_tray._APPEARANCE_NAMESPACE, linux_tray._COLOR_SCHEME_KEY, 1)
+        assert item.emitted == 2
+        # Nothing here re-registers the status item — the subscription only ever
+        # re-emits the icon.
+        assert not paths.messages
+    finally:
+        loop.close()
+
+
+def test_subscribing_to_a_missing_portal_is_logged_not_raised():
+    # An absent portal must not stop the tray from registering; the icon just
+    # stays white for the session.
+    import asyncio
+
+    connection = _PortalConnection(error=RuntimeError("no portal"))
+    paths = _Paths()
+    asyncio.run(
+        linux_tray._subscribe_color_scheme(
+            connection, paths, object(), [linux_tray._icon_pixmap(linux_tray._ICON_PATH)]
+        )
+    )
+    assert connection.handlers == []
+    assert paths.messages  # logged, not raised
 
 
 # --- D-Bus bring-up / teardown (integration, needs a session bus) ------------

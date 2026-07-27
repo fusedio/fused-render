@@ -1728,7 +1728,7 @@ def test_the_size_trim_drops_the_oldest_append_first(store):
 
 def test_follow_waits_when_a_foreign_cursor_has_no_matching_records(
         store, monkeypatch, capsys):
-    """Regression in the D139 fix, found by the 8th review pass.
+    """Regression in the D141 fix, found by the 8th review pass.
 
     Comparing `cursor != baseline` answers "is this the current tip", and a
     cursor from a BROADER read is not the tip of a narrower one. So the ordinary
@@ -1753,7 +1753,7 @@ def test_follow_waits_when_a_foreign_cursor_has_no_matching_records(
 def test_follow_answers_at_once_when_a_foreign_cursor_does_have_records(
         store, monkeypatch, capsys):
     """The other half: a broader cursor with matching records behind it is still
-    the D139 case and must be answered immediately, not waited out."""
+    the D141 case and must be answered immediately, not waited out."""
     os.makedirs(store, exist_ok=True)
     now = time.time()
     with open(calls.current_file(), "w") as fh:
@@ -1836,7 +1836,7 @@ def test_a_timeout_after_a_lost_cursor_says_so_in_text(store, monkeypatch, capsy
     `cursor_lost` through reached the caller only when activity happened to
     arrive — i.e. a wrong cursor was reported when it mattered least and stayed
     silent in the case that actually needs explaining ("nothing ran" vs "I could
-    not tell you what is new"). This is the same D142 promise, on the branch that
+    not tell you what is new"). This is the same D144 promise, on the branch that
     the assertion for it did not cover.
     """
     os.makedirs(store, exist_ok=True)
@@ -2132,7 +2132,7 @@ def test_the_gate_sees_records_when_the_ref_names_the_default_branch(
     assert condition.main(page) is True, "the page has records in the baseline store"
 
 
-# ------------------------- Windows path forms (Bugbot #283 review, D145)
+# ------------------------- Windows path forms (Bugbot #283 review, D147)
 #
 # Windows is simulated with `ntpath` and with literal drive-shaped strings
 # rather than skipped behind a sys.platform guard: the bug is a disagreement
@@ -2264,7 +2264,7 @@ def test_windows_gate_finds_a_run_only_target(store, monkeypatch):
     """The third reported site, fixed transitively rather than by a fourth copy
     of the rule: the gate's needle is the canonical path it was handed, so once
     the store is canonical the substring probe hits. No mirrored normalizer in
-    condition.py means nothing there to drift (the D144 lesson)."""
+    condition.py means nothing there to drift (the D146 lesson)."""
     from fused_render.templates.calls import condition
 
     log_a_windows_run()
@@ -2281,7 +2281,7 @@ def test_posix_page_filter_still_works_through_the_cli(store, monkeypatch, capsy
     assert "d.py" in out
 
 
-# -- override resolvers: set vs in force (Bugbot #283 review, D148) ------------
+# -- override resolvers: set vs in force (Bugbot #283 review, D150) ------------
 
 
 def test_retention_days_override_reports_only_values_it_honours(monkeypatch):

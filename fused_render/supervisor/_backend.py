@@ -29,7 +29,7 @@ Optional hooks (a backend may omit them; core probes with getattr):
   deintegrate    — reverse of integrate(): remove that desktop integration
                    (Linux only, driven by the tray "Uninstall" item;
                    integration-only, never app data or the binary)
-  update         — auto-updater: start_auto_checks(paths), check(paths)
+  update         — auto-updater: start_auto_checks(paths, notify), check(paths)
                    (Windows only: signed-manifest poll + user-approved install)
 """
 from __future__ import annotations

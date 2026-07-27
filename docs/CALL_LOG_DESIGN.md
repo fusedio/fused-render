@@ -1,6 +1,6 @@
 # Call Log — observability for a fused-render app
 
-**Status: phase 1 implemented** (D134, SPEC §30) — `fused_render/calls.py`,
+**Status: phase 1 implemented** (D136, SPEC §31) — `fused_render/calls.py`,
 `fused_render/templates/calls/`, the middleware write point, the runtime's
 attribution headers and `window.onerror` hook, the `fused-render calls` CLI,
 Preferences controls, `tests/test_calls.py`. This file stays the design record:
@@ -11,8 +11,8 @@ agent's only read surface, §9.2) and `page-error` records were added to it
 (§9.2a — the runtime had no `window.onerror` hook, so the most informative record
 was uncapturable). **One §6 decision was wrong and has been reversed** — 6.2's
 deferral of client-side supersession reporting, which turned out to be the whole
-of CL-5 rather than a refinement of it (D135; the defects fifteen rounds of review
-found are in §9.5, with D136–D148 the follow-up rounds). Deviations from the
+of CL-5 rather than a refinement of it (D137; the defects fifteen rounds of review
+found are in §9.5, with D138–D150 the follow-up rounds). Deviations from the
 design as written are marked **[shipped]** inline.
 Phases 2 and 3 are not started.
 
@@ -466,7 +466,7 @@ firehose is the thing §4.1 rejected, and a debounced version of it is the same
 bug with a longer fuse.
 
 **6.2 Is client-side reconciliation worth it?** **[shipped — and the original
-recommendation here was WRONG, corrected in D135.]** Deferring it traded away
+recommendation here was WRONG, corrected in D137.]** Deferring it traded away
 CL-5, the feature's central guarantee: the server-side substitute this decision
 assumed (`asyncio.CancelledError` out of `call_next`) **never fires**, so every
 abandoned call was recorded as an ordinary success and counted in the
@@ -528,7 +528,7 @@ additive change to `_child.py`'s envelope and independently useful.
 | `fused_render/executor.py` | `calls/reader.py` onto `INPROCESS_HELPERS`. |
 | `fused_render/shell/prefs.py` | `calls_enabled` (default on), `calls_params` (`full`/`keys`/`off`), retention days; surfaced on the Preferences page. |
 | `tests/test_calls.py` | **new.** Record caps and truncation markers; fail-open on an unwritable dir and on a full queue; retention sweep; attribution present/absent; reader ops paging + bucketing; the `condition.py` gate. |
-| `SPEC.md` §30, `DECISIONS.md` D134 | The spec section (CL-1..CL-n) and the decision row with rationale. |
+| `SPEC.md` §31, `DECISIONS.md` D136 | The spec section (CL-1..CL-n) and the decision row with rationale. |
 | `docs/usage.md`, `skills/fused-render-authoring/SKILL.md` | Where the log lives, how to read it, the params-redaction knob. Authoring skill gains "how to check what your page is doing." |
 
 Deliberately **not** in phase 1: shell UI, the header chip, deployed apps,
@@ -729,7 +729,7 @@ the difference between "I wrote the files, try it" and "verified: three calls,
 ## 9.4 What implementation changed about the design
 
 Three things building it revealed, and four more that only adversarial review
-did (D135) — the four are in §9.5 because they are a different lesson.
+did (D137) — the four are in §9.5 because they are a different lesson.
 
 From building it:
 
@@ -779,7 +779,7 @@ each individually correct and individually tested. None would have been found by
 more unit tests of either side; three of the four needed a real browser or a
 real socket, and the fourth needed a benchmark.
 
-Two more from the follow-up round (D136), both the same shape as the first four:
+Two more from the follow-up round (D138), both the same shape as the first four:
 
 - **A field name that reads as data.** Every *successful* record rendered as
   ERROR in `log_studio`, because a generic log viewer infers a level by sniffing
@@ -876,14 +876,14 @@ three individual rules, is the deliverable. Which cases did the raw join get rig
 Baseline, and an already-canonical ref: exactly the two anyone would try by hand.
 
 A tenth round found two, and the first is the ninth round's own promise breaking one
-branch over. D142 added "a lost cursor is never silent" — and `--follow`'s timeout
+branch over. D144 added "a lost cursor is never silent" — and `--follow`'s timeout
 branch returns before *both* output sites, so the flag reached the caller only when
 records happened to arrive. It hardcoded `"cursor_missing": False` and printed a bare
 "no new calls within Ns". That withholds the flag in exactly the case it explains: an
 agent holding a ghost id usually has nothing arriving either, and "nothing ran" and
 "I could not tell you what is new" are different answers to act on. **A flag that is
 only reported when it does not matter is worse than an absent one, because its
-silence reads as "fine".** The test I wrote for D142 called this very path and
+silence reads as "fine".** The test I wrote for D144 called this very path and
 asserted only `timed_out is True`. The habit that catches this class: when you add a
 value, check every *exit* that consumes it, not just the one you were looking at.
 Carrying `scan_truncated` alongside it needed the same care — on the follow path it
@@ -906,7 +906,7 @@ regresses, which is the single thing a test of a concurrency guard must not do.
 
 A ninth round found two more, and the first completes a pattern worth naming: for
 three rounds running, the state that broke was one my *previous fix had just made
-reachable*. D141 correctly sent an unfindable cursor to the wait — and the post-wait
+reachable*. D143 correctly sent an unfindable cursor to the wait — and the post-wait
 read then used that ghost id, which `query` answers with "the newest page", so a
 follow that waited *successfully* reported history as arrivals. The timeout path was
 already empty and correct, which is why it read as done. **When a change makes a
@@ -920,7 +920,7 @@ and the pre-toggle snapshot served for the whole 1 s TTL. A generation counter c
 it. The 1 s window looks benign until you notice it is exactly the window a user
 toggling the preference is watching.
 
-An eighth round found a **regression in the D139 fix itself**, and it is the
+An eighth round found a **regression in the D141 fix itself**, and it is the
 sharpest lesson of the lot. I had written that "a careless version of this fix
 answers instantly for every follow and quietly deletes the feature", and tested two
 cursor shapes against exactly that — a cursor at the tip, and no cursor. I did not
@@ -958,8 +958,8 @@ Closing it means persisting a periodic drop marker into the store, which adds a
 record kind (CL-2) — a feature, not a review fix, so it is recorded here rather
 than smuggled in.
 
-**Two spellings of the same path (D145).** The twelfth round is the eleventh's
-class of bug one layer down. D144 was two spellings of a *directory*; this is two
+**Two spellings of the same path (D147).** The twelfth round is the eleventh's
+class of bug one layer down. D146 was two spellings of a *directory*; this is two
 spellings of a *file path*: on Windows the store held `page` forward-slashed
 (headers, and what a `/view` URL decodes to) and `entrypoint` backslashed for a
 relative `/api/run` target (`os.path.normpath`), while the CLI's `--page` filter
@@ -974,11 +974,11 @@ sharper: **the platform I do not run on is the one the invariant breaks on.** Th
 two forms are identical on POSIX, so every test and every manual check was blind
 to this by construction — which is why the regressions simulate Windows with
 `ntpath` and drive-shaped literals instead of sitting behind a `sys.platform`
-guard that would only ever run where the bug cannot happen. After D144 I had
+guard that would only ever run where the bug cannot happen. After D146 I had
 verified the gate and the writer agreed about the *directory*; I never asked
 whether they agreed about the *paths inside it*.
 
-**Two directories, two lifetimes (D146).** The thirteenth round is the smallest
+**Two directories, two lifetimes (D148).** The thirteenth round is the smallest
 and the tidiest: `Browse call logs` navigated to the store directory, which the
 writer creates on its first append — so before any page had made a logged call
 the button opened a stat error. The fix worth noting is the one I did *not*
@@ -992,8 +992,8 @@ asymmetry it explains rather than hides: `log.dir` sits two lines above
 directory at startup. Two paths in one payload with two different lifetimes, and
 the UI had been treating them as one kind of thing.
 
-**Reporting the stored value instead of the effective one (D147).** The
-fourteenth round is the same class as D146 — a payload telling the UI something
+**Reporting the stored value instead of the effective one (D149).** The
+fourteenth round is the same class as D148 — a payload telling the UI something
 other than what the system is doing — but the precedent was sitting two lines
 above it. `FUSED_RENDER_CALLS` and `FUSED_RENDER_CALLS_RETENTION_DAYS` beat the
 stored prefs inside the resolvers, so Preferences showed *capture on, keep 90
@@ -1004,13 +1004,13 @@ never reports a different running engine." Two things to keep. First, the fix is
 a **call, not a copy** — `effective_*` comes from `calls.enabled()` /
 `calls.retention_days()`, and a test pins it across the spellings the real
 resolver accepts (`off`/`no`/`false`/`0`), which a re-derived `== "0"` check
-would fail; that is D144/D145's lesson applied before the drift rather than
+would fail; that is D146/D147's lesson applied before the drift rather than
 after. Second, **an existing pattern in the same file is the cheapest
 correctness check available, and I hadn't looked** — the question "does anything
 here already solve this?" would have found `engine_state()` in one grep.
 
-**Fixing half of a function (D148).** The fifteenth round found the *other half*
-of D147, in the function D147 had just written. The `effective_*` values were
+**Fixing half of a function (D150).** The fifteenth round found the *other half*
+of D149, in the function D149 had just written. The `effective_*` values were
 taken from the writer's resolvers, exactly as intended — and the `*_forced_by`
 flags beside them were `os.environ.get(...)`, a presence check, which is the same
 second copy of the precedence rule the paragraph above is about. It survived
@@ -1022,10 +1022,10 @@ select and captioned it *locked by `FUSED_RENDER_CALLS_RETENTION_DAYS=abc`* — 
 window the user could then change neither from the page nor by editing a variable
 that was never in force. The question "does this variable win?" now has one owner,
 `calls.retention_days_override()`, with `retention_days()` expressed in terms of
-it, and one reader, prefs' `_forced_by`. The lesson is narrower than D147's and
+it, and one reader, prefs' `_forced_by`. The lesson is narrower than D149's and
 sharper: **when a fix is "ask the writer instead of re-deriving", it has to be
 applied to every value in the function, not the one the bug report named.** A
-report is evidence of a class, not an inventory of it — D145 taught that about
+report is evidence of a class, not an inventory of it — D147 taught that about
 call sites and this taught it about the lines of a single return statement.
 
 Across all fifteen rounds the pattern never changed: each defect lived in a seam

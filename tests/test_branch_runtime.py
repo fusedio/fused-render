@@ -25,9 +25,18 @@ def _reload_with_ref(ref: str):
 
 
 @pytest.fixture(autouse=True)
-def _restore_baseline(monkeypatch):
+def _restore_baseline():
     yield
-    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    # `os.environ.pop`, NOT `monkeypatch.delenv`: this file sets the variable
+    # with a bare assignment (`_reload_with_ref`), so monkeypatch never recorded
+    # a pre-test value to restore. Deleting it THROUGH monkeypatch during
+    # teardown is self-defeating — delenv records the current value for undo and
+    # monkeypatch's own undo then runs after this fixture, putting the ref right
+    # back. The variable leaked out of this file for the rest of the worker's
+    # session, and any later test resolving a branch-aware path (the call log's
+    # store, ~/.fused-render/branches/<ref>/) silently looked in a directory
+    # nothing writes to.
+    os.environ.pop("FUSED_RENDER_BRANCH", None)
     _branch._CACHED_REF = None
     importlib.reload(_branch)
     import fused_render.server

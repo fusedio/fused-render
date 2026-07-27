@@ -783,6 +783,9 @@ export interface Prefs {
   log: { path: string; dir: string };
   // Whether the preview-header Deploy button is shown (opt-in, default off).
   deploy: { enabled: boolean };
+  // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
+  // default off).
+  reader: { enabled: boolean };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -824,6 +827,10 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putDeployEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { deploy_enabled: enabled });
+}
+
+export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
 
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
@@ -1292,7 +1299,9 @@ export function createTemplate(name: string, extensions: string[]): Promise<NewT
   return postJson<NewTemplateResult>("/api/templates/new", { name, extensions });
 }
 
-// Open Claude Code in Terminal.app in a user template's folder (macOS only).
-export function openTemplateInClaude(name: string): Promise<{ ok: true }> {
-  return postJson<{ ok: true }>("/api/templates/open-in-claude", { name });
+// Resolve a claude-cli:// deep link into a user template's folder. The
+// caller navigates to the returned URL (window.location.href) so the OS
+// hands it to Claude Code's registered scheme handler.
+export function openTemplateInClaude(name: string): Promise<{ url: string }> {
+  return postJson<{ url: string }>("/api/templates/open-in-claude", { name });
 }

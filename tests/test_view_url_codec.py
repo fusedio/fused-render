@@ -146,7 +146,7 @@ def test_open_target_unknown_scheme_fails_loudly():
 
 
 def test_canonical_fs_path_normalizes_only_drive_paths():
-    """The rule the call log stores and compares by (D145).
+    """The rule the call log stores and compares by (D147).
 
     A drive path becomes forward-slashed; a POSIX path is returned untouched
     even when it contains a backslash, because there a backslash is a legal

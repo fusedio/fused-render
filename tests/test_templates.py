@@ -68,7 +68,7 @@ def test_builtin_html_default_is_render_sentinel():
     # `calls` (the app call log view) is last and conditional — a page with no
     # recorded calls never shows it (its condition.py gate, CT-12).
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "annotate", "history", "calls"]
+        "_render", "code", "claude", "reader", "annotate", "history", "calls"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
@@ -80,6 +80,38 @@ def test_builtin_parquet_default_is_duckdb():
     assert error is None
     assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
+
+
+# ------------------------------------------------------------ reader mode (RD)
+#
+# `reader` (listen/TTS mode, templates/reader/) is a trailing meta-mode bound to
+# text-bearing keys just before `annotate`. It is deliberately absent from
+# binary/visual keys (images, 3D, geo, media, archives, parquet data).
+
+
+def test_reader_present_on_text_keys_before_annotate():
+    # Reader sits immediately before annotate on representative text formats,
+    # and never as the default (first entry stays the real content view).
+    cases = {
+        "/x/notes.md": ["markdown", "code", "reader", "annotate"],
+        "/x/data.csv": ["duckdb", "csv", "excel", "code", "reader", "annotate"],
+        "/x/paper.pdf": ["pdf", "pdf_studio", "reader", "annotate"],
+        "/x/log.txt": ["text", "code", "reader", "annotate"],
+    }
+    for path, expected in cases.items():
+        got, error = modes(path)
+        assert error is None, path
+        assert got == expected, path
+        assert got[0] != "reader", path  # never the default
+        assert got[got.index("reader") + 1] == "annotate", path
+
+
+def test_reader_absent_on_binary_visual_keys():
+    # Images, 3D models, and other non-text surfaces must not offer reader.
+    for path in ["/x/pic.png", "/x/scene.glb", "/x/video.mp4", "/x/data.parquet", "/x/tiles.pmtiles"]:
+        got, error = modes(path)
+        assert error is None, path
+        assert "reader" not in got, path
 
 
 def test_compressed_tabular_routes_to_duckdb():
@@ -248,7 +280,7 @@ def test_user_wildcard_key(user_dir):
     user_dir.template("geo")
     user_dir.registry({".*.json": "geo"})
     assert modes("/x/a.tiles.json") == (["geo"], None)
-    assert modes("/x/a.json")[0] == ["tree", "code", "duckdb", "annotate"]  # builtin still applies
+    assert modes("/x/a.json")[0] == ["tree", "code", "duckdb", "reader", "annotate"]  # builtin still applies
 
 
 def test_user_directory_binding(user_dir):
@@ -319,7 +351,7 @@ def test_unknown_sentinel_dropped_with_error(user_dir):
 def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     user_dir.registry({".csv": "no-such-template"})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
     assert "no-such-template" in error
 
 
@@ -328,21 +360,21 @@ def test_all_dangling_names_fall_back(user_dir):
     # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
     assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):
     user_dir.registry({".csv": 42})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
     assert "must be a list" in error
 
 
 def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     (user_dir.path / "registry.json").write_text("{not json")
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "annotate"]
+    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
     assert "cannot read registry.json" in error
 
 

@@ -4,6 +4,37 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fused Render</title>
+  <!-- Pre-paint theme bootstrap (SPEC §30, D134). Inline and ahead of every
+       stylesheet/script on purpose: the resolved appearance must be on <html>
+       BEFORE the first paint, or a light-mode user sees a dark flash while the
+       preference is read. Duplicates lib/theme.ts's key + resolution rule
+       because nothing importable exists this early; tests/test_theme.py pins
+       the two spellings together. Falls back to dark (today's look) whenever
+       storage or matchMedia is unavailable — but they get SEPARATE try blocks,
+       mirroring resolvedTheme() in static/runtime.js: sharing one meant a
+       throwing localStorage (private mode) skipped the OS check and pinned
+       dark on a light-mode desktop. -->
+  <script>
+    (function () {
+      var pref = null;
+      try {
+        pref = localStorage.getItem("fused-render:theme");
+      } catch (e) {
+        /* private mode / blocked storage — fall through to the OS preference */
+      }
+      var theme;
+      if (pref === "light" || pref === "dark") {
+        theme = pref;
+      } else {
+        try {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) {
+          theme = "dark"; /* no matchMedia — keep today's appearance */
+        }
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>

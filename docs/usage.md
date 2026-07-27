@@ -46,6 +46,9 @@ servers) sees ordinary local paths.
 
 The gear at the sidebar's bottom-left opens **Preferences**:
 
+- **Appearance** — System (follows your desktop), Light or Dark. Applies
+  immediately, and is remembered per browser profile (so a browser tab and the
+  desktop window each keep their own choice).
 - **Execution engine** — switch `fused.runPython` between the built-in
   executor (fresh subprocess per call) and the fused engine (PEP 723 inline
   requirements in cached venvs). Applied to the next run, no restart; setting

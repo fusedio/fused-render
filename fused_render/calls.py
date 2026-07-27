@@ -204,7 +204,7 @@ def retention_days_override() -> int | None:
     That makes "is the variable set" and "is the variable in force" two different
     questions, and anything reporting an override to the user has to ask the
     second one — hence this resolver rather than a presence check at the caller
-    (D148; the Preferences page's `retention_forced_by` goes through it).
+    (D150; the Preferences page's `retention_forced_by` goes through it).
     """
     raw = os.environ.get(RETENTION_DAYS_ENV)
     if not raw:
@@ -283,7 +283,7 @@ def enabled_override() -> bool | None:
     anything else (including the empty string) switches it on — so unlike
     `retention_days_override`, presence and force coincide here. Stated as a
     resolver anyway so the Preferences page derives both `*_forced_by` flags the
-    same way and neither can drift into a second copy of the rule (D148).
+    same way and neither can drift into a second copy of the rule (D150).
     """
     raw = os.environ.get(DISABLE_ENV)
     if raw is None:

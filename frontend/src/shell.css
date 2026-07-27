@@ -1,3 +1,20 @@
+/* Appearance — System / Light / Dark (SPEC §30, D134).
+ *
+ * Every colour in this file comes from a token below; nothing is hardcoded in
+ * a rule any more, because a hardcoded colour is a colour light mode cannot
+ * repaint (tests/test_theme.py enforces that). The dark block IS the app's
+ * historical appearance, value for value — this change adds a light palette,
+ * it does not restyle dark.
+ *
+ * `data-theme` is stamped on <html> by the pre-paint bootstrap in index.html
+ * and kept current by lib/theme.ts. Dark is the `:root` default so a document
+ * with no attribute at all still renders as it always did.
+ *
+ * The `--*-rgb`/`--tint` tokens are bare "r, g, b" triples, substituted
+ * textually into `rgba(var(--tint), .06)`: the many translucent washes in this
+ * file assumed a dark backdrop (white over dark), and in light mode the same
+ * wash has to be black over light. That flip is what `--tint` is for.
+ */
 :root {
   color-scheme: dark;
   --fg: #e8eaed;
@@ -10,6 +27,127 @@
   --error: #ff6b6b;
   --success: #3fb950;
   --warning: #d29922;
+
+  /* rgb triples for the translucent washes (see the note above). */
+  --tint: 255, 255, 255;
+  --accent-rgb: 229, 255, 68;
+  --error-rgb: 255, 107, 107;
+  --fg-muted-rgb: 154, 160, 166;
+
+  /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
+     dark page but as dirt against a light one, hence the light overrides. */
+  --shadow-sm: rgba(0, 0, 0, 0.25);
+  --shadow-md: rgba(0, 0, 0, 0.4);
+  --shadow-lg: rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55); /* modal backdrop — stays dark in both modes */
+
+  /* Surfaces floating above --bg-alt: the bookmark tooltip and icon/template
+     pickers (--bg-panel), the tour popover (--bg-popover). */
+  --bg-panel: #202329;
+  --bg-popover: #1c1e24;
+  /* Opaque row fills, pre-composited: a stretched-link row can't stack a
+     translucent wash over its own background, so the flat result is a token. */
+  --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+
+  --on-accent: #10131a; /* text/glyph on an --accent fill */
+  --on-fg: #ffffff; /* .btn-primary hover: one step further from --bg than --fg */
+  --accent-soft: #c9d95e; /* the accent as readable body text */
+  --success-bright: #3fca6b; /* live/signed-in dots */
+  --success-soft: #86d786;
+  --warning-soft: #dfb054;
+  --warning-strong: #e0a33e;
+
+  /* Full-page failure card (.status-message.error). */
+  --error-page-bg: rgba(30, 5, 5, 0.9);
+  --error-page-border: #c0392b;
+  --error-page-fg: #ffdede;
+
+  /* Tour popover chrome (driver.js overrides). */
+  --tour-fg: #e8e8e8;
+  --tour-desc: #b4b6bd;
+  --tour-dim: #7c7f88;
+  --tour-next-hover: #d8f238;
+
+  /* File-type icon hues (FileIcons.tsx). Tuned bright for a dark listing;
+     the light palette darkens each one to the same relative weight. */
+  --icon-folder: #9fb1d2;
+  --icon-code: #7fb2a6;
+  --icon-data: #a898cb;
+  --icon-json: #c3a96b;
+  --icon-html: #c9d95e;
+  --icon-image: #cd93b6;
+  --icon-doc: #9aa0a6;
+  --icon-media: #d0939b;
+  --icon-geo: #88bf95;
+  --icon-archive: #baa386;
+  --icon-db: #82abbf;
+  --icon-file: #868c93;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --fg: #1f2023;
+  --fg-muted: #61656c;
+  --border: #d8dade;
+  --bg: #ffffff;
+  --bg-alt: #f4f5f7;
+  --sel: #cfe0f7;
+  /* The brand lime is unreadable as text on white and near-invisible as a
+     hairline, so light mode uses a deep olive-lime of the same hue: it clears
+     4.5:1 against both --bg and white, so it works as text, border, fill and
+     wash from the one token — no second accent needed. */
+  --accent: #5f7300;
+  --error: #c62828;
+  --success: #1a7f37;
+  --warning: #8f6a10;
+
+  --tint: 0, 0, 0;
+  --accent-rgb: 95, 115, 0;
+  --error-rgb: 198, 40, 40;
+  --fg-muted-rgb: 97, 101, 108;
+
+  --shadow-sm: rgba(0, 0, 0, 0.1);
+  --shadow-md: rgba(0, 0, 0, 0.14);
+  --shadow-lg: rgba(0, 0, 0, 0.18);
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  /* Floating surfaces lift by going *lighter* than --bg-alt here, i.e. all the
+     way to --bg; their existing borders + shadow carry the separation. */
+  --bg-panel: #ffffff;
+  --bg-popover: #ffffff;
+  --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
+  --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  --on-accent: #ffffff;
+  --on-fg: #000000;
+  --accent-soft: #5f7300;
+  --success-bright: #1a8f45;
+  --success-soft: #1f7a3a;
+  --warning-soft: #8a6410;
+  --warning-strong: #9a6a10;
+
+  --error-page-bg: rgba(255, 236, 236, 0.95);
+  --error-page-border: #c0392b;
+  --error-page-fg: #7f1d1d;
+
+  --tour-fg: #1f2023;
+  --tour-desc: #4a4e55;
+  --tour-dim: #6f747c;
+  --tour-next-hover: #4e5f00;
+
+  --icon-folder: #45689e;
+  --icon-code: #2f7a6b;
+  --icon-data: #6b57a0;
+  --icon-json: #8a6d1f;
+  --icon-html: #6f7c14;
+  --icon-image: #9c4d78;
+  --icon-doc: #61656c;
+  --icon-media: #a34a56;
+  --icon-geo: #2f7d47;
+  --icon-archive: #806341;
+  --icon-db: #3d7b93;
+  --icon-file: #6b7178;
 }
 
 * {
@@ -109,7 +247,7 @@ body:has(.sidebar-resize-handle.resizing) {
 }
 
 .sidebar-expand-strip:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 /* Circular expand bubble, vertically centered, half overlapping the strip's
@@ -128,14 +266,14 @@ body:has(.sidebar-resize-handle.resizing) {
   border-radius: 50%;
   background: var(--bg-alt);
   border: 1px solid var(--border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 1px 4px var(--shadow-sm);
   color: var(--fg-muted);
   /* Protrudes over #content — stay above its content. */
   z-index: 10;
 }
 
 .sidebar-expand-strip:hover .sidebar-expand-bubble {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(var(--tint), 0.1);
   color: var(--fg);
 }
 
@@ -209,7 +347,7 @@ body:has(.sidebar-resize-handle.resizing) {
 }
 
 .sidebar-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .sidebar-item .icon {
@@ -263,7 +401,7 @@ body:has(.sidebar-resize-handle.resizing) {
   font-size: 10.5px;
   line-height: 1;
   color: var(--fg-muted);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
   border-radius: 8px;
   padding: 3px 6px;
   letter-spacing: normal;
@@ -295,13 +433,13 @@ body:has(.sidebar-resize-handle.resizing) {
 }
 
 .bookmark-row:hover {
-  background: rgba(255, 255, 255, 0.06);
-  --row-bg: #26282c; /* bg-alt composited with the white 0.06 hover layer */
+  background: rgba(var(--tint), 0.06);
+  --row-bg: var(--row-bg-hover); /* bg-alt composited with the white 0.06 hover layer */
 }
 
 .bookmark-row.active {
-  background: rgba(229, 255, 68, 0.13);
-  --row-bg: #353a25; /* bg-alt composited with the accent 0.13 active layer */
+  background: rgba(var(--accent-rgb), 0.13);
+  --row-bg: var(--row-bg-active); /* bg-alt composited with the accent 0.13 active layer */
 }
 
 .bookmark-row.active .bookmark-name {
@@ -388,7 +526,7 @@ body:has(.sidebar-resize-handle.resizing) {
   font-size: 10.5px;
   line-height: 1;
   color: var(--fg-muted);
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(var(--tint), 0.07);
   border-radius: 8px;
   padding: 3px 6px;
 }
@@ -405,7 +543,7 @@ body:has(.sidebar-resize-handle.resizing) {
   gap: 1px;
   margin-left: 20px;
   padding-left: 5px;
-  border-left: 1px solid rgba(255, 255, 255, 0.13);
+  border-left: 1px solid rgba(var(--tint), 0.13);
 }
 
 .child-row {
@@ -462,10 +600,10 @@ a.bookmark-name::after {
   z-index: 1000;
   min-width: 200px;
   max-width: 340px;
-  background: #202329;
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px var(--shadow-lg);
   padding: 10px 12px;
   font-size: 12px;
   pointer-events: none;
@@ -555,10 +693,10 @@ a.bookmark-name::after {
   position: fixed;
   z-index: 1001;
   width: 264px;
-  background: #202329;
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px var(--shadow-lg);
   padding: 8px;
 }
 
@@ -634,7 +772,7 @@ a.bookmark-name::after {
 
 .icon-picker-cell:hover,
 .icon-picker-cell.active {
-  background: rgba(255, 255, 255, 0.09);
+  background: rgba(var(--tint), 0.09);
 }
 
 .icon-picker-cell.active {
@@ -843,7 +981,7 @@ a.bookmark-name::after {
 .star-btn.starred {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(229, 255, 68, 0.13);
+  background: rgba(var(--accent-rgb), 0.13);
 }
 
 #content {
@@ -966,7 +1104,7 @@ a.bookmark-name::after {
 
 /* Matched-substring highlight in search results (explorer + bookmarks). */
 .search-mark {
-  background: rgba(229, 255, 68, 0.22);
+  background: rgba(var(--accent-rgb), 0.22);
   color: var(--fg);
   border-radius: 2px;
 }
@@ -1084,18 +1222,18 @@ table.listing-table .icon {
   width: 16px;
   height: 16px;
 }
-.file-icon--folder  { color: #9fb1d2; }
-.file-icon--code    { color: #7fb2a6; }
-.file-icon--data    { color: #a898cb; }
-.file-icon--json    { color: #c3a96b; }
-.file-icon--html    { color: #c9d95e; } /* launchable app — leans toward --accent */
-.file-icon--image   { color: #cd93b6; }
-.file-icon--doc     { color: #9aa0a6; }
-.file-icon--media   { color: #d0939b; }
-.file-icon--geo     { color: #88bf95; }
-.file-icon--archive { color: #baa386; }
-.file-icon--db      { color: #82abbf; }
-.file-icon--file    { color: #868c93; }
+.file-icon--folder  { color: var(--icon-folder); }
+.file-icon--code    { color: var(--icon-code); }
+.file-icon--data    { color: var(--icon-data); }
+.file-icon--json    { color: var(--icon-json); }
+.file-icon--html    { color: var(--accent-soft); } /* launchable app — leans toward --accent */
+.file-icon--image   { color: var(--icon-image); }
+.file-icon--doc     { color: var(--icon-doc); }
+.file-icon--media   { color: var(--icon-media); }
+.file-icon--geo     { color: var(--icon-geo); }
+.file-icon--archive { color: var(--icon-archive); }
+.file-icon--db      { color: var(--icon-db); }
+.file-icon--file    { color: var(--icon-file); }
 
 table.listing-table td.size,
 table.listing-table td.mtime {
@@ -1156,15 +1294,15 @@ table.listing-table td.mtime {
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
-  border: 1px solid rgba(229, 255, 68, 0.35);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 6px;
-  background: rgba(229, 255, 68, 0.08);
-  color: #c9d95e;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent-soft);
   cursor: pointer;
 }
 
 .open-as-app-btn:hover {
-  background: rgba(229, 255, 68, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -1190,7 +1328,7 @@ table.listing-table td.mtime {
 
 .preview-actions button.active {
   background: var(--accent);
-  color: #10131a;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 
@@ -1229,7 +1367,7 @@ table.listing-table td.mtime {
 
 .preview-actions .mode-switcher-btn.active {
   background: var(--accent);
-  color: #10131a;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 
@@ -1390,11 +1528,11 @@ table.listing-table td.mtime {
    failures, config-load failures) uses this class so the visual language
    stays consistent. */
 .status-message.error {
-  background: rgba(30, 5, 5, 0.9);
-  border: 2px solid #c0392b;
+  background: var(--error-page-bg);
+  border: 2px solid var(--error-page-border);
   border-radius: 10px;
   padding: 14px 16px;
-  color: #ffdede;
+  color: var(--error-page-fg);
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 13px;
   white-space: pre-wrap;
@@ -1463,13 +1601,13 @@ body.embed .open-as-app-chip {
   font-size: 11px;
   line-height: 1;
   padding: 5px 9px;
-  border: 1px solid rgba(229, 255, 68, 0.45);
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
   border-radius: 8px;
   /* Opaque (unlike .open-as-app-btn's translucent tint) — this one is pinned
      OVER the listing's search input, and a see-through fill let its
      placeholder text bleed through underneath. */
   background: var(--bg-alt);
-  color: #c9d95e;
+  color: var(--accent-soft);
   cursor: pointer;
 }
 
@@ -1580,7 +1718,7 @@ body.embed .open-as-app-chip:hover {
 }
 
 .panel-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
@@ -1672,7 +1810,7 @@ body.embed .open-as-app-chip:hover {
 
 .tab-open-plain:hover {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
 }
 
 .tab-close {
@@ -1690,7 +1828,7 @@ body.embed .open-as-app-chip:hover {
 
 .tab-close:hover {
   color: var(--error);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
 }
 
 /* Pane/tab template-mode menu: the trigger shows the active mode's icon; the
@@ -1714,7 +1852,7 @@ body.embed .open-as-app-chip:hover {
 }
 
 .pane-mode-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
@@ -1743,7 +1881,7 @@ body.embed .open-as-app-chip:hover {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 16px var(--shadow-md);
 }
 
 .pane-mode-item {
@@ -1759,7 +1897,7 @@ body.embed .open-as-app-chip:hover {
 }
 
 .pane-mode-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
@@ -1784,7 +1922,7 @@ body.embed .open-as-app-chip:hover {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 28px var(--shadow-lg);
   user-select: none;
 }
 
@@ -1808,7 +1946,7 @@ body.embed .open-as-app-chip:hover {
 
 .context-menu-item:hover:not(.disabled),
 .context-menu-item.open {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--tint), 0.08);
 }
 
 .context-menu-item.disabled {
@@ -1933,7 +2071,7 @@ body.embed .open-as-app-chip:hover {
   background: var(--bg-alt);
   border: 1px solid var(--error);
   border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 20px var(--shadow-lg);
 }
 
 .listing-toast-info {
@@ -2015,7 +2153,7 @@ body.embed .open-as-app-chip:hover {
   background: var(--bg-alt);
   border: 1px solid var(--error);
   border-radius: 8px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 20px var(--shadow-lg);
   animation: server-status-in 0.15s ease-out;
 }
 
@@ -2120,14 +2258,14 @@ body.embed .open-as-app-chip:hover {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #3fca6b;
+  background: var(--success-bright);
   flex: 0 0 auto;
 }
 
 .deploy-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--scrim);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -2143,7 +2281,7 @@ body.embed .open-as-app-chip:hover {
   max-height: 85vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 40px var(--shadow-lg);
 }
 
 .deploy-head {
@@ -2377,7 +2515,7 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--error);
   border: 1px solid var(--error);
   border-radius: 6px;
-  background: rgba(255, 107, 107, 0.07);
+  background: rgba(var(--error-rgb), 0.07);
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -2390,7 +2528,7 @@ select.field-control:has(option[value=""]:checked) {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(var(--tint), 0.02);
 }
 
 /* ---- Unified button vocabulary + modal chassis -------------------------- */
@@ -2449,7 +2587,7 @@ select.field-control:has(option[value=""]:checked) {
 .btn-primary:hover:not(:disabled),
 .deploy-body .btn-primary:hover:not(:disabled),
 .prefs-section .btn-primary:hover:not(:disabled) {
-  background: #ffffff;
+  background: var(--on-fg);
   border-color: transparent;
 }
 
@@ -2471,7 +2609,7 @@ select.field-control:has(option[value=""]:checked) {
 .btn-danger,
 .deploy-body .btn-danger,
 .prefs-section .btn-danger {
-  background: rgba(255, 107, 107, 0.1);
+  background: rgba(var(--error-rgb), 0.1);
   border-color: var(--error);
   color: var(--error);
 }
@@ -2479,7 +2617,7 @@ select.field-control:has(option[value=""]:checked) {
 .btn-danger:hover:not(:disabled),
 .deploy-body .btn-danger:hover:not(:disabled),
 .prefs-section .btn-danger:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.18);
+  background: rgba(var(--error-rgb), 0.18);
   border-color: var(--error);
 }
 
@@ -2497,7 +2635,7 @@ select.field-control:has(option[value=""]:checked) {
 .btn-danger-text:hover:not(:disabled),
 .deploy-body .btn-danger-text:hover:not(:disabled),
 .prefs-section .btn-danger-text:hover:not(:disabled) {
-  background: rgba(255, 107, 107, 0.12);
+  background: rgba(var(--error-rgb), 0.12);
   border-color: transparent;
 }
 
@@ -2546,7 +2684,7 @@ select.field-control:has(option[value=""]:checked) {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #3fca6b;
+  background: var(--success-bright);
   border: 1px solid var(--bg-alt);
 }
 
@@ -2594,8 +2732,8 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .share-status.active {
-  color: #3fca6b;
-  border-color: #3fca6b;
+  color: var(--success-bright);
+  border-color: var(--success-bright);
 }
 
 .share-status.revoked {
@@ -2827,8 +2965,8 @@ select.field-control:has(option[value=""]:checked) {
 /* user-code is the author's own traceback (actionable); invoke-failure is a
    platform fault (no detail); bad-result is a contract mistake. */
 .deploy-err-kind.kind-user-code {
-  color: #e0a33e;
-  border-color: #e0a33e;
+  color: var(--warning-strong);
+  border-color: var(--warning-strong);
 }
 
 .deploy-err-kind.kind-invoke-failure {
@@ -2940,7 +3078,7 @@ select.field-control:has(option[value=""]:checked) {
   height: 12px;
   margin-right: 7px;
   vertical-align: -1px;
-  border: 2px solid rgba(154, 160, 166, 0.35);
+  border: 2px solid rgba(var(--fg-muted-rgb), 0.35);
   border-top-color: currentColor;
   border-radius: 50%;
   animation: deploy-spin 0.8s linear infinite;
@@ -3038,7 +3176,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .deploy-file:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
 }
 
 .deploy-file code {
@@ -3046,7 +3184,7 @@ select.field-control:has(option[value=""]:checked) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--tint), 0.04);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 8px;
@@ -3162,7 +3300,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .deploy-picker-list button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .deploy-picker-add {
@@ -3186,7 +3324,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .deploy-warning {
-  color: var(--warning, #d9a441);
+  color: var(--warning);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -3243,77 +3381,77 @@ select.field-control:has(option[value=""]:checked) {
 .sidebar-footer .prefs-link:hover,
 .sidebar-footer .prefs-link.active {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 /* driver.js popover — dark theme overrides scoped under .driver-popover. */
 .driver-popover {
-  background: #1c1e24;
-  color: #e8e8e8;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-popover);
+  color: var(--tour-fg);
+  border: 1px solid rgba(var(--tint), 0.12);
   border-radius: 10px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 30px var(--shadow-lg);
 }
 
 .driver-popover-title {
-  color: #e8e8e8;
+  color: var(--tour-fg);
 }
 
 .driver-popover-description {
-  color: #b4b6bd;
+  color: var(--tour-desc);
 }
 
 .driver-popover-progress-text {
-  color: #7c7f88;
+  color: var(--tour-dim);
 }
 
 /* Arrow triangle: driver.js colors it via one border side. Tint every side to
    the popover bg so whichever side is shown matches the dark theme. */
 .driver-popover-arrow-side-left.driver-popover-arrow {
-  border-left-color: #1c1e24;
+  border-left-color: var(--bg-popover);
 }
 .driver-popover-arrow-side-right.driver-popover-arrow {
-  border-right-color: #1c1e24;
+  border-right-color: var(--bg-popover);
 }
 .driver-popover-arrow-side-top.driver-popover-arrow {
-  border-top-color: #1c1e24;
+  border-top-color: var(--bg-popover);
 }
 .driver-popover-arrow-side-bottom.driver-popover-arrow {
-  border-bottom-color: #1c1e24;
+  border-bottom-color: var(--bg-popover);
 }
 
 .driver-popover .driver-popover-close-btn {
-  color: #7c7f88;
+  color: var(--tour-dim);
 }
 
 .driver-popover .driver-popover-close-btn:hover {
-  color: #e8e8e8;
+  color: var(--tour-fg);
 }
 
 .driver-popover .driver-popover-navigation-btns button {
   background: transparent;
-  color: #b4b6bd;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--tour-desc);
+  border: 1px solid rgba(var(--tint), 0.12);
   border-radius: 6px;
   text-shadow: none;
 }
 
 .driver-popover .driver-popover-navigation-btns button:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #e8e8e8;
+  background: rgba(var(--tint), 0.06);
+  color: var(--tour-fg);
 }
 
 /* Primary next / done button on the accent token, dark text. */
 .driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn {
-  background: #e5ff44;
-  color: #131417;
-  border-color: #e5ff44;
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
   font-weight: 600;
 }
 
 .driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn:hover {
-  background: #d8f238;
-  color: #131417;
+  background: var(--tour-next-hover);
+  color: var(--bg);
 }
 
 .prefs-page {
@@ -3580,7 +3718,7 @@ select.field-control:has(option[value=""]:checked) {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.04),
+    rgba(var(--tint), 0.04),
     transparent
   );
   animation: mount-shimmer 1.2s ease-in-out infinite;
@@ -3658,7 +3796,7 @@ select.field-control:has(option[value=""]:checked) {
 .mount-card .mount-delete:hover:not(:disabled) {
   color: var(--error);
   border-color: var(--error);
-  background: rgba(255, 107, 107, 0.12);
+  background: rgba(var(--error-rgb), 0.12);
 }
 
 /* Health dot — color tracks state via a modifier class, off the shared
@@ -3980,7 +4118,7 @@ select.field-control:has(option[value=""]:checked) {
 
 .templates-seg-btn.active {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.09);
+  background: rgba(var(--tint), 0.09);
   font-weight: 600;
 }
 
@@ -4053,7 +4191,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--tint), 0.03);
 }
 
 .templates-col-pattern {
@@ -4106,7 +4244,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-chip.default {
-  border-color: rgba(229, 255, 68, 0.35);
+  border-color: rgba(var(--accent-rgb), 0.35);
 }
 
 .templates-chip.broken {
@@ -4331,7 +4469,7 @@ select.field-control:has(option[value=""]:checked) {
   padding: 8px 10px;
   border: 1px solid var(--error);
   border-radius: 6px;
-  background: rgba(255, 107, 107, 0.08);
+  background: rgba(var(--error-rgb), 0.08);
   color: var(--error);
   font-size: 12px;
   line-height: 1.45;
@@ -4372,7 +4510,7 @@ select.field-control:has(option[value=""]:checked) {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 24px var(--shadow-lg);
 }
 
 .templates-picker-head {
@@ -4416,7 +4554,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-picker-cell:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
 }
 
 .templates-icon-dot {
@@ -4635,13 +4773,13 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .deploy-body button.templates-rec-chip.on {
-  border-color: rgba(229, 255, 68, 0.5);
-  background: rgba(229, 255, 68, 0.07);
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.07);
   color: var(--accent);
 }
 
 .deploy-body button.templates-rec-chip.on:hover:not(:disabled) {
-  background: rgba(229, 255, 68, 0.12);
+  background: rgba(var(--accent-rgb), 0.12);
   border-color: var(--accent);
 }
 
@@ -4663,11 +4801,11 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .templates-rec-badge.bound {
-  color: #86d786;
+  color: var(--success-soft);
 }
 
 .templates-rec-badge.disabled {
-  color: #dfb054;
+  color: var(--warning-soft);
 }
 
 .deploy-body .templates-rec-add-input {
@@ -4692,7 +4830,7 @@ select.field-control:has(option[value=""]:checked) {
 .templates-rec-warn {
   margin-top: 5px;
   font-size: 11px;
-  color: #dfb054;
+  color: var(--warning-soft);
 }
 
 .templates-result-bindings {
@@ -4724,7 +4862,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .deploy-body .templates-picker-cell:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--tint), 0.06);
   border-color: transparent;
 }
 
@@ -4759,7 +4897,7 @@ select.field-control:has(option[value=""]:checked) {
 .deploy-body .templates-seg-btn.active,
 .deploy-body .templates-seg-btn.active:hover:not(:disabled) {
   color: var(--fg);
-  background: rgba(255, 255, 255, 0.09);
+  background: rgba(var(--tint), 0.09);
   border-color: transparent;
   font-weight: 600;
 }

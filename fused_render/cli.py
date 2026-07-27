@@ -296,7 +296,7 @@ def _run_calls(args: argparse.Namespace) -> None:
         # first version of this branch hardcoded `cursor_missing: False` and
         # printed only "no new calls", so the caller learned that its cursor was
         # unusable exactly when activity happened to save it — which turns
-        # D142's "a lost cursor is never silent" into "unless it also went
+        # D144's "a lost cursor is never silent" into "unless it also went
         # quiet", the least useful possible time to withhold it.
         if args.as_json:
             # Aggregates over the EMPTY set, not over the window: a historical

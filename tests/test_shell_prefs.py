@@ -86,6 +86,42 @@ def test_deploy_enabled_toggle_is_independent_of_engine(tmp_path, monkeypatch):
     assert body["deploy"]["enabled"] is True
 
 
+def test_reader_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Default off (accessibility opt-in), so the reader gate denies the mode.
+    assert client.get("/api/prefs").json()["reader"]["enabled"] is False
+    # Turn it on — persisted and reflected in the response and a fresh GET.
+    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
+    assert body["reader"]["enabled"] is True
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["reader_enabled"] is True
+    assert client.get("/api/prefs").json()["reader"]["enabled"] is True
+    # And back off.
+    assert client.put("/api/prefs", json={"reader_enabled": False}, headers=FUSED).json()[
+        "reader"
+    ]["enabled"] is False
+
+
+def test_reader_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
+    # A partial PUT touching only reader_enabled must not disturb the others.
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
+    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED)
+    body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
+    assert body["engine"]["selected"] == "fused"
+    assert body["deploy"]["enabled"] is True
+    assert body["reader"]["enabled"] is True
+
+
+def test_put_rejects_bad_reader_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    # Non-boolean reader_enabled is rejected without a write.
+    assert (
+        client.put("/api/prefs", json={"reader_enabled": "yes"}, headers=FUSED).status_code == 400
+    )
+    assert not (home / "prefs.json").exists()
+
+
 def test_put_rejects_bad_deploy_enabled_and_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Non-boolean deploy_enabled …
@@ -293,7 +329,7 @@ def test_registry_view_override_is_case_insensitive(tmp_path, monkeypatch):
     assert _names(csv_rows[0]) == ["code"]
 
 
-# -- the call store's existence (Bugbot #283 review, D146) ----------------------
+# -- the call store's existence (Bugbot #283 review, D148) ----------------------
 
 
 def test_calls_dir_exists_is_false_before_the_first_record(tmp_path, monkeypatch):
@@ -325,7 +361,7 @@ def test_calls_dir_exists_flips_once_a_record_lands(tmp_path, monkeypatch):
     assert os.path.isdir(body["dir"])
 
 
-# -- env overrides are surfaced, not hidden (Bugbot #283 review, D147) ---------
+# -- env overrides are surfaced, not hidden (Bugbot #283 review, D149) ---------
 
 
 def test_calls_effective_state_matches_the_stored_prefs_when_unforced(tmp_path, monkeypatch):
@@ -405,7 +441,7 @@ def test_calls_params_mode_gets_no_forced_by_pair(tmp_path, monkeypatch):
     assert "effective_params" not in calls
 
 
-# -- forced_by means "in force", not "set" (Bugbot #283 review, D148) ----------
+# -- forced_by means "in force", not "set" (Bugbot #283 review, D150) ----------
 
 
 def test_retention_forced_by_is_null_when_the_env_value_is_not_honoured(tmp_path, monkeypatch):
@@ -451,7 +487,7 @@ def test_retention_forced_by_is_reported_when_the_env_value_wins(tmp_path, monke
 
 def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypatch):
     """Pins both `*_forced_by` flags to `calls.*_override()` — the same
-    ask-the-writer discipline the `effective_*` values follow (D147).
+    ask-the-writer discipline the `effective_*` values follow (D149).
 
     Presence and force coincide for capture (every set value decides something)
     but not for retention, so a presence check would look right on one control

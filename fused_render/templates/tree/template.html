@@ -1,18 +1,49 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>JSON preview</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --json-str: #98c379;
+    --json-num: #d19a66;
+    --json-bool: #c678dd;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --json-str: #2f7d32;
+    --json-num: #9a5b00;
+    --json-bool: #7c4dbd;
+  }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 13px;
     line-height: 1.5;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
   }
   #tree {
     padding: 16px;
@@ -24,42 +55,42 @@
   .toggle {
     display: inline-block;
     width: 1em;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     user-select: none;
   }
-  .row.foldable:hover > .toggle { color: #e8eaed; }
-  .key { color: #E5FF44; }
-  .punct, .count { color: #9aa0a6; }
+  .row.foldable:hover > .toggle { color: var(--fg); }
+  .key { color: var(--accent); }
+  .punct, .count { color: var(--fg-muted); }
   .count { font-style: italic; }
   .collapsed > .node { display: none; }
-  .collapsed > .row .preview { color: #9aa0a6; }
-  .str { color: #98c379; }
-  .num { color: #d19a66; }
-  .bool { color: #c678dd; }
-  .null { color: #9aa0a6; }
+  .collapsed > .row .preview { color: var(--fg-muted); }
+  .str { color: var(--json-str); }
+  .num { color: var(--json-num); }
+  .bool { color: var(--json-bool); }
+  .null { color: var(--fg-muted); }
   #status {
     padding: 24px;
-    color: #9aa0a6;
+    color: var(--fg-muted);
     white-space: normal;
   }
-  #status.error { color: #ff6b6b; }
-  #status a { color: #E5FF44; }
+  #status.error { color: var(--error); }
+  #status a { color: var(--accent); }
   pre.raw {
     margin: 16px 0 0;
     padding: 12px;
-    background: #1b1d21;
-    border: 1px solid #2a2d33;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
     border-radius: 6px;
     white-space: pre-wrap;
     word-break: break-word;
-    color: #e8eaed;
+    color: var(--fg);
   }
   #skeleton { padding: 16px; }
   .srow { display: flex; align-items: center; gap: 6px; height: 1.5em; }
   .sk {
     display: inline-block;
     border-radius: 3px;
-    background: linear-gradient(90deg, #1b1d21 25%, #2a2d33 50%, #1b1d21 75%);
+    background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }

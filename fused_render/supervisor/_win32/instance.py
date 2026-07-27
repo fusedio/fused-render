@@ -1,11 +1,17 @@
 """Single-instance mutex + named-pipe IPC — port of
 windows/supervisor/src/instance.rs (feat/windows-desktop-foundation, PR
 #162).
+
+wait_for_exit additionally sweeps the installed payload directory clear of any
+lingering process (server, workers) before returning, so the installer can move
+payload\\ during --shutdown-for-upgrade without hitting a file lock.
 """
 from __future__ import annotations
 
+import os
 import queue
 import struct
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -16,6 +22,7 @@ import win32con
 import win32event
 import win32file
 import win32pipe
+import win32process
 import win32security
 import winerror
 
@@ -89,10 +96,12 @@ class SecondaryInstance:
             time.sleep(0.05)
 
     def wait_for_exit(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
         try:
             mutex = win32event.OpenMutex(_SYNCHRONIZE, False, self.names.mutex)
         except pywintypes.error:
-            return  # primary already gone
+            _wait_payload_gone(deadline)  # primary gone; its process tree may not be
+            return
         try:
             result = win32event.WaitForSingleObject(mutex, int(timeout * 1000))
             # 0x80 = WAIT_ABANDONED (raw value; not on every pywin32 build).
@@ -103,6 +112,7 @@ class SecondaryInstance:
                     win32event.ReleaseMutex(mutex)
                 except pywintypes.error:
                     pass
+                _wait_payload_gone(deadline)
                 return
             raise TimeoutError("supervisor did not exit")
         finally:
@@ -273,3 +283,52 @@ def _current_user_sid() -> str:
     token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
     sid, _attrs = win32security.GetTokenInformation(token, win32security.TokenUser)
     return win32security.ConvertSidToStringSid(sid)
+
+
+def _wait_payload_gone(deadline: float, payload: str | None = None) -> None:
+    """Block until no process whose image lives under the installed payload
+    directory survives — except this helper and the launcher that spawned it —
+    or raise TimeoutError at `deadline`. The mutex wait only proves the
+    primary's owning thread ended; its process, the Job-killed server still
+    holding the port, and any worker can keep handles open under payload\\ that
+    would fail the installer's rename. Gated on the payload.complete marker so a
+    developer running --shutdown-for-upgrade from a venv never sweeps it.
+
+    The parent (payload\\FusedRenderPy.exe) is spared: it execs this helper and
+    waits on it under the installer's ewWaitUntilTerminated Exec, so killing it
+    would make that Exec report a failed shutdown. It lives, so its PID is
+    current, not a recycled one."""
+    if payload is None:
+        payload = os.path.dirname(os.path.dirname(sys.executable))
+    if not os.path.isfile(os.path.join(payload, "payload.complete")):
+        return
+    prefix = os.path.normcase(payload) + os.sep
+    keep = {os.getpid(), os.getppid()}
+    access = (win32con.PROCESS_QUERY_INFORMATION | win32con.PROCESS_VM_READ
+              | win32con.PROCESS_TERMINATE)
+    while True:
+        remaining = 0
+        for pid in win32process.EnumProcesses():
+            if pid in keep:
+                continue
+            try:
+                handle = win32api.OpenProcess(access, False, pid)
+            except pywintypes.error:
+                continue
+            try:
+                image = win32process.GetModuleFileNameEx(handle, 0)
+                if os.path.normcase(image).startswith(prefix):
+                    remaining += 1
+                    try:
+                        win32process.TerminateProcess(handle, 1)
+                    except pywintypes.error:
+                        pass  # already exiting, or lost the race — re-enumeration decides
+            except pywintypes.error:
+                pass  # image unreadable (exited mid-scan) — not ours to worry about
+            finally:
+                handle.Close()
+        if remaining == 0:
+            return
+        if time.monotonic() >= deadline:
+            raise TimeoutError("processes under the installed payload did not stop")
+        time.sleep(0.1)

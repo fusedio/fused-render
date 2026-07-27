@@ -44,7 +44,7 @@ def test_plain_json_unaffected():
     # A bare, non-compound .json (no sidecar target) keeps its tree-first
     # binding — the wildcard `.*.json` needs a stem with its own extension
     # (HV-3), so this doesn't match it.
-    assert modes("/x/data.json", False) == (["tree", "code", "duckdb", "annotate"], None)
+    assert modes("/x/data.json", False) == (["tree", "code", "duckdb", "reader", "annotate"], None)
 
 
 def test_template_ships_html_and_icon_only():
