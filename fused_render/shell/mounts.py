@@ -459,6 +459,10 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    except OSError:
+        # Windows raises a bare OSError (WinError 6 invalid handle / WinError 87
+        # invalid parameter) for a dead pid instead of ProcessLookupError.
+        return False
     return True
 
 
@@ -956,7 +960,10 @@ def _kill_current_rcd() -> None:
         raise RuntimeError(
             f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
         )
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    # SIGKILL doesn't exist on Windows; there SIGTERM already maps to
+    # TerminateProcess, so it is sufficient on its own.
+    sigs = (signal.SIGTERM,) if sys.platform == "win32" else (signal.SIGTERM, signal.SIGKILL)
+    for sig in sigs:
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
@@ -3470,7 +3477,11 @@ def attach_mount(m: dict) -> str | None:
         params = {
             "fs": m["remote"],
             "mountPoint": mp,
-            "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
+            "mountType": (
+                "nfsmount" if sys.platform == "darwin"
+                else "cmount" if sys.platform == "win32"
+                else "mount"
+            ),
             # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
             # read-only remote's VFS rejects writes instead of caching them for
             # a forever-retried upload (see _vfs_opt_for).
