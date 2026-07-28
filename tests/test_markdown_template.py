@@ -485,11 +485,28 @@ def test_the_graph_gets_the_panel_s_leftover_space_not_the_backlinks(source):
 
 def test_a_backlink_row_keeps_its_path_visible_without_overflowing(source):
     # Two notes can share a title; the rel path is the only disambiguator, so it
-    # stays on the row and ellipsizes rather than being dropped or wrapping.
+    # sits inline next to the title, clips rather than spilling, and is never
+    # flung to the far edge where it reads as a second column.
     rules = source[source.index("  .bl-title,"):]
     rules = rules[:rules.index("\n  .bl-empty")]
     assert "text-overflow: ellipsis" in rules and "min-width: 0" in rules
+    assert "text-align: right" not in rules
     assert '<span class="bl-path">${escapeHtml(row.rel)}</span>' in source
+
+
+def test_backlink_rows_read_as_a_list_and_still_answer_the_keyboard(source):
+    # Borderless rows, so the two affordances that replace the border have to
+    # stay distinguishable: a fill on hover, an outline on keyboard focus. A
+    # single shared rule here would leave keyboard users with no signal at all.
+    row = source[source.index("  .bl {"):]
+    row = row[:row.index("\n  .bl-title,")]
+    assert "border: none" in row and "background: none" in row
+    hover = row[row.index(".bl:hover"):]
+    hover = hover[:hover.index("\n")]
+    assert "background: var(--bg)" in hover and "outline" not in hover
+    focus = row[row.index(".bl:focus-visible"):]
+    focus = focus[:focus.index("\n")]
+    assert "outline: 2px solid var(--accent)" in focus
 
 
 def test_the_panel_asks_for_a_bounded_neighbourhood(source):

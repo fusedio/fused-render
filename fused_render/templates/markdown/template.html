@@ -395,30 +395,43 @@
      flex: none is load-bearing — flex: 1 is what made the list mostly empty. */
   #links { flex: none; max-height: 42%; min-height: 0; overflow: auto; padding: 8px; }
   #links[hidden] { display: none; }
+  /* A list, not a table of cards: no row border and no row fill, so the four
+     backlinks of a typical note read as four lines of text. The rhythm has to
+     come from the margin now that no border draws the edges. */
   .bl {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
-    gap: 6px;
+    column-gap: 7px;
     width: 100%;
     text-align: left;
     padding: 4px 7px;
-    margin-bottom: 3px;
-    border: 1px solid var(--border);
+    margin-bottom: 4px;
+    border: none;
     border-radius: 5px;
-    background: var(--bg);
+    background: none;
     color: var(--fg);
     font: inherit;
     font-size: 12px;
+    line-height: 1.35;
     cursor: pointer;
   }
-  .bl:hover { border-color: var(--accent); }
-  /* One line per backlink. The rel path shares the row because it is the only
-     thing telling two same-titled notes apart, so it may shrink but never
-     vanish; both halves ellipsize because the panel is user-resizable. */
+  /* --bg, not --bg-alt: the panel itself is already --bg-alt, so hovering to
+     that colour would be a no-op. Keyboard focus gets the outline instead of a
+     fill, because with the border gone a hover-coloured row is the only other
+     signal and the two must not look alike. */
+  .bl:hover { background: var(--bg); }
+  .bl:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  /* The rel path sits right after the title, not flush right: it is what tells
+     two same-titled notes apart, so it belongs next to the title rather than a
+     ragged gutter away. It wraps to a second line when the pair no longer fits
+     — flex-wrap breaks on content width before it shrinks anything — which is
+     kinder on a narrow panel than ellipsizing both halves into uselessness.
+     Both still clip rather than wrap again, so a row is at most two lines. */
   .bl-title,
   .bl-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bl-title { flex: 0 1 auto; font-weight: 600; }
-  .bl-path { flex: 1 1 auto; color: var(--fg-muted); font-size: 11px; text-align: right; }
+  .bl-path { flex: 0 1 auto; max-width: 100%; color: var(--fg-muted); font-size: 11px; }
   .bl-empty { color: var(--fg-muted); font-size: 12px; }
   #tags { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
