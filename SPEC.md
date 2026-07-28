@@ -2765,13 +2765,31 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   the module is the guarantee. Reading and writing a single `.md` on a mount
   stays fully supported — that is one bounded read and one bounded write, which
   is what every template already does.
-- **MD-12** **Scope is the folder you are standing in**, which matches the
-  explorer, needs no setup and mirrors Obsidian's vault. The note view defaults
-  its root to the note's own directory, overridable by a `root` param. Dotdirs
-  (`.git`, `.obsidian`) and the usual vendored trees are skipped by name.
-  *Not built:* the optional `.fused-graph.json` tuning file (root override,
-  include/exclude globs, colour groups, default depth) and gitignore-awareness
-  of the walk — both are additive, and neither is needed for the folder default.
+- **MD-12** **Scope is the vault the note sits in, found by climbing to a
+  marker.** The folder mode's scope is still the folder you are standing in,
+  which matches the explorer and needs no setup. The **note view** does not use
+  the note's own directory: that was tried and is too narrow to be useful — a
+  note in `v/docs/` linking `../spec/overview.md` got a ghost for every link
+  leaving its folder and an empty backlinks panel, because nothing outside
+  `v/docs` was ever scanned. The default root is therefore the **nearest
+  ancestor carrying a vault-root marker** — `.obsidian/`, `.fused-graph.json`,
+  or `.git` (a directory in a clone, a *file* in a worktree, so both shapes are
+  probed) — and the note's own directory when none is found. Never `$HOME`,
+  never `/`. An explicit `root` param still wins; the ascent only supplies the
+  default. **The ascent must not enumerate**: a fixed set of `isdir`/`isfile`
+  probes per level and no `listdir`/`scandir`/`walk`/`glob` anywhere, the same
+  CT-12 discipline as the folder gate and for the same reason — it runs on every
+  note opened, and it is deciding the scope of a walk. It is bounded to 8 levels
+  and stops at the filesystem root, and it **never enters a mount-backed path**
+  (MD-11): a local note living under a mounted folder must be scanned in the
+  folder it is in, not answered `mount_unsupported`. A failed mount import means
+  "cannot tell", which reads as "do not climb". A wider root makes MD-10's
+  `truncated` cap matter more, not less, so the "only the first N notes were
+  scanned" notice stays surfaced in the sidebar. Dotdirs and the usual vendored
+  trees are still skipped by name inside the walk. *Not built:* the
+  `.fused-graph.json` file's **contents** (it counts as a marker but nothing
+  reads it yet: root override, include/exclude globs, colour groups, default
+  depth) and gitignore-awareness of the walk — both additive.
 - **MD-13** **Vendoring.** One rebuild of `scripts/vendor-codemirror/` adds
   `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
   `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/

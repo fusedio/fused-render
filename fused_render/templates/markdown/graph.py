@@ -78,6 +78,109 @@ def _refuse_mounts(root: str) -> None:
             "Opening and editing a single .md file still works.")
 
 
+# ----------------------------------------------------------------- vault root
+
+# What marks the top of a vault. `.obsidian/` is Obsidian's own marker; the
+# other two are ours — the (still unbuilt) `.fused-graph.json` tuning file, and
+# `.git`, which is a DIRECTORY in a clone and a FILE in a worktree, so both
+# shapes are probed.
+VAULT_MARKERS = (".obsidian", ".fused-graph.json", ".git")
+
+# How far up the ascent may look. Deep enough for any real vault layout, and
+# shallow enough that a note in a deep temp path cannot drag the scan up to
+# $HOME by accident.
+MAX_ASCENT = 8
+
+
+def _mount_detector():
+    """`is_mount_backed`, or None when we cannot tell (MD-11's fail-closed rule)."""
+    try:
+        from fused_render.shell.mounts import is_mount_backed
+    except Exception:  # noqa: BLE001 — cannot tell -> do not ascend
+        return None
+    return is_mount_backed
+
+
+def _has_vault_marker(directory: str) -> bool:
+    """Whether `directory` carries one of VAULT_MARKERS.
+
+    A fixed set of `isdir`/`isfile` probes and NEVER a listing — the discipline
+    `graph/condition.py` documents (CT-12). A probe is constant-time however
+    many entries the level holds; a listing is proportional to them, and this
+    runs per level of the climb on every note the user opens.
+    """
+    for name in VAULT_MARKERS:
+        candidate = os.path.join(directory, name)
+        if os.path.isdir(candidate) or os.path.isfile(candidate):
+            return True
+    return False
+
+
+def vault_root(start: str) -> str:
+    """The nearest ancestor of `start` that looks like a vault root, else `start`.
+
+    The note's own folder used to be the default scan root, and it was too
+    narrow to be useful (MD-12): every link leaving the folder rendered as a
+    ghost and every inbound link from outside it was invisible, so a note in
+    `v/docs/` linking `../spec/overview.md` got a halo of grey `../…` ghosts and
+    an empty backlinks panel.
+
+    Bounded (MAX_ASCENT levels, and the filesystem root ends it either way) and
+    mount-aware: the climb never enters a mount-backed path, because a walk over
+    one is the thing MD-11 exists to prevent — and because a local note that
+    merely lives under a mounted folder should be scanned in the folder it is
+    actually in, not answered with `mount_unsupported`. Falls back to `start`
+    when no marker is found: never `$HOME`, never `/`.
+    """
+    start = os.path.abspath(start)
+    detect = _mount_detector()
+    if detect is None:
+        return start
+    try:
+        if detect(start):
+            return start  # _refuse_mounts has the last word on this one anyway
+    except Exception:  # noqa: BLE001 — cannot tell -> do not ascend
+        return start
+    current = start
+    for _ in range(MAX_ASCENT + 1):
+        if _has_vault_marker(current):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            break  # the filesystem root
+        try:
+            if detect(parent):
+                break
+        except Exception:  # noqa: BLE001 — cannot tell -> stop climbing
+            break
+        current = parent
+    return start
+
+
+def _default_root(file: str) -> str:
+    """The scan root for `file` when no explicit `root` param was given."""
+    own = os.path.dirname(os.path.abspath(file))
+    root = vault_root(own)
+    # Every candidate the ascent can return is an ancestor of the note's own
+    # folder, so this holds by construction — checked rather than assumed,
+    # because a root that did not contain the file would turn the note view into
+    # an `outside_root` error for every note in the vault.
+    if own != root and not own.startswith(root.rstrip(os.sep) + os.sep):
+        return own
+    return root
+
+
+def _coerce_depth(depth, fallback: int = 1) -> int:
+    """`depth` reaches `main` as a STRING from the template (`String(depth)`),
+    and `_neighbourhood` compares it with an int — `range(max(0, "2"))` raises.
+    Coerced at the public entry point rather than trusting every caller, and a
+    nonsense value falls back instead of throwing: this is a URL param."""
+    try:
+        return int(depth)
+    except (TypeError, ValueError):
+        return fallback
+
+
 # ------------------------------------------------------------------- parsing
 
 # A fence opener/closer: up to 3 leading spaces, then 3+ backticks or tildes.
@@ -889,7 +992,7 @@ def _error(kind: str, message: str) -> dict:
 ACTIONS = ("note", "candidates", "graph")
 
 
-def main(action: str = "note", file: str = "", root: str = "", depth: int = 1):
+def main(action: str = "note", file: str = "", root: str = "", depth=1):
     """The template's one entry point.
 
     `note` answers the note view, `candidates` the `[[` autocomplete, and
@@ -897,6 +1000,11 @@ def main(action: str = "note", file: str = "", root: str = "", depth: int = 1):
     the folder-level mode (root only). Every one of them refuses a mount-backed
     root (MD-11); reading and writing a single file is not affected, because
     that is one bounded read and one bounded write.
+
+    Without an explicit `root`, the scan root is the nearest ancestor of the
+    note carrying a vault marker (`vault_root`), falling back to the note's own
+    folder. `depth` is untyped on purpose: it arrives as a string from a URL
+    param and is coerced here (`_coerce_depth`).
     """
     if action not in ACTIONS:
         return _error("bad_action", f"unknown action {action!r}")
@@ -905,7 +1013,9 @@ def main(action: str = "note", file: str = "", root: str = "", depth: int = 1):
     if action in ("candidates", "graph") and not root and not file:
         return _error("bad_request", f"'root' is required for {action}")
 
-    root = os.path.abspath(root) if root else os.path.dirname(os.path.abspath(file))
+    # An explicit `root` always wins; the ascent only supplies the DEFAULT.
+    root = os.path.abspath(root) if root else _default_root(file)
+    depth = _coerce_depth(depth)
     try:
         _refuse_mounts(root)
     except MountUnsupported as exc:

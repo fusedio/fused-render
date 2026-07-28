@@ -13,8 +13,10 @@ depends on:
   every resolution test drives `resolve_link` against a candidate set rather
   than against anything stored.
 """
+import contextlib
 import importlib.util
 import os
+from unittest import mock
 
 import pytest
 
@@ -247,7 +249,7 @@ def test_note_reports_outbound_links_backlinks_and_ghosts(graph, tmp_path):
     assert out["backlinks"][1]["label"] == "the hub"
 
 
-def test_note_defaults_its_root_to_the_files_own_directory(graph, tmp_path):
+def test_note_falls_back_to_its_own_directory_when_no_marker_is_found(graph, tmp_path):
     root = _vault(tmp_path, {"sub/A.md": "[[B]]\n", "sub/B.md": "back to [[A]]\n"})
     out = graph.main(action="note", file=os.path.join(root, "sub", "A.md"))
     assert out["root"] == os.path.join(root, "sub")
@@ -266,6 +268,170 @@ def test_an_embed_resolves_against_the_assets_in_the_scan(graph, tmp_path):
 def test_a_missing_file_is_an_error_not_an_empty_note(graph, tmp_path):
     out = graph.main(action="note", file=str(tmp_path / "nope.md"), root=str(tmp_path))
     assert out["error"] == "not_found"
+
+
+# ------------------------------------------------------- the default scan root
+#
+# The note's own folder was the old default, and it was too narrow to be useful:
+# every link leaving the folder rendered as a ghost and every inbound link from
+# outside it was invisible (MD-12). The default now climbs to the nearest
+# ancestor carrying a vault marker — and the climb itself has to be as cheap and
+# as mount-safe as the folder gate (CT-12), which is what most of these pin.
+
+
+@contextlib.contextmanager
+def _no_enumeration():
+    """Any directory enumeration inside the ascent is a test failure.
+
+    The same discipline tests/test_graph_condition.py applies to the folder
+    gate: a fixed set of `isdir`/`isfile` probes per level is constant-time
+    however many entries a level holds, and a listing is not. Patched around the
+    CALL, because pytest's own tmp_path machinery lists directories.
+    """
+    import glob as glob_mod
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the ascent must never enumerate a directory")
+
+    with mock.patch.object(os, "listdir", forbidden), \
+            mock.patch.object(os, "scandir", forbidden), \
+            mock.patch.object(os, "walk", forbidden), \
+            mock.patch.object(glob_mod, "glob", forbidden), \
+            mock.patch.object(glob_mod, "iglob", forbidden):
+        yield
+
+
+@pytest.mark.parametrize("marker", [".obsidian/config", ".fused-graph.json", ".git/HEAD"])
+def test_the_default_root_climbs_to_the_nearest_vault_marker(graph, tmp_path, marker):
+    root = _vault(tmp_path, {
+        marker: "x\n",
+        "docs/note.md": "see [../spec/overview.md](../spec/overview.md)\n",
+        "spec/overview.md": "back to [[note]]\n",
+    })
+    with _no_enumeration():
+        chosen = graph.vault_root(os.path.join(root, "docs"))
+    assert chosen == root
+
+    # And the point of it: the cross-folder link resolves and the inbound one
+    # from a sibling folder shows up, neither of which the old default could do.
+    out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
+    assert out["root"] == root
+    assert [link["path"] for link in out["links"]] == [
+        os.path.join(root, "spec", "overview.md")]
+    assert [b["rel"] for b in out["backlinks"]] == ["spec/overview.md"]
+
+
+def test_a_git_worktree_marker_is_a_file_not_a_directory(graph, tmp_path):
+    # `.git` is a directory in a clone and a FILE in a worktree, and this repo is
+    # checked out as one — probing only for a directory would miss it.
+    root = _vault(tmp_path, {".git": "gitdir: /elsewhere\n", "docs/note.md": "x\n"})
+    with _no_enumeration():
+        assert graph.vault_root(os.path.join(root, "docs")) == root
+
+
+def test_the_marker_can_be_several_levels_up(graph, tmp_path):
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "a/b/c/d/note.md": "x\n"})
+    with _no_enumeration():
+        assert graph.vault_root(os.path.join(root, "a", "b", "c", "d")) == root
+
+
+def test_the_climb_is_bounded_and_gives_up_rather_than_reaching_the_top(graph, tmp_path):
+    # Nine levels below the marker: past the bound, so the note's own folder
+    # wins. Never $HOME and never `/` — a runaway ascent would put a scan of
+    # someone's whole home directory behind opening one note.
+    deep = "/".join(["l%d" % n for n in range(9)])
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", deep + "/note.md": "x\n"})
+    start = os.path.join(root, *deep.split("/"))
+    with _no_enumeration():
+        assert graph.vault_root(start) == start
+    # One level shallower is inside the bound, which is what makes the bound the
+    # thing being tested rather than the tree shape.
+    assert graph.vault_root(os.path.dirname(start)) == root
+
+
+def test_the_climb_stops_at_a_mount_boundary(graph, tmp_path, monkeypatch):
+    """A remote mount must not become the scan root through the ascent (MD-11).
+
+    The refusal in `_refuse_mounts` would catch it afterwards, but then opening a
+    perfectly local note under a mounted folder would answer `mount_unsupported`
+    instead of scanning the folder it is actually in.
+    """
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
+    start = os.path.join(root, "docs")
+    assert graph.vault_root(start) == root  # the control: same tree, no mount
+
+    from fused_render.shell import mounts
+
+    # Only the ancestor is mount-backed: `is_mount_backed` is prefix-based, so a
+    # real mounts dir at `root` would make `start` mount-backed too and the test
+    # would prove the wrong thing.
+    monkeypatch.setattr(
+        mounts, "is_mount_backed", lambda path: os.path.abspath(path) == root)
+    with _no_enumeration():
+        assert graph.vault_root(start) == start
+
+
+def test_an_unavailable_mount_detector_does_not_climb(graph, tmp_path, monkeypatch):
+    # "Cannot tell" reads as "do not ascend", the same way the gate and
+    # `_refuse_mounts` read it as "refuse".
+    import builtins
+
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "fused_render.shell.mounts":
+            raise ImportError("blocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert graph.vault_root(os.path.join(root, "docs")) == os.path.join(root, "docs")
+
+
+def test_an_explicit_root_still_wins_over_the_marker(graph, tmp_path):
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
+    out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"),
+                     root=os.path.join(root, "docs"))
+    assert out["root"] == os.path.join(root, "docs")
+
+
+def test_the_chosen_root_always_contains_the_note(graph, tmp_path, monkeypatch):
+    # The invariant every `rel` depends on: a root that did not contain the file
+    # would turn the note view into an `outside_root` error. Checked rather than
+    # assumed, so a change to the ascent cannot break it silently.
+    root = _vault(tmp_path, {"docs/note.md": "x\n"})
+    monkeypatch.setattr(graph, "vault_root", lambda start: str(tmp_path / "elsewhere"))
+    out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
+    assert out["error"] is None
+    assert out["root"] == os.path.join(root, "docs")
+
+
+def test_a_wider_root_still_reports_the_file_cap(graph, tmp_path, monkeypatch):
+    # A wider default root makes MAX_FILES matter more, not less — so the notice
+    # the sidebar renders has to keep coming back (MD-10).
+    files = {".obsidian/app.json": "{}", "docs/note.md": "x\n"}
+    files.update({"other/n%d.md" % n: "x\n" for n in range(6)})
+    root = _vault(tmp_path, files)
+    real = graph.scan_indexed
+    monkeypatch.setattr(graph, "scan_indexed", lambda where: real(where, max_files=3))
+    out = graph.main(action="note", file=os.path.join(root, "docs", "note.md"))
+    assert out["root"] == root
+    assert out["truncated"] is True
+    assert out["notes"] == 3
+
+
+def test_main_coerces_a_string_depth(graph, chain):
+    """`depth` arrives from the template as `String(graphDepth())`, and
+    `_neighbourhood` compares it with an int — `range(max(0, "2"))` raises."""
+    root = chain
+    focus = os.path.join(root, "A.md")
+    out = graph.main(action="graph", file=focus, root=root, depth="2")
+    assert out["error"] is None
+    assert out["depth"] == 2
+    assert out["nodes"] == graph.main(
+        action="graph", file=focus, root=root, depth=2)["nodes"]
+    # Nonsense falls back rather than throwing: this is a URL param.
+    assert graph.main(action="graph", file=focus, root=root, depth="x")["depth"] == 1
 
 
 # ------------------------------------------------------------ mount refusal
