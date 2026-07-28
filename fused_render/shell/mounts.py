@@ -232,7 +232,7 @@ def _effective_serve_read_only(m: dict) -> bool:
     THAT, not the record. With no live mount there is no VFS to share yet — the
     next attach will bake the record's read_only — so fall back to the record
     (also the legacy/foreign case where mounted_read_only was never recorded)."""
-    if m.get("mounted_read_only") is not None and os.path.ismount(mountpoint(m)):
+    if m.get("mounted_read_only") is not None and _ismount(mountpoint(m)):
         return bool(m.get("mounted_read_only"))
     return bool(m.get("read_only"))
 
@@ -307,7 +307,9 @@ def _path() -> str:
 
 
 def mounts_dir() -> str:
-    return os.path.join(storage.home_dir(), "mounts")
+    # normpath: expanduser("~/...") on Windows keeps its forward slash, and a
+    # mixed-separator mountpoint never string-matches rcd's normalized paths.
+    return os.path.normpath(os.path.join(storage.home_dir(), "mounts"))
 
 
 def ensure_mounts_dir() -> str:
@@ -357,6 +359,35 @@ _store_lock = threading.Lock()
 
 def mountpoint(m: dict) -> str:
     return os.path.join(mounts_dir(), m["name"])
+
+
+# stat exposes this only on Windows builds; fall back to the winnt.h literal.
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat_mod, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def _ismount(mp: str) -> bool:
+    """os.path.ismount plus the WinFsp mounts it misses on win32: ntpath.ismount
+    resolves their reparse point to a Volume{...} device and returns False, or
+    raises WinError 123 when the backing device is gone (a disconnected mount) —
+    still a reparse point, so the lstat check below detects it and lets reconnect
+    heal it."""
+    try:
+        if os.path.ismount(mp):
+            return True
+    except OSError:
+        pass
+    if sys.platform != "win32":
+        return False
+    try:
+        st = os.lstat(mp)
+    except OSError:
+        return False
+    if getattr(st, "st_reparse_tag", 0) != _IO_REPARSE_TAG_MOUNT_POINT:
+        return False
+    try:
+        return "Volume{" in os.readlink(mp)
+    except OSError:
+        return False
 
 
 def add_mount(name: str, remote: str, read_only: bool | None = None) -> dict:
@@ -550,10 +581,24 @@ def _register_rcd(pid: int, port: int, auth: tuple[str, str] | None = None) -> N
 
 
 def _pid_alive(pid: int) -> bool:
-    """True if a process with `pid` currently exists. Signal 0 probes without
-    delivering anything; EPERM means it exists but is owned by someone else."""
+    """True if `pid` names a running process."""
     if not pid or pid <= 0:
         return False
+    if sys.platform == "win32":
+        # os.kill(pid, 0) (OpenProcess) keeps succeeding for an exited process
+        # whose handle is still held (e.g. the supervisor Job Object), so read
+        # the exit code instead: 259 == STILL_ACTIVE means running.
+        import ctypes
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -860,19 +905,25 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
 # it lists, so an un-memoized probe is up to ~3s of pure overhead per dir. Cache
 # the verified port for a short TTL, keyed on the recorded (port, pid): a new
 # daemon writes a new state (different key) and is picked up at once, while a
-# burst of calls within the window shares one probe. Only a SUCCESSFUL probe is
-# cached — "rcd down" always re-probes (a refused connection is cheap), so the
-# daemon coming up is never masked. The short TTL keeps liveness detection: a
-# daemon that dies is noticed within _LIVE_PORT_TTL_S.
+# burst of calls within the window shares one probe. The short TTL keeps
+# liveness detection: a daemon that dies is noticed within _LIVE_PORT_TTL_S.
+# Failed probes are cached too (longer TTL): a Windows connect to a dead port
+# stalls ~2s and a stale rcd.json starts every boot, which un-cached starved the
+# readiness probe into "did not become ready"; the spawn path re-probes.
 _LIVE_PORT_TTL_S = 1.0
+_DEAD_PORT_TTL_S = 5.0
 _live_port_lock = threading.Lock()
-_live_port_cache: tuple | None = None  # ((port, pid), port, monotonic expiry)
+_live_port_cache: tuple | None = None  # ((port, pid), port|None, monotonic expiry)
 
 
-def _live_rcd_port() -> int | None:
+def _live_rcd_port(*, trust_dead_cache: bool = True) -> int | None:
     """The recorded daemon's port iff it answers core/pid; never spawns.
-    Memoized for _LIVE_PORT_TTL_S per recorded (port, pid) so a walk over many
-    directories doesn't re-probe core/pid for every listing."""
+    Memoized per recorded (port, pid) — _LIVE_PORT_TTL_S for a live answer,
+    _DEAD_PORT_TTL_S for a failed probe — so neither a walk over many
+    directories nor a UI polling status re-probes core/pid per call.
+    trust_dead_cache=False skips the cached miss and re-probes: the spawn path
+    must not start a duplicate daemon over a live one that merely had a probe
+    time out."""
     global _live_port_cache
     state = storage.read_json(_rcd_state_path())
     if not isinstance(state, dict) or not state.get("port"):
@@ -882,10 +933,20 @@ def _live_rcd_port() -> int | None:
     with _live_port_lock:
         c = _live_port_cache
         if c is not None and c[0] == key and c[2] > now:
-            return c[1]
+            if c[1] is not None or trust_dead_cache:
+                return c[1]
     try:
         _rc(state["port"], "core/pid", timeout=3)
     except RuntimeError:
+        with _live_port_lock:
+            c = _live_port_cache
+            # A concurrent probe may have cached a live hit while ours timed
+            # out — trust it rather than blacking out a healthy daemon for
+            # the whole dead TTL.
+            if (c is not None and c[0] == key and c[1] is not None
+                    and c[2] > time.monotonic()):
+                return c[1]
+            _live_port_cache = (key, None, now + _DEAD_PORT_TTL_S)
         return None
     with _live_port_lock:
         _live_port_cache = (key, state["port"], now + _LIVE_PORT_TTL_S)
@@ -983,7 +1044,7 @@ def ensure_rcd() -> int:
 
 
 def _ensure_rcd_locked() -> int:
-    port = _live_rcd_port()
+    port = _live_rcd_port(trust_dead_cache=False)
     if port is not None:
         return port
     # About to spawn a fresh daemon — a natural, rare moment to opportunistically
@@ -1079,19 +1140,24 @@ def _kill_current_rcd() -> None:
         raise RuntimeError(
             f"refusing to kill pid {pid}: not confirmed to be our rclone rcd"
         )
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    # SIGKILL is absent on Windows; SIGTERM there maps to TerminateProcess.
+    sigs = (signal.SIGTERM,) if sys.platform == "win32" else (signal.SIGTERM, signal.SIGKILL)
+    for sig in sigs:
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
             return  # raced us and exited between the check and the signal
         except OSError as e:
+            # Windows signals the same race as a bare OSError, not ProcessLookupError.
+            if not _pid_alive(pid):
+                return
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
         deadline = time.time() + _KILL_TIMEOUT_S
         while time.time() < deadline:
             if _live_rcd_port() is None and not _pid_alive(pid):
                 return  # daemon gone
             time.sleep(0.1)
-    raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+    raise RuntimeError(f"rcd pid {pid} did not exit after {sigs[-1].name}")
 
 
 def stop_local_rcd() -> None:
@@ -1177,7 +1243,10 @@ def rcd_mount_map() -> dict:
         listed = _rc(port, "mount/listmounts").get("mountPoints", [])
     except RuntimeError:
         return {}
-    return {m.get("MountPoint"): m.get("Fs") for m in listed if isinstance(m, dict)}
+    # normpath the keys so membership tests against mountpoint() compare like
+    # with like whatever separator form rclone reports.
+    return {os.path.normpath(m["MountPoint"]): m.get("Fs")
+            for m in listed if isinstance(m, dict) and m.get("MountPoint")}
 
 
 def mounted_paths() -> set:
@@ -3474,10 +3543,10 @@ _MOUNT_ATTACH_POLL_S = 0.1
 
 
 def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
-    """True once os.path.ismount(mp) holds within `deadline` seconds, else False."""
+    """True once _ismount(mp) holds within `deadline` seconds, else False."""
     end = time.monotonic() + deadline
     while True:
-        if os.path.ismount(mp):
+        if _ismount(mp):
             return True
         if time.monotonic() >= end:
             return False
@@ -3487,6 +3556,16 @@ def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
 def _mount_wedged(mp: str) -> bool:
     # True when mp is a mountpoint whose backend process is gone: the kernel
     # still holds the mount, so the path exists, but every stat on it fails.
+    if sys.platform == "win32":
+        # A dead WinFsp mount keeps its volume reparse point while the volume
+        # query behind ntpath.ismount fails (WinError 123) — _ismount swallows
+        # that raise to stay True for reconnect's heal path, so the wedge
+        # signature must be re-derived here for state classification.
+        try:
+            os.path.ismount(mp)
+        except OSError:
+            return os.path.lexists(mp)
+        return False
     try:
         os.lstat(mp)
     except OSError as e:
@@ -3497,12 +3576,13 @@ def _mount_wedged(mp: str) -> bool:
 
 
 def _is_mounted(mp: str) -> bool:
-    # os.path.ismount, but it also sees wedged mounts. posixpath.ismount
-    # swallows the OSError from lstat and reports False for a mountpoint whose
-    # FUSE daemon died (ENOTCONN) — precisely the state reconnect exists to
-    # repair, so the bare predicate skips the force-unmount and then crashes in
-    # attach_mount's makedirs.
-    return os.path.ismount(mp) or _mount_wedged(mp)
+    # _ismount (not the bare os.path.ismount: WinFsp reparse mounts read False
+    # there), plus wedged mounts. posixpath.ismount swallows the OSError from
+    # lstat and reports False for a mountpoint whose FUSE daemon died
+    # (ENOTCONN) — precisely the state reconnect exists to repair, so the bare
+    # predicate skips the force-unmount and then crashes in attach_mount's
+    # makedirs.
+    return _ismount(mp) or _mount_wedged(mp)
 
 
 def attach_mount(m: dict) -> str | None:
@@ -3521,8 +3601,17 @@ def attach_mount(m: dict) -> str | None:
     # EMPTY leaf a previous mount left behind (os.rmdir succeeds only when empty)
     # and refuse a non-empty leaf rather than delete a user's files. If the leaf
     # is already a live mount we leave it for the adopt/reconcile path below.
+    if _mount_wedged(mp):
+        # Nothing can be mounted over a path whose backend is gone: on POSIX
+        # makedirs' exist_ok check can't recognise it as a directory and
+        # raises FileExistsError; on win32 the dead reparse point would pass
+        # _ismount below and be silently adopted as a live mount.
+        # reconnect_mount clears this before re-attaching; anyone else
+        # (automount, a plain mount) is told to.
+        return (f"mountpoint {mp} is wedged — its backend is gone; "
+                f"reconnect the mount to repair it")
     if sys.platform == "win32":
-        if os.path.isdir(mp) and not os.path.ismount(mp):
+        if os.path.isdir(mp) and not _ismount(mp):
             try:
                 os.rmdir(mp)
             except FileNotFoundError:
@@ -3539,16 +3628,8 @@ def attach_mount(m: dict) -> str | None:
                 # actual failure instead of misblaming it on non-emptiness.
                 return f"could not clear stale mountpoint {mp}: {e}"
     else:
-        if _mount_wedged(mp):
-            # Nothing can be mounted over a path whose stat fails: makedirs'
-            # exist_ok check can't recognise it as a directory and raises
-            # FileExistsError, violating this function's error-string contract.
-            # reconnect_mount clears this before re-attaching; anyone else
-            # (automount, a plain mount) is told to.
-            return (f"mountpoint {mp} is wedged — its backend is gone; "
-                    f"reconnect the mount to repair it")
         os.makedirs(mp, exist_ok=True)
-    if os.path.ismount(mp):
+    if _ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
         # deleted mount of the same name would otherwise pass for the
         # new remote. rcd knows the fs of every mount it serves; a mismatch
@@ -3622,7 +3703,11 @@ def attach_mount(m: dict) -> str | None:
         params = {
             "fs": m["remote"],
             "mountPoint": mp,
-            "mountType": "nfsmount" if sys.platform == "darwin" else "mount",
+            "mountType": (
+                "nfsmount" if sys.platform == "darwin"
+                else "cmount" if sys.platform == "win32"
+                else "mount"
+            ),
             # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
             # read-only remote's VFS rejects writes instead of caching them for
             # a forever-retried upload (see _vfs_opt_for).
@@ -3637,13 +3722,12 @@ def attach_mount(m: dict) -> str | None:
             params["mountOpt"] = _nfs_mount_opt(m)
         # win32 only: force WinFsp DISK mode (NetworkMode off). rclone defaults
         # Windows mounts to network-redirector mode, which does NOT create a
-        # volume mount point — so Python's os.path.ismount (backed by
-        # GetVolumePathName) never sees the mount. Every win32 detection path
-        # here leans on ismount: the _await_ismount verify below would fail a
-        # SUCCESSFUL mount, and a retry could then mistake the live mount's
-        # contents for a non-empty leaf (or the force-unmount poll / mount_state
-        # would call a live mount dead). Disk mode makes a real volume mount
-        # point that ismount detects. Like the darwin mountOpt, NetworkMode is a
+        # mount point at the leaf at all. Every win32 detection path here leans
+        # on _ismount: the _await_ismount verify below would fail a SUCCESSFUL
+        # mount, and a retry could then mistake the live mount's contents for a
+        # non-empty leaf (or the force-unmount poll / mount_state would call a
+        # live mount dead). Disk mode creates the volume-device reparse point
+        # that _ismount detects. Like the darwin mountOpt, NetworkMode is a
         # transport option, NOT a vfs option, so it does not affect the
         # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
         # serve.
@@ -3702,7 +3786,7 @@ def _quit_tile_daemons() -> None:
             continue
 
 
-# How long the win32 force-unmount polls os.path.ismount before giving up,
+# How long the win32 force-unmount polls _ismount before giving up,
 # mirroring the 15 s timeout each POSIX umount attempt below gets.
 _FORCE_UNMOUNT_WIN32_BUDGET_S = 15.0
 
@@ -3715,20 +3799,38 @@ def _force_unmount(mp: str) -> str | None:
     # win32 has no `umount` and no per-mount kernel detach. A WinFsp mount is
     # backed by rcd's serving process and vanishes the instant that process dies
     # — so process teardown, not a shell-out, IS the force-unmount. We do NOT
-    # kill rcd here: that would tear down EVERY mount it serves, and the shared
-    # kill path (_kill_current_rcd) is POSIX-only anyway — it escalates through
-    # signal.SIGKILL, which does not exist on Windows. So the win32 branch simply
-    # polls os.path.ismount within the same budget the POSIX ladder gets and
+    # kill rcd here: that would tear down EVERY mount it serves. So the win32
+    # branch simply polls _ismount within the same budget the POSIX ladder gets and
     # reports success once the reparse point is gone (rcd already exited /
     # unmounted), else an honest failure — there is nothing else safe to try.
     if sys.platform == "win32":
         deadline = time.time() + _FORCE_UNMOUNT_WIN32_BUDGET_S
         while True:
-            if not os.path.ismount(mp):
+            if not _ismount(mp):
                 return None
-            if time.time() >= deadline:
+            if _mount_wedged(mp) or time.time() >= deadline:
                 break
             time.sleep(0.1)
+        if _mount_wedged(mp):
+            # Orphaned reparse point — its volume device is gone, so nothing
+            # serves it and waiting cannot help. RemoveDirectory deletes the
+            # reparse point itself (junction semantics: no recursion, no
+            # privileges); DeleteVolumeMountPointW is the canonical fallback.
+            try:
+                os.rmdir(mp)
+            except OSError:
+                pass
+            if not _is_mounted(mp):
+                return None
+            try:
+                import ctypes
+                ctypes.windll.kernel32.DeleteVolumeMountPointW(mp.rstrip("\\") + "\\")
+                os.rmdir(mp)
+            except (OSError, AttributeError):
+                pass
+            if not _is_mounted(mp):
+                return None
+            return f"force unmount of {mp} failed: orphaned mountpoint could not be removed"
         return (f"force unmount of {mp} is not possible on Windows while rclone "
                 f"still serves it — disconnect the mount (or quit) to clear it")
     attempts = [["umount", mp]]
@@ -3766,7 +3868,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
     if port is None:
         # No daemon: nothing rcd-owned to unmount. A foreign mount at the
         # path (pre-rcd prototype, manual rclone) is not ours to force.
-        if os.path.ismount(mp):
+        if _ismount(mp):
             if force:
                 return _force_unmount(mp)
             return ("mounted outside the app (no rclone daemon running) — "
@@ -3782,7 +3884,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         # Linux both say "busy"); on any other failure quitting them would
         # tear down previews of unrelated LOCAL files for nothing.
         if "busy" not in str(e).lower():
-            if force and os.path.ismount(mp):
+            if force and _ismount(mp):
                 return _force_unmount(mp)
             return f"unmount failed: {e}"
     _quit_tile_daemons()
@@ -3791,7 +3893,7 @@ def detach_mount(m: dict, force: bool = False) -> str | None:
         _rc(port, "mount/unmount", params)
         return None
     except RuntimeError as e:
-        if force and os.path.ismount(mp):
+        if force and _ismount(mp):
             return _force_unmount(mp)
         return f"unmount failed (a preview may still hold a file open): {e}"
 
@@ -4032,9 +4134,13 @@ def learn_zip_path() -> str | None:
     FUSED_RENDER_LEARN_ZIP overrides for dev/testing (a dev checkout has the
     loose learn/ dir, not a zip — build_dmg.sh only creates the zip at DMG
     build time). Packaged (same sys.frozen check as rclone_bin) it lives at
-    Contents/Resources/learn.zip (build_dmg.sh step 4e). Existence-checked
-    either way so a stale env var or a hand-pruned bundle yields None, not a
-    mount record pointing at nothing."""
+    Contents/Resources/learn.zip (build_dmg.sh step 4e) on macOS; on the
+    Windows/Linux payload layouts it sits next to the bundled runtime
+    (payload/python/pythonw.exe -> payload/assets/learn.zip), resolved from
+    sys.executable so the server finds it without depending on the
+    supervisor-injected env var. Existence-checked either way so a stale env
+    var or a hand-pruned bundle yields None, not a mount record pointing at
+    nothing."""
     override = os.environ.get("FUSED_RENDER_LEARN_ZIP")
     if override:
         return override if os.path.isfile(override) else None
@@ -4043,6 +4149,10 @@ def learn_zip_path() -> str | None:
         bundled = os.path.join(contents, "Resources", "learn.zip")
         if os.path.isfile(bundled):
             return bundled
+    runtime_root = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    adjacent = os.path.join(runtime_root, "assets", "learn.zip")
+    if os.path.isfile(adjacent):
+        return adjacent
     return None
 
 
@@ -4055,9 +4165,11 @@ def ensure_learn_mount() -> None:
     from a user-created mount that happens to be named "learn" — that user
     mount is never touched. The remote embeds the zip's absolute path inside
     the app bundle, which changes across versions/relocations, so an existing
-    record's remote is refreshed every startup; with no zip (dev checkout,
-    downgrade) the builtin record is removed so it can't linger as a broken
-    mount in the UI. read_only_user pins the flag: the archive backend is
+    record's remote is refreshed every startup; the record is removed only
+    when the zip it points at is actually gone (uninstall, downgrade) so it
+    can't linger as a broken mount in the UI — a process that merely can't
+    RESOLVE a zip (a dev checkout sharing the real home) leaves a valid
+    record alone. read_only_user pins the flag: the archive backend is
     inherently read-only, and pinning keeps attach-time detection from ever
     reconsidering it — mount, serve, and kernel all get read-only baked in
     via the existing read_only plumbing.
@@ -4099,7 +4211,12 @@ def ensure_learn_mount() -> None:
                 (m for m in mounts if m.get("builtin") == LEARN_MOUNT_NAME), None
             )
             if path is None:
-                if builtin is not None:
+                # Removal is gated on the RECORD's zip being gone from disk,
+                # not on this process failing to resolve one: a dev-checkout
+                # server sharing the real home resolves nothing but must not
+                # delete the packaged app's perfectly valid record.
+                if builtin is not None and not os.path.isfile(
+                        builtin["remote"].partition(":archive:")[2]):
                     old_remote = builtin["remote"]
                     _write([m for m in mounts if m is not builtin])
                     detach_target = (builtin, old_remote)
@@ -4164,7 +4281,7 @@ def learn_mount_ready() -> bool:
     if builtin is None:
         return False
     mp = mountpoint(builtin)
-    return mp in mounted_paths() and os.path.ismount(mp)
+    return mp in mounted_paths() and _ismount(mp)
 
 
 def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
@@ -4221,11 +4338,11 @@ def _force_detach_learn_mount(builtin: dict, old_remote: str) -> None:
     kernel mount is already gone) — mirror that same follow-up call here."""
     try:
         mp = mountpoint(builtin)
-        live = mp in mounted_paths() or os.path.ismount(mp)
+        live = mp in mounted_paths() or _ismount(mp)
         port = _live_rcd_port()
         if live:
             detach_mount(builtin, force=True)
-            if os.path.ismount(mp):
+            if _ismount(mp):
                 _force_unmount(mp)
                 if port is not None:
                     try:
@@ -4409,7 +4526,7 @@ def run_automount() -> None:
         live = mounted_paths()
         for m in mounts:
             mp = mountpoint(m)
-            if mp in live and not os.path.ismount(mp):
+            if mp in live and not _ismount(mp):
                 # Split-brain: rcd lists the mount but the kernel dropped it.
                 # mount/mount over rcd's own stale entry would fail — leave it
                 # for mount_state to surface as "stale" and Reconnect to heal.
@@ -4858,11 +4975,11 @@ def delete_mount(cid: str, x_fused: str | None = Header(default=None)):
         )
     err = detach_mount(m)
     mp = mountpoint(m)
-    if err and os.path.ismount(mp):
+    if err and _ismount(mp):
         # Deleting the record while the filesystem is still mounted would
         # strand a live mount (and let a re-added name silently reuse it).
         return JSONResponse({"error": f"not deleted — {err}"}, status_code=502)
-    if os.path.isdir(mp) and not os.path.ismount(mp) and not os.listdir(mp):
+    if os.path.isdir(mp) and not _ismount(mp) and not os.listdir(mp):
         os.rmdir(mp)
     remove_mount(cid)
     sync_serves()  # stop the deleted mount's HTTP serve, drop its map entry

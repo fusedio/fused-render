@@ -48,7 +48,7 @@ class _FakePopen:
 def spawn(monkeypatch):
     _FakePopen.calls = []
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
-    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda: None)  # force a spawn
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda *a, **k: None)  # force a spawn
     monkeypatch.setattr(mounts_mod.subprocess, "Popen", _FakePopen)
     seen = []
 

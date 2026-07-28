@@ -193,6 +193,32 @@ begin
     RaiseException('The previous FusedRender payload could not be recovered.');
 end;
 
+procedure KillPayloadStragglers();
+var
+  Locator, WMI, Results: Variant;
+  Pattern: String;
+  I: Integer;
+begin
+  { Detached workers (template daemons, rclone rcd) outlive the app and hold
+    payload\ locked; old payloads' --shutdown-for-upgrade exits 0 without
+    sweeping them when no supervisor is running. Best-effort: a WMI failure
+    just leaves RenameWithRetry to ride out whatever survives. }
+  try
+    Pattern := ExpandConstant('{app}\');
+    StringChangeEx(Pattern, '\', '\\', True);
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    WMI := Locator.ConnectServer('.', 'root\CIMV2');
+    Results := WMI.ExecQuery(Format(
+      'SELECT * FROM Win32_Process WHERE ExecutablePath LIKE ''%s%%''', [Pattern]));
+    for I := 0 to Results.Count - 1 do
+      try
+        Results.ItemIndex(I).Terminate(1);
+      except
+      end;
+  except
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
@@ -203,7 +229,9 @@ begin
   begin
     RecoverPayload();
     if not ShutdownSupervisor() then
-    Result := 'FusedRender could not be stopped. Exit it from the tray and retry setup.';
+      Result := 'FusedRender could not be stopped. Exit it from the tray and retry setup.'
+    else
+      KillPayloadStragglers();
   end;
 end;
 
@@ -242,7 +270,9 @@ function InitializeUninstall(): Boolean;
 begin
   RecoverPayload();
   Result := ShutdownSupervisor();
-  if not Result then
+  if Result then
+    KillPayloadStragglers()
+  else
     MsgBox('FusedRender could not be stopped. Exit it from the tray and retry uninstall.',
       mbError, MB_OK);
 end;

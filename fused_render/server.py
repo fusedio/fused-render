@@ -3894,13 +3894,29 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.get("/render")
     def render(path: str):
-        if not os.path.isfile(path):
+        if not _is_file_mount_safe(path):
             return _error(f"no such file: {path}", status=404)
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                html = f.read()
-        except OSError as e:
-            return _error(f"cannot read {path}: {e}", status=400)
+        # Mount-backed pages read through the rclone serve like /api/fs/raw:
+        # the kernel mount's first cold read can fail (EINVAL) mid-warmup.
+        upstream = shell_mounts.serve_url_for(path)
+        if upstream is not None:
+            try:
+                with urllib.request.urlopen(upstream, timeout=120) as r:
+                    html = r.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as e:
+                e.close()
+                return _error(f"cannot read {path}: HTTP {e.code}",
+                              status=404 if e.code == 404 else 400)
+            except OSError:
+                return _error("mount serve unavailable", status=503)
+        elif shell_mounts.is_mount_backed(path):
+            return _error("mount serve unavailable", status=503)
+        else:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    html = f.read()
+            except OSError as e:
+                return _error(f"cannot read {path}: {e}", status=400)
 
         # Always inject the runtime.
         injection = '<script src="/static/runtime.js"></script>'
