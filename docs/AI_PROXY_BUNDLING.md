@@ -122,11 +122,27 @@ couple of seconds, and offer Cancel while waiting.
 
 ## Preferences UI
 
-A new **"AI accounts"** section following the house idiom exactly — a
-`<section className="prefs-section">` with an `<h2>`, a `.deploy-muted` explainer,
-per-section `busy`/`error` state, and an `ErrorBanner` (`Preferences.tsx`). It
-lists connected accounts with provider and email, a Connect button per provider,
-and Disconnect per account behind a `window.confirm` like Account.tsx's Forget.
+Follows the house idiom exactly — `<section className="prefs-section">` with an
+`<h2>`, a `.deploy-muted` explainer, per-control `busy`/`error` state, and
+`ErrorBanner` on failure. There is no shared Section/Row/Toggle component
+library: every section in `Preferences.tsx` is a bespoke function component
+sharing only CSS classes, so a new one matches by following that shape rather
+than by importing anything. Styles are plain global CSS in `frontend/src/shell.css`
+(prefs classes from ~:3594) — no CSS modules, no Tailwind.
+
+The connect flow reuses an existing hook rather than inventing one: `lib/account.ts`'s
+`useFusedLogin` is already exactly this shape (begin → `window.open` the URL →
+poll every 2s → surface "waiting for the browser" with a Cancel, and reconcile a
+completion that races the cancel). The AI version is that pattern pointed at our
+routes. `views/Account.tsx`'s environments table is the model for the account list
+with a per-row destructive action, including the `window.confirm` before removal.
+
+Note `PUT /api/prefs` returns the **whole fresh `Prefs`** and each control bubbles
+it up via `onChange`, so there is no client-side merge; and every mutating call
+must send `X-Fused: 1` or the server 403s (`mutateJson` in `lib/api.ts` does this).
+Since accounts are an external OAuth surface rather than a simple stored toggle,
+they get their own router module in the shape of `account.py` instead of new keys
+on `/api/prefs` — `prefs.py`'s `ai_base_url()` stays the read-only plumbing it is.
 
 Scope is **Claude and ChatGPT only** for now, though the proxy also speaks Gemini,
 Kimi, xAI and Antigravity — the two that matter are the two most users already
