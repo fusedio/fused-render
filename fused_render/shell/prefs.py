@@ -48,6 +48,7 @@ router = APIRouter()
 VALID_ENGINES = ("builtin", "fused")
 VALID_CALLS_PARAMS = ("full", "keys", "off")
 DEFAULT_CALLS_RETENTION_DAYS = 14
+DEFAULT_AI_BASE_URL = "http://127.0.0.1:8317"
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -132,6 +133,20 @@ def calls_retention_days() -> int:
     if isinstance(value, int) and 0 <= value <= 3_650:
         return value
     return DEFAULT_CALLS_RETENTION_DAYS
+
+
+def ai_base_url() -> str:
+    """Base URL of the local OpenAI-compatible proxy /api/ai relays to.
+
+    `FUSED_RENDER_AI_BASE_URL` is the process-level override (same precedence
+    discipline as FUSED_RENDER_ENGINE); otherwise the persisted `ai_base_url`
+    pref, defaulting to the CLI proxy's standard local port. No Preferences UI
+    yet — the pref is read-only plumbing for the /api/ai relay (MVP)."""
+    forced = os.environ.get("FUSED_RENDER_AI_BASE_URL")
+    if forced:
+        return forced
+    value = read_prefs().get("ai_base_url")
+    return value if isinstance(value, str) and value else DEFAULT_AI_BASE_URL
 
 
 def fused_engine_available() -> bool:
