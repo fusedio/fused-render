@@ -166,6 +166,16 @@ def test_a_rendered_checkbox_writes_back_and_is_locked_when_read_only(source):
 
 # ------------------------------------------------------- graph panel (MD-19)
 
+SHARED_CANVAS = os.path.join(
+    os.path.dirname(__file__), "..", "fused_render", "templates", "shared",
+    "graph-canvas.js")
+
+
+@pytest.fixture(scope="module")
+def canvas_source():
+    with open(SHARED_CANVAS, encoding="utf-8") as handle:
+        return handle.read()
+
 
 def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
     assert 'fused.params.set("graph"' in source
@@ -175,24 +185,35 @@ def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
 
 def test_the_panel_asks_for_a_bounded_neighbourhood(source):
     body = source[source.index("async function loadGraph"):]
-    body = body[:body.index("\n    function neighbours")]
+    body = body[:body.index("\n    document.getElementById(\"toggle-graph\")")]
     assert 'action: "graph"' in body
     assert "depth: String(graphDepth())" in body
+    # A refused root is reported, not drawn as an empty graph.
+    assert "graphNoteEl.textContent = data.message" in body
 
 
-def test_graph_colours_are_read_at_draw_time_not_baked(source):
+def test_both_graph_surfaces_share_one_canvas_implementation(source, canvas_source):
+    # Extracted when the second surface appeared, so the sim and the
+    # interaction rules cannot drift into two versions.
+    assert '/template-shared/graph-canvas.js' in source
+    assert "fusedGraph.create({" in source
+    assert "window.fusedGraph = { create: create };" in canvas_source
+
+
+def test_graph_colours_are_read_at_draw_time_not_baked(canvas_source):
     # var() cannot resolve inside a canvas fillStyle, so a theme flip has to
     # redraw with freshly-read tokens (SPEC §30).
-    assert "function token(name)" in source
-    assert "getPropertyValue(name)" in source
-    assert 'attributeFilter: ["data-theme"] });' in source
+    assert "function token(name)" in canvas_source
+    assert "getPropertyValue(name)" in canvas_source
+    assert 'attributeFilter: ["data-theme"] });' in canvas_source
 
 
-def test_the_graph_behaviours_obsidian_has_are_present(source):
-    assert "function radius(node)" in source          # radius ∝ degree
-    assert "const labels = G.zoom > 0.75" in source    # labels fade past a zoom
-    assert "node.pinned = true" in source              # drag-to-pin
-    assert "neighbours(G.hover)" in source             # hover highlighting
+def test_the_graph_behaviours_obsidian_has_are_present(canvas_source):
+    assert "function radius(node)" in canvas_source          # radius from degree
+    assert "var labels = zoom > 0.75" in canvas_source       # labels fade
+    assert "drag.pinned = true" in canvas_source             # drag-to-pin
+    assert "neighbours(hover)" in canvas_source              # hover highlighting
+    assert "[3, 3]" in canvas_source                         # dashed ghost edges
 
 
 def test_a_saved_note_refreshes_the_open_graph(source):

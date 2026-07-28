@@ -521,6 +521,11 @@ def _connect(root: str):
     path = index_path(root)
     real = os.path.realpath(root)
     for attempt in (0, 1):
+        # Bound BEFORE the try: `os.makedirs` and `sqlite3.connect` can both
+        # fail (an unwritable home, a directory where the db should be), and the
+        # except branch below closes `conn` — an unbound name there would turn a
+        # cache miss into a NameError escaping into the caller's run.
+        conn = None
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             conn = sqlite3.connect(path)
@@ -541,10 +546,11 @@ def _connect(root: str):
                 conn.commit()
             return conn
         except Exception:  # noqa: BLE001 — a cache failure is never fatal
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
             if attempt == 0:
                 try:
                     os.remove(path)
@@ -831,10 +837,11 @@ def _graph_nodes_and_edges(root: str, scan: dict):
     return nodes, edges
 
 
-def _neighbourhood(nodes, edges, focus: str, depth: int):
+def _neighbourhood(edges, focus: str, depth: int):
     """BFS `depth` hops out from `focus`, following edges in both directions —
     what a local graph means (an inbound link is as much a neighbour as an
-    outbound one)."""
+    outbound one). Adjacency comes from the edges alone; the node table adds
+    nothing a BFS can use."""
     adjacent = {}
     for edge in edges:
         adjacent.setdefault(edge["source"], set()).add(edge["target"])
@@ -855,7 +862,7 @@ def _neighbourhood(nodes, edges, focus: str, depth: int):
 def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
     nodes, edges = _graph_nodes_and_edges(root, scan)
     if focus is not None and focus in nodes:
-        kept = _neighbourhood(nodes, edges, focus, depth)
+        kept = _neighbourhood(edges, focus, depth)
         nodes = {node: row for node, row in nodes.items() if node in kept}
         edges = [e for e in edges if e["source"] in nodes and e["target"] in nodes]
     for edge in edges:
@@ -925,4 +932,9 @@ def main(action: str = "note", file: str = "", root: str = "", depth: int = 1):
         return _candidates_payload(root, scan)
     if action == "graph":
         return _graph_payload(root, scan, rel, depth)
+    # `note` is the only action that can reach here, and its two early returns
+    # above mean `rel` was assigned — but say it rather than assume it, so the
+    # invariant survives a fourth action being added.
+    if rel is None:
+        return _error("not_found", f"no such note: {file}")
     return _note_payload(root, rel, scan)

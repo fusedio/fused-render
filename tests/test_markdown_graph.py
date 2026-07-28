@@ -26,6 +26,7 @@ GRAPH = os.path.join(
 @pytest.fixture(scope="module")
 def graph():
     spec = importlib.util.spec_from_file_location("markdown_graph", GRAPH)
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -534,3 +535,23 @@ def test_the_graph_refuses_a_mount_backed_root(graph, tmp_path, home, monkeypatc
     out = graph.main(action="graph", root=root)
     assert out["error"] == "mount_unsupported"
     assert "remote mounts" in out["message"]
+
+
+def test_an_unwritable_index_home_still_answers_from_a_plain_walk(graph, tmp_path, home):
+    """A cache that cannot be opened costs a walk, never an error.
+
+    Regression: `conn` was bound only after `sqlite3.connect` succeeded, so a
+    failing `os.makedirs`/`connect` made the except branch's `conn.close()`
+    raise NameError — out of a cache helper, into the caller's run.
+    """
+    root = _vault(tmp_path, {"A.md": "# A\n[[B]]\n", "B.md": "# B\n"})
+    # A FILE where the graph directory belongs: makedirs raises, and so does the
+    # discard-and-retry unlink.
+    os.makedirs(home, exist_ok=True)
+    with open(os.path.join(home, "graph"), "w", encoding="utf-8") as handle:
+        handle.write("not a directory")
+    assert graph._connect(root) is None
+    assert sorted(graph.scan_indexed(root)["notes"]) == ["A.md", "B.md"]
+    out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
+    assert out["error"] is None
+    assert [b["rel"] for b in out["backlinks"]] == []
