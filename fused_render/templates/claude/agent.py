@@ -4,7 +4,13 @@ about the target file (POC).
 The browser never owns the work: `start` detaches a claude subprocess whose
 stream-json stdout goes to a log file in tmp; `poll` re-reads that file and
 returns the accumulated assistant text so the page can render the reply as it
-streams in. Stdlib only.
+streams in. Stdlib only (plus ../shared/procutil).
+
+Cross-platform: `claude` is looked up on PATH and then in the platform's known
+install locations, because a Windows install commonly isn't on the PATH this
+process inherited (_claude_bin); detaching, liveness and cancel each take the
+win32 route where the POSIX one is absent or destructive (_DETACH, _alive,
+_cancel).
 
 Sessions are per-file. Every conversation started from this template is
 recorded in a sidecar next to the target file — `<file>.json`, e.g.
@@ -29,26 +35,85 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op.
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "agent.py")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from procutil import pid_alive as _pid_alive
+
 RUNS = os.path.join(tempfile.gettempdir(), "fused_render_claude", "runs")
-PROJECTS = os.path.expanduser("~/.claude/projects")
+
+# Claude Code's own data dir. CLAUDE_CONFIG_DIR wins where it is set: the
+# supervisor sets it for every packaged build (supervisor/paths.py
+# child_environment), so the transcripts claude writes for OUR runs land there
+# and not under ~/.claude — reading the wrong dir loses history and resume.
+CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+PROJECTS = os.path.join(CLAUDE_DIR, "projects")
+
+# Where Claude Code installs `claude`, for when it isn't on our PATH. Windows is
+# the case that needs this: a GUI-launched app inherits the PATH of its login
+# session, so an install that appended to the *user* PATH afterwards stays
+# invisible until the next sign-in — and the packaged app's PATH is the
+# supervisor's, not a shell's. Ordered most-canonical first, `.exe` ahead of any
+# `.cmd` shim: a shim's arguments are re-parsed by cmd.exe, and our argv carries
+# arbitrary user text (-p) and the target path (--append-system-prompt).
+_WINDOWS_CANDIDATES = (
+    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
+    r"%USERPROFILE%\.local\bin\claude.exe",
+    # winget install Anthropic.ClaudeCode, via winget's own shim dir
+    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
+    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
+    r"%APPDATA%\npm\claude.exe",
+    r"%APPDATA%\npm\claude.cmd",
+    # legacy local npm install, written by older Claude Code versions
+    r"%USERPROFILE%\.claude\local\claude.exe",
+)
+_POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                     "/usr/local/bin/claude")
 
 
 def _claude_bin() -> str:
+    """Path to the claude executable to run.
+
+    FUSED_RENDER_CLAUDE_BIN (an explicit override, mirroring
+    FUSED_RENDER_RCLONE_BIN) beats PATH, which beats the platform's known
+    install locations. A stale override that isn't a file is ignored rather
+    than allowed to shadow a real install."""
+    override = os.environ.get("FUSED_RENDER_CLAUDE_BIN")
+    if override and os.path.isfile(override):
+        return override
     found = shutil.which("claude")
     if found:
         return found
-    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
-                      "/usr/local/bin/claude"):
-        candidate = os.path.expanduser(candidate)
-        if os.path.exists(candidate):
-            return candidate
+    candidates = _WINDOWS_CANDIDATES if os.name == "nt" else _POSIX_CANDIDATES
+    for candidate in candidates:
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved):
+            return resolved
     raise FileNotFoundError(
-        "claude CLI not found — install Claude Code or put `claude` on the "
-        "PATH of the environment that launched fused-render"
+        "claude CLI not found — install Claude Code, put `claude` on the PATH "
+        "of the environment that launched fused-render, or set "
+        "FUSED_RENDER_CLAUDE_BIN to its full path. Also looked in: "
+        + ", ".join(candidates)
     )
+
+
+def _bad_id(value: str) -> bool:
+    """Whether an id from the page is unsafe to join into a filesystem path.
+
+    run ids and session ids both arrive as URL params and both get joined onto
+    a directory we own, so neither may carry a path separator or a leading dot
+    — and on Windows `\\` escapes exactly like `/`, while a drive prefix
+    ("d:x") makes os.path.join drop our directory entirely."""
+    return not value or value.startswith(".") or any(c in value for c in "/\\:")
 
 
 def _system_prompt(file: str) -> str:
@@ -176,7 +241,7 @@ def _migrate_session(file: str, session_id: str) -> None:
     overwrites an existing destination (the destination is where new turns
     append — it is always the newer copy). Best-effort: any failure just
     means claude reports the session as not found."""
-    if not session_id or "/" in session_id:
+    if _bad_id(session_id):
         return
     new_cwd = os.path.dirname(file)
     dest_dir = os.path.join(PROJECTS, _munge(new_cwd))
@@ -208,6 +273,17 @@ def _migrate_session(file: str, session_id: str) -> None:
 
 
 # ----------------------------------------------------------------- start/poll
+
+# Detach the run so it outlives this 30 s executor subprocess. start_new_session
+# (setsid) is POSIX-only — Windows ignores it silently, where DETACHED_PROCESS +
+# CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors templates/docs, latex and
+# usd). Only the taken branch of the conditional is evaluated, so the win32-only
+# subprocess constants are never touched on POSIX.
+_DETACH = (
+    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    if os.name == "nt" else {"start_new_session": True}
+)
+
 
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str) -> dict:
@@ -244,24 +320,31 @@ def _start(file: str, message: str, session_id: str, model: str,
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
                                 stdin=subprocess.DEVNULL,
-                                start_new_session=True)
+                                **_DETACH)
     with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
 
 
 def _alive(run_dir: str) -> bool:
+    """Whether this run's claude process is still going.
+
+    procutil.pid_alive, NOT the POSIX `os.kill(pid, 0)` idiom: on Windows
+    signal 0 *is* CTRL_C_EVENT, so os.kill routes it to
+    GenerateConsoleCtrlEvent — it sends a real Ctrl+C where the pid resolves to
+    a process group sharing our console, and raises OSError where it doesn't,
+    which the POSIX idiom reads as "gone". Either way a poll kills or condemns
+    the run it is only supposed to be looking at."""
     try:
-        pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
-        os.kill(pid, 0)
-        return True
-    except (OSError, ValueError):
+        with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+            return _pid_alive(fh.read().strip())
+    except OSError:
         return False
 
 
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
-    if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id"}
 
     text_parts = []
@@ -389,7 +472,7 @@ def _history(file: str, session_id: str) -> dict:
     resume continues this one's. Migrates first (same as `start`) so a moved
     file's saved session shows its turns immediately, without waiting for the
     user to send a message."""
-    if not session_id or "/" in session_id:
+    if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
     _migrate_session(file, session_id)
@@ -434,13 +517,24 @@ def _cancel(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
     # so reject anything that could resolve outside the runs dir.
-    if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
-        os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
     except (OSError, ValueError):
-        pass
+        return {"cancelled": run_id}
+    if os.name == "nt":
+        # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
+        # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
+        # the tree instead, collecting claude's own children with it.
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False)
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
+        except OSError:
+            pass
     return {"cancelled": run_id}
 
 

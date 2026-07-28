@@ -126,10 +126,12 @@ fused_render/templates/claude/
 6. **Only text turns render.** Tool calls/diffs stream past invisibly (a
    "Working…" spinner phase is the only signal). Showing tool activity
    (edits made to the file!) inline is the obvious next feature.
-7. **`claude` binary discovery:** `shutil.which` + three well-known
-   fallbacks (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). The
-   server env's PATH (Finder-launched .app!) may lack it; error message says
-   what to do.
+7. **`claude` binary discovery:** `FUSED_RENDER_CLAUDE_BIN` (explicit
+   override, mirroring `FUSED_RENDER_RCLONE_BIN`), then `shutil.which`, then
+   the platform's install locations — `~/.local/bin`, `/opt/homebrew/bin`,
+   `/usr/local/bin` on POSIX; see **Windows** below for that list. The server
+   env's PATH (Finder-launched .app! GUI-launched .exe!) may lack it; the
+   error message names every place we looked.
 8. **`run_id`/tmp hygiene.** Run dirs under `$TMPDIR/fused_render_claude/`
    are never pruned (OS tmp cleanup handles it eventually). Cancel action
    exists in agent.py but has no button in the UI yet.
@@ -144,6 +146,60 @@ fused_render/templates/claude/
 11. **No tests for agent.py.** It shells out to a user-installed CLI;
     meaningful tests need a fake `claude` binary. The registry/test pin
     covers resolution (`.html` → `_render, code, claude`).
+
+## Windows
+
+The template was written against POSIX and broke on Windows in four separate
+places — each a POSIX idiom that Windows either ignores or reinterprets.
+
+- **`claude` is usually not on our PATH.** The PowerShell installer puts
+  `claude.exe` in `%USERPROFILE%\.local\bin` and appends that to the *user*
+  PATH in the registry; a process that was already running (or was started by
+  Explorer before the install) keeps the PATH it inherited at login, so
+  `shutil.which("claude")` finds nothing while `claude` works fine in a fresh
+  terminal. `_claude_bin` therefore also looks in the known install locations,
+  `%USERPROFILE%\.local\bin\claude.exe` (native installer) first, then winget's
+  shim dir and npm's global prefix. `.exe` is preferred over a `.cmd` shim:
+  a shim hands our argv back to cmd.exe for a second round of parsing, and that
+  argv carries arbitrary user text (`-p`) plus the target path.
+- **`start_new_session=True` does nothing on Windows** — subprocess accepts and
+  ignores it. So `claude.exe` was spawned with no creationflags at all, and
+  because the executor deliberately gives its worker no console
+  (`CREATE_NO_WINDOW`, so a windowless server doesn't flash a console per run),
+  Windows had to allocate a **fresh console window** for the console-subsystem
+  child: a terminal window popped up for every chat turn. `_DETACH` now passes
+  `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` there — the same detach idiom
+  as templates/docs, latex and usd — which both detaches the run and leaves it
+  console-less (stdout/stderr already go to the run dir).
+- **`os.kill(pid, 0)` is not a liveness probe on Windows.** Signal 0 *is*
+  `CTRL_C_EVENT`, so Python routes it to `GenerateConsoleCtrlEvent` instead of
+  a no-op check: it either delivers a real Ctrl+C or fails outright, and the
+  failure made `_alive` report a perfectly healthy run as dead. Since the page
+  polls 400 ms after `start`, the first poll killed or condemned the turn —
+  surfacing as *"claude exited unexpectedly"* with an empty `err.log`. `_alive`
+  now goes through `../shared/procutil.pid_alive` (OpenProcess +
+  GetExitCodeProcess), which is what the rest of the repo already uses.
+- **`os.killpg` doesn't exist on Windows**, so `cancel` raised AttributeError
+  instead of stopping the run. There is no process group to signal either —
+  `CTRL_BREAK` only reaches a shared console and a detached run has none — so
+  Windows cancels with `taskkill /PID <pid> /T /F`, which also collects the
+  children claude spawned for its own tools.
+
+Two related fixes came out of the same pass:
+
+- **`CLAUDE_CONFIG_DIR` is honoured** when locating transcripts. The supervisor
+  sets it for every packaged build (`supervisor/paths.py child_environment`),
+  so claude writes the transcripts for *our* runs under the app's state dir —
+  reading a hardcoded `~/.claude/projects` lost history and copy-on-resume in
+  the packaged app on every platform, not just Windows.
+- **The id guards reject `\` and a drive prefix.** `run_id` and `session_id`
+  arrive as URL params and are joined onto a directory we own; on Windows
+  `..\..\x` traverses exactly like `../../x`, and `os.path.join(runs, "d:x")`
+  drops `runs` entirely. Both now go through `_bad_id`.
+
+Not covered here: the `claude-cli://` deep link (`Open in Claude`, PR #286) is
+a different path — the OS hands the URL to Claude Code's own scheme handler,
+and nothing in this template is involved.
 
 ## Synergy worth noting
 
