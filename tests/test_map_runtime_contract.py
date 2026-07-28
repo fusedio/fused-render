@@ -176,6 +176,46 @@ def test_map_render_forwards_parameters_and_force_bypasses_cache(
     }
 
 
+def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
+    map_render = _load("map_render")
+    target = tmp_path / "target.py"
+    target.write_text("def main():\n    return None\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    attempts = []
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(map_render, "_ensure_service", lambda: {})
+
+    def describe(_state, _path, _request):
+        attempts.append(True)
+        if len(attempts) == 1:
+            return {
+                "status": "error",
+                "kind": None,
+                "data": {},
+                "message": "temporary mount failure",
+                "warnings": [],
+            }
+        return {
+            "status": "ok",
+            "kind": "vector_geojson",
+            "bounds": [0, 0, 1, 1],
+            "data": {},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(map_render, "_post", describe)
+
+    first = map_render.main(target=str(target))
+    recovered = map_render.main(target=str(target))
+
+    assert first["status"] == "error"
+    assert recovered["status"] == "ok"
+    assert len(attempts) == 2
+
+
 def test_map_template_exposes_run_parameters_and_map_click_location():
     template = (MAP / "template.html").read_text(encoding="utf-8")
 

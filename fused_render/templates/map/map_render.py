@@ -206,6 +206,8 @@ def _post(state: dict, path: str, payload: dict, timeout: float = 300) -> dict:
 
 
 def _artifact_exists(descriptor: dict) -> bool:
+    if descriptor.get("status") != "ok":
+        return False
     if descriptor.get("kind") == "raster_tiles":
         return False
     data = descriptor.get("data") or {}
@@ -224,7 +226,10 @@ def _cached_descriptor(path: Path) -> dict | None:
 
 
 def _save_descriptor(path: Path, descriptor: dict) -> None:
-    if descriptor.get("kind") == "raster_tiles":
+    if (
+        descriptor.get("status") != "ok"
+        or descriptor.get("kind") == "raster_tiles"
+    ):
         return
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
