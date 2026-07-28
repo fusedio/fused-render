@@ -164,12 +164,34 @@
       try { window.top.location.href = url; } catch (e) { location.href = url; }
     }
 
+    // Join an absolute POSIX dir with a relative path and collapse "." / ".."
+    // segments — pure string work, the same helper the note view uses.
+    function resolvePath(dir, rel) {
+      const out = [];
+      for (const p of dir.split("/").concat(rel.split("/"))) {
+        if (p === "" || p === ".") continue;
+        if (p === "..") out.pop();
+        else out.push(p);
+      }
+      return "/" + out.join("/");
+    }
+
     // Creating a missing note from the graph is the same affordance the note
-    // view has; the file lands in the folder this graph is scoped to.
-    async function createGhost(label) {
-      const clean = String(label).replace(/\\/g, "/").replace(/^\.\//, "");
+    // view has; the file lands in the folder this graph is scoped to. The
+    // argument is the ghost's authored TARGET, never its display label.
+    async function createGhost(target) {
+      const clean = String(target).replace(/\\/g, "/").replace(/^(\.\/)+/, "");
       const name = /\.(md|markdown)$/i.test(clean) ? clean : clean + ".md";
-      const path = (root.endsWith("/") ? root.slice(0, -1) : root) + "/" + name;
+      if (!name.replace(/\.(md|markdown)$/i, "").split("/").pop()) return;
+      const base = root.replace(/\/+$/, "");
+      // Collapsed rather than concatenated, and then checked: a target carrying
+      // `..` would otherwise write above the folder this graph is scoped to,
+      // where the graph itself would never see the note it just made.
+      const path = resolvePath(base, name);
+      if (path !== base && !path.startsWith(base + "/")) {
+        setStatus("Won't create " + name + ": that is outside " + base + ".", "error");
+        return;
+      }
       try {
         await fused.writeFile(path, "# " + name.replace(/\.(md|markdown)$/i, "") + "\n");
       } catch (err) {
@@ -182,7 +204,7 @@
     const canvas = fusedGraph.create({
       canvas: document.getElementById("canvas"),
       onOpenNote: (path) => navigateShell(path),
-      onCreateGhost: (label) => void createGhost(label),
+      onCreateGhost: (target) => void createGhost(target),
     });
 
     function setStatus(message, kind) {

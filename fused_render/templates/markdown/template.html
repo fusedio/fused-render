@@ -1619,10 +1619,33 @@
     // only possible because this template writes.
     async function createGhost(target) {
       if (!notes) return;
-      const clean = target.replace(/\\/g, "/").replace(/^\.\//, "");
+      const clean = String(target).replace(/\\/g, "/").replace(/^(\.\/)+/, "");
       const name = /\.(md|markdown)$/i.test(clean) ? clean : clean + ".md";
-      const base = clean.includes("/") ? notes.root : noteDir();
+      // Belt and braces against a degenerate target (a directory link used to
+      // produce a file called literally `.md`): graph.py no longer makes a ghost
+      // for one, and this refuses to act on one if it ever arrives anyway.
+      if (!name.replace(/\.(md|markdown)$/i, "").split("/").pop()) return;
+      // WHERE it lands has to be decided the way graph.py's `resolve_link`
+      // decides it, or this creates a note the graph that offered it will never
+      // look for. That is the same divergence MD-3 exists to prevent, here in
+      // the one place the page computes a path of its own. The resolver tries the
+      // linking note's OWN FOLDER first and the vault root second, so an
+      // explicitly relative target means "from this note" and a plain
+      // `folder/note` means "from the root" — Obsidian's convention.
+      const relative = /(^|\/)\.\.(\/|$)/.test(clean);
+      const base = relative || !clean.includes("/") ? noteDir() : notes.root;
       const path = resolvePath(base, name);
+      // A note created outside the scan root is invisible to the graph that
+      // offered to create it, so the offer would be incoherent — and `..` in a
+      // target is exactly how a write escapes upwards. The boundary slash keeps
+      // a sibling folder with a shared prefix out.
+      const root = notes.root.replace(/\/+$/, "");
+      if (path !== root && !path.startsWith(root + "/")) {
+        saveStateEl.textContent =
+          "Won't create " + name + ": that is outside " + root + ".";
+        saveStateEl.classList.add("error");
+        return;
+      }
       try {
         const st = await fused.stat(path);
         if (st.writable === false) return; // read-only target: nothing to offer

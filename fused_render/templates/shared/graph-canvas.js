@@ -256,7 +256,10 @@
         var focused = node.id === payload.focus;
         var seeded = {
           id: node.id, kind: node.kind, label: node.label,
-          path: node.path, degree: node.degree,
+          // `label` is a DISPLAY string (a note's is its title); `target` is the
+          // authored link target a ghost was made from. Creating a note is a
+          // path operation, so it reads target and never label.
+          path: node.path, target: node.target, degree: node.degree,
           x: focused ? cx : cx + Math.cos(angle) * at,
           y: focused ? cy : cy + Math.sin(angle) * at,
           vx: 0, vy: 0,
@@ -328,7 +331,9 @@
       var found = at(event);
       if (!found.node) return;
       if (found.node.kind === "note" && found.node.path) onOpenNote(found.node.path);
-      else if (found.node.kind === "ghost") onCreateGhost(found.node.label);
+      else if (found.node.kind === "ghost" && found.node.target) {
+        onCreateGhost(found.node.target);
+      }
     }
 
     function onWheel(event) {

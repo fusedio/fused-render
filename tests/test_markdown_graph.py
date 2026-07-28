@@ -687,6 +687,48 @@ def test_the_local_graph_only_keeps_edges_between_kept_nodes(graph, chain):
         assert edge["source"] in kept and edge["target"] in kept
 
 
+def test_a_link_to_a_directory_is_not_a_ghost_note(graph, tmp_path, home):
+    """A ghost is a promise: click it and that note appears. So a target that can
+    never BE a note must not become one.
+
+    Reported: `[`../examples/`](../examples/)` produced a ghost labelled
+    `../examples/`, and clicking it tried to create a file called `.md` one level
+    above the vault root. Judged on the target string — a trailing slash names a
+    directory — with no stat and no listing, because this runs per link per note.
+    """
+    root = _vault(tmp_path, {
+        ".obsidian/app.json": "{}",
+        "docs/note.md": "[dir](../examples/) and [gone](../examples/Nope.md)\n",
+    })
+    out = graph.main(action="graph", file=os.path.join(root, "docs", "note.md"), root=root)
+    ghosts = [n["label"] for n in out["nodes"] if n["kind"] == "ghost"]
+    assert ghosts == ["../examples/Nope.md"], ghosts
+    # And no edge left dangling at the node that was not created.
+    assert all(edge["target"] in {n["id"] for n in out["nodes"]} for edge in out["edges"])
+
+
+def test_a_link_to_a_non_note_file_is_not_a_ghost_note(graph, tmp_path, home):
+    # `../scripts/run.py` can only ever be a file that exists or does not; it can
+    # never be a note, so "click to create" would be a lie. A version-like target
+    # keeps its ghost — the suffix has to start with a letter to count.
+    root = _vault(tmp_path, {
+        "note.md": "[s](./scripts/run.py) and [[Chapter 1.2]] and [[Plain]]\n",
+    })
+    out = graph.main(action="graph", file=os.path.join(root, "note.md"), root=root)
+    ghosts = sorted(n["label"] for n in out["nodes"] if n["kind"] == "ghost")
+    assert ghosts == ["Chapter 1.2", "Plain"], ghosts
+
+
+def test_a_ghost_node_carries_the_target_not_just_a_label(graph, tmp_path, home):
+    # The label is a DISPLAY string (a real note's is its title), so the create
+    # path must not be driven by it.
+    root = _vault(tmp_path, {"docs/note.md": "[gone](../examples/Nope.md)\n"})
+    out = graph.main(action="graph", file=os.path.join(root, "docs", "note.md"), root=root)
+    ghost = [n for n in out["nodes"] if n["kind"] == "ghost"][0]
+    assert ghost["target"] == "../examples/Nope.md"
+    assert all("target" not in n for n in out["nodes"] if n["kind"] == "note")
+
+
 def test_an_embedded_asset_is_not_a_graph_node(graph, tmp_path, home):
     # A picture is not a note; it would otherwise dominate a vault of screenshots.
     root = _vault(tmp_path, {"A.md": "![[pic.png]]\n", "pic.png": "x"})

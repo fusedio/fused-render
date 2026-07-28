@@ -400,6 +400,37 @@ def _normalize_target(target: str) -> str:
     return target.strip("/")
 
 
+# A suffix that makes a target a FILE of some other kind: a dot, then a letter,
+# then up to four more word characters. The leading letter is what keeps
+# `[[Chapter 1.2]]` and `[[v1.0]]` linkable — a version is not an extension.
+_OTHER_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
+
+
+def _ghostable(target: str) -> bool:
+    """Whether an unresolved target could ever *be* a note (MD-4).
+
+    A ghost is a promise — click it and that note appears — so a target that can
+    never name a note must not become one. Two cases:
+
+    * a **directory**: `[../examples/](../examples/)` is a link to a folder, and
+      the ghost it used to make was labelled `../examples/`, from which the
+      template derived a file literally called `.md`, one level above the vault
+      root (the reported bug);
+    * a **file of another kind**: `../scripts/run.py` either exists or does not,
+      but it is never a note, and offering to create `run.py.md` is a lie. (An
+      *embed* of a non-note resolves through the asset index instead, so this
+      only ever fires on targets nothing could have resolved.)
+
+    Judged on the target STRING alone: no stat and no listing, because this runs
+    once per link per note — the same discipline as the vault-root ascent.
+    """
+    raw = (target or "").strip().replace("\\", "/")
+    if not raw or raw.endswith("/") or not _normalize_target(raw):
+        return False
+    base = raw.rsplit("/", 1)[-1]
+    return _is_note(base) or _OTHER_EXT_RE.search(base) is None
+
+
 def _posix_join(base: str, rel: str) -> str:
     """Join two vault-relative POSIX paths, collapsing `.`/`..`. Pure string
     work — never touches the filesystem, so it is safe on any root."""
@@ -921,9 +952,17 @@ def _graph_nodes_and_edges(root: str, scan: dict):
             if target is None:
                 # An unresolved target is one ghost per NAME, so five notes
                 # linking `[[Roadmap]]` share the node they are all asking for.
+                # Nothing that could never be a note gets one, and with no node
+                # there is no edge either.
+                if not _ghostable(link["target"]):
+                    continue
                 ghost = "ghost:" + _normalize_target(link["target"]).lower()
                 nodes.setdefault(ghost, {
                     "id": ghost, "kind": "ghost", "label": link["target"],
+                    # The authored target, alongside the DISPLAY label: creating
+                    # the note is a path operation and must not be driven by
+                    # whatever happens to be drawn on the canvas.
+                    "target": _normalize_target(link["target"]),
                     "path": None, "degree": 0})
                 add(rel, ghost, "embed" if link["embed"] else "link")
             elif target in nodes:

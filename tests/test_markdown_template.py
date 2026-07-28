@@ -271,6 +271,51 @@ def test_editing_and_saving_do_not_depend_on_the_scan(source):
     assert "resolved" not in link
 
 
+@pytest.fixture(scope="module")
+def create_ghost(source):
+    body = source[source.index("async function createGhost"):]
+    return body[:body.index("\n    // One delegated handler")]
+
+
+def test_creating_a_ghost_resolves_it_the_way_graph_py_does(create_ghost):
+    """The page computes exactly one path of its own, and it must agree with
+    `resolve_link`: the linking note's own folder first, the vault root second.
+
+    Reported: clicking `../examples/Nope.md` from `docs/` joined the target onto
+    the vault ROOT and tried to write one level above it. Same class of
+    divergence MD-3 exists to prevent.
+    """
+    assert "const relative = /(^|\\/)\\.\\.(\\/|$)/.test(clean);" in create_ghost
+    assert "const base = relative || !clean.includes(\"/\") ? noteDir() : notes.root;" \
+        in create_ghost
+
+
+def test_creating_a_ghost_never_writes_outside_the_scan_root(create_ghost):
+    # A note above the root is invisible to the graph that offered to create it,
+    # and `..` in a target is exactly how a write escapes upwards. The boundary
+    # slash keeps a sibling folder with a shared prefix out.
+    assert 'const root = notes.root.replace(/\\/+$/, "");' in create_ghost
+    assert 'if (path !== root && !path.startsWith(root + "/"))' in create_ghost
+    assert "outside" in create_ghost
+    # The refusal happens BEFORE the write, not as a caught failure.
+    assert create_ghost.index("!path.startsWith(root") < create_ghost.index("fused.writeFile")
+
+
+def test_creating_a_ghost_refuses_a_degenerate_name(create_ghost):
+    # A directory target used to derive a file called literally `.md`. graph.py no
+    # longer makes such a ghost; this refuses to act on one anyway.
+    assert 'if (!name.replace(/\\.(md|markdown)$/i, "").split("/").pop()) return;' \
+        in create_ghost
+
+
+def test_the_create_path_reads_the_ghost_target_not_its_label(source, canvas_source):
+    # `label` is a display string (a real note's is its title). Driving a write
+    # off it is fragile by construction.
+    assert 'found.node.kind === "ghost" && found.node.target' in canvas_source
+    assert "target: node.target" in canvas_source
+    assert "onCreateGhost(found.node.label)" not in canvas_source
+
+
 def test_the_editor_follows_the_shell_appearance_without_a_rebuild(source):
     assert "CM.StateEffect.reconfigure.of" in source
     assert 'attributeFilter: ["data-theme"]' in source

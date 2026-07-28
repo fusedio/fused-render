@@ -2722,6 +2722,27 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   note** (MD-16 makes that possible). An `![[embed]]` resolves through the same
   tiers over the folder's non-note files, so a picture in an `img/` subfolder is
   found from anywhere.
+- **MD-4c** **A ghost is a promise, so only a target that could BE a note gets
+  one.** A ghost says "click and this note appears", which makes it a lie for a
+  target that can never name a note. Two are excluded, on the target **string**
+  alone — no stat, no listing, because this runs once per link per note: a
+  **directory** (`](../examples/)`, trailing slash), and a **file of another
+  kind** (`](../scripts/run.py)` — an extension that is not `.md`/`.markdown`,
+  where the suffix must begin with a letter so `[[Chapter 1.2]]` stays linkable).
+  With no node there is no edge either. Creating one is also **bounded by the
+  scan root**: a note written above the root is invisible to the graph that
+  offered it, so the offer would be incoherent — the resolved path is checked
+  against the root (with a `/` boundary) and refused with a message rather than
+  written, on both graph surfaces. The ghost node carries the authored
+  **`target`** next to its display `label`, and the create path reads the target;
+  a write driven by whatever happens to be drawn on the canvas is fragile by
+  construction. Both halves were a real bug: `[`../examples/`](../examples/)`
+  produced a ghost that tried to create a file called literally `.md` one level
+  *above* the vault root, because the page joined a `../` target onto the root
+  while `resolve_link` joins it onto the linking note's folder. **The page's one
+  path computation must follow `resolve_link`'s order** — own folder, then root —
+  or it creates notes the graph will never look for, which is the same class of
+  divergence MD-3 exists to prevent.
 - **MD-4a** **A relative link is resolved for the shell.** The document is
   served at `/render?path=…`, so a browser resolves `](../CONTRIBUTING.md)`
   against the *server root* and misses the file. The link's widget therefore
