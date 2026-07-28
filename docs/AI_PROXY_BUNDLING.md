@@ -92,20 +92,33 @@ binds one for the duration of a login and reads the `code` straight out of the
 browser redirect. No copy-paste, no CLI subcommand.
 
 1. `POST …/connect {provider}` → we call `<provider>-auth-url`, get `{state, url}`
-2. we bind the provider's callback port with a tiny one-shot handler
-3. we hand `url` back to the frontend, which opens it in the user's browser
-4. the user approves; the browser hits our handler; we capture `code` and serve a "return to FusedRender" page
-5. we `POST oauth-callback {state, code}`
-6. **we poll `auth-files` for a new entry** — because `oauth-callback` answers 200 even for a bogus code, so its status proves nothing
+2. we bind the provider's callback port (loopback only) with a one-shot handler
+3. we return `url` to the frontend, which opens it — **the browser is always the
+   client's job**; the backend only ever returns a URL string, matching how
+   `account.py` handles Fused sign-in
+4. the user approves; the browser hits our handler; we capture `code` and serve a
+   short "return to FusedRender" page
+5. we `POST oauth-callback {provider, state, code}`
+6. we poll `GET get-auth-status?state=` until `ok` or `error`
 
-Step 6 is the part that must not be shortcut. Success is a credential appearing;
-anything else within the timeout is a failure the UI reports.
+Step 6 is the part an earlier draft got wrong. `oauth-callback` answers 200 even
+for a bogus code — it only records the code, and the exchange happens in a
+goroutine — so its status proves nothing. `get-auth-status` reports
+`wait`/`ok`/`error` with a real message ("Failed to exchange authorization code
+for tokens"), which means a failed login can be reported as a failure instead of
+being inferred from a timeout.
 
-Failure modes the UI has to name rather than hang on: callback port already held
-(a concurrent login, or the user's own proxy mid-login), user abandons the browser
-(timeout, release the port), token exchange rejected (no credential appears).
-Only one login may be in flight at a time — the fixed ports make that structural,
-so the endpoint should reject a second concurrent attempt outright.
+Failure modes the UI names rather than hangs on: callback port already held (a
+concurrent login, or the user's own proxy mid-login), user abandons the browser
+(timeout; release the port and `DELETE oauth-session`), exchange rejected
+(`get-auth-status` says so). Only one login at a time — the fixed ports make that
+structural, so a second concurrent attempt is rejected outright rather than
+queued. Cancellation is a real operation, not just closing the tab, since the
+proxy holds pending state for 30 minutes.
+
+Because the whole surface is poll-only (no SSE/websocket), the frontend follows
+the existing `useFusedLogin` cadence in `lib/account.ts`: open the URL, poll every
+couple of seconds, and offer Cancel while waiting.
 
 ## Preferences UI
 

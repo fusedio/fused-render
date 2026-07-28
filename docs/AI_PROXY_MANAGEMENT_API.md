@@ -34,14 +34,23 @@ it ourselves rather than trying to read an existing one.
 |---|---|---|---|
 | GET | `/v0/management/anthropic-auth-url` | Begin Claude OAuth | `{state, status:"ok", url}` |
 | GET | `/v0/management/codex-auth-url` | Begin ChatGPT/Codex OAuth | `{state, status:"ok", url}` |
-| POST/GET | `/v0/management/oauth-callback` | Finish a login | `{status:"ok"}` |
+| POST/GET | `/v0/management/oauth-callback` | Hand back the code | `{status:"ok"}` |
+| GET | `/v0/management/get-auth-status?state=` | **Poll the real login result** | `{status:"wait"\|"ok"\|"error", error?}` |
+| DELETE | `/v0/management/oauth-session?state=` | Cancel a pending login | `{status:"ok", cancelled}` |
 | GET | `/v0/management/auth-files` | List credentials | `{files:[…]}` |
 | DELETE | `/v0/management/auth-files?name=<file>` | Remove one credential | `{status:"ok"}` |
+| PATCH | `/v0/management/auth-files/status` | Enable/disable a credential | `{status:"ok", disabled}` |
 | GET | `/v0/management/config` | Effective config | config object |
 | GET | `/v0/management/request-log` | Request-log toggle state | `{request-log:bool}` |
 
 Confirmed **absent** in 7.2.90 (404), so don't build on them: `version`, `usage`,
-`login-status`, `auth-status`, `<provider>-auth-callback`, `claude-login`.
+`login-status`, `auth-status` (the real path is `get-auth-status` — an easy
+miss), `<provider>-auth-callback`, `claude-login`.
+
+Version/build info is not a JSON route; every management response carries
+`X-CPA-VERSION` / `X-CPA-COMMIT` / `X-CPA-BUILD-DATE` headers. There is no
+dedicated health route — a cheap authenticated GET doubles as a reachability
+check. No SSE or websocket for management state, so status is poll-only.
 
 Other providers also expose `…-auth-url` (`kimi`, `xai`, `antigravity`); `gemini`
 and `qwen` do not. Kimi and xAI return an extra `{flow:"device", expires_in,
@@ -62,14 +71,49 @@ handed back to the proxy:
 POST /v0/management/oauth-callback   {"state": "<from auth-url>", "code": "<from callback>"}
 ```
 
-Notable and load-bearing for our design: this returns `200 {"status":"ok"}`
-**even for a deliberately bogus code**, so a 200 means "accepted for processing",
-not "logged in". Token exchange is deferred. An unknown or expired `state` is the
-one thing it does reject up front (`404 unknown or expired state`), and a body
-with `state` but no `code` is a `400 code or error is required`.
+Notable and load-bearing: this returns `200 {"status":"ok"}` **even for a
+deliberately bogus code**, so a 200 means "the code was recorded", not "logged
+in". The exchange is deferred — `oauth-callback` only writes the code to a
+`.oauth-<provider>-<state>.oauth` file in the auth dir, and a goroutine spawned
+back at `…-auth-url` time picks it up and does the real token exchange. A body
+with `state` but no `code` is `400 code or error is required`; an unknown or
+expired state is `404`.
 
-Consequence: **success must be confirmed by observing `auth-files` grow a new
-entry**, not by the callback's status code. Our client polls the listing.
+`POST` also accepts a whole `redirect_url` instead of a picked-apart `code` — the
+server parses its query string to fill `code`/`state`/`error`. (That field is
+POST-JSON only; the GET form doesn't read it.) Posting `error` instead of `code`
+aborts the flow with a specific message.
+
+### Confirming a login: `get-auth-status`
+
+The result channel is **`GET /v0/management/get-auth-status?state=<state>`**,
+polled after handing back the code:
+
+| Response | Meaning |
+|---|---|
+| `{"status":"wait"}` | Exchange still in flight |
+| `{"status":"ok"}` | Credential saved — it is now in `auth-files` |
+| `{"status":"error","error":"…"}` | Exchange or save failed, with a readable reason |
+
+Verified: a deliberately bogus code yields `{"status":"error","error":"Failed to
+exchange authorization code for tokens"}` within about a second. This is strictly
+better than inferring failure from a timeout on the credential listing, which is
+what an earlier draft of this design did — poll **this**, not `auth-files`.
+
+A state is effectively single-use: completing it shrinks its TTL to a minute, and
+replaying `oauth-callback` on a used state is a `409`. Pending states live in an
+in-memory map with a 30-minute TTL, purged lazily on access — so a state does not
+survive a proxy restart, and an abandoned login expires on its own. A pending
+login can be cancelled outright with `DELETE …/oauth-session?state=`.
+
+### `?is_webui=1` — deliberately not used
+
+Passing `is_webui=1` to an auth-url route makes the proxy bind the callback port
+itself and 302 onward to its bundled control-panel SPA. Verified working, but
+rejected for us on two counts: it binds `*:54545` (**all interfaces**, not
+loopback), and it forwards into a control panel we switch off with
+`disable-control-panel`. Our own loopback-only listener is both tighter and
+fewer moving parts.
 
 ### Callback ports are fixed — and free for us to bind
 
