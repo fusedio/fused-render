@@ -25,7 +25,7 @@ def _bookmarks(home):
 
 # Every project folder the packaged seed ships (dot-metadata like .DS_Store on
 # a dev machine is skipped by the seeder and must never land).
-SEED_DIRS = ["how_it_works", "showcase", "sine", "tutorial"]
+SEED_DIRS = ["ai_demo", "how_it_works", "showcase", "sine", "tutorial"]
 
 
 def test_seeds_examples_into_empty_dir(tmp_path, monkeypatch):
