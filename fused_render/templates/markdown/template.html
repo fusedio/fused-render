@@ -1957,7 +1957,11 @@
       }
       graphNoteEl.hidden = !data.truncated;
       if (data.truncated) graphNoteEl.textContent = "Partial: the walk hit a cap.";
-      graphCountEl.textContent = `${data.nodes.length} of ${data.total_notes} notes`;
+      // Notes compared with notes: `nodes` also carries tag and ghost nodes, so
+      // a bare length reads "221 of 205 notes" on the `all` depth — and was
+      // quietly overcounting at every other depth too.
+      const shownNotes = data.nodes.filter((n) => n.kind === "note").length;
+      graphCountEl.textContent = `${shownNotes} of ${data.total_notes} notes`;
       canvas.setData(data);
     }
 

@@ -457,6 +457,20 @@ def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
     assert 'fused.params.get("graph") === "1"' in source
 
 
+def test_the_graph_count_compares_notes_with_notes(source):
+    """`total_notes` counts notes; `nodes` also holds tag and ghost nodes.
+
+    Comparing the two read "221 of 205 notes" once the `all` depth existed, and
+    was quietly wrong at every depth before that. The count has to filter by
+    kind, so a bare `data.nodes.length` in this string is the regression.
+    """
+    lines = source.splitlines()
+    at = next(n for n, ln in enumerate(lines) if "of ${" in ln and "notes`" in ln)
+    block = "\n".join(lines[max(0, at - 6):at + 1])
+    assert 'kind === "note"' in block, block
+    assert "${data.nodes.length}" not in block, block
+
+
 def test_backlinks_and_the_graph_are_one_sidebar_behind_one_toggle(source):
     # Obsidian's right sidebar, and the only chrome this view has: a 26px
     # toggle pinned to the right edge, plus the panel it opens.
