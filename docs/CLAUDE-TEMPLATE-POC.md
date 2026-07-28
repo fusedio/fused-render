@@ -125,6 +125,19 @@ claude (headless)                    agent.py / browser
   double-click, or a cancel landing on a card that was just allowed, must not
   overwrite a verdict the tool may already have acted on. Anything that is not
   the exact string `allow` fails closed.
+- **A lost race is waited out, never guessed.** `O_EXCL` makes the file's
+  *existence* the latch while its content lands a moment later, so for a few
+  microseconds it is there and unparseable. Both readers that lose the create
+  treat that as a write in flight (`DECISION_WRITE_WINDOW`, 2 s) rather than as
+  "nobody answered" — reading it the second way is how the loser of a
+  double-click reported *its own* verdict, and how the server's timeout could
+  hand claude a deny for a tool the user had just allowed. `poll` is the one
+  reader that never waits: it runs every 400 ms, so it reports the request as
+  still pending and the next tick corrects it. A writer that dies after the
+  create unlinks the file it claimed, since an empty one holds the latch
+  forever while never parsing. The UI follows the same rule — a card re-renders
+  when the polled verdict differs from the one the click rendered
+  optimistically, so the file is always what the label ends up showing.
 - **"Allow all X in this reply"** returns `updatedPermissions: [{type:
   "addRules", rules: [{toolName}], behavior: "allow", destination: "session"}]`
   — the CLI's own rule engine does the matching. The rule is the **bare tool

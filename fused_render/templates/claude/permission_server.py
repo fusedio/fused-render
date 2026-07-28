@@ -46,6 +46,9 @@ TOOL_NAME = "approve"
 # the user gets a sentence instead of an MCP timeout error.
 WAIT_TIMEOUT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
 POLL_INTERVAL = 0.15
+# How long a decision file that exists but has not parsed is treated as a write
+# in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
+DECISION_WRITE_WINDOW = 2.0
 
 PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
 
@@ -91,6 +94,21 @@ def _read_decision(res_path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _await_written(res_path: str, window: float) -> dict:
+    """Re-read a decision file that exists but has not parsed yet.
+
+    agent.py creates it with O_EXCL and writes the JSON a moment later, so
+    "unparseable" means a click is landing right now — not that nobody
+    answered. Reading it as nobody-answered is how this server could hand
+    claude a deny for a tool the user had just allowed."""
+    deadline = time.monotonic() + window
+    while True:
+        decision = _read_decision(res_path)
+        if decision or time.monotonic() >= deadline:
+            return decision
+        time.sleep(POLL_INTERVAL)
+
+
 def _await_decision(req_id: str) -> dict:
     """Block until agent.py writes the decision file, or we give up."""
     res_path = os.path.join(PERM_DIR, req_id + ".res.json")
@@ -105,15 +123,25 @@ def _await_decision(req_id: str) -> dict:
     # Nobody answered. Record the deny rather than just returning it, so the
     # request stops reading as "still waiting for you" on disk. Same
     # first-writer-wins rule agent.py uses: if the create loses, a click landed
-    # in this very instant and that click is the answer.
+    # in this very instant and that click is the answer — waited out rather
+    # than guessed, because its JSON may still be in flight.
     try:
         fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
-        return _read_decision(res_path) or timeout
+        return _await_written(res_path, DECISION_WRITE_WINDOW) or timeout
     except OSError:
         return timeout
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(timeout, fh)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(timeout, fh)
+    except OSError:
+        # Same reasoning as agent.py's writer: an empty file holds the latch
+        # while never parsing, so drop it rather than leaving the request
+        # permanently unanswerable on disk.
+        try:
+            os.unlink(res_path)
+        except OSError:
+            pass
     return timeout
 
 

@@ -294,14 +294,39 @@ def _permissions(run_dir: str) -> list:
     return out
 
 
-def _read_decision(perm_dir: str, request_id: str) -> dict:
-    try:
-        with open(os.path.join(perm_dir, request_id + ".res.json"),
-                  encoding="utf-8") as fh:
-            res = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}  # not answered yet, or caught mid-write
-    return res if isinstance(res, dict) else {}
+# O_EXCL makes the decision file's EXISTENCE the latch, but its content lands a
+# moment later — so for a few microseconds the file is there and unparseable.
+# A reader that calls that "no decision" will happily substitute a verdict of
+# its own for the one that actually won, which is how a card can say Allowed
+# while claude was told Deny. Long enough to cover any real write; a file still
+# unparseable after it is a writer that died, and every caller treats an
+# unreadable decision as no answer, which denies.
+DECISION_WRITE_WINDOW = 2.0
+
+
+def _read_decision(perm_dir: str, request_id: str, wait: float = 0.0) -> dict:
+    """The decision on disk, or `{}` when there is none.
+
+    `wait` seconds are spent re-reading a file that EXISTS but does not parse:
+    that is a write in flight, not an absent answer (see the latch below).
+    Callers that are about to fall back to a verdict of their own must pass a
+    wait; `poll` must not (it runs every 400 ms and simply reports the request
+    as still pending, which the next tick corrects)."""
+    path = os.path.join(perm_dir, request_id + ".res.json")
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                res = json.load(fh)
+        except OSError:
+            return {}  # absent — and nothing is being written either
+        except json.JSONDecodeError:
+            res = None  # exists, not complete yet
+        if isinstance(res, dict) and res:
+            return res
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(0.02)
 
 
 def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
@@ -311,8 +336,7 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
     O_EXCL rather than the atomic temp+replace used elsewhere in this file,
     because the race that matters here is a *second* answer to the same request
     — a double-click, or cancel landing on a card the user just allowed —
-    overwriting a verdict the tool may already have acted on. A torn read is
-    harmless by comparison: permission_server retries until the JSON parses."""
+    overwriting a verdict the tool may already have acted on."""
     path = os.path.join(perm_dir, request_id + ".res.json")
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -324,6 +348,13 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
     except OSError:
+        # Don't leave the corpse. An empty file holds the latch forever — every
+        # later O_EXCL loses to it — while never parsing, so the request could
+        # no longer be answered by anyone. Releasing it lets the next writer in.
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         return False
     return True
 
@@ -340,17 +371,19 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
     # Anything that is not an explicit allow is a deny: a mangled param must
     # fail closed, never grant.
     verdict = "allow" if decision == "allow" else "deny"
-    if not _write_decision(perm_dir, request_id, {
-            "decision": verdict,
-            "scope": "session" if scope == "session" else "once"}):
-        # claude is still blocked on this request — say so instead of letting
-        # the card render as answered.
+    _write_decision(perm_dir, request_id, {
+        "decision": verdict,
+        "scope": "session" if scope == "session" else "once"})
+    # Report what is on disk, never what was clicked — the losing half of a
+    # double-click must not show a verdict the tool will never see — and read it
+    # back rather than trusting our own write, so the answer is the same one
+    # claude will read. No decision here means nobody's write survived: claude
+    # is still blocked, so say so instead of rendering the card as answered.
+    res = _read_decision(perm_dir, request_id, wait=DECISION_WRITE_WINDOW)
+    if not res.get("decision"):
         return {"error": "could not record that decision"}
-    # Report what is actually on disk, not what was clicked: the losing half of
-    # a double-click must not show a verdict the tool will never see.
-    res = _read_decision(perm_dir, request_id)
     return {"decided": request_id,
-            "decision": str(res.get("decision") or verdict),
+            "decision": str(res["decision"]),
             "scope": str(res.get("scope") or "")}
 
 

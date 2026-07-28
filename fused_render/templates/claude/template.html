@@ -835,10 +835,17 @@ function buildPermCard(p, run_id) {
   status.className = "perm-status";
   el.append(actions, status);
 
-  let resolved = false;
+  // Re-render whenever the verdict CHANGES, rather than latching on the first
+  // one seen. The click renders optimistically; the polls that follow report
+  // what agent.py read back off disk, and on a lost race those differ — the
+  // file is the truth claude acts on, so it has to be able to correct the
+  // label. Same-verdict repeats (a poll replaying a decision already shown)
+  // are the common case and still no-op.
+  let shown = "";
   function resolve(decision, scope) {
-    if (resolved) return;  // the poll that follows a click reports it again
-    resolved = true;
+    const key = decision + "/" + (scope || "");
+    if (key === shown) return;
+    shown = key;
     actions.remove();
     el.classList.add("resolved");
     if (decision === "allow") {

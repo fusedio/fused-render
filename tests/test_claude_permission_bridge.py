@@ -255,6 +255,121 @@ def test_decide_latches_on_the_first_answer(agent, tmp_path):
     assert agent._permissions(run_dir)[0]["decision"] == "allow"
 
 
+def _lose_the_latch(perm_dir, request_id, payload, delay=0.25):
+    """Take the O_EXCL latch the way a writer does — create first, write the
+    JSON a beat later — so the next writer loses the race to a file that exists
+    but does not parse yet. Returns the thread doing the delayed write."""
+    path = os.path.join(perm_dir, request_id + ".res.json")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
+    def finish():
+        time.sleep(delay)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    t = threading.Thread(target=finish, daemon=True)
+    t.start()
+    return t
+
+
+def test_decide_waits_out_an_in_flight_write_instead_of_guessing(agent, tmp_path):
+    """The window between O_EXCL create and the JSON landing is not "unanswered".
+
+    Reading it as unanswered is how the loser of a double-click reported ITS
+    verdict — the card saying Allowed while claude was handed the Deny that
+    actually won.
+    """
+    run_dir = _run_dir(agent, tmp_path)
+    perm_dir = agent._perm_dir(run_dir)
+    with open(os.path.join(perm_dir, "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Bash", "input": {}}, fh)
+    monkey_runs(agent, tmp_path)
+
+    t = _lose_the_latch(perm_dir, "req-1", {"decision": "deny", "scope": "once"})
+    out = agent._decide("run", "req-1", "allow", "session")
+    t.join(timeout=5)
+    assert out["decision"] == "deny", "reported the click, not the winner"
+    assert agent._permissions(run_dir)[0]["decision"] == "deny"
+
+
+def test_decide_reports_an_error_when_no_write_survives(agent, tmp_path):
+    run_dir = _run_dir(agent, tmp_path)
+    perm_dir = agent._perm_dir(run_dir)
+    with open(os.path.join(perm_dir, "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Bash", "input": {}}, fh)
+    monkey_runs(agent, tmp_path)
+    agent.DECISION_WRITE_WINDOW = 0.2  # don't sit through the real window
+
+    # A latch taken by a writer that then died: the file exists, holds the
+    # latch, and will never parse.
+    os.close(os.open(os.path.join(perm_dir, "req-1.res.json"),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    assert agent._decide("run", "req-1", "allow", "once") == {
+        "error": "could not record that decision"}
+
+
+def test_a_failed_write_does_not_jam_the_latch(agent, tmp_path, monkeypatch):
+    """A write that dies after the create must release the file it claimed —
+    an empty one holds the latch forever while never parsing, so the request
+    could no longer be answered by anyone."""
+    run_dir = _run_dir(agent, tmp_path)
+    perm_dir = agent._perm_dir(run_dir)
+
+    real_fdopen = os.fdopen
+
+    def boom(fd, *a, **kw):
+        real_fdopen(fd, *a, **kw).close()
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent.os, "fdopen", boom)
+    assert not agent._write_decision(perm_dir, "req-1", {"decision": "allow"})
+    assert not os.path.exists(os.path.join(perm_dir, "req-1.res.json"))
+
+    monkeypatch.undo()
+    assert agent._write_decision(perm_dir, "req-1", {"decision": "allow"})
+    assert agent._read_decision(perm_dir, "req-1")["decision"] == "allow"
+
+
+def test_read_decision_does_not_block_the_poll_path(agent, tmp_path):
+    """`poll` runs every 400 ms and must never sit on a partial file — it
+    reports the request as still pending and the next tick corrects it."""
+    run_dir = _run_dir(agent, tmp_path)
+    perm_dir = agent._perm_dir(run_dir)
+    os.close(os.open(os.path.join(perm_dir, "req-1.res.json"),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    started = time.monotonic()
+    assert agent._read_decision(perm_dir, "req-1") == {}
+    assert time.monotonic() - started < 0.5
+
+
+def test_server_timeout_yields_to_a_click_landing_in_the_same_instant(tmp_path):
+    """The sharp end of the same bug: here a misread reaches CLAUDE, denying a
+    tool the user allowed."""
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir, env={"FUSED_RENDER_PERMISSION_TIMEOUT": "1"})
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        sink = []
+        reader = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Bash", "input": {"command": "ls"}}}, sink)
+        req = _wait_for_request(perm_dir)
+
+        # Claim the latch just as the server's own wait expires, and let the
+        # JSON land a beat later — exactly the shape of a click racing the
+        # timeout.
+        time.sleep(0.9)
+        t = _lose_the_latch(str(perm_dir), req["id"],
+                            {"decision": "allow", "scope": "once"}, delay=0.4)
+        reader.join(timeout=20)
+        t.join(timeout=5)
+
+        payload = _result_payload(sink[0])
+        assert payload["behavior"] == "allow", (
+            "the server denied a request the user had allowed")
+    finally:
+        s.close()
+
+
 @pytest.mark.parametrize("decision", ["deny", "", "Allow", "allow ", "yes", "1"])
 def test_only_the_exact_string_allow_grants(agent, tmp_path, decision):
     run_dir = _run_dir(agent, tmp_path)
