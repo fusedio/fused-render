@@ -15,9 +15,10 @@ landing + terminal-style chat) that talks to the local Claude Code CLI
 
 ```
 fused_render/templates/claude/
-├── template.html   # chat UI; adapted from the internal chat sandbox POC
-├── agent.py        # runPython backend: start/poll/sessions/history/cancel; stdlib only
-└── icon.svg        # monochrome asterisk for the mode switcher
+├── template.html          # chat UI; adapted from the internal chat sandbox POC
+├── agent.py               # runPython backend: start/poll/decide/sessions/history/cancel; stdlib only
+├── permission_server.py   # one-tool stdio MCP server: the approval bridge (stdlib only)
+└── icon.svg               # monochrome asterisk for the mode switcher
 ```
 
 ## How it works
@@ -84,17 +85,74 @@ fused_render/templates/claude/
   this one's. History also runs `_migrate_session` first (like `start`), so
   opening a moved file's saved session shows its turns immediately instead
   of appearing empty until the first new message triggers migration.
-- **Permissions:** spawned with `--permission-mode acceptEdits` so headless
-  Claude can actually edit the file (non-interactive runs can't answer
-  permission prompts; the default would stall/deny every Edit).
+- **Permissions — the chat window IS the prompt** (see the next section).
+  No `--permission-mode`: the default (ask) is answerable now.
+
+## Approvals: the permission bridge (2026-07-28)
+
+Headless `claude -p` has no terminal to prompt on. The POC's answer was
+`--permission-mode acceptEdits`, which bought silent edits anywhere on disk
+*and still left everything else broken*: a Bash/WebFetch/Write call the
+session's rules didn't already allow came back
+`tool requires user interaction; no prompt available in headless mode` — an
+invisible refusal. The user saw Claude decline, with no prompt and no reason.
+
+`--permission-prompt-tool` names an MCP tool the CLI calls **instead of**
+prompting, and `permission_server.py` is that tool:
+
+```
+claude (headless)                    agent.py / browser
+   │  needs to run Edit
+   ├─► mcp__fused_approvals__approve
+   │      └─ writes  perm/<id>.req.json ──────► poll → card with Allow/Deny
+   │         …blocks…                             │
+   │         reads   perm/<id>.res.json ◄─────────┘ decide
+   └─◄ {"behavior": "allow", "updatedInput": …}
+```
+
+- **The card is the prompt.** While one is unanswered the subprocess is
+  genuinely blocked, `poll` reports `phase: "awaiting"`, and the status line
+  reads "Waiting for your approval…".
+- **Wire shape** (CLI 2.1.220): in `{tool_name, input, tool_use_id}`, out a
+  *single* text block whose text is JSON — `{"behavior": "allow",
+  "updatedInput": …}` or `{"behavior": "deny", "message": …}` (the message is
+  required). Anything else and the CLI raises "Permission prompt tool returned
+  an invalid result". Pinned by `tests/test_claude_permission_bridge.py`,
+  which drives the server over its stdio JSON-RPC without invoking claude.
+- **Request ids are ours, not the CLI's `tool_use_id`** — the id is joined into
+  a path, and a name we minted cannot escape the perm dir.
+- **Decisions are a one-way latch.** `O_EXCL`, first writer wins: a
+  double-click, or a cancel landing on a card that was just allowed, must not
+  overwrite a verdict the tool may already have acted on. Anything that is not
+  the exact string `allow` fails closed.
+- **"Allow all X in this reply"** returns `updatedPermissions: [{type:
+  "addRules", rules: [{toolName}], behavior: "allow", destination: "session"}]`
+  — the CLI's own rule engine does the matching. The rule is the **bare tool
+  name**: the wire hands us no permission *suggestions*, and inventing our own
+  `Bash(rm -rf *)`-style patterns would be a hand-rolled matcher in the one
+  place that must not have one.
+- **Nobody home:** an unanswered request denies itself after
+  `FUSED_RENDER_PERMISSION_TIMEOUT` (1 h) and writes that verdict down, so a
+  re-attaching frame doesn't render buttons that lead nowhere. The per-server
+  `timeout` in the generated `mcp.json` is set *above* that, so our sentence
+  wins over the CLI's MCP-timeout error. `cancel` releases every parked request
+  before killing the process group.
+- **Side effect handled:** naming a permission-prompt tool also un-gates
+  `AskUserQuestion` and `ExitPlanMode`, which the CLI otherwise disables in
+  headless mode. This chat renders neither, so `--disallowed-tools` keeps them
+  off — the change is about tool approvals and nothing else.
 
 ## Deliberate simplifications / tradeoffs (revisit later)
 
-1. **`acceptEdits` without confirmation UI.** Claude edits files (anywhere,
-   if the user insists) with no approval step in the browser. Right POC
-   call, wrong product call — a real version wants a permission bridge
-   (e.g. `--permission-prompt-tool` via MCP, or the Agent SDK's canUseTool)
-   surfacing approvals in the chat UI.
+1. **"This reply", not "this session".** Each turn is a fresh
+   `claude -p --resume`, and a `destination: "session"` rule lives in *that
+   process* — verified: turn 2 asks again. So the second button is honestly
+   labelled "Allow all X in this reply". Making it stick across turns means a
+   grant store of our own (keyed by session id, replayed as `--allowedTools` on
+   the next `--resume`) — deliberately not built here, because a durable,
+   invisible, un-revokable grant is a bigger design call than this fix.
+   Approvals are also not narrowed (allow-all-Bash, never `Bash(npm test:*)`),
+   for the reason above.
 2. **Polling over push.** 400 ms `runPython` polls = one fresh Python
    subprocess per poll. Wasteful but fits the executor contract with zero
    server changes. A real version wants a server-side run manager +
@@ -123,9 +181,12 @@ fused_render/templates/claude/
    not move; fork semantics deemed reasonable for copied files).
    Cross-*machine* transfer would need the transcript embedded in the
    sidecar — out of scope.
-6. **Only text turns render.** Tool calls/diffs stream past invisibly (a
-   "Working…" spinner phase is the only signal). Showing tool activity
-   (edits made to the file!) inline is the obvious next feature.
+6. **Only text turns — and approval cards — render.** A tool call that needs
+   permission now shows up as a card (tool name + a per-tool summary: the Bash
+   command, the Edit's `-`/`+` lines, the Write's content). An *allowed* one
+   still streams past invisibly behind the "Working…" spinner, and cards are
+   not in the transcript, so they vanish on a reload of a finished session.
+   Showing all tool activity inline is still the obvious next feature.
 7. **`claude` binary discovery:** `shutil.which` + three well-known
    fallbacks (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`). The
    server env's PATH (Finder-launched .app!) may lack it; error message says
@@ -141,9 +202,14 @@ fused_render/templates/claude/
     bookmark or pane layout restores the exact conversation (nice), but
     switching modes keeps them on the shell URL (documented registry quirk;
     `session_id` is meaningless to other templates but harmless).
-11. **No tests for agent.py.** It shells out to a user-installed CLI;
-    meaningful tests need a fake `claude` binary. The registry/test pin
-    covers resolution (`.html` → `_render, code, claude`).
+11. **Tests stop at the CLI boundary.** `agent.py` shells out to a
+    user-installed binary, so nothing here runs `claude`:
+    `test_claude_agent_sidecar.py` covers the sidecar,
+    `test_claude_permission_bridge.py` drives `permission_server.py` over its
+    own stdio JSON-RPC and asserts the spawn line, and the registry test pins
+    resolution (`.html` → `_render, code, claude`). What no test can catch is
+    the CLI changing its side of the wire — the flag names, the result schema,
+    or which tools a prompt tool un-gates.
 
 ## Synergy worth noting
 

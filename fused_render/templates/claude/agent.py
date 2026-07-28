@@ -13,12 +13,21 @@ lists ONLY the sessions in that sidecar, never the user's global session
 history. Claude runs with cwd = the target file's directory and an appended
 system prompt that scopes it (softly) to the file.
 
+Tool approvals are the browser's to give: claude is spawned with a
+`--permission-prompt-tool` pointing at `permission_server.py` (a one-tool stdio
+MCP server), which parks each request as a file under the run's `perm/` dir.
+`poll` hands those to the page, `decide` writes the answer back, and the
+blocked claude subprocess picks it up.
+
 Actions:
   main(action="start", file=..., message=..., session_id="", model="", effort="")
       -> {"run_id": ...}
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
-          "phase": ..., "message": <the run's first message, for re-attach>}
+          "phase": ..., "message": <the run's first message, for re-attach>,
+          "permissions": [{"id", "tool", "input", "decision", "scope"}, ...]}
+  main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
+       scope="once"|"session")        -> {"decided": ..., "decision": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
@@ -29,11 +38,20 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
 RUNS = os.path.join(tempfile.gettempdir(), "fused_render_claude", "runs")
 PROJECTS = os.path.expanduser("~/.claude/projects")
+
+# The MCP server + tool that `--permission-prompt-tool` names. The CLI addresses
+# an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
+PERMISSION_SERVER = "fused_approvals"
+PERMISSION_TOOL = "approve"
+# Seconds an unanswered request waits before denying itself (permission_server
+# owns the wait; this side only has to agree on the number).
+PERMISSION_WAIT = 3600
 
 
 def _claude_bin() -> str:
@@ -207,6 +225,144 @@ def _migrate_session(file: str, session_id: str) -> None:
             pass
 
 
+# ------------------------------------------------------------- tool approvals
+
+def _perm_dir(run_dir: str) -> str:
+    return os.path.join(run_dir, "perm")
+
+
+def _safe_name(name: str) -> bool:
+    """True when `name` is safe to join into a path: a bare filename component,
+    not a traversal. Run ids and permission request ids are both minted by us,
+    but they come back from the browser as ordinary params. Backslash is
+    rejected everywhere, not just where it is `os.sep` — a POSIX server reading
+    a path a Windows client composed should refuse it, not create it."""
+    return bool(name) and not name.startswith(".") and \
+        "/" not in name and "\\" not in name
+
+
+def _write_mcp_config(run_dir: str) -> str:
+    """The one-server MCP config that makes the chat window the permission
+    prompt, written into the run dir. Returns its path (for --mcp-config)."""
+    path = os.path.join(run_dir, "mcp.json")
+    server = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "permission_server.py")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"mcpServers": {PERMISSION_SERVER: {
+            # sys.executable, matching how the app spawns every other helper
+            # (executor.py): in the packaged .app that is the bundled python.
+            "command": sys.executable,
+            "args": [server, _perm_dir(run_dir)],
+            "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
+            # Hard per-call ceiling for this server, and a permission card is a
+            # tool call that lasts as long as the user takes to look at it. Set
+            # above the server's own wait so an unanswered card returns OUR
+            # "nobody answered" deny instead of the CLI's MCP-timeout error.
+            "timeout": (PERMISSION_WAIT + 60) * 1000,
+        }}}, fh)
+    return path
+
+
+def _permissions(run_dir: str) -> list:
+    """Every permission request this run has raised, each with the user's
+    decision if one has been made. The whole list, not just the unanswered
+    ones: a frame that re-attaches mid-turn (mode switch, reload) has to be
+    able to rebuild the cards it never saw."""
+    perm_dir = _perm_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(perm_dir) if n.endswith(".req.json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            with open(os.path.join(perm_dir, name), encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue  # half-written; the next poll gets it
+        if not isinstance(req, dict) or not _safe_name(str(req.get("id") or "")):
+            continue
+        res = _read_decision(perm_dir, req["id"])
+        out.append({
+            "id": req["id"],
+            "tool": str(req.get("tool") or ""),
+            "input": req.get("input") if isinstance(req.get("input"), dict) else {},
+            "created_at": req.get("created_at") or 0,
+            "decision": str(res.get("decision") or ""),
+            "scope": str(res.get("scope") or ""),
+        })
+    return out
+
+
+def _read_decision(perm_dir: str, request_id: str) -> dict:
+    try:
+        with open(os.path.join(perm_dir, request_id + ".res.json"),
+                  encoding="utf-8") as fh:
+            res = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}  # not answered yet, or caught mid-write
+    return res if isinstance(res, dict) else {}
+
+
+def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
+    """Record one decision, first writer wins; True once a decision is on disk
+    (this one, or whichever got there first).
+
+    O_EXCL rather than the atomic temp+replace used elsewhere in this file,
+    because the race that matters here is a *second* answer to the same request
+    — a double-click, or cancel landing on a card the user just allowed —
+    overwriting a verdict the tool may already have acted on. A torn read is
+    harmless by comparison: permission_server retries until the JSON parses."""
+    path = os.path.join(perm_dir, request_id + ".res.json")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return True
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    except OSError:
+        return False
+    return True
+
+
+def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
+    run_dir = os.path.join(RUNS, run_id)
+    if not _safe_name(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if not _safe_name(request_id):
+        return {"error": "unknown permission request"}
+    perm_dir = _perm_dir(run_dir)
+    if not os.path.isfile(os.path.join(perm_dir, request_id + ".req.json")):
+        return {"error": "unknown permission request"}
+    # Anything that is not an explicit allow is a deny: a mangled param must
+    # fail closed, never grant.
+    verdict = "allow" if decision == "allow" else "deny"
+    if not _write_decision(perm_dir, request_id, {
+            "decision": verdict,
+            "scope": "session" if scope == "session" else "once"}):
+        # claude is still blocked on this request — say so instead of letting
+        # the card render as answered.
+        return {"error": "could not record that decision"}
+    # Report what is actually on disk, not what was clicked: the losing half of
+    # a double-click must not show a verdict the tool will never see.
+    res = _read_decision(perm_dir, request_id)
+    return {"decided": request_id,
+            "decision": str(res.get("decision") or verdict),
+            "scope": str(res.get("scope") or "")}
+
+
+def _deny_pending(run_dir: str, reason: str) -> None:
+    """Release every unanswered request so the blocked claude subprocess stops
+    waiting on a window that is not coming back."""
+    for perm in _permissions(run_dir):
+        if not perm["decision"]:
+            _write_decision(_perm_dir(run_dir), perm["id"],
+                            {"decision": "deny", "reason": reason})
+
+
 # ----------------------------------------------------------------- start/poll
 
 def _start(file: str, message: str, session_id: str, model: str,
@@ -220,12 +376,26 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
+    os.makedirs(_perm_dir(run_dir))
 
+    # No --permission-mode: the default (ask) is finally answerable now that
+    # --permission-prompt-tool routes the question to the chat window. The POC
+    # ran acceptEdits purely because headless claude could not be asked, which
+    # bought silent edits anywhere on disk and still left every Bash/WebFetch
+    # denied with "no prompt available in headless mode" — the invisible refusal
+    # this replaces.
     cmd = [_claude_bin(), "-p", message,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
            "--append-system-prompt", _system_prompt(file),
-           "--permission-mode", "acceptEdits"]
+           "--mcp-config", _write_mcp_config(run_dir),
+           "--permission-prompt-tool",
+           f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
+           # Naming a permission-prompt tool also un-gates AskUserQuestion and
+           # ExitPlanMode, which the CLI otherwise disables in headless mode.
+           # This chat renders neither a question picker nor a plan dialog, so
+           # keep them off: the change is about tool approvals and nothing else.
+           "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
     if session_id:
         cmd += ["--resume", session_id]
     if model:
@@ -261,8 +431,9 @@ def _alive(run_dir: str) -> bool:
 
 def _poll(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
-    if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
-        return {"text": "", "done": True, "session_id": "", "error": "unknown run_id"}
+    if not _safe_name(run_id) or not os.path.isdir(run_dir):
+        return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
+                "permissions": []}
 
     text_parts = []
     result_text = None
@@ -335,6 +506,21 @@ def _poll(run_id: str) -> dict:
         error = tail or ("claude exited before completing the reply"
                          if text_parts else "claude exited unexpectedly")
 
+    # Approvals, after `done` is final. A card the user never answered is only
+    # still live while the run is: once it ends, whatever the request was
+    # waiting for is gone (the server denied itself at its own timeout, or the
+    # subprocess died holding it), so mark it expired rather than leaving the
+    # page rendering buttons that lead nowhere.
+    permissions = _permissions(run_dir)
+    if done:
+        for perm in permissions:
+            if not perm["decision"]:
+                perm["decision"] = "expired"
+    elif any(not p["decision"] for p in permissions):
+        # A parked approval outranks whatever the stream last said it was
+        # doing: the run is not thinking, it is waiting on the user.
+        phase = "awaiting"
+
     # The run's own first message rides back on every poll so a re-attaching
     # page (mode switch / reload killed the poll loop, subprocess kept going)
     # can restore the user turn it never saw.
@@ -367,7 +553,7 @@ def _poll(run_id: str) -> dict:
         text = result_text
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
-            "message": meta.get("message", "")}
+            "message": meta.get("message", ""), "permissions": permissions}
 
 
 # ------------------------------------------------------- sessions & history
@@ -434,8 +620,12 @@ def _cancel(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
     # so reject anything that could resolve outside the runs dir.
-    if "/" in run_id or run_id.startswith(".") or not os.path.isdir(run_dir):
+    if not _safe_name(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
+    # Answer before killing: the kill takes the whole process group (the MCP
+    # server included), but if it fails, a parked approval would otherwise sit
+    # there holding the subprocess open for the full timeout.
+    _deny_pending(run_dir, "cancelled")
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
         os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
@@ -446,7 +636,8 @@ def _cancel(run_id: str) -> dict:
 
 def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
-         run_id: str = "") -> dict:
+         run_id: str = "", request_id: str = "", decision: str = "",
+         scope: str = "once") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -455,6 +646,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort)
     if action == "poll":
         return _poll(run_id)
+    if action == "decide":
+        return _decide(run_id, request_id, decision, scope)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}

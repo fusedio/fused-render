@@ -23,6 +23,7 @@
     --scrollbar: #33363d;
     --dot: #c8c6bd;            /* the assistant's ● gutter marker */
     --error: #f14c4c;
+    --ok: #6cc07a;             /* "✓ Allowed" on a resolved permission card */
     --faint: #5f6570;          /* placeholders, hint row, "model:" labels */
     --fg-strong: #ffffff;      /* **bold** and headings inside a reply */
     --code-bg: #22252b;
@@ -57,6 +58,7 @@
     --scrollbar: #c4c8ce;
     --dot: #6b6a62;
     --error: #c62828;
+    --ok: #2e7d32;
     --faint: #8a8f98;
     --fg-strong: #000000;
     --code-bg: #f0f1f3;
@@ -145,6 +147,56 @@
   .working .meta { color: var(--dim); }
   .error { color: var(--error); }
   .error::before { content: "✗ "; }
+
+  /* ── permission cards (the approval bridge) ─────────────────── */
+  /* Claude runs headless here, so a tool the session's rules don't already
+     allow becomes one of these instead of a terminal prompt. Bordered in the
+     brand orange while it is the thing blocking the reply; dropped back to the
+     ordinary border once answered. */
+  .perm {
+    border: 1px solid var(--orange);
+    border-radius: 6px;
+    background: var(--card);
+    padding: 8px 10px;
+  }
+  .perm.resolved { border-color: var(--border); }
+  .perm .perm-head .tool { color: var(--orange); font-weight: bold; }
+  .perm .perm-sub { color: var(--dim); word-break: break-word; }
+  .perm pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    max-height: 190px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .perm .perm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .perm button {
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .perm button:hover:not(:disabled) { border-color: var(--border-focus); }
+  .perm button.primary {
+    background: var(--orange);
+    border-color: var(--orange);
+    color: var(--on-orange);
+  }
+  .perm button.primary:hover:not(:disabled) { filter: brightness(1.12); }
+  .perm button:disabled { opacity: .55; cursor: default; }
+  .perm .perm-status { margin-top: 8px; }
+  .perm .perm-status.allow { color: var(--ok); }
+  .perm .perm-status.deny { color: var(--error); }
+  .perm .perm-status.expired { color: var(--dim); }
   #inputbox {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -530,6 +582,7 @@ document.getElementById("back").onclick = () => {
   fused.params.set("run", "");  // a failed re-attach must not chase us home
   showSession();
   log.innerHTML = "";
+  permCards.clear();  // the cards went with the log; don't keep handles to them
   document.body.classList.add("home");
   const recentlist = document.getElementById("recentlist");
   recentlist.innerHTML = "";
@@ -713,6 +766,154 @@ function addError(text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// ── permission cards ──────────────────────────────────────────
+// Headless claude cannot open a terminal prompt, so agent.py points its
+// --permission-prompt-tool at an MCP server that parks each request on disk;
+// poll hands them here and these buttons write the answer back. Until one is
+// clicked the subprocess is genuinely blocked — the card IS the prompt.
+const permCards = new Map();  // request id -> card handle, cleared with the log
+
+// What the user is actually being asked to allow. Every field goes in through
+// textContent — tool input is model-authored text and must never be parsed as
+// markup (the same rule the rest of this view follows).
+function summarizePermission(tool, input) {
+  const inp = input && typeof input === "object" ? input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  const clip = (s, n) => (s.length > n ? s.slice(0, n) + "\n…" : s);
+  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+  switch (tool) {
+    case "Bash":
+      return { sub: str(inp.description), body: clip(str(inp.command), 1200) };
+    case "Edit":
+      return { sub: str(inp.file_path),
+               body: clip(mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+"), 1200) };
+    case "Write":
+      return { sub: str(inp.file_path), body: clip(str(inp.content), 1200) };
+    case "NotebookEdit":
+      return { sub: str(inp.notebook_path), body: clip(str(inp.new_source), 1200) };
+    case "Read":
+    case "Glob":
+    case "Grep":
+      return { sub: str(inp.file_path || inp.path || inp.pattern), body: "" };
+    case "WebFetch":
+    case "WebSearch":
+      return { sub: str(inp.url || inp.query), body: clip(str(inp.prompt), 600) };
+  }
+  return { sub: "", body: Object.keys(inp).length ? clip(JSON.stringify(inp, null, 2), 1200) : "" };
+}
+
+function buildPermCard(p, run_id) {
+  const toolName = p.tool || "a tool";
+  const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
+
+  const el = document.createElement("div");
+  el.className = "turn perm";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  const tool = document.createElement("span");
+  tool.className = "tool";
+  tool.textContent = toolName;
+  head.append("Claude wants to use ", tool);
+  el.appendChild(head);
+
+  const { sub, body } = summarizePermission(p.tool, p.input);
+  if (sub) {
+    const d = document.createElement("div");
+    d.className = "perm-sub";
+    d.textContent = sub;
+    el.appendChild(d);
+  }
+  if (body) {
+    const pre = document.createElement("pre");
+    pre.textContent = body;
+    el.appendChild(pre);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "perm-actions";
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  el.append(actions, status);
+
+  let resolved = false;
+  function resolve(decision, scope) {
+    if (resolved) return;  // the poll that follows a click reports it again
+    resolved = true;
+    actions.remove();
+    el.classList.add("resolved");
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = scope === "session"
+        ? "✓ Allowed — not asking again for " + label + " in this reply"
+        : "✓ Allowed";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you decided";
+    } else {
+      status.className = "perm-status deny";
+      status.textContent = "✗ Denied";
+    }
+  }
+
+  async function send(decision, scope) {
+    actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython("./agent.py", {
+        action: "decide", run_id, request_id: p.id, decision, scope,
+      }, { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // agent.py answers with what landed on disk, which is not necessarily
+      // what this button asked for (first writer wins on a double-click).
+      resolve((res && res.decision) || decision, (res && res.scope) || scope);
+    } catch (err) {
+      // The subprocess is still blocked, so the buttons have to come back.
+      actions.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  // "this reply", not "this session": each turn is a fresh `claude -p
+  // --resume`, and the rule the allow installs lives in that process (see the
+  // POC notes) — so it covers the rest of this reply and no further.
+  [["Allow", "allow", "once", "primary"],
+   ["Allow all " + label + " in this reply", "allow", "session", ""],
+   ["Deny", "deny", "once", ""]].forEach(([text, decision, scope, cls]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = text;
+    b.onclick = () => send(decision, scope);
+    actions.appendChild(b);
+  });
+
+  return { el, resolve };
+}
+
+// Reconcile the poll's request list with what is on screen: new requests get a
+// card, answered ones get their verdict. Idempotent — poll replays the whole
+// list every 400 ms.
+function syncPermissions(list, run_id, working) {
+  for (const p of list || []) {
+    if (!p || !p.id) continue;
+    let card = permCards.get(p.id);
+    if (!card) {
+      card = buildPermCard(p, run_id);
+      permCards.set(p.id, card);
+    }
+    if (!card.el.isConnected) {
+      // Below the streamed text, above the status line — same slot the reply
+      // bubble takes, so the card reads in the order it happened.
+      if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
+      else log.appendChild(card.el);
+      log.scrollTop = log.scrollHeight;
+    }
+    if (p.decision) card.resolve(p.decision, p.scope);
+  }
+}
+
 function addWorking() {
   const d = document.createElement("div");
   d.className = "turn working";
@@ -724,7 +925,8 @@ function addWorking() {
   const meta = d.querySelector(".meta");
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
-    verbEl.textContent = (stats.phase === "composing" ? "Composing" :
+    verbEl.textContent = (stats.phase === "awaiting" ? "Waiting for your approval" :
+                          stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
     const effort = fused.params.get("effort") || DEFAULT_EFFORT;
     const parts = [secs + "s"];
@@ -851,6 +1053,7 @@ async function pollLoop(run_id) {
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking");
+      syncPermissions(data.permissions, run_id, w);
       if (data.text) {
         if (!reply) {
           reply = addAssistant("");
@@ -1040,6 +1243,7 @@ async function loadHistory(session_id) {
   // transcript order. Blocking sends for the load keeps turns in order.
   if (sending) return;
   sending = true;
+  permCards.clear();
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id }, { key: null });
