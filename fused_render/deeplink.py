@@ -165,7 +165,7 @@ def parse_github_url(src: str) -> dict:
         if subpath.startswith(("..", "/")) or subpath == ".":
             raise DeeplinkError(f"invalid subdirectory path in URL: {url}")
     name = posixpath.basename(subpath) if subpath else repo
-    if name in (".", "..") or name.startswith(".") or "/" in name or "\\" in name:
+    if name in (".", "..") or name.startswith(".") or "/" in name or "\\" in name or ":" in name:
         raise DeeplinkError(f"unusable destination folder name {name!r} from URL: {url}")
     return {"owner": owner, "repo": repo, "ref": ref, "subpath": subpath, "name": name}
 

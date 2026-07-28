@@ -1193,30 +1193,25 @@ def test_delete_rejects_builtin_mount(client, rcd, tmp_path, monkeypatch):
     assert any(m["id"] == builtin["id"] for m in mounts_mod.list_mounts())
 
 
-def test_create_s3_remote_builds_rclone_argv(client, monkeypatch):
-    seen = {}
-
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd
-
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(mounts_mod.subprocess, "run", fake_run)
+def test_create_s3_remote_uses_rc_not_argv(client, rcd, monkeypatch):
+    # Credentials must travel over the rc daemon's loopback HTTP body, not a
+    # subprocess argv, so they never show up in `ps` for other local users.
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
+    rcd.responses["config/create"] = {}
     r = client.post("/api/mounts/remotes", json={
         "name": "mys3",
         "params": {"access_key_id": "AK", "secret_access_key": "SK",
                    "endpoint": "https://e.example", "region": "us-east-1"},
     }, headers=FUSED)
     assert r.status_code == 200
-    cmd = seen["cmd"]
-    assert cmd[:4] == ["/usr/bin/rclone", "config", "create", "mys3"]
-    assert "s3" in cmd and "AK" in cmd and "https://e.example" in cmd
+    method, body = next(c for c in rcd.calls if c[0] == "config/create")
+    assert body["name"] == "mys3"
+    assert body["type"] == "s3"
+    params = body["parameters"]
+    assert params["access_key_id"] == "AK"
+    assert params["secret_access_key"] == "SK"
+    assert params["endpoint"] == "https://e.example"
+    assert params["region"] == "us-east-1"
 
 
 def test_create_remote_rejects_bad_name(client):
@@ -3294,7 +3289,7 @@ def test_sign_single_flight_defers_when_lock_held(fresh_upstream):
 # -- upstream cache hygiene (Task 4) -----------------------------------------
 
 
-def test_create_remote_invalidates_upstream_caches(client, fresh_upstream, monkeypatch):
+def test_create_remote_invalidates_upstream_caches(client, rcd, fresh_upstream, monkeypatch):
     # The stale-_upstream_cfg bug: a changed key must be picked up without a
     # restart. Creating a remote clears every memoized upstream fact.
     mounts_mod._upstream_cfg["mys3"] = {"type": "s3", "stale": True}
@@ -3303,10 +3298,7 @@ def test_create_remote_invalidates_upstream_caches(client, fresh_upstream, monke
     mounts_mod._cred_cache["mys3"] = (None, 9e18)
     mounts_mod._upstream_region["mys3:bucket"] = "us-east-1"
 
-    class _R:
-        returncode, stdout, stderr = 0, "", ""
-
-    monkeypatch.setattr(mounts_mod.subprocess, "run", lambda cmd, **kw: _R())
+    rcd.responses["config/create"] = {}
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
     r = client.post("/api/mounts/remotes", json={
         "name": "mys3",
