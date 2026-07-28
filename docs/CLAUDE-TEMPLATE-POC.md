@@ -136,18 +136,31 @@ claude (headless)                    agent.py / browser
   which drives the server over its stdio JSON-RPC without invoking claude.
 - **Request ids are ours, not the CLI's `tool_use_id`** — the id is joined into
   a path, and a name we minted cannot escape the perm dir.
-- **The run tree is `0700`, its files `0600`.** A run dir holds the whole
-  conversation — `out.jsonl` is the transcript, `meta.json` the user's message,
-  `perm/*.req.json` every tool payload — and it lives under the shared temp
-  root, which on a typical Linux box means default `0755`/`0644` and any other
-  local account can read all of it. Modes are set by the `mkdir`/`open` itself
-  (never a `chmod` after the content lands), and `os.makedirs`' `mode` reaches
-  only the leaf since 3.7, so `_private_dir` creates each level in turn.
-  Existing directories are deliberately *not* tightened: the chain starts at a
-  directory we do not own, and chmod-ing the temp root would be a worse bug
-  than the one being fixed — the freshly created run dir is the level that
-  actually contains the data. macOS' per-user temp root makes the exposure moot
-  there, which is exactly why it could not be relied on.
+- **The run tree is per-user and `0700`, its files `0600`.** A run dir holds the
+  whole conversation — `out.jsonl` is the transcript, `meta.json` the user's
+  message, `perm/*.req.json` every tool payload — and it lives under the shared
+  temp root, which on a typical Linux box means default `0755`/`0644` and any
+  other local account can read all of it. Three rules follow:
+  - the root is **`fused_render_claude-<uid>`**, not a name every account
+    shares. One shared root cannot be both private and usable: at `0700` the
+    first user to open a chat owns the namespace and everybody else is locked
+    out of creating runs at all, and anything writable by them is either a
+    world-writable directory we created or the disclosure the `0700` exists to
+    prevent. Windows' temp dir is already per-user, so the suffix is POSIX-only.
+  - modes are set by the `mkdir`/`open` itself, never a `chmod` after the
+    content lands, and `os.makedirs`' `mode` reaches only the leaf since 3.7 —
+    hence `_private_dir` creating each level in turn.
+  - **parents tolerate losing a race, the leaf does not.** Two runs starting at
+    once both find the root missing and both `mkdir`; the loser used to abort
+    `_start`, so one chat never sent its message (reproduced: 2 of 8 concurrent
+    first runs). An existing parent is accepted once confirmed to be a
+    directory. The run dir stays an exclusive create — it is the private
+    boundary, so one already there is a collision, not something to adopt.
+
+  Existing directories are deliberately *not* chmod'ed: the chain starts at a
+  directory we do not own, and tightening the temp root would be a worse bug
+  than the one being fixed. macOS' per-user temp root makes the original
+  exposure moot there, which is exactly why it could not be relied on.
 - **The card shows the whole input, and that is a security property.** An Allow
   returns `updatedInput` **unchanged**, so anything the card elided would still
   run. The input is model-authored, so a prompt-injected model that knows where

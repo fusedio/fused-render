@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import stat
 import sys
+import tempfile
 import threading
 import time
 
@@ -90,7 +91,10 @@ class _Server:
         self.proc.stdin.flush()
 
         def read():
-            sink.append(json.loads(self.proc.stdout.readline()))
+            line = self.proc.stdout.readline()
+            if not line:
+                return  # server shut down without replying; the empty sink says so
+            sink.append(json.loads(line))
         t = threading.Thread(target=read, daemon=True)
         t.start()
         return t
@@ -981,19 +985,118 @@ def test_the_run_tree_is_not_readable_by_other_local_accounts(agent, tmp_path,
         assert mode == 0o600, f"{name} is {oct(mode)}"
 
 
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX uid")
+def test_the_runs_root_is_per_user(agent):
+    """One shared `fused_render_claude` cannot be both private and usable: at
+    0700 the first account to open a chat owns the namespace and everyone else
+    is locked out of creating runs at all, and anything writable by them is
+    either a world-writable dir we created or the disclosure the 0700 exists
+    to prevent. A root per uid removes the contention instead of trading one
+    problem for the other."""
+    assert str(os.geteuid()) in agent.RUNS
+    assert agent.RUNS.startswith(tempfile.gettempdir())
+    # ...and it is still one tree, not a per-run scatter
+    assert agent.RUNS.endswith(os.path.join("runs"))
+
+
+def test_a_shared_parent_won_by_another_run_is_not_an_error(agent, tmp_path,
+                                                            monkeypatch):
+    """Deterministic form of the first-run race.
+
+    `fused_render_claude` and `runs` are shared by every run, so two templates
+    starting their first run at once both see them missing and both mkdir. The
+    loser used to propagate FileExistsError out of `_start`, so one chat simply
+    never sent its message. Here the parents already exist while `_private_dir`
+    is told they do not — exactly the window between its check and its mkdir.
+    """
+    runs = tmp_path / "fused_render_claude" / "runs"
+    os.makedirs(runs)  # what the other process finished a moment ago
+    real_isdir = os.path.isdir
+    window = {str(runs), str(runs.parent)}
+
+    def racing_isdir(p):
+        # Lie once per path — that is the window: the check says "missing",
+        # the other process wins the mkdir, and by the time we verify what
+        # blocked us the directory is really there.
+        if str(p) in window:
+            window.discard(str(p))
+            return False
+        return real_isdir(p)
+
+    monkeypatch.setattr(agent.os.path, "isdir", racing_isdir)
+
+    run_dir = str(runs / "20260101-000000-abcdef")
+    agent._private_dir(run_dir)  # must not raise
+    assert os.path.isdir(run_dir)
+    if os.name != "nt":
+        assert stat.S_IMODE(os.stat(run_dir).st_mode) == 0o700
+
+
+def test_concurrent_first_runs_all_get_a_directory(agent, tmp_path):
+    """The real thing: N first-runs against a parent chain that does not exist
+    yet. Every one of them has to come away with its own run dir."""
+    runs = tmp_path / "fused_render_claude" / "runs"
+    assert not runs.exists()
+    start = threading.Barrier(8)
+    failures, made = [], []
+
+    def first_run(n):
+        try:
+            start.wait(timeout=10)
+            path = str(runs / f"20260101-000000-{n:06d}")
+            agent._private_dir(path)
+            made.append(path)
+        except Exception as exc:  # noqa: BLE001 — the point is to see any of them
+            failures.append(exc)
+
+    threads = [threading.Thread(target=first_run, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert not failures, f"a concurrent first run aborted: {failures}"
+    assert len(made) == 8 and all(os.path.isdir(p) for p in made)
+
+
+def test_the_run_dir_itself_is_still_an_exclusive_create(agent, tmp_path):
+    """Tolerating a shared parent must not extend to the leaf: that one is
+    this run's private 0700 boundary, so an existing one is a collision or
+    somebody else's directory, not something to adopt."""
+    run_dir = tmp_path / "fused_render_claude" / "runs" / "20260101-000000-abcdef"
+    os.makedirs(run_dir)
+    with pytest.raises(FileExistsError):
+        agent._private_dir(str(run_dir))
+
+
+def test_a_file_blocking_a_parent_still_raises(agent, tmp_path):
+    """FileExistsError is swallowed only when what won the race is a directory
+    — a plain file in the path is not a lost race, and no retry fixes it."""
+    (tmp_path / "fused_render_claude").write_text("not a directory")
+    with pytest.raises((FileExistsError, NotADirectoryError)):
+        agent._private_dir(str(tmp_path / "fused_render_claude" / "runs" / "r1"))
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
 def test_a_parked_request_file_is_private(tmp_path, server):
     """The request body is the tool payload itself, so it must land 0600 — set
     by the create, never a chmod after the content is already on disk."""
     perm_dir = tmp_path / "perm"
     sink = []
-    server.send_async("tools/call", {
+    reader = server.send_async("tools/call", {
         "name": "approve",
         "arguments": {"tool_name": "Bash", "input": {"command": "echo secret"}}}, sink)
     req = _wait_for_request(perm_dir)
     mode = stat.S_IMODE(os.stat(perm_dir / (req["id"] + ".req.json")).st_mode)
     assert mode == 0o600, f"request file is {oct(mode)}"
     assert stat.S_IMODE(os.stat(perm_dir).st_mode) == 0o700
+
+    # Answer it and collect the reader before leaving: an abandoned request
+    # means teardown closes the server under a thread still blocked on
+    # readline, and the EOF surfaces as PytestUnhandledThreadExceptionWarning.
+    (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps({"decision": "deny"}))
+    reader.join(timeout=10)
+    assert _result_payload(sink[0])["behavior"] == "deny"
 
 
 def test_template_wires_the_decide_action(agent):

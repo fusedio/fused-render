@@ -58,7 +58,28 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
 
-RUNS = os.path.join(tempfile.gettempdir(), "fused_render_claude", "runs")
+def _runs_root() -> str:
+    """Where run dirs live: a per-user tree under the shared temp root.
+
+    Per-user because one `fused_render_claude` shared by everybody cannot be
+    both private and usable. At 0700 the first account to open a chat owns the
+    namespace and every other local user is locked out — they cannot create a
+    run at all. Loose enough for them to write means either world-writable
+    (a hazard we would be creating ourselves) or readable, which is the
+    disclosure the 0700 exists to prevent. Giving each uid its own root
+    dissolves the conflict: nobody contends for anybody else's directory, and
+    0700 on it is then simply correct.
+
+    POSIX-only suffix: `geteuid` does not exist on Windows, whose temp dir is
+    already per-user (%LOCALAPPDATA%\\Temp), so there is nothing to separate.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    suffix = "-%d" % geteuid() if geteuid is not None else ""
+    return os.path.join(tempfile.gettempdir(),
+                        "fused_render_claude" + suffix, "runs")
+
+
+RUNS = _runs_root()
 
 # Claude Code's own data dir. CLAUDE_CONFIG_DIR wins where it is set: the
 # supervisor sets it for every packaged build (supervisor/paths.py
@@ -378,9 +399,19 @@ def _private_dir(path: str) -> None:
     temp root would be a far worse bug than the one being fixed), and the run
     dir underneath — always freshly created here, always 0700 — is the level
     that actually contains the data.
+
+    Parents tolerate losing the race, the leaf does not. `fused_render_claude`
+    and `runs` are shared by every run, so two templates starting their first
+    run at once both find them missing and both call mkdir — and the loser
+    used to abort `_start`, so the user's message simply never sent. Whoever
+    won is fine as long as what landed is a directory. The **leaf** stays an
+    exclusive create: it is this run's private 0700 boundary, so finding one
+    already there means a run-id collision or somebody else's directory, and
+    quietly adopting it is the wrong answer.
     """
+    path = os.path.abspath(path)
     missing = []
-    head = os.path.abspath(path)
+    head = os.path.dirname(path)
     while head and not os.path.isdir(head):
         head, tail = os.path.split(head)
         if not tail:
@@ -388,7 +419,12 @@ def _private_dir(path: str) -> None:
         missing.append(tail)
     for tail in reversed(missing):
         head = os.path.join(head, tail)
-        os.mkdir(head, 0o700)
+        try:
+            os.mkdir(head, 0o700)
+        except FileExistsError:
+            if not os.path.isdir(head):
+                raise  # a *file* is in the way, which no retry will fix
+    os.mkdir(path, 0o700)
 
 
 def _private_open(path: str):
