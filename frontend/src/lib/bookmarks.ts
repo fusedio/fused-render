@@ -254,6 +254,18 @@ function mutate(transform: (items: BookmarkItem[]) => BookmarkItem[] | null): Pr
   });
 }
 
+// Id of the bookmark most recently added in this shell, for the sidebar to
+// scroll the new row into view (a new bookmark lands at the end of the
+// top-level list, which is often below the fold). Consume-once via
+// takeLastAddedBookmarkId so an unrelated later re-render can't scroll again.
+let lastAddedId: string | null = null;
+
+export function takeLastAddedBookmarkId(): string | null {
+  const id = lastAddedId;
+  lastAddedId = null;
+  return id;
+}
+
 export async function addBookmark(name: string, url: string): Promise<void> {
   const item: Bookmark = { id: crypto.randomUUID(), name, url, created_at: Date.now() };
   await mutate((items) => {
@@ -261,6 +273,9 @@ export async function addBookmark(name: string, url: string): Promise<void> {
     items.push(item);
     return items;
   });
+  // Only after the write commits — a failed PUT rejects above and leaves no
+  // row to scroll to.
+  lastAddedId = item.id;
   // Fire-and-forget after the bookmark write commits, so sidecar I/O never
   // blocks or fails the bookmark itself.
   recordBookmarkHistory({ id: item.id, name: item.name, url, created_at: item.created_at })

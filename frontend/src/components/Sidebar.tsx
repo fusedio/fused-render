@@ -24,6 +24,7 @@ import {
   sameSearch,
   splitBookmarkUrl,
   isBookmarkMissing,
+  takeLastAddedBookmarkId,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
@@ -234,17 +235,26 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
         </span>
       )}
       <span className="bookmark-actions">
-        <button
-          className="icon-btn save-btn"
-          title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
-          disabled={!savePath}
-          onClick={onSave}
-        >
-          {justSaved ? "✓" : "💾︎"}
-        </button>
-        <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
-          ✎
-        </button>
+        {/* While the inline rename input is open, "Save to disk" and "Rename"
+            are hidden: the input needs the row's full width, and both actions
+            would fight the edit in progress (save would snapshot the pre-edit
+            name; rename is what's already happening). Delete stays — it's the
+            one action that still makes sense mid-edit. */}
+        {!isRenaming && (
+          <>
+            <button
+              className="icon-btn save-btn"
+              title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
+              disabled={!savePath}
+              onClick={onSave}
+            >
+              {justSaved ? "✓" : "💾︎"}
+            </button>
+            <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
+              ✎
+            </button>
+          </>
+        )}
         <button className="icon-btn delete-btn" title="Delete" onClick={onDelete}>
           ✕
         </button>
@@ -317,7 +327,7 @@ export default function Sidebar({ config }: SidebarProps) {
   // bookmark-store mutation (this component is itself the primary subscriber
   // of the store it renders).
   useUrlVersion();
-  useBookmarksVersion();
+  const bookmarksVersion = useBookmarksVersion();
   useRecentsVersion();
   // Arm/disarm doesn't always coincide with a url or bookmark-store event —
   // the Breadcrumb's pathname-change disarm fires from an effect after this
@@ -494,6 +504,21 @@ export default function Sidebar({ config }: SidebarProps) {
   // imperative classList toggling below).
   const draggedIdRef = useRef<string | null>(null);
   const draggedIsFolderRef = useRef(false);
+
+  // A new bookmark is appended to the end of the top-level list, which on a
+  // tree of any size sits below the fold — so scroll it into view once the row
+  // has rendered. Keyed off the bookmark-store version (the same signal that
+  // rendered the row), and the id is consumed once by the store, so unrelated
+  // later mutations don't re-scroll. The row is missing from rowRefs only
+  // while a search filter is showing (those rows don't register) — nothing to
+  // scroll to then, so skip.
+  useEffect(() => {
+    const id = takeLastAddedBookmarkId();
+    if (!id) return;
+    // block: "nearest" scrolls the sidebar's own overflow container the
+    // minimum amount, and won't drag the page around it.
+    rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
+  }, [bookmarksVersion]);
 
   // Recents (SPEC §29): last files opened. Display order is stable-slot
   // (RC-11) — a shown file keeps its row for the session, only a genuinely
