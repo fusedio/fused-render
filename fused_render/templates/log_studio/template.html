@@ -1738,6 +1738,19 @@
     if (chartData) requestAnimationFrame(resizeCanvas);
   }).observe(document.documentElement, { attributeFilter: ["data-theme"] });
 
+  tailToggle.addEventListener("click", () => {
+    const state = currentState();
+    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
+    if (!state.tail) {
+      tailEndOffset = number(size);
+      tailPageOffset = Math.max(0, tailEndOffset - 65536);
+    }
+    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
+  });
+
+  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
+  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");
     if (!button || !overviewData) return;
