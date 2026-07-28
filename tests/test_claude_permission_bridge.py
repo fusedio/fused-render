@@ -17,6 +17,18 @@ else:
 
 The claude CLI itself is never invoked here: the MCP server is driven directly
 over its stdio JSON-RPC, which is exactly the surface the CLI talks to.
+
+**On permission_server's coverage number.** It reads low (~32%) and that is a
+measurement artifact, not a gap. The server's job is to be a subprocess — that
+is how the CLI runs it and how most of the suite below drives it — and coverage
+cannot see statements executed across a process boundary, so the protocol loop,
+`_handle_approve`, `_dispatch` and `main` all count as uncovered while being
+exercised end to end on every run. Only the handful of functions that are ALSO
+unit-tested in-process (the ones needing a monkeypatched failure, which cannot
+be injected into a child) show up as covered. Measuring the child properly would
+mean a coverage bootstrap in the spawn path for one template helper; the number
+is not a gate, so it is left honest-but-understated rather than gamed with
+tests written for the metric.
 """
 import importlib.util
 import json
