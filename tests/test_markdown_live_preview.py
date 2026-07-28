@@ -149,6 +149,27 @@ def test_a_heading_reveals_only_its_own_line(note_file):
     assert not at(revealed, "# ", "hide")
 
 
+def test_read_only_mode_reveals_nothing_wherever_the_caret_is(note_file):
+    """In read-only mode the document reads as fully rendered (MD-1a).
+
+    `editable.of(false)` leaves no caret, so nothing would reveal anyway — but a
+    browser text selection inside a non-editable CM view still lands in the
+    state's selection, and that would un-render whatever the user swiped over.
+    One guard in `selectedLines` makes the mode deterministic instead of
+    dependent on how the browser reports a selection.
+    """
+    caret = NOTE.index("**bold**") + 3
+    # The control: in editing mode this exact caret reveals the markers.
+    assert at(decorate(note_file, caret=caret), "**", "mark")
+    reading = decorate(note_file, caret=caret, params={"edit": "0"})
+    assert at(reading, "**", "hide"), "read-only mode must not reveal source"
+    assert not at(reading, "**", "mark")
+    # And the rest of the document renders exactly as it does in editing mode:
+    # a mode changes writability, never appearance.
+    assert at(reading, "**bold**", "mark")[0]["cls"] == "lp-bold"
+    assert at(reading, "# Heading one", "mark")[0]["cls"] == "lp-h1"
+
+
 # ------------------------------------------------------------ what renders
 
 

@@ -2649,14 +2649,42 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   or where it points. The folder mode calls it as `../markdown/graph.py`
   (`/api/run` resolves a relative `py` against the page's directory) rather
   than shipping a second copy.
+- **MD-1a** **Read-only and editing are a MODE, and the mode is writability
+  only — never appearance.** The same Live Preview decorations over the same
+  document, with CM's two read-only facets on or off
+  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`) — which are
+  *exactly* the facets the unwritable-file path already used, so **a read-only
+  file's locked buffer and read-only mode are one mechanism, not two**. There is
+  no different typography, no restyled surface and emphatically no second render
+  pipeline; that was removed deliberately (MD-1/D158) and does not come back to
+  serve a mode. With `editable=false` there is no caret, so nothing reveals and
+  the document reads as fully rendered — that *is* the reading view, obtained
+  without a second pipeline. The reveal is additionally suppressed by one guard
+  in `selectedLines`, because a browser text selection inside a non-editable view
+  still reaches the state's selection and would un-render whatever was swiped
+  over; the guard makes the mode deterministic rather than dependent on that.
+  **Editing is the default** — Obsidian's default, and a note must never silently
+  open read-only. The preference lives in `fused.params` under `edit`
+  (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh and
+  travels in a shared URL. It is layered **on top of** the file's real
+  writability and can never override it: for a genuinely unwritable file (MD-15)
+  the toggle is *disabled* with a title saying why. Switching to read-only
+  flushes pending edits first (`await save()`), for the same reason navigation
+  does (MD-16). The control is a second 26px button in the same corner cluster as
+  the sidebar toggle — not a toolbar row, which MD-2a still forbids — and
+  switching rebuilds the view (`editable` is chosen at construction), which is
+  invisible because `buildEditor` carries the caret and the scroll position
+  across.
 - **MD-2a** **No toolbar.** The shell's own breadcrumb already names the open
   file, and Obsidian shows no save state, no dirty indicator and no mode
   buttons — which left the bar holding nothing. What survived it went where it
   belongs: the read-only badge floats (the shared `ro-badge.js` idiom), a save
   *failure* floats as a pill and is invisible when there is nothing to say, and
   the reload-or-keep banner (MD-17) takes a row only while a conflict is
-  unresolved. The single piece of persistent chrome is a 26px sidebar toggle
-  pinned to the top-right corner.
+  unresolved. The only persistent chrome is a top-right cluster of two 26px
+  buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
+  The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
+  the graph together, and its accessible name says so.
 - **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
   "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
   **unchanged** as the raw-source escape hatch. Two editors for one extension

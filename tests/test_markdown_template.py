@@ -115,6 +115,63 @@ def test_the_banner_offers_reload_or_keep_and_keep_drops_the_lock(source):
     assert "expectedMtime" not in keep
 
 
+def test_the_mode_is_the_same_two_facets_the_unwritable_path_uses(source):
+    # A read-only *mode* and a read-only *file* are one mechanism (MD-1a): the
+    # same two CM facets over the same decorations. No second render pipeline,
+    # no different typography — the mode changes writability, never appearance.
+    body = source[source.index("function editorExtensions"):]
+    body = body[:body.index("\n    function buildEditor")]
+    assert "if (!editing())" in body
+    assert "CM.EditorView.editable.of(false)" in body
+    assert "CM.EditorState.readOnly.of(true)" in body
+    # One definition of the mode, and the file's real writability is a factor in
+    # it — a preference can never grant write access the file does not have.
+    assert "function editing() { return writable && editWanted(); }" in source
+
+
+def test_the_mode_lives_in_a_param_so_it_survives_a_refresh(source):
+    # The same shape `graph` and `depth` use (MD-20), so the mode is
+    # refresh-proof and the URL is shareable. Editing is the default: an absent
+    # param must not silently make notes read-only.
+    assert 'fused.params.get("edit") !== "0"' in source
+    assert 'fused.params.set("edit", next)' in source
+
+
+def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
+    # MD-2a still holds: a second 26px button in the same cluster, not a row.
+    assert 'id="toggle-edit"' in source
+    assert 'id="bar"' not in source
+    assert 'aria-pressed' in source[source.index('id="toggle-edit"'):][:400]
+
+
+def test_an_unwritable_file_cannot_be_toggled_into_editing(source):
+    # The mode is a preference layered on top of the file's real writability,
+    # never a way around it (MD-15).
+    body = source[source.index("function applyEditMode"):]
+    body = body[:body.index("\n    function ")]
+    assert "editToggleEl.disabled = !writable" in body
+    assert "can't be written" in body
+
+
+def test_a_mode_switch_keeps_the_caret_and_the_scroll_position(source):
+    # A mode switch rebuilds the view (editable is chosen at construction), so
+    # buildEditor carrying both across is what makes the rebuild invisible —
+    # load-bearing for MD-1a rather than a nicety.
+    body = source[source.index("function buildEditor"):]
+    body = body[:body.index("\n      // A live appearance change")]
+    assert "previous ? previous.state.selection.main.head : cursorMemory()" in body
+    assert "previous ? previous.scrollDOM.scrollTop : 0" in body
+    assert "view.dispatch({ selection: { anchor: at } });" in body
+    assert "view.scrollDOM.scrollTop = scroll;" in body
+
+
+def test_switching_to_read_only_flushes_pending_edits_first(source):
+    # Same reason navigation flushes (MD-16): the idle timer may not have fired.
+    body = source[source.index("editToggleEl.addEventListener"):]
+    body = body[:body.index("\n    depthEl.addEventListener")]
+    assert "await save();" in body
+
+
 def test_read_only_comes_from_stat_writable_not_os_access(source):
     assert "st.writable !== false" in source
     assert "CM.EditorState.readOnly.of(true)" in source
@@ -271,7 +328,10 @@ def test_the_popup_inserts_the_form_graph_py_says_resolves(source):
 def test_a_checkbox_writes_back_and_is_locked_when_read_only(source):
     body = source[source.index("function taskWidget"):]
     body = body[:body.index("\n    }")]
-    assert "box.disabled = !writable;" in body
+    # Locked by the MODE, which already includes the file's writability
+    # (`editing()` is `writable && editWanted()`, MD-1a) — so a note being read
+    # is not a note whose checkboxes can still be ticked.
+    assert "box.disabled = !editing();" in body
     # The position comes from the DOM at click time. The previous rendering
     # counted markers in the source and matched the nth checkbox to the nth
     # marker, which an edit between render and click could get wrong.

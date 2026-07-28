@@ -222,12 +222,18 @@
     cursor: text;
   }
 
-  /* ---- right sidebar: backlinks + graph (MD-19) -------------------------- */
-  #toggle-graph {
+  /* ---- the corner cluster: mode + sidebar (MD-1a, MD-19) ------------------
+     The only persistent chrome in this view. Two 26px buttons in one corner,
+     never a toolbar row (MD-2a). */
+  #corner {
     position: absolute;
     top: 8px;
     right: 8px;
     z-index: 5;
+    display: flex;
+    gap: 6px;
+  }
+  .corner-btn {
     width: 26px;
     height: 26px;
     display: flex;
@@ -240,13 +246,18 @@
     color: var(--fg-muted);
     cursor: pointer;
   }
-  #toggle-graph:hover { color: var(--fg); border-color: var(--accent); }
-  #toggle-graph[aria-pressed="true"] {
+  .corner-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .corner-btn[aria-pressed="true"] {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
   }
-  #toggle-graph svg { width: 14px; height: 14px; display: block; }
+  .corner-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+  .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
+  .corner-btn svg { width: 14px; height: 14px; display: block; }
   #side {
     width: 21rem;
     flex: none;
@@ -271,7 +282,7 @@
     color: var(--fg-muted);
   }
   .side-head .spacer { flex: 1; }
-  #links-head { padding-right: 40px; } /* clear of the floating toggle */
+  #links-head { padding-right: 72px; } /* clear of the floating corner cluster */
   #links { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
   #links[hidden] { display: none; }
   .bl {
@@ -379,15 +390,30 @@
       <div id="status" hidden></div>
       <div id="editor-wrap"></div>
     </div>
-    <button id="toggle-graph" aria-pressed="false" title="Backlinks and graph">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
-           stroke-linecap="round" aria-hidden="true">
-        <path d="M4.6 4.9 L11 3.2 M4.9 6 L7.4 11.4" />
-        <circle cx="3.6" cy="4.4" r="2" />
-        <circle cx="12.4" cy="2.8" r="1.6" />
-        <circle cx="8.4" cy="12.6" r="1.9" />
-      </svg>
-    </button>
+    <div id="corner">
+      <button id="toggle-edit" class="corner-btn" aria-pressed="true"
+              aria-label="Editing" title="Editing — click to read only">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.6 2.6 L13.4 5.4 L6 12.8 L3 13.6 L3.8 10.6 Z" />
+          <path d="M9.2 4 L12 6.8" />
+        </svg>
+      </button>
+      <button id="toggle-graph" class="corner-btn" aria-pressed="false"
+              aria-label="Toggle side panel" title="Toggle side panel">
+        <!-- A panel, not a graph: the sidebar holds backlinks AND the graph, and
+             the nodes-and-edges glyph this replaced was unreadable at 14px. The
+             right column is filled so the shape says "panel open on the right"
+             at a glance; both strokes and the fill inherit currentColor, so the
+             aria-pressed accent state and both themes come for free. -->
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"
+             stroke-linejoin="round" aria-hidden="true">
+          <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.8" />
+          <path d="M10.2 2.6 V13.4" />
+          <path d="M10.2 3.4 H13.6 V12.6 H10.2 Z" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
+    </div>
     <aside id="side">
       <div class="side-head" id="links-head">Backlinks</div>
       <div id="links" hidden>
@@ -483,6 +509,20 @@
 
     function noteDir() { return file ? file.slice(0, file.lastIndexOf("/")) : ""; }
     function isNote(path) { return /\.(md|markdown)$/i.test(path || ""); }
+
+    // ---- read-only vs editing (MD-1a) --------------------------------------
+    // A mode, not a second surface: the SAME decorations over the same document,
+    // with CM's two read-only facets on or off. It changes writability and
+    // nothing about appearance — no different typography, no second render
+    // pipeline. A note is editable by default, as in Obsidian.
+    //
+    // The preference lives in a param, like `graph` and `depth` (MD-20), so it
+    // survives a refresh and travels in a shared URL. It is layered ON TOP of
+    // the file's real writability and can never override it: an unwritable file
+    // (MD-15) is read-only whatever the param says, which is also why a
+    // read-only file and read-only mode are one mechanism rather than two.
+    function editWanted() { return fused.params.get("edit") !== "0"; }
+    function editing() { return writable && editWanted(); }
 
     // ---- shell navigation ---------------------------------------------------
     // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
@@ -615,6 +655,12 @@
     // that whole line's markup, not just the one node under the cursor.
     function selectedLines(state) {
       const lines = new Set();
+      // Read-only mode reveals nothing, ever (MD-1a). `editable.of(false)`
+      // leaves no caret so there is usually nothing to reveal — but a browser
+      // text selection inside a non-editable view still reaches the state's
+      // selection, and swiping over a heading would un-render it. One guard
+      // makes the mode deterministic instead of dependent on that.
+      if (!editing()) return lines;
       for (const range of state.selection.ranges) {
         const first = state.doc.lineAt(range.from).number;
         const last = state.doc.lineAt(range.to).number;
@@ -759,8 +805,8 @@
         box.type = "checkbox";
         box.className = "lp-task";
         box.checked = checked;
-        box.disabled = !writable;
-        if (!writable) return box;
+        box.disabled = !editing();
+        if (!editing()) return box;
         box.addEventListener("mousedown", (e) => e.stopPropagation());
         box.addEventListener("change", () => {
           const at = editorView.posAtDOM(box);
@@ -1192,6 +1238,9 @@
       clearTimeout(saveTimer);
       fusedRoBadge.update(document.getElementById("ro"), "Read-only", message);
       if (view) buildEditor(view.state.doc.toString()); // rebuild with the lock on
+      // The file just turned out to be unwritable, so the mode button has to
+      // stop offering editing (MD-1a) — false because buildEditor already ran.
+      applyEditMode(false);
     }
 
     function wantsDark() {
@@ -1382,13 +1431,15 @@
           armAutosave();
         }),
       ];
-      if (!writable) {
-        // The server refuses the write anyway; opening disabled is what makes
-        // the UI honest up front. On an rclone mount with CacheMode=full a
-        // doomed write even succeeds locally and only 403s later on upload, so
-        // this reads the shell's persisted read_only flag through
-        // stat.writable rather than os.access (MD-15). Decorations still
-        // render: a locked buffer is what "reading view" is now (MD-1).
+      if (!editing()) {
+        // Two ways to reach here, one mechanism (MD-1a). An UNWRITABLE file:
+        // the server refuses the write anyway, and opening disabled is what
+        // makes the UI honest up front — on an rclone mount with CacheMode=full
+        // a doomed write even succeeds locally and only 403s later on upload, so
+        // this reads the shell's persisted read_only flag through stat.writable
+        // rather than os.access (MD-15). Or read-only MODE, asked for by the
+        // user. Either way the decorations are unchanged and the buffer is
+        // locked, which is what "reading view" is here (MD-1).
         base.push(CM.EditorView.editable.of(false));
         base.push(CM.EditorState.readOnly.of(true));
       }
@@ -1621,6 +1672,7 @@
     // mode — one implementation, so the two surfaces cannot drift apart.
     const sideEl = document.getElementById("side");
     const toggleEl = document.getElementById("toggle-graph");
+    const editToggleEl = document.getElementById("toggle-edit");
     const canvasEl = document.getElementById("graph-canvas");
     const graphCountEl = document.getElementById("graph-count");
     const graphNoteEl = document.getElementById("graph-note");
@@ -1667,7 +1719,34 @@
     toggleEl.addEventListener("click", () => {
       fused.params.set("graph", graphOn() ? "0" : "1");
     });
+
+    // Leaving editing must not lose edits newer than the last autosave — the
+    // same reason navigation flushes first (MD-16). The param is set only after
+    // the flush, so the rebuild it triggers cannot race the write.
+    editToggleEl.addEventListener("click", async () => {
+      if (!writable) return; // disabled anyway; belt and braces (MD-15)
+      const next = editWanted() ? "0" : "1";
+      if (next === "0") await save();
+      fused.params.set("edit", next);
+    });
+
     depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
+
+    // The button's own state, and — when the mode actually changed — the
+    // rebuild that applies it. `editable` is a facet chosen at construction
+    // here, so the view is rebuilt rather than reconfigured; buildEditor carries
+    // the caret and the scroll position across, which is what makes that
+    // invisible.
+    function applyEditMode(rebuild) {
+      const on = editing();
+      editToggleEl.setAttribute("aria-pressed", String(on));
+      editToggleEl.setAttribute("aria-label", on ? "Editing" : "Read-only");
+      editToggleEl.disabled = !writable;
+      editToggleEl.title = writable
+        ? (on ? "Editing — click to read only" : "Read-only — click to edit")
+        : "This file can't be written, so it is always read-only.";
+      if (rebuild && view) buildEditor(view.state.doc.toString());
+    }
 
     // One toggle for the whole sidebar: backlinks and the graph are the same
     // panel, as they are in Obsidian's right sidebar. The state lives in a
@@ -1719,24 +1798,32 @@
 
       skelEl.hidden = true;
       buildEditor(text);
+      applyEditMode(false); // the view was just built with the mode applied
       scrollToHeading();
       // The link scan runs alongside the first build; a failed or refused scan
       // degrades to plain markdown rather than blocking the document, and
       // refreshLinks re-decorates once it lands.
       await refreshLinks();
       lastGraph = (fused.params.get("graph") || "0") + "/" + (fused.params.get("depth") || "1");
+      lastEdit = fused.params.get("edit") || "1";
       applySidebar();
     }
 
-    // Params are the state: the sidebar toggle and the depth both write params,
-    // and this is the single re-render path — which is also what makes a graph
-    // view URL-shareable, unlike Obsidian's.
+    // Params are the state: the sidebar toggle, the depth and the mode all write
+    // params, and this is the single re-render path — which is also what makes a
+    // graph view (and now a reading view) URL-shareable, unlike Obsidian's.
     let lastGraph = null;
+    let lastEdit = null;
     fused.params.onChange((params) => {
       const key = (params.graph || "0") + "/" + (params.depth || "1");
       if (key !== lastGraph) {
         lastGraph = key;
         applySidebar();
+      }
+      const edit = params.edit || "1";
+      if (edit !== lastEdit) {
+        lastEdit = edit;
+        applyEditMode(true);
       }
     });
 
