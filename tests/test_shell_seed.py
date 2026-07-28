@@ -37,6 +37,8 @@ def test_seeds_examples_into_empty_dir(tmp_path, monkeypatch):
     # loose at the workspace root.
     assert (fdir / "sine" / "sine.html").is_file()
     assert (fdir / "sine" / "sine.py").is_file()
+    assert (fdir / "ai_demo" / "ai_demo.html").is_file()
+    assert (fdir / "ai_demo" / "data.py").is_file()
     assert (fdir / "how_it_works" / "demo.py").is_file()
     assert (fdir / "how_it_works" / "explainer.html").is_file()
     assert (fdir / "showcase" / "index.html").is_file()
