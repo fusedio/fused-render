@@ -162,3 +162,39 @@ def test_a_rendered_checkbox_writes_back_and_is_locked_when_read_only(source):
     body = body[:body.index("\n    }")]
     assert "box.disabled = !writable;" in body
     assert "toggleTaskAt(position, box.checked)" in body
+
+
+# ------------------------------------------------------- graph panel (MD-19)
+
+
+def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
+    assert 'fused.params.set("graph"' in source
+    assert 'fused.params.set("depth"' in source
+    assert 'fused.params.get("graph") === "1"' in source
+
+
+def test_the_panel_asks_for_a_bounded_neighbourhood(source):
+    body = source[source.index("async function loadGraph"):]
+    body = body[:body.index("\n    function neighbours")]
+    assert 'action: "graph"' in body
+    assert "depth: String(graphDepth())" in body
+
+
+def test_graph_colours_are_read_at_draw_time_not_baked(source):
+    # var() cannot resolve inside a canvas fillStyle, so a theme flip has to
+    # redraw with freshly-read tokens (SPEC §30).
+    assert "function token(name)" in source
+    assert "getPropertyValue(name)" in source
+    assert 'attributeFilter: ["data-theme"] });' in source
+
+
+def test_the_graph_behaviours_obsidian_has_are_present(source):
+    assert "function radius(node)" in source          # radius ∝ degree
+    assert "const labels = G.zoom > 0.75" in source    # labels fade past a zoom
+    assert "node.pinned = true" in source              # drag-to-pin
+    assert "neighbours(G.hover)" in source             # hover highlighting
+
+
+def test_a_saved_note_refreshes_the_open_graph(source):
+    assert "if (graphOn()) void loadGraph();" in source
+    assert "candidates = null;" in source

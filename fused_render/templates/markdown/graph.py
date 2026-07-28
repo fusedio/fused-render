@@ -772,24 +772,131 @@ def _candidates_payload(root: str, scan: dict) -> dict:
     }
 
 
+# ----------------------------------------------------------- graph assembly
+#
+# Tier 2 (MD-8): nodes and edges are built from the cached rows on every
+# request and never stored. Cheap — milliseconds for thousands of notes — and
+# it is what keeps a rename honest, because the resolution it depends on
+# happens here.
+
+
+def _graph_nodes_and_edges(root: str, scan: dict):
+    notes = scan["notes"]
+    note_index = _candidate_index(notes)
+    asset_index = _candidate_index(list(notes) + scan["assets"])
+
+    nodes = {}
+    for rel in sorted(notes):
+        nodes[rel] = {
+            "id": rel,
+            "kind": "note",
+            "label": _display_title(rel, notes[rel]),
+            "path": os.path.join(root, rel.replace("/", os.sep)),
+            "degree": 0,
+        }
+
+    seen = set()
+    edges = []
+
+    def add(source, target, kind):
+        key = (source, target, kind)
+        if key in seen:
+            return
+        seen.add(key)
+        edges.append({"source": source, "target": target, "kind": kind})
+
+    for rel in sorted(notes):
+        row = notes[rel]
+        for link in _resolved_links(rel, row, note_index, asset_index):
+            target = link["rel"]
+            if target is None:
+                # An unresolved target is one ghost per NAME, so five notes
+                # linking `[[Roadmap]]` share the node they are all asking for.
+                ghost = "ghost:" + _normalize_target(link["target"]).lower()
+                nodes.setdefault(ghost, {
+                    "id": ghost, "kind": "ghost", "label": link["target"],
+                    "path": None, "degree": 0})
+                add(rel, ghost, "embed" if link["embed"] else "link")
+            elif target in nodes:
+                add(rel, target, "embed" if link["embed"] else "link")
+            # else: the target is an asset (a picture), which is not a note and
+            # would otherwise dominate a vault full of screenshots.
+        for tag in row["tags"]:
+            node = "tag:" + tag
+            nodes.setdefault(node, {
+                "id": node, "kind": "tag", "label": "#" + tag,
+                "path": None, "degree": 0})
+            add(rel, node, "tag")
+
+    return nodes, edges
+
+
+def _neighbourhood(nodes, edges, focus: str, depth: int):
+    """BFS `depth` hops out from `focus`, following edges in both directions —
+    what a local graph means (an inbound link is as much a neighbour as an
+    outbound one)."""
+    adjacent = {}
+    for edge in edges:
+        adjacent.setdefault(edge["source"], set()).add(edge["target"])
+        adjacent.setdefault(edge["target"], set()).add(edge["source"])
+    kept = {focus}
+    frontier = {focus}
+    for _ in range(max(0, depth)):
+        nxt = set()
+        for node in frontier:
+            nxt |= adjacent.get(node, set()) - kept
+        if not nxt:
+            break
+        kept |= nxt
+        frontier = nxt
+    return kept
+
+
+def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
+    nodes, edges = _graph_nodes_and_edges(root, scan)
+    if focus is not None and focus in nodes:
+        kept = _neighbourhood(nodes, edges, focus, depth)
+        nodes = {node: row for node, row in nodes.items() if node in kept}
+        edges = [e for e in edges if e["source"] in nodes and e["target"] in nodes]
+    for edge in edges:
+        nodes[edge["source"]]["degree"] += 1
+        nodes[edge["target"]]["degree"] += 1
+    return {
+        "error": None,
+        "root": root,
+        "focus": focus,
+        "depth": depth,
+        "nodes": [nodes[node] for node in sorted(nodes)],
+        "edges": edges,
+        "total_notes": len(scan["notes"]),
+        "truncated": scan["truncated"],
+        "skipped_large": scan["skipped_large"],
+        "parser_version": PARSER_VERSION,
+    }
+
+
 def _error(kind: str, message: str) -> dict:
     return {"error": kind, "message": message}
 
 
-def main(action: str = "note", file: str = "", root: str = ""):
+ACTIONS = ("note", "candidates", "graph")
+
+
+def main(action: str = "note", file: str = "", root: str = "", depth: int = 1):
     """The template's one entry point.
 
-    `action="note"` answers the note view; `action="candidates"` answers the
-    `[[` autocomplete. Every walk-backed action refuses a mount-backed root
-    (MD-11); a single-file read is not affected, because that is what the
-    template does through `fused.readFile` anyway.
+    `note` answers the note view, `candidates` the `[[` autocomplete, and
+    `graph` both graph surfaces — the local panel (with `file` + `depth`) and
+    the folder-level mode (root only). Every one of them refuses a mount-backed
+    root (MD-11); reading and writing a single file is not affected, because
+    that is one bounded read and one bounded write.
     """
-    if action not in ("note", "candidates"):
+    if action not in ACTIONS:
         return _error("bad_action", f"unknown action {action!r}")
     if action == "note" and (not file or not os.path.isabs(file)):
         return _error("bad_request", "'file' must be an absolute path")
-    if action == "candidates" and not root:
-        return _error("bad_request", "'root' is required for candidates")
+    if action in ("candidates", "graph") and not root and not file:
+        return _error("bad_request", f"'root' is required for {action}")
 
     root = os.path.abspath(root) if root else os.path.dirname(os.path.abspath(file))
     try:
@@ -798,13 +905,17 @@ def main(action: str = "note", file: str = "", root: str = ""):
         return _error("mount_unsupported", str(exc))
 
     rel = None
-    if action == "note":
+    if file:
         file = os.path.abspath(file)
         if not os.path.isfile(file):
-            return _error("not_found", f"no such file: {file}")
-        rel = os.path.relpath(file, root).replace(os.sep, "/")
-        if rel == ".." or rel.startswith("../"):
-            return _error("outside_root", f"{file} is not under {root}")
+            if action == "note":
+                return _error("not_found", f"no such file: {file}")
+        else:
+            rel = os.path.relpath(file, root).replace(os.sep, "/")
+            if rel == ".." or rel.startswith("../"):
+                if action == "note":
+                    return _error("outside_root", f"{file} is not under {root}")
+                rel = None
 
     try:
         scan = scan_indexed(root)
@@ -812,4 +923,6 @@ def main(action: str = "note", file: str = "", root: str = ""):
         return _error("mount_unsupported", str(exc))
     if action == "candidates":
         return _candidates_payload(root, scan)
+    if action == "graph":
+        return _graph_payload(root, scan, rel, depth)
     return _note_payload(root, rel, scan)

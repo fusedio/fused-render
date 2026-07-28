@@ -248,6 +248,39 @@
   }
   .cm-editor.cm-focused { outline: none; }
 
+  /* ---- graph panel (MD-19) ---------------------------------------------- */
+  #split { flex: 1; display: flex; min-height: 0; }
+  #graph-panel {
+    width: 22rem;
+    flex: none;
+    display: none;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+    background: var(--bg-alt);
+  }
+  #graph-panel.on { display: flex; }
+  #graph-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  #graph-head .spacer { flex: 1; }
+  #graph-canvas { flex: 1; width: 100%; display: block; cursor: grab; }
+  #graph-note { padding: 8px 10px; font-size: 12px; color: var(--fg-muted); }
+  #graph-note[hidden] { display: none; }
+  #depth {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font: inherit;
+    padding: 1px 4px;
+  }
+
   /* ---- skeleton --------------------------------------------------------- */
   .skel-bar {
     height: 14px;
@@ -284,12 +317,14 @@
       <button data-view="source" aria-pressed="false" title="Source (Cmd/Ctrl+E)">Source</button>
       <button data-view="reading" aria-pressed="false" title="Reading (Cmd/Ctrl+E)">Reading</button>
     </span>
+    <button id="toggle-graph" aria-pressed="false" title="Local graph">Graph</button>
   </div>
   <div id="conflict">
     <span id="conflict-text">This note changed on disk while you were editing it.</span>
     <button id="reload">Reload from disk</button>
     <button id="keep">Keep my version</button>
   </div>
+  <div id="split">
   <div id="surfaces">
     <div id="doc-wrap">
       <div id="page">
@@ -318,6 +353,22 @@
       <div id="bl-list"></div>
       <div id="notice" hidden></div>
     </div>
+  </div>
+  <aside id="graph-panel">
+    <div id="graph-head">
+      <span id="graph-count"></span>
+      <span class="spacer"></span>
+      <label>depth
+        <select id="depth">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+      </label>
+    </div>
+    <canvas id="graph-canvas"></canvas>
+    <div id="graph-note" hidden></div>
+  </aside>
   </div>
   <script>
     // This view owns its own saves and its own reload rule (MD-16/MD-17), so
@@ -549,9 +600,11 @@
           setDirty(true);
           armAutosave();
         }
-        // Each save re-parses exactly this note, so the ghosts, the backlinks
-        // and the `[[` candidates stay current with no rebuild (MD-9).
+        // Each save re-parses exactly this note, so the ghosts, the backlinks,
+        // the graph and the `[[` candidates stay current with no rebuild (MD-9).
+        candidates = null;
         await refreshLinks();
+        if (graphOn()) void loadGraph();
       } catch (err) {
         if (err.type === "conflict") {
           showConflict("This note changed on disk while you were editing it.");
@@ -1133,6 +1186,293 @@
       return { ok: !dirty && conflictEl.style.display !== "flex" };
     };
 
+    // ---- local graph panel (MD-19) -----------------------------------------
+    // A hand-rolled O(n²) spring layout on a Canvas 2D surface. No force
+    // library is vendored, and at the panel's bounded node count (a depth-N
+    // neighbourhood) the naive sim is well inside budget — vendoring one would
+    // be a dependency bought for nothing.
+    const panelEl = document.getElementById("graph-panel");
+    const canvasEl = document.getElementById("graph-canvas");
+    const graphCountEl = document.getElementById("graph-count");
+    const graphNoteEl = document.getElementById("graph-note");
+    const depthEl = document.getElementById("depth");
+
+    const G = {
+      nodes: [], edges: [], byId: new Map(),
+      hover: null, drag: null, pan: null,
+      zoom: 1, ox: 0, oy: 0, frame: null, alpha: 0, loading: false,
+    };
+
+    // Canvas fills cannot use var(), so the tokens are read at DRAW time and a
+    // theme flip simply redraws (SPEC §30's rule for JS-held colours).
+    function token(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function graphOn() { return fused.params.get("graph") === "1"; }
+    function graphDepth() {
+      const n = parseInt(fused.params.get("depth") || "1", 10);
+      return Number.isFinite(n) && n >= 0 && n <= 3 ? n : 1;
+    }
+
+    async function loadGraph() {
+      if (!graphOn() || !file) return;
+      G.loading = true;
+      const root = fused.params.get("root") || "";
+      let data;
+      try {
+        data = await fused.runPython("./graph.py",
+          { action: "graph", file, root, depth: String(graphDepth()) },
+          { key: "md-graph" });
+      } catch (err) {
+        data = { error: "graph_failed", message: err.message || String(err) };
+      }
+      G.loading = false;
+      if (data.error) {
+        G.nodes = [];
+        G.edges = [];
+        G.byId = new Map();
+        graphCountEl.textContent = "";
+        graphNoteEl.hidden = false;
+        graphNoteEl.textContent = data.message || data.error;
+        draw();
+        return;
+      }
+      graphNoteEl.hidden = !data.truncated;
+      if (data.truncated) {
+        graphNoteEl.textContent = "Partial: the walk hit its file cap.";
+      }
+      graphCountEl.textContent = `${data.nodes.length} of ${data.total_notes} notes`;
+
+      // Seed positions on a circle around the focus, so the sim starts spread
+      // out rather than exploding out of a single point.
+      const rect = canvasEl.getBoundingClientRect();
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      G.byId = new Map();
+      G.nodes = data.nodes.map((node, i) => {
+        const angle = (i / Math.max(1, data.nodes.length)) * Math.PI * 2;
+        const seeded = {
+          ...node,
+          x: node.id === data.focus ? cx : cx + Math.cos(angle) * 70,
+          y: node.id === data.focus ? cy : cy + Math.sin(angle) * 70,
+          vx: 0, vy: 0, pinned: node.id === data.focus,
+          focus: node.id === data.focus,
+        };
+        G.byId.set(node.id, seeded);
+        return seeded;
+      });
+      G.edges = data.edges
+        .map((e) => ({ ...e, a: G.byId.get(e.source), b: G.byId.get(e.target) }))
+        .filter((e) => e.a && e.b);
+      G.alpha = 1;
+      run();
+    }
+
+    function neighbours(node) {
+      const set = new Set([node.id]);
+      for (const edge of G.edges) {
+        if (edge.a === node) set.add(edge.b.id);
+        else if (edge.b === node) set.add(edge.a.id);
+      }
+      return set;
+    }
+
+    function step() {
+      const rect = canvasEl.getBoundingClientRect();
+      const cx = rect.width / 2;
+      const cy = rect.height / 2;
+      for (const a of G.nodes) {
+        for (const b of G.nodes) {
+          if (a === b) continue;
+          let dx = a.x - b.x;
+          let dy = a.y - b.y;
+          let d2 = dx * dx + dy * dy;
+          if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.01; }
+          const force = 1400 / d2;
+          const d = Math.sqrt(d2);
+          a.vx += (dx / d) * force;
+          a.vy += (dy / d) * force;
+        }
+        a.vx += (cx - a.x) * 0.005;
+        a.vy += (cy - a.y) * 0.005;
+      }
+      for (const edge of G.edges) {
+        const dx = edge.b.x - edge.a.x;
+        const dy = edge.b.y - edge.a.y;
+        const d = Math.max(1, Math.hypot(dx, dy));
+        const pull = (d - 70) * 0.02;
+        edge.a.vx += (dx / d) * pull;
+        edge.a.vy += (dy / d) * pull;
+        edge.b.vx -= (dx / d) * pull;
+        edge.b.vy -= (dy / d) * pull;
+      }
+      for (const node of G.nodes) {
+        if (node.pinned || node === G.drag) { node.vx = 0; node.vy = 0; continue; }
+        node.x += node.vx * G.alpha;
+        node.y += node.vy * G.alpha;
+        node.vx *= 0.82;
+        node.vy *= 0.82;
+      }
+      G.alpha *= 0.99;
+    }
+
+    function radius(node) { return 3.5 + Math.sqrt(node.degree) * 2.6; }
+
+    function draw() {
+      const rect = canvasEl.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      if (canvasEl.width !== Math.round(rect.width * dpr)) {
+        canvasEl.width = Math.round(rect.width * dpr);
+        canvasEl.height = Math.round(rect.height * dpr);
+      }
+      const ctx = canvasEl.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.translate(G.ox, G.oy);
+      ctx.scale(G.zoom, G.zoom);
+
+      const accent = token("--accent");
+      const muted = token("--fg-muted");
+      const ghost = token("--ghost");
+      const line = token("--border");
+      const near = G.hover ? neighbours(G.hover) : null;
+
+      ctx.lineWidth = 1 / G.zoom;
+      for (const edge of G.edges) {
+        const lit = near && (near.has(edge.a.id) && near.has(edge.b.id));
+        ctx.strokeStyle = lit ? accent : line;
+        ctx.setLineDash(edge.a.kind === "ghost" || edge.b.kind === "ghost" ? [3, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(edge.a.x, edge.a.y);
+        ctx.lineTo(edge.b.x, edge.b.y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // Labels fade out past a zoom threshold, as Obsidian's do — a hovered
+      // neighbourhood keeps them so the thing you are pointing at stays named.
+      const labels = G.zoom > 0.75;
+      ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+      ctx.textAlign = "center";
+      for (const node of G.nodes) {
+        const lit = !near || near.has(node.id);
+        ctx.globalAlpha = lit ? 1 : 0.25;
+        ctx.fillStyle = node.kind === "ghost" ? ghost
+          : node.focus || node.kind === "tag" ? accent : muted;
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, radius(node), 0, Math.PI * 2);
+        ctx.fill();
+        if (labels || (near && near.has(node.id))) {
+          ctx.fillStyle = node.kind === "ghost" ? ghost : muted;
+          ctx.fillText(node.label, node.x, node.y - radius(node) - 4);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    function run() {
+      if (G.frame) return;
+      const tick = () => {
+        G.frame = null;
+        if (!panelEl.classList.contains("on")) return;
+        if (G.alpha > 0.02 || G.drag) {
+          step();
+          G.frame = requestAnimationFrame(tick);
+        }
+        draw();
+      };
+      G.frame = requestAnimationFrame(tick);
+    }
+
+    function nodeAt(event) {
+      const rect = canvasEl.getBoundingClientRect();
+      const x = (event.clientX - rect.left - G.ox) / G.zoom;
+      const y = (event.clientY - rect.top - G.oy) / G.zoom;
+      let best = null;
+      let bestDistance = Infinity;
+      for (const node of G.nodes) {
+        const d = Math.hypot(node.x - x, node.y - y);
+        if (d < radius(node) + 6 && d < bestDistance) { best = node; bestDistance = d; }
+      }
+      return { node: best, x, y };
+    }
+
+    canvasEl.addEventListener("mousemove", (event) => {
+      const { node, x, y } = nodeAt(event);
+      if (G.drag) {
+        G.drag.x = x;
+        G.drag.y = y;
+        run();
+        return;
+      }
+      if (G.pan) {
+        G.ox += event.clientX - G.pan.x;
+        G.oy += event.clientY - G.pan.y;
+        G.pan = { x: event.clientX, y: event.clientY };
+        draw();
+        return;
+      }
+      if (node !== G.hover) {
+        G.hover = node;
+        canvasEl.style.cursor = node ? "pointer" : "grab";
+        draw();
+      }
+    });
+
+    canvasEl.addEventListener("mousedown", (event) => {
+      const { node } = nodeAt(event);
+      if (node) {
+        G.drag = node;
+        G.drag.moved = false;
+        // Dragging a node pins it, which is the only way to hold part of a
+        // layout still while the rest settles.
+        node.pinned = true;
+      } else {
+        G.pan = { x: event.clientX, y: event.clientY };
+      }
+    });
+
+    window.addEventListener("mouseup", () => { G.drag = null; G.pan = null; });
+
+    canvasEl.addEventListener("click", (event) => {
+      const { node } = nodeAt(event);
+      if (!node) return;
+      if (node.kind === "note" && node.path) openNote(node.path, "");
+      else if (node.kind === "ghost") void createGhost(node.label);
+    });
+
+    canvasEl.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const rect = canvasEl.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+      const factor = Math.exp(-event.deltaY * 0.002);
+      const next = Math.min(4, Math.max(0.25, G.zoom * factor));
+      // Zoom about the pointer, so the node under the cursor stays under it.
+      G.ox = px - ((px - G.ox) / G.zoom) * next;
+      G.oy = py - ((py - G.oy) / G.zoom) * next;
+      G.zoom = next;
+      draw();
+    }, { passive: false });
+
+    new MutationObserver(() => draw()).observe(document.documentElement,
+      { attributes: true, attributeFilter: ["data-theme"] });
+    window.addEventListener("resize", () => { G.alpha = Math.max(G.alpha, 0.4); run(); });
+
+    document.getElementById("toggle-graph").addEventListener("click", () => {
+      fused.params.set("graph", graphOn() ? "0" : "1");
+    });
+    depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
+
+    function applyGraphPanel() {
+      const on = graphOn();
+      panelEl.classList.toggle("on", on);
+      document.getElementById("toggle-graph").setAttribute("aria-pressed", String(on));
+      depthEl.value = String(graphDepth());
+      if (on) void loadGraph();
+    }
+
     // ---- load --------------------------------------------------------------
     async function load() {
       file = fused.params.get("_file");
@@ -1165,12 +1505,25 @@
       // The link scan runs alongside the first render; a failed or refused scan
       // degrades to plain markdown rather than blocking the document.
       await Promise.all([applyMode(fused.params.get("view") || "reading"), refreshLinks()]);
+      // The first render ran before the scan resolved, so re-render now that
+      // the wikilink renderer has the resolved targets in hand.
       if (mode === "reading") renderReading();
+      lastGraph = (fused.params.get("graph") || "0") + "/" + (fused.params.get("depth") || "1");
+      applyGraphPanel();
     }
 
+    // Params are the state: the mode switcher, the graph toggle and the depth
+    // all write params, and this is the single re-render path — which is also
+    // what makes a graph view URL-shareable, unlike Obsidian's.
+    let lastGraph = null;
     fused.params.onChange((params) => {
       const next = params.view || "reading";
       if (next !== mode) void applyMode(next);
+      const key = (params.graph || "0") + "/" + (params.depth || "1");
+      if (key !== lastGraph) {
+        lastGraph = key;
+        applyGraphPanel();
+      }
     });
 
     load();

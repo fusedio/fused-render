@@ -460,3 +460,77 @@ def test_the_index_is_never_touched_for_a_mount_backed_root(graph, tmp_path, hom
     with pytest.raises(graph.MountUnsupported):
         graph.scan_indexed(root)
     assert not os.path.exists(os.path.join(home, "graph"))
+
+
+# ---------------------------------------------------------- graph assembly
+
+
+@pytest.fixture()
+def chain(tmp_path, home):
+    """A.md -> B.md -> C.md, plus a ghost and a tag hanging off A."""
+    return _vault(tmp_path, {
+        "A.md": "# A\n[[B]] and [[Nope]] #alpha\n",
+        "B.md": "# B\n[[C]]\n",
+        "C.md": "# C\n",
+    })
+
+
+def _ids(payload):
+    return sorted(node["id"] for node in payload["nodes"])
+
+
+def test_the_whole_vault_graph_carries_notes_ghosts_and_tags(graph, chain):
+    out = graph.main(action="graph", root=chain)
+    assert out["error"] is None
+    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+    kinds = {node["id"]: node["kind"] for node in out["nodes"]}
+    assert kinds["ghost:nope"] == "ghost"
+    assert kinds["tag:alpha"] == "tag"
+    assert sorted((e["source"], e["target"]) for e in out["edges"]) == [
+        ("A.md", "B.md"), ("A.md", "ghost:nope"), ("A.md", "tag:alpha"), ("B.md", "C.md")]
+
+
+def test_node_degree_counts_both_directions(graph, chain):
+    degrees = {n["id"]: n["degree"] for n in graph.main(action="graph", root=chain)["nodes"]}
+    assert degrees["A.md"] == 3   # B, the ghost, the tag
+    assert degrees["B.md"] == 2   # A and C
+    assert degrees["C.md"] == 1
+
+
+def test_a_repeated_link_is_one_edge(graph, tmp_path, home):
+    root = _vault(tmp_path, {"A.md": "[[B]] then [[B]] again\n", "B.md": "x\n"})
+    assert len(graph.main(action="graph", root=root)["edges"]) == 1
+
+
+def test_the_local_graph_is_bounded_by_depth(graph, chain):
+    focus = os.path.join(chain, "A.md")
+    d0 = graph.main(action="graph", root=chain, file=focus, depth=0)
+    assert _ids(d0) == ["A.md"]
+    d1 = graph.main(action="graph", root=chain, file=focus, depth=1)
+    assert _ids(d1) == ["A.md", "B.md", "ghost:nope", "tag:alpha"]
+    d2 = graph.main(action="graph", root=chain, file=focus, depth=2)
+    assert _ids(d2) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+    assert d1["focus"] == "A.md" and d1["depth"] == 1
+
+
+def test_the_local_graph_only_keeps_edges_between_kept_nodes(graph, chain):
+    out = graph.main(action="graph", root=chain, file=os.path.join(chain, "A.md"), depth=1)
+    kept = _ids(out)
+    for edge in out["edges"]:
+        assert edge["source"] in kept and edge["target"] in kept
+
+
+def test_an_embedded_asset_is_not_a_graph_node(graph, tmp_path, home):
+    # A picture is not a note; it would otherwise dominate a vault of screenshots.
+    root = _vault(tmp_path, {"A.md": "![[pic.png]]\n", "pic.png": "x"})
+    assert _ids(graph.main(action="graph", root=root)) == ["A.md"]
+
+
+def test_the_graph_refuses_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "x\n"})
+    from fused_render.shell import mounts
+
+    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    out = graph.main(action="graph", root=root)
+    assert out["error"] == "mount_unsupported"
+    assert "remote mounts" in out["message"]
