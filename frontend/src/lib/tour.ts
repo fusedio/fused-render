@@ -149,7 +149,23 @@ export function maybeAutoStartTour(): void {
   }
   if (seen) return;
   if (!document.querySelector("#sidebar")) return;
-  const steps = presentSteps();
-  if (steps.length === 0) return;
-  runTour(steps);
+  // The sidebar's Learn entry only mounts once the builtin learn mount is
+  // attached (Sidebar polls learn_mount_ready on a 2s interval), which
+  // usually lands after this 600ms-delayed call — wait briefly for it so the
+  // Learn step isn't silently dropped from the first-run tour. Start anyway
+  // after ~3s: dev checkouts without a learn.zip never grow the entry.
+  const deadline = performance.now() + 3000;
+  const tryStart = () => {
+    if (
+      !document.querySelector("#learn-link") &&
+      performance.now() < deadline
+    ) {
+      setTimeout(tryStart, 250);
+      return;
+    }
+    const steps = presentSteps();
+    if (steps.length === 0) return;
+    runTour(steps);
+  };
+  tryStart();
 }

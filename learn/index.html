@@ -529,7 +529,10 @@
 
   /* ---------- first-open tour ---------- */
   /* Spotlight = one fixed div sized to the target whose huge box-shadow dims
-     everything else; no separate full-screen overlay to keep in sync. */
+     everything else. The veil is an invisible full-viewport layer under it
+     that soaks up presses outside the popover, so a dismissing click can
+     never also activate the page underneath. */
+  .ftour-veil { position:fixed; inset:0; z-index:89; }
   .ftour-spot { position:fixed; z-index:90; border-radius:10px; pointer-events:none;
        box-shadow:0 0 0 200vmax rgba(0,0,0,.62); border:1.5px solid var(--yellow);
        transition:top .25s ease, left .25s ease, width .25s ease, height .25s ease; }
@@ -1624,9 +1627,14 @@ function startLearnTour(){
     .filter(s => tourVisible(s.el));
   if (!steps.length) return;
 
+  // The veil catches every press outside the popover (dismiss, like
+  // driver.js allowClose) so the click can't ALSO hit the page underneath —
+  // the spotlight itself is pointer-events:none and its box-shadow dimmer
+  // doesn't intercept anything.
+  const veil = document.createElement("div"); veil.className = "ftour-veil";
   const spot = document.createElement("div"); spot.className = "ftour-spot";
   const pop  = document.createElement("div"); pop.className = "ftour-pop";
-  document.body.append(spot, pop);
+  document.body.append(veil, spot, pop);
   let i = 0;
 
   function place(){
@@ -1661,23 +1669,22 @@ function startLearnTour(){
   function next(){ if (i >= steps.length - 1) { end(); return; } i++; show(); }
   function end(){
     tourMarkSeen();
-    spot.remove(); pop.remove();
+    veil.remove(); spot.remove(); pop.remove();
     removeEventListener("resize", place);
     removeEventListener("scroll", onScroll, true);
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("pointerdown", onDown, true);
   }
   function onScroll(){ place(); }
   function onKey(e){
     if (e.key === "Escape") { e.preventDefault(); end(); }
     else if (e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); next(); }
   }
-  // like driver.js allowClose: any press outside the popover dismisses
-  function onDown(e){ if (!pop.contains(e.target)) end(); }
+  // like driver.js allowClose: a press outside the popover dismisses — the
+  // veil swallows it so it can't reach whatever it landed over
+  veil.addEventListener("pointerdown", e => { e.preventDefault(); end(); });
   addEventListener("resize", place);
   addEventListener("scroll", onScroll, true);
   document.addEventListener("keydown", onKey, true);
-  document.addEventListener("pointerdown", onDown, true);
   show();
 }
 
