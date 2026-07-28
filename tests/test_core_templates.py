@@ -160,7 +160,7 @@ def upgraded_install(tmp_path, monkeypatch):
     return server.TEMPLATES_DIR
 
 
-@pytest.mark.parametrize("template", ["csv", "code"])
+@pytest.mark.parametrize("template", ["text", "code"])
 def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_install, template):
     """The one test that reads what the server actually SENDS.
 

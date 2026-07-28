@@ -177,7 +177,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.3 Execution environment
 
-- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
+- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `duckdb`/`structure`/`xlsx`/`sqlite` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
 - **PY-6a** The subprocess worker (`_child.py`) **bootstraps the package onto
   its own `sys.path`**. It is spawned as a standalone script, so `sys.path[0]`
   is the package directory rather than its parent and `import fused_render`
@@ -266,7 +266,7 @@ const page = await fused.runPython("./reader.py",
 | Extension(s) | Modes (first = default) | Notes |
 |---|---|---|
 | `.parquet` | `table` | paged table via pyarrow; binary — no `code` mode |
-| `.csv .tsv` | `csv`, `code` | paged table, delimiter sniffing |
+| `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
 | `.md` | `markdown`, `code` | rendered markdown |
@@ -2176,7 +2176,7 @@ not by choice.
   parser-blocking, so it runs before the rest of the head is parsed (which is
   also why the view has no flash either).
 - **AP-9** **Tier 1** — views with a real light palette authored: `code`,
-  `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
+  `text`, `markdown`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
   `vector`, `structure`, `tree`, `log_studio`, `claude`, `history`, `annotate`,
   `zip`. Each carries the identical
   structure: a `:root` dark palette, a `:root[data-theme="light"]` twin defining

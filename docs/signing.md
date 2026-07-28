@@ -11,7 +11,7 @@ user code in a fresh `Contents/MacOS/python` subprocess; when the app is only
 ad-hoc signed, macOS won't attribute that helper's file access to the app, so
 it re-prompts every call. One stable Team ID signing the whole bundle makes the
 subprocess part of the same app identity → the prompt appears **once**. (The
-built-in table/csv/xlsx readers already avoid this by running in-process — see
+built-in duckdb/xlsx/sqlite readers already avoid this by running in-process — see
 DECISIONS D72 — but signing is what covers user scripts too.)
 
 ## TL;DR

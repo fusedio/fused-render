@@ -92,7 +92,7 @@ def test_reader_present_on_text_keys_before_annotate():
     # and never as the default (first entry stays the real content view).
     cases = {
         "/x/notes.md": ["markdown", "code", "reader", "annotate"],
-        "/x/data.csv": ["duckdb", "csv", "excel", "code", "reader", "annotate"],
+        "/x/data.csv": ["duckdb", "excel", "code", "reader", "annotate"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader", "annotate"],
         "/x/log.txt": ["text", "code", "reader", "annotate"],
     }
@@ -349,7 +349,7 @@ def test_unknown_sentinel_dropped_with_error(user_dir):
 def test_unresolvable_user_value_falls_back_to_builtin(user_dir):
     user_dir.registry({".csv": "no-such-template"})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
+    assert m == ["duckdb", "excel", "code", "reader", "annotate"]
     assert "no-such-template" in error
 
 
@@ -358,21 +358,21 @@ def test_all_dangling_names_fall_back(user_dir):
     # dangling names resolves to nothing -> built-in fallback, error names one.
     user_dir.registry({".csv": ["...", "..."]})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
+    assert m == ["duckdb", "excel", "code", "reader", "annotate"]
     assert "..." in error
 
 
 def test_bad_value_type_falls_back(user_dir):
     user_dir.registry({".csv": 42})
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
+    assert m == ["duckdb", "excel", "code", "reader", "annotate"]
     assert "must be a list" in error
 
 
 def test_unreadable_user_registry_reports_and_falls_back(user_dir):
     (user_dir.path / "registry.json").write_text("{not json")
     m, error = modes("/x/a.csv")
-    assert m == ["duckdb", "csv", "excel", "code", "reader", "annotate"]
+    assert m == ["duckdb", "excel", "code", "reader", "annotate"]
     assert "cannot read registry.json" in error
 
 

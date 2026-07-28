@@ -7,7 +7,7 @@ Two execution paths (D72):
   subprocess** per call (SPEC PY-6, D5): always-fresh code, no stale state, and
   a crash or `sys.exit` can't take down the server.
 - **An allowlist of first-party helpers** (`INPROCESS_HELPERS` — the duckdb/
-  table/csv/xlsx/sqlite readers and the `api` inspector) run **in-process**. They are trusted
+  duckdb/structure/xlsx/sqlite readers and the `api` inspector) run **in-process**. They are trusted
   and, crucially, none of them import or execute user code (the readers open a
   data file; the inspector `ast`-parses a .py without importing it) and each is
   fast and bounded. Running them in the server (= app) process means the
@@ -81,7 +81,6 @@ INPROCESS_HELPERS = frozenset(
         ("duckdb", "reader.py"),
         ("duckdb", "writer.py"),
         ("structure", "reader.py"),
-        ("csv", "reader.py"),
         ("xlsx", "reader.py"),
         ("sqlite", "reader.py"),
         ("sqlite", "writer.py"),
@@ -184,7 +183,7 @@ def _child_env() -> dict:
 
 def _is_builtin_helper(path: str) -> bool:
     """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
-    csv/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
+    duckdb/structure/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
     script (user code, and other shipped helpers like the claude agent or the
     geo tile servers/browsers) stays on the subprocess path with its timeout and
     isolation.

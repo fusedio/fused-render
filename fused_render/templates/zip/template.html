@@ -136,6 +136,9 @@
   }
   table.listing-table tr.row { cursor: pointer; }
   table.listing-table tr.row:hover { background: var(--bg-alt); }
+  /* ".." — an affordance, not content: muted, and it keeps its slot at the top
+     of the body regardless of the sort. */
+  table.listing-table tr.up-row td.name { color: var(--fg-muted); }
   table.listing-table td.name { display: flex; align-items: center; gap: 8px; font-size: 14px; }
   table.listing-table .icon { flex: 0 0 auto; opacity: 0.75; }
   table.listing-table td.size, table.listing-table td.mtime {
@@ -213,6 +216,37 @@
     let selected = null;      // full entry path currently previewed, or null
     let sortKey = "name";     // name | size | mtime
     let sortOrder = "asc";
+
+    // ---- where we are inside the archive lives in the URL --------------------
+    // `zipPath` (current folder) and `zipMember` (the previewed file) are
+    // ordinary visible params, so a position inside the archive is bookmarkable,
+    // shareable and survives a reload — before this, both were plain JS and a
+    // refresh dumped you back at the root.
+    //
+    // What this does NOT buy is a Back step per folder: the runtime coalesces
+    // param writes to ONE history entry per visit on purpose (D99 — WebKit hard-
+    // limits pushState, and a slider must not burn the budget), so the first
+    // navigation pushes and every later one replaces on top. Back therefore
+    // returns to the archive as-opened rather than to the previous folder, which
+    // is why the ".." row below exists: that is what makes going up one level
+    // reliable, at any depth.
+    function readLocation() {
+      const dir = (fused.params.get("zipPath") || "").replace(/\\/g, "/");
+      cwd = dir.split("/").filter(Boolean);
+      selected = fused.params.get("zipMember") || null;
+    }
+    function writeLocation() {
+      fused.params.set("zipPath", cwd.join("/"));
+      fused.params.set("zipMember", selected || "");
+    }
+    // Navigate + persist + repaint. Every cwd/selected mutation goes through
+    // here so the URL can never drift from what is on screen.
+    function goTo(parts, member) {
+      cwd = parts;
+      selected = member || null;
+      writeLocation();
+      render();
+    }
 
     function escapeHtml(s) {
       return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -306,9 +340,7 @@
         el.title = p.title;
         if (!isLast) {
           el.addEventListener("click", () => {
-            selected = null;
-            cwd = p.depth === 0 ? [] : cwd.slice(0, p.depth);
-            render();
+            goTo(p.depth === 0 ? [] : cwd.slice(0, p.depth), null);
           });
         }
         crumbsEl.appendChild(el);
@@ -340,11 +372,19 @@
       const { dirs, files } = childrenOf(cwd);
       const rows = sortRows(dirs, files);
       const head = `<thead><tr>${th("Name", "name")}${th("Size", "size")}${th("Modified", "mtime")}</tr></thead>`;
+      // ".." goes up one level and is the reliable way back at any depth (the
+      // breadcrumb jumps to an ancestor; Back leaves the archive — see the note
+      // on writeLocation). Sits above the rows and outside the sort, the way a
+      // file manager puts it.
+      const up = cwd.length
+        ? `<tr class="row up-row" data-up="1"><td class="name">` +
+          `<span class="icon">${DIR_ICON}</span>..</td><td class="size"></td><td class="mtime"></td></tr>`
+        : "";
       let bodyRows;
       if (rows.length === 0) {
-        bodyRows = `<tr><td colspan="3" class="status-message">This folder is empty.</td></tr>`;
+        bodyRows = up + `<tr><td colspan="3" class="status-message">This folder is empty.</td></tr>`;
       } else {
-        bodyRows = rows.map((r) => {
+        bodyRows = up + rows.map((r) => {
           const icon = r.is_dir ? DIR_ICON : FILE_ICON;
           const size = r.is_dir ? "" : escapeHtml(fmtBytes(r.size));
           const mtime = escapeHtml(r.modified || "");
@@ -365,11 +405,13 @@
       });
       bodyEl.querySelectorAll("tr.row").forEach((el) => {
         el.addEventListener("click", () => {
+          if (el.getAttribute("data-up") === "1") {
+            goTo(cwd.slice(0, -1), null);
+            return;
+          }
           const path = el.getAttribute("data-path");
           if (el.getAttribute("data-dir") === "1") {
-            cwd = path.replace(/\/$/, "").split("/").filter(Boolean);
-            selected = null;
-            render();
+            goTo(path.replace(/\/$/, "").split("/").filter(Boolean), null);
           } else {
             openPreview(path);
           }
@@ -383,6 +425,7 @@
     // renderer's own metadata card.
     async function openPreview(entry) {
       selected = entry;
+      writeLocation();
       clearNotice();
       renderCrumbs();
       renderActions();
@@ -452,13 +495,31 @@
       try {
         const data = await fused.runPython("./reader.py", { file, action: "list" }, { key: null });
         ENTRIES = data.entries || [];
-        render();
+        // A URL that already names a member has to re-enter the preview, not
+        // just paint the folder behind it — render() deliberately leaves #body
+        // to openPreview() whenever `selected` is set.
+        if (selected) openPreview(selected);
+        else render();
       } catch (err) {
         bodyEl.innerHTML = `<div class="status-message error"><strong>` +
           `${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
       }
     }
 
+    // Someone else moved the URL — a hand-edit, a bookmark restore, or the
+    // shell writing params. Re-read rather than assume our JS state is truth.
+    // Guarded against our own writes: goTo()/openPreview() already repainted,
+    // and re-entering openPreview() here would fire a second extract.
+    fused.params.onChange(() => {
+      const wasDir = cwd.join("/");
+      const wasMember = selected || "";
+      readLocation();
+      if (cwd.join("/") === wasDir && (selected || "") === wasMember) return;
+      if (selected) openPreview(selected);
+      else render();
+    });
+
+    readLocation();
     load();
   </script>
 </body>

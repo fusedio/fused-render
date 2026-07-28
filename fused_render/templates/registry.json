@@ -10,7 +10,6 @@
   ],
   ".csv": [
     "duckdb",
-    "csv",
     "excel",
     "code",
     "reader",
@@ -18,7 +17,6 @@
   ],
   ".tsv": [
     "duckdb",
-    "csv",
     "code",
     "reader",
     "annotate"

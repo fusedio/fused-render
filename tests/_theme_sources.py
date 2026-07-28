@@ -31,7 +31,6 @@ TIER_ONE_TEMPLATES = (
     "api",
     "claude",
     "code",
-    "csv",
     "duckdb",
     "history",
     "log_studio",
