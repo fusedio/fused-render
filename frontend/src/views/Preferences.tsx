@@ -24,10 +24,13 @@
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useRef, useState } from "react";
 import {
+  addAiApiKey,
   deleteAiAccount,
+  deleteAiApiKey,
   cancelAiConnect,
   getAiAccounts,
   getPrefs,
+  putAiRoutingStrategy,
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
@@ -35,11 +38,20 @@ import {
   putEnginePref,
   putReaderEnabled,
 } from "../lib/api";
-import type { AiAccount, AiAccountsResult, AiProvider, CallsParamsMode, Prefs } from "../lib/api";
+import type {
+  AiAccount,
+  AiAccountsResult,
+  AiApiKey,
+  AiProvider,
+  AiRoutingStrategy,
+  CallsParamsMode,
+  Prefs,
+} from "../lib/api";
 import { useAiLogin } from "../lib/aiAccounts";
 import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { Field, Select, TextInput } from "../components/field/fields";
 import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
@@ -432,6 +444,215 @@ function aiProviderLabel(p: AiProvider): string {
   return p === "claude" ? "Claude" : "ChatGPT";
 }
 
+// A pasted API key (ai_accounts.py's "API keys" section) — a second,
+// config-level way to authenticate one of the same two providers OAuth
+// connects above. Its own section rather than folded into the accounts
+// table: a key has no session to expire and no browser to reconnect
+// through, and removing one is a config write, not a file deletion — enough
+// of a different affordance that sharing a table would force the reader to
+// sniff which kind each row is. Rendered as plain rows (deploy-form-row), not
+// a table, so it reads as visually distinct from the OAuth table above it.
+//
+// One shared form with a provider selector, not two per-provider forms: the
+// add flow (paste a key, submit) is identical for both providers, so a
+// second copy of the same three fields would only be duplicated markup, not
+// a meaningfully different experience.
+function ApiKeysSection({ apiKeys, onChanged }: { apiKeys: AiApiKey[]; onChanged: () => void }) {
+  const [provider, setProvider] = useState<AiProvider>("claude");
+  const [apiKey, setApiKey] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  // The auth_index currently being removed — row-scoped busy, same pattern as
+  // AiAccountsPanel's rowBusy for Disconnect above.
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (addBusy || !apiKey) return;
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      await addAiApiKey(provider, apiKey);
+      // Cleared the instant the request settles, success or not: the module
+      // docstring's "never reaches a client" rule cuts both ways — this app
+      // must not hold a pasted key in React state any longer than the POST
+      // needs it, so a stale tab can't leak it back out via devtools.
+      setApiKey("");
+      onChanged();
+    } catch (e) {
+      setAddError((e as Error).message);
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const remove = (key: AiApiKey) => {
+    if (
+      !window.confirm(`Remove this ${aiProviderLabel(key.provider)} API key (${key.hint})?`)
+    ) {
+      return;
+    }
+    void (async () => {
+      setRowBusy(key.auth_index);
+      setRowError(null);
+      try {
+        await deleteAiApiKey(key.auth_index);
+        onChanged();
+      } catch (e) {
+        setRowError((e as Error).message);
+      } finally {
+        setRowBusy(null);
+      }
+    })();
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>API keys</h2>
+      <p className="deploy-muted">
+        A second way to authenticate Claude or ChatGPT for <code>fused.ai()</code>, alongside the
+        accounts above — paste a key from the provider's own dashboard instead of signing in with
+        a subscription. Useful for a pay-per-token key, or when there's no interactive login to
+        use. The full key is never stored by this app past the request that adds it, and there is
+        no way to read it back — only the masked hint below ever comes back from the server.
+      </p>
+      {apiKeys.length === 0 ? (
+        <p className="deploy-muted">No API keys added yet.</p>
+      ) : (
+        apiKeys.map((k) => (
+          <div className="deploy-form-row" key={k.auth_index}>
+            <span>
+              <b>{aiProviderLabel(k.provider)}</b> <code>{k.hint}</code>
+            </span>
+            {rowBusy === k.auth_index ? (
+              <span className="deploy-muted">Removing…</span>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={rowBusy !== null}
+                onClick={() => remove(k)}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        ))
+      )}
+      {rowError && <div className="deploy-error">{rowError}</div>}
+      <form
+        className="deploy-form-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <Field label="Provider">
+          <Select
+            value={provider}
+            disabled={addBusy}
+            onChange={(e) => setProvider(e.target.value as AiProvider)}
+          >
+            <option value="claude">Claude</option>
+            <option value="codex">ChatGPT</option>
+          </Select>
+        </Field>
+        <Field label="API key">
+          {/* type="password": a pasted key must never render as plain text on
+              screen, matching the backend's own "never reveal a full key"
+              rule. autoComplete off so the browser doesn't offer to save/fill
+              a provider secret into its own password store. */}
+          <TextInput
+            type="password"
+            autoComplete="off"
+            placeholder="paste key"
+            style={{ minWidth: 220 }}
+            value={apiKey}
+            disabled={addBusy}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </Field>
+        {/* Blank caption reserves the label row's height so the button aligns
+            with the inputs, not the captions above them (AddRemote's pattern). */}
+        <Field label={" "}>
+          <button type="submit" className="btn btn-primary" disabled={addBusy || !apiKey}>
+            {addBusy ? "Adding…" : "Add key"}
+          </button>
+        </Field>
+      </form>
+      {addError && <div className="deploy-error">{addError}</div>}
+    </section>
+  );
+}
+
+// PUT /api/ai/accounts/routing-strategy. Mirrors EngineSection's register
+// (a locked-looking radio pair with a plain-language tradeoff line each), but
+// nothing here is ever locked — there is no env override for this pref.
+function RoutingStrategySection({
+  strategy,
+  onChanged,
+}: {
+  strategy: AiRoutingStrategy;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const select = async (value: AiRoutingStrategy) => {
+    if (busy || value === strategy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await putAiRoutingStrategy(value);
+      onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Routing strategy</h2>
+      <p className="deploy-muted">
+        How <code>fused.ai()</code> picks a credential when a provider has more than one —
+        signed-in accounts and API keys are pooled together here, not treated separately.
+        Changing this restarts the AI proxy; it respawns lazily with the new setting on its next
+        use, so it's normal to see it briefly report not running right after.
+      </p>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="ai-routing-strategy"
+          checked={strategy === "round-robin"}
+          disabled={busy}
+          onChange={() => select("round-robin")}
+        />
+        <span>
+          <b>Round-robin</b> — every credential for a provider is rotated between calls, with
+          failover to the next one when one hits a rate limit. The upstream default.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="ai-routing-strategy"
+          checked={strategy === "fill-first"}
+          disabled={busy}
+          onChange={() => select("fill-first")}
+        />
+        <span>
+          <b>Fill-first</b> — one credential is used until it fails (rate limit, expiry), only
+          then does the next one take over. Pick this to keep a preferred account or key in use
+          for as long as possible before falling back.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 // The "AI accounts" tab (fused_render/ai_accounts.py). No enabling pref gates
 // it — unlike AccountPanel this is offered to everyone, since a user with
 // nothing connected yet is exactly who it's for. Connect flow follows
@@ -540,6 +761,7 @@ function AiAccountsPanel() {
   const connectDisabled = login.connecting || inFlightElsewhere;
 
   return (
+    <>
     <section className="prefs-section">
       <h2>AI accounts</h2>
       <p className="deploy-muted">
@@ -550,8 +772,20 @@ function AiAccountsPanel() {
 
       {data.accounts.length === 0 ? (
         <p className="deploy-muted">
-          No accounts connected yet — connect one below and pages in this app can start calling{" "}
-          <code>fused.ai()</code>.
+          {data.api_keys.length === 0 ? (
+            <>
+              Nothing connected yet. Connect Claude or ChatGPT below for one-click access to a
+              subscription you already have, or add an API key in the API keys section further
+              down instead — better for a pay-per-token key, or a provider account with no
+              interactive login. Either one is enough for pages to start calling{" "}
+              <code>fused.ai()</code>.
+            </>
+          ) : (
+            <>
+              No signed-in accounts yet — connect one below, or rely on the API key(s) already
+              configured further down.
+            </>
+          )}
         </p>
       ) : (
         <table className="deploy-shares-table">
@@ -636,6 +870,9 @@ function AiAccountsPanel() {
       {login.error && <div className="deploy-error">{login.error}</div>}
       {actionError && <div className="deploy-error">{actionError}</div>}
     </section>
+    <ApiKeysSection apiKeys={data.api_keys} onChanged={() => void load()} />
+    <RoutingStrategySection strategy={data.routing_strategy} onChanged={() => void load()} />
+    </>
   );
 }
 

@@ -804,12 +804,33 @@ export interface AiLoginInfo {
   detail: string | null;
 }
 
+// One pasted API key (ai_accounts.py's "API keys" section) — a config-level
+// credential, never a file, so it has no `disabled`/`label` (nothing to
+// re-authorize in a browser) and no `email` (the proxy never learns one).
+// `hint` is a masked display string ("...cdef") — never the key itself, and
+// there is no route that returns the full value once written.
+export interface AiApiKey {
+  provider: AiProvider;
+  hint: string;
+  // The handle DELETE .../keys/{auth_index} takes. Opaque and NOT stable
+  // across a proxy restart (the module docstring: PUT regenerates it from
+  // array position) — never cache this across a page reload, always use
+  // whatever the latest GET /api/ai/accounts returned.
+  auth_index: string;
+}
+
+// PUT /api/ai/accounts/routing-strategy's two values (ai_accounts.py /
+// shell/prefs.py). Upstream default is round-robin.
+export type AiRoutingStrategy = "round-robin" | "fill-first";
+
 export interface AiAccountsResult {
   // Whether this app spawned/manages the proxy vs. an independent install on
   // the default port (docs/AI_PROXY_BUNDLING.md's config-precedence note).
   supervised: boolean;
   running: boolean;
   accounts: AiAccount[];
+  api_keys: AiApiKey[];
+  routing_strategy: AiRoutingStrategy;
   login: AiLoginInfo | null;
 }
 
@@ -852,6 +873,49 @@ export function deleteAiAccount(name: string): Promise<{ ok: boolean }> {
     if (!r.ok) throw httpError(data, r.status);
     return data as { ok: boolean };
   });
+}
+
+// Add one API key for a provider (read-modify-write of the whole per-provider
+// array server-side, then read back to confirm it actually persisted — see
+// ai_accounts.py's api_ai_accounts_add_key docstring on the codex base-url
+// trap). A 502 here means the proxy accepted-then-dropped the key, not that
+// this request failed to reach the server — surface it as such, not as a
+// generic error.
+export function addAiApiKey(
+  provider: AiProvider,
+  apiKey: string
+): Promise<{ ok: boolean; provider: AiProvider; hint: string; auth_index: string }> {
+  return postJson<{ ok: boolean; provider: AiProvider; hint: string; auth_index: string }>(
+    "/api/ai/accounts/keys",
+    { provider, api_key: apiKey }
+  );
+}
+
+// Remove one API key by its (restart-unstable) auth_index. Not through
+// mutateJson (PUT/POST only) since this is a DELETE — same direct-fetch shape
+// as deleteAiAccount; the key itself never appears in the URL, only the index.
+export function deleteAiApiKey(authIndex: string): Promise<{ ok: boolean }> {
+  return fetch(`/api/ai/accounts/keys/${encodeURIComponent(authIndex)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) throw httpError(data, r.status);
+    return data as { ok: boolean };
+  });
+}
+
+// The proxy only reads this at startup, so the server force-restarts it on
+// change (see ai_accounts.py's api_ai_accounts_set_routing_strategy) —
+// `restarted` just reflects whether there was a live instance to kill, not
+// whether anything went wrong.
+export function putAiRoutingStrategy(
+  strategy: AiRoutingStrategy
+): Promise<{ ok: boolean; strategy: AiRoutingStrategy; restarted: boolean }> {
+  return putJson<{ ok: boolean; strategy: AiRoutingStrategy; restarted: boolean }>(
+    "/api/ai/accounts/routing-strategy",
+    { strategy }
+  );
 }
 
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
