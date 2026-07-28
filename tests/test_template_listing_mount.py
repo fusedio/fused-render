@@ -11,11 +11,6 @@ These tests stand up a threaded localhost HTTP server for /api/fs/stat +
 while the fake server reports it as a remote directory. Any accidental kernel
 fallback would fail to find the path (empty/NotADirectory) instead of returning
 the HTTP-served entries — so a silent-fallback regression fails loudly.
-
-log_studio is deliberately absent: its Browse-files picker (the only thing that
-listed directories from that template) was removed, and its reader's `list`/
-`resolve` ops went with it. If a directory listing ever returns to that reader,
-it must come back mount-routed and regain a case here.
 """
 import json
 import threading
@@ -24,6 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from fused_render.templates.log_studio import reader as log_studio
 from fused_render.templates.map import discover as map_discover
 from fused_render.templates.photos import reader as photos
 from fused_render.templates.excel import reader as excel
@@ -189,6 +185,13 @@ def test_photos_list_dir_routes_remote(fs):
     assert res["ok"] is True
     assert [i["name"] for i in res["items"]] == ["p.jpg"]
     assert [d["name"] for d in res["subdirs"]] == ["sub"]
+
+
+def test_log_studio_listdir_routes_remote(fs):
+    s = fs([_ent("sub", is_dir=True), _ent("app.log", size=10), _ent(".hidden")])
+    res = log_studio._listdir("", REMOTE_DIR, src=s.src)
+    assert [(e["name"], e["is_dir"]) for e in res["entries"]] == [
+        ("sub", True), ("app.log", False)]
 
 
 def test_reader_unreachable_falls_back_to_kernel_local(tmp_path):

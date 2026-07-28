@@ -46,6 +46,8 @@
     --notice-bg: rgba(230, 180, 80, 0.08);
     --notice-border: #665322;
     --notice-text: #d9bf7b;
+    --scrim: rgba(8, 11, 15, 0.55);
+    --picker-shadow: rgba(0, 0, 0, 0.4);
     font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
@@ -89,6 +91,8 @@
     --notice-bg: rgba(183, 121, 31, 0.10);
     --notice-border: #e0c48a;
     --notice-text: #7a5a12;
+    --scrim: rgba(16, 23, 34, 0.4);
+    --picker-shadow: rgba(16, 23, 34, 0.22);
   }
 
   * { box-sizing: border-box; }
@@ -181,7 +185,155 @@
   .brand-mark i:nth-child(2) { width: 70%; }
   .brand-mark i:nth-child(3) { width: 88%; }
 
+  .open-file-list { display: grid; gap: 3px; }
+  .browse-button { width: 100%; margin-top: 9px; }
+
+  .picker-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--scrim);
+  }
+
+  .picker {
+    width: min(720px, 100%);
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    box-shadow: 0 18px 50px var(--picker-shadow);
+    overflow: hidden;
+  }
+
+  .picker-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 15px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .picker-title {
+    flex: 1;
+    margin: 0;
+    color: var(--strong);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .picker-close {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--faint);
+    font-size: 20px;
+    cursor: pointer;
+  }
+
+  .picker-close:hover { color: var(--danger); background: var(--hover); }
+
+  .picker-path-form {
+    display: flex;
+    gap: 8px;
+    padding: 13px 15px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  #picker-path {
+    flex: 1;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--input);
+    color: var(--strong);
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #picker-path::placeholder { color: var(--faint); }
+
+  .picker-crumbs {
+    padding: 9px 15px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+    font: 11px ui-monospace, monospace;
+    word-break: break-all;
+  }
+
+  .picker-crumbs a { color: var(--accent); cursor: pointer; }
+  .picker-crumbs a:hover { text-decoration: underline; }
+
+  .picker-list {
+    flex: 1;
+    min-height: 120px;
+    overflow: auto;
+    padding: 6px 0;
+  }
+
+  .picker-entry {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 15px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .picker-entry:hover { background: var(--hover); }
+  .picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-size { color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .picker-empty { padding: 14px 15px; color: var(--faint); font-size: 12px; }
+
+  .picker-error {
+    padding: 11px 15px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  .open-file {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 22px;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+  }
+
+  .open-file.active { border-color: var(--accent); background: var(--accent-dim); }
+
+  .open-file-select {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 7px;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .open-file-select:hover { background: var(--hover); }
+  .open-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .open-file.active .open-file-name { color: var(--strong); font-weight: 650; }
   .file-kind { width: 26px; flex: 0 0 26px; color: var(--faint); font: 9px ui-monospace, monospace; }
+  .close-file { width: 22px; height: 26px; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
+  .close-file:hover { color: var(--danger); }
 
   .facet-section {
     padding: 17px 13px;
@@ -513,6 +665,8 @@
 
   dd.skel-dd { display: flex; justify-content: flex-end; }
 
+  .skel-picker-row, .skel-picker-row:hover { background: transparent; cursor: default; }
+
   .hist-skel {
     position: absolute;
     z-index: 2;
@@ -732,6 +886,11 @@
         <span class="brand-label">LOG STUDIO</span>
       </div>
       <div class="facets-inner" id="facets-inner">
+        <section class="facet-section">
+          <h2 class="facet-title">Open files</h2>
+          <div class="open-file-list" id="open-files"></div>
+          <button class="button browse-button" id="browse-open" type="button">Browse files&hellip;</button>
+        </section>
         <section class="facet-section" id="file-overview">
           <h2 class="facet-title">Active file</h2>
           <div class="file-name"><span class="skel-bar" style="width:70%;height:12px"></span></div>
@@ -808,6 +967,22 @@
     </main>
   </div>
 
+  <div class="picker-overlay" id="picker-overlay" hidden>
+    <div class="picker" role="dialog" aria-modal="true" aria-label="Open a file">
+      <div class="picker-head">
+        <h2 class="picker-title">Open a file</h2>
+        <button class="picker-close" id="picker-close" type="button" aria-label="Close">&times;</button>
+      </div>
+      <form class="picker-path-form" id="picker-path-form">
+        <input id="picker-path" type="text" spellcheck="false" autocomplete="off" placeholder="Paste a full path, e.g. C:\logs\app.log or ~/logs/app.log" aria-label="File path" />
+        <button class="button query-submit" type="submit">Open</button>
+      </form>
+      <div class="picker-crumbs" id="picker-crumbs"></div>
+      <div class="picker-list" id="picker-list"></div>
+      <div class="picker-error" id="picker-error" hidden></div>
+    </div>
+  </div>
+
 <script>
   const PAGE_LIMIT = 200;
   const LEVEL_ORDER = ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "OTHER"];
@@ -824,6 +999,15 @@
 
   const fileOverview = document.getElementById("file-overview");
   const app = document.querySelector(".app");
+  const openFiles = document.getElementById("open-files");
+  const browseButton = document.getElementById("browse-open");
+  const pickerOverlay = document.getElementById("picker-overlay");
+  const pickerClose = document.getElementById("picker-close");
+  const pickerPathForm = document.getElementById("picker-path-form");
+  const pickerPath = document.getElementById("picker-path");
+  const pickerCrumbs = document.getElementById("picker-crumbs");
+  const pickerList = document.getElementById("picker-list");
+  const pickerError = document.getElementById("picker-error");
   const levelList = document.getElementById("level-list");
   const queryForm = document.getElementById("query-form");
   const queryInput = document.getElementById("query");
@@ -900,12 +1084,28 @@
         </div>`).join("")}</div>`;
   }
 
+  function pickerSkeleton() {
+    const widths = [62, 44, 78, 50, 68];
+    return widths.map((width) => `
+      <div class="picker-entry skel-picker-row">
+        <span class="file-kind">${skelBar("22px", "8px")}</span>
+        <span class="picker-name">${skelBar(`${width}%`)}</span>
+      </div>`).join("");
+  }
+
   function currentState() {
     const rawPage = fused.params.get("page") || "0";
     const target = fused.params.get("_file") || "";
     const file = fused.params.get("file") || target;
+    let opened = [];
+    try {
+      const parsed = JSON.parse(fused.params.get("open") || "[]");
+      if (Array.isArray(parsed)) opened = parsed.filter((value) => typeof value === "string");
+    } catch (_) {}
+    if (file && !opened.some((value) => samePath(value, file))) opened.push(file);
     return {
       file,
+      opened,
       q: fused.params.get("q") || "",
       level: fused.params.get("level") || "",
       levels: (fused.params.get("level") || "").split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
@@ -1058,6 +1258,104 @@
       min: data.from ?? data.min_time ?? data.first_timestamp ?? range.from ?? range.min ?? "",
       max: data.to ?? data.max_time ?? data.last_timestamp ?? range.to ?? range.max ?? ""
     };
+  }
+
+  function renderOpenFiles(state) {
+    openFiles.innerHTML = state.opened.map((path) => {
+      const active = samePath(path, state.file);
+      const name = basename(path);
+      const dot = name.lastIndexOf(".");
+      const kind = dot > 0 ? name.slice(dot + 1, dot + 5).toUpperCase() : "FILE";
+      return `
+        <div class="open-file ${active ? "active" : ""}" title="${escapeHtml(path)}">
+          <button class="open-file-select" type="button" data-open-file="${escapeHtml(path)}">
+            <span class="file-kind">${escapeHtml(kind)}</span>
+            <span class="open-file-name">${escapeHtml(name)}</span>
+          </button>
+          <button class="close-file" type="button" data-close-file="${escapeHtml(path)}" aria-label="Close ${escapeHtml(name)}">x</button>
+        </div>`;
+    }).join("");
+  }
+
+  function crumbHtml(path) {
+    const parts = String(path).split("/").filter(Boolean);
+    const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");
+    const crumbs = winRoot ? [] : [`<a data-path="/">/</a>`];
+    parts.forEach((part, index) => {
+      const acc = (winRoot ? "" : "/") + parts.slice(0, index + 1).join("/") + (winRoot && !index ? "/" : "");
+      crumbs.push(`<a data-path="${escapeHtml(acc)}">${escapeHtml(part)}</a>`);
+    });
+    return crumbs.join(` <span style="color:var(--faint)">/</span> `);
+  }
+
+  function renderPickerDir(data) {
+    pickerCrumbs.innerHTML = crumbHtml(data.path);
+    const rows = [];
+    if (data.parent && data.parent !== data.path) {
+      rows.push(`<button class="picker-entry" type="button" data-dir="${escapeHtml(data.parent)}"><span class="file-kind">UP</span><span class="picker-name">..</span></button>`);
+    }
+    for (const entry of data.entries) {
+      const attr = entry.is_dir ? "data-dir" : "data-file";
+      rows.push(`
+        <button class="picker-entry" type="button" ${attr}="${escapeHtml(entry.path)}" title="${escapeHtml(entry.path)}">
+          <span class="file-kind">${entry.is_dir ? "DIR" : "FILE"}</span>
+          <span class="picker-name">${escapeHtml(entry.name)}</span>
+          ${entry.is_dir ? "" : `<span class="picker-size">${escapeHtml(formatBytes(entry.size))}</span>`}
+        </button>`);
+    }
+    pickerList.innerHTML = rows.length ? rows.join("") : `<div class="picker-empty">This folder is empty.</div>`;
+  }
+
+  async function loadPickerDir(path) {
+    pickerError.hidden = true;
+    pickerList.innerHTML = pickerSkeleton();
+    try {
+      // src (origin only) lets the reader route a mount-backed dir via
+      // /api/fs/list instead of a kernel scan that could drop the mount.
+      renderPickerDir(await runReader("list", currentState(), { path: path || "",
+        src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` }));
+    } catch (error) {
+      pickerList.innerHTML = "";
+      showPickerError(errorMessage(error));
+    }
+  }
+
+  function openPickedFile(path) {
+    const state = currentState();
+    const opened = state.opened.some((value) => samePath(value, path)) ? state.opened : [...state.opened, path];
+    closePicker();
+    activateFile(path, opened);
+  }
+
+  function showPickerError(message) {
+    pickerError.textContent = message;
+    pickerError.hidden = false;
+  }
+
+  function openPicker() {
+    pickerOverlay.hidden = false;
+    pickerPath.value = "";
+    pickerError.hidden = true;
+    loadPickerDir("");
+    pickerPath.focus();
+  }
+
+  function closePicker() {
+    pickerOverlay.hidden = true;
+  }
+
+  function activateFile(path, opened) {
+    setParams({
+      file: path,
+      open: JSON.stringify(opened),
+      q: "",
+      level: "",
+      from: "",
+      to: "",
+      page: "0",
+      back: "",
+      tail: "0"
+    });
   }
 
   function renderOverview(data, state) {
@@ -1652,13 +1950,14 @@
     const state = currentState();
     if (!state.file) {
       renderState(state);
+      renderOpenFiles(state);
       fileOverview.innerHTML = "";
       levelList.innerHTML = "";
       resultSummary.textContent = "No file open";
       noticeArea.innerHTML = "";
       pager.hidden = true;
       histSkel.hidden = true;
-      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Open a <code>.log</code> file from the file explorer to view it here.</span></div>`;
+      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Use "Browse files..." to pick a log.</span></div>`;
       return;
     }
     const nextDataKey = dataKey(state);
@@ -1671,6 +1970,7 @@
     }
     lastTailState = state.tail;
     renderState(state);
+    renderOpenFiles(state);
     if (loadingDataKey === nextDataKey) return;
     if (dataReadyKey === nextDataKey && overviewData && overviewFile === state.file) {
       renderOverview(overviewData, state);
@@ -1728,6 +2028,81 @@
   clearRange.addEventListener("click", () => setParams({ from: "", to: "", page: "0", back: "" }));
 
   railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
+
+  openFiles.addEventListener("click", (event) => {
+    const state = currentState();
+    const close = event.target.closest("[data-close-file]");
+    if (close) {
+      if (state.opened.length <= 1) return;
+      const remaining = state.opened.filter((path) => !samePath(path, close.dataset.closeFile));
+      if (samePath(close.dataset.closeFile, state.file)) activateFile(remaining[remaining.length - 1], remaining);
+      else setParams({ open: JSON.stringify(remaining) });
+      return;
+    }
+    const select = event.target.closest("[data-open-file]");
+    if (select && !samePath(select.dataset.openFile, state.file)) activateFile(select.dataset.openFile, state.opened);
+  });
+
+  browseButton.addEventListener("click", openPicker);
+  pickerClose.addEventListener("click", closePicker);
+  pickerOverlay.addEventListener("mousedown", (event) => {
+    if (event.target === pickerOverlay) closePicker();
+  });
+
+  pickerCrumbs.addEventListener("click", (event) => {
+    const crumb = event.target.closest("[data-path]");
+    if (crumb) loadPickerDir(crumb.dataset.path);
+  });
+
+  pickerList.addEventListener("click", (event) => {
+    const dir = event.target.closest("[data-dir]");
+    if (dir) {
+      loadPickerDir(dir.dataset.dir);
+      return;
+    }
+    const file = event.target.closest("[data-file]");
+    if (file) openPickedFile(file.dataset.file);
+  });
+
+  pickerPathForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = pickerPath.value.trim();
+    if (!value) return;
+    pickerError.hidden = true;
+    try {
+      const info = await runReader("resolve", currentState(), { path: value });
+      if (!info.exists) {
+        showPickerError(`No such file or folder: ${info.path}`);
+        return;
+      }
+      if (info.is_dir) {
+        pickerPath.value = "";
+        loadPickerDir(info.path);
+        return;
+      }
+      openPickedFile(info.path);
+    } catch (error) {
+      showPickerError(errorMessage(error));
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !pickerOverlay.hidden) closePicker();
+  });
+
+  tailToggle.addEventListener("click", () => {
+    const state = currentState();
+    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
+    if (!state.tail) {
+      tailEndOffset = number(size);
+      tailPageOffset = Math.max(0, tailEndOffset - 65536);
+    }
+    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
+  });
+
+  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
+  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+
   // runtime.js owns `data-theme` now (the `data-fused-theme` opt-in above), so
   // nothing here resolves or applies a theme. The charts still have to know:
   // they read the palette through getComputedStyle at DRAW time, so a theme
