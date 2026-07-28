@@ -192,7 +192,10 @@ def test_cancel_signals_the_process_group_on_posix(tmp_path, monkeypatch):
     (run_dir / "pid").write_text("4242")
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     killed = []
-    monkeypatch.setattr(agent.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    # raising=False: os.killpg is absent on a Windows host, and this test drives
+    # the POSIX branch there too
+    monkeypatch.setattr(agent.os, "killpg", lambda pid, sig: killed.append((pid, sig)),
+                        raising=False)
     monkeypatch.setattr(
         agent.subprocess, "run",
         lambda *a, **kw: pytest.fail("taskkill is the Windows-only path"))
@@ -204,7 +207,7 @@ def test_cancel_of_an_unknown_run_kills_nothing(tmp_path, monkeypatch):
     agent = _load_agent()
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent.os, "killpg",
-                        lambda *a: pytest.fail("nothing to kill"))
+                        lambda *a: pytest.fail("nothing to kill"), raising=False)
     monkeypatch.setattr(agent.subprocess, "run",
                         lambda *a, **kw: pytest.fail("nothing to kill"))
     assert agent._cancel("no-such-run") == {"cancelled": "no-such-run"}
