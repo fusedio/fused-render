@@ -119,9 +119,12 @@ Scope is **Claude and ChatGPT only** for now, though the proxy also speaks Gemin
 Kimi, xAI and Antigravity — the two that matter are the two most users already
 subscribe to, and each provider added is another OAuth flow to verify.
 
-Whether this lives as a section in the render tab or its own tab depends on
-whether it should appear before any account is connected; a section is the
-smaller change and is the starting assumption.
+**Placement: its own tab** (decided), a third beside "Render preferences" and
+"Fused account", following how `AccountPanel` occupies a whole tab. Accounts need
+more room than a settings row: per-account provider, email, expiry and disabled
+state, plus a login that involves an external browser round-trip. Unlike the
+Fused account tab, this one is always offered — there is no enabling pref to gate
+it on, and a user with no accounts yet is exactly who the tab is for.
 
 ## Build
 
@@ -139,11 +142,15 @@ historically needed care with hardened runtime.
 
 ## Open questions
 
-- **Terms of service.** CLIProxyAPI authenticates as a CLI client against Claude /
-  ChatGPT using subscription OAuth, not sanctioned API keys. A user choosing to run
-  that themselves is one risk posture; an app shipping it bundled and inviting the
-  user to log in is a different and larger one. This is a judgement call for the
-  project owner, not an engineering task, and it gates the whole branch.
+- **Terms of service — known and accepted (2026-07-28).** CLIProxyAPI
+  authenticates as a CLI client against Claude / ChatGPT using subscription
+  OAuth, not sanctioned API keys, and the proxy even carries a "cloak" feature
+  that disguises requests as Claude Code. Shipping that bundled, with a button
+  inviting the user to log in, is plausibly contrary to those providers' terms —
+  a materially larger exposure than a user independently choosing to run the same
+  tool. The owner reviewed this and chose to proceed; it is recorded here so it
+  is not later rediscovered as an oversight. Revisit before any public launch or
+  distribution beyond current users.
 - **Version pinning vs. drift.** The management surface is undocumented upstream
   and was verified against exactly one build. Pin hard, and degrade gracefully:
   an unexpected 404 should read as "this proxy build can't manage accounts from
