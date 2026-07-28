@@ -291,7 +291,8 @@ def _yaml_str(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _write_config(port: int, api_key: str, management_key: str) -> str:
+def _write_config(port: int, api_key: str, management_key: str,
+                   routing_strategy: str) -> str:
     """Write the proxy's YAML config and return its path.
 
     host is pinned to 127.0.0.1 (never the upstream default of all
@@ -303,6 +304,15 @@ def _write_config(port: int, api_key: str, management_key: str) -> str:
     rotated log instead (see _rotate_log) — there is no --log-file flag on
     this binary, so config-side logging and our redirect would otherwise be
     two independent, un-rotated log destinations.
+
+    routing.strategy is written out EXPLICITLY rather than left to omission:
+    the upstream default ("round-robin" — pool every credential for a
+    provider and fail over between them) is otherwise invisible in this
+    file, and prefs.ai_routing_strategy() already resolves an unset pref to
+    that same default, so a caller reading this config can't tell "chose
+    round-robin" from "never asked." Written from the pref at spawn time
+    because the binary only reads its config at startup (see
+    restart_ai_proxy()) — there is no hot-reload to short-circuit that with.
 
     Written 0600 immediately after creation: the file holds both secrets in
     plaintext, and CLIProxyAPI hashes a plaintext secret-key on startup, so
@@ -320,6 +330,8 @@ def _write_config(port: int, api_key: str, management_key: str) -> str:
         f'  - "{_yaml_str(api_key)}"\n'
         f'auth-dir: "{_yaml_str(_auth_dir())}"\n'
         'logging-to-file: false\n'
+        'routing:\n'
+        f'  strategy: "{_yaml_str(routing_strategy)}"\n'
         'remote-management:\n'
         '  allow-remote: false\n'
         f'  secret-key: "{_yaml_str(management_key)}"\n'
@@ -428,7 +440,8 @@ def _ensure_locked() -> tuple[str, str, str]:
 
     api_key = secrets.token_urlsafe(32)
     management_key = secrets.token_urlsafe(32)
-    config_path = _write_config(port, api_key, management_key)
+    routing_strategy = prefs.ai_routing_strategy()
+    config_path = _write_config(port, api_key, management_key, routing_strategy)
     log_path = _rotate_log()
 
     with open(log_path, "ab") as log_f:
@@ -510,6 +523,44 @@ def _kill_current_ai_proxy() -> None:
     raise RuntimeError(f"ai-proxy pid {pid} did not exit after {sigs[-1].name}")
 
 
+def restart_ai_proxy() -> bool:
+    """Force-kill the current supervised instance so the NEXT ensure_ai_proxy()
+    call spawns a fresh one, picking up a config change that only takes
+    effect at process startup — routing.strategy today (see _write_config
+    and prefs.ai_routing_strategy()). Returns True if a live instance was
+    actually killed, False if there was nothing running to kill (nothing
+    spawned yet, or it belongs to a process we can't confirm — see
+    _confirmed_ours).
+
+    Deliberately does NOT respawn here: that would make a routing-strategy
+    change block its caller (an accounts-page PUT) on the same ~15s startup
+    poll ensure_ai_proxy() pays once per session, for a change that doesn't
+    need the proxy back up immediately. The next call that actually needs
+    the proxy (an accounts refresh, or the next fused.ai()) respawns it
+    lazily, same discipline as every other ensure_ai_proxy() call site.
+
+    Unlike stop_local_ai_proxy() (the app-quit path), this ignores
+    _should_persist(): a dev convenience for surviving watchfiles restarts
+    across app-process restarts is not a reason to keep serving a stale
+    routing strategy after the user explicitly changed it from the
+    accounts page."""
+    with _lock:
+        entry = storage.read_json(_state_path())
+        if not isinstance(entry, dict):
+            return False
+        pid = entry.get("pid") or 0
+        if not _pid_alive(pid):
+            return False
+        try:
+            _kill_current_ai_proxy()
+        except RuntimeError:
+            # Not confirmed ours (e.g. pid recycled to an unrelated process,
+            # or owned by something else entirely) — nothing safe to kill;
+            # the next ensure call still spawns fresh with the new config.
+            return False
+        return True
+
+
 def stop_local_ai_proxy() -> None:
     """Best-effort teardown of the proxy we spawned, for the app's quit path
     — stop_local_rcd's exact contract, applied to this daemon.
@@ -554,14 +605,17 @@ def status() -> dict:
     return {"supervised": True, "running": False}
 
 
-def management_request(method: str, path: str, body: dict | None = None,
+def management_request(method: str, path: str, body: dict | list | None = None,
                         *, timeout: float = 10.0) -> dict:
     """One authenticated call to the proxy's /v0/management API.
 
     `path` is the suffix after /v0/management (e.g. "/auth-files",
     "/auth-files?name=foo.json", "/anthropic-auth-url", "/oauth-callback")
     — the routes layer builds the exact route; this is transport only, with
-    no FastAPI/route awareness. Ensures a live proxy first (same lazy-spawn
+    no FastAPI/route awareness. `body` is a dict for every route except the
+    API-key PUTs, which the doc is explicit take a bare JSON array (see
+    replace_api_keys) — json.dumps handles either with no branching needed
+    here. Ensures a live proxy first (same lazy-spawn
     discipline as ensure_ai_proxy(), since a management call to an instance
     that isn't running is meaningless) and authenticates with
     `management_key` — the account-management surface's own secret,
@@ -685,3 +739,53 @@ def set_credential_disabled(name: str, disabled: bool,
     if auth_index is not None:
         body["auth_index"] = auth_index
     return management_request("PATCH", "/auth-files/status", body)
+
+
+# -- API keys (config-level credentials) --------------------------------------
+#
+# Separate surface from the auth-files/OAuth wrappers above: an API key is a
+# config entry, not a file in auth-dir, so it never shows up in list_credentials
+# (docs/AI_PROXY_MANAGEMENT_API.md's "API keys" section). Our provider names
+# ("claude"/"codex") already match the route names 1:1 here — unlike the OAuth
+# routes, there is no anthropic/claude naming seam to bridge.
+#
+# This layer stays exactly as thin as the wrappers above: no read-modify-write
+# policy, no key masking, no base-url defaulting. Those are the routes layer's
+# job (ai_accounts.py) precisely because they need to reason about what a
+# client is allowed to see and about the codex-base-url trap, neither of
+# which belongs in a transport-only module.
+
+_API_KEY_ROUTE = {"claude": "claude-api-key", "codex": "codex-api-key"}
+
+
+def list_api_keys(provider: str) -> list:
+    """Every API-key entry configured for `provider`, proxy-native shape:
+    {api-key, base-url, proxy-url, models, auth-index}. Returns the raw
+    entries — including the plaintext api-key field — unfiltered; masking a
+    key down to a display hint before it can reach a client is the routes
+    layer's job, same division of labor as list_credentials()/
+    api_ai_accounts(). Callers holding this return value must treat it with
+    the same care as any other live credential material: never log it,
+    never let it further than the one response that needed it."""
+    route = _API_KEY_ROUTE[provider]
+    result = management_request("GET", f"/{route}")
+    entries = result.get(route)
+    return entries if isinstance(entries, list) else []
+
+
+def replace_api_keys(provider: str, entries: list) -> dict:
+    """Overwrite `provider`'s ENTIRE api-key list with `entries`. There is no
+    POST-to-append on this API (confirmed 404 in the doc), so every add or
+    remove is a read-modify-write of the whole array, and this wrapper is
+    deliberately dumb about that — it PUTs exactly the list it's given, no
+    more and no less.
+
+    `entries` MUST be a bare list (not a dict wrapping it under the route
+    name) — the proxy's 400 on the object shape is the exact trap the doc
+    calls out, since GET returns that wrapper and it's an easy shape to
+    carry over by mistake. Defaulting Codex's base-url (the doc's silent-
+    drop trap) and reading back to confirm a write landed are both the
+    caller's job; this function does not know which provider it's talking
+    to beyond picking the route."""
+    route = _API_KEY_ROUTE[provider]
+    return management_request("PUT", f"/{route}", entries)

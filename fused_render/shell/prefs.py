@@ -50,6 +50,17 @@ VALID_CALLS_PARAMS = ("full", "keys", "off")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 DEFAULT_AI_BASE_URL = "http://127.0.0.1:8317"
 
+# The bundled proxy's two supported credential-pooling behaviours (see
+# ai_proxy._write_config's routing.strategy). "round-robin" is the upstream
+# default (pool every credential for a provider — OAuth accounts and API
+# keys alike — and fail over between them); "fill-first" instead drains one
+# credential before moving to the next ("prefer one, fall back" behaviour).
+# Named DEFAULT_ (not just "the fallback") because ai_proxy writes it out
+# EXPLICITLY into the generated config rather than relying on omission, so
+# the effective value is always visible in the file, not just in this pref.
+VALID_AI_ROUTING_STRATEGIES = ("round-robin", "fill-first")
+DEFAULT_AI_ROUTING_STRATEGY = "round-robin"
+
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Same D3 guard as server._require_fused, duplicated to keep shell↛server
@@ -147,6 +158,42 @@ def ai_base_url() -> str:
         return forced
     value = read_prefs().get("ai_base_url")
     return value if isinstance(value, str) and value else DEFAULT_AI_BASE_URL
+
+
+def ai_routing_strategy() -> str:
+    """The persisted routing-strategy pref for the bundled AI proxy; unset
+    or unrecognized values read as DEFAULT_AI_ROUTING_STRATEGY — same
+    validated-fallback idiom as selected_engine()/calls_params_mode(). Read
+    by ai_proxy._ensure_locked() at spawn time (the binary only reads config
+    at startup, so this value is only picked up by a FRESH instance — see
+    ai_proxy.restart_ai_proxy()), and by the accounts listing so the page
+    can show the current choice."""
+    value = read_prefs().get("ai_routing_strategy")
+    return value if value in VALID_AI_ROUTING_STRATEGIES else DEFAULT_AI_ROUTING_STRATEGY
+
+
+def set_ai_routing_strategy(value: str) -> None:
+    """Persist the routing-strategy pref. Raises ValueError for anything
+    outside VALID_AI_ROUTING_STRATEGIES — the same set the getter falls back
+    across, so a rejected write can never silently become a different stored
+    value than the one the caller asked for.
+
+    Lives here rather than as an inline PUT /api/prefs branch because the
+    caller (ai_accounts.py's routing-strategy route) also needs to restart
+    the proxy for the change to take effect, and ai_proxy.py already imports
+    THIS module (is_supervised, ai_base_url) — so prefs.py importing
+    ai_proxy.py back would be a cycle. Keeping the write (and its
+    validation) here, with the restart triggered by the caller after this
+    returns, is what keeps prefs.json's single-writer discipline (every
+    other mutation in this file also goes through read_prefs()/
+    storage.write_json in one place) without introducing that cycle."""
+    if value not in VALID_AI_ROUTING_STRATEGIES:
+        raise ValueError(
+            f"'routing_strategy' must be one of: {', '.join(VALID_AI_ROUTING_STRATEGIES)}"
+        )
+    prefs = read_prefs()
+    prefs["ai_routing_strategy"] = value
+    storage.write_json(_path(), prefs)
 
 
 def fused_engine_available() -> bool:

@@ -31,7 +31,12 @@ def _free_port() -> int:
 
 
 @pytest.fixture(autouse=True)
-def _reset_state(monkeypatch):
+def _reset_state(monkeypatch, tmp_path):
+    # Redirect FUSED_RENDER_HOME so the routing-strategy pref (read on every
+    # GET, written by the new PUT route) never touches a developer's real
+    # ~/.fused-render/prefs.json — same discipline as test_shell_prefs.py's
+    # _client(). Must be set before anything in this module reads prefs.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     # Give every test its own ephemeral callback ports — never the real fixed
     # 54545/1455, which could collide with an actual login in progress on the
     # machine running these tests.
@@ -139,10 +144,15 @@ def test_listing_is_cheap_when_not_running(client, monkeypatch):
         raise AssertionError("list_credentials must not be called when not running")
 
     monkeypatch.setattr(ai_accounts.ai_proxy, "list_credentials", _boom)
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys",
+                         lambda provider: _boom())
     resp = client.get("/api/ai/accounts")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"supervised": True, "running": False, "accounts": [], "login": None}
+    assert body == {
+        "supervised": True, "running": False, "accounts": [], "api_keys": [],
+        "routing_strategy": "round-robin", "login": None,
+    }
 
 
 def test_listing_filters_providers_and_omits_token_material(client, monkeypatch):
@@ -163,6 +173,7 @@ def test_listing_filters_providers_and_omits_token_material(client, monkeypatch)
         {"name": "gemini-e@f.com.json", "provider": "gemini", "email": "e@f.com"},
     ]
     monkeypatch.setattr(ai_accounts.ai_proxy, "list_credentials", lambda: files)
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys", lambda provider: [])
     resp = client.get("/api/ai/accounts")
     assert resp.status_code == 200
     body = resp.json()
@@ -181,6 +192,29 @@ def test_listing_filters_providers_and_omits_token_material(client, monkeypatch)
     assert "secret/state/dir" not in dumped
 
 
+def test_listing_masks_api_keys(client, monkeypatch):
+    # The one non-negotiable rule for this surface: a full API key must
+    # never appear anywhere in a response the client can read.
+    monkeypatch.setattr(ai_accounts.ai_proxy, "status",
+                         lambda: {"supervised": True, "running": True})
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_credentials", lambda: [])
+    full_key = "sk-ant-super-secret-do-not-leak-1234"
+
+    def _list_api_keys(provider):
+        if provider == "claude":
+            return [{"api-key": full_key, "base-url": "", "auth-index": "idx-1"}]
+        return []
+
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys", _list_api_keys)
+    resp = client.get("/api/ai/accounts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["api_keys"] == [
+        {"provider": "claude", "hint": "..." + full_key[-4:], "auth_index": "idx-1"},
+    ]
+    assert full_key not in str(body)
+
+
 def test_listing_degrades_gracefully_on_a_listing_failure(client, monkeypatch):
     monkeypatch.setattr(ai_accounts.ai_proxy, "status",
                          lambda: {"supervised": True, "running": True})
@@ -189,9 +223,13 @@ def test_listing_degrades_gracefully_on_a_listing_failure(client, monkeypatch):
         raise RuntimeError("this proxy build does not support account management")
 
     monkeypatch.setattr(ai_accounts.ai_proxy, "list_credentials", _boom)
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys",
+                         lambda provider: (_ for _ in ()).throw(
+                             RuntimeError("this proxy build does not support account management")))
     resp = client.get("/api/ai/accounts")
     assert resp.status_code == 200  # never a 500 over a listing hiccup
     assert resp.json()["accounts"] == []
+    assert resp.json()["api_keys"] == []
 
 
 # -- connect: single-flight ---------------------------------------------------------
@@ -458,3 +496,220 @@ def test_delete_surfaces_proxy_error(client, monkeypatch):
     resp = client.request("DELETE", "/api/ai/accounts/claude-a@b.com.json", headers=FUSED)
     assert resp.status_code == 502
     assert "invalid name" in resp.json()["error"]
+
+
+# -- API keys ------------------------------------------------------------------
+
+
+def _install_fake_key_store(monkeypatch, store=None):
+    """A tiny in-memory stand-in for the proxy's per-provider api-key arrays,
+    faithful to the one behaviour these tests care about: replace_api_keys
+    hands back auth-index by array position, exactly like the real PUT
+    (docs/AI_PROXY_MANAGEMENT_API.md — auth-index is server-assigned)."""
+    store = store if store is not None else {"claude": [], "codex": []}
+
+    def list_api_keys(provider):
+        return [dict(e) for e in store.get(provider, [])]
+
+    def replace_api_keys(provider, entries):
+        store[provider] = [
+            {**{k: v for k, v in e.items() if k != "auth-index"},
+             "auth-index": f"{provider}-{i}"}
+            for i, e in enumerate(entries)
+        ]
+        return {"status": "ok"}
+
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys", list_api_keys)
+    monkeypatch.setattr(ai_accounts.ai_proxy, "replace_api_keys", replace_api_keys)
+    return store
+
+
+def test_add_key_rejects_unknown_provider(client, monkeypatch):
+    _install_fake_key_store(monkeypatch)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "gemini", "api_key": "sk-abcdefgh"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "provider" in resp.json()["error"]
+
+
+@pytest.mark.parametrize("bad_key", [
+    None, "", "   ", "short", "has space", "\t\n", "x" * 5000,
+])
+def test_add_key_rejects_bad_api_key(client, monkeypatch, bad_key):
+    _install_fake_key_store(monkeypatch)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": bad_key},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "api_key" in resp.json()["error"]
+
+
+def test_add_key_requires_x_fused_header(client, monkeypatch):
+    _install_fake_key_store(monkeypatch)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": "sk-ant-abcdefgh"})
+    assert resp.status_code == 403
+
+
+def test_add_key_persists_and_returns_masked_hint(client, monkeypatch):
+    _install_fake_key_store(monkeypatch)
+    key = "sk-ant-abcdefgh12345"
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": key}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["provider"] == "claude"
+    assert body["hint"] == "..." + key[-4:]
+    assert body["auth_index"] == "claude-0"
+    assert key not in resp.text  # the full key never travels back to the client
+
+
+def test_add_key_is_read_modify_write(client, monkeypatch):
+    # A pre-existing key for the provider (and an unrelated one for the OTHER
+    # provider) must both survive an add — the whole point of read-modify-
+    # write over a naive PUT [{new}] is that it can't clobber what's there.
+    store = {
+        "claude": [{"api-key": "sk-ant-existing-key", "base-url": "", "auth-index": "old-0"}],
+        "codex": [{"api-key": "sk-codex-existing", "base-url": "https://api.openai.com/v1",
+                   "auth-index": "old-0"}],
+    }
+    _install_fake_key_store(monkeypatch, store)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": "sk-ant-new-key-999"},
+        headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    claude_keys = {e["api-key"] for e in store["claude"]}
+    assert claude_keys == {"sk-ant-existing-key", "sk-ant-new-key-999"}
+    # The codex list (a different provider entirely) is untouched.
+    assert [e["api-key"] for e in store["codex"]] == ["sk-codex-existing"]
+
+
+def test_add_key_defaults_base_url_for_codex(client, monkeypatch):
+    store = {"claude": [], "codex": []}
+    _install_fake_key_store(monkeypatch, store)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "codex", "api_key": "sk-codex-abcdefgh"},
+        headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert store["codex"][0]["base-url"] == ai_accounts._CODEX_DEFAULT_BASE_URL
+
+    # Claude gets no such default — the doc shows Claude persisting fine
+    # with an empty base-url, so forcing one there would be pure guesswork.
+    resp2 = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": "sk-ant-abcdefgh"},
+        headers=FUSED)
+    assert resp2.status_code == 200, resp2.text
+    assert "base-url" not in store["claude"][0]
+
+
+def test_add_key_surfaces_error_when_write_does_not_persist(client, monkeypatch):
+    # The trap, generalized: whatever the reason (the codex-no-base-url
+    # silent drop, or anything else), if a read-back after PUT does not show
+    # the key, this must be a clean error — never a false "ok".
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys", lambda provider: [])
+    monkeypatch.setattr(ai_accounts.ai_proxy, "replace_api_keys",
+                         lambda provider, entries: {"status": "ok"})
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "codex", "api_key": "sk-codex-abcdefgh"},
+        headers=FUSED)
+    assert resp.status_code == 502
+    assert "did not persist" in resp.json()["error"]
+
+
+def test_add_key_surfaces_proxy_error_on_write(client, monkeypatch):
+    monkeypatch.setattr(ai_accounts.ai_proxy, "list_api_keys", lambda provider: [])
+
+    def _boom(provider, entries):
+        raise RuntimeError("management surface unreachable")
+
+    monkeypatch.setattr(ai_accounts.ai_proxy, "replace_api_keys", _boom)
+    resp = client.post(
+        "/api/ai/accounts/keys", json={"provider": "claude", "api_key": "sk-ant-abcdefgh"},
+        headers=FUSED)
+    assert resp.status_code == 502
+    assert "management surface unreachable" in resp.json()["error"]
+
+
+def test_delete_key_by_auth_index_removes_only_target(client, monkeypatch):
+    store = {
+        "claude": [
+            {"api-key": "sk-ant-keep", "base-url": "", "auth-index": "keep-me"},
+            {"api-key": "sk-ant-gone", "base-url": "", "auth-index": "delete-me"},
+        ],
+        "codex": [
+            {"api-key": "sk-codex-untouched", "base-url": "https://api.openai.com/v1",
+             "auth-index": "delete-me"},  # same auth-index string, different provider
+        ],
+    }
+    _install_fake_key_store(monkeypatch, store)
+    resp = client.request("DELETE", "/api/ai/accounts/keys/delete-me", headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+    # Only the claude entry with that exact auth-index is gone.
+    assert [e["api-key"] for e in store["claude"]] == ["sk-ant-keep"]
+    # The codex entry sharing the same auth-index string is untouched: the
+    # route stops at the first provider whose list actually shrank.
+    assert [e["api-key"] for e in store["codex"]] == ["sk-codex-untouched"]
+
+
+def test_delete_key_requires_x_fused_header(client, monkeypatch):
+    _install_fake_key_store(monkeypatch)
+    resp = client.request("DELETE", "/api/ai/accounts/keys/anything")
+    assert resp.status_code == 403
+
+
+def test_delete_key_bogus_auth_index_is_a_clean_error(client, monkeypatch):
+    store = {
+        "claude": [{"api-key": "sk-ant-keep", "base-url": "", "auth-index": "real-index"}],
+        "codex": [],
+    }
+    _install_fake_key_store(monkeypatch, store)
+    resp = client.request("DELETE", "/api/ai/accounts/keys/no-such-index", headers=FUSED)
+    assert resp.status_code == 404
+    # Nothing was mutated.
+    assert [e["api-key"] for e in store["claude"]] == ["sk-ant-keep"]
+
+
+# -- routing strategy ------------------------------------------------------------
+
+
+def test_routing_strategy_defaults_to_round_robin_in_listing(client, monkeypatch):
+    monkeypatch.setattr(ai_accounts.ai_proxy, "status",
+                         lambda: {"supervised": True, "running": False})
+    body = client.get("/api/ai/accounts").json()
+    assert body["routing_strategy"] == "round-robin"
+
+
+def test_put_routing_strategy_persists_and_restarts(client, monkeypatch):
+    restarted = []
+    monkeypatch.setattr(ai_accounts.ai_proxy, "restart_ai_proxy", lambda: restarted.append(1) or True)
+    resp = client.put(
+        "/api/ai/accounts/routing-strategy", json={"strategy": "fill-first"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "strategy": "fill-first", "restarted": True}
+    assert restarted == [1]
+    # Persisted — the next read (e.g. the listing) sees the new choice.
+    assert ai_accounts.prefs.ai_routing_strategy() == "fill-first"
+    monkeypatch.setattr(ai_accounts.ai_proxy, "status",
+                         lambda: {"supervised": True, "running": False})
+    assert client.get("/api/ai/accounts").json()["routing_strategy"] == "fill-first"
+
+
+def test_put_routing_strategy_rejects_bad_value(client, monkeypatch):
+    restarted = []
+    monkeypatch.setattr(ai_accounts.ai_proxy, "restart_ai_proxy", lambda: restarted.append(1))
+    resp = client.put(
+        "/api/ai/accounts/routing-strategy", json={"strategy": "fastest"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert restarted == []  # rejected before any attempt to restart the proxy
+    assert ai_accounts.prefs.ai_routing_strategy() == "round-robin"  # unchanged
+
+
+def test_put_routing_strategy_requires_x_fused_header(client, monkeypatch):
+    resp = client.put("/api/ai/accounts/routing-strategy", json={"strategy": "fill-first"})
+    assert resp.status_code == 403
+    assert ai_accounts.prefs.ai_routing_strategy() == "round-robin"  # unchanged
