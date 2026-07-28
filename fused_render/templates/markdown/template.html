@@ -21,6 +21,7 @@
     --accent: #E5FF44;
     --error: #ff6b6b;
     --skel-shine: #26292f;
+    --ghost: #6b7076;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -32,6 +33,7 @@
     --accent: #5f7300;
     --error: #c62828;
     --skel-shine: #e4e6ea;
+    --ghost: #a3a7ad;
   }
   * { box-sizing: border-box; }
   body {
@@ -42,7 +44,7 @@
     color: var(--fg);
     background: var(--bg);
   }
-  #doc {
+  #page {
     max-width: 46rem;
     margin: 0 auto;
     padding: 40px 24px 80px;
@@ -97,6 +99,83 @@
   #doc th { background: var(--bg-alt); }
   #doc img { max-width: 100%; }
   #doc hr { border: none; border-top: 1px solid var(--border); }
+
+  /* Wikilinks, ghosts and tags — the link layer (SPEC §32, MD-3/MD-4). */
+  .wl {
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+  }
+  .wl:hover { border-bottom-color: var(--accent); }
+  .wl-ghost {
+    color: var(--ghost);
+    cursor: default;
+    border-bottom: 1px dashed var(--ghost);
+  }
+  .wl-ghost:hover { border-bottom-color: var(--ghost); }
+  .wl-embed-missing {
+    display: inline-block;
+    padding: 2px 8px;
+    border: 1px dashed var(--ghost);
+    border-radius: 4px;
+    color: var(--ghost);
+    font-size: 13px;
+  }
+  .tag {
+    display: inline-block;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    font-size: 87%;
+  }
+
+  /* Backlinks footer. */
+  #links {
+    margin-top: 56px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+  }
+  #links[hidden] { display: none; }
+  #links h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-muted);
+    font-weight: 600;
+    margin: 0 0 10px;
+  }
+  .bl {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  .bl:hover { border-color: var(--accent); }
+  .bl-title { font-weight: 600; }
+  .bl-path { color: var(--fg-muted); font-size: 12px; }
+  .bl-empty { color: var(--fg-muted); font-size: 13px; }
+  #tags { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #notice {
+    margin: 0 0 18px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    font-size: 13px;
+  }
+  #notice[hidden] { display: none; }
   #status {
     padding: 24px;
     color: var(--fg-muted);
@@ -129,24 +208,38 @@
 </style>
 </head>
 <body>
-  <div id="doc">
-    <div id="skel" aria-hidden="true">
-      <div class="skel-bar skel-h1"></div>
-      <div class="skel-bar" style="width:94%"></div>
-      <div class="skel-bar" style="width:82%"></div>
-      <div class="skel-bar" style="width:88%"></div>
-      <div class="skel-bar skel-h2"></div>
-      <div class="skel-bar" style="width:76%"></div>
-      <div class="skel-bar" style="width:91%"></div>
-      <div class="skel-bar" style="width:65%"></div>
-      <div class="skel-code"></div>
-      <div class="skel-bar" style="width:60%; margin-left:24px"></div>
-      <div class="skel-bar" style="width:70%; margin-left:24px"></div>
-      <div class="skel-bar" style="width:85%"></div>
+  <div id="page">
+    <div id="doc">
+      <div id="skel" aria-hidden="true">
+        <div class="skel-bar skel-h1"></div>
+        <div class="skel-bar" style="width:94%"></div>
+        <div class="skel-bar" style="width:82%"></div>
+        <div class="skel-bar" style="width:88%"></div>
+        <div class="skel-bar skel-h2"></div>
+        <div class="skel-bar" style="width:76%"></div>
+        <div class="skel-bar" style="width:91%"></div>
+        <div class="skel-bar" style="width:65%"></div>
+        <div class="skel-code"></div>
+        <div class="skel-bar" style="width:60%; margin-left:24px"></div>
+        <div class="skel-bar" style="width:70%; margin-left:24px"></div>
+        <div class="skel-bar" style="width:85%"></div>
+      </div>
+    </div>
+    <div id="links" hidden>
+      <div id="tags"></div>
+      <h2 id="bl-heading">Backlinks</h2>
+      <div id="bl-list"></div>
+      <div id="notice" hidden></div>
     </div>
   </div>
   <script>
     const MAX_BYTES = 2 * 1024 * 1024;
+
+    // The note's link facts, from graph.py. Resolution happens THERE, on the
+    // candidate set that exists right now (MD-6) — this page never resolves a
+    // target itself, so the note view and the graph views can never disagree.
+    let notes = null;      // {links, backlinks, tags, title, …} or null
+    let resolved = null;   // raw target -> resolved link row
 
     function escapeHtml(s) {
       return String(s)
@@ -167,6 +260,212 @@
         else out.push(p);
       }
       return "/" + out.join("/");
+    }
+
+    // ---- shell navigation ---------------------------------------------------
+    // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
+    // history/canvas/preview each do: /view/ (or /embed/, whichever prefix this
+    // session is in) with every path segment encoded, then pushState +
+    // "fused:navigate" on the top window so the shell re-routes without a full
+    // reload. Falls back to a plain location set when the top window is
+    // unreachable.
+    function shellPrefix() {
+      try {
+        const p = window.top.location.pathname;
+        if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+      } catch (e) { /* cross-origin — assume the normal shell */ }
+      return "/view/";
+    }
+    function urlForFsPath(fsPath, search) {
+      const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+      const encoded = norm.replace(/^\/+/, "").split("/").filter(Boolean)
+        .map(encodeURIComponent).join("/");
+      return shellPrefix() + encoded + (search ? "?" + search : "");
+    }
+    function navigateShell(fsPath, search) {
+      const url = urlForFsPath(fsPath, search);
+      try {
+        const top = window.top;
+        void top.location.href; // throws when cross-origin
+        top.history.pushState(null, "", url);
+        top.dispatchEvent(new Event("fused:navigate"));
+        return;
+      } catch (e) { /* fall through */ }
+      try { window.top.location.href = url; } catch (e) { location.href = url; }
+    }
+
+    // A link to `Note#Heading` navigates to the note and hands the heading over
+    // as an ordinary param, so the target view can scroll to it and the URL
+    // stays shareable — which is also how this view receives it (see load()).
+    function openNote(path, heading) {
+      navigateShell(path, heading ? "heading=" + encodeURIComponent(heading) : "");
+    }
+
+    // ---- marked extensions --------------------------------------------------
+    // Wikilinks and tags are tokenized by marked itself rather than by a
+    // pre-pass over the source. That is the whole reason there is no second
+    // copy of graph.py's code-masking rule here: marked already knows it is
+    // inside a fenced block or a code span and simply never offers those
+    // characters to an inline tokenizer.
+    const wikilinkExtension = {
+      name: "wikilink",
+      level: "inline",
+      start(src) { return src.indexOf("[["); },
+      tokenizer(src) {
+        const match = /^(!?)\[\[([^\[\]\n]+?)\]\]/.exec(src);
+        if (!match) return undefined;
+        const [target, heading, label] = splitInner(match[2]);
+        return { type: "wikilink", raw: match[0], embed: !!match[1], target, heading, label };
+      },
+      renderer(token) { return renderWikilink(token); },
+    };
+
+    // `Target#Heading|label` → [target, heading, label]. Both parts optional.
+    function splitInner(inner) {
+      const pipe = inner.indexOf("|");
+      const head = pipe === -1 ? inner : inner.slice(0, pipe);
+      const label = pipe === -1 ? "" : inner.slice(pipe + 1).trim();
+      const hash = head.indexOf("#");
+      const target = (hash === -1 ? head : head.slice(0, hash)).trim();
+      const heading = hash === -1 ? "" : head.slice(hash + 1).trim();
+      return [target, heading, label];
+    }
+
+    const tagExtension = {
+      name: "hashtag",
+      level: "inline",
+      // Only a `#` at the start of the remaining source or after whitespace or
+      // an opening bracket can be a tag. Without that guard `start()` would
+      // point into the middle of a URL (".../#section") and split it in two.
+      start(src) {
+        const match = /(^|[\s(\[])#[A-Za-z_]/.exec(src);
+        return match ? match.index + (match[1] ? 1 : 0) : undefined;
+      },
+      tokenizer(src) {
+        const match = /^#([A-Za-z_][\w/-]*)/.exec(src);
+        if (!match) return undefined;
+        return { type: "hashtag", raw: match[0], tag: match[1] };
+      },
+      renderer(token) {
+        return `<span class="tag">#${escapeHtml(token.tag)}</span>`;
+      },
+    };
+
+    function renderWikilink(token) {
+      const row = resolved ? resolved.get(token.target) : undefined;
+      const path = row ? row.path : null;
+      const text = token.label || token.target + (token.heading ? " > " + token.heading : "");
+      if (token.embed) {
+        if (!path) {
+          return `<span class="wl-embed-missing">Missing embed: ${escapeHtml(token.target)}</span>`;
+        }
+        if (isNote(path)) {
+          // A note embedded in a note: link to it rather than inlining the
+          // whole document, which would need a second parse and could recurse.
+          return `<a class="wl" data-path="${escapeHtml(path)}">${escapeHtml(text)}</a>`;
+        }
+        return `<img src="${escapeHtml(fused.rawUrl(path))}" alt="${escapeHtml(token.target)}" />`;
+      }
+      if (!path) {
+        return `<a class="wl wl-ghost" title="Unresolved link">${escapeHtml(text)}</a>`;
+      }
+      const heading = token.heading ? ` data-heading="${escapeHtml(token.heading)}"` : "";
+      const title = row && row.title ? ` title="${escapeHtml(row.title)}"` : "";
+      return `<a class="wl" data-path="${escapeHtml(path)}"${heading}${title}>${escapeHtml(text)}</a>`;
+    }
+
+    function isNote(path) {
+      return /\.(md|markdown)$/i.test(path || "");
+    }
+
+    marked.use({ extensions: [wikilinkExtension, tagExtension], gfm: true });
+
+    // ---- the backlinks footer ----------------------------------------------
+    function renderFooter(file) {
+      const linksEl = document.getElementById("links");
+      const listEl = document.getElementById("bl-list");
+      const tagsEl = document.getElementById("tags");
+      const noticeEl = document.getElementById("notice");
+      if (!notes) {
+        linksEl.hidden = true;
+        return;
+      }
+      linksEl.hidden = false;
+
+      tagsEl.innerHTML = notes.tags
+        .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+
+      const rows = notes.backlinks || [];
+      document.getElementById("bl-heading").textContent =
+        rows.length ? `Backlinks (${rows.length})` : "Backlinks";
+      if (!rows.length) {
+        listEl.innerHTML = `<div class="bl-empty">No other note under
+          ${escapeHtml(notes.root)} links here.</div>`;
+      } else {
+        listEl.innerHTML = rows.map((row) => `
+          <button class="bl" data-path="${escapeHtml(row.path)}">
+            <span class="bl-title">${escapeHtml(row.title)}</span>
+            <span class="bl-path">${escapeHtml(row.rel)}</span>
+          </button>`).join("");
+      }
+
+      // Caps are reported, never silently applied (MD-10).
+      const notices = [];
+      if (notes.truncated) {
+        notices.push(`Only the first ${notes.notes} notes under
+          ${escapeHtml(notes.root)} were scanned, so some backlinks may be missing.`);
+      }
+      if ((notes.skipped_large || []).length) {
+        notices.push(`${notes.skipped_large.length} file(s) were too large to
+          parse as notes and were skipped.`);
+      }
+      noticeEl.innerHTML = notices.join("<br />");
+      noticeEl.hidden = !notices.length;
+    }
+
+    // One delegated handler for every link surface: rendered wikilinks and
+    // backlink rows both carry data-path.
+    document.addEventListener("click", (event) => {
+      const el = event.target.closest("[data-path]");
+      if (!el) return;
+      event.preventDefault();
+      openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
+    });
+
+    // ---- load --------------------------------------------------------------
+    async function loadLinks(file) {
+      const root = fused.params.get("root") || "";
+      try {
+        const data = await fused.runPython("./graph.py", { action: "note", file, root });
+        if (data.error) {
+          // A mount-backed root, or a note outside its root: the document still
+          // renders, the link layer just has nothing to say (MD-11).
+          notes = null;
+          resolved = null;
+          return data;
+        }
+        notes = data;
+        resolved = new Map();
+        for (const link of data.links) {
+          if (!resolved.has(link.target)) resolved.set(link.target, link);
+        }
+        return data;
+      } catch (err) {
+        notes = null;
+        resolved = null;
+        return { error: "link_scan_failed", message: err.message || String(err) };
+      }
+    }
+
+    function scrollToHeading(root) {
+      const wanted = (fused.params.get("heading") || "").trim().toLowerCase();
+      if (!wanted) return;
+      for (const el of root.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
+        if (el.textContent.trim().toLowerCase() === wanted) {
+          el.scrollIntoView({ block: "start" });
+          return;
+        }
+      }
     }
 
     // Rewrite <img> tags whose markdown-authored src is relative. The page URL
@@ -198,11 +497,16 @@
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
           return;
         }
-        const text = await fused.readFile(file);
+        // The link scan runs before the render so the wikilink renderer has the
+        // resolved targets in hand; a failed scan degrades to plain markdown
+        // rather than blocking the document.
+        const [text] = await Promise.all([fused.readFile(file), loadLinks(file)]);
         // No sanitizer by design — local trust model (DECISIONS.md D3); the file
         // is the user's own and renders with full HTML powers, like any view.
         doc.innerHTML = marked.parse(text);
         rewriteRelativeImages(doc, file);
+        renderFooter(file);
+        scrollToHeading(doc);
       } catch (err) {
         doc.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
       }
