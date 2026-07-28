@@ -27,11 +27,13 @@ def _load_agent():
 
 
 def _as_windows(monkeypatch):
-    """Make the module take its win32 branches from any host. The two
-    creationflags constants are win32-only, so they must be faked in too."""
+    """Make the module take its win32 branches from any host. The creationflags
+    constants are win32-only, so they must be faked in too (with their real
+    values, so a Windows host asserts against the same numbers)."""
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(subprocess, "DETACHED_PROCESS", 0x8, raising=False)
     monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
 
 
 # ------------------------------------------------------------ finding `claude`
@@ -175,13 +177,17 @@ def test_cancel_kills_the_tree_with_taskkill_on_windows(tmp_path, monkeypatch):
     (run_dir / "pid").write_text("4242")
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     calls = []
-    monkeypatch.setattr(agent.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    monkeypatch.setattr(agent.subprocess, "run",
+                        lambda cmd, **kw: calls.append((cmd, kw)))
     monkeypatch.setattr(
         agent.os, "killpg",
         lambda *a: pytest.fail("os.killpg does not exist on Windows"),
         raising=False)
     assert agent._cancel("r1") == {"cancelled": "r1"}
-    assert calls == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    assert [cmd for cmd, _ in calls] == [["taskkill", "/PID", "4242", "/T", "/F"]]
+    # taskkill is a console program and this worker has no console to lend it,
+    # so without the flag a cancel flashes the window _DETACH just removed
+    assert calls[0][1]["creationflags"] == 0x08000000
 
 
 def test_cancel_signals_the_process_group_on_posix(tmp_path, monkeypatch):

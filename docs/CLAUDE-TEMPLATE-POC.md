@@ -183,7 +183,11 @@ places — each a POSIX idiom that Windows either ignores or reinterprets.
   instead of stopping the run. There is no process group to signal either —
   `CTRL_BREAK` only reaches a shared console and a detached run has none — so
   Windows cancels with `taskkill /PID <pid> /T /F`, which also collects the
-  children claude spawned for its own tools.
+  children claude spawned for its own tools. It runs with `CREATE_NO_WINDOW`:
+  taskkill is itself a console program, so it would otherwise flash the very
+  window the detach fix removes (Bugbot, PR #307). The server's global
+  no-window policy does not reach here — it patches `Popen` in `cli.py`'s
+  process, and the executor worker is a bare `python _child.py`.
 
 Two related fixes came out of the same pass:
 

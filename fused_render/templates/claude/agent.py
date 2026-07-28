@@ -527,9 +527,17 @@ def _cancel(run_id: str) -> dict:
         # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
         # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
         # the tree instead, collecting claude's own children with it.
+        #
+        # CREATE_NO_WINDOW because taskkill is itself a console program and this
+        # worker has no console to lend it (executor.py spawns us with that same
+        # flag), so without it a cancel flashes exactly the console window
+        # _DETACH just removed from the run. The server's global no-window policy
+        # does NOT cover us: it patches Popen in cli.py's process, and the worker
+        # is a bare `python _child.py`.
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False)
+                       stderr=subprocess.DEVNULL, check=False,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         try:
             os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
