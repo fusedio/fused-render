@@ -604,6 +604,79 @@ def test_attach_refuses_dead_winfsp_point_instead_of_adopting(home, rcd, monkeyp
     assert not [x for x in rcd.calls if x[0] == "mount/mount"]
 
 
+def _dead_winfsp_point(monkeypatch, mp):
+    """Simulate an orphaned WinFsp reparse point at `mp`: ismount raises
+    WinError 123, the reparse point persists until os.rmdir removes it.
+    Returns the {"v": True} flag rmdir flips."""
+    wedged = {"v": True}
+
+    def ismount(p):
+        if wedged["v"] and p == mp:
+            raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+        return False
+
+    class St:
+        st_reparse_tag = mounts_mod._IO_REPARSE_TAG_MOUNT_POINT
+
+    def lstat(p):
+        if wedged["v"] and p == mp:
+            return St()
+        raise FileNotFoundError(p)
+
+    def rmdir(p):
+        assert p == mp
+        wedged["v"] = False
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", ismount)
+    monkeypatch.setattr(mounts_mod.os.path, "lexists",
+                        lambda p: wedged["v"] and p == mp)
+    monkeypatch.setattr(mounts_mod.os, "lstat", lstat)
+    monkeypatch.setattr(mounts_mod.os, "readlink",
+                        lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
+    monkeypatch.setattr(mounts_mod.os, "rmdir", rmdir)
+    return wedged
+
+
+def test_force_unmount_clears_orphaned_winfsp_point(monkeypatch):
+    # Bugbot (high): the win32 force-unmount only polled and never removed a
+    # dead reparse point, so Reconnect could never recover a persistent wedge.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    wedged = _dead_winfsp_point(monkeypatch, "/mounts/dead")
+    assert mounts_mod._force_unmount("/mounts/dead") is None
+    assert wedged["v"] is False
+
+
+def test_force_unmount_win32_still_refuses_live_mount(monkeypatch):
+    # A live, serving mount (not wedged) keeps the refusal: removing it would
+    # have to kill rcd, tearing down every mount it serves.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_FORCE_UNMOUNT_WIN32_BUDGET_S", 0.2)
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: True)
+    err = mounts_mod._force_unmount("/mounts/live")
+    assert err is not None and "still serves it" in err
+
+
+def test_reconnect_heals_orphaned_winfsp_point(home, rcd, monkeypatch):
+    # End-to-end: reconnect force-clears the orphan, then remounts cleanly.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+    wedged = _dead_winfsp_point(monkeypatch, mp)
+
+    def ismount(p):
+        if wedged["v"] and p == mp:
+            raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+        return p in rcd.mounted
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", ismount)
+    monkeypatch.setattr(mounts_mod.os.path, "isdir",
+                        lambda p: p != mp or not wedged["v"])
+    assert mounts_mod.reconnect_mount(c) is None
+    assert wedged["v"] is False
+    assert [x for x in rcd.calls if x[0] == "mount/mount"]
+
+
 def test_ismount_posix_short_circuits_to_os_path_ismount(monkeypatch):
     # Off Windows the answer IS os.path.ismount; the reparse fallback must not
     # even stat the path.
@@ -2179,6 +2252,8 @@ def test_broken_mount_error_no_cred_probe_when_never_mounted(
 
 def test_reconnect_force_unmounts_dead_mount_then_remounts(home, rcd, monkeypatch):
     # rcd's own unmount fails (the wedged-NFS case) -> force umount -> remount.
+    # The umount ladder being modeled is POSIX; pin past the win32 branch.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
     c, mp = _make_mount(home, rcd, served=False)
     rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
     still_mounted = {"v": True}
@@ -2308,6 +2383,8 @@ def test_reconnect_reports_force_unmount_failure(home, rcd, monkeypatch):
 
 
 def test_forced_detach_escalates_on_rc_failure(home, rcd, monkeypatch):
+    # POSIX umount ladder; pin past the win32 branch.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
     c, mp = _make_mount(home, rcd, served=False)
     rcd.responses["mount/unmount"] = (500, {"error": "failed to umount the NFS volume"})
     still_mounted = {"v": True}

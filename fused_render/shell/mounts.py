@@ -3808,9 +3808,29 @@ def _force_unmount(mp: str) -> str | None:
         while True:
             if not _ismount(mp):
                 return None
-            if time.time() >= deadline:
+            if _mount_wedged(mp) or time.time() >= deadline:
                 break
             time.sleep(0.1)
+        if _mount_wedged(mp):
+            # Orphaned reparse point — its volume device is gone, so nothing
+            # serves it and waiting cannot help. RemoveDirectory deletes the
+            # reparse point itself (junction semantics: no recursion, no
+            # privileges); DeleteVolumeMountPointW is the canonical fallback.
+            try:
+                os.rmdir(mp)
+            except OSError:
+                pass
+            if not _is_mounted(mp):
+                return None
+            try:
+                import ctypes
+                ctypes.windll.kernel32.DeleteVolumeMountPointW(mp.rstrip("\\") + "\\")
+                os.rmdir(mp)
+            except (OSError, AttributeError):
+                pass
+            if not _is_mounted(mp):
+                return None
+            return f"force unmount of {mp} failed: orphaned mountpoint could not be removed"
         return (f"force unmount of {mp} is not possible on Windows while rclone "
                 f"still serves it — disconnect the mount (or quit) to clear it")
     attempts = [["umount", mp]]
