@@ -1224,6 +1224,10 @@ function setPageParam(slug, hash){
 function goto(slug, hash){ setPageParam(slug, hash); render(slug, hash); }
 
 function render(slug, hash){
+  // A landing page/viewport can leave the first-open tour with zero visible
+  // targets (e.g. narrow ?page=build: rail hidden, home sections inactive) —
+  // seen stays unset, so re-arm on every navigation until it actually runs.
+  retryLearnTourOnNav();
   const p = PAGES.find(x => x.slug === slug) || PAGES[0];
   PAGES.forEach(x => x.el.classList.toggle("active", x === p));
   $$("#nav a.top").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
@@ -1704,7 +1708,23 @@ function shellTourBlocking(){
   } catch(e){ return false; }
 }
 
+/* Called from render() on every navigation: if the boot-time auto-start
+   found nothing to point at (narrow viewport + non-home landing), the tour
+   is still unseen — try again on the page the user just moved to. Never
+   re-reads the tour=1 param, so a forced replay can't retrigger on nav. */
+let tourBootArmed = false; // boot's render() runs before maybeStartLearnTour — let it own the first attempt
+function retryLearnTourOnNav(){
+  if (!tourBootArmed) return;
+  if (tourSeen()) return;
+  if (document.querySelector(".ftour-spot")) return; // already on screen
+  if (shellTourBlocking()) return; // boot already armed the storage listener
+  setTimeout(() => {
+    if (!tourSeen() && !shellTourBlocking()) startLearnTour();
+  }, 400);
+}
+
 function maybeStartLearnTour(){
+  tourBootArmed = true;
   const forced = currentParams().get("tour") === "1"; // forced replay/testing
   if (!forced && tourSeen()) return;
   const kick = () => setTimeout(() => {
