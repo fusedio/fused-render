@@ -144,9 +144,13 @@ const { text, model, usage } = await fused.ai(prompt, {
   `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
   it, so the check is a positive signal, not the absence of an API.
 - **RH-11** `fused.ai(prompt, opts?)` asks an AI model through the shell: the server's
-  `/api/ai` relays to a **local OpenAI-compatible proxy** (`/v1/chat/completions`) at a
-  base URL from the `ai_base_url` preference (`FUSED_RENDER_AI_BASE_URL` overrides;
-  default `http://127.0.0.1:8317`). Resolves with `{ text, model, usage }`; rejects with
+  `/api/ai` relays to a **local OpenAI-compatible proxy** (`/v1/chat/completions`).
+  The proxy is **bundled with the app** and supervised by it (RH-12) — a page can call
+  `fused.ai` with no install step, once an account is connected in Preferences (§20.7).
+  An explicitly configured `ai_base_url` preference (or `FUSED_RENDER_AI_BASE_URL`)
+  instead points the relay at a proxy the user runs themselves, in which case the shell
+  supervises nothing; so does a build with no bundled binary, which falls back to the
+  pref's default `http://127.0.0.1:8317`. Resolves with `{ text, model, usage }`; rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (proxy unreachable — the message names the base URL), or
   `"ai_error"` (proxy returned non-200 or an unexpected shape). `opts.effort`
@@ -155,6 +159,17 @@ const { text, model, usage } = await fused.ai(prompt, {
   channel (an AI call is never a slider scrub). No streaming (MVP). **Local-only**:
   the proxy lives on the author's machine, so the exporter rejects a page that calls
   it (§18.2) — gate with `fused.env === "local"` instead.
+- **RH-12** The AI proxy (**CLIProxyAPI**, MIT, a single static Go binary) is **bundled
+  in the app payload** next to `rclone` and supervised by `shell/ai_proxy.py`, which
+  mirrors the rclone-daemon lifecycle (RC-\*): the binary resolves via
+  `FUSED_RENDER_AI_PROXY_BIN` → the packaged bundle path → `PATH`; an instance is spawned
+  **lazily on first use** (never at launch) on an ephemeral loopback port, health-polled,
+  and torn down on quit, only ever signalling a pid proven to be ours. It is configured
+  bound to `127.0.0.1` with two generated per-launch secrets — one gating the
+  OpenAI-compatible surface the relay uses, a second gating account management — because
+  loopback is not a boundary against the browser. Config and state files holding those
+  secrets are written `0600`. Bundling deliberately does **not** remove the one-time OAuth
+  step: the user still signs in to their own provider subscription (§20.7).
 
 ### 4.2 `runPython(path, params)`
 
@@ -654,7 +669,9 @@ nothing. Full detail: `docs/EXPORT.md`.
   assets), and `params` (pure client-side URL state, unchanged). `writeFile`, `stat`,
   and SSE live-reload are **unsupported** — a hosted artifact is immutable and has no
   filesystem behind it. `fused.ai` (RH-11) is also **unsupported**: it relays to a
-  proxy on the author's own machine, which a hosted page cannot reach.
+  proxy on the author's own machine — bundled with their app and holding their own
+  provider logins (RH-12) — which a hosted page can neither reach nor borrow
+  credentials from.
 
 ### 18.3 Static resolution & fail-loud
 
@@ -1167,15 +1184,35 @@ never imports server).
 
 ### 20.5 Tabs (D125)
 
-- **PF-9** The page is split into two tabs, active tab in the URL
-  (`?tab=account`, default clean-URL tab is **Render preferences** —
-  Logs/Execution engine/Deploy to Fused account/Tour, unchanged): **Render preferences**
-  and **Fused account** (§27's account panel, folded in here since it stopped
-  being its own sidebar-footer entry). The **Fused account** tab button is
-  offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
+- **PF-9** The page is split into tabs, active tab in the URL
+  (`?tab=account`, `?tab=ai`; default clean-URL tab is **Render preferences** —
+  Logs/Execution engine/Deploy to Fused account/Tour, unchanged): **Render preferences**,
+  **Fused account** (§27's account panel, folded in here since it stopped
+  being its own sidebar-footer entry), and **AI accounts** (§20.7). The **Fused account**
+  tab button is offered only while the PF-8 Deploy toggle is on; requesting `?tab=account`
   while it's off falls back to Render preferences rather than showing a tab
   with nothing pointing at it. This is also where the sidebar footer's
-  signed-in dot now points — see AC-1.
+  signed-in dot now points — see AC-1. **AI accounts** is offered unconditionally: no
+  pref gates it, and a user with nothing connected yet is exactly its audience.
+
+### 20.7 AI accounts (RH-12)
+
+- **PF-10** The **AI accounts** tab connects the provider logins that back `fused.ai`
+  (RH-11), served by `/api/ai/accounts` (`ai_accounts.py`). It lists each connected
+  account's provider and sign-in identity, offers **Connect** per provider and
+  **Disconnect** per account (confirmed, matching the Fused-account Forget flow), and
+  reports whether the bundled proxy is currently supervised and running.
+- **PF-11** Scope is **Claude and ChatGPT only**, though the bundled proxy also speaks
+  Gemini, Kimi, xAI and Antigravity: these are the two subscriptions users most often
+  already hold, and each further provider is another OAuth flow to verify.
+- **PF-12** Connecting is an **external browser round-trip the frontend owns** — the
+  server returns an authorization URL and never opens a browser itself (the AC-\* rule for
+  Fused sign-in, applied unchanged). The shell binds the provider's fixed loopback
+  callback port for the duration of one login, so the user never copies a code by hand;
+  the page then **polls** for the outcome, because the proxy accepts a code before it has
+  exchanged it and a failed exchange is only visible afterwards. One login at a time (the
+  callback ports are fixed, so this is structural, not a policy); an in-flight attempt is
+  cancellable, and an attempt started elsewhere is reported rather than silently blocking.
 
 ### 20.6 Template registry view
 
