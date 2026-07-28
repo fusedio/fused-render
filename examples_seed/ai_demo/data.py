@@ -1,4 +1,4 @@
-"""Synthesized daily sales for the AI analyst demo (sandbox-ai-demo/analyst.html).
+"""Synthesized daily sales for the AI analyst demo (ai_demo.html).
 
 Deterministic per `seed` so a bookmarked URL reproduces the exact dataset the
 question was asked about. Pure stdlib — no imports outside random/math/datetime.
@@ -18,6 +18,7 @@ def main(seed: int = 7, days: int = 30):
     # model can find (a best region, a declining product, a weekend dip).
     base = {(r, p): rng.uniform(40, 220) for r in REGIONS for p in PRODUCTS}
     trend = {p: rng.uniform(-0.9, 1.1) for p in PRODUCTS}  # units/day drift
+    phase = {r: rng.uniform(0, 2 * math.pi) for r in REGIONS}  # per-region sine offset
     start = date(2026, 6, 1)
     rows = []
     for d in range(days):
@@ -26,7 +27,7 @@ def main(seed: int = 7, days: int = 30):
         for r in REGIONS:
             for p in PRODUCTS:
                 units = base[(r, p)] * weekend + trend[p] * d
-                units *= 1 + 0.12 * math.sin(d / 4.5 + hash(r) % 7)
+                units *= 1 + 0.12 * math.sin(d / 4.5 + phase[r])
                 units = max(0, round(units + rng.gauss(0, 8)))
                 price = {"Widget": 12.5, "Gadget": 34.0, "Doohickey": 8.75}[p]
                 rows.append({
