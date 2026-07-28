@@ -185,6 +185,55 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Stage cli-proxy-api (docs/AI_PROXY_BUNDLING.md): CLIProxyAPI is, like
+#     rclone, a single static Go binary under a permissive license, so this
+#     step is a straight copy of 2b above - same pin/checksum/cache/skip
+#     shape, different upstream. shell/ai_proxy.py's ai_proxy_bin() resolves
+#     the packaged app to Contents/Resources/bin/cli-proxy-api, the same tier
+#     rclone_bin() uses for rclone.
+#
+#     macOS-arm64 only, matching this script's Apple Silicon-only py2app
+#     target (see the FRAMEWORK_PYTHON note above): the release asset is
+#     "darwin_aarch64". Note the asset name has NO leading "v" in the
+#     version, but the upstream git tag DOES - that's a real upstream
+#     inconsistency, not a typo here.
+# ---------------------------------------------------------------------------
+
+CLIPROXY_VERSION="7.2.104"
+CLIPROXY_ASSET="CLIProxyAPI_${CLIPROXY_VERSION}_darwin_aarch64.tar.gz"
+CLIPROXY_SHA256="3d52c292af57ea7114bacf35fb1b76c9552448940d3e9f10d39c1ec57229c0e0"
+CLIPROXY_STAGE_DIR="$BUILD_DIR/cli-proxy-api-bin/${CLIPROXY_VERSION}"
+CLIPROXY_STAGED_BIN="$CLIPROXY_STAGE_DIR/cli-proxy-api"
+
+if [[ ! -x "$CLIPROXY_STAGED_BIN" ]]; then
+  echo "==> downloading cli-proxy-api ${CLIPROXY_VERSION} (darwin_aarch64)"
+  CLIPROXY_DL_DIR="$BUILD_DIR/cli-proxy-api-download"
+  rm -rf "$CLIPROXY_DL_DIR"
+  mkdir -p "$CLIPROXY_DL_DIR"
+  curl -fsSL "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${CLIPROXY_VERSION}/${CLIPROXY_ASSET}" \
+    -o "$CLIPROXY_DL_DIR/$CLIPROXY_ASSET"
+
+  ACTUAL_SHA256="$(shasum -a 256 "$CLIPROXY_DL_DIR/$CLIPROXY_ASSET" | cut -d' ' -f1)"
+  if [[ "$ACTUAL_SHA256" != "$CLIPROXY_SHA256" ]]; then
+    echo "FATAL: cli-proxy-api download checksum mismatch." >&2
+    echo "       expected: $CLIPROXY_SHA256" >&2
+    echo "       actual:   $ACTUAL_SHA256" >&2
+    exit 1
+  fi
+
+  # The archive's top level is the executable plus README/LICENSE/an example
+  # config - no version-named subdirectory the way rclone's zip has, so
+  # extract straight into the download dir.
+  (cd "$CLIPROXY_DL_DIR" && tar -xzf "$CLIPROXY_ASSET")
+  mkdir -p "$CLIPROXY_STAGE_DIR"
+  cp "$CLIPROXY_DL_DIR/cli-proxy-api" "$CLIPROXY_STAGED_BIN"
+  chmod +x "$CLIPROXY_STAGED_BIN"
+  rm -rf "$CLIPROXY_DL_DIR"
+else
+  echo "==> cli-proxy-api ${CLIPROXY_VERSION} already staged, skipping download"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. App icon: a fresh, high-res render of the same four-pointed sparkle used
 #    for the menu-bar glyph (fused_render/assets/menubar-template.png, 36px,
 #    template/monochrome) on a rounded dark card, at the sizes iconutil wants.
@@ -468,7 +517,36 @@ fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 # ---------------------------------------------------------------------------
-# 4e. Bundle learn.zip (D123): the repo's learn/ content ships as a single
+# 4e. Bundle cli-proxy-api (docs/AI_PROXY_BUNDLING.md, staged in step 2c
+#     above) at the same Contents/Resources/bin/ spot as rclone - a real
+#     Mach-O binary, so it's picked up and signed by the nested-binary
+#     signing sweep below (step 5) with no extra rule needed there.
+#     shell/ai_proxy.py's ai_proxy_bin() looks here first, exactly like
+#     rclone_bin() does for rclone.
+#
+#     Smoke test runs `--help`, which this binary's flag parser treats as a
+#     recognized flag (exit 0) unlike an unrecognized one (exit 2) - and its
+#     first output line is always a version banner regardless of which flag
+#     triggered it, so this is the cheapest way to prove the staged binary
+#     both runs and reports the version we pinned.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling cli-proxy-api ${CLIPROXY_VERSION}"
+CLIPROXY_DEST="$APP_DIR/Contents/Resources/bin/cli-proxy-api"
+mkdir -p "$(dirname "$CLIPROXY_DEST")"
+cp "$CLIPROXY_STAGED_BIN" "$CLIPROXY_DEST"
+chmod +x "$CLIPROXY_DEST"
+
+CLIPROXY_SMOKE_OUT="$("$CLIPROXY_DEST" --help)"
+if ! echo "$CLIPROXY_SMOKE_OUT" | head -1 | grep -q "CLIProxyAPI Version: ${CLIPROXY_VERSION}"; then
+  echo "FATAL: bundled cli-proxy-api failed to report its version:" >&2
+  echo "$CLIPROXY_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    $(echo "$CLIPROXY_SMOKE_OUT" | head -1)"
+
+# ---------------------------------------------------------------------------
+# 4f. Bundle learn.zip (D123): the repo's learn/ content ships as a single
 #     zip at Contents/Resources/learn.zip, and shell/mounts.py's
 #     ensure_learn_mount() mounts it read-only at startup via rclone's
 #     archive backend (:archive:<path>, new in v1.74) — the bundled default

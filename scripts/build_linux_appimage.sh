@@ -107,6 +107,31 @@ echo "${RCLONE_SHA256}  ${RCLONE_ZIP}" | sha256sum --check --status \
     "import zipfile, sys, shutil, os; z = zipfile.ZipFile(sys.argv[1]); member = [n for n in z.namelist() if n.endswith('/rclone')][0]; dst = open(sys.argv[2], 'wb'); shutil.copyfileobj(z.open(member), dst); dst.close(); os.chmod(sys.argv[2], 0o755)" \
     "$RCLONE_ZIP" "$PYTHON_ROOT/bin/rclone"
 
+# --- cli-proxy-api bundled next to rclone (docs/AI_PROXY_BUNDLING.md) --------
+# CLIProxyAPI is, like rclone, a single static Go binary - same pin/verify/
+# stage shape as the rclone block just above, different upstream and archive
+# format (a .tar.gz, not a .zip). shell/ai_proxy.py's ai_proxy_bin() looks
+# here first on a packaged Linux build, the same tier rclone_bin() uses.
+# x86_64 only, matching this script's scope (see the ARCH note at the top).
+# Note the asset name has NO leading "v" in the version, but the upstream git
+# tag DOES - a real upstream inconsistency, not a typo here.
+log "Bundling cli-proxy-api"
+require sha256sum
+CLIPROXY_VERSION="7.2.104"
+CLIPROXY_ASSET="CLIProxyAPI_${CLIPROXY_VERSION}_linux_amd64.tar.gz"
+CLIPROXY_SHA256="993babb37b6de831600f0eb31527ca0f938337e1d1f837d5cf846263affa9724"
+CLIPROXY_TARBALL="$BUILD_DIR/${CLIPROXY_ASSET}"
+[ -f "$CLIPROXY_TARBALL" ] || curl -fsSL \
+    "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${CLIPROXY_VERSION}/${CLIPROXY_ASSET}" \
+    -o "$CLIPROXY_TARBALL"
+echo "${CLIPROXY_SHA256}  ${CLIPROXY_TARBALL}" | sha256sum --check --status \
+    || { echo "cli-proxy-api tarball SHA256 mismatch" >&2; exit 1; }
+# The archive's top level is the executable plus README/LICENSE/an example
+# config - no version-named subdirectory the way rclone's zip has - so a
+# plain extract lands the binary directly.
+tar -xzf "$CLIPROXY_TARBALL" -C "$PYTHON_ROOT/bin" cli-proxy-api
+chmod 0755 "$PYTHON_ROOT/bin/cli-proxy-api"
+
 # --- prune dead weight (mirrors build_dmg.sh's D116/D118 pruning) ------------
 # manylinux wheels ship native libs with full debug + local symbol tables that
 # the Windows PE / macOS Mach-O wheels of the same libraries don't — the main
@@ -144,6 +169,14 @@ log "Smoke tests"
     "import duckdb, fused_render, fused_render.cli, fused_render.supervisor.core, fused_render.supervisor._linux.tree, fused_render.supervisor._linux.instance, fused_render.supervisor._linux.tray, dbus_fast; print('bundle imports ok')"
 "$PYTHON_ROOT/bin/uv" --version
 "$PYTHON_ROOT/bin/rclone" version
+# --help exits 0 for this binary's flag parser (unlike an unrecognized flag,
+# which exits 2) and its first output line is always a version banner - the
+# cheapest proof the staged binary both runs and matches the pinned version.
+CLIPROXY_SMOKE_OUT="$("$PYTHON_ROOT/bin/cli-proxy-api" --help)"
+case "$(echo "$CLIPROXY_SMOKE_OUT" | head -1)" in
+    *"CLIProxyAPI Version: ${CLIPROXY_VERSION}"*) : ;;
+    *) echo "bundled cli-proxy-api failed to report its version: $CLIPROXY_SMOKE_OUT" >&2; exit 1 ;;
+esac
 SMOKE_REQUEST="$(mktemp)"
 SMOKE_PROBE="$(mktemp --suffix=.py)"
 trap 'rm -f "$SMOKE_REQUEST" "$SMOKE_PROBE"' EXIT

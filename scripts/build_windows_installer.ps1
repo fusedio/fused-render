@@ -208,6 +208,33 @@ if (-not $rcloneExe) {
 }
 Copy-Item -LiteralPath $rcloneExe.FullName -Destination (Join-Path $PythonRoot "rclone.exe") -Force
 
+# cli-proxy-api.exe bundled next to rclone.exe (the supervisor's
+# child_environment points FUSED_RENDER_AI_PROXY_BIN here) so "connect a
+# Claude or ChatGPT account" works with zero user setup, matching the macOS
+# DMG and the Linux AppImage (docs/AI_PROXY_BUNDLING.md). Pinned release,
+# published-SHA256 verified (same discipline as the rclone pin above). Note
+# the asset name has NO leading "v" in the version, but the upstream git tag
+# DOES - a real upstream inconsistency, not a typo here.
+$CliProxyVersion = "7.2.104"
+$CliProxySha256 = "5c2a5ab399bc9ee752a16f5b83c539e1d7f5caa0b78e8ec2c9bf3449356f71a7"
+$cliProxyZip = Join-Path $BuildDir "CLIProxyAPI_${CliProxyVersion}_windows_amd64.zip"
+if (-not (Test-Path -LiteralPath $cliProxyZip)) {
+    Invoke-WebRequest -Uri "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$CliProxyVersion/CLIProxyAPI_${CliProxyVersion}_windows_amd64.zip" -OutFile $cliProxyZip
+}
+$actualSha = (Get-FileHash -LiteralPath $cliProxyZip -Algorithm SHA256).Hash.ToLower()
+if ($actualSha -ne $CliProxySha256) {
+    throw "cli-proxy-api zip SHA256 mismatch: expected $CliProxySha256, got $actualSha"
+}
+$cliProxyExtract = Join-Path $BuildDir "cli-proxy-api-extract"
+Remove-Item -LiteralPath $cliProxyExtract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $cliProxyZip -DestinationPath $cliProxyExtract -Force
+$cliProxyExe = Get-ChildItem -Path $cliProxyExtract -Recurse -Filter "cli-proxy-api.exe" |
+    Select-Object -First 1
+if (-not $cliProxyExe) {
+    throw "cli-proxy-api.exe not found in the downloaded zip"
+}
+Copy-Item -LiteralPath $cliProxyExe.FullName -Destination (Join-Path $PythonRoot "cli-proxy-api.exe") -Force
+
 # WinFsp MSI staged for installer.iss to chain-install when the driver is
 # missing (D133 - reverses D132's user-installs stance), so mounts work with
 # zero user setup. The app itself stays per-user; only this MSI elevates, from
@@ -281,6 +308,13 @@ Invoke-Native $bundlePython @(
 )
 Invoke-Native (Join-Path $PythonRoot "uv.exe") @("--version")
 Invoke-Native (Join-Path $PythonRoot "rclone.exe") @("version")
+# --help exits 0 for this binary's flag parser (unlike an unrecognized flag,
+# which exits 2) and its first output line is always a version banner - the
+# cheapest proof the staged .exe both runs and matches the pinned version.
+$cliProxyOutput = & (Join-Path $PythonRoot "cli-proxy-api.exe") --help
+if ($LASTEXITCODE -ne 0 -or -not ($cliProxyOutput[0] -match "CLIProxyAPI Version: $CliProxyVersion")) {
+    throw "bundled cli-proxy-api.exe failed to report its version: $cliProxyOutput"
+}
 $probe = Join-Path $env:TEMP "fused_render_installer_probe_$PID.py"
 $request = Join-Path $env:TEMP "fused_render_installer_request_$PID.json"
 try {

@@ -220,6 +220,13 @@ class DesktopPaths:
             "FUSED_RENDER_RCLONE_BIN": str(
                 tools_dir / ("rclone.exe" if sys.platform == "win32" else "rclone")
             ),
+            # cli-proxy-api (CLIProxyAPI, docs/AI_PROXY_BUNDLING.md) is bundled
+            # in the payload right next to rclone, so ai_proxy.ai_proxy_bin()
+            # can resolve a packaged Windows/Linux build without a user
+            # install - the same rationale as FUSED_RENDER_RCLONE_BIN above.
+            "FUSED_RENDER_AI_PROXY_BIN": str(
+                tools_dir / ("cli-proxy-api.exe" if sys.platform == "win32" else "cli-proxy-api")
+            ),
             # learn.zip ships in the payload's assets/ (the Windows installer
             # globs assets\*); mounts.learn_zip_path() reads this override, and
             # its isfile check no-ops when a build didn't bundle the zip.
