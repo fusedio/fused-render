@@ -36,6 +36,22 @@ def source():
         return handle.read()
 
 
+@pytest.fixture(scope="module")
+def graph_source():
+    """The folder-level graph mode, which shares this template's create path."""
+    path = os.path.join(os.path.dirname(TEMPLATE), "..", "graph", "template.html")
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+@pytest.fixture(scope="module")
+def runtime_source():
+    path = os.path.join(
+        os.path.dirname(TEMPLATE), "..", "..", "static", "runtime.js")
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
 # ------------------------------------------------------- one surface (MD-1)
 
 
@@ -315,6 +331,50 @@ def test_creating_a_ghost_refuses_a_degenerate_name(create_ghost):
     # longer makes such a ghost; this refuses to act on one anyway.
     assert 'if (!name.replace(/\\.(md|markdown)$/i, "").split("/").pop()) return;' \
         in create_ghost
+
+
+@pytest.fixture(scope="module")
+def graph_create_ghost(graph_source):
+    body = graph_source[graph_source.index("async function createGhost"):]
+    return body[:body.index("\n    const canvas = fusedGraph.create")]
+
+
+def test_a_ghost_click_on_an_existing_note_opens_it_instead_of_clobbering_it(
+        create_ghost, graph_create_ghost):
+    """A ghost whose target DOES exist must never be written over.
+
+    `resolved` only holds the last scan's answers, so a `[[Note]]` you just
+    typed renders as a ghost until the next scan lands, and an AMBIGUOUS target
+    is a ghost by design (`_only` returns None for two same-named notes) —
+    precisely the case where a real file sits at the computed path. An
+    unconditional `writeFile` there replaced the note with a one-line stub.
+
+    The guard is the server's `create` flag, not a stat-then-write: there is no
+    window between the check and the write for the file to appear in, and a
+    failure that is NOT "already exists" (a directory at the path, a
+    permissions error) reports itself instead of reading as "absent, go ahead".
+    """
+    for body, where, nav in (
+        (create_ghost, "the note view", 'openNote(path, "")'),
+        (graph_create_ghost, "the graph mode", "navigateShell(path)"),
+    ):
+        assert body.count("fused.writeFile") == 1, where
+        assert "{ create: true }" in body, where
+        # The write is create-only, so nothing here stats first and then trusts
+        # the answer.
+        assert "fused.stat" not in body, where
+        # "It already exists" is the one failure that navigates instead of
+        # reporting; everything else is reported and stops.
+        assert 'if (err.type !== "exists")' in body, where
+        assert body.index('err.type !== "exists"') < body.rindex(nav), where
+
+
+def test_the_write_bridge_can_refuse_to_clobber_an_existing_file(runtime_source):
+    # createGhost's guard is only as good as the bridge under it: `create` has
+    # to reach the server, and its 409 has to be distinguishable from the
+    # optimistic-lock 409 (which means "changed", not "exists").
+    assert "payload.create = true" in runtime_source
+    assert 'err.type = "exists"' in runtime_source
 
 
 def test_resolving_a_path_leaves_a_windows_drive_root_alone(source):

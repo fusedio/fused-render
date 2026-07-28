@@ -661,15 +661,25 @@
 
   // Write UTF-8 text to a file, returning the fresh stat object. opts:
   //   { expectedMtime } — optimistic lock; omit to write unconditionally.
+  //   { create: true }  — create only if absent; an existing path rejects.
   // A 409 becomes an Error with `type: "conflict"` and the server's current
   // `mtime` attached, so callers can offer reload/overwrite. A read-only
   // refusal (403 {"error":"readonly"}) becomes `type: "readonly"` — the
   // backstop for templates that never checked stat().writable.
+  //
+  // `create` exists so "make this file if it isn't there" can be ONE call the
+  // server decides, rather than stat-then-write with a window in between — the
+  // markdown template's ghost-note create is exactly that, and stat-then-write
+  // there meant a click on a note that already existed replaced it with a stub.
+  // Its 409 is typed `"exists"`, not `"conflict"`: the two mean different
+  // things (this one is "it is already there", the lock's is "it changed"), and
+  // a caller that offers overwrite-anyway on a conflict must not offer it here.
   function writeFile(path, content, opts) {
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
       payload.expected_mtime = opts.expectedMtime;
     }
+    if (opts && opts.create) payload.create = true;
     return fetch("/api/fs/write", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -677,6 +687,11 @@
     })
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
+        if (res.status === 409 && payload.create) {
+          const err = new Error("file already exists");
+          err.type = "exists";
+          throw err;
+        }
         if (res.status === 409) {
           const err = new Error("file changed on disk");
           err.type = "conflict";

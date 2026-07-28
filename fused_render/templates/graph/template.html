@@ -197,11 +197,26 @@
         setStatus("Won't create " + name + ": that is outside " + base + ".", "error");
         return;
       }
+      // CREATE-ONLY, and the server decides (`create: true` → 409 on an
+      // existing path). Load-bearing, and deliberately identical to the note
+      // view's copy in markdown/template.html — the two must agree, and they
+      // have drifted apart once already (the Windows `resolvePath` fix). A
+      // ghost is not proof the target is missing: this payload is one scan old,
+      // and an ambiguous target is a ghost BY DESIGN (graph.py's `_only`),
+      // which is exactly when a real note sits at this path. A plain write
+      // there replaced it with a one-line stub.
+      //
+      // Absent → created; already there → navigate to it; anything else (a
+      // directory at the path, an unwritable file or parent) is reported rather
+      // than swallowed as "absent".
       try {
-        await fused.writeFile(path, "# " + name.replace(/\.(md|markdown)$/i, "") + "\n");
+        await fused.writeFile(path, "# " + name.replace(/\.(md|markdown)$/i, "") + "\n",
+          { create: true });
       } catch (err) {
-        setStatus("Could not create " + name + ": " + (err.message || ""), "error");
-        return;
+        if (err.type !== "exists") {
+          setStatus("Could not create " + name + ": " + (err.message || ""), "error");
+          return;
+        }
       }
       navigateShell(path);
     }
