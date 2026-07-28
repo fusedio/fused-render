@@ -262,6 +262,11 @@ def main(
     warmup: str = "",
     source_url: str = "",
     source_origin: str = "",
+    date: str = "",
+    time: str = "",
+    latitude: str = "",
+    longitude: str = "",
+    force: str = "",
 ):
     if warmup:
         try:
@@ -309,6 +314,26 @@ def main(
         "entrypoint": entrypoint,
         "var": var,
     }
+    run_params: dict[str, object] = {}
+    if date:
+        run_params["date"] = date
+    if time:
+        run_params["time"] = time
+    for name, value in (("latitude", latitude), ("longitude", longitude)):
+        if value not in ("", None):
+            try:
+                run_params[name] = float(value)
+            except (TypeError, ValueError):
+                return {
+                    "status": "error",
+                    "message": f"Invalid {name}: {value}",
+                    "kind": None,
+                    "bounds": None,
+                    "data": {},
+                    "warnings": [],
+                }
+    if run_params:
+        options["run_params"] = run_params
     if rescale:
         try:
             lo, hi = (float(value) for value in rescale.split(","))
@@ -329,7 +354,7 @@ def main(
     ).hexdigest()[:16]
     cache_path = CACHE_DIR / f"desc_{artifact_id}.json"
     cached = _cached_descriptor(cache_path)
-    if cached:
+    if cached and not force:
         return cached
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)

@@ -2,8 +2,16 @@
 from __future__ import annotations
 
 import importlib.util
-import tomllib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,3 +64,129 @@ def test_macos_bundle_forces_dynamic_map_runtime_packages():
         "xlrd",
     ):
         assert f'"{package}"' in setup
+
+
+def test_remote_table_urls_are_not_converted_to_local_paths(monkeypatch):
+    classify = _load("geo_classify")
+    observed = []
+
+    def capture(path, _artifact_dir, _artifact_id, _opts):
+        observed.append(path)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(classify, "_from_table", capture)
+    monkeypatch.setattr(classify, "_from_parquet", capture)
+
+    csv_url = "https://example.test/data/points.csv?version=2"
+    parquet_url = "s3://bucket/data/points.parquet"
+    classify._from_path(csv_url, "", "csv", {})
+    classify._from_path(parquet_url, "", "parquet", {})
+
+    assert observed == [csv_url, parquet_url]
+
+
+def test_remote_csv_query_string_still_selects_the_csv_reader(monkeypatch):
+    classify = _load("geo_classify")
+    observed = []
+    fake_pandas = SimpleNamespace(
+        read_csv=lambda path, **kwargs: observed.append((path, kwargs))
+        or "frame",
+        read_excel=lambda path: pytest.fail(
+            f"Excel reader should not handle CSV URL {path}"
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "pandas", fake_pandas)
+    monkeypatch.setattr(
+        classify,
+        "_from_dataframe",
+        lambda frame, *_args, **_kwargs: {"frame": frame},
+    )
+
+    url = "https://example.test/data/points.csv?version=2"
+    result = classify._from_table(url, "", "csv", {})
+
+    assert result == {"frame": "frame"}
+    assert observed == [(url, {})]
+
+
+def test_python_entrypoint_receives_only_supported_run_parameters():
+    worker = _load("worker")
+
+    module = SimpleNamespace(
+        main=lambda date="default", *, latitude=None: (date, latitude)
+    )
+    result, entrypoint = worker._run_entrypoint(
+        module,
+        params={
+            "date": "2026-07-28",
+            "time": "14:30",
+            "latitude": 12.9716,
+            "longitude": 77.5946,
+        },
+    )
+
+    assert entrypoint == "main"
+    assert result == ("2026-07-28", 12.9716)
+
+
+def test_map_render_forwards_parameters_and_force_bypasses_cache(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    target = tmp_path / "target.py"
+    target.write_text("def main():\n    return None\n", encoding="utf-8")
+    cache = tmp_path / "cache"
+    artifacts = tmp_path / "artifacts"
+    cache.mkdir()
+    observed = []
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", artifacts)
+    monkeypatch.setattr(map_render, "_ensure_service", lambda: {})
+
+    def describe(_state, _path, request):
+        observed.append(request)
+        return {
+            "status": "ok",
+            "kind": "vector_geojson",
+            "bounds": [0, 0, 1, 1],
+            "data": {},
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(map_render, "_post", describe)
+    arguments = {
+        "target": str(target),
+        "date": "2026-07-28",
+        "time": "14:30",
+        "latitude": "12.9716",
+        "longitude": "77.5946",
+    }
+
+    map_render.main(**arguments)
+    map_render.main(**arguments)
+    map_render.main(**arguments, force="1")
+
+    assert len(observed) == 2
+    assert observed[-1]["opts"]["run_params"] == {
+        "date": "2026-07-28",
+        "time": "14:30",
+        "latitude": 12.9716,
+        "longitude": 77.5946,
+    }
+
+
+def test_map_template_exposes_run_parameters_and_map_click_location():
+    template = (MAP / "template.html").read_text(encoding="utf-8")
+
+    for element_id in (
+        "cp-date",
+        "cp-time",
+        "cp-latitude",
+        "cp-longitude",
+        "cp-run-button",
+    ):
+        assert f'id="{element_id}"' in template
+    assert 'map.on("click"' in template
+    assert "force: execution.force" in template
+    assert "currentRunParameters()" in template

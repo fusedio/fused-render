@@ -203,31 +203,46 @@ TABLE_EXT = (".csv", ".tsv", ".xlsx", ".xls")
 
 
 def _from_path(path, artifact_dir, artifact_id, opts):
-    p = os.path.abspath(os.path.expanduser(path.strip()))
+    path = path.strip()
     is_url = path.startswith(("http://", "https://", "s3://", "/vsi"))
+    reader_path = (
+        path
+        if is_url
+        else os.path.abspath(os.path.expanduser(path))
+    )
     low = path.lower().split("?")[0]
 
     if low.endswith(".pmtiles"):
-        return _from_pmtiles(p if not is_url else path, artifact_id)
+        return _from_pmtiles(reader_path, artifact_id)
     if low.endswith(".parquet") or low.endswith(".geoparquet"):
-        return _from_parquet(p, artifact_dir, artifact_id, opts)
+        return _from_parquet(reader_path, artifact_dir, artifact_id, opts)
     if low.endswith(TABLE_EXT):
-        return _from_table(p, artifact_dir, artifact_id, opts)
+        return _from_table(reader_path, artifact_dir, artifact_id, opts)
     if low.endswith(RASTER_EXT):
-        return _from_rasterio_path(p if not is_url else path, artifact_dir, artifact_id, opts)
+        return _from_rasterio_path(
+            reader_path, artifact_dir, artifact_id, opts
+        )
     if low.endswith(VECTOR_EXT):
-        return _from_vector_file(p if not is_url else path, artifact_dir, artifact_id, opts)
+        return _from_vector_file(
+            reader_path, artifact_dir, artifact_id, opts
+        )
 
-    if not is_url and not os.path.exists(p):
-        return _not_geo(artifact_id, "path", f"File not found: {p}")
+    if not is_url and not os.path.exists(reader_path):
+        return _not_geo(
+            artifact_id, "path", f"File not found: {reader_path}"
+        )
 
     # Unknown suffix: try raster, then vector.
     try:
-        return _from_rasterio_path(p if not is_url else path, artifact_dir, artifact_id, opts)
+        return _from_rasterio_path(
+            reader_path, artifact_dir, artifact_id, opts
+        )
     except Exception:
         pass
     try:
-        return _from_vector_file(p if not is_url else path, artifact_dir, artifact_id, opts)
+        return _from_vector_file(
+            reader_path, artifact_dir, artifact_id, opts
+        )
     except Exception as e:
         return _not_geo(artifact_id, "path",
                         f"Couldn't read {path} as raster or vector ({e}).")
@@ -247,7 +262,7 @@ def _from_parquet(path, artifact_dir, artifact_id, opts):
 def _from_table(path, artifact_dir, artifact_id, opts):
     import pandas as pd
 
-    suffix = os.path.splitext(path)[1].lower()
+    suffix = os.path.splitext(path.split("?", 1)[0])[1].lower()
     if suffix == ".csv":
         frame = pd.read_csv(path)
         detected = "CSV(table)"

@@ -389,6 +389,54 @@ def test_real_preview_masks_an_inferred_zero_collar(tmp_path, monkeypatch):
     assert upstream.full_gets == 0
 
 
+def test_cached_preview_is_reused_without_restarting_preparation(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "cached-preview.tif"
+    make_zero_collar_tiff(source)
+    monkeypatch.setattr(raster_engine, "AUTO_OPTIMIZE_MAX_BYTES", 0)
+    cache_dir = tmp_path / "cache"
+    request = request_for(str(source), source_url="")
+    request["source_origin"] = ""
+
+    first = RasterEngine(
+        cache_dir=str(cache_dir),
+        base_url="http://127.0.0.1:1",
+        token="first",
+    )
+    descriptor = first.try_describe(request)
+    source_id = descriptor["data"]["source_id"]
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        job = first.job(source_id)
+        if job["status"] in {"available", "error"}:
+            break
+        time.sleep(0.1)
+    assert job["status"] == "available", job
+    assert Path(job["preview_path"]).is_file()
+
+    fresh = RasterEngine(
+        cache_dir=str(cache_dir),
+        base_url="http://127.0.0.1:1",
+        token="fresh",
+    )
+    starts = []
+    monkeypatch.setattr(
+        fresh,
+        "_start_preparation",
+        lambda *args, **kwargs: starts.append((args, kwargs)),
+    )
+
+    reloaded = fresh.try_describe(request)
+
+    assert starts == []
+    assert reloaded["optimization"]["status"] == "available"
+    assert reloaded["optimization"]["preview_ready"] is True
+    assert not any(
+        "being prepared" in notice for notice in reloaded["warnings"]
+    )
+
+
 def test_local_file_bypasses_the_loopback_range_proxy(tmp_path, monkeypatch):
     source = tmp_path / "local.tif"
     source.write_bytes(b"local")

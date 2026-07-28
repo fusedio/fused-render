@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -35,12 +36,37 @@ def _load_module(path: str):
     return module
 
 
-def _run_entrypoint(module: Any, preferred: str = "") -> tuple[Any, str]:
+def _run_entrypoint(
+    module: Any,
+    preferred: str = "",
+    params: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
     names = ([preferred] if preferred else []) + list(ENTRYPOINTS)
     for name in names:
         function = getattr(module, name, None)
         if callable(function):
-            return function(), name
+            supplied = {
+                key: value
+                for key, value in (params or {}).items()
+                if value not in (None, "")
+            }
+            signature = inspect.signature(function)
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
+            if not accepts_kwargs:
+                supplied = {
+                    key: value
+                    for key, value in supplied.items()
+                    if key in signature.parameters
+                    and signature.parameters[key].kind
+                    in {
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    }
+                }
+            return function(**supplied), name
     for name in RESULT_VARS:
         value = getattr(module, name, None)
         if value is not None and not callable(value):
@@ -65,7 +91,9 @@ def build(request: dict[str, Any], raster_engine=None) -> dict[str, Any]:
         if isinstance(target, str) and target.lower().endswith(".py"):
             module = _load_module(target)
             obj, entrypoint = _run_entrypoint(
-                module, str(options.get("entrypoint") or "")
+                module,
+                str(options.get("entrypoint") or ""),
+                options.get("run_params") or {},
             )
         else:
             obj = target

@@ -321,6 +321,25 @@
   .cp-head .fn { font-family: var(--mono); font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cp-head .lang { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 5px; }
   .cp-head .lang:empty { display: none; }
+  .cp-run { padding: 11px 14px 12px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+  .cp-run-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .cp-run-head b { font-size: 11.5px; font-weight: 650; }
+  .cp-run-head span { color: var(--faint); font-size: 10.5px; }
+  .cp-run-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 8px; }
+  .cp-run-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 10px; }
+  .cp-run-grid input {
+    min-width: 0; width: 100%; box-sizing: border-box; background: var(--panel);
+    color: var(--text); border: 1px solid var(--border-2); border-radius: 6px;
+    padding: 6px 7px; font-family: var(--mono); font-size: 11px; outline: none;
+  }
+  .cp-run-grid input:focus { border-color: var(--accent); }
+  .cp-run-actions { display: flex; align-items: center; gap: 9px; margin-top: 9px; }
+  .cp-run-actions button {
+    border: 0; border-radius: 7px; padding: 7px 15px; background: var(--accent);
+    color: #fff; font-size: 11.5px; font-weight: 650;
+  }
+  .cp-run-actions button:disabled { opacity: .42; cursor: default; }
+  .cp-run-status { min-width: 0; color: var(--muted); font-size: 10.5px; line-height: 1.35; }
   .cp-body { flex: 1; overflow: auto; min-height: 0; }
   .cp-empty, .cp-note { color: var(--faint); padding: 22px 16px; font-size: 12.5px; line-height: 1.6; }
   .cp-note { color: var(--muted); font-family: var(--mono); white-space: pre-wrap; word-break: break-all; }
@@ -497,6 +516,22 @@
       <span class="lang" id="cp-lang"></span>
       <button class="x" id="cp-close">×</button>
     </div>
+    <div class="cp-run">
+      <div class="cp-run-head">
+        <b>Run parameters</b>
+        <span>Click the map to set location</span>
+      </div>
+      <div class="cp-run-grid">
+        <label>Date<input id="cp-date" type="date" /></label>
+        <label>Time<input id="cp-time" type="time" step="1" /></label>
+        <label>Latitude<input id="cp-latitude" type="number" step="any" placeholder="Click map" /></label>
+        <label>Longitude<input id="cp-longitude" type="number" step="any" placeholder="Click map" /></label>
+      </div>
+      <div class="cp-run-actions">
+        <button id="cp-run-button" type="button" disabled>Run</button>
+        <span class="cp-run-status" id="cp-run-status">Select a Python layer to run.</span>
+      </div>
+    </div>
     <div class="cp-body" id="cp-body"><div class="cp-empty">Select a file on the left, then this shows its source.</div></div>
   </aside>
 </div>
@@ -613,7 +648,29 @@ map.addControl(overlay);
 fused.runPython("./map_render.py", { warmup: "1" }).catch(() => {});
 
 /* ---- state ------------------------------------------------------------ */
-const state = { layers: new Map(), selected: null, dir: P.get("dir") || "", entries: [] };
+const now = new Date();
+const localDate = [
+  now.getFullYear(),
+  String(now.getMonth() + 1).padStart(2, "0"),
+  String(now.getDate()).padStart(2, "0"),
+].join("-");
+const localTime = [
+  String(now.getHours()).padStart(2, "0"),
+  String(now.getMinutes()).padStart(2, "0"),
+  String(now.getSeconds()).padStart(2, "0"),
+].join(":");
+const state = {
+  layers: new Map(),
+  selected: null,
+  dir: P.get("dir") || "",
+  entries: [],
+  runParams: {
+    date: P.get("map_date") || localDate,
+    time: P.get("map_time") || localTime,
+    latitude: P.get("map_latitude") || "",
+    longitude: P.get("map_longitude") || "",
+  },
+};
 const sourceArgs = target => ({
   source_origin: location.origin,
   source_url: /^https?:\/\//i.test(target)
@@ -857,7 +914,7 @@ function selectLayer(key) {
   refreshCode();
 }
 
-async function loadTarget(target, name) {
+async function loadTarget(target, name, execution = {}) {
   target = normalizeTarget(target);
   if (!target) return;
   name = name || target.split(/[\\/]/).pop();
@@ -870,6 +927,11 @@ async function loadTarget(target, name) {
     const desc = await fused.runPython("./map_render.py", {
       target, colormap: (L.style && L.style.colormap) || "viridis",
       rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
+      date: execution.date || "",
+      time: execution.time || "",
+      latitude: execution.latitude ?? "",
+      longitude: execution.longitude ?? "",
+      force: execution.force ? "1" : "",
       ...sourceArgs(target),
     });
     L.loading = false; L.descriptor = desc;
@@ -879,10 +941,11 @@ async function loadTarget(target, name) {
       const kind = desc.status === "not_georeferenced" ? "warn" : "bad";
       toast(kind, desc.status === "not_georeferenced" ? "Not georeferenced" : "Couldn't render " + name,
             desc.message || (desc.error && desc.error.message) || "unknown error");
-      renderAll(); refreshCode(); return;
+      renderAll(); refreshCode(); return desc;
     }
     const touched = L.style && L.style._touched;
     L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    L.geojson = null; L.binary = null; L._cb = null; L._colorBuf = null;
     if (desc.kind === "vector_geojson") {
       L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
       computeColorByStats(L);
@@ -899,12 +962,14 @@ async function loadTarget(target, name) {
     monitorOptimization(L);
     fitTo(desc.bounds);
     refreshCode();
+    return desc;
   } catch (e) {
     L.loading = false;
     L.descriptor = { status: "error", message: e.message, error: { traceback: e.traceback } };
     L.visible = false;
     toast("bad", "Error running " + name, (e.type ? e.type + ": " : "") + e.message);
     renderAll();
+    return L.descriptor;
   }
 }
 
@@ -1618,6 +1683,103 @@ qs("sp-close").onclick = () => {
 /* ---- code viewer (right-docked, collapsed by default) ---------------- */
 const TEXT_EXT = ["py","json","geojson","csv","txt","md","yaml","yml","toml","cfg","ini","js","ts","html","css","sh","sql"];
 const LANG_ALIAS = { py: "python", geojson: "json", yml: "yaml", sh: "bash", ts: "typescript" };
+let runLocationMarker = null;
+
+function persistRunParameter(name, value) {
+  state.runParams[name] = value;
+  P.set("map_" + name, String(value ?? ""));
+}
+
+function updateRunLocation(latitude, longitude) {
+  const lat = Number(latitude), lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)
+      || lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
+  const fixedLat = lat.toFixed(6), fixedLon = lon.toFixed(6);
+  qs("cp-latitude").value = fixedLat;
+  qs("cp-longitude").value = fixedLon;
+  persistRunParameter("latitude", fixedLat);
+  persistRunParameter("longitude", fixedLon);
+  if (!runLocationMarker) {
+    runLocationMarker = new maplibregl.Marker({ color: "#ff3e00" });
+  }
+  runLocationMarker.setLngLat([lon, lat]).addTo(map);
+  return true;
+}
+
+function currentRunParameters() {
+  const latitude = qs("cp-latitude").value.trim();
+  const longitude = qs("cp-longitude").value.trim();
+  return {
+    date: qs("cp-date").value,
+    time: qs("cp-time").value,
+    latitude: latitude === "" ? "" : Number(latitude),
+    longitude: longitude === "" ? "" : Number(longitude),
+  };
+}
+
+function updateRunAvailability(path) {
+  const isPython = Boolean(path && /\.py$/i.test(path));
+  const running = state.runningTarget === path;
+  qs("cp-run-button").disabled = !isPython || Boolean(state.runningTarget);
+  qs("cp-run-status").textContent = running
+    ? "Running with the current parameters..."
+    : isPython
+      ? "Run calls main(date, time, latitude, longitude) when declared."
+      : "Select a Python layer to run.";
+}
+
+async function runSelectedPython() {
+  const L = state.selected ? state.layers.get(state.selected) : null;
+  if (!L || !/\.py$/i.test(L.target) || state.runningTarget) return;
+  const params = currentRunParameters();
+  if ((params.latitude === "") !== (params.longitude === "")) {
+    qs("cp-run-status").textContent = "Set both latitude and longitude, or leave both empty.";
+    return;
+  }
+  if (params.latitude !== "" && !updateRunLocation(params.latitude, params.longitude)) {
+    qs("cp-run-status").textContent = "Latitude or longitude is outside its valid range.";
+    return;
+  }
+  state.runningTarget = L.target;
+  updateRunAvailability(L.target);
+  const descriptor = await loadTarget(
+    L.target, L.name, Object.assign({ force: true }, params)
+  );
+  state.runningTarget = null;
+  updateRunAvailability(L.target);
+  qs("cp-run-status").textContent = descriptor && descriptor.status === "ok"
+    ? `Completed in ${descriptor.timing_ms ?? 0} ms.`
+    : "Run failed. See the layer message for details.";
+}
+
+qs("cp-date").value = state.runParams.date;
+qs("cp-time").value = state.runParams.time;
+qs("cp-latitude").value = state.runParams.latitude;
+qs("cp-longitude").value = state.runParams.longitude;
+for (const name of ["date", "time"]) {
+  qs("cp-" + name).onchange = event => {
+    persistRunParameter(name, event.target.value);
+  };
+}
+for (const name of ["latitude", "longitude"]) {
+  qs("cp-" + name).onchange = () => {
+    const params = currentRunParameters();
+    if (params.latitude === "" && params.longitude === "") {
+      persistRunParameter("latitude", "");
+      persistRunParameter("longitude", "");
+      if (runLocationMarker) {
+        runLocationMarker.remove();
+        runLocationMarker = null;
+      }
+      return;
+    }
+    updateRunLocation(params.latitude, params.longitude);
+  };
+}
+qs("cp-run-button").onclick = runSelectedPython;
+if (state.runParams.latitude !== "" && state.runParams.longitude !== "") {
+  updateRunLocation(state.runParams.latitude, state.runParams.longitude);
+}
 
 function openCodePanel() {
   qs("codepanel").classList.remove("hidden"); qs("btn-code").classList.add("on");
@@ -1640,6 +1802,7 @@ function refreshCode() {
 
 async function updateCodeViewer(path) {
   const body = qs("cp-body"), fnEl = qs("cp-fn"), langEl = qs("cp-lang");
+  updateRunAvailability(path);
   if (!path) { fnEl.textContent = "—"; langEl.textContent = ""; body.innerHTML = `<div class="cp-empty">Select a file on the left, then this shows its source.</div>`; return; }
   const name = path.split(/[\\/]/).pop();
   fnEl.textContent = name; fnEl.title = path;
@@ -1751,6 +1914,11 @@ async function geocode(q) {
 /* coordinate readout + camera persist */
 map.on("mousemove", e => {
   qs("coords").textContent = `${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`;
+});
+map.on("click", e => {
+  updateRunLocation(e.lngLat.lat, e.lngLat.lng);
+  qs("cp-run-status").textContent =
+    `Location set to ${e.lngLat.lat.toFixed(6)}, ${e.lngLat.lng.toFixed(6)}.`;
 });
 map.on("mouseout", () => { const c = map.getCenter(); qs("coords").textContent = `${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`; });
 map.on("moveend", () => { const c = map.getCenter(); P.set("cam", `${c.lat.toFixed(4)},${c.lng.toFixed(4)},${map.getZoom().toFixed(1)}`); });

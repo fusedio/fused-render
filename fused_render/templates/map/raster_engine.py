@@ -532,7 +532,7 @@ class RasterEngine:
         with self.lock:
             self.sources[fingerprint] = record
 
-        if not record.has_overviews:
+        if not record.has_overviews and not record.preview_path:
             auto_optimize = (
                 record.source_size is not None
                 and record.source_size <= AUTO_OPTIMIZE_MAX_BYTES
