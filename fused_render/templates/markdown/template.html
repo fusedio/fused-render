@@ -2,8 +2,10 @@
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
-<title>Markdown preview</title>
+<title>Markdown</title>
 <script src="/template-assets/marked.min.js"></script>
+<script src="/template-assets/codemirror.bundle.js"></script>
+<script src="/template-shared/ro-badge.js"></script>
 <style>
   /* Appearance (SPEC §30, D134). The dark block below IS this view's
      historical palette, value for value; the light block is the new one.
@@ -20,8 +22,10 @@
     --bg-alt: #1b1d21;
     --accent: #E5FF44;
     --error: #ff6b6b;
+    --warn: #ffb454;
     --skel-shine: #26292f;
     --ghost: #6b7076;
+    --on-accent: #131417;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -32,23 +36,90 @@
     --bg-alt: #f4f5f7;
     --accent: #5f7300;
     --error: #c62828;
+    --warn: #a35b00;
     --skel-shine: #e4e6ea;
     --ghost: #a3a7ad;
+    --on-accent: #ffffff;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0;
+    display: flex;
+    flex-direction: column;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 15px;
     line-height: 1.6;
     color: var(--fg);
     background: var(--bg);
   }
-  #page {
-    max-width: 46rem;
-    margin: 0 auto;
-    padding: 40px 24px 80px;
+
+  /* ---- toolbar ---------------------------------------------------------- */
+  #bar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    font-size: 12px;
+    color: var(--fg-muted);
   }
+  #filename { color: var(--fg); font-weight: 600; }
+  #bar .spacer { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .seg button {
+    border: none;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+  #toggle-graph {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  #toggle-graph[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+
+  /* ---- the reload-or-keep banner (MD-17) -------------------------------- */
+  #conflict {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--warn);
+    background: var(--bg-alt);
+    color: var(--warn);
+    font-size: 12px;
+  }
+  #conflict button {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  #conflict button:hover { border-color: var(--accent); }
+
+  /* ---- surfaces --------------------------------------------------------- */
+  #surfaces { flex: 1; min-height: 0; overflow: auto; }
+  #page { max-width: 46rem; margin: 0 auto; padding: 40px 24px 80px; }
+  #editor-wrap { display: none; }
+  #editor-wrap.on { display: block; }
+  #doc-wrap.off { display: none; }
+
   #doc h1, #doc h2 {
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.3em;
@@ -75,27 +146,15 @@
     padding: 14px 16px;
     overflow-x: auto;
   }
-  #doc pre code {
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 90%;
-  }
+  #doc pre code { background: none; border: none; padding: 0; font-size: 90%; }
   #doc blockquote {
     margin: 1em 0;
     padding: 0 1em;
     color: var(--fg-muted);
     border-left: 3px solid var(--border);
   }
-  #doc table {
-    border-collapse: collapse;
-    display: block;
-    overflow-x: auto;
-  }
-  #doc th, #doc td {
-    border: 1px solid var(--border);
-    padding: 6px 12px;
-  }
+  #doc table { border-collapse: collapse; display: block; overflow-x: auto; }
+  #doc th, #doc td { border: 1px solid var(--border); padding: 6px 12px; }
   #doc th { background: var(--bg-alt); }
   #doc img { max-width: 100%; }
   #doc hr { border: none; border-top: 1px solid var(--border); }
@@ -108,12 +167,7 @@
     border-bottom: 1px solid transparent;
   }
   .wl:hover { border-bottom-color: var(--accent); }
-  .wl-ghost {
-    color: var(--ghost);
-    cursor: default;
-    border-bottom: 1px dashed var(--ghost);
-  }
-  .wl-ghost:hover { border-bottom-color: var(--ghost); }
+  .wl-ghost { color: var(--ghost); border-bottom: 1px dashed var(--ghost); }
   .wl-embed-missing {
     display: inline-block;
     padding: 2px 8px;
@@ -132,10 +186,11 @@
     font-size: 87%;
   }
 
-  /* Backlinks footer. */
+  /* ---- backlinks footer ------------------------------------------------- */
   #links {
-    margin-top: 56px;
-    padding-top: 18px;
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 18px 24px 60px;
     border-top: 1px solid var(--border);
   }
   #links[hidden] { display: none; }
@@ -162,26 +217,38 @@
   }
   .bl:hover { border-color: var(--accent); }
   .bl-title { font-weight: 600; }
-  .bl-path { color: var(--fg-muted); font-size: 12px; }
+  .bl-path { color: var(--fg-muted); font-size: 12px; margin-left: 8px; }
   .bl-empty { color: var(--fg-muted); font-size: 13px; }
   #tags { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
-    margin: 0 0 18px;
+    margin: 14px 0 0;
     padding: 8px 12px;
     border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
+    border-left: 3px solid var(--warn);
     border-radius: 0 6px 6px 0;
     background: var(--bg-alt);
     color: var(--fg-muted);
     font-size: 13px;
   }
   #notice[hidden] { display: none; }
-  #status {
-    padding: 24px;
-    color: var(--fg-muted);
-  }
+
+  #status { padding: 24px; color: var(--fg-muted); }
   #status.error { color: var(--error); }
   #status a { color: var(--accent); }
+  #save-state { min-width: 5.5em; }
+  #save-state.error { color: var(--error); }
+
+  /* ---- editor ----------------------------------------------------------- */
+  .cm-editor { font-size: 14px; }
+  .cm-editor .cm-content {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  .cm-editor.cm-focused { outline: none; }
+
+  /* ---- skeleton --------------------------------------------------------- */
   .skel-bar {
     height: 14px;
     margin: 0 0 14px;
@@ -208,23 +275,43 @@
 </style>
 </head>
 <body>
-  <div id="page">
-    <div id="doc">
-      <div id="skel" aria-hidden="true">
-        <div class="skel-bar skel-h1"></div>
-        <div class="skel-bar" style="width:94%"></div>
-        <div class="skel-bar" style="width:82%"></div>
-        <div class="skel-bar" style="width:88%"></div>
-        <div class="skel-bar skel-h2"></div>
-        <div class="skel-bar" style="width:76%"></div>
-        <div class="skel-bar" style="width:91%"></div>
-        <div class="skel-bar" style="width:65%"></div>
-        <div class="skel-code"></div>
-        <div class="skel-bar" style="width:60%; margin-left:24px"></div>
-        <div class="skel-bar" style="width:70%; margin-left:24px"></div>
-        <div class="skel-bar" style="width:85%"></div>
+  <div id="bar">
+    <span id="filename"></span>
+    <span id="save-state"></span>
+    <span id="ro" hidden></span>
+    <span class="spacer"></span>
+    <span class="seg" id="modes">
+      <button data-view="source" aria-pressed="false" title="Source (Cmd/Ctrl+E)">Source</button>
+      <button data-view="reading" aria-pressed="false" title="Reading (Cmd/Ctrl+E)">Reading</button>
+    </span>
+  </div>
+  <div id="conflict">
+    <span id="conflict-text">This note changed on disk while you were editing it.</span>
+    <button id="reload">Reload from disk</button>
+    <button id="keep">Keep my version</button>
+  </div>
+  <div id="surfaces">
+    <div id="doc-wrap">
+      <div id="page">
+        <div id="doc">
+          <div id="skel" aria-hidden="true">
+            <div class="skel-bar skel-h1"></div>
+            <div class="skel-bar" style="width:94%"></div>
+            <div class="skel-bar" style="width:82%"></div>
+            <div class="skel-bar" style="width:88%"></div>
+            <div class="skel-bar skel-h2"></div>
+            <div class="skel-bar" style="width:76%"></div>
+            <div class="skel-bar" style="width:91%"></div>
+            <div class="skel-bar" style="width:65%"></div>
+            <div class="skel-code"></div>
+            <div class="skel-bar" style="width:60%; margin-left:24px"></div>
+            <div class="skel-bar" style="width:70%; margin-left:24px"></div>
+            <div class="skel-bar" style="width:85%"></div>
+          </div>
+        </div>
       </div>
     </div>
+    <div id="editor-wrap"></div>
     <div id="links" hidden>
       <div id="tags"></div>
       <h2 id="bl-heading">Backlinks</h2>
@@ -233,13 +320,48 @@
     </div>
   </div>
   <script>
+    // This view owns its own saves and its own reload rule (MD-16/MD-17), so
+    // the runtime's blanket reload-on-change must stay out of the way — it
+    // would reload the page under the cursor, and our own autosave moves the
+    // mtime on every write anyway.
+    fused.autoReload(false);
+
     const MAX_BYTES = 2 * 1024 * 1024;
+    // Obsidian's idle autosave interval. Not configurable, deliberately: the
+    // whole point of copying Obsidian here is the absence of save ceremony.
+    const AUTOSAVE_MS = 2000;
+    // "live" is Live Preview, added on top of the same editor in a later step;
+    // it behaves as Source until then, which is why only two buttons show.
+    const VIEWS = ["live", "source", "reading"];
+
+    const barEl = document.getElementById("bar");
+    const filenameEl = document.getElementById("filename");
+    const saveStateEl = document.getElementById("save-state");
+    const conflictEl = document.getElementById("conflict");
+    const conflictTextEl = document.getElementById("conflict-text");
+    const docEl = document.getElementById("doc");
+    const docWrapEl = document.getElementById("doc-wrap");
+    const editorWrapEl = document.getElementById("editor-wrap");
+    const surfacesEl = document.getElementById("surfaces");
+
+    let file = null;
+    let text = "";        // last text loaded from (or written to) disk
+    let mtime = null;     // the optimistic-lock token
+    let writable = true;  // stat.writable — the shell's persisted read_only (MD-15)
+    let dirty = false;
+    let saving = false;
+    let savePromise = null;
+    let saveTimer = null;
+    let view = null;      // the live CodeMirror view, or null
+    let mode = "reading";
+    let themeObserver = null;
+    let themedDark = true;
 
     // The note's link facts, from graph.py. Resolution happens THERE, on the
     // candidate set that exists right now (MD-6) — this page never resolves a
-    // target itself, so the note view and the graph views can never disagree.
-    let notes = null;      // {links, backlinks, tags, title, …} or null
-    let resolved = null;   // raw target -> resolved link row
+    // target itself, so the note view and the graph views cannot disagree.
+    let notes = null;
+    let resolved = null;
 
     function escapeHtml(s) {
       return String(s)
@@ -252,9 +374,8 @@
     // Join an absolute POSIX dir with a relative path and collapse "." / ".."
     // segments — pure string work (no fs access; paths are absolute POSIX).
     function resolvePath(dir, rel) {
-      const parts = dir.split("/").concat(rel.split("/"));
       const out = [];
-      for (const p of parts) {
+      for (const p of dir.split("/").concat(rel.split("/"))) {
         if (p === "" || p === ".") continue;
         if (p === "..") out.pop();
         else out.push(p);
@@ -264,11 +385,9 @@
 
     // ---- shell navigation ---------------------------------------------------
     // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
-    // history/canvas/preview each do: /view/ (or /embed/, whichever prefix this
-    // session is in) with every path segment encoded, then pushState +
-    // "fused:navigate" on the top window so the shell re-routes without a full
-    // reload. Falls back to a plain location set when the top window is
-    // unreachable.
+    // history/canvas/preview each do: the prefix this session is already in,
+    // every path segment encoded, then pushState + "fused:navigate" on the top
+    // window so the shell re-routes without a full reload.
     function shellPrefix() {
       try {
         const p = window.top.location.pathname;
@@ -282,7 +401,10 @@
         .map(encodeURIComponent).join("/");
       return shellPrefix() + encoded + (search ? "?" + search : "");
     }
-    function navigateShell(fsPath, search) {
+    async function navigateShell(fsPath, search) {
+      // Leaving this note must not lose edits newer than the last autosave.
+      const flushed = await window.__fusedFlushEdits();
+      if (!flushed.ok) return;
       const url = urlForFsPath(fsPath, search);
       try {
         const top = window.top;
@@ -296,17 +418,30 @@
 
     // A link to `Note#Heading` navigates to the note and hands the heading over
     // as an ordinary param, so the target view can scroll to it and the URL
-    // stays shareable — which is also how this view receives it (see load()).
+    // stays shareable — which is also how this view receives it (see render()).
     function openNote(path, heading) {
       navigateShell(path, heading ? "heading=" + encodeURIComponent(heading) : "");
     }
 
     // ---- marked extensions --------------------------------------------------
     // Wikilinks and tags are tokenized by marked itself rather than by a
-    // pre-pass over the source. That is the whole reason there is no second
-    // copy of graph.py's code-masking rule here: marked already knows it is
-    // inside a fenced block or a code span and simply never offers those
-    // characters to an inline tokenizer.
+    // pre-pass over the source. That is why there is no second copy of
+    // graph.py's code-masking rule here: marked already knows it is inside a
+    // fenced block or a code span and never offers those characters to an
+    // inline tokenizer.
+    // `Target#Heading|label` → [target, heading, label]. Both parts optional.
+    function splitInner(inner) {
+      const pipe = inner.indexOf("|");
+      const head = pipe === -1 ? inner : inner.slice(0, pipe);
+      const label = pipe === -1 ? "" : inner.slice(pipe + 1).trim();
+      const hash = head.indexOf("#");
+      return [
+        (hash === -1 ? head : head.slice(0, hash)).trim(),
+        hash === -1 ? "" : head.slice(hash + 1).trim(),
+        label,
+      ];
+    }
+
     const wikilinkExtension = {
       name: "wikilink",
       level: "inline",
@@ -320,17 +455,6 @@
       renderer(token) { return renderWikilink(token); },
     };
 
-    // `Target#Heading|label` → [target, heading, label]. Both parts optional.
-    function splitInner(inner) {
-      const pipe = inner.indexOf("|");
-      const head = pipe === -1 ? inner : inner.slice(0, pipe);
-      const label = pipe === -1 ? "" : inner.slice(pipe + 1).trim();
-      const hash = head.indexOf("#");
-      const target = (hash === -1 ? head : head.slice(0, hash)).trim();
-      const heading = hash === -1 ? "" : head.slice(hash + 1).trim();
-      return [target, heading, label];
-    }
-
     const tagExtension = {
       name: "hashtag",
       level: "inline",
@@ -343,117 +467,276 @@
       },
       tokenizer(src) {
         const match = /^#([A-Za-z_][\w/-]*)/.exec(src);
-        if (!match) return undefined;
-        return { type: "hashtag", raw: match[0], tag: match[1] };
+        return match ? { type: "hashtag", raw: match[0], tag: match[1] } : undefined;
       },
-      renderer(token) {
-        return `<span class="tag">#${escapeHtml(token.tag)}</span>`;
-      },
+      renderer(token) { return `<span class="tag">#${escapeHtml(token.tag)}</span>`; },
     };
+
+    function isNote(path) { return /\.(md|markdown)$/i.test(path || ""); }
 
     function renderWikilink(token) {
       const row = resolved ? resolved.get(token.target) : undefined;
       const path = row ? row.path : null;
-      const text = token.label || token.target + (token.heading ? " > " + token.heading : "");
+      const label = token.label || token.target + (token.heading ? " > " + token.heading : "");
       if (token.embed) {
         if (!path) {
           return `<span class="wl-embed-missing">Missing embed: ${escapeHtml(token.target)}</span>`;
         }
         if (isNote(path)) {
-          // A note embedded in a note: link to it rather than inlining the
+          // A note embedded in a note links to it rather than inlining the
           // whole document, which would need a second parse and could recurse.
-          return `<a class="wl" data-path="${escapeHtml(path)}">${escapeHtml(text)}</a>`;
+          return `<a class="wl" data-path="${escapeHtml(path)}">${escapeHtml(label)}</a>`;
         }
         return `<img src="${escapeHtml(fused.rawUrl(path))}" alt="${escapeHtml(token.target)}" />`;
       }
       if (!path) {
-        return `<a class="wl wl-ghost" title="Unresolved link">${escapeHtml(text)}</a>`;
+        return `<a class="wl wl-ghost" data-create="${escapeHtml(token.target)}"
+          title="Unresolved — click to create this note">${escapeHtml(label)}</a>`;
       }
       const heading = token.heading ? ` data-heading="${escapeHtml(token.heading)}"` : "";
       const title = row && row.title ? ` title="${escapeHtml(row.title)}"` : "";
-      return `<a class="wl" data-path="${escapeHtml(path)}"${heading}${title}>${escapeHtml(text)}</a>`;
-    }
-
-    function isNote(path) {
-      return /\.(md|markdown)$/i.test(path || "");
+      return `<a class="wl" data-path="${escapeHtml(path)}"${heading}${title}>${escapeHtml(label)}</a>`;
     }
 
     marked.use({ extensions: [wikilinkExtension, tagExtension], gfm: true });
 
-    // ---- the backlinks footer ----------------------------------------------
-    function renderFooter(file) {
-      const linksEl = document.getElementById("links");
-      const listEl = document.getElementById("bl-list");
-      const tagsEl = document.getElementById("tags");
-      const noticeEl = document.getElementById("notice");
-      if (!notes) {
-        linksEl.hidden = true;
-        return;
+    // ---- saving: Obsidian's model (MD-16) ----------------------------------
+    // No save button, no dirty dot, no prompt. Autosave on an idle timer, on
+    // focus loss and on tab switch; Cmd/Ctrl+S only forces the flush early.
+    function setDirty(next) {
+      dirty = next;
+      // Deliberately no dirty indicator: the absence of save ceremony IS the
+      // behaviour being copied. The slot only ever carries "Saving…" or a
+      // failure, both of which a user does need to see.
+      if (conflictEl.style.display !== "flex" && !saving) {
+        saveStateEl.textContent = "";
+        saveStateEl.classList.remove("error");
       }
-      linksEl.hidden = false;
-
-      tagsEl.innerHTML = notes.tags
-        .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
-
-      const rows = notes.backlinks || [];
-      document.getElementById("bl-heading").textContent =
-        rows.length ? `Backlinks (${rows.length})` : "Backlinks";
-      if (!rows.length) {
-        listEl.innerHTML = `<div class="bl-empty">No other note under
-          ${escapeHtml(notes.root)} links here.</div>`;
-      } else {
-        listEl.innerHTML = rows.map((row) => `
-          <button class="bl" data-path="${escapeHtml(row.path)}">
-            <span class="bl-title">${escapeHtml(row.title)}</span>
-            <span class="bl-path">${escapeHtml(row.rel)}</span>
-          </button>`).join("");
-      }
-
-      // Caps are reported, never silently applied (MD-10).
-      const notices = [];
-      if (notes.truncated) {
-        notices.push(`Only the first ${notes.notes} notes under
-          ${escapeHtml(notes.root)} were scanned, so some backlinks may be missing.`);
-      }
-      if ((notes.skipped_large || []).length) {
-        notices.push(`${notes.skipped_large.length} file(s) were too large to
-          parse as notes and were skipped.`);
-      }
-      noticeEl.innerHTML = notices.join("<br />");
-      noticeEl.hidden = !notices.length;
     }
 
-    // One delegated handler for every link surface: rendered wikilinks and
-    // backlink rows both carry data-path.
-    document.addEventListener("click", (event) => {
-      const el = event.target.closest("[data-path]");
-      if (!el) return;
-      event.preventDefault();
-      openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
-    });
+    function armAutosave() {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => { void save(); }, AUTOSAVE_MS);
+    }
 
-    // ---- load --------------------------------------------------------------
-    async function loadLinks(file) {
-      const root = fused.params.get("root") || "";
+    async function save() {
+      clearTimeout(saveTimer);
+      while (saving && savePromise) await savePromise;
+      if (!view || !dirty || !writable) return;
+      if (conflictEl.style.display === "flex") return; // never auto-overwrite
+      savePromise = doSave();
+      await savePromise;
+    }
+
+    async function doSave() {
+      // CM's Text is immutable, so a reference compare after the await detects
+      // edits that landed during the write — those must not be masked by
+      // setDirty(false), or the idle timer would skip them.
+      const docState = view.state.doc;
+      const body = docState.toString();
+      saving = true;
+      saveStateEl.textContent = "Saving…";
+      saveStateEl.classList.remove("error");
       try {
-        const data = await fused.runPython("./graph.py", { action: "note", file, root });
-        if (data.error) {
-          // A mount-backed root, or a note outside its root: the document still
-          // renders, the link layer just has nothing to say (MD-11).
-          notes = null;
-          resolved = null;
-          return data;
+        const st = await fused.writeFile(file, body, { expectedMtime: mtime });
+        mtime = st.mtime;
+        text = body;
+        hideConflict();
+        if (view.state.doc === docState) {
+          setDirty(false);
+          saveStateEl.textContent = "";
+        } else {
+          setDirty(true);
+          armAutosave();
         }
-        notes = data;
-        resolved = new Map();
-        for (const link of data.links) {
-          if (!resolved.has(link.target)) resolved.set(link.target, link);
-        }
-        return data;
+        // Each save re-parses exactly this note, so the ghosts, the backlinks
+        // and the `[[` candidates stay current with no rebuild (MD-9).
+        await refreshLinks();
       } catch (err) {
-        notes = null;
-        resolved = null;
-        return { error: "link_scan_failed", message: err.message || String(err) };
+        if (err.type === "conflict") {
+          showConflict("This note changed on disk while you were editing it.");
+        } else if (err.type === "readonly") {
+          writable = false;
+          lockEditor("This file is read-only, so your edits can't be saved.");
+        } else {
+          saveStateEl.textContent = "Save failed: " + (err.message || "");
+          saveStateEl.classList.add("error");
+        }
+      } finally {
+        saving = false;
+      }
+    }
+
+    function showConflict(message) {
+      conflictTextEl.textContent = message;
+      conflictEl.style.display = "flex";
+      saveStateEl.textContent = "";
+    }
+
+    function hideConflict() { conflictEl.style.display = "none"; }
+
+    async function reloadFromDisk() {
+      try {
+        const st = await fused.stat(file);
+        const fresh = await fused.readFile(file);
+        text = fresh;
+        mtime = st.mtime;
+        writable = st.writable !== false;
+        hideConflict();
+        if (view) {
+          view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fresh } });
+        }
+        setDirty(false);
+        await refreshLinks();
+        if (mode === "reading") renderReading();
+      } catch (err) {
+        saveStateEl.textContent = "Reload failed: " + (err.message || "");
+        saveStateEl.classList.add("error");
+      }
+    }
+
+    // "Keep my version" is the one write that goes without the lock — the user
+    // has been shown the conflict and chosen.
+    async function keepMine() {
+      if (!view) return;
+      const body = view.state.doc.toString();
+      try {
+        const st = await fused.writeFile(file, body);
+        mtime = st.mtime;
+        text = body;
+        hideConflict();
+        setDirty(false);
+        await refreshLinks();
+      } catch (err) {
+        saveStateEl.textContent = "Save failed: " + (err.message || "");
+        saveStateEl.classList.add("error");
+      }
+    }
+
+    // External changes are noticed on focus and on becoming visible rather than
+    // by a stat ticker: a poll is the traffic that killed a mount once already
+    // (runtime.js's fs/events note), and this view must stay mount-agnostic.
+    // Clean buffer -> silent reload, exactly as Obsidian does. Dirty buffer and
+    // the mtime moved -> the banner, which is the one deliberate deviation
+    // (MD-17): fused-render sits on shared paths where Obsidian's
+    // only-writer-in-the-vault assumption does not hold.
+    async function checkExternalChange() {
+      if (!file || saving) return;
+      let st;
+      try {
+        st = await fused.stat(file);
+      } catch (err) {
+        return; // transient — the next focus or the next save will notice
+      }
+      if (st.mtime === mtime) return;
+      if (!dirty) {
+        await reloadFromDisk();
+        return;
+      }
+      showConflict("This note changed on disk while you were editing it.");
+    }
+
+    function lockEditor(message) {
+      clearTimeout(saveTimer);
+      fusedRoBadge.update(document.getElementById("ro"), "Read-only", message);
+      if (view) buildEditor(view.state.doc.toString()); // rebuild with the lock on
+    }
+
+    // ---- surfaces -----------------------------------------------------------
+    function wantsDark() {
+      return document.documentElement.getAttribute("data-theme") !== "light";
+    }
+
+    function editorExtensions() {
+      const base = [
+        CM.basicSetup,
+        ...(wantsDark() ? [CM.oneDark] : []),
+        CM.markdown({ base: CM.markdownLanguage }),
+        CM.EditorView.lineWrapping,
+        CM.EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          setDirty(true);
+          armAutosave();
+        }),
+      ];
+      if (!writable) {
+        // The server refuses the write anyway; opening disabled is what makes
+        // the UI honest up front. On an rclone mount with CacheMode=full a
+        // doomed write even succeeds locally and only 403s later on upload, so
+        // this reads the shell's persisted read_only flag through
+        // stat.writable rather than os.access (MD-15).
+        base.push(CM.EditorView.editable.of(false));
+        base.push(CM.EditorState.readOnly.of(true));
+      }
+      return base;
+    }
+
+    function buildEditor(body) {
+      const previous = view;
+      const selection = previous ? previous.state.selection.main.head : cursorMemory();
+      const scroll = surfacesEl.scrollTop;
+      previous?.destroy();
+      editorWrapEl.innerHTML = "";
+      const extensions = editorExtensions();
+      view = new CM.EditorView({ doc: body, extensions, parent: editorWrapEl });
+      const at = Math.min(selection, view.state.doc.length);
+      view.dispatch({ selection: { anchor: at } });
+      surfacesEl.scrollTop = scroll;
+
+      // A live appearance change reconfigures the RUNNING view — rebuilding it
+      // would throw away unsaved edits, the caret and the scroll position.
+      themeObserver?.disconnect();
+      themedDark = wantsDark();
+      themeObserver = new MutationObserver(() => {
+        const next = wantsDark();
+        if (next === themedDark || !view) return;
+        themedDark = next;
+        try {
+          view.dispatch({
+            effects: CM.StateEffect.reconfigure.of(
+              extensions.filter((e) => e !== CM.oneDark).concat(next ? [CM.oneDark] : [])),
+          });
+        } catch (err) { /* cosmetic only — keep the current editor theme */ }
+      });
+      themeObserver.observe(document.documentElement,
+        { attributes: true, attributeFilter: ["data-theme"] });
+    }
+
+    // Cursor position per file, so switching away and back lands where you were
+    // (Obsidian remembers this; sessionStorage is the right lifetime for it).
+    function cursorKey() { return "fused-md-cursor:" + file; }
+    function cursorMemory() {
+      try { return parseInt(sessionStorage.getItem(cursorKey()) || "0", 10) || 0; }
+      catch (e) { return 0; }
+    }
+    function rememberCursor() {
+      if (!view) return;
+      try { sessionStorage.setItem(cursorKey(), String(view.state.selection.main.head)); }
+      catch (e) { /* private mode — the memory is a nicety */ }
+    }
+
+    function renderReading() {
+      // No sanitizer by design — local trust model (DECISIONS.md D3); the file
+      // is the user's own and renders with full HTML powers, like any view.
+      docEl.innerHTML = marked.parse(currentText());
+      rewriteRelativeImages(docEl, file);
+      scrollToHeading(docEl);
+    }
+
+    function currentText() {
+      return view ? view.state.doc.toString() : text;
+    }
+
+    // Rewrite <img> tags whose markdown-authored src is relative. The page URL
+    // is /render?path=…, so a browser-relative src resolves against the server
+    // root, not the markdown file's directory — it would 404. Uses
+    // getAttribute("src") (the authored value); .src is already absolutized.
+    function rewriteRelativeImages(root, path) {
+      const dir = path.slice(0, path.lastIndexOf("/"));
+      for (const img of root.querySelectorAll("img")) {
+        const src = img.getAttribute("src") || "";
+        if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
+        img.src = fused.rawUrl(resolvePath(dir, src));
       }
     }
 
@@ -468,49 +751,210 @@
       }
     }
 
-    // Rewrite <img> tags whose markdown-authored src is relative. The page URL
-    // is /render?path=…, so a browser-relative src resolves against the server
-    // root, not the markdown file's directory — it would 404. Point relative
-    // images at the raw endpoint, resolved against the file's own dir. Uses
-    // getAttribute("src") (the authored value); .src is already absolutized.
-    function rewriteRelativeImages(root, file) {
-      const dir = file.slice(0, file.lastIndexOf("/"));
-      for (const img of root.querySelectorAll("img")) {
-        const src = img.getAttribute("src") || "";
-        if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
-        img.src = fused.rawUrl(resolvePath(dir, src));
+    async function applyMode(next) {
+      if (!VIEWS.includes(next)) next = "reading";
+      if (next !== "reading" && !view) buildEditor(text);
+      if (next === "reading") {
+        // Leaving an editing surface flushes, exactly as switching file does.
+        rememberCursor();
+        await save();
+        renderReading();
       }
+      mode = next;
+      docWrapEl.classList.toggle("off", next !== "reading");
+      editorWrapEl.classList.toggle("on", next !== "reading");
+      for (const button of document.querySelectorAll("#modes button")) {
+        button.setAttribute("aria-pressed", String(button.dataset.view === next));
+      }
+      if (next !== "reading") view.focus();
     }
 
+    // ---- the backlinks footer ----------------------------------------------
+    function renderFooter() {
+      const linksEl = document.getElementById("links");
+      const listEl = document.getElementById("bl-list");
+      const tagsEl = document.getElementById("tags");
+      const noticeEl = document.getElementById("notice");
+      if (!notes) {
+        linksEl.hidden = true;
+        return;
+      }
+      linksEl.hidden = false;
+      tagsEl.innerHTML = notes.tags
+        .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+
+      const rows = notes.backlinks || [];
+      document.getElementById("bl-heading").textContent =
+        rows.length ? `Backlinks (${rows.length})` : "Backlinks";
+      listEl.innerHTML = rows.length
+        ? rows.map((row) => `
+            <button class="bl" data-path="${escapeHtml(row.path)}">
+              <span class="bl-title">${escapeHtml(row.title)}</span>
+              <span class="bl-path">${escapeHtml(row.rel)}</span>
+            </button>`).join("")
+        : `<div class="bl-empty">No other note under ${escapeHtml(notes.root)}
+             links here.</div>`;
+
+      // Caps are reported, never silently applied (MD-10).
+      const notices = [];
+      if (notes.truncated) {
+        notices.push(`Only the first ${notes.notes} notes under
+          ${escapeHtml(notes.root)} were scanned, so some backlinks may be missing.`);
+      }
+      if ((notes.skipped_large || []).length) {
+        notices.push(`${notes.skipped_large.length} file(s) were too large to parse
+          as notes and were skipped.`);
+      }
+      noticeEl.innerHTML = notices.join("<br />");
+      noticeEl.hidden = !notices.length;
+    }
+
+    async function refreshLinks() {
+      const root = fused.params.get("root") || "";
+      try {
+        const data = await fused.runPython("./graph.py",
+          { action: "note", file, root }, { key: "md-note" });
+        if (data.error) {
+          // A mount-backed root, or a note outside its root: the document still
+          // renders and stays editable, the link layer just has nothing to say
+          // (MD-11). Reading and writing one file never needed the walk.
+          notes = null;
+          resolved = null;
+        } else {
+          notes = data;
+          resolved = new Map();
+          for (const link of data.links) {
+            if (!resolved.has(link.target)) resolved.set(link.target, link);
+          }
+        }
+      } catch (err) {
+        notes = null;
+        resolved = null;
+      }
+      renderFooter();
+      return notes;
+    }
+
+    // Clicking an unresolved link creates the note — Obsidian's behaviour, and
+    // only possible because this template writes.
+    async function createGhost(target) {
+      if (!notes) return;
+      const clean = target.replace(/\\/g, "/").replace(/^\.\//, "");
+      const name = /\.(md|markdown)$/i.test(clean) ? clean : clean + ".md";
+      const base = clean.includes("/") ? notes.root : file.slice(0, file.lastIndexOf("/"));
+      const path = resolvePath(base, name);
+      try {
+        const st = await fused.stat(path);
+        if (st.writable === false) return; // read-only target: nothing to offer
+      } catch (err) { /* absent, which is the normal case here */ }
+      try {
+        await fused.writeFile(path, "# " + name.replace(/\.(md|markdown)$/i, "") + "\n");
+      } catch (err) {
+        saveStateEl.textContent = "Could not create " + name + ": " + (err.message || "");
+        saveStateEl.classList.add("error");
+        return;
+      }
+      openNote(path, "");
+    }
+
+    // One delegated handler for every link surface: rendered wikilinks and
+    // backlink rows both carry data-path; ghosts carry data-create.
+    document.addEventListener("click", (event) => {
+      const create = event.target.closest("[data-create]");
+      if (create) {
+        event.preventDefault();
+        void createGhost(create.getAttribute("data-create"));
+        return;
+      }
+      const el = event.target.closest("[data-path]");
+      if (!el) return;
+      event.preventDefault();
+      openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
+    });
+
+    for (const button of document.querySelectorAll("#modes button")) {
+      button.addEventListener("click", () => fused.params.set("view", button.dataset.view));
+    }
+    document.getElementById("reload").addEventListener("click", () => void reloadFromDisk());
+    document.getElementById("keep").addEventListener("click", () => void keepMine());
+
+    // Cmd/Ctrl+S forces the flush early — it is not "the save", because the
+    // idle timer and the blur hook already saved. Cmd/Ctrl+E toggles
+    // reading/editing, as in Obsidian.
+    window.addEventListener("keydown", (event) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        void save();
+      } else if (key === "e") {
+        event.preventDefault();
+        fused.params.set("view", mode === "reading" ? "source" : "reading");
+      }
+    });
+
+    // Flush on focus loss and on tab switch, then look for an external change
+    // when we come back (see checkExternalChange).
+    window.addEventListener("blur", () => { rememberCursor(); void save(); });
+    window.addEventListener("pagehide", () => { rememberCursor(); void save(); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        rememberCursor();
+        void save();
+      } else {
+        void checkExternalChange();
+      }
+    });
+    window.addEventListener("focus", () => { void checkExternalChange(); });
+
+    // Flush hook for the shell: anything that remounts this iframe (a mode
+    // switch) would silently discard edits newer than the last autosave.
+    window.__fusedFlushEdits = async () => {
+      if (!view || !dirty) return { ok: true };
+      if (conflictEl.style.display === "flex") return { ok: false };
+      await save();
+      return { ok: !dirty && conflictEl.style.display !== "flex" };
+    };
+
+    // ---- load --------------------------------------------------------------
     async function load() {
-      const doc = document.getElementById("doc");
-      const file = fused.params.get("_file");
+      file = fused.params.get("_file");
       if (!file) {
-        doc.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        docEl.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
         return;
       }
       const rawUrl = fused.rawUrl(file);
       try {
-        const stat = await fused.stat(file);
-        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
-          doc.innerHTML = `<div id="status">File is too large to render inline (${stat.size.toLocaleString()} bytes).
+        const st = await fused.stat(file);
+        if (st.size !== null && st.size !== undefined && st.size > MAX_BYTES) {
+          docEl.innerHTML = `<div id="status">File is too large to render inline (${st.size.toLocaleString()} bytes).
             <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
           return;
         }
-        // The link scan runs before the render so the wikilink renderer has the
-        // resolved targets in hand; a failed scan degrades to plain markdown
-        // rather than blocking the document.
-        const [text] = await Promise.all([fused.readFile(file), loadLinks(file)]);
-        // No sanitizer by design — local trust model (DECISIONS.md D3); the file
-        // is the user's own and renders with full HTML powers, like any view.
-        doc.innerHTML = marked.parse(text);
-        rewriteRelativeImages(doc, file);
-        renderFooter(file);
-        scrollToHeading(doc);
+        text = await fused.readFile(file);
+        mtime = st.mtime;
+        writable = st.writable !== false; // absent field (older server) → editable
       } catch (err) {
-        doc.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        docEl.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        return;
       }
+
+      filenameEl.textContent = file.split("/").pop();
+      barEl.style.display = "flex";
+      fusedRoBadge.update(document.getElementById("ro"),
+        writable ? "" : "Read-only",
+        writable ? "" : "This file can't be written, so the editor opens locked.");
+
+      // The link scan runs alongside the first render; a failed or refused scan
+      // degrades to plain markdown rather than blocking the document.
+      await Promise.all([applyMode(fused.params.get("view") || "reading"), refreshLinks()]);
+      if (mode === "reading") renderReading();
     }
+
+    fused.params.onChange((params) => {
+      const next = params.view || "reading";
+      if (next !== mode) void applyMode(next);
+    });
 
     load();
   </script>
