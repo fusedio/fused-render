@@ -746,3 +746,77 @@ def test_put_routing_strategy_requires_x_fused_header(client, monkeypatch):
     resp = client.put("/api/ai/accounts/routing-strategy", json={"strategy": "fill-first"})
     assert resp.status_code == 403
     assert ai_accounts.prefs.ai_routing_strategy() == "round-robin"  # unchanged
+
+
+# -- config regeneration must not destroy API keys -----------------------------
+#
+# shell/ai_proxy._write_config rewrites config.yaml from scratch on every spawn,
+# and provider API keys live in that same file (the proxy writes them there when
+# the management API adds one). So a regenerate that ignores them is silent data
+# loss for every key the user added — including via the routing-strategy control,
+# whose whole job is to restart the proxy. OAuth credentials are unaffected: they
+# are separate files under auth-dir.
+
+
+def _config_with_keys(tmp_path, monkeypatch, body: str) -> str:
+    from fused_render.shell import ai_proxy as ap
+
+    monkeypatch.setattr(ap, "_state_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ap, "_auth_dir", lambda: str(tmp_path / "auths"))
+    cfg = tmp_path / "config.yaml"
+    monkeypatch.setattr(ap, "_config_path", lambda: str(cfg))
+    cfg.write_text(body, encoding="utf-8")
+    ap._write_config(1234, "gen-api-key", "gen-mgmt-key", "fill-first")
+    return cfg.read_text(encoding="utf-8")
+
+
+def test_write_config_preserves_existing_api_keys(tmp_path, monkeypatch):
+    existing = (
+        'host: "127.0.0.1"\n'
+        "port: 9\n"
+        "claude-api-key:\n"
+        "  - api-key: sk-ant-KEEP-1\n"
+        '    base-url: ""\n'
+        "codex-api-key:\n"
+        "  - api-key: sk-KEEP-2\n"
+        "    base-url: https://api.openai.com/v1\n"
+    )
+    out = _config_with_keys(tmp_path, monkeypatch, existing)
+    assert "sk-ant-KEEP-1" in out
+    assert "sk-KEEP-2" in out
+    # ...and the regenerated settings still took effect.
+    assert 'strategy: "fill-first"' in out
+    assert "gen-api-key" in out
+
+
+def test_write_config_drops_unrelated_trailing_sections(tmp_path, monkeypatch):
+    """Only the api-key blocks are carried over.
+
+    The proxy rewrites this file itself and appends its own resolved settings
+    (credential-concurrency, ws-auth, ...). Those are its defaults to
+    regenerate, not ours to pin — copying them forward would freeze whatever
+    the previous version happened to emit.
+    """
+    existing = (
+        "claude-api-key:\n"
+        "  - api-key: sk-ant-KEEP-3\n"
+        "credential-concurrency:\n"
+        "  reclaim-grace: 5s\n"
+        "ws-auth: true\n"
+    )
+    out = _config_with_keys(tmp_path, monkeypatch, existing)
+    assert "sk-ant-KEEP-3" in out
+    assert "credential-concurrency" not in out
+    assert "reclaim-grace" not in out
+
+
+def test_write_config_with_no_existing_file_is_a_clean_first_spawn(tmp_path, monkeypatch):
+    from fused_render.shell import ai_proxy as ap
+
+    monkeypatch.setattr(ap, "_state_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ap, "_auth_dir", lambda: str(tmp_path / "auths"))
+    monkeypatch.setattr(ap, "_config_path", lambda: str(tmp_path / "config.yaml"))
+    ap._write_config(1234, "gen-api-key", "gen-mgmt-key", "round-robin")
+    out = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+    assert "api-key" in out  # our own generated inbound key
+    assert "claude-api-key" not in out  # nothing to preserve, nothing invented

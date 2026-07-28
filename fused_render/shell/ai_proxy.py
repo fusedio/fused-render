@@ -291,6 +291,43 @@ def _yaml_str(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _preserved_api_key_blocks() -> str:
+    """The provider API-key sections of the EXISTING config, verbatim.
+
+    _write_config regenerates config.yaml from scratch on every spawn, but
+    provider API keys (claude-api-key / codex-api-key) live in that same file —
+    the proxy itself writes them there when the management API adds one. So a
+    naive regenerate DESTROYS every key the user has added: verified by adding a
+    key, changing the routing strategy (which restarts), and finding the key
+    gone. Unlike OAuth credentials, which live as separate files under auth-dir
+    and are therefore untouched by this, keys have no home outside the config.
+
+    Rather than model these blocks (entries carry base-url/proxy-url/models and
+    a server-assigned auth-index, and the shapes differ per provider), the old
+    text is carried across unparsed: this function owns nothing about their
+    meaning, it just refuses to lose them. Everything from a top-level
+    `<provider>-api-key:` line up to the next top-level key is kept.
+
+    Best-effort by design — a missing or unreadable config simply means there
+    is nothing to preserve, which is the correct answer for a first spawn.
+    """
+    try:
+        with open(_config_path(), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return ""
+    kept: list[str] = []
+    keeping = False
+    for line in lines:
+        if line[:1] not in (" ", "\t", "", "#"):
+            # A new top-level key ends any block we were copying, and starts a
+            # new one only if it is a provider api-key section.
+            keeping = line.split(":", 1)[0] in _API_KEY_ROUTE.values()
+        if keeping:
+            kept.append(line)
+    return ("\n".join(kept) + "\n") if kept else ""
+
+
 def _write_config(port: int, api_key: str, management_key: str,
                    routing_strategy: str) -> str:
     """Write the proxy's YAML config and return its path.
@@ -323,6 +360,10 @@ def _write_config(port: int, api_key: str, management_key: str,
     except OSError:
         pass
     os.makedirs(_auth_dir(), exist_ok=True)
+    # Read the outgoing config's provider key blocks BEFORE the write below
+    # clobbers it — see _preserved_api_key_blocks for why losing them is data
+    # loss and not just a reset.
+    preserved = _preserved_api_key_blocks()
     config = (
         'host: "127.0.0.1"\n'
         f'port: {port}\n'
@@ -336,6 +377,7 @@ def _write_config(port: int, api_key: str, management_key: str,
         '  allow-remote: false\n'
         f'  secret-key: "{_yaml_str(management_key)}"\n'
         '  disable-control-panel: true\n'
+        + preserved
     )
     path = _config_path()
     with open(path, "w", encoding="utf-8") as f:
