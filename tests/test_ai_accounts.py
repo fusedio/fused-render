@@ -476,6 +476,39 @@ def test_listing_includes_login_snapshot(client, monkeypatch):
     assert body["login"] == {"provider": "claude", "state": "exchanging", "detail": None}
 
 
+@pytest.mark.parametrize("settled", ["done", "failed"])
+def test_listing_reports_no_login_once_an_attempt_settles(client, monkeypatch, settled):
+    """A finished attempt must not read as in-flight.
+
+    Regression guard for a bug that made the SECOND provider unconnectable.
+    _active is deliberately kept after an attempt settles so /connect/status
+    can still report its outcome, but the listing's `login` field is what the
+    page uses to decide "is a login in progress" — and reporting a settled
+    attempt there left every Connect button disabled forever, so connecting
+    Claude locked the user out of ChatGPT until a restart.
+    """
+    monkeypatch.setattr(ai_accounts.ai_proxy, "status",
+                         lambda: {"supervised": True, "running": False})
+    _install_active(phase=settled, state="st-settled")
+    assert client.get("/api/ai/accounts").json()["login"] is None
+    # ...while the status route still reports the outcome to whoever was polling.
+    assert client.get("/api/ai/accounts/connect/status").json()["state"] == settled
+
+
+@pytest.mark.parametrize("settled", ["done", "failed"])
+def test_connect_is_allowed_again_once_the_previous_attempt_settles(
+    client, monkeypatch, settled
+):
+    """The other half of the same bug: a settled attempt must not hold the
+    single-flight gate either, or a second provider could never start."""
+    monkeypatch.setattr(ai_accounts.ai_proxy, "start_login",
+                         lambda p: {"state": "st-new", "url": "https://example.test/auth"})
+    _install_active(phase=settled, state="st-old")
+    resp = client.post("/api/ai/accounts/connect", json={"provider": "codex"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "st-new"
+
+
 # -- delete --------------------------------------------------------------------
 
 
