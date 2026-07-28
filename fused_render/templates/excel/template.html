@@ -1036,9 +1036,11 @@ function positionFilterMenu(m, anchor) {
   m.style.left = left + "px"; m.style.top = top + "px";
 }
 function numAwareCmp(a, b) {   // numbers first in numeric order, then text
-  const na = parseFloat(a), nb = parseFloat(b);
-  const an = a !== "" && !isNaN(na), bn = b !== "" && !isNaN(nb);
-  if (an && bn) return na - nb;
+  // whole-string numeric test (NUM_RE), matching the reader's TRY_CAST ordering:
+  // loose parseFloat would rank "12abc" as a number here but text server-side
+  const ta = String(a).trim(), tb = String(b).trim();
+  const an = NUM_RE.test(ta), bn = NUM_RE.test(tb);
+  if (an && bn) return parseFloat(ta) - parseFloat(tb);
   if (an !== bn) return an ? -1 : 1;
   return a < b ? -1 : a > b ? 1 : 0;
 }
