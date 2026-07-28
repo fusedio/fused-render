@@ -57,9 +57,34 @@ MAX_ASSETS = 5000
 # pathological case to tens of milliseconds instead of the size of a monorepo.
 MAX_ENTRIES = 20000
 
-# Directories a note vault never means to include. Dotdirs cover .git/.obsidian;
-# the rest are the usual vendored trees whose bundled markdown is noise.
-SKIP_DIRS = frozenset(("node_modules", "__pycache__", "site-packages", "venv"))
+# Directories a note vault never means to include: dotdirs (.git, .obsidian,
+# .venv, .tox, .next) plus the usual vendored and build-output trees, whose
+# markdown is generated or someone else's. Skipping them is two wins at once —
+# a vendored README stops being drawn as a graph node the author appears to have
+# written, and the walk stops paying for the subtree at all.
+#
+# `.gitignore` is deliberately NOT consulted, and that is a decision rather than
+# an oversight: pattern matching with negations, `**` and nested ignore files is
+# real complexity, and it silently does nothing outside a git repo — which is
+# exactly where a vault often lives. Obsidian likewise keeps its own exclusion
+# list. `server._walk_bfs` can afford git's own answer (a `check-ignore`
+# co-process per repo, D100); this walk runs on every note open and cannot. A
+# fixed name list is what we can reason about, so it stays the whole mechanism.
+#
+# The list is deliberately conservative: a skipped directory is invisible with no
+# notice at all, so a folder of real notes silently missing is a worse failure
+# than a generated one showing up. Every name here is one that only a tool
+# writes — `docs`, `site`, `public`, `static`, `content`, `notes`, `output` and
+# `bin` were all considered and rejected as names a person plausibly keeps their
+# own writing (or a hand-built site's sources) in.
+SKIP_DIRS = frozenset((
+    # dependencies vendored into the tree
+    "node_modules", "bower_components", "site-packages", "venv", "vendor", "Pods",
+    # compiler / bundler / doc-generator output
+    "__pycache__", "build", "_build", "dist", "out", "target", "_site",
+    # coverage reports
+    "coverage", "htmlcov",
+))
 
 
 class MountUnsupported(Exception):

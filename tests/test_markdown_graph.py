@@ -315,6 +315,40 @@ def test_a_dropped_asset_is_reported_as_truncation_too(graph, tmp_path):
     assert scan["truncated"] is True
 
 
+@pytest.mark.parametrize("generated", [
+    "build", "dist", "out", "target", "_build", "_site", "vendor",
+    "bower_components", "Pods", "coverage", "htmlcov",
+])
+def test_a_generated_tree_is_never_indexed_as_a_note(graph, tmp_path, generated):
+    """Markdown under a build/vendor output directory is not the author's note.
+
+    Indexed, it becomes a real graph node — a vendored README drawn as though
+    you wrote it — and its whole subtree is walked on every open. `.gitignore` is
+    deliberately NOT consulted (a vault often lives outside a repo, where
+    gitignore silently does nothing), so this name list is the entire defence
+    and has to be pinned.
+    """
+    root = _vault(tmp_path, {"note.md": "x\n", "%s/gen.md" % generated: "generated\n"})
+    scan = graph.scan_root(root)
+    assert list(scan["notes"]) == ["note.md"]
+    assert scan["assets"] == []
+
+
+@pytest.mark.parametrize("authored", [
+    "docs", "notes", "content", "site", "public", "static", "assets", "src",
+    "journal", "archive", "output",
+])
+def test_a_plausibly_authored_directory_is_still_scanned(graph, tmp_path, authored):
+    """The skip list must stay conservative.
+
+    Every name on it is invisible with no notice at all — a folder of real notes
+    silently missing from the graph is worse than a vendored one showing up. Any
+    name a person might plausibly keep their own writing in stays off the list.
+    """
+    root = _vault(tmp_path, {"%s/mine.md" % authored: "mine\n"})
+    assert list(graph.scan_root(root)["notes"]) == ["%s/mine.md" % authored]
+
+
 # --------------------------------------------------------------- the note API
 
 
