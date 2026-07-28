@@ -235,7 +235,7 @@ class RasterEngine:
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
         self._transparent: bytes | None = None
 
-    def _locator(self, source: str, target: str) -> str:
+    def locator(self, source: str, target: str) -> str:
         if source.startswith("/vsi"):
             return source
         if not source.startswith(("http://", "https://")):
@@ -367,7 +367,7 @@ class RasterEngine:
         from rio_tiler.errors import NoOverviewWarning
         from rio_tiler.io import Reader
 
-        locator = self._locator(source, target)
+        locator = self.locator(source, target)
         with _gdal_env(), rasterio.open(locator) as dataset:
             if dataset.driver in {"OGR_VRT"}:
                 raise ValueError("not a raster dataset")

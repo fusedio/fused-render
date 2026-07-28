@@ -57,6 +57,8 @@ def clean_path(value: str) -> str:
         and cleaned[-1] == QUOTE_PAIRS[cleaned[0]]
     ):
         cleaned = cleaned[1:-1].strip()
+    if cleaned.lower().startswith(("http://", "https://", "s3://", "/vsi")):
+        return cleaned
     return os.path.expandvars(os.path.expanduser(cleaned))
 
 

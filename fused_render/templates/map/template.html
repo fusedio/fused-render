@@ -1124,21 +1124,153 @@ function rasterLayerForSource(sourceId) {
   return null;
 }
 
+let vectorSourceIds = new Set();
+function vectorIdsFromSafe(safe) {
+  return {
+    source: "mv-v-src-" + safe,
+    fill: "mv-v-fill-" + safe,
+    line: "mv-v-line-" + safe,
+    point: "mv-v-point-" + safe,
+    boundsSource: "mv-v-bounds-src-" + safe,
+    boundsLayer: "mv-v-bounds-layer-" + safe,
+  };
+}
+function vectorIds(L) {
+  const safe = String(L.descriptor.data.source_id || L.descriptor.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return vectorIdsFromSafe(safe);
+}
+function cssColor(value, fallback) {
+  const c = Array.isArray(value) ? value : fallback;
+  return `rgba(${c[0]},${c[1]},${c[2]},${(c[3] ?? 255) / 255})`;
+}
+function removeVectorSource(sourceId) {
+  const safe = sourceId.slice("mv-v-src-".length);
+  const ids = vectorIdsFromSafe(safe);
+  for (const layerId of [ids.boundsLayer, ids.point, ids.line, ids.fill]) {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }
+  if (map.getSource(ids.boundsSource)) map.removeSource(ids.boundsSource);
+  if (map.getSource(ids.source)) map.removeSource(ids.source);
+}
+function rebuildVectorTiles() {
+  if (!map.isStyleLoaded()) return;
+  const wanted = new Map();
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (L.visible && d && d.status === "ok" && d.kind === "vector_tiles_mvt") {
+      const ids = vectorIds(L);
+      wanted.set(ids.source, { L, ids });
+    }
+  }
+  const styleSources = Object.keys((map.getStyle() && map.getStyle().sources) || {})
+    .filter(id => id.startsWith("mv-v-src-"));
+  for (const sourceId of new Set([...vectorSourceIds, ...styleSources])) {
+    if (!wanted.has(sourceId)) removeVectorSource(sourceId);
+  }
+
+  for (const [sourceId, { L, ids }] of wanted) {
+    const d = L.descriptor, s = L.style || {};
+    const sourceLayer = d.data.source_layer || "layer";
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: "vector",
+        tiles: [d.data.tile_url],
+        minzoom: d.minzoom ?? 0,
+        maxzoom: d.maxzoom ?? 18,
+        bounds: d.bounds,
+      });
+    }
+    const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
+    const lineColor = cssColor(s.line_color, [90, 200, 255, 220]);
+    if (!map.getLayer(ids.fill)) {
+      map.addLayer({
+        id: ids.fill, type: "fill", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": fillColor, "fill-opacity": L.opacity ?? 1 },
+      });
+    } else {
+      map.setPaintProperty(ids.fill, "fill-color", fillColor);
+      map.setPaintProperty(ids.fill, "fill-opacity", L.opacity ?? 1);
+    }
+    if (!map.getLayer(ids.line)) {
+      map.addLayer({
+        id: ids.line, type: "line", source: sourceId, "source-layer": sourceLayer,
+        filter: ["in", ["geometry-type"], ["literal", ["LineString", "Polygon"]]],
+        paint: {
+          "line-color": lineColor,
+          "line-width": s.line_width ?? 1.5,
+          "line-opacity": L.opacity ?? 1,
+        },
+      });
+    } else {
+      map.setPaintProperty(ids.line, "line-color", lineColor);
+      map.setPaintProperty(ids.line, "line-width", s.line_width ?? 1.5);
+      map.setPaintProperty(ids.line, "line-opacity", L.opacity ?? 1);
+    }
+    if (!map.getLayer(ids.point)) {
+      map.addLayer({
+        id: ids.point, type: "circle", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-color": fillColor,
+          "circle-radius": s.point_radius ?? 5,
+          "circle-opacity": L.opacity ?? 1,
+        },
+      });
+    } else {
+      map.setPaintProperty(ids.point, "circle-color", fillColor);
+      map.setPaintProperty(ids.point, "circle-radius", s.point_radius ?? 5);
+      map.setPaintProperty(ids.point, "circle-opacity", L.opacity ?? 1);
+    }
+    if (!map.getSource(ids.boundsSource)) {
+      map.addSource(ids.boundsSource, {
+        type: "geojson",
+        data: boundsFeature(d.bounds),
+      });
+    }
+    if (!map.getLayer(ids.boundsLayer)) {
+      map.addLayer({
+        id: ids.boundsLayer, type: "line", source: ids.boundsSource,
+        paint: {
+          "line-color": lineColor,
+          "line-width": 1,
+          "line-opacity": 0.6,
+          "line-dasharray": [2, 2],
+        },
+      });
+    }
+  }
+  vectorSourceIds = new Set(wanted.keys());
+}
+function vectorLayerForSource(sourceId) {
+  if (!sourceId || !sourceId.startsWith("mv-v-src-")) return null;
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (d && d.kind === "vector_tiles_mvt" && vectorIds(L).source === sourceId) {
+      return L;
+    }
+  }
+  return null;
+}
+function tiledLayerForSource(sourceId) {
+  return rasterLayerForSource(sourceId) || vectorLayerForSource(sourceId);
+}
+
 map.on("sourcedataloading", event => {
-  const L = rasterLayerForSource(event.sourceId);
+  const L = tiledLayerForSource(event.sourceId);
   if (!L || L.tileLoading) return;
   L.tileLoading = true;
   L.tileError = null;
   renderLayerCards();
 });
 map.on("sourcedata", event => {
-  const L = rasterLayerForSource(event.sourceId);
+  const L = tiledLayerForSource(event.sourceId);
   if (!L || (!event.isSourceLoaded && event.sourceDataType !== "idle")) return;
   L.tileLoading = false;
   renderLayerCards();
 });
 map.on("error", event => {
-  const L = rasterLayerForSource(event.sourceId);
+  const L = tiledLayerForSource(event.sourceId);
   if (!L) return;
   L.tileLoading = false;
   L.tileError = (event.error && event.error.message) || "unknown tile error";
@@ -1221,7 +1353,7 @@ function makeGeoJsonLayer(key, L) {
   });
 }
 
-function renderAll() { renderFileList(); rebuildRasterTiles(); rebuildDeck(); renderLayerCards(); renderStyleDock(); }
+function renderAll() { renderFileList(); rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); renderLayerCards(); renderStyleDock(); }
 
 /* =======================================================================
    LAYERS SECTION (cards in the left panel)
@@ -1272,6 +1404,14 @@ function formatRasterStatus(L) {
   return "";
 }
 
+function formatVectorStatus(L) {
+  const d = L.descriptor;
+  if (!d || d.kind !== "vector_tiles_mvt") return "";
+  if (L.tileError) return "Visible tiles failed: " + L.tileError;
+  if (L.tileLoading) return "Loading visible vector tiles…";
+  return d.stats.indexed ? "Indexed vector tiles ready" : "Vector tiles ready";
+}
+
 function renderLayerCards() {
   const box = qs("layercards");
   const all = [...state.layers.values()];
@@ -1313,8 +1453,8 @@ function layerCard(L) {
     m.textContent = d.message || (d.error && d.error.message) || "Couldn't render this file.";
     card.appendChild(m);
   }
-  if (d && !L.loading && d.status === "ok" && d.kind === "raster_tiles") {
-    const message = formatRasterStatus(L);
+  if (d && !L.loading && d.status === "ok" && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
+    const message = d.kind === "raster_tiles" ? formatRasterStatus(L) : formatVectorStatus(L);
     const bounds = d.bounds || [];
     if (message || bounds.length === 4) {
       const status = document.createElement("div");
@@ -1414,9 +1554,10 @@ function renderStyleDock() {
   }
 
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
-    v => { L.opacity = v/100; rebuildRasterTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
+    v => { L.opacity = v/100; rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
   if (d.kind === "raster_image" || d.kind === "raster_tiles") rasterControls(body, L);
+  else if (d.kind === "vector_tiles_mvt") vectorTileControls(body, L);
   else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
   else if (d.kind === "vector_geojson") vectorControls(body, L);
 
@@ -1424,7 +1565,7 @@ function renderStyleDock() {
   const st = d.stats || {};
   let statTxt = "";
   if (d.kind === "raster_image" || d.kind === "raster_tiles") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
-  else if (d.kind === "vector_geojson" || d.kind === "vector_points_binary") statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
+  else if (["vector_geojson", "vector_points_binary", "vector_tiles_mvt"].includes(d.kind)) statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
   if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
   if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
@@ -1513,6 +1654,31 @@ function vectorControls(body, L) {
     v => { s.line_width = v/2; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); }));
   if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius??5), 1, 24, s.point_radius??5,
     v => { s.point_radius = v; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
+}
+
+function vectorTileControls(body, L) {
+  const s = L.style, d = L.descriptor;
+  const gtypes = d.stats.geometry_types || [];
+  const isPoint = gtypes.some(g => g.includes("Point"));
+  const isLine = gtypes.some(g => g.includes("Line"));
+  if (!isLine) body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
+    const alpha = (s.fill_color && s.fill_color[3]) ?? 90;
+    s.fill_color = [...hexToRgb(hex), alpha]; s._touched = true;
+    rebuildVectorTiles(); renderLayerCards();
+  }));
+  body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color || L.defaultColor), hex => {
+    const alpha = (s.line_color && s.line_color[3]) ?? 220;
+    s.line_color = [...hexToRgb(hex), alpha]; s._touched = true;
+    if (isPoint) {
+      const fillAlpha = (s.fill_color && s.fill_color[3]) ?? 220;
+      s.fill_color = [...hexToRgb(hex), fillAlpha];
+    }
+    rebuildVectorTiles(); renderLayerCards();
+  }));
+  if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
+    value => { s.line_width = value / 2; s._touched = true; rebuildVectorTiles(); updateCtlLabel(body, "Line width", (value / 2).toFixed(1)); }));
+  if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius ?? 5), 1, 24, s.point_radius ?? 5,
+    value => { s.point_radius = value; s._touched = true; rebuildVectorTiles(); updateCtlLabel(body, "Point size", String(value)); }));
 }
 
 function binaryPointControls(body, L) {
@@ -1707,8 +1873,10 @@ function setBasemap(name) {
 }
 map.on("style.load", () => {
   rasterSourceIds = new Set();
+  vectorSourceIds = new Set();
   for (const L of state.layers.values()) L._tileUrl = null;
   rebuildRasterTiles();
+  rebuildVectorTiles();
 });
 
 /* geocode (Photon) */

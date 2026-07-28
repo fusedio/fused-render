@@ -36,11 +36,26 @@ def test_clipboard_quotes_are_removed_before_path_resolution():
         assert map_render._clean_target(quoted) == path
 
 
+def test_remote_urls_are_never_environment_expanded(monkeypatch):
+    discover = _load("discover")
+    map_render = _load("map_render")
+    monkeypatch.setenv("MAP_OBJECT", "wrong-object")
+
+    for remote in (
+        "https://example.test/$MAP_OBJECT/%MAP_OBJECT%/scene.tif",
+        "s3://bucket/$MAP_OBJECT/%MAP_OBJECT%/scene.gpkg",
+        "/vsicurl/https://example.test/$MAP_OBJECT/scene.fgb",
+    ):
+        assert discover.clean_path(f'"{remote}"') == remote
+        assert map_render._clean_target(f'"{remote}"') == remote
+
+
 def test_map_uses_the_bundled_runtime_without_first_open_installation():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
 
     assert any(item.startswith("rio-tiler==") for item in bundled)
+    assert "mapbox-vector-tile==2.2.0" in bundled
     assert any(item.startswith("xlrd") for item in bundled)
 
     launcher = (MAP / "map_render.py").read_text(encoding="utf-8")
@@ -59,6 +74,7 @@ def test_macos_bundle_forces_dynamic_map_runtime_packages():
         "morecantile",
         "color_operations",
         "pystac",
+        "mapbox_vector_tile",
         "httpx2",
         "httpcore2",
         "xlrd",
@@ -215,3 +231,72 @@ def test_non_raster_service_failure_keeps_oneshot_fallback(
     assert descriptor == fallback
     assert len(requests) == 1
     assert requests[0]["target"] == str(target)
+
+
+def test_large_vector_service_failure_never_loads_the_whole_file(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    target = tmp_path / "large.gpkg"
+    target.write_bytes(b"x" * 128)
+    cache = tmp_path / "cache"
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", cache / "artifacts")
+    monkeypatch.setattr(map_render, "VECTOR_ONESHOT_MAX_BYTES", 64)
+    monkeypatch.setattr(
+        map_render,
+        "_ensure_service",
+        lambda: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
+    )
+    monkeypatch.setattr(
+        map_render,
+        "_run_oneshot",
+        lambda _request: pytest.fail("large vector must not use one-shot mode"),
+    )
+
+    descriptor = map_render.main(target=str(target))
+
+    assert descriptor["status"] == "error"
+    assert descriptor["detected_type"] == "vector"
+    assert "bounded vector-tile service is unavailable" in descriptor["message"]
+    assert "whole-file one-shot fallback was not used" in descriptor["message"]
+
+
+def test_managed_vector_service_failure_never_uses_the_mount_path(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    target = tmp_path / "managed.gpkg"
+    cache = tmp_path / "cache"
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", cache / "artifacts")
+    monkeypatch.setattr(
+        map_render,
+        "_ensure_service",
+        lambda: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
+    )
+    monkeypatch.setattr(
+        map_render,
+        "_run_oneshot",
+        lambda _request: pytest.fail("managed vector must not use one-shot mode"),
+    )
+
+    descriptor = map_render.main(
+        target=str(target),
+        source_url="http://127.0.0.1:1777/api/fs/raw?path=managed.gpkg",
+    )
+
+    assert descriptor["status"] == "error"
+    assert descriptor["detected_type"] == "vector"
+    assert "whole-file one-shot fallback was not used" in descriptor["message"]
+
+
+def test_map_frontend_uses_native_maplibre_vector_tiles():
+    template = (MAP / "template.html").read_text(encoding="utf-8")
+
+    assert 'd.kind === "vector_tiles_mvt"' in template
+    assert 'type: "vector"' in template
+    assert '"source-layer": sourceLayer' in template
+    assert "rebuildVectorTiles()" in template

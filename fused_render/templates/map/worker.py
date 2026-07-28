@@ -51,7 +51,11 @@ def _run_entrypoint(module: Any, preferred: str = "") -> tuple[Any, str]:
     )
 
 
-def build(request: dict[str, Any], raster_engine=None) -> dict[str, Any]:
+def build(
+    request: dict[str, Any],
+    raster_engine=None,
+    vector_engine=None,
+) -> dict[str, Any]:
     import geo_classify
 
     target = request["target"]
@@ -75,6 +79,8 @@ def build(request: dict[str, Any], raster_engine=None) -> dict[str, Any]:
             if raster_engine is not None
             else None
         )
+        if descriptor is None and vector_engine is not None:
+            descriptor = vector_engine.try_describe(request, obj=obj)
         if descriptor is None:
             descriptor = geo_classify.classify(
                 obj, artifact_dir, artifact_id, options
@@ -85,10 +91,18 @@ def build(request: dict[str, Any], raster_engine=None) -> dict[str, Any]:
     return descriptor
 
 
-def main(request: dict[str, Any], raster_engine=None) -> dict[str, Any]:
+def main(
+    request: dict[str, Any],
+    raster_engine=None,
+    vector_engine=None,
+) -> dict[str, Any]:
     started = time.time()
     try:
-        descriptor = build(request, raster_engine=raster_engine)
+        descriptor = build(
+            request,
+            raster_engine=raster_engine,
+            vector_engine=vector_engine,
+        )
     except Exception as error:
         descriptor = {
             "id": request.get("artifact_id", ""),

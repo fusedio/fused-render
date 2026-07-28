@@ -45,6 +45,7 @@ import geo_classify
 import raster_engine
 from daemon import Handler, MapServer
 from raster_engine import RasterEngine
+from vector_engine import VectorEngine
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -133,6 +134,11 @@ def map_service(cache_dir: Path):
         cache_dir=str(cache_dir),
         base_url=f"http://127.0.0.1:{port}",
         token=token,
+    )
+    server.vectors = VectorEngine(
+        base_url=f"http://127.0.0.1:{port}",
+        token=token,
+        locator=server.engine.locator,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

@@ -38,6 +38,7 @@ BACKEND_FILES = (
     DAEMON,
     WORKER,
     HERE / "raster_engine.py",
+    HERE / "vector_engine.py",
     HERE / "geo_classify.py",
 )
 URL_PREFIXES = ("http://", "https://", "s3://", "/vsi")
@@ -46,6 +47,10 @@ RASTER_SUFFIXES = (
     ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd", ".nc",
     ".hdf", ".h5",
 )
+VECTOR_SUFFIXES = (
+    ".geojson", ".json", ".shp", ".gpkg", ".fgb", ".kml", ".gml",
+)
+VECTOR_ONESHOT_MAX_BYTES = 32 << 20
 QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’"}
 
 
@@ -57,11 +62,25 @@ def _clean_target(value: str) -> str:
         and target[-1] == QUOTE_PAIRS[target[0]]
     ):
         target = target[1:-1].strip()
+    if target.lower().startswith(URL_PREFIXES):
+        return target
     return os.path.expandvars(os.path.expanduser(target))
 
 
 def _looks_like_raster(target: str) -> bool:
     return target.lower().split("?", 1)[0].endswith(RASTER_SUFFIXES)
+
+
+def _requires_vector_service(target: str, source_url: str = "") -> bool:
+    normalized = target.lower().split("?", 1)[0]
+    if not normalized.endswith(VECTOR_SUFFIXES):
+        return False
+    if source_url or target.lower().startswith(URL_PREFIXES):
+        return True
+    try:
+        return os.path.getsize(target) >= VECTOR_ONESHOT_MAX_BYTES
+    except OSError:
+        return False
 
 
 def _backend_version() -> str:
@@ -217,7 +236,7 @@ def _post(state: dict, path: str, payload: dict, timeout: float = 300) -> dict:
 def _artifact_exists(descriptor: dict) -> bool:
     if descriptor.get("status") != "ok":
         return False
-    if descriptor.get("kind") == "raster_tiles":
+    if descriptor.get("kind") in {"raster_tiles", "vector_tiles_mvt"}:
         return False
     data = descriptor.get("data") or {}
     for name in ("geojson_path", "image_path", "points_path"):
@@ -237,7 +256,7 @@ def _cached_descriptor(path: Path) -> dict | None:
 def _save_descriptor(path: Path, descriptor: dict) -> None:
     if (
         descriptor.get("status") != "ok"
-        or descriptor.get("kind") == "raster_tiles"
+        or descriptor.get("kind") in {"raster_tiles", "vector_tiles_mvt"}
     ):
         return
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -371,6 +390,21 @@ def main(
                 "message": (
                     "The range-first raster service is unavailable. "
                     "The unsafe one-shot fallback was not used; retrying will "
+                    f"start a fresh service. {type(error).__name__}: {error}"
+                ),
+            }
+        if _requires_vector_service(target, source_url):
+            return {
+                "id": artifact_id,
+                "status": "error",
+                "kind": None,
+                "bounds": None,
+                "data": {},
+                "warnings": [],
+                "detected_type": "vector",
+                "message": (
+                    "The bounded vector-tile service is unavailable. The "
+                    "whole-file one-shot fallback was not used; retrying will "
                     f"start a fresh service. {type(error).__name__}: {error}"
                 ),
             }

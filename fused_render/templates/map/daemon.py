@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import worker
 from raster_engine import RasterEngine
+from vector_engine import VectorEngine
 
 
 IDLE_TIMEOUT = int(os.environ.get("MAP_VIEWER_IDLE_TIMEOUT", "1800"))
@@ -39,6 +40,10 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def engine(self) -> RasterEngine:
         return self.server.engine  # type: ignore[attr-defined]
+
+    @property
+    def vectors(self) -> VectorEngine:
+        return self.server.vectors  # type: ignore[attr-defined]
 
     def _touch(self):
         self.server.last_hit = time.time()  # type: ignore[attr-defined]
@@ -159,6 +164,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._bytes(200, tile, "image/png")
             return
 
+        if len(parts) == 5 and parts[0] == "vtiles" and parts[4].endswith(".pbf"):
+            try:
+                source_id = parts[1]
+                z, x = int(parts[2]), int(parts[3])
+                y = int(parts[4][:-4])
+            except ValueError:
+                self._json(400, {"error": "invalid tile coordinate"})
+                return
+            tile = self.vectors.tile(source_id, z, x, y)
+            if tile is None:
+                self._json(404, {"error": "unknown source"})
+            elif not tile:
+                self._bytes(204, b"", "application/vnd.mapbox-vector-tile")
+            else:
+                self._bytes(200, tile, "application/vnd.mapbox-vector-tile")
+            return
+
         self._json(404, {"error": "not found"})
 
     def do_POST(self):
@@ -170,9 +192,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/describe":
                 request = self._read_json()
-                descriptor = self.engine.try_describe(request)
-                if descriptor is None:
-                    descriptor = worker.main(request, raster_engine=self.engine)
+                descriptor = worker.main(
+                    request,
+                    raster_engine=self.engine,
+                    vector_engine=self.vectors,
+                )
                 self._json(200, descriptor)
                 return
 
@@ -229,6 +253,11 @@ def main():
         cache_dir=args.cache,
         base_url=f"http://127.0.0.1:{port}",
         token=token,
+    )
+    server.vectors = VectorEngine(  # type: ignore[attr-defined]
+        base_url=f"http://127.0.0.1:{port}",
+        token=token,
+        locator=server.engine.locator,
     )
 
     state_path = Path(args.state)
