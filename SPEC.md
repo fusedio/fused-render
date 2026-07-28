@@ -2625,3 +2625,401 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   out unclaimed (owner-accepted over a rename chain). A `.py` borrowed by a
   page in another folder logs under the borrower, since a record lives where
   its `page` lives.
+
+## 32. Markdown — Notes, Wikilinks & the Link Graph (D153)
+
+Goal: `.md` stops being read-only. One template reads, writes, resolves
+`[[wikilinks]]`, shows backlinks and draws a link graph, with read/write
+behaviour copied from Obsidian rather than invented. Design + rationale:
+`docs/markdown-graph.html`.
+
+- **MD-1** **One surface, not a reading mode and a writing mode.** The **note
+  view** (`markdown`, the `.md` default) is a **Live Preview editor and nothing
+  else**: always editable, markup rendered in place, and no mode switcher.
+  Obsidian splits Reading view from Editing view; this deliberately does not,
+  because a mode switch here is a *template swap* rather than a sub-mode of one
+  persistent editor — the caret and the undo history would not survive it, so
+  the toggle would cost more than it does in Obsidian and buy less. A read-only
+  file is the reading view: the same decorations over a locked buffer (MD-15),
+  which unifies that path instead of branching it. The **local graph** is a
+  panel inside the view (MD-19), and the **folder graph** (`graph`) is a
+  directory mode over every note under the folder you are standing in. All
+  three read `templates/markdown/graph.py` — one module owns parsing,
+  resolution and assembly, so no two surfaces can disagree about what a link is
+  or where it points. The folder mode calls it as `../markdown/graph.py`
+  (`/api/run` resolves a relative `py` against the page's directory) rather
+  than shipping a second copy.
+- **MD-1a** **Read-only and editing are a MODE, and the mode is writability
+  only — never appearance.** The same Live Preview decorations over the same
+  document, with CM's two read-only facets on or off
+  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`) — which are
+  *exactly* the facets the unwritable-file path already used, so **a read-only
+  file's locked buffer and read-only mode are one mechanism, not two**. There is
+  no different typography, no restyled surface and emphatically no second render
+  pipeline; that was removed deliberately (MD-1/D158) and does not come back to
+  serve a mode. With `editable=false` there is no caret, so nothing reveals and
+  the document reads as fully rendered — that *is* the reading view, obtained
+  without a second pipeline. The reveal is additionally suppressed by one guard
+  in `selectedLines`, because a browser text selection inside a non-editable view
+  still reaches the state's selection and would un-render whatever was swiped
+  over; the guard makes the mode deterministic rather than dependent on that.
+  **Editing is the default** — Obsidian's default, and a note must never silently
+  open read-only. The preference lives in `fused.params` under `edit`
+  (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh and
+  travels in a shared URL. It is layered **on top of** the file's real
+  writability and can never override it: for a genuinely unwritable file (MD-15)
+  the toggle is *disabled* with a title saying why. Switching to read-only
+  flushes pending edits first (`await save()`), for the same reason navigation
+  does (MD-16). The control is a second 26px button in the same corner cluster as
+  the sidebar toggle — not a toolbar row, which MD-2a still forbids — and
+  switching rebuilds the view (`editable` is chosen at construction), which is
+  invisible because `buildEditor` carries the caret and the scroll position
+  across.
+- **MD-2a** **No toolbar.** The shell's own breadcrumb already names the open
+  file, and Obsidian shows no save state, no dirty indicator and no mode
+  buttons — which left the bar holding nothing. What survived it went where it
+  belongs: the read-only badge floats (the shared `ro-badge.js` idiom), a save
+  *failure* floats as a pill and is invisible when there is nothing to say, and
+  the reload-or-keep banner (MD-17) takes a row only while a conflict is
+  unresolved. The only persistent chrome is a top-right cluster of two 26px
+  buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
+  The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
+  the graph together, and its accessible name says so.
+- **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
+  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
+  **unchanged** as the raw-source escape hatch. Two editors for one extension
+  with two save models is accepted rather than reconciled: `code` is the
+  generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
+  is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
+  `code` for a `.md` asked for code behaviour. The universal `/` directory key
+  gains `graph`:
+  `["_listing", "graph", "preview", "zarr_aoi"]`. `graph` ships a `condition.py`
+  (CT-12), so `_listing` remains the immediate default and the graph joins the
+  switcher only where the background gate allows it (PT-8).
+- **MD-3** **What a link is.** Parsed from the source with **code elided**:
+  `_mask_code` blanks fenced blocks, indented blocks, inline code spans and the
+  YAML frontmatter to spaces of the same length, so offsets and line numbers
+  still line up and a `[[Note]]` in a code sample is not an edge. Six forms
+  count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`,
+  `#tag`, and an ordinary relative markdown link `](./rel.md)` — a URL, a
+  `mailto:` and a bare `#anchor` do not. `[[#Heading]]` is an anchor inside the
+  same note, not an edge. The editing surface does **not** re-implement the
+  masking rule: wikilinks and tags are not in the vendored markdown grammar, so
+  they are matched by regex and then checked **against the syntax tree** — a
+  match inside `InlineCode`/`CodeText`/`FencedCode` is not a link, and a `#`
+  inside a `URL` is a fragment. The tree is asked what a range *is*; no second
+  block parser exists in JS. The guard must **not** list `Link`/`Image`: the
+  grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
+  `![[embed]]` in an `Image` node, so including them silently renders no
+  wikilinks at all (found by executing it — see MD-18a).
+- **MD-4** **Resolution: the shortest path that is unambiguous.** Tried in
+  order — relative to the linking note's own folder, then from the vault root,
+  then as a path suffix, then as a bare basename — case-insensitively, with the
+  `.md`/`.markdown` extension optional. **A tie is a ghost, not a guess:** two
+  notes sharing a basename means the link did not carry enough path to say
+  which, and silently picking one makes the graph assert an edge the author
+  never wrote. Unresolved targets render dashed and clicking one **creates the
+  note** (MD-16 makes that possible). An `![[embed]]` resolves through the same
+  tiers over the folder's non-note files, so a picture in an `img/` subfolder is
+  found from anywhere.
+- **MD-4c** **A ghost is a promise, so only a target that could BE a note gets
+  one.** A ghost says "click and this note appears", which makes it a lie for a
+  target that can never name a note. Two are excluded, on the target **string**
+  alone — no stat, no listing, because this runs once per link per note: a
+  **directory** (`](../examples/)`, trailing slash), and a **file of another
+  kind** (`](../scripts/run.py)` — an extension that is not `.md`/`.markdown`,
+  where the suffix must begin with a letter so `[[Chapter 1.2]]` stays linkable).
+  With no node there is no edge either. Creating one is also **bounded by the
+  scan root**: a note written above the root is invisible to the graph that
+  offered it, so the offer would be incoherent — the resolved path is checked
+  against the root (with a `/` boundary) and refused with a message rather than
+  written, on both graph surfaces. The ghost node carries the authored
+  **`target`** next to its display `label`, and the create path reads the target;
+  a write driven by whatever happens to be drawn on the canvas is fragile by
+  construction. Both halves were a real bug: `[`../examples/`](../examples/)`
+  produced a ghost that tried to create a file called literally `.md` one level
+  *above* the vault root, because the page joined a `../` target onto the root
+  while `resolve_link` joins it onto the linking note's folder. **The page's one
+  path computation must follow `resolve_link`'s order** — own folder, then root —
+  or it creates notes the graph will never look for, which is the same class of
+  divergence MD-3 exists to prevent.
+- **MD-4a** **A relative link is resolved for the shell.** The document is
+  served at `/render?path=…`, so a browser resolves `](../CONTRIBUTING.md)`
+  against the *server root* and misses the file. The link's widget therefore
+  resolves the target against the note's own folder and sets `data-path` (plus
+  `data-heading` for a `#Heading` suffix), which is what the one delegated click
+  handler already listens for — so a relative link and a wikilink navigate by
+  the same route and get the same pre-navigation flush of unsaved edits. A real
+  `href` is set alongside it so hover and ⌘-click behave like ordinary links.
+  Percent-escapes are decoded first, and a malformed escape falls back to the
+  authored text rather than throwing the decoration pass away. Left untouched,
+  matching MD-3's line for what is an edge: absolute paths, any scheme (opened
+  in a new tab), and a bare `#anchor`. **No extension filter** — the shell opens
+  any path with its own template, so a link to a `.png` or a subfolder is as
+  navigable as one to a note.
+- **MD-4b** **An arriving `?heading=` scrolls, it does not select.** There are no
+  rendered headings to scan, so the document is the index: the matching ATX line
+  is found by text and scrolled into view with `scrollIntoView`. The caret is
+  deliberately **not** moved onto it — that would reveal the heading's own
+  markup the instant you arrived.
+- **MD-5** **Backlinks** are computed by resolving every other note's links and
+  keeping the ones that land on this note — never from a stored reverse index,
+  for the reason in MD-6. Each carries the linking note's title, relative path
+  and the label/heading it used.
+- **MD-6** **Resolve at assembly time, never at index time.** The index stores
+  the **raw** authored target. Renaming `Foo.md` silently changes what every
+  other note's `[[Foo]]` points at, so a cached resolved edge would be *wrong*
+  rather than merely stale — the one mistake that makes incremental updates
+  incorrect instead of slow. The page holds a raw-target → resolved-row map and
+  contains no resolution rule of its own.
+- **MD-7** **Where the index lives.** `<home_dir()>/graph/<sha256 of
+  realpath(root)>.sqlite`, resolved against `home_dir()` on **each call** so
+  `FUSED_RENDER_HOME` (and the per-branch nesting) work — the established
+  `core_templates.CORE_TEMPLATES_DIR` pattern. Keyed on `realpath`, so a symlink
+  and its target share one index. Home dir, never an in-folder sidecar: no repo
+  pollution, nothing to gitignore. The absolute root is stored **inside** the
+  db, so a moved folder or a hash collision is detected and the rows discarded
+  rather than attributed to the wrong vault.
+- **MD-8** **Three tiers.** (1) Per-file rows on disk — `rel`, `mtime_ns`,
+  `size`, and the parse as JSON — invalidated when `(mtime_ns, size)` differs
+  from disk or when `parser_version` moved, which invalidates everything at once
+  so changing `parse_note` needs no migration. (2) Nodes and edges, assembled on
+  every request and **never** cached (MD-6). (3) Nothing above that: the walk is
+  cheap enough warm. Cold costs one walk plus N reads; warm costs a **stat-only**
+  walk plus reads for changed files, typically zero. Deletions are free —
+  assembly only uses rows the current walk found — and vanished rows are dropped
+  so the file cannot grow without bound.
+- **MD-8a** **The index is a cache, and every failure mode is treated as one.**
+  No sqlite, a corrupt file, an unwritable home: each costs a full walk and
+  nothing else, and none may become an error the user sees. An unusable db is
+  discarded and rebuilt once, then given up on.
+- **MD-9** **The write path keeps the graph live.** Each autosave re-parses
+  exactly that note, updates one row, and re-assembles in memory — no rebuild.
+  The open graph and the `[[` candidate cache are both invalidated by the same
+  save.
+- **MD-10** **Bounded, and honest about it.** A file over 256 KB is not a note
+  and is skipped; a walk stops at 5000 notes. Both are **reported** (`truncated`,
+  `skipped_large`) and surfaced in the footer and the graph panel, never silently
+  applied. The walk is deterministic — sorted directories and files — so a cap
+  that fires drops the same tail every time.
+- **MD-11** **Mounts are out of scope for the graph, structurally.** The
+  recursive walk is exactly the shape that wedges an rclone-NFS mount (a kernel
+  listing on a flat million-key prefix), so it simply never happens there.
+  **Two independent halves:** the folder mode's gate returns `False` for any
+  mount-backed path, so the mode is never offered; and `graph.py` refuses a
+  mount-backed root **before it walks or even creates the index dir**, returning
+  a clear `mount_unsupported` result — never a partial walk. Both use the app's
+  own `shell.mounts.is_mount_backed`, not a second copy of the rule, and both
+  treat a failed import as *refuse* rather than *guess*. The gate is the UX;
+  the module is the guarantee. Reading and writing a single `.md` on a mount
+  stays fully supported — that is one bounded read and one bounded write, which
+  is what every template already does. A relative markdown link still navigates
+  (the page resolves it against the note's own folder, MD-4a, which needs no
+  scan).
+- **MD-11a** **Unknown is not the same as missing.** On the no-scan path —
+  a mount, a refused scan, a failed one — the page holds no resolution map at
+  all, and that state is **three-valued, not two**: "scanned, and this target did
+  not resolve" is a ghost (dashed, click-to-create, MD-4); "not scanned, so
+  resolution is unknown" is **inert** — no ghost styling, no `data-create`, no
+  create-on-click, and a title saying targets are not resolved here. A ghost
+  there asserts the target does not exist when nothing ever looked, and offers to
+  create a note that may be sitting next to this one. The unknown flag is part of
+  the widget's reuse key, so a scan landing later replaces the inert links
+  (MD-9). The **sidebar** says the same thing rather than hiding an empty
+  backlinks list — an empty list reads as "nothing links here", which is also an
+  answer nobody computed — and it says it in `graph.py`'s own words, so a mount
+  refusal, a note outside its root and a crashed scan each read as themselves.
+  The page still resolves **nothing** itself (MD-6): the only two answers it can
+  render are graph.py's map and "we do not know".
+- **MD-12** **Scope is the vault the note sits in, found by climbing to a
+  marker.** The folder mode's scope is still the folder you are standing in,
+  which matches the explorer and needs no setup. The **note view** does not use
+  the note's own directory: that was tried and is too narrow to be useful — a
+  note in `v/docs/` linking `../spec/overview.md` got a ghost for every link
+  leaving its folder and an empty backlinks panel, because nothing outside
+  `v/docs` was ever scanned. The default root is therefore the **nearest
+  ancestor carrying a vault-root marker** — `.obsidian/`, `.fused-graph.json`,
+  or `.git` (a directory in a clone, a *file* in a worktree, so both shapes are
+  probed) — and the note's own directory when none is found. Never `$HOME`,
+  never `/`. An explicit `root` param still wins; the ascent only supplies the
+  default. **The ascent must not enumerate**: a fixed set of `isdir`/`isfile`
+  probes per level and no `listdir`/`scandir`/`walk`/`glob` anywhere, the same
+  CT-12 discipline as the folder gate and for the same reason — it runs on every
+  note opened, and it is deciding the scope of a walk. It is bounded to 8 levels
+  and stops at the filesystem root, and it **never enters a mount-backed path**
+  (MD-11): a local note living under a mounted folder must be scanned in the
+  folder it is in, not answered `mount_unsupported`. A failed mount import means
+  "cannot tell", which reads as "do not climb". A wider root makes MD-10's
+  `truncated` cap matter more, not less, so the "only the first N notes were
+  scanned" notice stays surfaced in the sidebar. Dotdirs and the usual vendored
+  trees are still skipped by name inside the walk. *Not built:* the
+  `.fused-graph.json` file's **contents** (it counts as a marker but nothing
+  reads it yet: root override, include/exclude globs, colour groups, default
+  depth) and gitignore-awareness of the walk — both additive.
+- **MD-13** **Vendoring.** One rebuild of `scripts/vendor-codemirror/` adds
+  `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
+  `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/
+  `MatchDecorator`/`keymap`, `EditorSelection`/`RangeSetBuilder`/`Prec`,
+  `syntaxTree`, `autocompletion`, `indentMore`/`indentLess` and
+  `markdown`/`markdownLanguage`/`markdownKeymap`. Anything not re-exported is
+  tree-shaken, so `entry.js` is the whole gate on what the template can reach.
+- **MD-14** **Link authoring.** `[[`, `![[`, `[[#`, `[[note#` and `#tag`
+  complete from a `candidates` action off the **same scan the graph reads**, so
+  the popup is free once the index exists and can never offer a note the graph
+  disagrees about; cached ~5 s so a fast typist does not spawn a run per
+  keystroke. What it inserts is the **shortest form that `resolve_link` itself
+  resolves back to that note** (each candidate form is run through the resolver
+  to pick it) — Obsidian's "shortest path when possible", made correct by
+  construction rather than by a parallel rule, and pinned by a property test.
+- **MD-15** **Read-only comes from the shell's persisted flag**, read off
+  `stat.writable` (`server._writable`, which consults `mounts.mount_read_only`),
+  never `os.access`: on an rclone mount with `CacheMode=full` a doomed write
+  succeeds locally and only 403s later on async upload, so the editor must open
+  **disabled** rather than apologise afterwards. Both CM facets
+  (`editable=false` + `readOnly=true`), the shared read-only badge, and a
+  `readonly` rejection from the server locks the surface too.
+- **MD-16** **Saving is Obsidian's model.** No save button, no dirty indicator,
+  no prompt — the absence of save ceremony *is* the behaviour being copied. A
+  2 s idle timer, plus a flush on blur, on tab switch, on `pagehide`, and before
+  any navigation this view initiates (through `__fusedFlushEdits`, so a mode
+  switch cannot silently drop edits). `⌘S` only forces the flush **early**; it
+  is not *the* save. Saves are single-flight and re-check the buffer after the
+  write, so edits landing mid-write stay dirty instead of being masked.
+  `fused.autoReload(false)`: this view owns its own reload rule, and its own
+  autosave moves the mtime on every write.
+- **MD-17** **One deliberate deviation: conflicts.** Obsidian assumes it is the
+  only writer in the vault; fused-render sits on shared and mount-backed paths
+  where that does not hold. So: **clean buffer → silent reload**, exactly as
+  Obsidian. **Dirty buffer *and* the mtime moved → a reload-or-keep banner**,
+  never last-write-wins; autosave is suspended while the banner is up, and
+  "keep my version" is the one write that goes without `expectedMtime`, because
+  the user has been shown the conflict and chosen. External changes are noticed
+  **on focus and on becoming visible**, plus at the next save via the
+  `expectedMtime` lock — deliberately **not** by a stat ticker, because a poll
+  is the traffic that killed a mount once already (the `fs/events` stat-storm
+  incident) and this template stays mount-agnostic. The cost is that an
+  external change is seen a moment later rather than instantly.
+- **MD-18** **Editing behaviours.** Smart lists, list renumbering and blockquote
+  continuation are `markdownKeymap` — the same code Obsidian's own editor runs —
+  not a hand-rolled copy; auto-pairing comes from `basicSetup`'s
+  `closeBrackets`. On top: `Tab`/`⇧Tab` indent and outdent list items, `⌘B`/`⌘I`/
+  `⌘K` as **toggles**, `⌘⏎` cycling a line through task states, pasting a URL
+  over a selection making a link of it, and the caret position remembered per
+  file. There is no `⌘E`: with one surface there is nothing to toggle to (MD-1).
+  A **rendered checkbox** is clickable and writes back, disabled on a read-only
+  file; its position comes from `posAtDOM` at click time rather than from a
+  count of markers in the source, so an edit between render and click cannot
+  tick the wrong box.
+- **MD-18a** **Live Preview.** One `Decoration` set over the CM6 document —
+  Obsidian's own mechanism, not an approximation of it. Markup is replaced by a
+  widget or hidden everywhere except the lines the selection touches, where the
+  raw source returns so it can be edited; reveal is **per line**, matching
+  Obsidian, so putting the caret on a line un-renders that whole line rather
+  than one node. Covered: headings, bold/italic/strikethrough/inline code,
+  fenced blocks (markers kept and the embedded language highlighted, as in
+  Obsidian), blockquotes, list bullets, horizontal rules, pipe tables,
+  `[label](target)` links, `![alt](src)` images, wikilinks/embeds/ghosts and
+  tags. **What a range is comes from `syntaxTree`**, so this template holds no
+  block parser (MD-3).
+  Two behaviours are deliberately unlike the rest: a **checkbox stays rendered**
+  under the caret, because it is a control and not markup you edit by hand; and
+  widgets whose *content* needs editing (image, table, tag) are **click-to-edit**
+  — a click lands the caret inside them and the source appears — whereas links
+  are opaque so a click navigates.
+  **Frontmatter is a special case with a real trap:** the vendored grammar has
+  no frontmatter rule, and what it produces instead is actively wrong —
+  `---\ntitle: x\n---` parses as a `HorizontalRule` followed by a
+  `SetextHeading2`, so YAML rendered as a horizontal rule plus a large heading.
+  The block is therefore found by a line scan, dimmed, and **every tree
+  decoration inside it suppressed**. Dimmed rather than hidden because a
+  properties table is separate work (MD-18b) and a silently invisible block is
+  worse than a plain one.
+  Because CM *throws* on a decoration set whose replacements overlap, every
+  replaced range is recorded as it is made and the regex passes skip anything
+  landing inside one; a `block: true` replacement is avoided entirely, since it
+  additionally demands exact line boundaries.
+  This is the one part of the template whose correctness is invisible in a diff
+  — it depends entirely on what the grammar calls each range, and the grammar
+  was wrong twice in ways no source assertion would have caught (the frontmatter
+  case above, and `Link`/`Image` wrapping wikilink brackets, MD-3). It is
+  therefore covered by **execution**: `scripts/vendor-codemirror/live-preview-probe.mjs`
+  runs the real builder against the real grammar headlessly and
+  `tests/test_markdown_live_preview.py` asserts over the resulting decoration
+  set. Those tests skip where the gitignored vendor `node_modules` is absent.
+- **MD-18b** *Not built:* a frontmatter properties table; inline note embeds (an
+  embedded note renders as a link, which avoids a second parse and a
+  recursion); inline markup **inside a table cell**, which a decoration cannot
+  reach because it cannot span into a widget's DOM (clicking the table shows the
+  source, which is where a cell is edited); and paste-or-drop of an image —
+  `fused.writeFile` takes UTF-8 text only, so a binary attachment write needs a
+  runtime change first.
+- **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
+  Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
+  document, which a full-height editor has no room for. Backlinks and tags
+  scroll in the upper section; the graph canvas and its depth control sit below.
+  One toggle opens both: they answer the same question about the open note. The
+  panel is **resizable** by dragging a thin handle on its left edge (15rem to
+  45rem, arrow keys on the focused handle too), and the width is persisted in
+  **`localStorage`, deliberately not in params**: params are the state a shared
+  URL should reproduce (MD-20), and how wide someone dragged their panel is
+  window furniture that a link must not carry. Each resize `nudge()`s the canvas,
+  which is a fixed-size bitmap and does not otherwise learn that its box moved.
+- **MD-19** **Rendering the graph.** One implementation, in
+  `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
+  and used by both graph surfaces — extracted the moment the second one
+  appeared, so the sim and the interaction rules cannot drift into two versions.
+  A hand-rolled O(n²) spring layout on Canvas 2D: no force library is vendored,
+  and at the node counts these views reach the naive sim is well inside budget.
+  Behaviours copied from Obsidian: the settling layout is **fitted to the
+  canvas**, node radius scales with degree, labels fade past a zoom threshold,
+  hover lights the neighbourhood, drag pins a node, ghost nodes are dim with
+  dashed edges, a click opens the note (a ghost click creates it). Colours are
+  read from the CSS custom properties **at draw time**, because `var()` cannot
+  resolve inside a canvas `fillStyle`, and a `data-theme` change redraws (§30).
+  **Spacing is set for the label, not the node** — a label is drawn above its
+  node and an 11px one is 60-100px wide, so the original ~80px equilibrium put
+  every label on top of its neighbour. Roughly doubled (rest 135, repulsion
+  4600). The spacing is **not** scaled per surface, because the fit-to-canvas
+  makes a uniform scale invisible: what differs between a 320px panel and a full
+  window is the zoom. Two bounds keep the folder surface honest, where the same
+  sim can be handed hundreds of notes: nodes are **seeded on a disc sized to the
+  node count** rather than all on one small ring, and there is a **per-step speed
+  ceiling** — velocity accumulates across steps and the repulsion sum grows with
+  node count, so without one the first frames threw a large graph thousands of
+  pixels apart and it cooled before it could recover. The fit yields permanently
+  as soon as the user pans, zooms or drags, and is not reset by new data, because
+  every autosave re-sends the graph (MD-9).
+- **MD-20** **Graph state is params.** Panel open, depth, filter and
+  tag-visibility all live in `fused.params`, so a graph view is refresh-proof
+  and **URL-shareable** — which Obsidian's is not. Nodes are notes, per-**name**
+  ghosts (five notes linking `[[Roadmap]]` share the node they are all asking
+  for) and tags; an embedded picture is deliberately **not** a node, or a vault
+  of screenshots would drown the graph. A focused graph BFSes out `depth` hops
+  following edges in **both** directions, because an inbound link is as much a
+  neighbour as an outbound one. `depth` also carries an **`all`** option, sent
+  as the sentinel **`-1`**: a negative depth skips the neighbourhood filter
+  entirely, so the panel shows the whole vault with the focus note still
+  reported (and still drawn apart). The sentinel is negative rather than `0`
+  because `0` already means something on the focused path — the focus node
+  alone — and the folder graph relies on `depth: "0"` with no focus meaning
+  "nothing to filter by".
+- **MD-21** **The gate never enumerates** (CT-12). It answers two questions in
+  order: mount-backed → `False` always (MD-11), then exactly two
+  `os.path.isfile` probes for the **vault marker `index.md`** (and `Index.md`,
+  because only a case-insensitive filesystem answers one for the other). A
+  README is deliberately **not** a marker: `README.md` is in essentially every
+  code repository, and a link graph over a repository is meaningless, so probing
+  it offered the mode on every checkout on the disk. No `listdir`, `scandir`,
+  `glob` or recursion — doubly binding here, because this gate runs on every
+  directory the user opens and the mode it gates is itself a walk. The tests
+  make enumeration **fatal**, so a listing added later fails rather than ships.
+  The cost of the marker being wrong is one-directional and small, and it is
+  discoverability rather than capability: a vault with no `index.md` is not
+  *offered* the mode (the local panel in the note view still works, and
+  `_mode=graph` still reaches the folder mode), whereas the content sniff that
+  would avoid that needs the listing this rule forbids. Fails closed on any
+  error.
+- **MD-22** **Out of the template's reach, by design.** Rename-updates-inbound-
+  links needs a hook on the explorer's rename plus a multi-file write, and
+  vault-wide search / a quick-switcher are shell surfaces. Both belong to the
+  shell, later, elsewhere.

@@ -181,7 +181,7 @@ window.fused = {
 };
 ```
 
-- **IO helpers:** `stat`/`readFile`/`writeFile` reject with an `Error` carrying the server's message (mirrors runPython's rejection style). `writeFile` opts = `{expectedMtime}` (optimistic lock); a 409 rejects with an error whose `.type === "conflict"` and `.mtime` = the server's current mtime, so a caller can offer reload/overwrite. `runPython` and `writeFile` send the `X-Fused: 1` header the server requires on its POSTs (see §3).
+- **IO helpers:** `stat`/`readFile`/`writeFile` reject with an `Error` carrying the server's message (mirrors runPython's rejection style). `writeFile` opts = `{expectedMtime}` (optimistic lock) and `{create: true}` (create only if absent); an optimistic-lock 409 rejects with an error whose `.type === "conflict"` and `.mtime` = the server's current mtime, so a caller can offer reload/overwrite, while a `create` 409 rejects with `.type === "exists"` — "already there", which is not an overwrite offer. `runPython` and `writeFile` send the `X-Fused: 1` header the server requires on its POSTs (see §3).
 
 Behavior:
 - **runPython:** POST `/api/run` with `{py: pyPath, html: <own file path>, params}`. Own file path = `path` query param of the iframe's own URL. Non-ok response → reject with `Error` carrying `.type`, `.traceback`, `.stdout`. If `stdout` non-empty (ok or not), `console.log` it prefixed `[python]`.
