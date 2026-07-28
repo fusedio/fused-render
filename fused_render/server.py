@@ -53,9 +53,11 @@ from fused_render import __version__
 from fused_render import calls as shell_calls
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.account import router as account_router
+from fused_render.ai_accounts import router as ai_accounts_router
 from fused_render.core_templates import ensure_core_templates
 from fused_render.deploy import router as deploy_router
 from fused_render.executor import dumps_result, run_python
+from fused_render.shell import ai_proxy as shell_ai_proxy
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell import storage
 from fused_render.shell.bookmarks import router as bookmarks_router
@@ -885,12 +887,39 @@ async def _ai_relay(body: dict) -> JSONResponse:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    base = shell_prefs.ai_base_url().rstrip("/")
+    # Supervised (the default): no explicit ai_base_url/env override exists,
+    # so route through the bundled proxy — spawn/reuse it and authenticate
+    # with its generated api_key. Unsupervised (the user pointed ai_base_url
+    # at something of their own): behave EXACTLY as before this change — no
+    # supervision, no auth header, straight to that base URL. is_supervised()
+    # is keyed on explicit configuration, not on ai_base_url()'s resolved
+    # value, so this branch can't be fooled by the pref's own unset-default
+    # (see shell/ai_proxy.is_supervised's docstring).
+    # Supervising also requires a binary to supervise. A dev checkout has no
+    # bundled cli-proxy-api, and neither does an existing install that predates
+    # bundling — in both cases ai_base_url()'s default (127.0.0.1:8317, the port
+    # a user-run CLIProxyAPI conventionally listens on) is exactly what worked
+    # before this change, so fall through to it instead of failing. Without this
+    # gate, bundling would REGRESS every dev checkout and every user who relied
+    # on the documented default port without explicitly setting the pref: they
+    # have a proxy running and answering, and we'd have reported ai_unavailable.
+    headers = None
+    if shell_ai_proxy.is_supervised() and shell_ai_proxy.ai_proxy_bin() is not None:
+        try:
+            base, api_key, _mgmt_key = await asyncio.to_thread(shell_ai_proxy.ensure_ai_proxy)
+        except RuntimeError as e:
+            # Same {ok, error} contract as any other proxy-unreachable case —
+            # RH-11's three error `type`s don't grow a fourth for this.
+            return _ai_error("ai_unavailable", str(e))
+        headers = {"Authorization": f"Bearer {api_key}"}
+    else:
+        base = shell_prefs.ai_base_url()
+    base = base.rstrip("/")
     url = base + "/v1/chat/completions"
     payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(_AI_TIMEOUT_S)) as client:
-            r = await client.post(url, json=payload)
+            r = await client.post(url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
         return _ai_error(
             "ai_unavailable",
@@ -3230,6 +3259,10 @@ def create_app(start_dir: str) -> FastAPI:
     # Fused account (in-app `fused cloud login/logout`, account.py) — the
     # sign-in the managed-env deploys need, without a terminal.
     app.include_router(account_router)
+    # AI account management (ai_accounts.py) — list/connect/disconnect Claude
+    # and Codex logins against the bundled AI proxy (shell/ai_proxy.py) that
+    # backs fused.ai(). See docs/AI_PROXY_BUNDLING.md.
+    app.include_router(ai_accounts_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here

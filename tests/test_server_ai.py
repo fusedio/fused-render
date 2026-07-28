@@ -23,6 +23,18 @@ _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _default_unsupervised(monkeypatch):
+    # Every pre-existing test in this file exercises the plain, unsupervised
+    # relay path (the one that existed before the bundled-proxy supervision
+    # was added) — pin is_supervised() False so a stray ai_base_url pref/env
+    # on the machine running these tests, or the default-supervised behavior
+    # itself, can't turn a fake-httpx-client test into an attempt to spawn a
+    # real cli-proxy-api. The supervised-path tests below override this
+    # explicitly.
+    monkeypatch.setattr(server.shell_ai_proxy, "is_supervised", lambda: False)
+
+
 def _relay(body):
     return asyncio.run(server._ai_relay(body))
 
@@ -37,7 +49,7 @@ class _FakeClient:
     def __init__(self, response=None, exc=None):
         self._response = response
         self._exc = exc
-        self.requests = []  # (url, json_payload) of every post
+        self.requests = []  # (url, json_payload, headers) of every post
 
     def __call__(self, *args, **kwargs):  # the AsyncClient(...) constructor call
         return self
@@ -48,8 +60,8 @@ class _FakeClient:
     async def __aexit__(self, *exc_info):
         return False
 
-    async def post(self, url, json=None):
-        self.requests.append((url, json))
+    async def post(self, url, json=None, headers=None):
+        self.requests.append((url, json, headers))
         if self._exc is not None:
             raise self._exc
         return self._response
@@ -85,7 +97,7 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["usage"]["completion_tokens"] == 2
     # One POST to the proxy's chat/completions with the default model and the
     # medium effort default (4096 tokens), user message only (no system prompt).
-    (url, payload), = fake.requests
+    (url, payload, _), = fake.requests
     assert url.endswith("/v1/chat/completions")
     assert payload["model"] == server._AI_DEFAULT_MODEL
     assert payload["max_tokens"] == 4096
@@ -96,7 +108,7 @@ def test_relay_options_reach_the_proxy(monkeypatch):
     fake = _proxy_ok(monkeypatch, _COMPLETION)
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
-    (_, payload), = fake.requests
+    (_, payload, _headers), = fake.requests
     assert payload["model"] == "claude-sonnet-5"
     assert payload["max_tokens"] == 16384  # effort: high
     assert payload["messages"][0] == {"role": "system", "content": "be terse"}
@@ -106,7 +118,7 @@ def test_relay_options_reach_the_proxy(monkeypatch):
 def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
     fake = _proxy_ok(monkeypatch, _COMPLETION)
     _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
-    (_, payload), = fake.requests
+    (_, payload, _headers), = fake.requests
     assert payload["max_tokens"] == 99
 
 
@@ -192,8 +204,83 @@ def test_relay_uses_configured_base_url(monkeypatch):
     fake = _proxy_ok(monkeypatch, _COMPLETION)
     monkeypatch.setenv("FUSED_RENDER_AI_BASE_URL", "http://127.0.0.1:4242/")
     _relay({"prompt": "hello"})
-    (url, _), = fake.requests
+    (url, _, _headers), = fake.requests
     assert url == "http://127.0.0.1:4242/v1/chat/completions"
+
+
+def test_relay_unsupervised_sends_no_auth_header(monkeypatch):
+    # The unsupervised path (this file's default fixture) must send exactly
+    # what it always sent — no Authorization header baked in for a proxy the
+    # user runs and controls themselves.
+    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    _relay({"prompt": "hello"})
+    (_, _, headers), = fake.requests
+    assert headers is None
+
+
+# -- supervised (bundled proxy) relay path -----------------------------------
+
+
+def test_relay_supervised_uses_proxy_base_url_and_bearer_key(monkeypatch):
+    monkeypatch.setattr(server.shell_ai_proxy, "is_supervised", lambda: True)
+    # A resolvable binary is the second half of the supervised gate — see
+    # test_relay_supervised_without_a_binary_falls_back_to_the_base_url.
+    monkeypatch.setattr(server.shell_ai_proxy, "ai_proxy_bin", lambda: "/fake/cli-proxy-api")
+    monkeypatch.setattr(
+        server.shell_ai_proxy, "ensure_ai_proxy",
+        lambda: ("http://127.0.0.1:55123", "sekret-key", "mgmt-key"))
+    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 200
+    (url, _, headers), = fake.requests
+    assert url == "http://127.0.0.1:55123/v1/chat/completions"
+    assert headers == {"Authorization": "Bearer sekret-key"}
+
+
+def test_relay_supervised_ensure_failure_is_ai_unavailable(monkeypatch):
+    # ensure_ai_proxy() raising (no binary, failed to become healthy, ...)
+    # maps to the existing "ai_unavailable" error type — RH-11's error
+    # surface does not grow a fourth type for this.
+    monkeypatch.setattr(server.shell_ai_proxy, "is_supervised", lambda: True)
+    monkeypatch.setattr(server.shell_ai_proxy, "ai_proxy_bin", lambda: "/fake/cli-proxy-api")
+
+    def _boom():
+        raise RuntimeError("ai-proxy did not become healthy within 15s")
+
+    monkeypatch.setattr(server.shell_ai_proxy, "ensure_ai_proxy", _boom)
+    fake = _proxy_ok(monkeypatch, _COMPLETION)  # must never be reached
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 502
+    data = _data(resp)
+    assert data["error"]["type"] == "ai_unavailable"
+    assert "did not become healthy" in data["error"]["message"]
+    assert fake.requests == []
+
+
+def test_relay_supervised_without_a_binary_falls_back_to_the_base_url(monkeypatch):
+    """No bundled binary must NOT become an ai_unavailable.
+
+    Regression guard. Supervision is the default (no explicit ai_base_url), but
+    a dev checkout — and any install predating bundling — has no cli-proxy-api
+    to supervise, while very often DOES have a user-run CLIProxyAPI answering on
+    ai_base_url()'s default port. Gating only on is_supervised() broke exactly
+    that case: fused.ai() reported the proxy as unavailable while it sat there
+    serving requests. So a missing binary falls through to the unsupervised
+    path, unauthenticated, precisely as it behaved before bundling existed.
+    """
+    monkeypatch.setattr(server.shell_ai_proxy, "is_supervised", lambda: True)
+    monkeypatch.setattr(server.shell_ai_proxy, "ai_proxy_bin", lambda: None)
+
+    def _never():  # ensure_ai_proxy must not even be attempted
+        raise AssertionError("ensure_ai_proxy() called with no binary resolved")
+
+    monkeypatch.setattr(server.shell_ai_proxy, "ensure_ai_proxy", _never)
+    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 200
+    (url, _, headers), = fake.requests
+    assert url == prefs.ai_base_url().rstrip("/") + "/v1/chat/completions"
+    assert headers is None  # unsupervised: no generated key to send
 
 
 # -- runtime surface --------------------------------------------------------------
