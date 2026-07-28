@@ -7,39 +7,67 @@
 <script src="/template-shared/ro-badge.js"></script>
 <script src="/template-shared/graph-canvas.js"></script>
 <style>
-  /* Appearance (SPEC §30, D134). The dark block below IS this view's
-     historical palette, value for value; the light block is the new one.
-     `data-theme` is written onto <html> by the injected runtime, which acts
-     only because this document opted in via `data-fused-theme` on <html>
-     (see fused_render/static/runtime.js) — dark stays the default for any
-     document that never gets the attribute. */
+  /* Appearance (SPEC §30, D134). Both palettes are **Obsidian's own default
+     theme**, taken from its published CSS-variable reference rather than
+     approximated: the `--color-base-*` neutral scale, `--color-red` and
+     `--color-orange`, and the default accent `hsl(254, 80%, 68%)`. Obsidian is
+     already the reference for this template's read/write behaviour (SPEC §32),
+     so it should be the reference for its appearance too.
+
+       --bg      = --background-primary        (--color-base-00)
+       --bg-alt  = --background-secondary      (--color-base-20)
+       --border  = --background-modifier-border(--color-base-30)
+       --fg      = --text-normal               (--color-base-100)
+       --fg-muted= --text-muted                (--color-base-70)
+       --ghost   = --text-faint                (--color-base-50)
+
+     The NEUTRALS are Obsidian's; the ACCENT is not. Obsidian's default accent is
+     a violet (`hsl(254, 80%, 68%)`), and against these greys it read as off —
+     so the accent stays fused-render's own yellow, used sparingly and mostly on
+     links. That is the whole point of borrowing a neutral scale: it is neutral,
+     so it carries any accent. `--on-accent` is therefore dark, because the
+     accent is light.
+
+     One other deviation: light `--warn` is darkened from Obsidian's l=46% to
+     36% (same hue and saturation). Its light orange is 2.8:1 on white and it
+     carries the conflict banner, the one message in this view that must be read
+     (4.3:1 after, on `--bg-alt`).
+
+     `data-theme` is written onto <html> by the injected runtime, which acts only
+     because this document opted in via `data-fused-theme` on <html> (see
+     fused_render/static/runtime.js) — dark stays the default for any document
+     that never gets the attribute. */
   :root {
     color-scheme: dark;
-    --fg: #e8eaed;
-    --fg-muted: #9aa0a6;
-    --border: #2a2d33;
-    --bg: #131417;
-    --bg-alt: #1b1d21;
+    --fg: #dadada;
+    --fg-muted: #bababa;
+    --border: #363636;
+    --bg: #1e1e1e;
+    --bg-alt: #262626;
     --accent: #E5FF44;
-    --error: #ff6b6b;
-    --warn: #ffb454;
-    --skel-shine: #26292f;
-    --ghost: #6b7076;
-    --on-accent: #131417;
+    --error: #fb464c;
+    --warn: #e9973f;
+    --skel-shine: #363636;
+    --ghost: #666666;
+    --on-accent: #1e1e1e;
+    /* Neutral, not accent-tinted: a wash of acid yellow over a paragraph is not
+       a selection anyone can read through. */
+    --selection: rgba(255, 255, 255, 0.16);
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --fg: #1f2023;
-    --fg-muted: #61656c;
-    --border: #d8dade;
+    --fg: #222222;
+    --fg-muted: #5a5a5a;
+    --border: #e0e0e0;
     --bg: #ffffff;
-    --bg-alt: #f4f5f7;
+    --bg-alt: #f6f6f6;
     --accent: #5f7300;
-    --error: #c62828;
-    --warn: #a35b00;
-    --skel-shine: #e4e6ea;
-    --ghost: #a3a7ad;
+    --error: #e93147;
+    --warn: #b85b00;
+    --skel-shine: #e0e0e0;
+    --ghost: #ababab;
     --on-accent: #ffffff;
+    --selection: rgba(0, 0, 0, 0.12);
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -114,6 +142,50 @@
      exactly what a Live Preview must not show. */
   .cm-editor { height: 100%; font-size: 16px; }
   .cm-editor.cm-focused { outline: none; }
+
+  /* ---- the editing surface belongs to the page --------------------------
+     CM's `oneDark` ships its own surface — background #282c34, a blue cursor,
+     a blue-grey selection — which rendered the editor as a second, lighter,
+     bluer dark slab sitting inside this one, with the accent clashing against
+     it. Obsidian's editor is the SAME colour as the app around it, and that
+     unified surface is much of why it reads as calm. So oneDark is kept only
+     for what it is good at (colouring fenced code in the dark), and every
+     surface colour is taken back to this view's tokens.
+     CM inserts its stylesheet as the FIRST child of <head> (StyleModule), so
+     these rules win at equal specificity purely by source order. */
+  .cm-editor { background: var(--bg); color: var(--fg); }
+  .cm-editor .cm-cursor, .cm-editor .cm-dropCursor { border-left-color: var(--accent); }
+  .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground,
+  .cm-editor .cm-selectionBackground,
+  .cm-editor .cm-content ::selection { background: var(--selection); }
+  .cm-editor .cm-panels {
+    background: var(--bg-alt);
+    color: var(--fg);
+    border-color: var(--border);
+  }
+  .cm-editor .cm-tooltip {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
+    color: var(--fg);
+  }
+  .cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+
+  /* oneDark also colours markdown SYNTAX like source code: headings red, every
+     `#`/`*`/`>` marker green, URLs cyan. Obsidian does none of that — a heading
+     is body-coloured and a marker is faint — and the Live Preview already knows
+     what each range MEANS, so `inherit` hands the colour back to the decoration
+     that does. Fenced code is excluded, because there the syntax colouring is
+     exactly the point; so are our own widgets and marks, which carry `lp-`,
+     `wl-` or `tag` classes (a highlight span's class is generated, e.g. `ͼ4`). */
+  .cm-content .cm-line:not(.lp-fence-line)
+      span:not([class*="lp-"]):not([class*="wl"]):not(.tag) {
+    color: inherit;
+    text-decoration: inherit;
+  }
   .cm-editor .cm-scroller {
     overflow: auto;
     font-family: inherit;
@@ -132,24 +204,28 @@
 
   /* Live Preview marks. Every rule here styles a range of the SOURCE — there
      is no second rendered copy of the document to style. */
+  /* Heading scale and weights are Obsidian's defaults (--h1-size … --h6-size,
+     --h1-weight 700 and 600 below it). Colour is deliberately absent: a heading
+     is body-coloured there, which is also why oneDark's red had to go. */
   .lp-h1, .lp-h2, .lp-h3, .lp-h4, .lp-h5, .lp-h6 {
     font-weight: 600;
     line-height: 1.3;
   }
-  .lp-h1 { font-size: 1.9em; }
-  .lp-h2 { font-size: 1.55em; }
-  .lp-h3 { font-size: 1.3em; }
-  .lp-h4 { font-size: 1.13em; }
-  .lp-h5 { font-size: 1em; }
-  .lp-h6 { font-size: 0.94em; color: var(--fg-muted); }
+  .lp-h1 { font-size: 1.802em; font-weight: 700; }
+  .lp-h2 { font-size: 1.602em; }
+  .lp-h3 { font-size: 1.424em; }
+  .lp-h4 { font-size: 1.266em; }
+  .lp-h5 { font-size: 1.125em; }
+  .lp-h6 { font-size: 1em; }
   .lp-bold { font-weight: 700; }
   .lp-italic { font-style: italic; }
   .lp-strike { text-decoration: line-through; color: var(--fg-muted); }
+  /* Tinted, not boxed: Obsidian gives code a background and no border, and a
+     border around every inline span is noise at prose density. */
   .lp-code {
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 0.86em;
     background: var(--bg-alt);
-    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 0.1em 0.32em;
   }
@@ -163,9 +239,13 @@
     padding-left: 12px;
     color: var(--fg-muted);
   }
-  .lp-mark { color: var(--fg-muted); opacity: 0.6; }
+  /* Faint (--text-faint), not a dimmed muted grey: at 0.6 opacity on top of a
+     muted grey these were all but invisible in the dark, and a marker you cannot
+     see is a marker you cannot tell you are about to edit. */
+  .lp-mark { color: var(--ghost); }
   .lp-fm-line { color: var(--fg-muted); font-size: 0.86em; }
-  .lp-bullet { color: var(--accent); }
+  /* Faint, not accent: a page of yellow bullets is not what sparing means. */
+  .lp-bullet { color: var(--ghost); }
   .lp-hr {
     display: inline-block;
     width: 100%;
@@ -193,6 +273,8 @@
     border-bottom: 1px solid transparent;
   }
   .wl:hover { border-bottom-color: var(--accent); }
+  /* Dashed and faint: "scanned, and this target is not there". Kept visibly
+     distinct from the solid-underlined grey of "not scanned, unknown" below. */
   .wl-ghost { color: var(--ghost); border-bottom: 1px dashed var(--ghost); }
   /* Unknown, not missing (MD-11): no scan ran, so this link is inert. Muted and
      underlined like a link that is simply not clickable — deliberately NOT the
@@ -258,6 +340,9 @@
   }
   .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
   .corner-btn svg { width: 14px; height: 14px; display: block; }
+  #toggle-edit .icon-lock { display: none; }
+  #toggle-edit[aria-pressed="true"] .icon-edit { display: none; }
+  #toggle-edit[aria-pressed="true"] .icon-lock { display: block; }
   #side {
     position: relative;
     width: 21rem;
@@ -412,12 +497,23 @@
       <div id="editor-wrap"></div>
     </div>
     <div id="corner">
-      <button id="toggle-edit" class="corner-btn" aria-pressed="true"
-              aria-label="Editing" title="Editing — click to read only">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
-             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <!-- `aria-pressed` tracks READ-ONLY, not editing: editing is the default
+           (MD-1a), and accenting the default would leave the corner permanently
+           lit and say nothing. The accent marks the state worth noticing, and
+           the glyph changes with it — pencil while editing, padlock when not. -->
+      <button id="toggle-edit" class="corner-btn" aria-pressed="false"
+              aria-label="Read-only" title="Editing — click to read only">
+        <svg class="icon-edit" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+             stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
           <path d="M10.6 2.6 L13.4 5.4 L6 12.8 L3 13.6 L3.8 10.6 Z" />
           <path d="M9.2 4 L12 6.8" />
+        </svg>
+        <svg class="icon-lock" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+             stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <rect x="3.4" y="7" width="9.2" height="6.6" rx="1.4" />
+          <path d="M5.6 7 V5.2 a2.4 2.4 0 0 1 4.8 0 V7" />
         </svg>
       </button>
       <button id="toggle-graph" class="corner-btn" aria-pressed="false"
@@ -1741,7 +1837,12 @@
     const SIDE_MAX = 45 * 16;   // 45rem — wider and the note itself is squeezed
 
     function applySideWidth(px, persist) {
-      const width = Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(px)));
+      // The note keeps at least 20rem whatever the stored width says: 45rem of
+      // panel in a narrow window would otherwise squeeze the prose to a word per
+      // line, and a width stored on a wide monitor travels to a narrow one.
+      const room = document.getElementById("split").getBoundingClientRect().width;
+      const max = Math.max(SIDE_MIN, Math.min(SIDE_MAX, room - 20 * 16));
+      const width = Math.min(max, Math.max(SIDE_MIN, Math.round(px)));
       sideEl.style.width = width + "px";
       // A canvas is a fixed-size bitmap: its backing store only follows its CSS
       // box when something tells it to, and nudge() is that (it re-measures and
@@ -1841,8 +1942,8 @@
     // invisible.
     function applyEditMode(rebuild) {
       const on = editing();
-      editToggleEl.setAttribute("aria-pressed", String(on));
-      editToggleEl.setAttribute("aria-label", on ? "Editing" : "Read-only");
+      // Pressed = READ-ONLY, the non-default state (see the button's markup).
+      editToggleEl.setAttribute("aria-pressed", String(!on));
       editToggleEl.disabled = !writable;
       editToggleEl.title = writable
         ? (on ? "Editing — click to read only" : "Read-only — click to edit")

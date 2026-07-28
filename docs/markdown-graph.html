@@ -122,7 +122,23 @@
   too; backlinks moved off a footer into a right sidebar shared with the graph,
   behind one small toggle. <code>code</code> is untouched and still registered
   for <code>.md</code>. The contract is <code>SPEC.md</code> §32
-  (MD-1..MD-22); the decisions are D153..D158.
+  (MD-1..MD-22); the decisions are D153..D159.
+  <br /><br />
+  <strong>Follow-ups since (D159).</strong> The decoration set is a
+  <code>StateField</code>, not a <code>ViewPlugin</code> — CM refuses a
+  plugin-provided replacement that spans a line break, and the table widget does,
+  so scrolling a note containing a table threw mid-update and left unpainted
+  regions on screen. There <em>is</em> a read-only/editing <strong>mode</strong>
+  after all (MD-1a), but only as the two CM facets the unwritable-file path
+  already used, in the <code>edit</code> param, with no second pipeline and no
+  change of appearance: the reading view is still "these decorations over a
+  locked buffer". The note view's scan root now climbs to a vault marker rather
+  than being the note's own folder (see Scope, below). On a path with no scan —
+  a mount, a refusal, a failure — wikilinks render <strong>inert</strong> rather
+  than as ghosts, because "we never looked" is not "it is not there" (MD-11a).
+  The side panel is resizable, the graph layout is about twice as open and fits
+  itself to the canvas, and both palettes are now Obsidian's own neutral scale
+  with fused's accent kept for links.
   <br /><br />
   <strong>Why one surface</strong> rather than copying Obsidian's split: in
   Obsidian, Reading and Editing are leaves of a single
@@ -183,6 +199,7 @@
   <tr><td>Click an image, table or tag</td><td>Puts the caret inside: the source appears, which is how the content is edited.</td></tr>
   <tr><td>Click a checkbox</td><td>Toggles and writes back. It stays a control even under the caret, as in Obsidian.</td></tr>
   <tr><td>Read-only file</td><td>Same decorations over a locked buffer — this is the reading view.</td></tr>
+  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, asked for by the user (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
 </table>
 
 <p>Frontmatter is the one place the grammar cannot be trusted: it has no frontmatter rule, and <code>---\ntitle: x\n---</code> parses as a <code>HorizontalRule</code> followed by a <code>SetextHeading2</code>, so YAML rendered as a rule plus a large heading. The block is found by a line scan, dimmed, and every tree decoration inside it suppressed.</p>
@@ -295,11 +312,15 @@
   <li><em>Parser change</em> — bump <code>parser_version</code> to invalidate everything at once.</li>
 </ul>
 
-<h2>Scope: folder, not an index file</h2>
+<h2>Scope: the folder for the folder graph, a vault marker for a note</h2>
 
-<p>The graph is scoped by the folder you're standing in. That matches the explorer (you're always in a directory), needs no setup, and mirrors Obsidian's vault. An index file as the <em>primary</em> mechanism would need manual creation, go stale on the next new note, and restate what the links already say.</p>
+<p>The <strong>folder graph</strong> is scoped by the folder you're standing in. That matches the explorer (you're always in a directory), needs no setup, and mirrors Obsidian's vault. An index file as the <em>primary</em> mechanism would need manual creation, go stale on the next new note, and restate what the links already say.</p>
 
-<p>What folder scope alone doesn't answer is <em>which</em> folder — open at a repo root and you get README plus vendored docs; open in <code>docs/</code> and you lose links to <code>ARCHITECTURE.md</code> above. So an <strong>optional</strong> <code>.fused-graph.json</code> in the folder carries tuning only: root override, include/exclude globs, colour groups, default depth. Config, never a data mirror — the same relationship <code>registry.json</code> has to the templates it describes. Absent the file: sensible defaults plus the gitignore-awareness <code>/api/fs/walk</code> already has.</p>
+<p>What folder scope alone doesn't answer is <em>which</em> folder — and for the <strong>note view</strong> the answer "the note's own folder" turned out to be wrong, not merely imprecise. It was what shipped first, and on a vault where <code>docs/note.md</code> links <code>../spec/overview.md</code> it meant: both links ghosted, backlinks empty, one note in the graph. Every link leaving the folder looked broken and every link arriving from outside it was invisible.</p>
+
+<p>So the default now <strong>climbs</strong> from the note's directory to the nearest ancestor carrying a vault-root marker — <code>.obsidian/</code>, <code>.fused-graph.json</code>, or <code>.git</code> (a directory in a clone, a <em>file</em> in a worktree, so both are probed) — and falls back to the note's own directory when there is none. Never <code>$HOME</code>, never <code>/</code>. An explicit <code>root</code> param still wins. Three properties make the climb safe rather than merely convenient: it is bounded (8 levels, and the filesystem root ends it anyway); it <strong>never enumerates</strong> — fixed <code>isdir</code>/<code>isfile</code> probes per level, the same CT-12 rule as the folder gate, and doubly binding here because the ascent is choosing the scope of a walk; and it never enters a <strong>mount-backed</strong> path, so a local note living under a mounted folder is scanned where it is instead of being answered <code>mount_unsupported</code>. A failed mount import means "cannot tell", which reads as "do not climb".</p>
+
+<p>A wider root makes the <code>truncated</code> cap matter more, not less, so the "only the first N notes were scanned" notice stays surfaced in the sidebar. <code>.fused-graph.json</code> counts as a marker but its <em>contents</em> are still unread: the tuning it was designed to carry (root override, include/exclude globs, colour groups, default depth) remains unbuilt, as does gitignore-awareness of the walk.</p>
 
 <h2>Mounts: out of scope for the graph</h2>
 
@@ -312,11 +333,15 @@
   <li>Hard caps still apply on local roots (file count, per-file bytes), and dropped files are reported rather than silently truncated.</li>
 </ul>
 
-<p>Reading and writing a single <code>.md</code> file on a mount stays fully supported — that's one bounded read and one bounded write, which is what every template already does. Only the recursive graph is local-only.</p>
+<p>Reading and writing a single <code>.md</code> file on a mount stays fully supported — that's one bounded read and one bounded write, which is what every template already does. Relative markdown links still navigate, because the page resolves those against the note's own folder and needs no scan for it. Only the recursive graph is local-only.</p>
+
+<p><strong>And a refused scan must not be reported as an answer.</strong> This was got wrong first time round and is worth stating: with no scan the page holds no resolution map, and it rendered <em>every</em> wikilink as a dim ghost titled "Unresolved — click to create this note". That asserts the target doesn't exist when nothing ever looked — and offers to create a note that may be sitting right beside the open one. Three states, not two: <em>scanned and unresolved</em> is a ghost (dashed, click-to-create); <em>not scanned</em> is <strong>inert</strong> — no ghost styling, no create-on-click, and a title saying targets aren't resolved here. The sidebar does the same thing rather than hiding an empty backlinks list, because an empty list also reads as an answer, and it says it in <code>graph.py</code>'s own words so a mount refusal, a note outside its root and a crashed scan each read as themselves.</p>
 
 <h2>Rendering the graph</h2>
 
-<p><em>As built: hand-rolled, and shared.</em> The sim and every interaction rule live in <code>templates/shared/graph-canvas.js</code>, served from the existing <code>/template-shared/</code> mount and driven by both graph surfaces — extracted the moment the second one appeared, so they cannot drift into two versions. Nothing was vendored. The original choice was open: either vendor <code>d3-force</code> (~15 KB) or hand-roll an O(n²) sim; both are fine to ~1500 nodes on a Canvas 2D surface. Behaviour worth copying from Obsidian: node radius ∝ degree, labels fading past a zoom threshold, hover highlighting the neighbourhood, drag-to-pin, ghost nodes dimmed. Clicking a node navigates to that note. Graph state — depth, filters, focus — goes through <code>fused.params</code>, so a graph view is URL-shareable, which Obsidian's isn't.</p>
+<p><em>As built: hand-rolled, and shared.</em> The sim and every interaction rule live in <code>templates/shared/graph-canvas.js</code>, served from the existing <code>/template-shared/</code> mount and driven by both graph surfaces — extracted the moment the second one appeared, so they cannot drift into two versions. Nothing was vendored. The original choice was open: either vendor <code>d3-force</code> (~15 KB) or hand-roll an O(n²) sim; both are fine to ~1500 nodes on a Canvas 2D surface. Behaviour worth copying from Obsidian: node radius ∝ degree, labels fading past a zoom threshold, hover highlighting the neighbourhood, drag-to-pin, ghost nodes dimmed, and the settling layout <strong>fitted to the canvas</strong>. Clicking a node navigates to that note. Graph state — depth, filters, focus — goes through <code>fused.params</code>, so a graph view is URL-shareable, which Obsidian's isn't. (The <em>panel width</em> deliberately does not: that is a personal preference, so it lives in <code>localStorage</code>, and a shared link should not carry someone else's window furniture.)</p>
+
+<p>Spacing is set for the <strong>label</strong>, not the node — a label is drawn above its node, and an 11px one is 60–100px wide, so the original ~80px equilibrium put every label on top of its neighbour. Roughly doubled. It is <em>not</em> scaled per surface: once the layout is fitted to the canvas, scaling it uniformly changes nothing on screen, so what differs between a 320px sidebar and a full window is the zoom. Two bounds keep the folder surface honest, where the same sim can be handed hundreds of notes — nodes seeded on a disc sized to the node count rather than all on one small ring, and a per-step speed ceiling, without which the first few frames threw a 600-note graph several thousand pixels apart and it cooled before it could recover. All of that was measured by running the sim headlessly and counting label collisions at the resulting zoom, not judged by eye.</p>
 
 <h2>Order of work</h2>
 

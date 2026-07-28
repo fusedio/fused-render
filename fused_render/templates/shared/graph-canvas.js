@@ -150,7 +150,11 @@
       var accent = token("--accent");
       var muted = token("--fg-muted");
       var ghost = token("--ghost");
-      var line = token("--border");
+      // Edges read from --ghost, not --border: a border token is tuned to be
+      // barely there against its own background (Obsidian's is base-30, ~1.5:1),
+      // and an edge that cannot be seen is not an edge. --ghost is the faint TEXT
+      // token — recessive but legible, in both themes.
+      var line = token("--ghost");
       var near = hover ? neighbours(hover) : null;
       var i;
 

@@ -144,6 +144,15 @@ def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
     assert 'aria-pressed' in source[source.index('id="toggle-edit"'):][:400]
 
 
+def test_the_accent_marks_read_only_not_the_default(source):
+    # Editing is the default (MD-1a), so accenting it would leave the corner
+    # permanently lit and say nothing. `aria-pressed` tracks read-only, and the
+    # glyph follows: pencil while editing, padlock when locked.
+    assert 'editToggleEl.setAttribute("aria-pressed", String(!on));' in source
+    assert '#toggle-edit[aria-pressed="true"] .icon-edit { display: none; }' in source
+    assert 'class="icon-lock"' in source
+
+
 def test_an_unwritable_file_cannot_be_toggled_into_editing(source):
     # The mode is a preference layered on top of the file's real writability,
     # never a way around it (MD-15).
@@ -319,6 +328,29 @@ def test_the_create_path_reads_the_ghost_target_not_its_label(source, canvas_sou
 def test_the_editor_follows_the_shell_appearance_without_a_rebuild(source):
     assert "CM.StateEffect.reconfigure.of" in source
     assert 'attributeFilter: ["data-theme"]' in source
+    # The swap is still oneDark-shaped, so the reconfigure has something real to
+    # do: it is kept for fenced-code colours, with its surface overridden below.
+    assert "e !== CM.oneDark" in source
+    assert "next ? [CM.oneDark] : []" in source
+
+
+def test_the_editing_surface_is_the_same_colour_as_the_page(source):
+    """oneDark's own surface (#282c34, a blue cursor, a blue-grey selection) made
+    the editor a second, lighter dark slab inside this one. Obsidian's editor is
+    the same colour as the app around it.
+
+    Every override is a token, never a literal — the tier-one theme test enforces
+    that separately, and this pins that the overrides exist at all.
+    """
+    style = source[source.index("<style>"):source.index("</style>")]
+    assert ".cm-editor { background: var(--bg); color: var(--fg); }" in style
+    assert "border-left-color: var(--accent);" in style
+    assert "background: var(--selection);" in style
+    assert ".cm-editor .cm-tooltip {" in style
+    # And oneDark must not colour PROSE like source code: headings red, markdown
+    # markers green, URLs cyan. Fenced code keeps its highlighting.
+    assert ".cm-line:not(.lp-fence-line)" in style
+    assert "color: inherit;" in style
 
 
 def test_leaving_the_note_flushes_before_navigating(source):
