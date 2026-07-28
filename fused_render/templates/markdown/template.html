@@ -575,6 +575,9 @@
               <option value="1">1</option>
               <option value="2">2</option>
               <option value="3">3</option>
+              <!-- The whole vault, focus still highlighted: graph.py reads a
+                   negative depth as "skip the neighbourhood filter" (MD-20). -->
+              <option value="-1">all</option>
             </select>
           </label>
         </div>
@@ -1923,9 +1926,13 @@
     });
 
     function graphOn() { return fused.params.get("graph") === "1"; }
+    // -1 is the `all` option: graph.py skips the neighbourhood filter for a
+    // negative depth, so the panel shows the whole vault with the focus still
+    // drawn apart. Anything outside [-1, 3] is not one of our options, so it
+    // falls back rather than being sent on.
     function graphDepth() {
       const n = parseInt(fused.params.get("depth") || "1", 10);
-      return Number.isFinite(n) && n >= 0 && n <= 3 ? n : 1;
+      return Number.isFinite(n) && n >= -1 && n <= 3 ? n : 1;
     }
 
     async function loadGraph() {

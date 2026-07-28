@@ -209,7 +209,10 @@ def _coerce_depth(depth, fallback: int = 1) -> int:
     """`depth` reaches `main` as a STRING from the template (`String(depth)`),
     and `_neighbourhood` compares it with an int — `range(max(0, "2"))` raises.
     Coerced at the public entry point rather than trusting every caller, and a
-    nonsense value falls back instead of throwing: this is a URL param."""
+    nonsense value falls back instead of throwing: this is a URL param.
+
+    A NEGATIVE depth is meaningful, not garbage — it is the panel's `all`
+    sentinel (see `_graph_payload`) — so the coercion must pass it through."""
     try:
         return int(depth)
     except (TypeError, ValueError):
@@ -1082,8 +1085,20 @@ def _neighbourhood(edges, focus: str, depth: int):
 
 
 def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
+    """`depth` has three regions, and all three are reachable from a URL:
+
+    * `depth >= 1` with a focus — the local panel: a BFS neighbourhood.
+    * `depth == 0` — with a focus, just the focus node (`_neighbourhood` keeps
+      only `{focus}`); with no focus, the whole vault. The folder-level `graph`
+      mode sends exactly this: `depth: "0"` and no `file`.
+    * `depth < 0` — **the whole vault even when a focus is set**, which is the
+      note panel's `all` option. A negative sentinel rather than reusing `0`
+      because `0`-with-a-focus already means something (one node), and the
+      focus is still reported in the payload so the canvas keeps drawing it
+      apart from its neighbours.
+    """
     nodes, edges = _graph_nodes_and_edges(root, scan)
-    if focus is not None and focus in nodes:
+    if depth >= 0 and focus is not None and focus in nodes:
         kept = _neighbourhood(edges, focus, depth)
         nodes = {node: row for node, row in nodes.items() if node in kept}
         edges = [e for e in edges if e["source"] in nodes and e["target"] in nodes]
@@ -1123,7 +1138,8 @@ def main(action: str = "note", file: str = "", root: str = "", depth=1):
     Without an explicit `root`, the scan root is the nearest ancestor of the
     note carrying a vault marker (`vault_root`), falling back to the note's own
     folder. `depth` is untyped on purpose: it arrives as a string from a URL
-    param and is coerced here (`_coerce_depth`).
+    param and is coerced here (`_coerce_depth`); a negative value means "the
+    whole vault, focus and all" (`_graph_payload`).
     """
     if action not in ACTIONS:
         return _error("bad_action", f"unknown action {action!r}")

@@ -518,6 +518,18 @@ def test_the_panel_asks_for_a_bounded_neighbourhood(source):
     assert "graphNoteEl.textContent = data.message" in body
 
 
+def test_the_depth_select_offers_the_whole_vault(source):
+    # A BFS neighbourhood was the only thing the panel could show, so a 205-note
+    # vault rendered as "13 of 205 notes" with no way to the rest. `-1` is the
+    # sentinel graph.py reads as "skip the neighbourhood filter" (MD-20).
+    select = source[source.index('<select id="depth">'):]
+    select = select[:select.index("</select>")]
+    assert '<option value="-1">all</option>' in select
+    body = source[source.index("function graphDepth"):]
+    body = body[:body.index("\n    }")]
+    assert "n >= -1" in body
+
+
 def test_both_graph_surfaces_share_one_canvas_implementation(source, canvas_source):
     # Extracted when the second surface appeared, so the sim and the
     # interaction rules cannot drift into two versions.

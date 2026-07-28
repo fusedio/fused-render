@@ -2996,7 +2996,13 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   for) and tags; an embedded picture is deliberately **not** a node, or a vault
   of screenshots would drown the graph. A focused graph BFSes out `depth` hops
   following edges in **both** directions, because an inbound link is as much a
-  neighbour as an outbound one.
+  neighbour as an outbound one. `depth` also carries an **`all`** option, sent
+  as the sentinel **`-1`**: a negative depth skips the neighbourhood filter
+  entirely, so the panel shows the whole vault with the focus note still
+  reported (and still drawn apart). The sentinel is negative rather than `0`
+  because `0` already means something on the focused path — the focus node
+  alone — and the folder graph relies on `depth: "0"` with no focus meaning
+  "nothing to filter by".
 - **MD-21** **The gate never enumerates** (CT-12). It answers two questions in
   order: mount-backed → `False` always (MD-11), then a small fixed set of
   `os.path.isfile` probes for the file a notes folder almost always has

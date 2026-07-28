@@ -846,6 +846,30 @@ def test_the_local_graph_is_bounded_by_depth(graph, chain):
     assert d1["focus"] == "A.md" and d1["depth"] == 1
 
 
+def test_a_negative_depth_is_the_whole_vault_even_with_a_focus(graph, tmp_path, home):
+    """The panel's `all` option. A *negative* depth is the sentinel rather than
+    `0`, because `0` already means something on this path (just the focus) and
+    the folder graph already sends `"0"` to mean "no focus, so no filter"."""
+    root = _vault(tmp_path, {"A.md": "[[B]]\n", "B.md": "x\n", "Island.md": "x\n"})
+    focus = os.path.join(root, "A.md")
+    # No finite depth reaches Island: nothing links to it.
+    assert _ids(graph.main(action="graph", root=root, file=focus, depth=3)) == ["A.md", "B.md"]
+    out = graph.main(action="graph", root=root, file=focus, depth=-1)
+    assert _ids(out) == ["A.md", "B.md", "Island.md"]
+    # The focus survives the unfiltered view — the canvas still draws it apart.
+    assert out["focus"] == "A.md" and out["depth"] == -1
+    # As the template actually sends it: `String(graphDepth())`.
+    assert _ids(graph.main(action="graph", root=root, file=focus, depth="-1")) == _ids(out)
+
+
+def test_the_folder_graph_keeps_asking_for_everything_with_depth_zero(graph, chain):
+    """The folder mode sends `depth: "0"` and no `file`; `all` must not have
+    changed what that means."""
+    out = graph.main(action="graph", root=chain, depth="0")
+    assert out["focus"] is None and out["depth"] == 0
+    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+
+
 def test_the_local_graph_only_keeps_edges_between_kept_nodes(graph, chain):
     out = graph.main(action="graph", root=chain, file=os.path.join(chain, "A.md"), depth=1)
     kept = _ids(out)
