@@ -160,6 +160,21 @@ def test_links_images_tables_rules_and_tasks_all_render(note_file):
     assert at(plain, "[ ]", "widget") and at(plain, "[x]", "widget")
 
 
+def test_a_replacement_spans_a_line_break_which_is_why_it_is_a_state_field(note_file):
+    """The behavioural half of why the decorations cannot be a ViewPlugin.
+
+    CM refuses a plugin-provided replacement that crosses a newline, and this one
+    does — a table is replaced whole. As a plugin that threw during the view
+    update as soon as a table scrolled in, leaving blank regions on screen. The
+    source half of this pair is in tests/test_markdown_template.py.
+    """
+    plain = decorate(note_file, caret=0)
+    multiline = [d for d in plain
+                 if d["kind"] in ("widget", "hide") and "\n" in d["text"]]
+    assert multiline, "expected at least one replacement crossing a newline"
+    assert [d["text"] for d in multiline] == ["| a | b |\n|---|--:|\n| 1 | 2 |"]
+
+
 def test_a_checkbox_stays_rendered_under_the_caret(note_file):
     # Obsidian keeps the checkbox a control even with the caret on its line: it
     # is not markup you edit by hand. Everything else on the line reveals.

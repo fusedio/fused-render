@@ -797,17 +797,24 @@
       return false;
     }
 
-    function buildDecorations(editorView) {
-      const state = editorView.state;
+    // Takes a STATE, not a view, and walks the whole document — see the
+    // StateField below for why it cannot be a view plugin, and therefore has no
+    // viewport to narrow the walk to. Notes are small (MD-10 caps a note at
+    // 256 KB), so whole-document is well inside budget, and it also removes the
+    // viewport/height feedback loop that made scrolling jitter.
+    function buildDecorations(state) {
       const lines = selectedLines(state);
       const tree = CM.syntaxTree(state);
       const out = [];
       // CM rejects overlapping replacements, so every replaced range is
       // recorded as it is made and the regex passes below skip anything that
       // would land inside one. Decorations are built as Ranges via
-      // `.range(from, to)`, the shape Decoration.set takes; a replacement may
-      // span line breaks as an inline decoration, whereas `block: true` would
-      // additionally demand exact line boundaries and throw without them.
+      // `.range(from, to)`, the shape Decoration.set takes. A replacement here
+      // MAY span line breaks (the table widget does) — but only because these
+      // come from a StateField: CM throws "Decorations that replace line breaks
+      // may not be specified via plugins" for the same range out of a
+      // ViewPlugin. `block: true` would additionally demand exact line
+      // boundaries and throw without them.
       const blocked = [];
       function pushMark(from, to, cls) {
         if (from >= to) return;
@@ -845,153 +852,167 @@
         }
       }
 
-      for (const { from, to } of editorView.visibleRanges) {
-        tree.iterate({
-          from, to,
-          enter: (node) => {
-            const name = node.name;
-            // Inside frontmatter the grammar's answer is wrong (see above), so
-            // nothing it says about this range is acted on.
-            if (name !== "Document" && node.to <= frontmatterEnd) return false;
-            const open = touched(state, lines, node.from, node.to);
+      tree.iterate({
+        enter: (node) => {
+          const name = node.name;
+          // Inside frontmatter the grammar's answer is wrong (see above), so
+          // nothing it says about this range is acted on.
+          if (name !== "Document" && node.to <= frontmatterEnd) return false;
+          const open = touched(state, lines, node.from, node.to);
 
-            if (HEADINGS[name]) {
-              pushMark(node.from, node.to, "lp-h" + HEADINGS[name]);
-              return true; // descend: the HeaderMark child is hidden below
+          if (HEADINGS[name]) {
+            pushMark(node.from, node.to, "lp-h" + HEADINGS[name]);
+            return true; // descend: the HeaderMark child is hidden below
+          }
+          if (name === "HeaderMark") {
+            const parent = node.node.parent;
+            if (!parent || !HEADINGS[parent.name]) return false;
+            if (touched(state, lines, parent.from, parent.to)) {
+              pushMark(node.from, node.to, "lp-mark");
+              return false;
             }
-            if (name === "HeaderMark") {
-              const parent = node.node.parent;
-              if (!parent || !HEADINGS[parent.name]) return false;
-              if (touched(state, lines, parent.from, parent.to)) {
-                pushMark(node.from, node.to, "lp-mark");
-                return false;
-              }
-              // Swallow the space after `##` too, or the text starts indented.
+            // Swallow the space after `##` too, or the text starts indented.
+            const after = state.doc.sliceString(node.to, node.to + 1);
+            pushHide(node.from, node.to + (after === " " ? 1 : 0));
+            return false;
+          }
+          if (EMPHASIS[name]) {
+            pushMark(node.from, node.to, EMPHASIS[name]);
+            return true;
+          }
+          if (EMPHASIS_MARKS.has(name)) {
+            if (open) pushMark(node.from, node.to, "lp-mark");
+            else pushHide(node.from, node.to);
+            return false;
+          }
+          if (name === "InlineCode") {
+            pushMark(node.from, node.to, "lp-code");
+            return true;
+          }
+          if (name === "CodeMark") {
+            const parent = node.node.parent;
+            // Only an inline span's backticks vanish; a fence keeps its
+            // markers, exactly as Obsidian does.
+            if (!parent || parent.name !== "InlineCode") return false;
+            if (open) pushMark(node.from, node.to, "lp-mark");
+            else pushHide(node.from, node.to);
+            return false;
+          }
+          if (name === "FencedCode" || name === "CodeBlock") {
+            out.push(...lineClass(state, node.from, node.to, "lp-fence-line"));
+            return true; // let the embedded language highlight inside
+          }
+          if (name === "Blockquote") {
+            out.push(...lineClass(state, node.from, node.to, "lp-quote-line"));
+            return true;
+          }
+          if (name === "QuoteMark") {
+            if (open) pushMark(node.from, node.to, "lp-mark");
+            else {
               const after = state.doc.sliceString(node.to, node.to + 1);
               pushHide(node.from, node.to + (after === " " ? 1 : 0));
-              return false;
             }
-            if (EMPHASIS[name]) {
-              pushMark(node.from, node.to, EMPHASIS[name]);
-              return true;
-            }
-            if (EMPHASIS_MARKS.has(name)) {
-              if (open) pushMark(node.from, node.to, "lp-mark");
-              else pushHide(node.from, node.to);
-              return false;
-            }
-            if (name === "InlineCode") {
-              pushMark(node.from, node.to, "lp-code");
-              return true;
-            }
-            if (name === "CodeMark") {
-              const parent = node.node.parent;
-              // Only an inline span's backticks vanish; a fence keeps its
-              // markers, exactly as Obsidian does.
-              if (!parent || parent.name !== "InlineCode") return false;
-              if (open) pushMark(node.from, node.to, "lp-mark");
-              else pushHide(node.from, node.to);
-              return false;
-            }
-            if (name === "FencedCode" || name === "CodeBlock") {
-              out.push(...lineClass(state, node.from, node.to, "lp-fence-line"));
-              return true; // let the embedded language highlight inside
-            }
-            if (name === "Blockquote") {
-              out.push(...lineClass(state, node.from, node.to, "lp-quote-line"));
-              return true;
-            }
-            if (name === "QuoteMark") {
-              if (open) pushMark(node.from, node.to, "lp-mark");
-              else {
-                const after = state.doc.sliceString(node.to, node.to + 1);
-                pushHide(node.from, node.to + (after === " " ? 1 : 0));
-              }
-              return false;
-            }
-            if (name === "ListMark") {
-              pushMark(node.from, node.to, "lp-bullet");
-              return false;
-            }
-            if (name === "TaskMarker") {
-              // Rendered even with the caret on its line — as in Obsidian, a
-              // checkbox is a control, not markup you edit by hand.
-              const checked = /[xX]/.test(state.doc.sliceString(node.from, node.to));
-              pushWidget(node.from, node.to, taskWidget(checked));
-              return false;
-            }
-            if (name === "HorizontalRule") {
-              if (open) return false;
-              pushWidget(node.from, node.to, hrWidget());
-              return false;
-            }
-            if (name === "Table") {
-              if (open) return true;
-              pushWidget(node.from, node.to,
-                tableWidget(state.doc.sliceString(node.from, node.to)));
-              return false;
-            }
-            if (name === "Image" || name === "Link") {
-              if (open) return true;
-              const raw = state.doc.sliceString(node.from, node.to);
-              const match = /^(!?)\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
-              // No match means this is not a plain inline link: a reference
-              // link, a titled link, or — the common case — the inner brackets
-              // of a `[[wikilink]]`, which the regex pass below owns.
-              if (!match) return true;
-              pushWidget(node.from, node.to, match[1]
-                ? imageWidget(match[2], match[3])
-                : markdownLinkWidget(match[2], match[3]));
-              return false;
-            }
-            return true;
-          },
-        });
-      }
+            return false;
+          }
+          if (name === "ListMark") {
+            pushMark(node.from, node.to, "lp-bullet");
+            return false;
+          }
+          if (name === "TaskMarker") {
+            // Rendered even with the caret on its line — as in Obsidian, a
+            // checkbox is a control, not markup you edit by hand.
+            const checked = /[xX]/.test(state.doc.sliceString(node.from, node.to));
+            pushWidget(node.from, node.to, taskWidget(checked));
+            return false;
+          }
+          if (name === "HorizontalRule") {
+            if (open) return false;
+            pushWidget(node.from, node.to, hrWidget());
+            return false;
+          }
+          if (name === "Table") {
+            if (open) return true;
+            pushWidget(node.from, node.to,
+              tableWidget(state.doc.sliceString(node.from, node.to)));
+            return false;
+          }
+          if (name === "Image" || name === "Link") {
+            if (open) return true;
+            const raw = state.doc.sliceString(node.from, node.to);
+            const match = /^(!?)\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
+            // No match means this is not a plain inline link: a reference
+            // link, a titled link, or — the common case — the inner brackets
+            // of a `[[wikilink]]`, which the regex pass below owns.
+            if (!match) return true;
+            pushWidget(node.from, node.to, match[1]
+              ? imageWidget(match[2], match[3])
+              : markdownLinkWidget(match[2], match[3]));
+            return false;
+          }
+          return true;
+        },
+      });
 
       // Wikilinks and tags are not in the grammar, so they are matched by regex
       // and then checked AGAINST the tree: a `[[x]]` inside a fence or a `#tag`
       // inside a URL stays literal, which is the same line graph.py draws over
       // the same text (MD-3). A `[[` inside frontmatter is not a link either.
-      for (const { from, to } of editorView.visibleRanges) {
-        const chunk = state.doc.sliceString(from, to);
-        WIKILINK_RE.lastIndex = 0;
-        let match;
-        while ((match = WIKILINK_RE.exec(chunk))) {
-          const start = from + match.index;
-          const end = start + match[0].length;
-          if (start < frontmatterEnd) continue;
-          if (isBlocked(start, end) || within(tree, start + 2, CODE_NODES)) continue;
-          if (touched(state, lines, start, end)) continue;
-          pushWidget(start, end, wikilinkWidget(match[0]));
-        }
-        TAG_RE.lastIndex = 0;
-        while ((match = TAG_RE.exec(chunk))) {
-          const start = from + match.index + match[1].length;
-          const end = start + match[2].length + 1;
-          if (start < frontmatterEnd) continue;
-          if (isBlocked(start, end)) continue;
-          if (within(tree, start + 1, CODE_NODES)
-              || within(tree, start + 1, URL_NODES)) continue;
-          if (touched(state, lines, start, end)) continue;
-          pushWidget(start, end, tagWidget(match[2]));
-        }
+      const chunk = state.doc.toString();
+      WIKILINK_RE.lastIndex = 0;
+      let match;
+      while ((match = WIKILINK_RE.exec(chunk))) {
+        const start = match.index;
+        const end = start + match[0].length;
+        if (start < frontmatterEnd) continue;
+        if (isBlocked(start, end) || within(tree, start + 2, CODE_NODES)) continue;
+        if (touched(state, lines, start, end)) continue;
+        pushWidget(start, end, wikilinkWidget(match[0]));
+      }
+      TAG_RE.lastIndex = 0;
+      while ((match = TAG_RE.exec(chunk))) {
+        const start = match.index + match[1].length;
+        const end = start + match[2].length + 1;
+        if (start < frontmatterEnd) continue;
+        if (isBlocked(start, end)) continue;
+        if (within(tree, start + 1, CODE_NODES)
+            || within(tree, start + 1, URL_NODES)) continue;
+        if (touched(state, lines, start, end)) continue;
+        pushWidget(start, end, tagWidget(match[2]));
       }
 
       return CM.Decoration.set(out, true);
     }
 
-    const livePreview = CM.ViewPlugin.fromClass(class {
-      constructor(editorView) { this.decorations = buildDecorations(editorView); }
-      update(update) {
-        const relinked = update.transactions.some(
-          (tr) => tr.effects.some((e) => e.is(relinkEffect)));
-        if (update.docChanged || update.viewportChanged
-            || update.selectionSet || relinked) {
-          this.decorations = buildDecorations(update.view);
+    // A StateField, NOT a ViewPlugin — and this is load-bearing, not a style
+    // preference. CM refuses a plugin-provided replacement that spans a line
+    // break ("Decorations that replace line breaks may not be specified via
+    // plugins", @codemirror/view), and the table widget replaces a multi-line
+    // Table node with one element. As a plugin that threw during the view update
+    // the instant a table scrolled into the viewport, abandoning the rest of the
+    // render and leaving unpainted white regions on screen — reported as "parts
+    // of the page go blank while scrolling". A state field is allowed to span
+    // line breaks, so the constraint disappears rather than being worked around.
+    // Do not "simplify" this back to a ViewPlugin.
+    const livePreviewField = CM.StateField.define({
+      create: (state) => buildDecorations(state),
+      update(value, tr) {
+        // The syntax tree is NOT complete when the view opens: the language
+        // extension parses a first chunk and then advances in the background,
+        // dispatching as it goes. A whole-document walk over a half-parsed tree
+        // would leave everything past the parse frontier undecorated until the
+        // next keystroke, so an advanced tree counts as a reason to rebuild.
+        // Identity compare — the language field hands out a new Tree each time.
+        if (tr.docChanged || tr.selection
+            || CM.syntaxTree(tr.startState) !== CM.syntaxTree(tr.state)
+            || tr.effects.some((e) => e.is(relinkEffect))) {
+          return buildDecorations(tr.state);
         }
-      }
-    }, { decorations: (plugin) => plugin.decorations });
+        // Nothing that changes what renders, and `tr.docChanged` above covers
+        // every case where positions moved, so the set is reused as-is.
+        return value;
+      },
+      provide: (field) => CM.EditorView.decorations.from(field),
+    });
 
     // ---- saving: Obsidian's model (MD-16) ----------------------------------
     // No save button, no dirty dot, no prompt. Autosave on an idle timer, on
@@ -1317,7 +1338,7 @@
         CM.Prec.high(CM.keymap.of(CM.markdownKeymap.concat(editorKeymap))),
         CM.Prec.high(CM.autocompletion({ override: [markdownCompletions] })),
         pasteHandler,
-        livePreview,
+        livePreviewField,
         CM.EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           setDirty(true);

@@ -18,7 +18,7 @@
 // Must run from this directory — module resolution needs ./node_modules.
 import fs from "node:fs";
 import {
-  EditorState, RangeSetBuilder, EditorSelection, StateEffect, Prec,
+  EditorState, RangeSetBuilder, EditorSelection, StateEffect, StateField, Prec,
 } from "@codemirror/state";
 import { syntaxTree, ensureSyntaxTree } from "@codemirror/language";
 import {
@@ -43,7 +43,14 @@ const stub = () => new Proxy({}, {
 
 globalThis.CM = {
   EditorState, EditorView, Decoration, WidgetType, ViewPlugin, MatchDecorator,
-  keymap, EditorSelection, RangeSetBuilder, Prec, StateEffect, syntaxTree,
+  keymap, EditorSelection, RangeSetBuilder, Prec, StateEffect, StateField,
+  // A parse that has caught up with the document, which is the state the real
+  // editor converges to: `syntaxTree(state)` alone returns only what the
+  // language extension has parsed so far (a few KB on a fresh state, and it
+  // advances in the background from a view it does not have here), so a table
+  // halfway down a real note would simply not be in the tree.
+  syntaxTree: (state) => ensureSyntaxTree(state, state.doc.length, 10000)
+    || syntaxTree(state),
   autocompletion, indentMore, indentLess, markdown, markdownLanguage,
   markdownKeymap, basicSetup: [], oneDark: [],
 };
@@ -84,7 +91,12 @@ ensureSyntaxTree(state, doc.length, 10000);
 
 // Building the set at all is the overlap/sort check: Decoration.set rejects
 // replacements that overlap, whatever order they were added in.
-const set = buildDecorations({ state, visibleRanges: [{ from: 0, to: doc.length }] });
+//
+// A STATE, not a view: the builder is registered as a StateField, because a
+// ViewPlugin may not provide a replacement spanning a line break and the table
+// widget does exactly that (see the template). Passing the state here is what
+// keeps this harness honest about the shape the template actually uses.
+const set = buildDecorations(state);
 
 const decorations = [];
 for (const iter = set.iter(); iter.value; iter.next()) {

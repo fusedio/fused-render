@@ -141,6 +141,32 @@ def test_the_link_layer_asks_the_grammar_what_a_range_is(source):
     assert '"Link"' not in code_nodes and '"Image"' not in code_nodes
 
 
+def test_the_decorations_come_from_a_state_field_not_a_view_plugin(source):
+    """A ViewPlugin may not provide a replacement that spans a line break.
+
+    CM throws "Decorations that replace line breaks may not be specified via
+    plugins", and the table widget replaces a multi-line `Table` node with one
+    element. As a plugin it therefore threw during the view update the moment a
+    table scrolled into the viewport, abandoning the rest of the render and
+    leaving unpainted white regions — reported as "parts of the page go blank
+    while scrolling". A StateField is allowed to span line breaks.
+
+    Pinned in the source because the failure only appears in a real EditorView:
+    the probe calls the builder directly, so it cannot see this. Its half of the
+    pair is test_markdown_live_preview.py's assertion that the table widget's
+    range really does cross a newline.
+    """
+    assert "CM.StateField.define" in source
+    assert "CM.EditorView.decorations.from(" in source
+    # No plugin anywhere may hand decorations to the view. (The word itself is
+    # allowed in prose — the template says at length why it must not be one.)
+    assert "CM.ViewPlugin" not in source
+    assert "decorations: (plugin)" not in source
+    # And the builder takes a state, because a state field has no viewport.
+    assert "function buildDecorations(state)" in source
+    assert "visibleRanges" not in source
+
+
 def test_resolution_is_never_recomputed_in_the_page(source):
     # The page maps a raw target to whatever graph.py resolved it to; it must
     # not contain a second resolution rule (MD-6).
