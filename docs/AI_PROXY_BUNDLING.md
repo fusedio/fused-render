@@ -120,6 +120,18 @@ Because the whole surface is poll-only (no SSE/websocket), the frontend follows
 the existing `useFusedLogin` cadence in `lib/account.ts`: open the URL, poll every
 couple of seconds, and offer Cancel while waiting.
 
+One deliberate asymmetry with `account.py`: `/connect/cancel` clears the tracked
+attempt unconditionally, including one that settled a moment earlier, so
+`/connect/status` afterwards reports `idle` rather than what actually happened.
+It is therefore useless as a post-cancel reconciliation read — unlike
+`getAccountStatus`, which can still answer "did it finish?". Verified that this
+only forgets the *outcome*: a credential written in the race window survives
+untouched, so **the account listing is the reconciliation source of truth after a
+cancel**, and that is what the frontend re-reads. Keeping cancel unconditional is
+the simpler contract (it always means "stop tracking this"), and the listing
+answers the only question that matters afterwards — is there a new account or
+not.
+
 ## Preferences UI
 
 Follows the house idiom exactly — `<section className="prefs-section">` with an
