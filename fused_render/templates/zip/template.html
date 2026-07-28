@@ -235,9 +235,21 @@
       cwd = dir.split("/").filter(Boolean);
       selected = fused.params.get("zipMember") || null;
     }
+    // Two params, two set() calls, and set() dispatches fused:urlchange
+    // SYNCHRONOUSLY — so between them the URL is a state that never existed:
+    // the new folder alongside the old member. `syncing` makes the pair atomic
+    // as far as the change handler is concerned. Without it, clicking a
+    // breadcrumb ancestor out of a file preview read that torn URL back over
+    // the fresh state and re-opened the preview we were leaving.
+    let syncing = false;
     function writeLocation() {
-      fused.params.set("zipPath", cwd.join("/"));
-      fused.params.set("zipMember", selected || "");
+      syncing = true;
+      try {
+        fused.params.set("zipPath", cwd.join("/"));
+        fused.params.set("zipMember", selected || "");
+      } finally {
+        syncing = false;
+      }
     }
     // Navigate + persist + repaint. Every cwd/selected mutation goes through
     // here so the URL can never drift from what is on screen.
@@ -508,9 +520,12 @@
 
     // Someone else moved the URL — a hand-edit, a bookmark restore, or the
     // shell writing params. Re-read rather than assume our JS state is truth.
-    // Guarded against our own writes: goTo()/openPreview() already repainted,
-    // and re-entering openPreview() here would fire a second extract.
+    // Our OWN writes are excluded twice over: `syncing` covers the torn window
+    // inside writeLocation(), and the value diff covers the coalesced history
+    // flush that lands later (D99) with a URL we already match. Both matter —
+    // re-entering openPreview() here would fire a second extract of the member.
     fused.params.onChange(() => {
+      if (syncing) return;
       const wasDir = cwd.join("/");
       const wasMember = selected || "";
       readLocation();
