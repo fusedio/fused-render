@@ -16,8 +16,15 @@ preference:
    mount-routing shim at all — not a second copy of the rule. If that import
    fails we cannot tell, and "cannot tell" must read as "refuse".
 
-2. **Does this folder look like it holds notes?** A small fixed set of
-   `os.path.isfile` probes for the file a notes folder almost always has.
+2. **Does this folder look like a notes VAULT?** A link graph is a notes tool:
+   it draws what the notes say about each other. `index.md` is the marker used
+   to tell a vault from an ordinary code repository — a vault's entry point is
+   conventionally an index note, whereas a repository's `README.md` says
+   nothing about links and is present in essentially every repository there is.
+   Probing README would offer the mode on every checkout on the disk, which is
+   noise, so it is not probed. Two `os.path.isfile` probes, `index.md` and
+   `Index.md`: only a case-INSENSITIVE filesystem answers one for the other,
+   and a second stat is free.
 
 CRITICAL: this never lists or walks the directory (`os.listdir`, `os.scandir`,
 `glob`, recursion) — the rule `zarr_aoi/condition.py` documents, and doubly
@@ -25,32 +32,26 @@ binding here: this gate runs on EVERY directory the user opens, and the mode it
 gates is itself a walk. A targeted `isfile` is constant-time no matter how many
 entries the folder holds; a listing is proportional to them.
 
-The cost of the name list being wrong is small and one-directional: a notes
-folder with no README/index/Home simply isn't offered the mode (the local graph
-panel in the note view still works, and the folder mode is reachable by adding
-`_mode=graph` by hand). Offering it on every directory in the filesystem — which
-is what a content sniff would need a listing to avoid — is the failure worth
-preventing.
+The cost of the marker being wrong is small and one-directional — it costs
+DISCOVERABILITY, never capability: a vault with no `index.md` simply isn't
+OFFERED the mode, while the local graph panel in the note view still works and
+the folder mode stays reachable by adding `_mode=graph` to the URL by hand.
+Offering it on every directory that happens to hold a README — or on every
+directory in the filesystem, which is what a content sniff would need a listing
+to avoid — is the failure worth preventing.
 
 Fails closed: any exception while probing returns False, and a path that isn't a
 directory is False. Self-contained apart from the one mount import — the module
 is exec'd standalone (not imported as part of a package).
 """
 
-# The file a notes folder almost always has, cheapest/most-likely first. Both
-# cases of each are probed because only a case-INSENSITIVE filesystem answers
-# one for the other; the set stays small and fixed, so the gate is constant-time.
-_LIKELY_NOTES = (
-    "README.md",
-    "readme.md",
+# The vault marker, in both casings (only a case-INSENSITIVE filesystem answers
+# one for the other). Deliberately NOT README.md and friends: those live in
+# every code repository, where a link graph means nothing. The set stays small
+# and fixed, so the gate is constant-time.
+_VAULT_INDEX = (
     "index.md",
     "Index.md",
-    "Home.md",
-    "home.md",
-    "notes.md",
-    "Notes.md",
-    "README.markdown",
-    "index.markdown",
 )
 
 
@@ -72,7 +73,7 @@ def main(path: str) -> bool:
             return False
 
         # (2) Bounded, short-circuiting probes — first hit wins, never a listing.
-        for name in _LIKELY_NOTES:
+        for name in _VAULT_INDEX:
             if os.path.isfile(os.path.join(path, name)):
                 return True
         return False

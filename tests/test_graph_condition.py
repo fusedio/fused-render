@@ -77,19 +77,24 @@ def folder(tmp_path):
     return make
 
 
-def test_a_folder_with_a_readme_is_offered_the_graph(gate, folder):
-    assert gate(folder("README.md")) is True
+def test_a_folder_with_an_index_note_is_offered_the_graph(gate, folder):
+    assert gate(folder("index.md")) is True
 
 
-def test_the_other_likely_note_names_are_offered_too(gate, tmp_path):
-    for name in ("readme.md", "index.md", "Home.md", "notes.md", "README.markdown"):
-        target = tmp_path / name.replace(".", "_")
-        target.mkdir()
-        (target / name).write_text("x\n", encoding="utf-8")
-        assert gate(str(target)) is True, name
+def test_the_other_casing_is_probed_too(gate, folder):
+    # Only a case-INSENSITIVE filesystem answers one for the other, and the
+    # probe is free — so both are asked.
+    assert gate(folder("Index.md")) is True
 
 
-def test_a_folder_of_notes_without_an_entry_point_is_not_offered(gate, folder):
+def test_a_repository_readme_is_not_a_notes_vault(gate, folder):
+    # The whole point of narrowing the gate: `README.md` is in essentially every
+    # code repository, and a link graph over one says nothing.
+    assert gate(folder("README.md")) is False
+    assert gate(folder("readme.md", "Home.md", "notes.md")) is False
+
+
+def test_a_folder_of_notes_without_an_index_is_not_offered(gate, folder):
     # Deliberate and one-directional: the cost is a mode that has to be asked
     # for by hand, while the alternative — a content sniff — needs a listing.
     assert gate(folder("Some Note.md", "Another.md")) is False
@@ -100,7 +105,7 @@ def test_an_ordinary_folder_is_not_offered(gate, folder):
 
 
 def test_a_file_path_is_not_offered(gate, tmp_path):
-    note = tmp_path / "README.md"
+    note = tmp_path / "index.md"
     note.write_text("x\n", encoding="utf-8")
     assert gate(str(note)) is False
 
@@ -110,7 +115,7 @@ def test_a_missing_path_is_not_offered(gate, tmp_path):
 
 
 def test_a_mount_backed_folder_is_never_offered(gate, folder, monkeypatch):
-    target = folder("README.md")
+    target = folder("index.md")
     assert gate(target) is True  # the same folder, before it looks mount-backed
     from fused_render.shell import mounts
 
@@ -123,7 +128,7 @@ def test_an_unavailable_mount_detector_fails_closed(gate, folder, monkeypatch):
     # mount, and a guess is not good enough for that.
     import builtins
 
-    target = folder("README.md")
+    target = folder("index.md")
     real_import = builtins.__import__
 
     def blocked(name, *args, **kwargs):
@@ -136,6 +141,6 @@ def test_an_unavailable_mount_detector_fails_closed(gate, folder, monkeypatch):
 
 
 def test_a_probe_error_fails_closed(gate, folder, monkeypatch):
-    target = folder("README.md")
+    target = folder("index.md")
     monkeypatch.setattr(os.path, "isfile", lambda p: (_ for _ in ()).throw(OSError("boom")))
     assert gate(target) is False

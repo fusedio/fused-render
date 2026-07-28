@@ -3004,17 +3004,21 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   alone — and the folder graph relies on `depth: "0"` with no focus meaning
   "nothing to filter by".
 - **MD-21** **The gate never enumerates** (CT-12). It answers two questions in
-  order: mount-backed → `False` always (MD-11), then a small fixed set of
-  `os.path.isfile` probes for the file a notes folder almost always has
-  (`README.md`, `index.md`, `Home.md`, `notes.md`, both cases). No `listdir`,
-  `scandir`, `glob` or recursion — doubly binding here, because this gate runs
-  on every directory the user opens and the mode it gates is itself a walk. The
-  tests make enumeration **fatal**, so a listing added later fails rather than
-  ships. The cost of the name list being wrong is one-directional and small: a
-  notes folder with no entry-point file is not offered the mode (the local panel
-  in the note view still works, and `_mode=graph` still reaches it), whereas the
-  content sniff that would avoid that needs the listing this rule forbids. Fails
-  closed on any error.
+  order: mount-backed → `False` always (MD-11), then exactly two
+  `os.path.isfile` probes for the **vault marker `index.md`** (and `Index.md`,
+  because only a case-insensitive filesystem answers one for the other). A
+  README is deliberately **not** a marker: `README.md` is in essentially every
+  code repository, and a link graph over a repository is meaningless, so probing
+  it offered the mode on every checkout on the disk. No `listdir`, `scandir`,
+  `glob` or recursion — doubly binding here, because this gate runs on every
+  directory the user opens and the mode it gates is itself a walk. The tests
+  make enumeration **fatal**, so a listing added later fails rather than ships.
+  The cost of the marker being wrong is one-directional and small, and it is
+  discoverability rather than capability: a vault with no `index.md` is not
+  *offered* the mode (the local panel in the note view still works, and
+  `_mode=graph` still reaches the folder mode), whereas the content sniff that
+  would avoid that needs the listing this rule forbids. Fails closed on any
+  error.
 - **MD-22** **Out of the template's reach, by design.** Rename-updates-inbound-
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
