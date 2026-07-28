@@ -165,11 +165,11 @@ def test_registry_rich_shape(ctx):
 
 
 def test_registry_broken_name_marked_not_exists(ctx):
-    ctx.registry({".csv": ["no-such-template", "csv"]})
+    ctx.registry({".csv": ["no-such-template", "excel"]})
     by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
     templates = by_key[".csv"]["templates"]
     assert templates[0] == {"name": "no-such-template", "source": None, "exists": False, "hasIcon": False}
-    assert templates[1]["name"] == "csv" and templates[1]["exists"] is True
+    assert templates[1]["name"] == "excel" and templates[1]["exists"] is True
 
 
 def test_registry_invalid_value_surfaces_error(ctx):
@@ -190,13 +190,13 @@ def test_registry_invalid_value_surfaces_error(ctx):
 def test_registry_splice_token_is_dangling(ctx):
     # Splice is removed: a "..." entry is an ordinary name that resolves to no
     # folder — kept as a broken (exists:false) ref, not expanded, no error.
-    ctx.registry({".csv": ["...", "csv"]})
+    ctx.registry({".csv": ["...", "excel"]})
     by_key = {e["key"]: e for e in ctx.client.get("/api/templates/registry").json()["entries"]}
     row = by_key[".csv"]
     assert row["error"] is None
     names = {t["name"]: t for t in row["templates"]}
     assert names["..."]["exists"] is False  # dangling, surfaced not dropped
-    assert names["csv"]["exists"] is True
+    assert names["excel"]["exists"] is True
 
 
 def test_registry_empty_list_disables_like_null(ctx):
@@ -216,7 +216,7 @@ def test_put_upsert_returns_recomputed_entry(ctx):
     ctx.make_template("mytable", icon=True)
     resp = ctx.client.put(
         "/api/templates/registry",
-        json={"key": ".csv", "value": ["mytable", "csv", "code"]},
+        json={"key": ".csv", "value": ["mytable", "excel", "code"]},
         headers=FUSED,
     )
     assert resp.status_code == 200
@@ -224,13 +224,13 @@ def test_put_upsert_returns_recomputed_entry(ctx):
     assert entry["key"] == ".csv"
     assert entry["resolvedSource"] == "user"
     assert entry["overridesCore"] is True
-    assert _names(entry) == ["mytable", "csv", "code"]
-    assert entry["userValue"] == ["mytable", "csv", "code"]
+    assert _names(entry) == ["mytable", "excel", "code"]
+    assert entry["userValue"] == ["mytable", "excel", "code"]
     # mytable resolves to the user source with an icon.
     mt = entry["templates"][0]
     assert mt["source"] == "user" and mt["hasIcon"] is True
     # Persisted to the user registry file.
-    assert ctx.read_registry()[".csv"] == ["mytable", "csv", "code"]
+    assert ctx.read_registry()[".csv"] == ["mytable", "excel", "code"]
 
 
 def test_put_null_disables(ctx):
@@ -286,7 +286,7 @@ def test_put_empty_list_disables(ctx):
 
 def test_put_invalid_key_rejected(ctx):
     resp = ctx.client.put(
-        "/api/templates/registry", json={"key": ".geo*.json", "value": ["csv"]}, headers=FUSED
+        "/api/templates/registry", json={"key": ".geo*.json", "value": ["excel"]}, headers=FUSED
     )
     assert resp.status_code == 400
     assert "invalid registry key" in resp.json()["error"]
@@ -306,7 +306,7 @@ def test_put_unknown_names_saved_as_dangling(ctx):
 def test_put_rejects_non_string_entries(ctx):
     # Structurally invalid entries (not non-empty strings) are still rejected.
     resp = ctx.client.put(
-        "/api/templates/registry", json={"key": ".csv", "value": ["csv", 5]}, headers=FUSED
+        "/api/templates/registry", json={"key": ".csv", "value": ["excel", 5]}, headers=FUSED
     )
     assert resp.status_code == 400
     assert "non-empty string" in resp.json()["error"]
@@ -314,13 +314,13 @@ def test_put_rejects_non_string_entries(ctx):
 
 def test_put_bad_value_type_rejected(ctx):
     resp = ctx.client.put(
-        "/api/templates/registry", json={"key": ".csv", "value": "csv"}, headers=FUSED
+        "/api/templates/registry", json={"key": ".csv", "value": "excel"}, headers=FUSED
     )
     assert resp.status_code == 400
 
 
 def test_put_requires_fused_header(ctx):
-    resp = ctx.client.put("/api/templates/registry", json={"key": ".csv", "value": ["csv"]})
+    resp = ctx.client.put("/api/templates/registry", json={"key": ".csv", "value": ["excel"]})
     assert resp.status_code == 403
     assert not (ctx.udir / "registry.json").exists()
 
@@ -328,11 +328,11 @@ def test_put_requires_fused_header(ctx):
 def test_put_case_collision_replaced(ctx):
     ctx.registry({".CSV": ["code"]})
     ctx.client.put(
-        "/api/templates/registry", json={"key": ".csv", "value": ["csv"]}, headers=FUSED
+        "/api/templates/registry", json={"key": ".csv", "value": ["excel"]}, headers=FUSED
     )
     reg = ctx.read_registry()
     assert ".CSV" not in reg  # the case-colliding key was dropped
-    assert reg[".csv"] == ["csv"]
+    assert reg[".csv"] == ["excel"]
 
 
 # --------------------------------------------------------- reset binding (2.4)
@@ -1025,7 +1025,7 @@ def test_commit_applies_bindings_appending_to_core_list(ctx):
         {"key": ".myext", "template": "fresh"},
     ]
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "fresh"]
+    assert reg[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "fresh"]
     assert reg[".myext"] == ["fresh"]
 
 
@@ -1096,7 +1096,7 @@ def test_commit_binding_reenables_disabled_key_with_core_list(ctx):
         headers=FUSED,
     ).json()
     assert body["bindingsApplied"] == [{"key": ".csv", "template": "fresh"}]
-    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "fresh"]
+    assert ctx.read_registry()[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "fresh"]
 
 
 def test_commit_binding_already_bound_is_noop(ctx):
@@ -1170,14 +1170,14 @@ def test_new_template_scaffolds_and_binds(ctx):
 def test_new_template_appends_to_existing_core_default(ctx):
     # Additive only (owner ask): binding a new template to a key that already
     # has a core default must append to that list, never replace it — an
-    # existing multi-mode viewer (e.g. .csv -> duckdb/csv/code/annotate) keeps
+    # existing multi-mode viewer (e.g. .csv -> duckdb/excel/code/annotate) keeps
     # every prior mode plus the new one at the end.
     resp = ctx.client.post(
         "/api/templates/new", json={"name": "mycsv", "extensions": [".csv"]}, headers=FUSED
     )
     assert resp.status_code == 200
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "mycsv"]
+    assert reg[".csv"] == ["duckdb", "excel", "code", "reader", "annotate", "mycsv"]
 
 
 def test_new_template_appends_to_existing_user_override(ctx):

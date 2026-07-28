@@ -177,7 +177,7 @@ def main(city: str = "oslo", limit: int = 100):
 
 ### 5.3 Execution environment
 
-- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `table`/`csv`/`xlsx` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
+- **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `duckdb`/`structure`/`xlsx`/`sqlite` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
 - **PY-6a** The subprocess worker (`_child.py`) **bootstraps the package onto
   its own `sys.path`**. It is spawned as a standalone script, so `sys.path[0]`
   is the package directory rather than its parent and `import fused_render`
@@ -266,7 +266,7 @@ const page = await fused.runPython("./reader.py",
 | Extension(s) | Modes (first = default) | Notes |
 |---|---|---|
 | `.parquet` | `table` | paged table via pyarrow; binary — no `code` mode |
-| `.csv .tsv` | `csv`, `code` | paged table, delimiter sniffing |
+| `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
 | `.md` | `markdown`, `code` | rendered markdown |
@@ -2176,8 +2176,9 @@ not by choice.
   parser-blocking, so it runs before the rest of the head is parsed (which is
   also why the view has no flash either).
 - **AP-9** **Tier 1** — views with a real light palette authored: `code`,
-  `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
-  `vector`, `structure`, `tree`, `log_studio`. Each carries the identical
+  `text`, `markdown`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
+  `vector`, `structure`, `tree`, `log_studio`, `claude`, `history`, `annotate`,
+  `zip`. Each carries the identical
   structure: a `:root` dark palette, a `:root[data-theme="light"]` twin defining
   the same token set, and the AP-8 opt-in — and **nothing else**: no `data-theme`
   literal on `<html>` (dark is the CSS default, AP-2, and the runtime overwrites
@@ -2186,9 +2187,11 @@ not by choice.
   time re-reads them from a `MutationObserver` on `data-theme` (`code`
   reconfigures CodeMirror this way; `log_studio` redraws its charts).
 - **AP-10** **Light by design** — always light, ignore the setting entirely, no
-  opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
+  opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `docs`,
   `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
-  text/code group.)
+  text/code group. `claude` was on this list and did not belong: it was a *dark*
+  view mislabelled light-by-design, which is why the error stayed invisible —
+  it is tier-1 as of D157.)
 - **AP-11** **Self-toggling**: `excel` and `tableau` keep their own in-view
   theme buttons and their private storage keys, ignore the app setting entirely,
   and the shell never pushes a theme into them (no `data-fused-theme` opt-in, so
@@ -2201,9 +2204,11 @@ not by choice.
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
-  `netcdf`, `las`, `annotate`, `geometry_editor`, `history`, `preview`, `zip`,
-  `tar`. Accepted consequence: in Light mode these render dark inside a light
-  shell.
+  `netcdf`, `las`, `geometry_editor`, `preview`, `reader`, `tar`. Accepted
+  consequence: in Light mode these render dark inside a light shell. (`history`,
+  `annotate` and `zip` left this list in D157 — they are ordinary DOM chrome
+  with no canvas or map underneath, which is what made them cheap to convert;
+  `annotate`'s *stage* is still whatever the framed view chose to be.)
 - **AP-13** **User-authored `.html` views get no theme signal at all** — by
   default. Their CSS stays entirely theirs and nothing is written into their
   document. The AP-8 opt-in is a property of the *document*, not of who wrote

@@ -482,7 +482,7 @@ def _result_shape(result) -> dict:
     """`result_kind` / `result_rows` for a run's return value.
 
     ``result_rows`` prefers a real row count: len() for a list, else the common
-    reader envelope's ``rows``/``total_rows`` (templates/table, csv, xlsx,
+    reader envelope's ``rows``/``total_rows`` (templates/duckdb, xlsx,
     duckdb all return one of these), so the size chart can be read in rows and
     not just bytes.
     """

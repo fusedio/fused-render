@@ -157,7 +157,7 @@ StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted �
 
 ## 4. Executor protocol (`executor.py` + `_child.py`) — ALREADY IMPLEMENTED
 
-- `run_python(path, params, timeout=30.0) -> dict`: routes by target (D72). A `.py` on the **`INPROCESS_HELPERS` allowlist** (the table/csv/xlsx readers + api inspector — trusted, fast, never import/exec user code) runs **in-process** via `_run_inprocess`; anything else (user scripts, user template readers, and other shipped `templates/` helpers like the claude agent / geo tile servers) **spawns `[sys.executable, _child.py]`**, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
+- `run_python(path, params, timeout=30.0) -> dict`: routes by target (D72). A `.py` on the **`INPROCESS_HELPERS` allowlist** (the duckdb/structure/xlsx/sqlite readers + api inspector — trusted, fast, never import/exec user code) runs **in-process** via `_run_inprocess`; anything else (user scripts, user template readers, and other shipped `templates/` helpers like the claude agent / geo tile servers) **spawns `[sys.executable, _child.py]`**, writes `{"path", "params"}` JSON to stdin, `subprocess.run(timeout=…)`, parses **last stdout line** as result JSON. Timeout → `TimeoutError` error dict. Garbage/no output → `ExecutorError` with stderr tail.
 - `_child.py` (subprocess path): chdir to the .py's dir (relative data paths work), prepend dir to `sys.path`, import via `importlib.util.spec_from_file_location`, find callable `main`, bind params (via `_binding.bind_params`) with annotation-based coercion (`"100"`→int, `"2.4"`→float, `"true"/"1"/"yes"/"on"`→bool), missing required arg / non-callable main → structured error. Extra params ignored unless `**kwargs`. Return value must be JSON-native, else clear TypeError suggesting `df.to_dict('records')`. User `print()` captured → returned as `stdout` field. Catches `BaseException` (incl. SystemExit).
 - `_run_inprocess` (in-process path): imports the helper, binds params with the same `_binding` coercion, calls `main`, JSON-checks the result, catches `BaseException` → error dict. No chdir (helpers take absolute paths), no stdout capture (helpers don't print; global `sys.stdout` redirect would race the threadpool), no timeout (bounded reads / `ast` parse). Shares the app's macOS TCC grant because it runs in the server (= app) process — that is the point (D72).
 - `_binding.py`: `coerce` / `bind_params` / `ParamError`, shared by both paths so param binding is identical.
@@ -271,7 +271,7 @@ visual language); the section is hidden while empty.
 ```json
 {
   ".parquet": ["table"],
-  ".csv": ["csv", "code"], ".tsv": ["csv", "code"],
+  ".csv": ["duckdb", "code"], ".tsv": ["duckdb", "code"],
   ".json": ["tree", "code"],
   ".py": ["code", "api"],
   ".html": ["_render", "code"], ".htm": ["_render", "code"],

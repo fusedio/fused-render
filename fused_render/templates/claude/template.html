@@ -1,16 +1,78 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8">
 <title>Claude</title>
 <style>
+  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
+     historical palette, value for value — every colour that used to be a
+     literal in a rule is now a token, because a literal is a colour light mode
+     cannot repaint. `data-theme` is written onto <html> by the injected
+     runtime, which acts only because this document opted in via
+     `data-fused-theme` on <html> (fused_render/static/runtime.js); dark stays
+     the CSS default for any document that never gets the attribute. */
   :root {
+    color-scheme: dark;
     --bg: #131417;
     --fg: #e8eaed;
     --dim: #8b8f98;
     --orange: #d97757;
     --border: #2a2d33;
     --card: #1b1d21;
+    --border-focus: #4a4e57;   /* #back / #inputbox / #card focus ring */
+    --scrollbar: #33363d;
+    --dot: #c8c6bd;            /* the assistant's ● gutter marker */
+    --error: #f14c4c;
+    --faint: #5f6570;          /* placeholders, hint row, "model:" labels */
+    --fg-strong: #ffffff;      /* **bold** and headings inside a reply */
+    --code-bg: #22252b;
+    --code-fg: #e8c07d;
+    --pre-bg: #101114;
+    --pre-fg: #ce9178;
+    --link: #5b9dff;
+    --title-fg: #e8e6dc;       /* the serif home title */
+    --note-fg: #7a6b52;        /* the "experimental" line under it */
+    --card-shadow: rgba(0, 0, 0, .35);
+    --home-placeholder: #8a877e;
+    --select-fg: #b8b5ac;      /* model/effort pickers inside the home card */
+    --on-orange: #1a1a1a;      /* glyph on the round send button */
+    --row-line: #22252b;
+    --row-hover: #22252b;
+    --row-title-fg: #e6e4dc;
+  }
+  /* The brand orange is the one token that cannot carry over unchanged: at
+     #d97757 it reads ~2.6:1 on white, and it is used as body text (the working
+     verb, bullets, the beta badge) as well as a fill. The light value is the
+     same hue taken deep enough to clear 4.5:1 both as text on --bg and as a
+     fill under --on-orange. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --fg: #1f2023;
+    --dim: #61656c;
+    --orange: #b8542f;
+    --border: #d8dade;
+    --card: #f4f5f7;
+    --border-focus: #a8adb6;
+    --scrollbar: #c4c8ce;
+    --dot: #6b6a62;
+    --error: #c62828;
+    --faint: #8a8f98;
+    --fg-strong: #000000;
+    --code-bg: #f0f1f3;
+    --code-fg: #8a5a12;
+    --pre-bg: #f7f8f9;
+    --pre-fg: #a04a24;
+    --link: #1c5fb8;
+    --title-fg: #2b2a24;
+    --note-fg: #8a7550;
+    --card-shadow: rgba(0, 0, 0, .10);
+    --home-placeholder: #9a978e;
+    --select-fg: #55534c;
+    --on-orange: #ffffff;
+    --row-line: #e6e8eb;
+    --row-hover: #eceef0;
+    --row-title-fg: #2b2a24;
   }
   * { box-sizing: border-box; }
   body {
@@ -51,7 +113,7 @@
     flex-shrink: 0;
     margin-top: 1px;
   }
-  #back:hover { color: var(--fg); border-color: #4a4e57; }
+  #back:hover { color: var(--fg); border-color: var(--border-focus); }
   #banner .title { font-weight: bold; }
   #banner .sub { color: var(--dim); }
   .beta {
@@ -71,17 +133,17 @@
   #banner .beta { position: relative; top: -1px; }
   #log { flex: 1; overflow-y: auto; padding-bottom: 8px; }
   #log::-webkit-scrollbar { width: 8px; }
-  #log::-webkit-scrollbar-thumb { background: #33363d; border-radius: 4px; }
+  #log::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
   .turn { margin: 0 0 14px; white-space: pre-wrap; word-break: break-word; }
   .user { color: var(--dim); }
   .user::before { content: "> "; }
   .assistant { display: flex; }
-  .assistant .dot { color: #c8c6bd; flex-shrink: 0; margin-right: 6px; }
+  .assistant .dot { color: var(--dot); flex-shrink: 0; margin-right: 6px; }
   .working { color: var(--fg); }
   .working .star { color: var(--orange); display: inline-block; }
   .working .verb { color: var(--orange); font-style: italic; }
   .working .meta { color: var(--dim); }
-  .error { color: #f14c4c; }
+  .error { color: var(--error); }
   .error::before { content: "✗ "; }
   #inputbox {
     border: 1px solid var(--border);
@@ -91,7 +153,7 @@
     align-items: flex-start;
     flex-shrink: 0;
   }
-  #inputbox:focus-within { border-color: #4a4e57; }
+  #inputbox:focus-within { border-color: var(--border-focus); }
   #inputbox .caret { color: var(--fg); margin-right: 8px; }
   #box {
     flex: 1;
@@ -102,9 +164,9 @@
     font: inherit;
     padding: 0;
   }
-  #box::placeholder { color: #5f6570; }
+  #box::placeholder { color: var(--faint); }
   #hint {
-    color: #5f6570;
+    color: var(--faint);
     margin-top: 4px;
     display: flex;
     justify-content: space-between;
@@ -125,7 +187,7 @@
   }
   select:hover { color: var(--fg); }
   select option { background: var(--bg); color: var(--fg); }
-  .sel-label { color: #5f6570; }
+  .sel-label { color: var(--faint); }
 
   /* ── attached comments (claudeComments param) ─────────────── */
   /* Chips: small, horizontally wrapped. #attachments sits inside the home
@@ -181,17 +243,17 @@
   .cursor { color: var(--fg); animation: blink 1s step-end infinite; }
 
   /* markdown-ish styling, matching Claude Code's terminal rendering */
-  .assistant b, .assistant strong { color: #ffffff; font-weight: bold; }
+  .assistant b, .assistant strong { color: var(--fg-strong); font-weight: bold; }
   .assistant em { font-style: italic; }
   .assistant code {
-    background: #22252b;
-    color: #e8c07d;
+    background: var(--code-bg);
+    color: var(--code-fg);
     border-radius: 3px;
     padding: 0 4px;
     font: inherit;
   }
   .assistant pre {
-    background: #101114;
+    background: var(--pre-bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px 10px;
@@ -199,10 +261,10 @@
     overflow-x: auto;
     white-space: pre;
   }
-  .assistant pre code { background: transparent; color: #ce9178; padding: 0; }
-  .assistant .h { color: #ffffff; font-weight: bold; }
+  .assistant pre code { background: transparent; color: var(--pre-fg); padding: 0; }
+  .assistant .h { color: var(--fg-strong); font-weight: bold; }
   .assistant .bullet { color: var(--orange); }
-  .assistant a { color: #5b9dff; }
+  .assistant a { color: var(--link); }
 
   /* ── home view (claude.ai-style landing, scoped to the file) ── */
   #home {
@@ -217,7 +279,7 @@
   .home-title {
     font-family: Georgia, "Times New Roman", serif;
     font-size: 32px;
-    color: #e8e6dc;
+    color: var(--title-fg);
     text-align: center;
     margin-bottom: 6px;
   }
@@ -231,7 +293,7 @@
     white-space: nowrap;
   }
   .beta-note {
-    color: #7a6b52;
+    color: var(--note-fg);
     text-align: center;
     font-size: 12px;
     margin-bottom: 22px;
@@ -241,9 +303,9 @@
     border: 1px solid var(--border);
     border-radius: 16px;
     padding: 12px 14px 10px;
-    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    box-shadow: 0 8px 30px var(--card-shadow);
   }
-  #card:focus-within { border-color: #4a4e57; }
+  #card:focus-within { border-color: var(--border-focus); }
   #homebox {
     width: 100%;
     background: transparent;
@@ -255,7 +317,7 @@
     font-size: 15px;
     min-height: 40px;
   }
-  #homebox::placeholder { color: #8a877e; }
+  #homebox::placeholder { color: var(--home-placeholder); }
   .card-row {
     display: flex;
     align-items: center;
@@ -264,7 +326,7 @@
     color: var(--dim);
   }
   .card-row .spacer { flex: 1; }
-  .card-row select { color: #b8b5ac; font-size: 13px; }
+  .card-row select { color: var(--select-fg); font-size: 13px; }
   .card-row .go {
     width: 30px;
     height: 30px;
@@ -272,7 +334,7 @@
     align-items: center;
     justify-content: center;
     background: var(--orange);
-    color: #1a1a1a;
+    color: var(--on-orange);
     border: 0;
     border-radius: 50%;
     padding: 0;
@@ -289,14 +351,14 @@
     align-items: baseline;
     gap: 8px;
     padding: 4px 8px;
-    border-bottom: 1px solid #22252b;
+    border-bottom: 1px solid var(--row-line);
     border-radius: 5px;
     cursor: pointer;
   }
-  .chat-row:hover { background: #22252b; }
+  .chat-row:hover { background: var(--row-hover); }
   .chat-row .dot { color: var(--orange); flex-shrink: 0; }
   .chat-row .row-title {
-    color: #e6e4dc;
+    color: var(--row-title-fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

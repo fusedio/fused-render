@@ -53,7 +53,6 @@ def main():
     # underscores -> spaces and Title Case.
     NICE = {
         "duckdb": "DuckDB",
-        "csv": "CSV",
         "tsv": "TSV",
         "xlsx": "XLSX",
         "pdf": "PDF",

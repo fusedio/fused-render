@@ -25,12 +25,14 @@ THEME_KEY = "fused-render:theme"
 # is what every user-authored .html view gets.
 OPT_IN_ATTR = "data-fused-theme"
 
-# Real light palettes authored in this change.
+# Real light palettes authored.
 TIER_ONE_TEMPLATES = (
+    "annotate",
     "api",
+    "claude",
     "code",
-    "csv",
     "duckdb",
+    "history",
     "log_studio",
     "markdown",
     "plist",
@@ -40,11 +42,11 @@ TIER_ONE_TEMPLATES = (
     "tree",
     "vector",
     "xlsx",
+    "zip",
 )
 
 # Light by design: these views are light in both modes and ignore the setting.
 EXEMPT_TEMPLATES = (
-    "claude",
     "docs",
     "latex",
     "map",
@@ -62,13 +64,11 @@ SELF_TOGGLING_TEMPLATES = ("excel", "tableau")
 
 # Media / geospatial / studio groups — keep today's appearance for now.
 DEFERRED_TEMPLATES = (
-    "annotate",
     "canvas",
     "geometry_editor",
     "geotiff",
     "glb",
     "h3",
-    "history",
     "image",
     "las",
     "media",
@@ -80,7 +80,6 @@ DEFERRED_TEMPLATES = (
     "reader",
     "tar",
     "zarr_aoi",
-    "zip",
 )
 
 
