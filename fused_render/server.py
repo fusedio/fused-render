@@ -828,6 +828,91 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
+# --- /api/ai — relay to a local OpenAI-compatible proxy ----------------------
+#
+# fused.ai(prompt, opts) lands here. The shell relays to a proxy the user runs
+# on their own machine (base URL from shell/prefs.ai_base_url, default the CLI
+# proxy at 127.0.0.1:8317) rather than pages fetching it directly: the page
+# stays origin-clean (no cross-origin call, no proxy URL baked into authored
+# HTML), and the relay is one place to grow config/limits later. Wire shape is
+# the house {ok, result, error:{type,message}} contract /api/run set. MVP: no
+# streaming.
+
+# `effort` is author-facing shorthand; MVP maps it to max_tokens only (the
+# proxy's chat/completions shape has no portable reasoning-effort field).
+_AI_EFFORT_TOKENS = {"low": 1024, "medium": 4096, "high": 16384}
+_AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_AI_TIMEOUT_S = 120.0
+
+
+def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": {"type": type_, "message": message}},
+        status_code=status,
+    )
+
+
+async def _ai_relay(body: dict) -> JSONResponse:
+    """Validate an /api/ai body and relay it to the proxy's /v1/chat/completions.
+
+    Module-level (not a closure) so tests can drive it directly and mock the
+    HTTP hop — the same discipline as _fs_stat/_fs_write."""
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _ai_error(
+            "bad_request", "request body must include 'prompt': a non-empty string",
+            status=400)
+
+    model = body.get("model") or _AI_DEFAULT_MODEL
+    effort = body.get("effort")
+    if effort is not None and effort not in _AI_EFFORT_TOKENS:
+        return _ai_error(
+            "bad_request",
+            "'effort' must be one of: %s" % ", ".join(_AI_EFFORT_TOKENS),
+            status=400)
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None and (
+            not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
+            or max_tokens <= 0):
+        return _ai_error(
+            "bad_request", "'max_tokens' must be a positive integer", status=400)
+    if max_tokens is None:
+        max_tokens = _AI_EFFORT_TOKENS[effort or "medium"]
+
+    messages = []
+    system_prompt = body.get("system_prompt")
+    if isinstance(system_prompt, str) and system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    base = shell_prefs.ai_base_url().rstrip("/")
+    url = base + "/v1/chat/completions"
+    payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(_AI_TIMEOUT_S)) as client:
+            r = await client.post(url, json=payload)
+    except httpx.HTTPError as exc:
+        return _ai_error(
+            "ai_unavailable",
+            f"could not reach the AI proxy at {base} ({exc.__class__.__name__}); "
+            "is it running?")
+    if r.status_code != 200:
+        snippet = r.text[:500]
+        return _ai_error(
+            "ai_error", f"AI proxy returned HTTP {r.status_code}: {snippet}")
+    try:
+        data = r.json()
+        text = data["choices"][0]["message"]["content"]
+    except (ValueError, LookupError, TypeError):
+        return _ai_error(
+            "ai_error", "AI proxy returned an unexpected response shape")
+    return JSONResponse({"ok": True, "result": {
+        "text": text,
+        "model": data.get("model", model),
+        "usage": data.get("usage"),
+    }})
+
+
 # Per-file sidecar <file>.json (shared with the claude chat template, which
 # owns "claudeSessions", and bookmarks, which own "bookmarkHistory" — see
 # templates/claude/agent.py and shell/bookmarks.py). Read/merge/write preserves
@@ -4014,6 +4099,15 @@ def create_app(start_dir: str) -> FastAPI:
         # that string instead of encoding a multi-MB result a second time. The
         # bytes are identical to JSONResponse's for every other result.
         return Response(content=dumps_result(result), media_type="application/json")
+
+    @app.post("/api/ai")
+    async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        # fused.ai() relay — validation and the proxy hop live in _ai_relay
+        # (module-level so tests can drive it with the HTTP call mocked).
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+        return await _ai_relay(body)
 
     @app.post("/api/export")
     def api_export(body: dict = Body(...), x_fused: str | None = Header(default=None)):
