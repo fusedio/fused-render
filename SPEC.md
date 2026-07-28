@@ -2177,7 +2177,8 @@ not by choice.
   also why the view has no flash either).
 - **AP-9** **Tier 1** — views with a real light palette authored: `code`,
   `text`, `markdown`, `csv`, `plist`, `api`, `sqlite`, `duckdb`, `xlsx`,
-  `vector`, `structure`, `tree`, `log_studio`. Each carries the identical
+  `vector`, `structure`, `tree`, `log_studio`, `claude`, `history`, `annotate`,
+  `zip`. Each carries the identical
   structure: a `:root` dark palette, a `:root[data-theme="light"]` twin defining
   the same token set, and the AP-8 opt-in — and **nothing else**: no `data-theme`
   literal on `<html>` (dark is the CSS default, AP-2, and the runtime overwrites
@@ -2186,9 +2187,11 @@ not by choice.
   time re-reads them from a `MutationObserver` on `data-theme` (`code`
   reconfigures CodeMirror this way; `log_studio` redraws its charts).
 - **AP-10** **Light by design** — always light, ignore the setting entirely, no
-  opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `claude`, `docs`,
+  opt-in: `map`, `pano`, `latex`, `slides`, `usd`, `pyramid`, `docs`,
   `pdf_studio`. (`docs` is exempt even though it otherwise sits in the tier-1
-  text/code group.)
+  text/code group. `claude` was on this list and did not belong: it was a *dark*
+  view mislabelled light-by-design, which is why the error stayed invisible —
+  it is tier-1 as of D157.)
 - **AP-11** **Self-toggling**: `excel` and `tableau` keep their own in-view
   theme buttons and their private storage keys, ignore the app setting entirely,
   and the shell never pushes a theme into them (no `data-fused-theme` opt-in, so
@@ -2201,9 +2204,11 @@ not by choice.
 - **AP-12** **Deferred** — the media, geospatial and studio/tool groups keep
   today's appearance in both modes until a later pass: `image`, `photos`,
   `media`, `pdf`, `glb`, `canvas`, `geotiff`, `pmtiles`, `h3`, `zarr_aoi`,
-  `netcdf`, `las`, `annotate`, `geometry_editor`, `history`, `preview`, `zip`,
-  `tar`. Accepted consequence: in Light mode these render dark inside a light
-  shell.
+  `netcdf`, `las`, `geometry_editor`, `preview`, `reader`, `tar`. Accepted
+  consequence: in Light mode these render dark inside a light shell. (`history`,
+  `annotate` and `zip` left this list in D157 — they are ordinary DOM chrome
+  with no canvas or map underneath, which is what made them cheap to convert;
+  `annotate`'s *stage* is still whatever the framed view chose to be.)
 - **AP-13** **User-authored `.html` views get no theme signal at all** — by
   default. Their CSS stays entirely theirs and nothing is written into their
   document. The AP-8 opt-in is a property of the *document*, not of who wrote

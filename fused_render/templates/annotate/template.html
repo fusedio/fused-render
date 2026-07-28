@@ -1,10 +1,83 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Annotate</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30/AP-9, D134). This view had no palette at all — every
+     colour was a literal in a rule, which is exactly the shape light mode
+     cannot repaint — so the dark block below is those literals lifted out
+     unchanged, value for value, and the light block is the new twin.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (fused_render/static/runtime.js); dark stays the CSS default.
+
+     Note the stage itself is an iframe rendering the file's ordinary view —
+     that document opts in (or not) on its own terms; only the chrome, pins and
+     sidebar here are ours to theme. */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #24262b;      /* sidebar skeleton bar */
+    --line: #2a2d33;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --accent: #E5FF44;
+    --on-accent: #10131a;      /* pin/label glyph on an --accent fill */
+    --error: #ff6b6b;
+    --warn: #ffb64d;           /* the budget note in the top bar */
+    --pin-ring: #131417;       /* the pin's outline against the framed page */
+    --skel-shine: #2a2d33;
+    --skel-shine-2: #33373f;
+    --shadow-pin: rgba(0, 0, 0, 0.4);
+    --shadow-pin-active: rgba(0, 0, 0, 0.5);
+    --shadow-pop: rgba(0, 0, 0, 0.5);
+    --ghost-ring: rgba(0, 0, 0, 0.35);
+    /* Accent washes. The pin/ghost/selection fills sit over an ARBITRARY
+       framed document, so they are stated as explicit rgba rather than riding
+       a --tint triple: what is underneath is not ours to assume. */
+    --accent-wash: rgba(229, 255, 68, 0.08);
+    --accent-wash-strong: rgba(229, 255, 68, 0.18);
+    --accent-glow: rgba(229, 255, 68, 0.35);
+    /* Highlight-API tints. Read through getComputedStyle and injected INTO the
+       framed document (the API paints there), so these are the one pair that
+       cannot ride var() at the point of use — see the load handler. */
+    --hl-sel: rgba(229, 255, 68, 0.28);
+    --hl-active: rgba(229, 255, 68, 0.55);
+    --hl-active-fg: #10131a;
+  }
+  /* The brand lime is invisible on white, so light mode uses shell.css's
+     same-hue deep olive: readable as text, visible as a hairline, and dark
+     enough that the pin glyph flips to white. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --accent: #5f7300;
+    --on-accent: #ffffff;
+    --error: #c62828;
+    --warn: #8f6a10;
+    --pin-ring: #ffffff;
+    --skel-shine: #dfe2e7;
+    --skel-shine-2: #d3d7dd;
+    --shadow-pin: rgba(0, 0, 0, 0.18);
+    --shadow-pin-active: rgba(0, 0, 0, 0.22);
+    --shadow-pop: rgba(0, 0, 0, 0.18);
+    --ghost-ring: rgba(255, 255, 255, 0.7);
+    --accent-wash: rgba(95, 115, 0, 0.10);
+    --accent-wash-strong: rgba(95, 115, 0, 0.20);
+    --accent-glow: rgba(95, 115, 0, 0.30);
+    /* The active tint composites to a mid olive over a light page, so the
+       label on it goes DARK here rather than white. */
+    --hl-sel: rgba(95, 115, 0, 0.22);
+    --hl-active: rgba(95, 115, 0, 0.55);
+    --hl-active-fg: #1f2023;
+  }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -12,8 +85,8 @@
     flex-direction: column;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
   }
   #bar {
     flex: 0 0 auto;
@@ -21,17 +94,17 @@
     align-items: center;
     gap: 10px;
     padding: 6px 12px;
-    border-bottom: 1px solid #2a2d33;
-    background: #1b1d21;
-    color: #9aa0a6;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg-muted);
   }
   #bar select {
     font: inherit;
     padding: 3px 8px;
-    border: 1px solid #2a2d33;
+    border: 1px solid var(--line);
     border-radius: 6px;
-    background: #131417;
-    color: #e8eaed;
+    background: var(--bg);
+    color: var(--fg);
   }
   #main { flex: 1 1 auto; display: flex; min-height: 0; }
   /* Stage: the file's ordinary view rendered live in a same-origin iframe;
@@ -45,15 +118,15 @@
   #stageskel {
     position: absolute; inset: 16px;
     border-radius: 8px;
-    background: #1b1d21;
-    border: 1px solid #2a2d33;
+    background: var(--surface);
+    border: 1px solid var(--line);
     overflow: hidden;
     pointer-events: none;
   }
   #stageskel::after {
     content: "";
     position: absolute; inset: 0;
-    background: linear-gradient(100deg, #1b1d21 30%, #2a2d33 50%, #1b1d21 70%);
+    background: linear-gradient(100deg, var(--surface) 30%, var(--skel-shine) 50%, var(--surface) 70%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
@@ -63,10 +136,10 @@
   }
   /* Sidebar boot skeleton: comment-card-shaped shimmer bars shown in #list
      until the first render() call swaps in real cards (or the empty state). */
-  .skelcard { padding: 12px 16px; border-bottom: 1px solid #2a2d33; }
+  .skelcard { padding: 12px 16px; border-bottom: 1px solid var(--line); }
   .skelbar {
     height: 10px; border-radius: 4px;
-    background: linear-gradient(100deg, #24262b 30%, #33373f 50%, #24262b 70%);
+    background: linear-gradient(100deg, var(--surface-2) 30%, var(--skel-shine-2) 50%, var(--surface-2) 70%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
@@ -77,22 +150,22 @@
     transform: translate(-50%, -50%);
     width: 22px; height: 22px;
     border-radius: 50% 50% 50% 2px;
-    background: #E5FF44; color: #10131a;
-    border: 1.5px solid #131417;
+    background: var(--accent); color: var(--on-accent);
+    border: 1.5px solid var(--pin-ring);
     display: flex; align-items: center; justify-content: center;
     font-size: 11px; font-weight: 700; cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.4); user-select: none;
+    box-shadow: 0 1px 4px var(--shadow-pin); user-select: none;
   }
   .pin.resolved { opacity: 0.55; }
   .pin.active {
     transform: translate(-50%, -50%) scale(1.35);
-    box-shadow: 0 0 0 3px rgba(229, 255, 68, 0.35), 0 1px 6px rgba(0,0,0,0.5);
+    box-shadow: 0 0 0 3px var(--accent-glow), 0 1px 6px var(--shadow-pin-active);
     z-index: 5;
   }
   #hl {
     position: absolute; pointer-events: none; display: none;
-    border: 1.5px solid #E5FF44;
-    background: rgba(229, 255, 68, 0.08);
+    border: 1.5px solid var(--accent);
+    background: var(--accent-wash);
     border-radius: 3px;
   }
   /* Point ghost: hover affordance on pixel surfaces (image/video/PDF page
@@ -101,91 +174,91 @@
   #ghost {
     position: absolute; pointer-events: none; display: none;
     width: 18px; height: 18px; border-radius: 50%;
-    border: 2px solid #E5FF44;
-    background: rgba(229, 255, 68, 0.18);
+    border: 2px solid var(--accent);
+    background: var(--accent-wash-strong);
     transform: translate(-50%, -50%);
-    box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 0 0 1.5px var(--ghost-ring);
   }
   #ghost::after {
     content: ""; position: absolute; left: 50%; top: 50%;
     width: 3px; height: 3px; border-radius: 50%;
-    background: #E5FF44; transform: translate(-50%, -50%);
+    background: var(--accent); transform: translate(-50%, -50%);
   }
   /* Composer popover, stage coordinates. */
   #pop {
     position: absolute; display: none; z-index: 10;
     width: 280px; padding: 10px;
-    background: #1b1d21; border: 1px solid #2a2d33; border-radius: 10px;
-    box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 8px 28px var(--shadow-pop);
   }
   #pop textarea {
     width: 100%; min-height: 56px; resize: vertical;
-    font: inherit; color: #e8eaed;
-    background: #131417; border: 1px solid #2a2d33; border-radius: 6px;
+    font: inherit; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 7px 9px; outline: none;
   }
-  #pop textarea:focus { border-color: #E5FF44; }
-  #pop .hint { color: #9aa0a6; font-size: 11px; margin-top: 6px; }
+  #pop textarea:focus { border-color: var(--accent); }
+  #pop .hint { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
   /* Comments sidebar — this template owns it entirely. */
   #side {
     flex: 0 0 300px;
-    border-left: 1px solid #2a2d33;
-    background: #1b1d21;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
     display: flex; flex-direction: column;
   }
   #side h1 {
     margin: 0; padding: 12px 16px;
     font-size: 14px; font-weight: 600;
-    border-bottom: 1px solid #2a2d33;
+    border-bottom: 1px solid var(--line);
   }
   #list { flex: 1 1 auto; overflow-y: auto; }
   .card {
     padding: 12px 16px;
-    border-bottom: 1px solid #2a2d33;
+    border-bottom: 1px solid var(--line);
     cursor: pointer;
   }
-  .card:hover { background: #131417; }
-  .card .when { color: #9aa0a6; font-size: 11px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+  .card:hover { background: var(--bg); }
+  .card .when { color: var(--fg-muted); font-size: 11px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
   .card .body { white-space: pre-wrap; word-break: break-word; }
   .card .acts { margin-top: 8px; display: flex; gap: 6px; }
   .card button {
     font: inherit; font-size: 11px; cursor: pointer;
-    color: #e8eaed; background: #131417;
-    border: 1px solid #2a2d33; border-radius: 6px; padding: 3px 8px;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
   }
-  .card button:hover { border-color: #E5FF44; }
+  .card button:hover { border-color: var(--accent); }
   .card.resolved { opacity: 0.6; }
-  .card.active { background: #131417; border-left: 3px solid #E5FF44; padding-left: 13px; }
+  .card.active { background: var(--bg); border-left: 3px solid var(--accent); padding-left: 13px; }
   .card .lbl {
     display: inline-flex; align-items: center; justify-content: center;
     min-width: 18px; height: 18px; padding: 0 3px;
     border-radius: 50% 50% 50% 2px;
-    background: #E5FF44; color: #10131a;
+    background: var(--accent); color: var(--on-accent);
     font-size: 11px; font-weight: 700;
   }
-  #empty { padding: 40px 20px; color: #9aa0a6; text-align: center; }
+  #empty { padding: 40px 20px; color: var(--fg-muted); text-align: center; }
   #sidefoot {
     flex: 0 0 auto;
     padding: 10px 16px;
-    border-top: 1px solid #2a2d33;
+    border-top: 1px solid var(--line);
   }
   #sidefoot button {
     width: 100%;
     font: inherit; font-weight: 600; cursor: pointer;
-    color: #10131a; background: #E5FF44;
+    color: var(--on-accent); background: var(--accent);
     border: none; border-radius: 8px; padding: 8px 0;
   }
   #sidefoot button:hover { filter: brightness(1.06); }
   #sidefoot button:disabled { opacity: 0.4; cursor: default; }
-  #status { padding: 24px; color: #9aa0a6; }
-  #status.error { color: #ff6b6b; }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); }
 </style>
 </head>
 <body>
   <div id="bar">
     <span>Annotating</span>
     <select id="viewsel" title="Which view to annotate"></select>
-    <span id="budgetnote" style="color:#ffb64d"></span>
+    <span id="budgetnote" style="color:var(--warn)"></span>
     <span style="margin-left:auto">comments live in the URL — share it to share the review</span>
     <span id="ro" hidden></span>
   </div>
@@ -248,6 +321,32 @@
       const p = (new URLSearchParams(location.search).get("path") || "").replace(/\\/g, "/").split("/");
       return p.length >= 2 ? p[p.length - 2] : "annotate";
     })();
+
+    // --- Highlight-API tints (SPEC §30/AP-9) ---------------------------------
+    // The CSS Custom Highlight API paints inside the FRAMED document, so its
+    // styles have to be injected there — and that document is not ours and has
+    // none of our tokens. So the two tints are resolved off our own <html> and
+    // written as literal values, then rewritten whenever `data-theme` flips.
+    // One observer for the life of the page: the frame reloads on every view
+    // switch, and re-observing per load would stack observers.
+    let hlStyleEl = null;
+    function paintHighlightStyles(el) {
+      hlStyleEl = el || hlStyleEl;
+      if (!hlStyleEl) return;
+      const css = getComputedStyle(document.documentElement);
+      const token = (name) => css.getPropertyValue(name).trim();
+      hlStyleEl.textContent =
+        "::highlight(fa_sel){background-color:" + token("--hl-sel") + "}" +
+        "::highlight(fa_active){background-color:" + token("--hl-active") +
+        ";color:" + token("--hl-active-fg") + "}";
+    }
+    function watchTheme(apply) {
+      new MutationObserver(apply).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    }
+    watchTheme(() => paintHighlightStyles(null));
 
     let activeView = null; // {mode, path} currently framed
     let defaultViewMode = null; // views[0] — home for unstamped comments
@@ -710,7 +809,7 @@
           }
         }
         const resolvedHere = el || free || range;
-        const chip = (t) => `<span style="color:#9aa0a6;border:1px solid #2a2d33;border-radius:4px;padding:0 5px">${t}</span>`;
+        const chip = (t) => `<span style="color:var(--fg-muted);border:1px solid var(--line);border-radius:4px;padding:0 5px">${t}</span>`;
         // Off-page, not broken: a recognized paged-view id (see ID_RESOLVERS)
         // whose row/page just isn't mounted right now.
         const off = !resolvedHere && ownView && c.anchorId ? resolverMatch(c.anchorId) : null;
@@ -724,7 +823,7 @@
               ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
               : off
                 ? chip(off.r.label(off.m, doc) || "off-page")
-                : "<span style='color:#ff6b6b'>detached</span>";
+                : "<span style='color:var(--error)'>detached</span>";
         const card = document.createElement("div");
         card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
         card.setAttribute("data-id", c.id);
@@ -1000,10 +1099,11 @@
       if (!doc) return;
       // Highlight-API tint styles for selection anchors, injected into the
       // framed page (the API paints there, so the styles must live there).
+      // That page is somebody else's document and does not have our tokens, so
+      // the values are RESOLVED here and re-resolved whenever the appearance
+      // changes — the AP-9 shape for a colour sampled outside CSS.
       const hlStyle = doc.createElement("style");
-      hlStyle.textContent =
-        "::highlight(fa_sel){background-color:rgba(229,255,68,0.28)}" +
-        "::highlight(fa_active){background-color:rgba(229,255,68,0.55);color:#10131a}";
+      paintHighlightStyles(hlStyle);
       (doc.head || doc.documentElement).appendChild(hlStyle);
       // An event target can be a TEXT node (Safari, SVG oddities) — anchor
       // math needs its owning element.

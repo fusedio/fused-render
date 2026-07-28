@@ -1,11 +1,14 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Archive preview</title>
 <style>
   /* Tokens mirror the app shell (shell.css) so the archive browser reads as a
-     native folder view. */
+     native folder view — including its light palette (SPEC §30/AP-9, D134).
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (fused_render/static/runtime.js); dark stays the CSS default. */
   :root {
     color-scheme: dark;
     --fg: #e8eaed;
@@ -15,6 +18,18 @@
     --bg-alt: #1b1d21;
     --accent: #E5FF44;
     --error: #ff6b6b;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    /* The brand lime is invisible on white; shell.css's same-hue deep olive
+       clears 4.5:1 as text, which is the only role it plays here. */
+    --accent: #5f7300;
+    --error: #c62828;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -27,7 +42,9 @@
     flex-direction: column;
   }
 
-  /* Header: breadcrumb on the left, actions on the right (mirrors .preview-header). */
+  /* Footer bar: breadcrumb on the left, actions on the right. It sits at the
+     BOTTOM of the pane — the listing is what the eye lands on first, and the
+     extract button stays put while crumbs grow with the path. */
   .header {
     flex: 0 0 auto;
     display: flex;
@@ -35,7 +52,7 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
   }
   .crumbs {
     display: flex;
@@ -69,12 +86,13 @@
   .actions button:hover:not(:disabled) { background: var(--bg-alt); }
   .actions button:disabled { opacity: 0.5; cursor: default; }
 
-  /* Toast line for extract results / errors. */
+  /* Toast line for extract results / errors — directly above the footer bar
+     whose Extract button produced it. */
   #notice {
     flex: 0 0 auto;
     display: none;
     padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
     background: var(--bg-alt);
     color: var(--fg-muted);
     font-size: 12.5px;
@@ -159,11 +177,6 @@
 </style>
 </head>
 <body>
-  <div class="header">
-    <div class="crumbs" id="crumbs"></div>
-    <div class="actions" id="actions"></div>
-  </div>
-  <div id="notice"></div>
   <div id="body">
     <table class="listing-table skel-table">
       <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
@@ -176,6 +189,11 @@
         <tr class="row skel-row"><td class="name"><span class="skel-bar skel-icon"></span><span class="skel-bar" style="width:110px"></span></td><td class="size"><span class="skel-bar" style="width:48px"></span></td><td class="mtime"><span class="skel-bar" style="width:86px"></span></td></tr>
       </tbody>
     </table>
+  </div>
+  <div id="notice"></div>
+  <div class="header">
+    <div class="crumbs" id="crumbs"></div>
+    <div class="actions" id="actions"></div>
   </div>
 
   <script>

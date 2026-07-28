@@ -24,7 +24,7 @@ What this suite pins:
   (the tokenization is what makes light mode possible at all);
 * pushing the theme into a view document is **opt-in** — user-authored `.html`
   views must receive no theme signal;
-* all thirteen tier-1 templates carry the identical dual-palette structure, and
+* every tier-1 template carries the identical dual-palette structure, and
   the exempt / self-toggling / deferred templates carry none of it.
 
 The four template lists below are exhaustive over `fused_render/templates/`,

@@ -1,9 +1,20 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>History</title>
 <style>
+  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
+     historical palette, value for value — every colour that used to be a
+     literal in a rule is now a token, because a literal is a colour light mode
+     cannot repaint. `data-theme` is written onto <html> by the injected
+     runtime, which acts only because this document opted in via
+     `data-fused-theme` on <html> (fused_render/static/runtime.js); dark stays
+     the CSS default for any document that never gets the attribute.
+
+     The two blocks must define the SAME token set (tests/test_theme.py), so
+     --spine-x — a geometry constant, not a colour — lives on `body` below
+     rather than being duplicated here with an identical value. */
   :root {
     color-scheme: dark;
     --bg: #131417;
@@ -15,10 +26,67 @@
     --ink-3: #868d94;
     --accent: #E5FF44;
     --accent-dim: #b8cc36;
-    --spine-x: 7px;
+    --grid-dot: #1e2126;        /* the page's faint dot grid */
+    --line-strong: #3a3e46;     /* a pressed filter chip's border */
+    --line-hover: #454a53;
+    --on-accent: #131417;       /* glyph on an --accent fill */
+    --node-line: #4b5057;       /* the idle ring on a timeline dot */
+    --accent-glow: rgba(229, 255, 68, 0.35);
+    --skel-shine: #2f333c;
+    /* "continue where you left off" banner */
+    --cta-line: #3d421c;
+    --cta-line-hover: #5a6229;
+    --cta-bg-1: #1c1e12;
+    --cta-bg-2: #17190f;
+    /* warning card + its raw-payload <details> */
+    --warn-line: #5c4a1f;
+    --warn-bg: #1b1913;
+    --warn-fg: #e8d8ac;
+    --warn-icon: #d4a72c;
+    --pre-fg: #c8ccd2;
+    /* whole-page failure card */
+    --err-line: #5c2a2a;
+    --err-bg: #1b1315;
+    --err-fg: #f0c4c4;
+  }
+  /* The brand lime is invisible on white as a hairline and unreadable as text,
+     so light mode uses shell.css's same-hue deep olive — one token still
+     serving text, dot fill, focus ring and glow. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --ink: #1f2023;
+    --ink-2: #61656c;
+    --ink-3: #6f747c;
+    --accent: #5f7300;
+    --accent-dim: #4e5f00;
+    --grid-dot: #e8eaed;
+    --line-strong: #c4c8ce;
+    --line-hover: #b4b9c0;
+    --on-accent: #ffffff;
+    --node-line: #b4b9c0;
+    --accent-glow: rgba(95, 115, 0, 0.30);
+    --skel-shine: #dfe2e7;
+    --cta-line: #c8d18a;
+    --cta-line-hover: #a8b660;
+    --cta-bg-1: #f7faea;
+    --cta-bg-2: #f1f6dd;
+    --warn-line: #e0cd94;
+    --warn-bg: #fdf7e6;
+    --warn-fg: #6b5316;
+    --warn-icon: #9a7415;
+    --pre-fg: #3f434a;
+    --err-line: #e8b4b4;
+    --err-bg: #fdf0f0;
+    --err-fg: #8f2020;
   }
   * { box-sizing: border-box; }
   body {
+    /* x of the timeline spine, shared by the real .day and the skeleton. */
+    --spine-x: 7px;
     margin: 0;
     font-family: ui-monospace, Menlo, Consolas, monospace;
     font-size: 13px;
@@ -26,7 +94,7 @@
     color: var(--ink);
     background: var(--bg);
     /* faint dot grid — terminal graph paper, fades out below the header */
-    background-image: radial-gradient(circle, #1e2126 1px, transparent 1px);
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
     background-size: 28px 28px;
   }
   #root { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
@@ -76,9 +144,9 @@
                 background-color 150ms cubic-bezier(0.2, 0, 0, 1);
   }
   .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); transition: background-color 150ms; }
-  .chip[aria-pressed="true"] { color: var(--ink); border-color: #3a3e46; background: var(--surface); }
+  .chip[aria-pressed="true"] { color: var(--ink); border-color: var(--line-strong); background: var(--surface); }
   .chip[aria-pressed="true"] .dot { background: var(--accent); }
-  .chip:hover { border-color: #454a53; }
+  .chip:hover { border-color: var(--line-hover); }
   .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .chip .n { color: var(--ink-3); }
   .chip[aria-pressed="true"] .n { color: var(--ink-2); }
@@ -91,9 +159,9 @@
     width: 100%;
     margin: 28px 0 0;
     padding: 14px 16px;
-    border: 1px solid #3d421c;
+    border: 1px solid var(--cta-line);
     border-radius: 10px;
-    background: linear-gradient(180deg, #1c1e12, #17190f);
+    background: linear-gradient(180deg, var(--cta-bg-1), var(--cta-bg-2));
     color: var(--ink);
     font: inherit;
     text-align: left;
@@ -101,7 +169,7 @@
     transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
                 background-color 150ms cubic-bezier(0.2, 0, 0, 1);
   }
-  .continue:hover, .continue:focus-visible { border-color: #5a6229; }
+  .continue:hover, .continue:focus-visible { border-color: var(--cta-line-hover); }
   .continue:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .continue .resume {
     flex: none;
@@ -109,7 +177,7 @@
     display: grid; place-items: center;
     border-radius: 50%;
     background: var(--accent);
-    color: #131417;
+    color: var(--on-accent);
     transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
   }
   .continue:hover .resume { transform: scale(1.08); }
@@ -126,14 +194,14 @@
   /* ================= warnings ================= */
   .warns { margin: 24px 0 0; display: grid; gap: 10px; }
   .warn {
-    border: 1px solid #5c4a1f;
+    border: 1px solid var(--warn-line);
     border-radius: 10px;
-    background: #1b1913;
+    background: var(--warn-bg);
     padding: 12px 14px;
-    color: #e8d8ac;
+    color: var(--warn-fg);
   }
   .warn .msg { display: flex; align-items: baseline; gap: 8px; }
-  .warn .msg .icon { flex: none; color: #d4a72c; align-self: center; }
+  .warn .msg .icon { flex: none; color: var(--warn-icon); align-self: center; }
   .warn details summary { cursor: pointer; color: var(--ink-2); font-size: 12px; margin-top: 4px; }
   pre.raw {
     margin: 8px 0 0;
@@ -143,18 +211,18 @@
     border-radius: 6px;
     white-space: pre-wrap;
     word-break: break-word;
-    color: #c8ccd2;
+    color: var(--pre-fg);
     font-size: 12px;
     max-height: 320px;
     overflow: auto;
   }
   .error-page {
     margin-top: 24px;
-    border: 1px solid #5c2a2a;
+    border: 1px solid var(--err-line);
     border-radius: 10px;
-    background: #1b1315;
+    background: var(--err-bg);
     padding: 14px 16px;
-    color: #f0c4c4;
+    color: var(--err-fg);
   }
 
   /* ================= timeline ================= */
@@ -216,7 +284,7 @@
     height: 7px;
     border-radius: 50%;
     background: var(--bg);
-    border: 1.5px solid #4b5057;
+    border: 1.5px solid var(--node-line);
     transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1),
                 background-color 150ms cubic-bezier(0.2, 0, 0, 1),
                 box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
@@ -227,7 +295,7 @@
   .ev.link:focus-visible::before {
     border-color: var(--accent);
     background: var(--accent);
-    box-shadow: 0 0 10px 1px rgba(229, 255, 68, 0.35);
+    box-shadow: 0 0 10px 1px var(--accent-glow);
   }
   .ev.link:focus-visible {
     outline: 2px solid var(--accent);
@@ -318,7 +386,7 @@
   .skel-bar {
     display: block;
     border-radius: 4px;
-    background: linear-gradient(90deg, var(--surface-2) 25%, #2f333c 50%, var(--surface-2) 75%);
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--skel-shine) 50%, var(--surface-2) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.3s ease-in-out infinite;
   }
