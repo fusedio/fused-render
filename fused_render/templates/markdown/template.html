@@ -647,12 +647,181 @@
       return document.documentElement.getAttribute("data-theme") !== "light";
     }
 
+    // ---- editing behaviours (MD-18) ----------------------------------------
+    // Each of these is what makes Obsidian feel like Obsidian, and each is a
+    // small keymap entry rather than a feature. Smart lists, list renumbering
+    // and blockquote continuation are NOT reimplemented here: they are
+    // `markdownKeymap` from the markdown grammar we vendored, which is the same
+    // code Obsidian's own editor runs.
+    function toggleWrap(view, marker) {
+      const state = view.state;
+      const { from, to } = state.selection.main;
+      const pre = state.sliceDoc(Math.max(0, from - marker.length), from);
+      const post = state.sliceDoc(to, Math.min(state.doc.length, to + marker.length));
+      if (pre === marker && post === marker) {
+        view.dispatch({
+          changes: [
+            { from: from - marker.length, to: from },
+            { from: to, to: to + marker.length },
+          ],
+          selection: { anchor: from - marker.length, head: to - marker.length },
+        });
+      } else {
+        view.dispatch({
+          changes: [{ from, insert: marker }, { from: to, insert: marker }],
+          selection: { anchor: from + marker.length, head: to + marker.length },
+        });
+      }
+      return true;
+    }
+
+    function insertLink(view) {
+      const { from, to } = view.state.selection.main;
+      const selected = view.state.sliceDoc(from, to);
+      const isUrl = /^[a-z][a-z0-9+.-]*:\/\/\S*$/i.test(selected);
+      const text = isUrl ? `[](${selected})` : `[${selected}]()`;
+      view.dispatch({
+        changes: { from, to, insert: text },
+        selection: { anchor: isUrl ? from + 1 : from + selected.length + 3 },
+      });
+      return true;
+    }
+
+    // Cmd+Enter toggles the task on this line, adds a checkbox to a plain list
+    // item, or makes the line a task — the three states Obsidian cycles.
+    function toggleCheckbox(view) {
+      const line = view.state.doc.lineAt(view.state.selection.main.head);
+      const box = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]/.exec(line.text);
+      if (box) {
+        const at = line.from + box[1].length + 1;
+        view.dispatch({ changes: { from: at, to: at + 1, insert: box[2] === " " ? "x" : " " } });
+        return true;
+      }
+      const bullet = /^(\s*(?:[-*+]|\d+[.)])\s+)/.exec(line.text);
+      const indent = /^\s*/.exec(line.text)[0];
+      view.dispatch({
+        changes: bullet
+          ? { from: line.from + bullet[1].length, insert: "[ ] " }
+          : { from: line.from + indent.length, insert: "- [ ] " },
+      });
+      return true;
+    }
+
+    const editorKeymap = [
+      { key: "Tab", run: CM.indentMore, shift: CM.indentLess },
+      { key: "Mod-b", run: (v) => toggleWrap(v, "**") },
+      { key: "Mod-i", run: (v) => toggleWrap(v, "*") },
+      { key: "Mod-k", run: insertLink },
+      { key: "Mod-Enter", run: toggleCheckbox },
+    ];
+
+    // Pasting a URL over a selection makes a link out of it, rather than
+    // replacing the words the user just chose.
+    const pasteHandler = CM.EditorView.domEventHandlers({
+      paste(event, target) {
+        const url = ((event.clipboardData || {}).getData
+          ? event.clipboardData.getData("text/plain") : "").trim();
+        if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(url)) return false;
+        const { from, to } = target.state.selection.main;
+        if (from === to) return false;
+        const selected = target.state.sliceDoc(from, to);
+        event.preventDefault();
+        target.dispatch({
+          changes: { from, to, insert: `[${selected}](${url})` },
+          selection: { anchor: from + selected.length + url.length + 4 },
+        });
+        return true;
+      },
+    });
+
+    // ---- the [[ popup (MD-14) ----------------------------------------------
+    // Candidates come from the same scan the graph reads, so the popup is free
+    // once the index exists and can never offer a note the graph disagrees
+    // about. Cached briefly so a fast typist does not spawn a run per keystroke.
+    let candidates = null;
+    let candidatesAt = 0;
+    const CANDIDATES_TTL_MS = 5000;
+
+    async function ensureCandidates() {
+      if (candidates && Date.now() - candidatesAt < CANDIDATES_TTL_MS) return candidates;
+      const root = notes ? notes.root : (fused.params.get("root") || "");
+      if (!root) return null;
+      try {
+        const data = await fused.runPython("./graph.py",
+          { action: "candidates", root }, { key: "md-candidates" });
+        if (data.error) return null;
+        candidates = data;
+        candidatesAt = Date.now();
+        return candidates;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function headingOptions(headings, prefix) {
+      return headings.map((h) => ({
+        label: prefix + "#" + h.text,
+        displayLabel: "#".repeat(h.level) + " " + h.text,
+        type: "text",
+      }));
+    }
+
+    async function markdownCompletions(context) {
+      const before = context.state.doc.sliceString(
+        Math.max(0, context.pos - 240), context.pos);
+
+      // `[[…` and `![[…` — the same popup; the `!` only changes what the link
+      // means, not what can be linked to.
+      const wiki = /\[\[([^\[\]\n]*)$/.exec(before);
+      if (wiki) {
+        const typed = wiki[1];
+        const from = context.pos - typed.length;
+        const data = await ensureCandidates();
+        if (!data) return null;
+        const hash = typed.indexOf("#");
+        if (hash === -1) {
+          return {
+            from,
+            options: data.notes.map((note) => ({
+              label: note.link, detail: note.title, type: "class",
+            })),
+            validFor: /^[^\[\]#\n]*$/,
+          };
+        }
+        const notePart = typed.slice(0, hash);
+        const headings = notePart
+          ? ((data.notes.find((n) => n.link.toLowerCase() === notePart.toLowerCase())
+              || {}).headings || [])
+          : (notes ? notes.headings : []);
+        return { from, options: headingOptions(headings, notePart) };
+      }
+
+      // `#tag` — same guard the renderer uses, so a URL fragment is not a tag.
+      const tag = /(?:^|[\s(\[])#([A-Za-z_][\w/-]*)?$/.exec(before);
+      if (tag) {
+        const typed = tag[1] || "";
+        const data = await ensureCandidates();
+        if (!data) return null;
+        return {
+          from: context.pos - typed.length,
+          options: data.tags.map((t) => ({ label: t, type: "keyword" })),
+          validFor: /^[\w/-]*$/,
+        };
+      }
+      return null;
+    }
+
     function editorExtensions() {
       const base = [
         CM.basicSetup,
         ...(wantsDark() ? [CM.oneDark] : []),
         CM.markdown({ base: CM.markdownLanguage }),
         CM.EditorView.lineWrapping,
+        // Above basicSetup's default keymap: Enter must continue the list
+        // marker rather than plain-indent, and Tab must indent the list item.
+        CM.Prec.high(CM.keymap.of(CM.markdownKeymap.concat(editorKeymap))),
+        CM.Prec.high(CM.autocompletion({ override: [markdownCompletions] })),
+        pasteHandler,
         CM.EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           setDirty(true);
@@ -720,7 +889,55 @@
       // is the user's own and renders with full HTML powers, like any view.
       docEl.innerHTML = marked.parse(currentText());
       rewriteRelativeImages(docEl, file);
+      enableTaskBoxes(docEl);
       scrollToHeading(docEl);
+    }
+
+    // A rendered checkbox is clickable and writes back to the file, as in
+    // Obsidian. The nth checkbox in the DOM is the nth task marker in the
+    // source — a positional match, which is exactly why it is computed against
+    // the text being rendered rather than remembered from an earlier parse.
+    const TASK_MARKER = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm;
+
+    function enableTaskBoxes(root) {
+      const boxes = root.querySelectorAll('input[type="checkbox"]');
+      boxes.forEach((box, position) => {
+        box.disabled = !writable;
+        if (!writable) return;
+        box.addEventListener("change", () => void toggleTaskAt(position, box.checked));
+      });
+    }
+
+    async function toggleTaskAt(position, checked) {
+      const body = currentText();
+      let index = 0;
+      let updated = null;
+      TASK_MARKER.lastIndex = 0;
+      body.replace(TASK_MARKER, (whole, head, state, tail, offset) => {
+        if (index++ === position) {
+          updated = body.slice(0, offset) + head + (checked ? "x" : " ") + tail
+            + body.slice(offset + whole.length);
+        }
+        return whole;
+      });
+      if (updated === null) return;
+      if (view) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: updated } });
+        await save();
+      } else {
+        text = updated;
+        try {
+          const st = await fused.writeFile(file, updated, { expectedMtime: mtime });
+          mtime = st.mtime;
+          await refreshLinks();
+        } catch (err) {
+          if (err.type === "conflict") {
+            showConflict("This note changed on disk, so the checkbox was not written.");
+          }
+          return;
+        }
+      }
+      renderReading();
     }
 
     function currentText() {

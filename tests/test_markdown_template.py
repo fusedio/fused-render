@@ -113,3 +113,52 @@ def test_leaving_the_note_flushes_before_navigating(source):
     nav = nav[:nav.index("\n    }")]
     assert "__fusedFlushEdits()" in nav
     assert "if (!flushed.ok) return;" in nav
+
+
+# ------------------------------------------------- editing behaviours (MD-18)
+
+
+def test_smart_lists_come_from_the_markdown_keymap_not_a_reimplementation(source):
+    # Enter-continues-the-marker, renumbering and blockquote continuation are
+    # `markdownKeymap` — the same code Obsidian's editor runs. A hand-rolled
+    # copy here would be a second, worse implementation of a solved problem.
+    assert "CM.markdownKeymap.concat(editorKeymap)" in source
+    assert "CM.Prec.high(CM.keymap.of(" in source
+
+
+def test_the_formatting_keys_are_toggles(source):
+    for key in ["Mod-b", "Mod-i", "Mod-k", "Mod-Enter", "Tab"]:
+        assert f'key: "{key}"' in source, key
+    # toggleWrap unwraps when the markers are already there.
+    body = source[source.index("function toggleWrap"):]
+    body = body[:body.index("\n    }")]
+    assert "pre === marker && post === marker" in body
+
+
+def test_pasting_a_url_over_a_selection_makes_a_link(source):
+    body = source[source.index("const pasteHandler"):]
+    body = body[:body.index("\n    });")]
+    assert "if (from === to) return false;" in body
+    assert "`[${selected}](${url})`" in body
+
+
+def test_the_popup_offers_notes_headings_and_tags_from_the_same_scan(source):
+    body = source[source.index("async function markdownCompletions"):]
+    body = body[:body.index("\n    function editorExtensions")]
+    assert "/\\[\\[([^\\[\\]\\n]*)$/" in body      # `[[` and `![[`
+    assert "headingOptions(headings, notePart)" in body
+    assert "data.tags.map" in body
+    assert 'action: "candidates"' in source
+
+
+def test_the_popup_inserts_the_form_graph_py_says_resolves(source):
+    # `note.link` is _link_form's output, which is verified against resolve_link
+    # itself in tests/test_markdown_graph.py — the page must not compute its own.
+    assert "label: note.link" in source
+
+
+def test_a_rendered_checkbox_writes_back_and_is_locked_when_read_only(source):
+    body = source[source.index("function enableTaskBoxes"):]
+    body = body[:body.index("\n    }")]
+    assert "box.disabled = !writable;" in body
+    assert "toggleTaskAt(position, box.checked)" in body

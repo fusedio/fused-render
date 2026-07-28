@@ -516,37 +516,93 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
     }
 
 
+def _link_form(rel: str, paths, index) -> str:
+    """The shortest form of `rel` that still resolves to `rel` — what the `[[`
+    popup inserts (MD-14).
+
+    Obsidian's "new link format: shortest path when possible", made honest by
+    construction: each candidate form is run through `resolve_link` itself, so
+    the popup can never insert a link the resolver would read as a ghost or as
+    somebody else's note.
+    """
+    segments = _stem(rel).split("/")
+    for depth in range(1, len(segments)):
+        form = "/".join(segments[-depth:])
+        if resolve_link(form, "", paths, index) == rel:
+            return form
+    return "/".join(segments)
+
+
+def _candidates_payload(root: str, scan: dict) -> dict:
+    """Everything the `[[`, `[[note#` and `#tag` popups offer (MD-14).
+
+    Comes off the same scan the graph reads, so the popup is free once the walk
+    has happened and can never suggest a note the graph does not know about.
+    """
+    notes = scan["notes"]
+    paths = list(notes)
+    index = _candidate_index(paths)
+    tags = set()
+    rows = []
+    for rel in sorted(notes):
+        row = notes[rel]
+        tags.update(row["tags"])
+        rows.append({
+            "rel": rel,
+            "path": os.path.join(root, rel.replace("/", os.sep)),
+            "title": _display_title(rel, row),
+            "link": _link_form(rel, paths, index),
+            "headings": row["headings"],
+        })
+    return {
+        "error": None,
+        "root": root,
+        "notes": rows,
+        "tags": sorted(tags),
+        "assets": scan["assets"],
+        "truncated": scan["truncated"],
+        "parser_version": PARSER_VERSION,
+    }
+
+
 def _error(kind: str, message: str) -> dict:
     return {"error": kind, "message": message}
 
 
 def main(action: str = "note", file: str = "", root: str = ""):
-    """The template's one entry point. `action="note"` answers the note view.
+    """The template's one entry point.
 
-    Every walk-backed action refuses a mount-backed root (MD-11); a single-file
-    read is not affected, because that is what the template does through
-    `fused.readFile` anyway.
+    `action="note"` answers the note view; `action="candidates"` answers the
+    `[[` autocomplete. Every walk-backed action refuses a mount-backed root
+    (MD-11); a single-file read is not affected, because that is what the
+    template does through `fused.readFile` anyway.
     """
-    if action != "note":
+    if action not in ("note", "candidates"):
         return _error("bad_action", f"unknown action {action!r}")
-    if not file or not os.path.isabs(file):
+    if action == "note" and (not file or not os.path.isabs(file)):
         return _error("bad_request", "'file' must be an absolute path")
+    if action == "candidates" and not root:
+        return _error("bad_request", "'root' is required for candidates")
 
     root = os.path.abspath(root) if root else os.path.dirname(os.path.abspath(file))
-    file = os.path.abspath(file)
     try:
         _refuse_mounts(root)
     except MountUnsupported as exc:
         return _error("mount_unsupported", str(exc))
-    if not os.path.isfile(file):
-        return _error("not_found", f"no such file: {file}")
 
-    rel = os.path.relpath(file, root).replace(os.sep, "/")
-    if rel == ".." or rel.startswith("../"):
-        return _error("outside_root", f"{file} is not under {root}")
+    rel = None
+    if action == "note":
+        file = os.path.abspath(file)
+        if not os.path.isfile(file):
+            return _error("not_found", f"no such file: {file}")
+        rel = os.path.relpath(file, root).replace(os.sep, "/")
+        if rel == ".." or rel.startswith("../"):
+            return _error("outside_root", f"{file} is not under {root}")
 
     try:
         scan = scan_root(root)
     except MountUnsupported as exc:
         return _error("mount_unsupported", str(exc))
+    if action == "candidates":
+        return _candidates_payload(root, scan)
     return _note_payload(root, rel, scan)

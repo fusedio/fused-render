@@ -293,3 +293,59 @@ def test_a_local_root_is_not_refused_when_a_mounts_dir_merely_exists(
 
     monkeypatch.setattr(mounts, "mounts_dir", lambda: str(tmp_path / "elsewhere"))
     assert graph.main(action="note", file=os.path.join(root, "A.md"), root=root)["error"] is None
+
+
+# ------------------------------------------------------- autocomplete candidates
+
+
+def test_candidates_lists_notes_headings_tags_and_assets(graph, tmp_path):
+    root = _vault(tmp_path, {
+        "Hub.md": "---\ntags: [proj]\n---\n# Hub\n## Details\n[[Leaf]] #inline\n",
+        "sub/Leaf.md": "# Leaf\n",
+        "sub/pic.png": "x",
+    })
+    out = graph.main(action="candidates", root=root)
+    assert out["error"] is None
+    assert [n["rel"] for n in out["notes"]] == ["Hub.md", "sub/Leaf.md"]
+    hub = out["notes"][0]
+    assert hub["title"] == "Hub"
+    assert [h["text"] for h in hub["headings"]] == ["Hub", "Details"]
+    assert out["tags"] == ["inline", "proj"]
+    assert out["assets"] == ["sub/pic.png"]
+
+
+def test_a_candidates_link_form_is_the_shortest_unambiguous_one(graph, tmp_path):
+    # A unique basename inserts as the basename; a shared one must carry enough
+    # path to resolve, or the inserted link would be a ghost (MD-4/MD-14).
+    root = _vault(tmp_path, {
+        "Unique.md": "x\n",
+        "a/Shared.md": "x\n",
+        "b/Shared.md": "x\n",
+    })
+    forms = {n["rel"]: n["link"] for n in graph.main(action="candidates", root=root)["notes"]}
+    assert forms == {
+        "Unique.md": "Unique",
+        "a/Shared.md": "a/Shared",
+        "b/Shared.md": "b/Shared",
+    }
+
+
+def test_every_candidate_link_form_resolves_back_to_its_own_note(graph, tmp_path):
+    # The property that matters: what the popup inserts is what resolution
+    # finds. Asserted rather than reasoned about, because the two rules are
+    # separate code.
+    root = _vault(tmp_path, {
+        "Top.md": "x\n", "a/Same.md": "x\n", "b/Same.md": "x\n", "a/deep/Leaf.md": "x\n",
+    })
+    out = graph.main(action="candidates", root=root)
+    paths = [n["rel"] for n in out["notes"]]
+    for note in out["notes"]:
+        assert graph.resolve_link(note["link"], "Top.md", paths) == note["rel"], note["link"]
+
+
+def test_candidates_refuses_a_mount_backed_root(graph, tmp_path, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "x\n"})
+    from fused_render.shell import mounts
+
+    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
