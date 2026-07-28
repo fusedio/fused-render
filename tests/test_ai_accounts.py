@@ -820,3 +820,108 @@ def test_write_config_with_no_existing_file_is_a_clean_first_spawn(tmp_path, mon
     out = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert "api-key" in out  # our own generated inbound key
     assert "claude-api-key" not in out  # nothing to preserve, nothing invented
+
+
+# -- spawn failure must not leak a process (bugbot) -----------------------------
+
+
+class _FakePopen:
+    """A spawned process that stays ALIVE but never becomes healthy."""
+
+    def __init__(self, pid=424242):
+        self.pid = pid
+        self.returncode = None
+        self.terminated = False
+        self.killed = False
+        self.waited = False
+
+    def poll(self):
+        return None  # still running, the whole point
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        self.waited = True
+        return self.returncode
+
+
+def _stub_spawn(monkeypatch, tmp_path, proc):
+    """Point ai_proxy at a throwaway home and make Popen return `proc`."""
+    from fused_render.shell import ai_proxy as ap
+
+    monkeypatch.setattr(ap, "_state_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ap, "_auth_dir", lambda: str(tmp_path / "auths"))
+    monkeypatch.setattr(ap, "_config_path", lambda: str(tmp_path / "config.yaml"))
+    monkeypatch.setattr(ap, "_state_path", lambda: str(tmp_path / "ai_proxy.json"))
+    monkeypatch.setattr(ap, "_log_path", lambda: str(tmp_path / "proxy.log"))
+    monkeypatch.setattr(ap, "ai_proxy_bin", lambda: "/fake/cli-proxy-api")
+    monkeypatch.setattr(ap, "_probe_models", lambda *a, **k: False)  # never healthy
+    monkeypatch.setattr(ap, "_STARTUP_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(ap.subprocess, "Popen", lambda *a, **k: proc)
+    return ap
+
+
+def test_unhealthy_spawn_is_terminated_not_leaked(monkeypatch, tmp_path):
+    """An alive-but-unhealthy spawn must be killed before giving up.
+
+    Otherwise it leaks forever: no state file is written, so nothing later
+    knows its pid, ownership can never be proven, and each retry spawns another
+    beside it — and under FUSED_RENDER_AI_PROXY_PERSIST setsid has already
+    detached it, so app teardown won't collect it either.
+    """
+    proc = _FakePopen()
+    ap = _stub_spawn(monkeypatch, tmp_path, proc)
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        ap.ensure_ai_proxy()
+    assert proc.terminated, "the unhealthy child was left running"
+    assert proc.waited, "the killed child was never reaped"
+    assert ap._child is None  # handle cleared, nothing stale to reap later
+    assert not (tmp_path / "ai_proxy.json").exists()  # no state for a failed spawn
+
+
+def test_hung_recorded_instance_is_killed_before_a_respawn(monkeypatch, tmp_path):
+    """A recorded instance that stops answering but is still ALIVE must be
+    killed before we overwrite the config and state that describe it — else it
+    keeps running, unreachable and unidentifiable, so nothing can ever reap it.
+    """
+    proc = _FakePopen(pid=515151)
+    ap = _stub_spawn(monkeypatch, tmp_path, proc)
+    (tmp_path / "ai_proxy.json").write_text(
+        '{"port": 65000, "pid": 999001, "api_key": "old", '
+        '"management_key": "old-m", "config": "/old/config.yaml"}',
+        encoding="utf-8")
+    monkeypatch.setattr(ap, "_pid_alive", lambda pid: pid == 999001)
+    killed = []
+    monkeypatch.setattr(ap, "_kill_current_ai_proxy", lambda: killed.append(True))
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        ap.ensure_ai_proxy()
+    assert killed == [True], "the hung instance was left behind"
+
+
+def test_unconfirmable_hung_instance_does_not_block_a_respawn(monkeypatch, tmp_path):
+    """If the stale pid can't be proven ours (a recycled pid on an unrelated
+    process), refusing to spawn would be worse than the leak — so the kill
+    failure is logged and the spawn proceeds."""
+    proc = _FakePopen(pid=525252)
+    ap = _stub_spawn(monkeypatch, tmp_path, proc)
+    (tmp_path / "ai_proxy.json").write_text(
+        '{"port": 65001, "pid": 999002, "api_key": "old", '
+        '"management_key": "old-m", "config": "/old/config.yaml"}',
+        encoding="utf-8")
+    monkeypatch.setattr(ap, "_pid_alive", lambda pid: pid == 999002)
+
+    def _refuse():
+        raise RuntimeError("refusing to kill pid 999002: not confirmed ours")
+
+    monkeypatch.setattr(ap, "_kill_current_ai_proxy", _refuse)
+    # Reaches the spawn (and so the unhealthy path) rather than propagating the
+    # kill refusal.
+    with pytest.raises(RuntimeError, match="did not become healthy"):
+        ap.ensure_ai_proxy()
+    assert proc.terminated

@@ -38,11 +38,17 @@ builds) → the macOS bundle path under `Contents/Resources/bin/` when
 `sys.frozen == "macosx_app"` → `shutil.which`. The PATH tier is what keeps an
 existing user-run install working untouched.
 
-**Lifecycle** — `ensure_ai_proxy()` spawns lazily on the first `fused.ai()` call
-rather than at app launch: AI calls are occasional, and an idle 20 MB Go process
-in every session is rent we don't need to pay. Under a `threading.Lock` like
-`_rcd_lock`, since the relay is async and two concurrent calls would otherwise
-both spawn. It generates a config under the app state dir with:
+**Lifecycle** — `ensure_ai_proxy()` spawns lazily on **first use**, not at app
+launch: AI calls are occasional, and an idle 20 MB Go process in every session is
+rent we don't need to pay. "First use" is any caller that needs the proxy — a
+`fused.ai()` relay, *or* a management call from the accounts UI (`connect`, an
+add-a-key write). Opening the accounts tab therefore does not require a running
+proxy: the listing is deliberately non-spawning (it reports `running: false` and
+an empty list rather than paying a ~15s startup to draw a page), while the first
+action that genuinely needs the management API brings it up. Under a
+`threading.Lock` like `_rcd_lock`, since the relay is async and two concurrent
+calls would otherwise both spawn. It generates a config under the app state dir
+with:
 
 - an ephemeral port we pick ourselves (bind-0 then close, as `ensure_rcd` does)
 - `host: "127.0.0.1"` — loopback only, never the upstream default of all interfaces
@@ -51,10 +57,26 @@ both spawn. It generates a config under the app state dir with:
 - `auth-dir` under the app state dir, holding the OAuth tokens
 - `disable-control-panel: true` — we drive the API ourselves and don't want it fetching a web panel from GitHub
 
-Then health-polls `/v1/models` to a deadline before reporting ready, writes
+Then health-polls `/v1/models` **with that generated `api-keys` bearer token** —
+the config above makes `/v1/*` authenticated, so an unauthenticated poll would
+401 forever and every spawn would fail its deadline — writes
 `{port, pid, spawner_pid, keys, log}` to a state file, and rotates its log.
+
+A spawn that never passes the health check is **killed before giving up**: no
+state file has been written at that point, so a survivor could never be
+identified or reaped, and each retry would spawn another beside it (worse under
+the dev persist flag, where `setsid` has already detached it). Likewise, a
+*recorded* instance that stops answering while its pid is still alive is killed
+before we overwrite the config and state that describe it — otherwise it keeps
+running, unreachable and unprovable as ours. An unconfirmable stale pid (a
+recycled pid on an unrelated process) is left alone and logged rather than
+blocking the respawn.
+
 Teardown reuses the `stop_local_rcd()` shape: SIGTERM→SIGKILL, refuse to signal
-a pid not confirmed ours, respect a spawner that is still alive.
+a pid not confirmed ours, respect a spawner that is still alive. Ownership is
+provable two ways — the recorded port answering with the recorded key, or the
+pid's command line naming our own config path — so a *hung* (non-answering)
+instance is still confirmably ours via the second.
 
 **Relay change** — `server.py:_ai_relay` currently posts to
 `ai_base_url()/v1/chat/completions` with no credentials. It gains: call
@@ -91,7 +113,13 @@ callback ports (`54545` for Claude, `1455` for Codex) are unoccupied — so the 
 binds one for the duration of a login and reads the `code` straight out of the
 browser redirect. No copy-paste, no CLI subcommand.
 
-1. `POST …/connect {provider}` → we call `<provider>-auth-url`, get `{state, url}`
+1. `POST …/connect {provider}` → we call `<auth_provider>-auth-url`, get
+   `{state, url}`. **Note the slug swap**: the UI/listing provider is `claude`,
+   but the route is `anthropic-auth-url` — the upstream uses two different names
+   for the same product (`claude` in the credential listing, `anthropic` in the
+   route table), so building the path from the listing slug yields a 404.
+   `ai_accounts._CALLBACK` maps `claude → anthropic` (and `codex → codex`) and is
+   the single place that seam is bridged.
 2. we bind the provider's callback port (loopback only) with a one-shot handler
 3. we return `url` to the frontend, which opens it — **the browser is always the
    client's job**; the backend only ever returns a URL string, matching how
@@ -107,6 +135,14 @@ goroutine — so its status proves nothing. `get-auth-status` reports
 `wait`/`ok`/`error` with a real message ("Failed to exchange authorization code
 for tokens"), which means a failed login can be reported as a failure instead of
 being inferred from a timeout.
+
+That earlier draft's "watch `auth-files` grow an entry" test was not merely
+weaker — it was **wrong for re-authentication**. Credentials are named
+`<provider>-<email>.json`, so signing the same account in again *updates* the
+existing file instead of adding one; a count-based check would have waited out
+its timeout and reported a successful re-login as a failure. `get-auth-status`
+keys on the login's own `state`, so it is indifferent to whether the credential
+was created or refreshed.
 
 Failure modes the UI names rather than hangs on: callback port already held (a
 concurrent login, or the user's own proxy mid-login), user abandons the browser

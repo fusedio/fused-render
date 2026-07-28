@@ -459,12 +459,51 @@ def ensure_ai_proxy() -> tuple[str, str, str]:
         return _ensure_locked()
 
 
+def _terminate_unhealthy_child(proc: subprocess.Popen) -> None:
+    """Kill a just-spawned instance that never became healthy, and reap it.
+
+    Only ever called with a Popen WE created moments ago, so ownership needs no
+    proving — unlike _kill_current_ai_proxy, whose pid comes from a state file
+    and could have been recycled. SIGTERM then SIGKILL, then wait() so the dead
+    child doesn't linger as a zombie (see _reap_child). Best-effort throughout:
+    this runs on a path that is already failing, and must not replace the
+    caller's "never became healthy" error with a teardown one."""
+    global _child
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=_KILL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=_KILL_TIMEOUT_S)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        logger.warning("ai-proxy: could not terminate an unhealthy spawn",
+                       exc_info=True)
+    if _child is proc:
+        _child = None
+
+
 def _ensure_locked() -> tuple[str, str, str]:
     state = storage.read_json(_state_path())
     if isinstance(state, dict) and state.get("port") and state.get("api_key"):
         if _probe_models(int(state["port"]), state["api_key"]):
             return (_base_url(state["port"]), state["api_key"],
                     state.get("management_key", ""))
+        # Recorded but not answering. If that pid is still alive it is a HUNG
+        # instance, not a dead one — and we are about to overwrite the config
+        # and state file it is described by, which would leave it running,
+        # unreachable, and unprovable as ours (so never reapable). Kill it
+        # first, while the state file that identifies it still exists.
+        # Best-effort: an unconfirmable pid raises here and we carry on to the
+        # spawn, since refusing to start a proxy because an unrelated process
+        # inherited a recycled pid would be worse than the leak.
+        if _pid_alive(state.get("pid") or 0):
+            try:
+                _kill_current_ai_proxy()
+            except RuntimeError:
+                logger.warning(
+                    "ai-proxy: recorded instance is unreachable but its pid "
+                    "could not be confirmed as ours; leaving it alone")
 
     bin_ = ai_proxy_bin()
     if not bin_:
@@ -512,10 +551,20 @@ def _ensure_locked() -> tuple[str, str, str]:
                          config_path, log_path)
             return (_base_url(port), api_key, management_key)
         if proc.poll() is not None:
+            _child = None  # already dead; nothing to reap but don't keep the handle
             raise RuntimeError(
                 f"ai-proxy exited immediately (code {proc.returncode}); "
                 f"see {log_path}")
         time.sleep(0.2)
+    # Unhealthy but ALIVE — kill it before giving up. Without this the process
+    # leaks permanently: no state file was written, so nothing afterwards knows
+    # its pid, _confirmed_ours can never prove it is ours, and every later
+    # retry spawns another one beside it. Worse under
+    # FUSED_RENDER_AI_PROXY_PERSIST, where start_new_session has already
+    # detached it from this process group, so app teardown won't collect it
+    # either. Signal directly rather than via _kill_current_ai_proxy: that
+    # reads the state file, which deliberately does not exist yet.
+    _terminate_unhealthy_child(proc)
     raise RuntimeError(
         f"ai-proxy did not become healthy within {_STARTUP_TIMEOUT_S:g}s; "
         f"see {log_path}")
