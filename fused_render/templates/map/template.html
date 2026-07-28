@@ -497,6 +497,19 @@ loadScript("https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js").
 const qs = id => document.getElementById(id);
 const P = fused.params;
 
+// Escape before interpolating ANY value into an innerHTML string or into an
+// HTML attribute. The trust model says a file you OPEN may render with full
+// HTML/JS power — but that does not extend to strings that arrive incidentally
+// and land in this template's own chrome: URL params (?dir=, ?open=, both read
+// at boot), backend error text that echoes those params back, filenames and
+// paths from a directory listing (a bucket or a shared folder can name a file
+// anything), sub-layer names read out of a GPKG/KML, and geocoder results from
+// a third-party API. Injected script here is same-origin with the shell, so it
+// can send X-Fused and reach /api/run — i.e. it walks around the D36 guard.
+// Attributes are quoted with ", which &quot; below neutralizes.
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 // Windows "Copy as path" wraps the path in double quotes; a quoted path isn't
 // absolute, so os.path.abspath would join it onto the template dir. Strip them.
 const cleanPath = s => String(s || "").trim().replace(/^["']|["']$/g, "").trim();
@@ -621,7 +634,7 @@ function renderFileList() {
     div.className = "file" + (selPath === e.path ? " selected" : "") + (L && L.loading ? " loading" : "");
 
     if (e.kind === "dir") {
-      div.innerHTML = `<span class="ic">${KIND_ICON.dir}</span><span class="nm">${e.name}</span><span class="kd">open</span>`;
+      div.innerHTML = `<span class="ic">${KIND_ICON.dir}</span><span class="nm">${esc(e.name)}</span><span class="kd">open</span>`;
       div.onclick = () => loadDir(e.path);
     } else {
       const ic = document.createElement("span"); ic.className = "ic";
@@ -931,7 +944,7 @@ function groupCard(groupKey, groupName, members) {
   head.innerHTML =
     `<span class="lg-chev ${collapsed ? "" : "open"}">${CHEV}</span>` +
     `<span class="ic">${KIND_ICON.dir}</span>` +
-    `<span class="lg-nm" title="${groupKey}">${groupName}</span>` +
+    `<span class="lg-nm" title="${esc(groupKey)}">${esc(groupName)}</span>` +
     `<span class="lc-badge">${members.length} layers</span>` +
     `<button class="lc-eye ${anyVisible ? "" : "off"}" title="Toggle all layers">${anyVisible ? EYE : EYEOFF}</button>` +
     `<button class="lc-dots" title="More">${DOTS}</button>`;
@@ -965,17 +978,17 @@ function layerCard(L) {
 
   const h = document.createElement("div"); h.className = "lc-h";
   if (L.loading) {
-    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${tp}">${L.name}</span><span class="lc-badge">loading</span>`;
+    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${esc(tp)}">${esc(L.name)}</span><span class="lc-badge">loading</span>`;
   } else if (d && d.status !== "ok") {
     h.innerHTML =
       `<span class="lc-swatch" style="background:${d.status === "error" ? "var(--bad)" : "var(--warn)"}"></span>` +
-      `<span class="lc-nm" title="${tp}">${L.name}</span>` +
+      `<span class="lc-nm" title="${esc(tp)}">${esc(L.name)}</span>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
   } else {
     const preparing = d.kind === "vector_tiles_mvt" && L.mvt && !L.mvt.ready && L.mvt.phase !== "error";
     h.innerHTML =
       (preparing ? `<span class="spin"></span>` : `<span class="lc-swatch" style="${swatchStyle(L)}"></span>`) +
-      `<span class="lc-nm" title="${tp}">${L.name}</span>` +
+      `<span class="lc-nm" title="${esc(tp)}">${esc(L.name)}</span>` +
       `<span class="lc-badge">${preparing ? "tiles " + (L.mvt.pct || 0) + "%" : kindBadge(d)}</span>` +
       `<button class="lc-eye ${L.visible ? "" : "off"}" title="Toggle visibility">${L.visible ? EYE : EYEOFF}</button>` +
       `<button class="lc-dots" title="More">${DOTS}</button>`;
@@ -1089,7 +1102,7 @@ function renderStyleDock() {
   qs("sp-kind").textContent = d.kind ? kindBadge(d) : "";
   body.innerHTML = "";
   if (d.status !== "ok") {
-    body.innerHTML = `<div class="sp-empty">${d.message || (d.error && d.error.message) || "This layer couldn't be rendered."}</div>`;
+    body.innerHTML = `<div class="sp-empty">${esc(d.message || (d.error && d.error.message) || "This layer couldn't be rendered.")}</div>`;
     return;
   }
 
@@ -1268,7 +1281,7 @@ async function updateCodeViewer(path) {
   const ext = (name.split(".").pop() || "").toLowerCase();
   if (!TEXT_EXT.includes(ext)) {
     langEl.textContent = ext || "data";
-    body.innerHTML = `<div class="cp-note">Binary dataset — no source to show.\n\n${path}</div>`;
+    body.innerHTML = `<div class="cp-note">Binary dataset — no source to show.\n\n${esc(path)}</div>`;
     return;
   }
   langEl.textContent = ext;
@@ -1288,7 +1301,7 @@ async function updateCodeViewer(path) {
     wrap.appendChild(g); wrap.appendChild(pre);
     body.innerHTML = ""; body.appendChild(wrap);
   } catch (e) {
-    body.innerHTML = `<div class="cp-note">Couldn't read file:\n${e.message}</div>`;
+    body.innerHTML = `<div class="cp-note">Couldn't read file:\n${esc(e.message)}</div>`;
   }
 }
 
@@ -1358,7 +1371,7 @@ async function geocode(q) {
       const name = p.name || p.street || p.city || "Result";
       const sub = [p.city, p.state, p.country].filter(Boolean).join(", ");
       const div = document.createElement("div"); div.className = "geores";
-      div.innerHTML = `<div class="g1">${name}</div><div class="g2">${sub}</div>`;
+      div.innerHTML = `<div class="g1">${esc(name)}</div><div class="g2">${esc(sub)}</div>`;
       div.onclick = () => {
         if (p.extent) { const [w,nn,ee,ss] = p.extent; map.fitBounds([[w,ss],[ee,nn]], { padding: 60, maxZoom: 15, duration: 900 }); }
         else map.flyTo({ center: [c[0], c[1]], zoom: 13, duration: 900 });
@@ -1387,7 +1400,7 @@ qs("importpath").onkeydown = e => { if (e.key === "Enter" && cleanPath(e.target.
 let toastTimer = null;
 function toast(kind, title, msg) {
   const t = qs("toast"); t.className = kind === "warn" ? "warn" : kind === "bad" ? "bad" : "";
-  t.innerHTML = `<div class="tx"><b>${title}</b>${msg ? `<span>${String(msg).slice(0,300)}</span>` : ""}</div><button class="tclose">×</button>`;
+  t.innerHTML = `<div class="tx"><b>${esc(title)}</b>${msg ? `<span>${esc(String(msg).slice(0,300))}</span>` : ""}</div><button class="tclose">×</button>`;
   t.classList.remove("hidden");
   t.querySelector(".tclose").onclick = () => t.classList.add("hidden");
   clearTimeout(toastTimer);

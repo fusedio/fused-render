@@ -69,6 +69,17 @@ and neither changes the trust model above:
   in the daemon's state file, so it is only as private as the local
   filesystem — which is consistent with the trust model above (local read is
   already out of scope; this guards the *browser* boundary).
+- **rclone rc daemon access token.** `shell/mounts.py` drives mounts through
+  `rclone rcd` on a loopback port, and the same reasoning applies to it: a
+  page in the user's browser can POST to `http://127.0.0.1:<port>/...`, and
+  because rclone merges URL query parameters into the rc call's arguments, a
+  CORS-*simple* request (POST, `text/plain`, no custom header — so no
+  preflight) is enough to drive it blind even though the reply is unreadable.
+  The daemon therefore mints a random secret at spawn and requires HTTP basic
+  auth on every call; the secret is handed to the child in the environment
+  (`RCLONE_RC_USER`/`RCLONE_RC_PASS`), never on argv, so it does not appear in
+  `ps`. Like the tile-daemon token it is recorded in the daemon's state file
+  and is only as private as the local filesystem.
 
 ## Network / supply chain
 
