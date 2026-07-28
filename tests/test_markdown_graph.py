@@ -371,6 +371,50 @@ def test_the_climb_stops_at_a_mount_boundary(graph, tmp_path, monkeypatch):
         assert graph.vault_root(start) == start
 
 
+def test_a_note_on_a_mount_is_never_probed_at_all(graph, tmp_path, monkeypatch):
+    """The ascent must not touch a mount-backed path even ONCE.
+
+    `test_the_climb_stops_at_a_mount_boundary` covers the note that merely lives
+    under a mounted ancestor. This covers the note that is itself on the mount,
+    where the bound alone would not save us: 8 levels of `isdir`/`isfile` against
+    a remote is 8 levels too many. Each probe is a kernel GETATTR on a live NFS
+    mount, and this repo has already wedged one that way — so this asserts the
+    absence of the syscall, not merely that the answer came out right.
+
+    Every filesystem primitive the probes could reach is counted, because
+    `_has_vault_marker` is free to change which one it calls; what may not change
+    is that none of them see the mount.
+    """
+    from fused_render.shell import mounts
+
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
+    start = os.path.join(root, "docs")
+    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+
+    touched = []
+    real = {name: getattr(os.path, name) for name in ("isdir", "isfile", "exists")}
+
+    def watched(name):
+        def probe(path, *args, **kwargs):
+            if str(path).startswith(root):
+                touched.append((name, str(path)))
+            return real[name](path, *args, **kwargs)
+        return probe
+
+    with mock.patch.object(os.path, "isdir", watched("isdir")), \
+            mock.patch.object(os.path, "isfile", watched("isfile")), \
+            mock.patch.object(os.path, "exists", watched("exists")), \
+            _no_enumeration():
+        # `start` is its own root, so nothing above it is consulted...
+        assert graph.vault_root(start) == start
+    assert touched == [], touched
+
+    # ...and the refusal is what the user actually sees, so the walk never runs
+    # even though the ascent handed back a mount-backed path.
+    out = graph.main(action="note", file=os.path.join(start, "note.md"))
+    assert out["error"] == "mount_unsupported"
+
+
 def test_an_unavailable_mount_detector_does_not_climb(graph, tmp_path, monkeypatch):
     # "Cannot tell" reads as "do not ascend", the same way the gate and
     # `_refuse_mounts` read it as "refuse".
