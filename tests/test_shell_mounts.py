@@ -547,6 +547,63 @@ def test_ismount_survives_ismount_oserror_on_disconnected_winfsp(monkeypatch):
     assert mounts_mod._ismount("/mounts/learn") is True
 
 
+def test_mount_wedged_win32_dead_reparse_point(monkeypatch):
+    # ntpath.ismount raising while the reparse point persists is the win32
+    # wedge signature; a clean False answer is not wedged.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+
+    def raiser(p):
+        raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", raiser)
+    monkeypatch.setattr(mounts_mod.os.path, "lexists", lambda p: True)
+    assert mounts_mod._mount_wedged("/mounts/dead") is True
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod._mount_wedged("/mounts/fine") is False
+
+
+def test_state_disconnected_for_dead_winfsp_point_rcd_still_lists(home, monkeypatch):
+    # Bugbot: a dead WinFsp mount (reparse point up, volume gone) that rcd
+    # still lists must classify "disconnected" on the I/O-free health path,
+    # not "mounted" — _ismount deliberately reads it True so reconnect can
+    # heal, so the wedge check is what keeps the state honest.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    m = {"id": "x1", "name": "dead", "remote": "remote:b"}
+    mp = mounts_mod.mountpoint(m)
+
+    def raiser(p):
+        raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", raiser)
+    monkeypatch.setattr(mounts_mod.os.path, "lexists", lambda p: True)
+
+    class St:
+        st_reparse_tag = mounts_mod._IO_REPARSE_TAG_MOUNT_POINT
+
+    monkeypatch.setattr(mounts_mod.os, "lstat", lambda p: St())
+    monkeypatch.setattr(mounts_mod.os, "readlink",
+                        lambda p: "\\Device\\Volume{5c3e4b06-8982}\\")
+    assert mounts_mod.mount_state(m, {mp}, probe_io=False) == "disconnected"
+
+
+def test_attach_refuses_dead_winfsp_point_instead_of_adopting(home, rcd, monkeypatch):
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod, "_winfsp_available", lambda: True)
+    c = mounts_mod.add_mount("data", "remote:bucket")
+    mp = mounts_mod.mountpoint(c)
+
+    def raiser(p):
+        if p == mp:
+            raise OSError(123, "The filename, directory name, or volume label syntax is incorrect")
+        return False
+
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", raiser)
+    monkeypatch.setattr(mounts_mod.os.path, "lexists", lambda p: p == mp)
+    err = mounts_mod.attach_mount(c)
+    assert err is not None and "wedged" in err
+    assert not [x for x in rcd.calls if x[0] == "mount/mount"]
+
+
 def test_ismount_posix_short_circuits_to_os_path_ismount(monkeypatch):
     # Off Windows the answer IS os.path.ismount; the reparse fallback must not
     # even stat the path.
@@ -1917,6 +1974,9 @@ def _wedge(monkeypatch, mp, *, also_mounted=None):
     # Bound before patching: os.path IS posixpath, so a lambda that referenced
     # posixpath.ismount by attribute would call the patched name — itself.
     real_ismount = posixpath.ismount
+    # The wedge being modeled is the POSIX FUSE one (ENOTCONN stats); pin the
+    # platform so _mount_wedged's win32 branch never bypasses these mocks.
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
     monkeypatch.setattr(
         mounts_mod.os.path, "ismount",
         real_ismount if also_mounted is None
@@ -2537,7 +2597,7 @@ def test_reconnect_stale_unmounts_rcd_entry_before_remounting(home, rcd, monkeyp
 
 def test_ensure_rcd_spawn_has_log_file_and_records_path(home, monkeypatch):
     monkeypatch.setattr(mounts_mod, "rclone_bin", lambda: "/usr/bin/rclone")
-    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda **k: None)  # force a spawn
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port", lambda *a, **k: None)  # force a spawn
     argvs = []
 
     class FakePopen:

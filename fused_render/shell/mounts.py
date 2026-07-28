@@ -1157,7 +1157,7 @@ def _kill_current_rcd() -> None:
             if _live_rcd_port() is None and not _pid_alive(pid):
                 return  # daemon gone
             time.sleep(0.1)
-    raise RuntimeError(f"rcd pid {pid} did not exit after SIGKILL")
+    raise RuntimeError(f"rcd pid {pid} did not exit after {sigs[-1].name}")
 
 
 def stop_local_rcd() -> None:
@@ -3556,6 +3556,16 @@ def _await_ismount(mp: str, deadline: float = _MOUNT_ATTACH_DEADLINE_S) -> bool:
 def _mount_wedged(mp: str) -> bool:
     # True when mp is a mountpoint whose backend process is gone: the kernel
     # still holds the mount, so the path exists, but every stat on it fails.
+    if sys.platform == "win32":
+        # A dead WinFsp mount keeps its volume reparse point while the volume
+        # query behind ntpath.ismount fails (WinError 123) — _ismount swallows
+        # that raise to stay True for reconnect's heal path, so the wedge
+        # signature must be re-derived here for state classification.
+        try:
+            os.path.ismount(mp)
+        except OSError:
+            return os.path.lexists(mp)
+        return False
     try:
         os.lstat(mp)
     except OSError as e:
@@ -3591,6 +3601,15 @@ def attach_mount(m: dict) -> str | None:
     # EMPTY leaf a previous mount left behind (os.rmdir succeeds only when empty)
     # and refuse a non-empty leaf rather than delete a user's files. If the leaf
     # is already a live mount we leave it for the adopt/reconcile path below.
+    if _mount_wedged(mp):
+        # Nothing can be mounted over a path whose backend is gone: on POSIX
+        # makedirs' exist_ok check can't recognise it as a directory and
+        # raises FileExistsError; on win32 the dead reparse point would pass
+        # _ismount below and be silently adopted as a live mount.
+        # reconnect_mount clears this before re-attaching; anyone else
+        # (automount, a plain mount) is told to.
+        return (f"mountpoint {mp} is wedged — its backend is gone; "
+                f"reconnect the mount to repair it")
     if sys.platform == "win32":
         if os.path.isdir(mp) and not _ismount(mp):
             try:
@@ -3609,14 +3628,6 @@ def attach_mount(m: dict) -> str | None:
                 # actual failure instead of misblaming it on non-emptiness.
                 return f"could not clear stale mountpoint {mp}: {e}"
     else:
-        if _mount_wedged(mp):
-            # Nothing can be mounted over a path whose stat fails: makedirs'
-            # exist_ok check can't recognise it as a directory and raises
-            # FileExistsError, violating this function's error-string contract.
-            # reconnect_mount clears this before re-attaching; anyone else
-            # (automount, a plain mount) is told to.
-            return (f"mountpoint {mp} is wedged — its backend is gone; "
-                    f"reconnect the mount to repair it")
         os.makedirs(mp, exist_ok=True)
     if _ismount(mp):
         # Already a kernel mount — but is it OURS? A stale mount left by a
@@ -3788,10 +3799,8 @@ def _force_unmount(mp: str) -> str | None:
     # win32 has no `umount` and no per-mount kernel detach. A WinFsp mount is
     # backed by rcd's serving process and vanishes the instant that process dies
     # — so process teardown, not a shell-out, IS the force-unmount. We do NOT
-    # kill rcd here: that would tear down EVERY mount it serves, and the shared
-    # kill path (_kill_current_rcd) is POSIX-only anyway — it escalates through
-    # signal.SIGKILL, which does not exist on Windows. So the win32 branch simply
-    # polls _ismount within the same budget the POSIX ladder gets and
+    # kill rcd here: that would tear down EVERY mount it serves. So the win32
+    # branch simply polls _ismount within the same budget the POSIX ladder gets and
     # reports success once the reparse point is gone (rcd already exited /
     # unmounted), else an honest failure — there is nothing else safe to try.
     if sys.platform == "win32":
