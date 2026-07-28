@@ -2444,7 +2444,7 @@ function applyTheme(t) {
   $("themeBtn").textContent = t === "light" ? "◑ Dark" : "◐ Light";
   try { localStorage.setItem("excel-theme", t); } catch {}
 }
-applyTheme((() => { try { return localStorage.getItem("excel-theme") || "dark"; } catch { return "dark"; } })());
+applyTheme((() => { try { return localStorage.getItem("excel-theme") || "light"; } catch { return "light"; } })());
 $("themeBtn").addEventListener("click", () =>
   applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
 
