@@ -175,6 +175,13 @@ def _bind_callback_server(port: int, path: str) -> HTTPServer:
         ) from e
 
 
+# The phases in which an attempt still owns its callback port and so blocks a
+# new login. Anything else (done/failed) is a finished attempt kept only so
+# /connect/status can report its outcome — it must not block the next login,
+# nor be reported as in-flight by the accounts listing.
+_IN_FLIGHT_PHASES = ("waiting_browser", "exchanging")
+
+
 @dataclasses.dataclass
 class _ActiveConnect:
     """The one in-flight (or just-finished) account-connect attempt.
@@ -320,8 +327,16 @@ def api_ai_accounts():
             })
     with _LOCK:
         entry = _active
+    # Only a GENUINELY in-flight attempt belongs here. _active is also kept
+    # after an attempt settles (so /connect/status can still report the
+    # outcome), but reporting a settled attempt as the listing's `login` reads
+    # to the page as "a login is in progress" forever — which disabled every
+    # Connect button after the FIRST login finished, making it impossible to
+    # connect a second provider without restarting. The phases below are the
+    # same two api_ai_accounts_connect treats as blocking, deliberately: this
+    # field exists to mirror that gate, so it must not be broader than it.
     login = None
-    if entry is not None:
+    if entry is not None and entry.phase in _IN_FLIGHT_PHASES:
         login = {"provider": entry.provider, "state": entry.phase, "detail": entry.detail}
     return {
         "supervised": bool(st.get("supervised")),
@@ -342,7 +357,7 @@ def api_ai_accounts_connect(body: dict = Body(...), x_fused: str | None = Header
 
     global _active
     with _LOCK:
-        if _active is not None and _active.phase in ("waiting_browser", "exchanging"):
+        if _active is not None and _active.phase in _IN_FLIGHT_PHASES:
             # Structural, not a race we chose: the callback ports are fixed
             # per provider, and the doc is explicit that two logins can't run
             # concurrently — so this is rejected outright rather than queued.

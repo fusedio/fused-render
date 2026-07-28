@@ -141,6 +141,34 @@ Requested scopes, for the record: Claude asks for `user:profile user:inference
 user:sessions:claude_code …`; Codex asks for `openid email profile
 offline_access`.
 
+## API keys (config-level credentials)
+
+Separate from OAuth credentials: an API key is a *config* entry, not a file in
+`auth-dir`, and it does **not** appear in `auth-files`. Each provider has its own
+route, verified on the pinned build:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v0/management/claude-api-key` | List Claude API keys → `{"claude-api-key":[…]}` |
+| PUT | `/v0/management/claude-api-key` | Replace the whole list |
+| GET/PUT | `/v0/management/codex-api-key` | Same for ChatGPT/Codex |
+
+`PUT` takes a **bare JSON array** of entries, e.g. `[{"api-key": "sk-…"}]` — not
+an object wrapping the list. An object body (`{"claude-api-key":[…]}`, mirroring
+the GET shape) is rejected `400 invalid body`, which is an easy mistake since GET
+returns exactly that wrapper. `PUT []` clears the list. There is no POST-to-append
+(404), so adding one key means read-modify-write of the whole array. Entries come
+back with `base-url`, `proxy-url`, `models` and a server-assigned `auth-index`.
+Deleting via `DELETE …?api-key=` answers `200 {"status":"ok"}` whether or not the
+key was there, so it is not a useful existence check.
+
+**Trap — a `codex-api-key` entry with no `base-url` is silently dropped.** The
+`PUT` answers `200 {"status":"ok"}` and the subsequent `GET` returns an empty
+list; supplying `base-url` (e.g. `https://api.openai.com/v1`) makes the identical
+entry persist. Claude has no such requirement — `[{"api-key": "sk-ant-…"}]`
+persists with an empty `base-url`. So a caller must **read back after writing**
+rather than trust the 200, and must default a `base-url` for Codex.
+
 ## Credential listing shape
 
 `GET /v0/management/auth-files` → `{"files": [...]}`, one entry per credential:
