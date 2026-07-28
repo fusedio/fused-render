@@ -826,30 +826,55 @@ const WHOLE_TOOL_GRANTABLE = new Set([
 // What the user is actually being asked to allow. Every field goes in through
 // textContent — tool input is model-authored text and must never be parsed as
 // markup (the same rule the rest of this view follows).
+// NOTHING here truncates, and that is a security property rather than a style
+// choice. An Allow hands the tool its input **verbatim** — permission_server
+// returns `updatedInput` unchanged — so a card that rendered only a prefix
+// would be asking the user to approve bytes they never saw. The input is
+// model-authored, so a prompt-injected model that knows where the cut falls
+// can put something benign in front of it and anything at all behind it. The
+// <pre> is already `max-height` + `overflow: auto`, which makes length a
+// scrolling problem instead of a disclosure one.
+//
+// `covered` names the input keys each case renders; buildPermCard shows
+// whatever is left over, so no key can be invisible either.
 function summarizePermission(tool, input) {
   const inp = input && typeof input === "object" ? input : {};
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
-  const clip = (s, n) => (s.length > n ? s.slice(0, n) + "\n…" : s);
   const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
   switch (tool) {
     case "Bash":
-      return { sub: str(inp.description), body: clip(str(inp.command), 1200) };
+      return { sub: str(inp.description), body: str(inp.command),
+               covered: ["command", "description"] };
     case "Edit":
-      return { sub: str(inp.file_path),
-               body: clip(mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+"), 1200) };
+      return { sub: str(inp.file_path) + (inp.replace_all ? "  (every occurrence)" : ""),
+               body: mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+"),
+               covered: ["file_path", "old_string", "new_string", "replace_all"] };
     case "Write":
-      return { sub: str(inp.file_path), body: clip(str(inp.content), 1200) };
+      return { sub: str(inp.file_path), body: str(inp.content),
+               covered: ["file_path", "content"] };
     case "NotebookEdit":
-      return { sub: str(inp.notebook_path), body: clip(str(inp.new_source), 1200) };
+      return { sub: str(inp.notebook_path), body: str(inp.new_source),
+               covered: ["notebook_path", "new_source"] };
     case "Read":
+      return { sub: str(inp.file_path || inp.path), body: "",
+               covered: ["file_path", "path"] };
+    // The pattern IS the request for these two — where it searches is scope,
+    // what it searches for is the thing being authorised. Falling back through
+    // `path || pattern` meant any request that named a path hid its query
+    // entirely, so the card asked you to approve a search you could not see.
     case "Glob":
     case "Grep":
-      return { sub: str(inp.file_path || inp.path || inp.pattern), body: "" };
+      return { sub: [str(inp.path), inp.glob ? "in " + str(inp.glob) : ""]
+                      .filter(Boolean).join("  "),
+               body: str(inp.pattern), covered: ["pattern", "path", "glob"] };
     case "WebFetch":
     case "WebSearch":
-      return { sub: str(inp.url || inp.query), body: clip(str(inp.prompt), 600) };
+      return { sub: str(inp.url || inp.query), body: str(inp.prompt),
+               covered: ["url", "query", "prompt"] };
   }
-  return { sub: "", body: Object.keys(inp).length ? clip(JSON.stringify(inp, null, 2), 1200) : "" };
+  const keys = Object.keys(inp);
+  return { sub: "", body: keys.length ? JSON.stringify(inp, null, 2) : "",
+           covered: keys };
 }
 
 function buildPermCard(p, run_id) {
@@ -866,7 +891,7 @@ function buildPermCard(p, run_id) {
   head.append("Claude wants to use ", tool);
   el.appendChild(head);
 
-  const { sub, body } = summarizePermission(p.tool, p.input);
+  const { sub, body, covered } = summarizePermission(p.tool, p.input);
   if (sub) {
     const d = document.createElement("div");
     d.className = "perm-sub";
@@ -876,6 +901,17 @@ function buildPermCard(p, run_id) {
   if (body) {
     const pre = document.createElement("pre");
     pre.textContent = body;
+    el.appendChild(pre);
+  }
+  // Whatever the summary above did not render. Allow authorises the WHOLE
+  // input, so a key the curated view has no case for must not be silently
+  // dropped — it gets shown verbatim rather than trusted to be unimportant.
+  const rest = Object.keys(p.input || {}).filter((k) => (covered || []).indexOf(k) < 0);
+  if (rest.length) {
+    const extra = {};
+    rest.forEach((k) => { extra[k] = p.input[k]; });
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(extra, null, 2);
     el.appendChild(pre);
   }
 

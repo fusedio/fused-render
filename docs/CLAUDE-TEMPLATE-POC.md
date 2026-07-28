@@ -136,6 +136,18 @@ claude (headless)                    agent.py / browser
   which drives the server over its stdio JSON-RPC without invoking claude.
 - **Request ids are ours, not the CLI's `tool_use_id`** — the id is joined into
   a path, and a name we minted cannot escape the perm dir.
+- **The card shows the whole input, and that is a security property.** An Allow
+  returns `updatedInput` **unchanged**, so anything the card elided would still
+  run. The input is model-authored, so a prompt-injected model that knows where
+  a cut falls can put something benign in front of it and the real payload
+  behind it — the user clicks Allow on the part they can read. Two rules
+  therefore hold: nothing is truncated (the `<pre>` is `max-height` +
+  `overflow: auto`, which makes length a *scrolling* problem, not a disclosure
+  one), and every `input` key the curated summary has no case for is rendered
+  verbatim underneath it rather than assumed unimportant. Both are pinned by a
+  node probe that runs the card's own `summarizePermission` over a table of
+  tool inputs — including a 5 KB command whose last line is the destructive
+  one, and a `Grep` whose `pattern` used to vanish whenever a `path` was set.
 - **Decisions are a one-way latch.** `O_EXCL`, first writer wins: a
   double-click, or a cancel landing on a card that was just allowed, must not
   overwrite a verdict the tool may already have acted on. Anything that is not
