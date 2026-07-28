@@ -92,9 +92,52 @@ _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
 # an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
 PERMISSION_SERVER = "fused_approvals"
 PERMISSION_TOOL = "approve"
-# Seconds an unanswered request waits before denying itself (permission_server
-# owns the wait; this side only has to agree on the number).
-PERMISSION_WAIT = 3600
+
+
+def _permission_wait() -> int:
+    """Seconds an unanswered request waits before denying itself.
+
+    Read from the environment here, NOT just in permission_server: this side
+    stamps the value into the generated mcp.json (both as the server's own env
+    and as the CLI's per-call ceiling), so a hardcoded constant here silently
+    overwrote whatever the user had set — the var read as configurable and was
+    not. Nonsense values fall back rather than producing a run that gives up
+    instantly or never."""
+    raw = os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT")
+    try:
+        seconds = int(float(raw))
+    except (TypeError, ValueError):
+        return 3600
+    return seconds if seconds >= 1 else 3600
+
+
+PERMISSION_WAIT = _permission_wait()
+
+# Tools for which "allow all of these for the rest of the reply" is offered.
+# MUST stay identical to WHOLE_TOOL_GRANTABLE in template.html — the card is
+# where the choice is made, this is where it is enforced, and a test asserts
+# the two lists agree (D146: a duplicated rule needs a test, not a comment).
+#
+# Enforced here and not only in the page because the page is a view, and a
+# view is the wrong place for the only copy of a security-relevant rule: any
+# other caller of `decide` — a future surface, a hand-built request — would
+# otherwise get a session-wide Bash grant the UI deliberately never offers.
+WHOLE_TOOL_GRANTABLE = frozenset({
+    "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
+})
+
+# How many approvals the user wants to be asked for, mapped onto the CLI's own
+# --permission-mode. The prompt tool stays wired in ALL of them: the mode only
+# decides how much is auto-approved before it is consulted, and whatever is
+# left still has to be answerable or it goes back to being a silent refusal.
+#
+#   prompt      the CLI default — a card for anything not already allowed
+#   acceptEdits file edits go through; Bash/web/everything else still cards
+#   auto        the CLI's own classifier auto-approves what it judges safe,
+#               and escalates the rest to a card (it is a broader opt-in, NOT
+#               a blanket one — bypassPermissions is deliberately not offered)
+PERMISSION_MODES = {"prompt": None, "acceptEdits": "acceptEdits", "auto": "auto"}
+DEFAULT_PERMISSION_MODE = "prompt"
 
 
 def _claude_bin() -> str:
@@ -363,6 +406,18 @@ def _permissions(run_dir: str) -> list:
 DECISION_WRITE_WINDOW = 2.0
 
 
+def _request_tool(req_path: str) -> str:
+    """The tool a parked request is asking about, or "" if it can't be read —
+    which lands outside WHOLE_TOOL_GRANTABLE, so an unreadable request cannot
+    talk its way into a session-wide grant."""
+    try:
+        with open(req_path, encoding="utf-8") as fh:
+            req = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(req.get("tool") or "") if isinstance(req, dict) else ""
+
+
 def _read_decision(perm_dir: str, request_id: str, wait: float = 0.0) -> dict:
     """The decision on disk, or `{}` when there is none.
 
@@ -425,14 +480,29 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
     if _bad_id(request_id):
         return {"error": "unknown permission request"}
     perm_dir = _perm_dir(run_dir)
-    if not os.path.isfile(os.path.join(perm_dir, request_id + ".req.json")):
+    req_path = os.path.join(perm_dir, request_id + ".req.json")
+    if not os.path.isfile(req_path):
         return {"error": "unknown permission request"}
     # Anything that is not an explicit allow is a deny: a mangled param must
     # fail closed, never grant.
     verdict = "allow" if decision == "allow" else "deny"
-    _write_decision(perm_dir, request_id, {
-        "decision": verdict,
-        "scope": "session" if scope == "session" else "once"})
+    if _alive(run_dir):
+        # Narrow, never widen: a session grant is only honoured for the tools
+        # the card offers it for. Asking for one on a Bash request — which the
+        # UI never does — downgrades to allow-once instead of installing a
+        # session-wide Bash rule, and the caller is told which scope it got.
+        if scope == "session" and _request_tool(req_path) not in WHOLE_TOOL_GRANTABLE:
+            scope = "once"
+        payload = {"decision": verdict,
+                   "scope": "session" if scope == "session" else "once"}
+    else:
+        # The run is over, so nothing will ever read this answer. Record the
+        # expiry rather than the click: an Allow that was in flight when the
+        # run died used to latch on disk all the same, and the card then read
+        # "✓ Allowed" for a tool claude never ran — a permission UI telling the
+        # user their grant took effect when it provably did not.
+        payload = {"decision": "expired"}
+    _write_decision(perm_dir, request_id, payload)
     # Report what is on disk, never what was clicked — the losing half of a
     # double-click must not show a verdict the tool will never see — and read it
     # back rather than trusting our own write, so the answer is the same one
@@ -469,7 +539,7 @@ _DETACH = (
 
 
 def _start(file: str, message: str, session_id: str, model: str,
-           effort: str) -> dict:
+           effort: str, permission_mode: str = "") -> dict:
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
@@ -481,12 +551,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     os.makedirs(run_dir)
     os.makedirs(_perm_dir(run_dir))
 
-    # No --permission-mode: the default (ask) is finally answerable now that
-    # --permission-prompt-tool routes the question to the chat window. The POC
-    # ran acceptEdits purely because headless claude could not be asked, which
-    # bought silent edits anywhere on disk and still left every Bash/WebFetch
-    # denied with "no prompt available in headless mode" — the invisible refusal
-    # this replaces.
+    # An unknown mode falls back to the strictest of the three rather than
+    # erroring: a mangled param must not quietly buy more auto-approval than
+    # the user picked.
+    mode = permission_mode if permission_mode in PERMISSION_MODES \
+        else DEFAULT_PERMISSION_MODE
+    cli_mode = PERMISSION_MODES[mode]
+
     cmd = [_claude_bin(), "-p", message,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
@@ -499,6 +570,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
            "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
+    if cli_mode:
+        cmd += ["--permission-mode", cli_mode]
     if session_id:
         cmd += ["--resume", session_id]
     if model:
@@ -625,7 +698,16 @@ def _poll(run_id: str) -> dict:
     if done:
         for perm in permissions:
             if not perm["decision"]:
-                perm["decision"] = "expired"
+                # Latch it, don't just label it. A payload-only "expired" left
+                # the file unwritten, so a click still in flight landed on disk
+                # afterwards and flipped the card to "✓ Allowed" for a tool the
+                # dead run will never run. Re-read rather than assume: a real
+                # answer racing this write wins the O_EXCL and is the truth.
+                _write_decision(_perm_dir(run_dir), perm["id"],
+                                {"decision": "expired"})
+                perm["decision"] = str(
+                    _read_decision(_perm_dir(run_dir), perm["id"]).get("decision")
+                    or "expired")
     elif any(not p["decision"] for p in permissions):
         # A parked approval outranks whatever the stream last said it was
         # doing: the run is not thinking, it is waiting on the user.
@@ -766,13 +848,13 @@ def _cancel(run_id: str) -> dict:
 def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
-         scope: str = "once") -> dict:
+         scope: str = "once", permission_mode: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
         if not message:
             return {"error": "(empty message)"}
-        return _start(file, message, session_id, model, effort)
+        return _start(file, message, session_id, model, effort, permission_mode)
     if action == "poll":
         return _poll(run_id)
     if action == "decide":

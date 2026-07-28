@@ -474,6 +474,8 @@
     <span class="right">
       <span><span class="sel-label">model: </span><select id="model" class="model-sel"></select></span>
       <span><span class="sel-label">effort: </span><select id="effort" class="effort-sel"></select></span>
+      <span><span class="sel-label">approvals: </span><select id="perm" class="perm-sel"
+            title="How much Claude may do without asking"></select></span>
       <span id="session"></span>
     </span>
   </div>
@@ -492,6 +494,8 @@
           <span class="spacer"></span>
           <select id="hmodel" class="model-sel"></select>
           <select id="heffort" class="effort-sel"></select>
+          <select id="hperm" class="perm-sel"
+                  title="How much Claude may do without asking"></select>
           <button class="go" type="submit" aria-label="Send">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -537,13 +541,27 @@ document.title = "Claude — " + BASENAME;
 
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
-// ── model/effort selectors (home + footer stay in sync via params) ──
+// ── model/effort/approvals selectors (home + footer sync via params) ──
 const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// How much Claude may do without stopping for a card. Values are agent.py's
+// PERMISSION_MODES keys; the labels say what the user gets, not what the CLI
+// calls it. `auto` is a broader opt-in, NOT a blanket one — Claude Code's own
+// classifier judges each request and still escalates what it won't vouch for,
+// so cards can still appear. Nothing here can turn approvals off entirely.
+const PERMISSION_MODES = ["prompt", "acceptEdits", "auto"];
+const PERMISSION_LABELS = {
+  prompt: "ask every time",
+  acceptEdits: "auto-accept edits",
+  auto: "Claude decides",
+};
 // Baseline when no param is set. Selecting the "default" option (empty
 // string) falls back to these too — the initial experience is sonnet/medium.
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_EFFORT = "medium";
+// The strictest of the three is the default: more auto-approval is something
+// the user opts into, never something a missing param hands them.
+const DEFAULT_PERMISSION = "prompt";
 function fillSelect(el, values, label) {
   for (const v of values) {
     const o = document.createElement("option");
@@ -554,6 +572,14 @@ function fillSelect(el, values, label) {
 }
 document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "default"));
 document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "default"));
+document.querySelectorAll(".perm-sel").forEach((el) => {
+  for (const v of PERMISSION_MODES) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = PERMISSION_LABELS[v];
+    el.appendChild(o);
+  }
+});
 // the home card shows friendlier default labels
 document.querySelector("#hmodel option[value='']").textContent = "model";
 document.querySelector("#heffort option[value='']").textContent = "effort";
@@ -561,11 +587,17 @@ document.querySelector("#heffort option[value='']").textContent = "effort";
 function syncSelects() {
   document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || DEFAULT_MODEL; });
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || DEFAULT_EFFORT; });
+  const perm = fused.params.get("permission");
+  document.querySelectorAll(".perm-sel").forEach((el) => {
+    el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
+  });
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("effort", el.value); syncSelects(); }));
+document.querySelectorAll(".perm-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
 syncSelects();
 
 function showSession() {
@@ -1131,6 +1163,7 @@ async function sendMessage(message) {
       session_id: fused.params.get("session_id") || "",
       model: fused.params.get("model") || DEFAULT_MODEL,
       effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
       // key:null — all agent.py calls opt out of default per-file cancellation
       // (D114): start/poll/history/sessions share this file, and superseding an
       // awaited poll would leave it pending and hang the streaming loop.

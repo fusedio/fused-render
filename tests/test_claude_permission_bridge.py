@@ -248,6 +248,7 @@ def test_decide_latches_on_the_first_answer(agent, tmp_path):
         json.dump({"id": "req-1", "tool": "Bash", "input": {"command": "ls"}}, fh)
 
     monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
     assert agent._decide("run", "req-1", "allow", "once")["decision"] == "allow"
     # A second click (or a cancel racing it) must not flip the verdict the tool
     # has already been told about.
@@ -283,6 +284,7 @@ def test_decide_waits_out_an_in_flight_write_instead_of_guessing(agent, tmp_path
     with open(os.path.join(perm_dir, "req-1.req.json"), "w") as fh:
         json.dump({"id": "req-1", "tool": "Bash", "input": {}}, fh)
     monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
 
     t = _lose_the_latch(perm_dir, "req-1", {"decision": "deny", "scope": "once"})
     out = agent._decide("run", "req-1", "allow", "session")
@@ -376,6 +378,7 @@ def test_only_the_exact_string_allow_grants(agent, tmp_path, decision):
     with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
         json.dump({"id": "req-1", "tool": "Bash", "input": {}}, fh)
     monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
     assert agent._decide("run", "req-1", decision, "session")["decision"] == "deny"
 
 
@@ -423,6 +426,70 @@ def test_poll_marks_an_unanswered_request_expired_once_the_run_is_over(agent, tm
     # Not "pending": the run that was waiting on it is gone, so the buttons
     # would lead nowhere.
     assert data["permissions"][0]["decision"] == "expired"
+
+
+def _dead_run_with_a_parked_request(agent, tmp_path, finished=True):
+    """A run that is over — result row written, process gone — with one
+    permission request nobody ever answered."""
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Bash", "input": {"command": "ls"}}, fh)
+    if finished:
+        with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+            fh.write(json.dumps({"type": "result", "session_id": "s",
+                                 "result": "done"}) + "\n")
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        # A real reaped pid, so the genuine _alive path runs. NOT a sentinel
+        # like -1: to kill(2) that means "every process I may signal", so
+        # os.kill(-1, 0) succeeds and a "dead" run reads as alive.
+        done = subprocess.Popen([sys.executable, "-c", ""])
+        done.wait()
+        fh.write(str(done.pid))
+    monkey_runs(agent, tmp_path)
+    return run_dir
+
+
+def test_expiry_is_latched_on_disk_not_just_labelled(agent, tmp_path):
+    """`poll` marking an unanswered request expired has to WRITE that, or a
+    click still in flight lands afterwards and the card claims a grant that
+    never reached claude."""
+    run_dir = _dead_run_with_a_parked_request(agent, tmp_path)
+
+    assert agent._poll("run")["permissions"][0]["decision"] == "expired"
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-1")
+    assert on_disk.get("decision") == "expired", "expiry never reached the latch"
+
+    # The in-flight Allow now loses to the latch and is told so.
+    assert agent._decide("run", "req-1", "allow", "once")["decision"] == "expired"
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-1")["decision"] == "expired"
+
+
+def test_a_click_landing_after_the_run_died_is_not_recorded_as_a_grant(agent, tmp_path):
+    """The other ordering: the click arrives before any poll noticed the run
+    was over. Nothing is waiting for the answer, so it must not be recorded as
+    one — '✓ Allowed' for a tool claude never ran is a permission UI lying
+    about the thing it exists to report."""
+    run_dir = _dead_run_with_a_parked_request(agent, tmp_path, finished=False)
+
+    out = agent._decide("run", "req-1", "allow", "session")
+    assert out["decision"] == "expired", f"recorded a grant on a dead run: {out}"
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-1") == {
+        "decision": "expired"}
+
+
+def test_a_live_run_still_records_the_click(agent, tmp_path, monkeypatch):
+    """The guard above must not swallow ordinary answers."""
+    run_dir = _dead_run_with_a_parked_request(agent, tmp_path, finished=False)
+    assert agent._decide("run", "req-1", "allow", "once")["decision"] == "expired"
+
+    # Same request, same click — the only difference is that the run is live.
+    os.unlink(os.path.join(agent._perm_dir(run_dir), "req-1.res.json"))
+    monkeypatch.setattr(agent, "_alive", lambda _: True)
+    out = agent._decide("run", "req-1", "allow", "once")
+    assert out["decision"] == "allow", out
+    # (scope stays "once" here because the fixture's request is Bash — that is
+    # the allowlist's doing, covered separately.)
+    assert out["scope"] == "once"
 
 
 def test_poll_reports_awaiting_while_a_request_is_parked(agent, tmp_path, monkeypatch):
@@ -518,6 +585,44 @@ def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(t
     assert os.path.basename(server) == "permission_server.py"
 
 
+def test_the_card_and_the_backend_agree_on_who_may_be_granted(agent):
+    """D146: a rule duplicated across two implementations needs a test that
+    asserts they agree, not a comment saying they should."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    listed = html.split("const WHOLE_TOOL_GRANTABLE = new Set([")[1].split("]);")[0]
+    in_page = {t.strip().strip('"') for t in listed.split(",") if t.strip()}
+    assert in_page == set(agent.WHOLE_TOOL_GRANTABLE)
+
+
+def test_session_scope_is_refused_server_side_for_an_ungrantable_tool(agent, tmp_path):
+    """The card only offers "allow all" for the file tools, but that is a view
+    — and a view is the wrong place for the only copy of the rule. A `decide`
+    asking for session scope on a Bash request must not install a session-wide
+    Bash grant; it narrows to allow-once and says so."""
+    run_dir = _run_dir(agent, tmp_path)
+    for name, tool in (("req-bash", "Bash"), ("req-edit", "Edit")):
+        with open(os.path.join(agent._perm_dir(run_dir), name + ".req.json"), "w") as fh:
+            json.dump({"id": name, "tool": tool, "input": {}}, fh)
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+
+    bash = agent._decide("run", "req-bash", "allow", "session")
+    assert bash["decision"] == "allow" and bash["scope"] == "once", bash
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-bash")["scope"] == "once"
+
+    # ...and the tools that DO carry the offer are untouched by the guard.
+    edit = agent._decide("run", "req-edit", "allow", "session")
+    assert edit["scope"] == "session", edit
+
+
+def test_an_unreadable_request_cannot_win_a_session_grant(agent, tmp_path):
+    run_dir = _run_dir(agent, tmp_path)
+    open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w").write("{trunc")
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+    assert agent._decide("run", "req-1", "allow", "session")["scope"] == "once"
+
+
 def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
     """"Allow all Bash in this reply" hands over every command for the rest of
     the turn — not a proportionate second option next to one `gh pr diff`, and
@@ -534,6 +639,84 @@ def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
     assert "WHOLE_TOOL_GRANTABLE.has(p.tool)" in html
 
 
+@pytest.mark.parametrize("env,expected", [
+    ("5", 5),           # the reported case: set it to 5, get 3600 anyway
+    ("120", 120),
+    ("0", 3600),        # nonsense values fall back rather than giving up instantly
+    ("-30", 3600),
+    ("banana", 3600),
+    (None, 3600),
+])
+def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env, expected):
+    """`FUSED_RENDER_PERMISSION_TIMEOUT` is read by permission_server, but
+    agent.py stamps its own value into the generated mcp.json — as the
+    server's env AND as the CLI's per-call ceiling. A constant here therefore
+    overwrote whatever the user set, so the var documented as configurable
+    silently was not."""
+    if env is None:
+        monkeypatch.delenv("FUSED_RENDER_PERMISSION_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("FUSED_RENDER_PERMISSION_TIMEOUT", env)
+    agent = _load("agent")  # re-import: the value is resolved at module load
+    assert agent.PERMISSION_WAIT == expected
+
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm")
+    entry = json.loads(open(agent._write_mcp_config(str(run_dir))).read())
+    entry = entry["mcpServers"][agent.PERMISSION_SERVER]
+    assert entry["env"]["FUSED_RENDER_PERMISSION_TIMEOUT"] == str(expected)
+    # and the CLI's hard ceiling still clears our own wait, whatever it is
+    assert entry["timeout"] > expected * 1000
+
+
+@pytest.mark.parametrize("picked,flag", [
+    ("prompt", None),                  # CLI default — a card for everything
+    ("acceptEdits", "acceptEdits"),    # edits through, Bash/web still card
+    ("auto", "auto"),                  # the CLI's classifier judges each one
+    ("", None),                        # unset -> strictest
+    ("bypassPermissions", None),       # not on the menu, and not reachable
+    ("dontAsk", None),
+    ("../../etc", None),
+])
+def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
+        agent, tmp_path, monkeypatch, picked, flag):
+    """The selector's three modes map onto --permission-mode. Anything else
+    falls back to the strictest: a mangled param must never buy more
+    auto-approval than the user picked, and the CLI's blanket
+    `bypassPermissions` is deliberately not offered at all."""
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda cmd, **kw: (seen.__setitem__("cmd", cmd), _Proc())[1])
+    agent._start(str(target), "hi", "", "", "", picked)
+    cmd = seen["cmd"]
+
+    if flag is None:
+        assert "--permission-mode" not in cmd
+    else:
+        assert cmd[cmd.index("--permission-mode") + 1] == flag
+    assert "bypassPermissions" not in cmd
+    # the bridge stays wired whatever the mode — whatever is NOT auto-approved
+    # still has to be answerable, or it is a silent refusal again
+    assert "--permission-prompt-tool" in cmd
+
+
+def test_the_selector_and_the_backend_offer_the_same_modes(agent):
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    listed = html.split("const PERMISSION_MODES = [")[1].split("];")[0]
+    in_page = [m.strip().strip('"') for m in listed.split(",") if m.strip()]
+    assert set(in_page) == set(agent.PERMISSION_MODES)
+    assert agent.DEFAULT_PERMISSION_MODE == "prompt"
+    assert 'const DEFAULT_PERMISSION = "prompt"' in html
+
+
 def test_template_wires_the_decide_action(agent):
     html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
     assert 'action: "decide"' in html
@@ -547,3 +730,9 @@ def test_template_wires_the_decide_action(agent):
 def monkey_runs(agent, tmp_path):
     """Point the module's RUNS at tmp_path, where `_run_dir` made "run"."""
     agent.RUNS = str(tmp_path)
+
+
+def monkeypatch_alive(agent):
+    """Treat the run as in flight — these fixtures write no pid file, and a
+    decision on a finished run is deliberately recorded as expired."""
+    agent._alive = lambda _run_dir: True

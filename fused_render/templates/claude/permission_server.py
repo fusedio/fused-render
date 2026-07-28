@@ -166,7 +166,12 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
             result["decisionClassification"] = "user_permanent"
         return result
 
-    if decision.get("reason") == "timeout":
+    if verdict == "expired":
+        # agent.py latched this when it saw the run end with the request still
+        # unanswered. Reaching us at all means the run outlived that call, so
+        # say what happened rather than blaming the user.
+        message = "The reply ended before this was answered."
+    elif decision.get("reason") == "timeout":
         message = ("No answer from the fused-render chat window after "
                    "%d minutes — treating this as denied." % (WAIT_TIMEOUT // 60))
     elif decision.get("reason") == "cancelled":

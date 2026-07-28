@@ -113,6 +113,21 @@ claude (headless)                    agent.py / browser
 - **The card is the prompt.** While one is unanswered the subprocess is
   genuinely blocked, `poll` reports `phase: "awaiting"`, and the status line
   reads "Waiting for your approval…".
+- **How many cards you get is a picker** (`permission` URL param, next to
+  model/effort), mapping onto the CLI's own `--permission-mode`:
+
+  | label | mode | measured against CLI 2.1.220 |
+  |---|---|---|
+  | ask every time *(default)* | *(none)* | `Edit` **and** `Write` both carded |
+  | auto-accept edits | `acceptEdits` | edit applied with no card; `WebFetch` still carded |
+  | Claude decides | `auto` | its classifier vouched for the edit + write; escalates what it won't |
+
+  The bridge stays wired in **all three** — the mode only decides how much is
+  auto-approved *before* the prompt tool is consulted, and whatever is left has
+  to stay answerable or it is a silent refusal again. `bypassPermissions` is
+  deliberately not on the menu, and an unknown value falls back to the
+  strictest: more auto-approval is opted into, never handed over by a mangled
+  param. "Claude decides" is a *broader* opt-in, not a blanket one.
 - **Wire shape** (CLI 2.1.220): in `{tool_name, input, tool_use_id}`, out a
   *single* text block whose text is JSON — `{"behavior": "allow",
   "updatedInput": …}` or `{"behavior": "deny", "message": …}` (the message is
@@ -155,12 +170,34 @@ claude (headless)                    agent.py / browser
   off. The middle ground the CLI's own prompt offers — a rule narrowed to
   *that* command — is unavailable to us for the reason above, so the honest
   choice is all-or-nothing per tool, defaulting to nothing.
+- **…and it is enforced in `agent.py`, not only on the card.** The page is a
+  view, and a view is the wrong place for the only copy of a security-relevant
+  rule — any other caller of `decide` would otherwise get the session-wide Bash
+  grant the UI never offers. `WHOLE_TOOL_GRANTABLE` exists on both sides and a
+  test asserts the two lists are identical (D146: a duplicated rule needs a
+  test, not a comment). A session scope asked for on an ungrantable tool
+  **narrows to allow-once** rather than erroring, and the effective scope is
+  reported back.
+- **It is a rule, not a mode.** The update is `addRules` for one `toolName`;
+  the CLI's separate `setMode` update — the one that would turn on `auto` — is
+  never sent. Verified end to end: after allow-all on an `Edit`, a second
+  `Edit` went through untouched and a `Write` in the same turn still parked its
+  own card.
 - **Nobody home:** an unanswered request denies itself after
-  `FUSED_RENDER_PERMISSION_TIMEOUT` (1 h) and writes that verdict down, so a
-  re-attaching frame doesn't render buttons that lead nowhere. The per-server
-  `timeout` in the generated `mcp.json` is set *above* that, so our sentence
-  wins over the CLI's MCP-timeout error. `cancel` releases every parked request
-  before killing the process group.
+  `FUSED_RENDER_PERMISSION_TIMEOUT` (default 1 h, read in `agent.py` *and*
+  `permission_server.py` — the former stamps the resolved value into
+  `mcp.json`, so a constant there would silently overwrite whatever the user
+  set) and writes that verdict down, so a re-attaching frame doesn't render
+  buttons that lead nowhere. The per-server `timeout` in the generated
+  `mcp.json` is set *above* that, so our sentence wins over the CLI's
+  MCP-timeout error. `cancel` releases every parked request before killing the
+  process group.
+- **A run that ends latches its leftovers.** `poll` marking an unanswered
+  request `expired` **writes** that to the latch rather than only labelling the
+  payload, and `decide` records an expiry instead of the click once the run is
+  no longer alive. Both orderings otherwise ended with a click landing on disk
+  after the run died and the card reading "✓ Allowed" for a tool claude never
+  ran (Bugbot, PR #308).
 - **Side effect handled:** naming a permission-prompt tool also un-gates
   `AskUserQuestion` and `ExitPlanMode`, which the CLI otherwise disables in
   headless mode. This chat renders neither, so `--disallowed-tools` keeps them
