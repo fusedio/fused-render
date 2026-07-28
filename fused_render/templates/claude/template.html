@@ -842,13 +842,25 @@ function summarizePermission(tool, input) {
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
   const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
 
-  // `covered` is derived from what was actually READ, never hand-listed.
-  // Naming both sides of an `a || b` as covered hid whichever one lost: the
-  // leftover dump skipped it, the card never showed it, and updatedInput
-  // authorised it anyway — the same "approve what you cannot see" hole as the
-  // truncation, arriving through the mechanism built to close that one.
+  // `covered` is derived from what was actually RENDERED, never hand-listed
+  // and never merely "read". Naming both sides of an `a || b` as covered hid
+  // whichever one lost: the leftover dump skipped it, the card never showed
+  // it, and updatedInput authorised it anyway — the same "approve what you
+  // cannot see" hole as the truncation, arriving through the mechanism built
+  // to close that one.
+  //
+  // "Rendered" has to mean non-empty, for the same reason. buildPermCard only
+  // emits a <pre> for a truthy body, so claiming an empty value as covered hid
+  // it from BOTH surfaces: an empty `Write` content — which truncates the file
+  // — showed as a path and nothing else, reading exactly like an ordinary
+  // path-only approve. Empty values fall through to the leftover dump, where
+  // JSON.stringify prints them as the `""` they are.
   const used = [];
-  const show = (k) => { if (k in inp) used.push(k); return str(inp[k]); };
+  const show = (k) => {
+    const v = str(inp[k]);
+    if (v) used.push(k);
+    return v;
+  };
   const pick = (...keys) => {           // an alternation: record only the winner
     for (const k of keys) if (inp[k]) { used.push(k); return str(inp[k]); }
     return "";

@@ -181,11 +181,18 @@ claude (headless)                    agent.py / browser
   `overflow: auto`, which makes length a *scrolling* problem, not a disclosure
   one), and every `input` key the curated summary has no case for is rendered
   verbatim underneath it rather than assumed unimportant. That second rule
-  needs `covered` to be **derived from the keys actually read**, never
-  hand-listed: naming both sides of an `a || b` (`file_path || path`,
-  `url || query`) marked the loser covered too, so the leftover dump skipped
-  it, the card never showed it, and `updatedInput` authorised it regardless —
-  the same hole arriving through the mechanism built to close it. The dump
+  needs `covered` to be **derived from what was actually rendered**, never
+  hand-listed and never merely "read". Naming both sides of an `a || b`
+  (`file_path || path`, `url || query`) marked the loser covered too, so the
+  leftover dump skipped it, the card never showed it, and `updatedInput`
+  authorised it regardless — the same hole arriving through the mechanism
+  built to close it. **Rendered has to mean non-empty**, for the same reason:
+  the card emits a `<pre>` only for a truthy body, so a key claimed as covered
+  while rendering as nothing was hidden from *both* surfaces — and the sharp
+  case is a `Write` whose `content` is `""`, which truncates the file while
+  the card shows a bare path, indistinguishable from an ordinary path-only
+  approve. Empty values now fall through to the leftover dump, which prints
+  them as the `""` they are. The dump
   itself is built with **`Object.fromEntries`, never `{}` + assignment**, for a
   related reason: the input reaches the page through `res.json()`, which — like
   `JSON.parse` — *defines* an own `__proto__` key, so `Object.keys` lists it and

@@ -1118,6 +1118,76 @@ def _leftover(raw_input_json, covered):
     return json.loads(out.stdout)
 
 
+_EVERY_SURFACE = [
+    # An empty value is the case that motivated this: buildPermCard emits a
+    # <pre> only for a truthy body, so a key claimed as "covered" while
+    # rendering as nothing appeared on NEITHER surface.
+    ("Write", {"file_path": "/notes.md", "content": ""}),
+    ("Bash", {"command": "", "description": "tidy up"}),
+    ("Grep", {"pattern": "", "path": "/home"}),
+    ("Glob", {"pattern": "", "path": "/home"}),
+    ("Edit", {"file_path": "/a", "old_string": "x", "new_string": ""}),
+    ("NotebookEdit", {"notebook_path": "/n.ipynb", "new_source": ""}),
+    ("WebFetch", {"url": "", "prompt": ""}),
+    # …and the ordinary non-empty cases must keep working.
+    ("Write", {"file_path": "/a", "content": "real"}),
+    ("Bash", {"command": "ls", "description": "d", "timeout": 900}),
+    ("Read", {"file_path": "/shown.txt", "path": "/etc/shadow"}),
+    ("mcp__x__y", {"secret_arg": "visible", "empty_arg": ""}),
+]
+
+
+@pytest.mark.parametrize("tool,tool_input", _EVERY_SURFACE,
+                         ids=["%s-%s" % (t, "-".join(i)) for t, i in _EVERY_SURFACE])
+def test_every_input_value_reaches_one_surface_or_the_other(tool, tool_input):
+    """The whole disclosure contract in one assertion.
+
+    Allow hands the tool its input verbatim, so every key must be visible
+    somewhere: rendered by the curated summary, or printed by the leftover
+    dump. `covered` is what routes between the two, and each way it has been
+    wrong has produced the same bug — hand-listed (the `a || b` loser),
+    then claimed-for-empty (a `Write` whose empty `content` truncates the file
+    while the card shows a bare path).
+
+    Note the `bool(text)` guard: `"" in shown` is always True, which is exactly
+    why the earlier alternation test could not catch the empty case.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own summariser")
+    summary = _summarize(tool, tool_input)
+    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
+    leftover = _leftover(json.dumps(tool_input), summary["covered"]) or {}
+    for key, value in tool_input.items():
+        text = value if isinstance(value, str) else json.dumps(value)
+        # An empty value carries no text to look for, so the only way to
+        # disclose it is to NAME it — either in the leftover dump or in the
+        # verbatim JSON the unknown-tool branch renders as its body.
+        disclosed = (key in leftover
+                     or '"%s"' % key in shown
+                     or (bool(text) and text in shown))
+        assert disclosed, (
+            f"{tool}.{key}={value!r} appears on neither surface — the user "
+            "would approve it without ever seeing it, and permission_server "
+            "returns updatedInput unchanged")
+
+
+def test_an_empty_write_is_not_shown_as_a_bare_path():
+    """The sharp end of the rule above.
+
+    `Write` with `content: ""` truncates the file. Marking `content` covered
+    while rendering nothing made that card identical to an ordinary path-only
+    approve — no body, no leftover dump, nothing to distinguish "write this
+    text" from "empty this file".
+    """
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own summariser")
+    summary = _summarize("Write", {"file_path": "/notes.md", "content": ""})
+    assert "content" not in summary["covered"], (
+        "an unrendered key must not be claimed as covered")
+    assert _leftover(json.dumps({"file_path": "/notes.md", "content": ""}),
+                     summary["covered"]) == {"content": ""}
+
+
 def test_no_input_key_is_dropped_from_the_card():
     """Allow authorises the whole input, so a key the curated summary has no
     case for must still be visible rather than assumed unimportant."""
