@@ -1,10 +1,12 @@
 """Large-vector registration and bounded MVT tile regressions."""
 from __future__ import annotations
 
+import json
 import math
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -164,6 +166,32 @@ def test_vector_tile_is_served_over_the_daemon_endpoint(tmp_path, monkeypatch):
                 "application/vnd.mapbox-vector-tile"
             )
         assert mapbox_vector_tile.decode(tile)["layer"]["features"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_vector_tile_endpoint_returns_json_when_encoding_fails():
+    class BrokenVectors:
+        def tile(self, *_args):
+            raise RuntimeError("encoder unavailable")
+
+    token = "test-token"
+    server = MapServer(("127.0.0.1", 0), Handler)
+    port = int(server.server_address[1])
+    server.token = token
+    server.last_hit = time.time()
+    server.vectors = BrokenVectors()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{port}/vtiles/source/0/0/0.pbf?t={token}"
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(url, timeout=5)
+        assert caught.value.code == 500
+        payload = json.loads(caught.value.read())
+        assert payload["message"] == "RuntimeError: encoder unavailable"
     finally:
         server.shutdown()
         server.server_close()

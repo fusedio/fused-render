@@ -50,6 +50,29 @@ def test_remote_urls_are_never_environment_expanded(monkeypatch):
         assert map_render._clean_target(f'"{remote}"') == remote
 
 
+def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
+    monkeypatch,
+):
+    template_dir = str(MAP.resolve())
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [
+            value
+            for value in sys.path
+            if str(Path(value or ".").resolve()) != template_dir
+        ],
+    )
+    for name in ("worker", "raster_engine", "vector_engine"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    daemon = _load("daemon")
+
+    assert Path(daemon.worker.__file__).resolve().parent == MAP.resolve()
+    assert daemon.RasterEngine.__module__ == "raster_engine"
+    assert daemon.VectorEngine.__module__ == "vector_engine"
+
+
 def test_map_uses_the_bundled_runtime_without_first_open_installation():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
@@ -64,6 +87,60 @@ def test_map_uses_the_bundled_runtime_without_first_open_installation():
     assert "uv run" not in launcher
     assert "FUSED_RENDER_UV" not in launcher
     assert not (MAP / "pyproject.toml").exists()
+
+
+def test_large_vector_reports_an_old_runtime_before_registering_tiles(
+    monkeypatch,
+):
+    vector_engine = _load("vector_engine")
+    monkeypatch.setattr(
+        vector_engine,
+        "_encoder_dependency_error",
+        lambda: "This Fused Render runtime is too old for streamed vector tiles.",
+    )
+    engine = vector_engine.VectorEngine(
+        base_url="http://127.0.0.1:1234",
+        token="test-token",
+        locator=lambda source, _target: source,
+    )
+
+    descriptor = engine.try_describe(
+        {
+            "target": "C:/data/large.gpkg",
+            "artifact_id": "vector-1",
+        }
+    )
+
+    assert descriptor["status"] == "error"
+    assert "runtime is too old" in descriptor["message"]
+    assert engine.sources == {}
+
+
+def test_small_vector_can_use_geojson_fallback_on_an_old_runtime(
+    monkeypatch,
+    tmp_path,
+):
+    vector_engine = _load("vector_engine")
+    source = tmp_path / "small.gpkg"
+    source.write_bytes(b"small")
+    monkeypatch.setattr(
+        vector_engine,
+        "_encoder_dependency_error",
+        lambda: pytest.fail("small vector should not require the MVT encoder"),
+    )
+    engine = vector_engine.VectorEngine(
+        base_url="http://127.0.0.1:1234",
+        token="test-token",
+        locator=lambda candidate, _target: candidate,
+    )
+    monkeypatch.setattr(engine, "_describe", lambda **_kwargs: None)
+
+    assert engine.try_describe(
+        {
+            "target": str(source),
+            "artifact_id": "vector-1",
+        }
+    ) is None
 
 
 def test_macos_bundle_forces_dynamic_map_runtime_packages():

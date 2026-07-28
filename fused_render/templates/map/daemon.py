@@ -11,12 +11,20 @@ import argparse
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+# Frozen desktop launchers do not consistently put a directly executed data
+# script's directory on sys.path. Resolve sibling template modules from this
+# file explicitly so daemon startup is independent of cwd and launcher shape.
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 
 import worker
 from raster_engine import RasterEngine
@@ -172,7 +180,18 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._json(400, {"error": "invalid tile coordinate"})
                 return
-            tile = self.vectors.tile(source_id, z, x, y)
+            try:
+                tile = self.vectors.tile(source_id, z, x, y)
+            except Exception as error:
+                traceback.print_exc()
+                self._json(
+                    500,
+                    {
+                        "status": "error",
+                        "message": f"{type(error).__name__}: {error}",
+                    },
+                )
+                return
             if tile is None:
                 self._json(404, {"error": "unknown source"})
             elif not tile:

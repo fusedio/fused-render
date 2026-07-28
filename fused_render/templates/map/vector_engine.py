@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import importlib.util
 import math
 import os
 import sqlite3
@@ -49,6 +50,37 @@ MVT_EXTENT = 4096
 MVT_BUFFER = 64
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
+
+
+def _encoder_dependency_error() -> str | None:
+    missing = [
+        module
+        for module in ("mapbox_vector_tile", "google.protobuf", "pyclipper")
+        if importlib.util.find_spec(module) is None
+    ]
+    if not missing:
+        return None
+    return (
+        "This Fused Render runtime is too old for streamed vector tiles "
+        f"(missing {', '.join(missing)}). Install a build that includes the "
+        "Map Viewer vector runtime; the template will not download packages "
+        "while opening a map."
+    )
+
+
+def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
+    return {
+        "id": artifact_id,
+        "status": "error",
+        "kind": None,
+        "bounds": None,
+        "data": {},
+        "stats": {},
+        "style": {},
+        "warnings": [],
+        "detected_type": "vector",
+        "message": message,
+    }
 
 
 def _suffix(value: str) -> str:
@@ -248,6 +280,10 @@ class VectorEngine:
         source = _resolve_source(request, target)
         source_size = _source_size(source)
         artifact_id = str(request.get("artifact_id") or "")
+        if source_size is None or source_size >= VECTOR_TILE_MIN_BYTES:
+            dependency_error = _encoder_dependency_error()
+            if dependency_error:
+                return _dependency_descriptor(artifact_id, dependency_error)
         try:
             locator = self.locator(source, target)
             return self._describe(
@@ -313,6 +349,9 @@ class VectorEngine:
             and feature_count < VECTOR_TILE_MIN_FEATURES
         ):
             return None
+        dependency_error = _encoder_dependency_error()
+        if dependency_error:
+            return _dependency_descriptor(artifact_id, dependency_error)
 
         source_crs = info.get("crs")
         if not source_crs:
