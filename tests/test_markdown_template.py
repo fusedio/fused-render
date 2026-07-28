@@ -469,6 +469,29 @@ def test_backlinks_and_the_graph_are_one_sidebar_behind_one_toggle(source):
     assert 'toggleEl.setAttribute("aria-pressed", String(on))' in body
 
 
+def test_the_graph_gets_the_panel_s_leftover_space_not_the_backlinks(source):
+    # The obvious "simplification" is to let the scrollable list flex and cap
+    # the canvas, which leaves four backlinks holding 300px of nothing while the
+    # graph's labels overlap. The split only works in this direction.
+    links = source[source.index("  #links {"):]
+    links = links[:links.index("\n")]
+    assert "flex: none" in links and "max-height:" in links
+    assert "overflow: auto" in links and "min-height: 0" in links
+    graph = source[source.index("  #graph-sec {"):]
+    graph = graph[:graph.index("\n  }")]
+    assert "flex: 1" in graph and "min-height:" in graph
+    assert "height: 45%" not in graph
+
+
+def test_a_backlink_row_keeps_its_path_visible_without_overflowing(source):
+    # Two notes can share a title; the rel path is the only disambiguator, so it
+    # stays on the row and ellipsizes rather than being dropped or wrapping.
+    rules = source[source.index("  .bl-title,"):]
+    rules = rules[:rules.index("\n  .bl-empty")]
+    assert "text-overflow: ellipsis" in rules and "min-width: 0" in rules
+    assert '<span class="bl-path">${escapeHtml(row.rel)}</span>' in source
+
+
 def test_the_panel_asks_for_a_bounded_neighbourhood(source):
     body = source[source.index("async function loadGraph"):]
     body = body[:body.index("\n    toggleEl.addEventListener")]

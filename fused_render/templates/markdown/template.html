@@ -389,25 +389,36 @@
   }
   .side-head .spacer { flex: 1; }
   #links-head { padding-right: 72px; } /* clear of the floating corner cluster */
-  #links { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
+  /* Sized by its content, not by the leftover space: a handful of backlinks
+     should not reserve half the panel while the graph's labels collide. The
+     cap keeps a long list scrolling here instead of starving #graph-sec, so
+     flex: none is load-bearing — flex: 1 is what made the list mostly empty. */
+  #links { flex: none; max-height: 42%; min-height: 0; overflow: auto; padding: 8px; }
   #links[hidden] { display: none; }
   .bl {
-    display: block;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
     width: 100%;
     text-align: left;
-    padding: 7px 9px;
-    margin-bottom: 6px;
+    padding: 4px 7px;
+    margin-bottom: 3px;
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 5px;
     background: var(--bg);
     color: var(--fg);
     font: inherit;
-    font-size: 13px;
+    font-size: 12px;
     cursor: pointer;
   }
   .bl:hover { border-color: var(--accent); }
-  .bl-title { font-weight: 600; }
-  .bl-path { display: block; color: var(--fg-muted); font-size: 11px; }
+  /* One line per backlink. The rel path shares the row because it is the only
+     thing telling two same-titled notes apart, so it may shrink but never
+     vanish; both halves ellipsize because the panel is user-resizable. */
+  .bl-title,
+  .bl-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bl-title { flex: 0 1 auto; font-weight: 600; }
+  .bl-path { flex: 1 1 auto; color: var(--fg-muted); font-size: 11px; text-align: right; }
   .bl-empty { color: var(--fg-muted); font-size: 12px; }
   #tags { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
@@ -421,9 +432,11 @@
     font-size: 12px;
   }
   #notice[hidden] { display: none; }
+  /* Takes everything the backlinks list does not use: the canvas is the one
+     thing here that gets better with more room, since the force layout spreads
+     its labels out instead of stacking them. */
   #graph-sec {
-    flex: none;
-    height: 45%;
+    flex: 1;
     min-height: 12rem;
     display: flex;
     flex-direction: column;
