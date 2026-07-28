@@ -1,5 +1,6 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Two tabs (D125):
+// from the sidebar's bottom-left gear. Three tabs (D125; AI accounts added
+// alongside the bundled AI proxy work — docs/AI_PROXY_BUNDLING.md):
 //   Render preferences — Appearance, Call log (capture/redaction/retention for
 //     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
 //     toggle), Accessibility, and last Execution engine. Always present; the
@@ -9,15 +10,23 @@
 //     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
+//   AI accounts         — connect/disconnect Claude and ChatGPT logins against
+//     the bundled AI proxy that backs fused.ai() (fused_render/ai_accounts.py).
+//     Always offered, unlike Fused account below — there is no enabling pref
+//     to gate it on, and a user with no accounts yet is exactly who the tab is
+//     for (docs/AI_PROXY_BUNDLING.md's "Preferences UI" section).
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
 //     the only reason this app cares about a Fused account.
-// The active tab lives in the URL (`?tab=account`), same pattern as
-// Templates' bindings/library tabs.
+// The active tab lives in the URL (`?tab=account` / `?tab=ai`), same pattern
+// as Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  deleteAiAccount,
+  cancelAiConnect,
+  getAiAccounts,
   getPrefs,
   putCallsEnabled,
   putCallsParamsMode,
@@ -26,14 +35,15 @@ import {
   putEnginePref,
   putReaderEnabled,
 } from "../lib/api";
-import type { CallsParamsMode, Prefs } from "../lib/api";
+import type { AiAccount, AiAccountsResult, AiProvider, CallsParamsMode, Prefs } from "../lib/api";
+import { useAiLogin } from "../lib/aiAccounts";
 import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
-type PrefsTab = "render" | "account";
+type PrefsTab = "render" | "ai" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -418,6 +428,217 @@ function DeploymentsSection({
   );
 }
 
+function aiProviderLabel(p: AiProvider): string {
+  return p === "claude" ? "Claude" : "ChatGPT";
+}
+
+// The "AI accounts" tab (fused_render/ai_accounts.py). No enabling pref gates
+// it — unlike AccountPanel this is offered to everyone, since a user with
+// nothing connected yet is exactly who it's for. Connect flow follows
+// useAiLogin (lib/aiAccounts.ts, mirroring useFusedLogin); the account list
+// and its per-row Disconnect follow Account.tsx's environments table.
+function AiAccountsPanel() {
+  const [data, setData] = useState<AiAccountsResult | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // The account (by listing `name`) currently being disconnected — disables
+  // just that row's button rather than the whole panel.
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    []
+  );
+
+  const load = async () => {
+    try {
+      const fresh = await getAiAccounts();
+      if (alive.current) {
+        setData(fresh);
+        setLoadError(null);
+      }
+    } catch (e) {
+      if (alive.current) setLoadError((e as Error).message);
+    }
+  };
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const login = useAiLogin(() => void loadRef.current());
+
+  // A login started from another page/tab shows up as the listing's own
+  // `login` field (Account.tsx's inFlightElsewhere pattern) — this tab never
+  // called connect itself, so connect/status was never subscribed to here;
+  // polling the LISTING is the only way to notice it resolve.
+  const inFlightElsewhere = data?.login != null && !login.connecting;
+  useEffect(() => {
+    if (!inFlightElsewhere) return;
+    const id = window.setInterval(() => void loadRef.current(), 2000);
+    return () => window.clearInterval(id);
+  }, [inFlightElsewhere]);
+
+  const onCancelElsewhere = async () => {
+    setActionError(null);
+    try {
+      await cancelAiConnect();
+    } catch (e) {
+      if (alive.current) setActionError((e as Error).message);
+    }
+    void load();
+  };
+
+  const onDisconnect = (account: AiAccount) => {
+    const label = account.email ?? account.label ?? account.name;
+    // Reversible by reconnecting — the tone Account.tsx's "Forget…" confirm
+    // uses for its local-only removals, adapted: this one really does delete
+    // the credential file server-side, but signing in again recreates it.
+    if (!window.confirm(`Disconnect ${label}? You can reconnect it any time.`)) return;
+    void (async () => {
+      setRowBusy(account.name);
+      setActionError(null);
+      try {
+        await deleteAiAccount(account.name);
+        await load();
+      } catch (e) {
+        if (alive.current) setActionError((e as Error).message);
+      } finally {
+        if (alive.current) setRowBusy(null);
+      }
+    })();
+  };
+
+  if (loadError) {
+    return (
+      <section className="prefs-section">
+        <h2>AI accounts</h2>
+        <div className="deploy-error">{loadError}</div>
+        <button type="button" onClick={() => void load()}>
+          Retry
+        </button>
+      </section>
+    );
+  }
+  if (!data) {
+    return (
+      <section className="prefs-section">
+        <h2>AI accounts</h2>
+        <div className="deploy-muted">Loading…</div>
+      </section>
+    );
+  }
+
+  // Both Connect buttons disable together, not just the in-flight provider's:
+  // the callback ports are fixed per provider, so only one login can run at
+  // all across the whole app, regardless of which provider it's for.
+  const connectDisabled = login.connecting || inFlightElsewhere;
+
+  return (
+    <section className="prefs-section">
+      <h2>AI accounts</h2>
+      <p className="deploy-muted">
+        Connects a Claude or ChatGPT subscription so pages can call <code>fused.ai()</code> —
+        a one-time browser sign-in, no API key to manage.
+        {!data.running && " The AI proxy isn't running yet; it starts on the first fused.ai() call."}
+      </p>
+
+      {data.accounts.length === 0 ? (
+        <p className="deploy-muted">
+          No accounts connected yet — connect one below and pages in this app can start calling{" "}
+          <code>fused.ai()</code>.
+        </p>
+      ) : (
+        <table className="deploy-shares-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Account</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.accounts.map((a) => (
+              <tr key={a.name}>
+                <td>{aiProviderLabel(a.provider)}</td>
+                <td>
+                  {a.email ?? a.label ?? a.name}
+                  {a.disabled && <span className="deploy-muted"> (disabled)</span>}
+                </td>
+                <td className="row-actions-cell">
+                  {rowBusy === a.name ? (
+                    <span className="deploy-muted">Disconnecting…</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={rowBusy !== null}
+                      onClick={() => onDisconnect(a)}
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {login.connecting ? (
+        <div className="deploy-form-row">
+          <span className="deploy-spinner" />
+          <span className="deploy-muted">
+            Waiting for the browser sign-in
+            {login.provider ? ` (${aiProviderLabel(login.provider)})` : ""}… finish signing in in
+            the tab that just opened.
+          </span>
+          <button type="button" onClick={() => void login.cancel()}>
+            Cancel
+          </button>
+        </div>
+      ) : inFlightElsewhere ? (
+        <div className="deploy-form-row">
+          <span className="deploy-muted">
+            A sign-in is already in progress
+            {data.login ? ` (${aiProviderLabel(data.login.provider)})` : ""} — started from
+            another page or tab.
+          </span>
+          <button type="button" onClick={() => void onCancelElsewhere()}>
+            Cancel it
+          </button>
+        </div>
+      ) : (
+        <div className="deploy-form-row">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={connectDisabled}
+            onClick={() => void login.begin("claude")}
+          >
+            Connect Claude
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={connectDisabled}
+            onClick={() => void login.begin("codex")}
+          >
+            Connect ChatGPT
+          </button>
+        </div>
+      )}
+      {login.error && <div className="deploy-error">{login.error}</div>}
+      {actionError && <div className="deploy-error">{actionError}</div>}
+    </section>
+  );
+}
+
 export default function Preferences() {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -432,14 +653,16 @@ export default function Preferences() {
     };
   }, []);
 
-  // Requested tab lives in the URL (`?tab=account`) — bookmarkable, and how
-  // the Deploy modal and the old `/view/_account` redirect (App.tsx) land
-  // here directly on the account tab. Falls back to "render" whenever the
+  // Requested tab lives in the URL (`?tab=account` / `?tab=ai`) — bookmarkable,
+  // and how the Deploy modal and the old `/view/_account` redirect (App.tsx)
+  // land here directly on the account tab. Falls back to "render" whenever the
   // account tab wouldn't be offered (Deploy not enabled) rather than showing
-  // a tab with no button pointing at it.
-  const requestedTab: PrefsTab =
-    new URLSearchParams(location.search).get("tab") === "account" ? "account" : "render";
-  const tab: PrefsTab = requestedTab === "account" && prefs?.deploy.enabled ? "account" : "render";
+  // a tab with no button pointing at it; "ai" needs no such fallback — it has
+  // no gating pref.
+  const rawTab = new URLSearchParams(location.search).get("tab");
+  const requestedTab: PrefsTab = rawTab === "account" ? "account" : rawTab === "ai" ? "ai" : "render";
+  const tab: PrefsTab =
+    requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -461,6 +684,13 @@ export default function Preferences() {
               onClick={() => setTab("render")}
             >
               Render preferences
+            </button>
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "ai" ? " active" : "")}
+              onClick={() => setTab("ai")}
+            >
+              AI accounts
             </button>
             {prefs.deploy.enabled && (
               <button
@@ -490,6 +720,7 @@ export default function Preferences() {
                 <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "ai" && <AiAccountsPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
         </>

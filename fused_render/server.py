@@ -3047,6 +3047,21 @@ def create_app(start_dir: str) -> FastAPI:
         if client is not None:
             await client.aclose()
 
+    @app.on_event("shutdown")
+    async def _stop_bundled_ai_proxy():
+        # The AI proxy (SPEC RH-12) is spawned lazily by THIS process, so
+        # whoever owns the process has to reap it: a bare `fused-render serve`
+        # has no supervisor and no menu-bar quit path, and without this the
+        # proxy would outlive the server holding a port and the user's OAuth
+        # credentials. Blocking (it signals and waits), hence to_thread; the
+        # call is internally gated on the dev persist flag and refuses to
+        # signal any pid it cannot prove is ours. Never let a teardown failure
+        # turn into a noisy shutdown — log and move on, as app.py does.
+        try:
+            await asyncio.to_thread(shell_ai_proxy.stop_local_ai_proxy)
+        except Exception:
+            logger.warning("ai-proxy teardown on server shutdown failed", exc_info=True)
+
     @app.exception_handler(Exception)
     async def unhandled_exception(request, exc):
         # A bare "Internal Server Error" with an empty body is undebuggable on

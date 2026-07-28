@@ -402,6 +402,19 @@ def main() -> None:
             stop_local_rcd()
         except Exception:
             logger.warning("rcd teardown on quit failed", exc_info=True)
+        # Same story for the bundled AI proxy (shell/ai_proxy.py, SPEC RH-12):
+        # it is spawned lazily by the in-process server, so on quit it would
+        # reparent to launchd and keep both its port and the user's OAuth
+        # credentials loaded with no app left to use them. Independently gated
+        # (FUSED_RENDER_AI_PROXY_PERSIST) and ownership-checked internally, so
+        # this is safe to call unconditionally; kept in its own try so an
+        # rcd-side failure can't skip it, or vice versa.
+        try:
+            from fused_render.shell.ai_proxy import stop_local_ai_proxy
+
+            stop_local_ai_proxy()
+        except Exception:
+            logger.warning("ai-proxy teardown on quit failed", exc_info=True)
         rumps.quit_application()
 
     status_app = FusedRenderStatusApp()

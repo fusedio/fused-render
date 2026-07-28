@@ -767,6 +767,93 @@ export function deleteStoreEnv(name: string): Promise<AccountStatus> {
   return postJson<AccountStatus>("/api/account/envs/delete", { name });
 }
 
+// -- AI accounts (fused_render/ai_accounts.py; docs/AI_PROXY_BUNDLING.md) -----
+// Connect/disconnect Claude and ChatGPT (codex) logins against the bundled AI
+// proxy that backs fused.ai(). Scope is deliberately these two providers only
+// (the doc's "Claude and ChatGPT only for now" note) even though the proxy
+// speaks more.
+
+export type AiProvider = "claude" | "codex";
+
+// One connected credential, mapped field-by-field server-side from the
+// proxy's auth-files listing — never the raw entry (which carries token
+// material this app must never see, let alone render).
+export interface AiAccount {
+  provider: AiProvider;
+  email: string | null;
+  label: string | null;
+  disabled: boolean;
+  // The handle DELETE takes (the credential file's name) — opaque, not
+  // necessarily the email (a re-auth of the same email keeps the same file).
+  name: string;
+}
+
+// The phases a connect attempt moves through server-side (ai_accounts.py's
+// _ActiveConnect.phase), plus "idle" for connect/status when nothing is
+// tracked. The accounts listing's own `login` field never reports "idle" —
+// an idle/finished attempt is simply `login: null` there.
+export type AiConnectPhase = "idle" | "waiting_browser" | "exchanging" | "done" | "failed";
+
+// An attempt reported by GET /api/ai/accounts — may have been started from a
+// different tab/page than the one reading this, since only one login can be
+// in flight at a time across the whole app (the callback ports are fixed per
+// provider, so a second concurrent attempt is rejected outright).
+export interface AiLoginInfo {
+  provider: AiProvider;
+  state: Exclude<AiConnectPhase, "idle">;
+  detail: string | null;
+}
+
+export interface AiAccountsResult {
+  // Whether this app spawned/manages the proxy vs. an independent install on
+  // the default port (docs/AI_PROXY_BUNDLING.md's config-precedence note).
+  supervised: boolean;
+  running: boolean;
+  accounts: AiAccount[];
+  login: AiLoginInfo | null;
+}
+
+export function getAiAccounts(): Promise<AiAccountsResult> {
+  return getJson<AiAccountsResult>("/api/ai/accounts");
+}
+
+// Begin (or 409-reject, if one is already running) a provider login. OPENING
+// the returned URL is the caller's job (window.open) — the server never
+// drives a browser, same house rule as startAccountLogin.
+export function startAiConnect(
+  provider: AiProvider
+): Promise<{ authorize_url: string; state: string }> {
+  return postJson<{ authorize_url: string; state: string }>("/api/ai/accounts/connect", {
+    provider,
+  });
+}
+
+export interface AiConnectStatus {
+  state: AiConnectPhase;
+  detail: string | null;
+}
+
+export function getAiConnectStatus(): Promise<AiConnectStatus> {
+  return getJson<AiConnectStatus>("/api/ai/accounts/connect/status");
+}
+
+export function cancelAiConnect(): Promise<{ ok: boolean; canceled: boolean }> {
+  return postJson<{ ok: boolean; canceled: boolean }>("/api/ai/accounts/connect/cancel", {});
+}
+
+// Disconnect one account by its listing `name`. Not through mutateJson (PUT/
+// POST only) since this is a DELETE — same direct-fetch shape as deleteMount.
+export function deleteAiAccount(name: string): Promise<{ ok: boolean }> {
+  return fetch(`/api/ai/accounts/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  }).then(async (r) => {
+    const data = await r.json();
+    if (!r.ok) throw httpError(data, r.status);
+    return data as { ok: boolean };
+  });
+}
+
 // -- Preferences (shell/prefs.py; SPEC §20) -----------------------------------
 
 export interface EnginePrefs {
