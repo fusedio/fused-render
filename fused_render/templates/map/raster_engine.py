@@ -310,15 +310,17 @@ class RasterEngine:
         normalized_target = target.replace("\\", "/").lower()
         is_managed_mount = "/.fused-render/mounts/" in normalized_target
         is_local_file = (
-            not target.startswith(("http://", "https://", "/vsi"))
+            not target.startswith(("http://", "https://", "s3://", "/vsi"))
             and not is_managed_mount
             and os.path.isfile(target)
         )
         if is_local_file:
             source = os.path.abspath(target)
+        elif target.startswith(("s3://", "/vsi")):
+            source = target
         elif target == direct_target and supplied_url:
             source = supplied_url
-        elif target.startswith(("http://", "https://", "/vsi")):
+        elif target.startswith(("http://", "https://")):
             source = target
         else:
             origin = str(req.get("source_origin") or "")
@@ -479,18 +481,6 @@ class RasterEngine:
                 auto_rescale=auto_rescale,
             )
 
-        with self.lock:
-            existing = self.sources.get(fingerprint)
-            if existing is not None:
-                existing.colormap = record.colormap
-                if not record.auto_rescale:
-                    existing.rescale = record.rescale
-                    existing.auto_rescale = False
-                notices = self._warnings(existing)
-                if existing.optimization.get("status") in {"queued", "running"}:
-                    notices.append("The shared background optimization job is running.")
-                return self.descriptor(existing, artifact_id, notices)
-
         derivative = self.optimized_dir / f"{fingerprint}.tif"
         preview_derivative = self.optimized_dir / (
             f"{fingerprint}.preview-{PREVIEW_VERSION}.tif"
@@ -529,15 +519,35 @@ class RasterEngine:
         if not record.has_overviews and not record.preview_path:
             record.optimization = {"status": "available", "progress": 0}
 
+        needs_preparation = not record.has_overviews and not record.preview_path
+        auto_optimize = (
+            needs_preparation
+            and record.source_size is not None
+            and record.source_size <= AUTO_OPTIMIZE_MAX_BYTES
+        )
         with self.lock:
-            self.sources[fingerprint] = record
+            existing = self.sources.get(fingerprint)
+            if existing is not None:
+                existing.colormap = record.colormap
+                if not record.auto_rescale:
+                    existing.rescale = record.rescale
+                    existing.auto_rescale = False
+                existing_notices = self._warnings(existing)
+                if existing.optimization.get("status") in {"queued", "running"}:
+                    existing_notices.append(
+                        "The shared background optimization job is running."
+                    )
+            else:
+                self.sources[fingerprint] = record
+                if needs_preparation:
+                    self._start_preparation(
+                        fingerprint, full_optimize=auto_optimize
+                    )
 
-        if not record.has_overviews and not record.preview_path:
-            auto_optimize = (
-                record.source_size is not None
-                and record.source_size <= AUTO_OPTIMIZE_MAX_BYTES
-            )
-            self._start_preparation(fingerprint, full_optimize=auto_optimize)
+        if existing is not None:
+            return self.descriptor(existing, artifact_id, existing_notices)
+
+        if needs_preparation:
             notices.append(
                 "A cached coarse preview is being prepared so the raster "
                 "remains visible at low zoom."

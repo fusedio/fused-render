@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -458,6 +459,80 @@ def test_local_file_bypasses_the_loopback_range_proxy(tmp_path, monkeypatch):
 
     assert result["status"] == "captured"
     assert observed["source"] == str(source.resolve())
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "s3://example-bucket/scene.tif",
+        "/vsis3/example-bucket/scene.tif",
+    ],
+)
+def test_native_remote_rasters_bypass_the_shell_raw_proxy(
+    tmp_path, monkeypatch, target
+):
+    engine = RasterEngine(
+        cache_dir=str(tmp_path / "cache"),
+        base_url="http://127.0.0.1:1",
+        token="test",
+    )
+    observed = {}
+
+    def capture(**kwargs):
+        observed.update(kwargs)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(engine, "_describe", capture)
+    request = request_for(
+        target,
+        "http://127.0.0.1:1777/api/fs/raw?path=remote-raster",
+    )
+
+    result = engine.try_describe(request)
+
+    assert result["status"] == "captured"
+    assert observed["source"] == target
+
+
+def test_concurrent_describes_register_one_source_and_one_preparation(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "concurrent.tif"
+    make_zero_collar_tiff(source)
+    engine = RasterEngine(
+        cache_dir=str(tmp_path / "cache"),
+        base_url="http://127.0.0.1:1",
+        token="test",
+    )
+    request = request_for(str(source), source_url="")
+    request["source_origin"] = ""
+    barrier = threading.Barrier(2)
+    source_size = raster_engine._source_size
+
+    def synchronized_source_size(value):
+        result = source_size(value)
+        barrier.wait(timeout=10)
+        return result
+
+    starts = []
+
+    def capture_preparation(source_id, full_optimize):
+        starts.append((source_id, full_optimize))
+        engine.sources[source_id].optimization = {
+            "status": "queued",
+            "progress": 0,
+        }
+        return dict(engine.sources[source_id].optimization)
+
+    monkeypatch.setattr(raster_engine, "_source_size", synchronized_source_size)
+    monkeypatch.setattr(engine, "_start_preparation", capture_preparation)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        descriptors = list(pool.map(engine.try_describe, [request, request]))
+
+    assert len(engine.sources) == 1
+    assert len(starts) == 1
+    assert len({item["data"]["source_id"] for item in descriptors}) == 1
 
 
 def test_service_launch_is_hidden_on_windows_and_detached_elsewhere():

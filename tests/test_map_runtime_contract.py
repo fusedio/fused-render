@@ -147,3 +147,71 @@ def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
     assert first["status"] == "error"
     assert recovered["status"] == "ok"
     assert len(attempts) == 2
+
+
+def test_raster_service_failure_never_uses_unsafe_oneshot(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    target = tmp_path / "managed-raster.tif"
+    target.write_bytes(b"raster-placeholder")
+    cache = tmp_path / "cache"
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", cache / "artifacts")
+    monkeypatch.setattr(
+        map_render,
+        "_ensure_service",
+        lambda: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
+    )
+    monkeypatch.setattr(
+        map_render,
+        "_run_oneshot",
+        lambda _request: pytest.fail("raster must not use one-shot mode"),
+    )
+
+    descriptor = map_render.main(target=str(target))
+
+    assert descriptor["status"] == "error"
+    assert descriptor["detected_type"] == "raster"
+    assert "range-first raster service is unavailable" in descriptor["message"]
+    assert "one-shot fallback was not used" in descriptor["message"]
+
+
+def test_non_raster_service_failure_keeps_oneshot_fallback(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    target = tmp_path / "features.geojson"
+    target.write_text('{"type":"FeatureCollection","features":[]}')
+    cache = tmp_path / "cache"
+    fallback = {
+        "id": "fallback",
+        "status": "ok",
+        "kind": "vector",
+        "bounds": None,
+        "data": {},
+        "warnings": [],
+        "detected_type": "vector",
+        "message": "",
+    }
+    requests = []
+
+    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", cache / "artifacts")
+    monkeypatch.setattr(
+        map_render,
+        "_ensure_service",
+        lambda: (_ for _ in ()).throw(RuntimeError("daemon unavailable")),
+    )
+    monkeypatch.setattr(
+        map_render,
+        "_run_oneshot",
+        lambda request: requests.append(request) or fallback,
+    )
+
+    descriptor = map_render.main(target=str(target))
+
+    assert descriptor == fallback
+    assert len(requests) == 1
+    assert requests[0]["target"] == str(target)

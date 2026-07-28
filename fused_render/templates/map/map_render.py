@@ -41,6 +41,11 @@ BACKEND_FILES = (
     HERE / "geo_classify.py",
 )
 URL_PREFIXES = ("http://", "https://", "s3://", "/vsi")
+RASTER_SUFFIXES = (
+    ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",
+    ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd", ".nc",
+    ".hdf", ".h5",
+)
 QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’"}
 
 
@@ -53,6 +58,10 @@ def _clean_target(value: str) -> str:
     ):
         target = target[1:-1].strip()
     return os.path.expandvars(os.path.expanduser(target))
+
+
+def _looks_like_raster(target: str) -> bool:
+    return target.lower().split("?", 1)[0].endswith(RASTER_SUFFIXES)
 
 
 def _backend_version() -> str:
@@ -349,7 +358,22 @@ def main(
     try:
         state = _ensure_service()
         descriptor = _post(state, "/describe", request)
-    except Exception:
+    except Exception as error:
+        if _looks_like_raster(target):
+            return {
+                "id": artifact_id,
+                "status": "error",
+                "kind": None,
+                "bounds": None,
+                "data": {},
+                "warnings": [],
+                "detected_type": "raster",
+                "message": (
+                    "The range-first raster service is unavailable. "
+                    "The unsafe one-shot fallback was not used; retrying will "
+                    f"start a fresh service. {type(error).__name__}: {error}"
+                ),
+            }
         descriptor = _run_oneshot(request)
     _save_descriptor(cache_path, descriptor)
     return descriptor
