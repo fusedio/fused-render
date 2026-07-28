@@ -123,7 +123,11 @@ OPTIONS = {
         # Force the packages into the app because templates import them
         # dynamically in a child process.
         "rasterio", "rio_tiler", "morecantile", "color_operations", "pystac",
-        "mapbox_vector_tile", "google.protobuf",
+        # protobuf lives below the PEP 420 `google` namespace and cannot be
+        # forced through py2app's legacy package-bootstrap lookup. The
+        # generated vector_tile_pb2 module imports it statically, so
+        # modulegraph follows and bundles the required protobuf modules.
+        "mapbox_vector_tile",
         "cachetools", "attrs", "httpx2", "httpcore2", "numexpr", "xlrd",
         "requests", "urllib3", "certifi", "charset_normalizer", "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
