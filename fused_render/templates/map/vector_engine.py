@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
+from geo_paths import is_managed_mount
+
 
 VECTOR_SUFFIXES = {
     ".geojson",
@@ -99,11 +101,9 @@ def _raw_url(origin: str, path: str) -> str:
 
 def _resolve_source(request: dict[str, Any], target: str) -> str:
     supplied_url = str(request.get("source_url") or "")
-    normalized = target.replace("\\", "/").lower()
-    managed_mount = "/.fused-render/mounts/" in normalized
     local = (
         not target.startswith(("http://", "https://", "s3://", "/vsi"))
-        and not managed_mount
+        and not is_managed_mount(target)
         and os.path.isfile(target)
     )
     if local:

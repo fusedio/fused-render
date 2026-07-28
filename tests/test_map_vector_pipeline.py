@@ -205,3 +205,30 @@ def test_small_vector_stays_on_the_existing_geojson_path(tmp_path, monkeypatch):
     monkeypatch.setattr(vector_engine, "VECTOR_TILE_MIN_BYTES", 1 << 30)
 
     assert _engine().try_describe(_request(source)) is None
+
+
+def test_branch_mount_vector_uses_the_range_proxy(tmp_path, monkeypatch):
+    home = tmp_path / "custom-home"
+    source = (
+        home
+        / "branches"
+        / "feat-map"
+        / "mounts"
+        / "bucket"
+        / "segments.gpkg"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mounted")
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "feat/map")
+    source_url = "http://127.0.0.1:1777/api/fs/raw?path=mounted-vector"
+
+    resolved = vector_engine._resolve_source(
+        {
+            "target": str(source),
+            "source_url": source_url,
+        },
+        str(source),
+    )
+
+    assert resolved == source_url

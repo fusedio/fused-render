@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from geo_paths import is_managed_mount
+
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
     os.environ.get("MAP_VIEWER_AUTO_OPTIMIZE_MAX_BYTES", str(512 << 20))
@@ -307,11 +309,9 @@ class RasterEngine:
 
         direct_target = str(req.get("target") or "")
         supplied_url = str(req.get("source_url") or "")
-        normalized_target = target.replace("\\", "/").lower()
-        is_managed_mount = "/.fused-render/mounts/" in normalized_target
         is_local_file = (
             not target.startswith(("http://", "https://", "s3://", "/vsi"))
-            and not is_managed_mount
+            and not is_managed_mount(target)
             and os.path.isfile(target)
         )
         if is_local_file:
@@ -532,6 +532,14 @@ class RasterEngine:
                 if not record.auto_rescale:
                     existing.rescale = record.rescale
                     existing.auto_rescale = False
+                if (
+                    not existing.has_overviews
+                    and not existing.preview_path
+                    and existing.optimization.get("status") == "error"
+                ):
+                    self._start_preparation(
+                        fingerprint, full_optimize=auto_optimize
+                    )
                 existing_notices = self._warnings(existing)
                 if existing.optimization.get("status") in {"queued", "running"}:
                     existing_notices.append(
@@ -889,11 +897,9 @@ class RasterEngine:
             record = self.sources.get(source_id)
             if record is None:
                 return None
-            optimization = record.optimization.get("status")
             if (
                 not record.has_overviews
                 and not record.preview_path
-                and optimization in {"queued", "running"}
                 and z < record.minzoom
             ):
                 return self.transparent_tile()

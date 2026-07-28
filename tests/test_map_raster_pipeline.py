@@ -467,6 +467,42 @@ def test_local_file_bypasses_the_loopback_range_proxy(tmp_path, monkeypatch):
     assert observed["source"] == str(source.resolve())
 
 
+@pytest.mark.parametrize("branch", ["", "feat/map"])
+def test_custom_and_branch_mount_roots_use_the_range_proxy(
+    tmp_path,
+    monkeypatch,
+    branch,
+):
+    home = tmp_path / "custom-home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    if branch:
+        monkeypatch.setenv("FUSED_RENDER_BRANCH", branch)
+        mount_root = home / "branches" / "feat-map" / "mounts"
+    else:
+        monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+        mount_root = home / "mounts"
+    source = mount_root / "bucket" / "scene.tif"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mounted")
+    raw_url = "http://127.0.0.1:1777/api/fs/raw?path=mounted-raster"
+    engine = RasterEngine(
+        cache_dir=str(tmp_path / "cache"),
+        base_url="http://127.0.0.1:1",
+        token="test",
+    )
+    observed = {}
+    monkeypatch.setattr(
+        engine,
+        "_describe",
+        lambda **kwargs: observed.update(kwargs) or {"status": "captured"},
+    )
+
+    result = engine.try_describe(request_for(str(source), raw_url))
+
+    assert result["status"] == "captured"
+    assert observed["source"] == raw_url
+
+
 @pytest.mark.parametrize(
     "target",
     [
@@ -539,6 +575,47 @@ def test_concurrent_describes_register_one_source_and_one_preparation(
     assert len(engine.sources) == 1
     assert len(starts) == 1
     assert len({item["data"]["source_id"] for item in descriptors}) == 1
+
+
+def test_failed_preview_retries_on_reopen_and_stays_safe_at_low_zoom(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "retry-preview.tif"
+    make_zero_collar_tiff(source)
+    engine = RasterEngine(
+        cache_dir=str(tmp_path / "cache"),
+        base_url="http://127.0.0.1:1",
+        token="test",
+    )
+    request = request_for(str(source), source_url="")
+    request["source_origin"] = ""
+    starts = []
+
+    def capture_preparation(source_id, full_optimize):
+        starts.append((source_id, full_optimize))
+        engine.sources[source_id].optimization = {
+            "status": "queued",
+            "progress": 0,
+        }
+        return dict(engine.sources[source_id].optimization)
+
+    monkeypatch.setattr(engine, "_start_preparation", capture_preparation)
+    first = engine.try_describe(request)
+    source_id = first["data"]["source_id"]
+    record = engine.sources[source_id]
+    record.optimization = {
+        "status": "error",
+        "message": "preview failed",
+    }
+
+    low_zoom = max(0, record.minzoom - 1)
+    assert engine.tile(source_id, low_zoom, 0, 0) == engine.transparent_tile()
+
+    second = engine.try_describe(request)
+
+    assert second["optimization"]["status"] == "queued"
+    assert len(starts) == 2
 
 
 def test_service_launch_is_hidden_on_windows_and_detached_elsewhere():

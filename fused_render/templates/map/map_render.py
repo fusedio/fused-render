@@ -34,12 +34,16 @@ DAEMON = HERE / "daemon.py"
 WORKER = HERE / "worker.py"
 LOG = CACHE_DIR / "daemon.log"
 START_LOCK = CACHE_DIR / "daemon-start.lock"
+SERVICE_START_TIMEOUT = 120
+START_LOCK_STALE_AFTER = SERVICE_START_TIMEOUT + 30
+FOLLOWER_WAIT_TIMEOUT = SERVICE_START_TIMEOUT + 10
 BACKEND_FILES = (
     DAEMON,
     WORKER,
     HERE / "raster_engine.py",
     HERE / "vector_engine.py",
     HERE / "geo_classify.py",
+    HERE / "geo_paths.py",
 )
 URL_PREFIXES = ("http://", "https://", "s3://", "/vsi")
 RASTER_SUFFIXES = (
@@ -152,7 +156,7 @@ def _claim_start_lock() -> bool:
         )
     except FileExistsError:
         try:
-            if time.time() - START_LOCK.stat().st_mtime > 120:
+            if time.time() - START_LOCK.stat().st_mtime > START_LOCK_STALE_AFTER:
                 START_LOCK.unlink()
                 return _claim_start_lock()
         except OSError:
@@ -170,13 +174,9 @@ def _ensure_service() -> dict:
 
     owner = _claim_start_lock()
     if not owner:
-        state = _wait_for_service(90)
+        state = _wait_for_service(FOLLOWER_WAIT_TIMEOUT)
         if state:
             return state
-        try:
-            START_LOCK.unlink()
-        except OSError:
-            pass
         owner = _claim_start_lock()
     if not owner:
         raise RuntimeError("map service startup is already in progress")
@@ -201,7 +201,7 @@ def _ensure_service() -> dict:
                 stderr=log,
                 **_process_options(),
             )
-        state = _wait_for_service(120)
+        state = _wait_for_service(SERVICE_START_TIMEOUT)
         if state:
             return state
         tail = ""

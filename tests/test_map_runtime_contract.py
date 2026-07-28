@@ -19,6 +19,8 @@ MAP = ROOT / "fused_render" / "templates" / "map"
 
 
 def _load(name: str):
+    if str(MAP) not in sys.path:
+        sys.path.insert(0, str(MAP))
     spec = importlib.util.spec_from_file_location(name, MAP / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -141,6 +143,31 @@ def test_small_vector_can_use_geojson_fallback_on_an_old_runtime(
             "artifact_id": "vector-1",
         }
     ) is None
+
+
+def test_map_daemon_follower_never_steals_a_fresh_start_lock(
+    monkeypatch,
+    tmp_path,
+):
+    map_render = _load("map_render")
+    start_lock = tmp_path / "daemon-start.lock"
+    start_lock.write_text("owner", encoding="utf-8")
+    monkeypatch.setattr(map_render, "START_LOCK", start_lock)
+    monkeypatch.setattr(map_render, "_claim_start_lock", lambda: False)
+    monkeypatch.setattr(map_render, "_wait_for_service", lambda _timeout: None)
+
+    with pytest.raises(RuntimeError, match="already in progress"):
+        map_render._ensure_service()
+
+    assert start_lock.read_text(encoding="utf-8") == "owner"
+    assert (
+        map_render.FOLLOWER_WAIT_TIMEOUT
+        > map_render.SERVICE_START_TIMEOUT
+    )
+    assert (
+        map_render.START_LOCK_STALE_AFTER
+        > map_render.FOLLOWER_WAIT_TIMEOUT
+    )
 
 
 def test_macos_bundle_forces_dynamic_map_runtime_packages():
