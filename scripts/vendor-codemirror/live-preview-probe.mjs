@@ -107,6 +107,10 @@ function fakeNoteScan() {
   const links = [];
   for (const match of doc.matchAll(/!?\[\[([^\[\]\n]+?)\]\]/g)) {
     const target = match[1].split("|")[0].split("#")[0].trim();
+    // `[[#Heading]]` has no target: graph.py's `_resolved_links` skips it
+    // outright (it is an anchor inside this same note, not an edge), so the
+    // answer this stands in for carries no row for it either.
+    if (!target) continue;
     const named = /\.[a-z0-9]+$/i.test(target);
     links.push({
       target,

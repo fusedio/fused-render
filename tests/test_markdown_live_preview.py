@@ -60,6 +60,8 @@ Some **bold** and *ital* and ~~strike~~ and `inline` text.
 
 A [[Wiki Link|label]], a ![[embed.png]], a [[Ghost]] and a #tag here.
 
+Back up to [[#Heading one]] in this same note.
+
 ```python
 x = "[[not a link]] #nottag"
 ```
@@ -266,6 +268,31 @@ def test_a_scanned_note_resolves_links_and_ghosts_the_rest(note_file):
     assert "click to create" in ghost["title"].lower()
     # And a resolved embed is the image itself.
     assert dom(scanned, "![[embed.png]]")["tag"] == "img"
+
+
+def test_a_same_note_anchor_is_a_link_not_an_offer_to_create_a_file(note_file):
+    """`[[#Heading]]` points inside this very note, so it is a LINK.
+
+    It rendered as a dead ghost: `splitInner` gives it an empty target,
+    graph.py's `_resolved_links` deliberately skips empty targets (it is not an
+    edge), so nothing resolved it — and with a scan in hand the widget took its
+    "scanned, no path" branch and drew the dashed create-me affordance, with
+    `data-create=""`. An empty attribute value still matches
+    `closest("[data-create]")`, so clicking it ran createGhost("") and hit the
+    degenerate-name guard: an offer to create a file that could never be made.
+    """
+    for scanned in (False, True):
+        anchor = dom(decorate(note_file, caret=0, scanned=scanned),
+                     "[[#Heading one]]")
+        where = "scanned" if scanned else "unscanned"
+        assert "wl-ghost" not in anchor["cls"], where
+        assert "create" not in anchor["data"], where
+        # It scrolls to the heading in this document rather than navigating: the
+        # target note is the one already open.
+        assert anchor["data"]["anchor"] == "Heading one", where
+        assert "path" not in anchor["data"], where
+        # And it reads as the heading, not as an empty name with a separator.
+        assert anchor["text"] == "#Heading one", where
 
 
 def test_the_two_states_are_told_apart_by_the_widget_key(note_file):

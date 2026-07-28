@@ -536,9 +536,20 @@ def resolve_link(target: str, from_rel: str, paths, index=None):
 
     **Shortest path that is unambiguous** (MD-4), tried in order: relative to
     the linking note's own folder, then from the vault root, then as a path
-    suffix, then as a bare basename. Case-insensitive, as Obsidian is. `paths`
-    is the candidate set that exists *now*; `index` is the memoised
-    `_candidate_index` of it when a caller resolves many links at once.
+    suffix. Case-insensitive, as Obsidian is. `paths` is the candidate set that
+    exists *now*; `index` is the memoised `_candidate_index` of it when a caller
+    resolves many links at once.
+
+    Three steps, not four. A fourth ("then as a bare basename") was documented
+    and written but could never run: it sat behind an `if "/" in lowered: return
+    None`, so the target had no slash by then and splitting one off its last
+    slash gave the target back — a repeat of the root lookup that had already
+    failed, so the answer was always None. It
+    was redundant as well as dead: a bare basename is found by the root lookup
+    when the note is top-level and by the suffix step when it is not. Deleted
+    rather than made live, because making it live would CHANGE resolution
+    (turning currently-unresolved links into resolved ones) and MD-4's rule is
+    the shortest path that is UNAMBIGUOUS.
     """
     normalized = _normalize_target(target)
     if not normalized:
@@ -553,13 +564,8 @@ def resolve_link(target: str, from_rel: str, paths, index=None):
             return hit
 
     suffix = "/" + lowered
-    hit = _only([rel for key, rels in index.items() if key.endswith(suffix)
-                 for rel in rels])
-    if hit is not None:
-        return hit
-    if "/" in lowered:
-        return None
-    return _only(index.get(lowered.rsplit("/", 1)[-1]))
+    return _only([rel for key, rels in index.items() if key.endswith(suffix)
+                  for rel in rels])
 
 
 # --------------------------------------------------------------------- walking

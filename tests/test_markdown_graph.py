@@ -15,6 +15,7 @@ depends on:
 """
 import contextlib
 import importlib.util
+import inspect
 import os
 from unittest import mock
 
@@ -180,6 +181,27 @@ def test_an_ambiguous_basename_stays_unresolved(graph):
 def test_resolution_is_case_insensitive_and_tolerates_leading_dot_slash(graph):
     assert graph.resolve_link("dOcS/uNiQuE", "index.md", NOTES) == "docs/Unique.md"
     assert graph.resolve_link("./notes/Daily.md", "index.md", NOTES) == "notes/Daily.md"
+
+
+def test_the_resolver_documents_exactly_the_fallbacks_it_has(graph):
+    """The docstring promised a fourth step that could never run.
+
+    "then as a bare basename" was guarded by `if "/" in lowered: return None`,
+    so by the time it was reached `lowered` had no slash and
+    `rsplit("/", 1)[-1]` was `lowered` itself — a repeat of the root lookup that
+    had already failed. Always None. It was also redundant: a bare basename is
+    already found by the root lookup when the note is top-level and by the
+    suffix step when it is not (the test above), so the branch was deleted
+    rather than made live, which would have CHANGED resolution.
+    """
+    doc = " ".join((graph.resolve_link.__doc__ or "").split())
+    assert "then from the vault root, then as a path suffix." in doc
+    assert "Three steps, not four" in doc
+    # And the branch itself is gone rather than merely unreachable.
+    assert 'rsplit("/", 1)[-1]' not in inspect.getsource(graph.resolve_link)
+    # The behaviour that step pretended to add, still working through the ones
+    # that are real.
+    assert graph.resolve_link("Unique", "index.md", NOTES) == "docs/Unique.md"
 
 
 def test_an_unknown_target_resolves_to_nothing(graph):

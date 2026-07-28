@@ -369,6 +369,27 @@ def test_a_ghost_click_on_an_existing_note_opens_it_instead_of_clobbering_it(
         assert body.index('err.type !== "exists"') < body.rindex(nav), where
 
 
+def test_a_reload_applies_the_writability_it_just_read(source):
+    """`reloadFromDisk` updated `writable` and then did nothing with it.
+
+    The editor's `editable`/`readOnly` facets are chosen when the view is built
+    and the corner button's disabled state and title are set by applyEditMode,
+    so reassigning the variable alone left both showing the OLD answer: a file
+    that had become read-only stayed typeable (and the edits then failed at save
+    time), and one that had become writable stayed locked until the iframe
+    reloaded. This is the silent-reload path, so nothing else was going to
+    notice.
+    """
+    body = source[source.index("async function reloadFromDisk"):]
+    body = body[:body.index('\n    // "Keep my version"')]
+    assert "writable = st.writable !== false;" in body
+    # The rebuild is what applies the facets; the badge is what says so.
+    assert "applyEditMode(true)" in body
+    assert "fusedRoBadge.update" in body
+    # Only when it actually changed — a rebuild on every reload would be churn.
+    assert "writable !== wasWritable" in body
+
+
 def test_the_write_bridge_can_refuse_to_clobber_an_existing_file(runtime_source):
     # createGhost's guard is only as good as the bridge under it: `create` has
     # to reach the server, and its 409 has to be distinguishable from the

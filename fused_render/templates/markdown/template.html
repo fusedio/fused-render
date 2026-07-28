@@ -849,7 +849,12 @@
       const known = resolved !== null;
       const row = known ? resolved.get(target) : undefined;
       const path = row ? row.path : null;
-      const shown = label || target + (heading ? " > " + heading : "");
+      // `[[#Heading]]` has no target: it points inside THIS note. Reading as
+      // "#Heading" rather than " > Heading" (an empty name and a separator) is
+      // the whole of what it needs to say.
+      const anchorOnly = !target && !!heading;
+      const shown = label
+        || (anchorOnly ? "#" + heading : target + (heading ? " > " + heading : ""));
       // `known` belongs in the key: widgets are reused across rebuilds by key,
       // so an inert link has to be replaced when a scan finally lands (MD-9).
       const key = "wl:" + (embed ? "!" : "") + raw + "|" + (path || "")
@@ -862,7 +867,10 @@
           img.alt = target;
           return img;
         }
-        if (embed && !path) {
+        // `!anchorOnly`: `![[#Heading]]` names no file, so "Missing embed" would
+        // be answering a question nobody asked. It degrades to the anchor link
+        // below (embedding a section of this same note is not supported).
+        if (embed && !path && !anchorOnly) {
           const span = document.createElement("span");
           // Unknown reads as "we did not look", not as "it is missing".
           span.className = known ? "wl-embed-missing" : "wl-embed-unknown";
@@ -872,7 +880,19 @@
           return span;
         }
         const a = document.createElement("a");
-        if (!known) {
+        if (anchorOnly) {
+          // An anchor into this same note is a LINK, and it needs no scan to be
+          // one — the target document is the one already open. It rendered as a
+          // dead ghost instead: no scan resolves an empty target (graph.py's
+          // `_resolved_links` skips them, correctly — it is not an edge), so the
+          // scanned branch below drew the create-me affordance with
+          // `data-create=""`, and an empty attribute VALUE still matches
+          // closest("[data-create]"), so clicking it ran createGhost("") and
+          // died at the degenerate-name guard.
+          a.className = "wl";
+          a.dataset.anchor = heading;
+          a.title = "Jump to " + heading + " in this note";
+        } else if (!known) {
           // Inert: no ghost styling, no data-create, nothing to click.
           a.className = "wl wl-unknown";
           a.title = UNRESOLVED_HERE;
@@ -1333,12 +1353,26 @@
         const fresh = await fused.readFile(file);
         text = fresh;
         mtime = st.mtime;
+        const wasWritable = writable;
         writable = st.writable !== false;
         hideConflict();
         if (view) {
           view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: fresh } });
         }
         setDirty(false);
+        // Reassigning `writable` changes nothing on its own: `editable`/
+        // `readOnly` are facets chosen when the view is BUILT, and the corner
+        // button's state comes from applyEditMode. Without this, a file that had
+        // become read-only stayed typeable (the edits then failed at save time)
+        // and one that had become writable stayed locked until the iframe
+        // reloaded — and this is the silent-reload path, so nothing else was
+        // going to notice. Only on a change: rebuilding every reload is churn.
+        if (writable !== wasWritable) {
+          fusedRoBadge.update(document.getElementById("ro"),
+            writable ? "" : "Read-only",
+            writable ? "" : "This file can't be written, so the editor opens locked.");
+          applyEditMode(true);
+        }
         await refreshLinks();
       } catch (err) {
         saveStateEl.textContent = "Reload failed: " + (err.message || "");
@@ -1647,8 +1681,12 @@
     // rendered headings to scan any more, so the doc itself is the index:
     // scroll the matching ATX line into view without moving the caret onto it,
     // which would un-render that line the moment you arrived.
-    function scrollToHeading() {
-      const wanted = (fused.params.get("heading") || "").trim().toLowerCase();
+    //
+    // The argument is for `[[#Heading]]`, an anchor into THIS note: same jump,
+    // no navigation and no param, because the document is already open.
+    function scrollToHeading(heading) {
+      const wanted = (heading === undefined
+        ? fused.params.get("heading") || "" : heading).trim().toLowerCase();
       if (!wanted || !view) return;
       const doc = view.state.doc;
       for (let n = 1; n <= doc.lines; n++) {
@@ -1810,6 +1848,14 @@
     // One delegated handler for every link surface: wikilink and markdown-link
     // widgets and backlink rows all carry data-path; ghosts carry data-create.
     document.addEventListener("click", (event) => {
+      // `[[#Heading]]`: the target note IS this one, so this is a scroll, not a
+      // navigation. Checked first — its data attribute is the narrowest.
+      const anchor = event.target.closest("[data-anchor]");
+      if (anchor) {
+        event.preventDefault();
+        scrollToHeading(anchor.getAttribute("data-anchor"));
+        return;
+      }
       const create = event.target.closest("[data-create]");
       if (create) {
         event.preventDefault();
