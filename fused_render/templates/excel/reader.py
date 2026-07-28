@@ -382,20 +382,30 @@ def _filters_sql(filters):
     return (" WHERE " + " AND ".join(where)) if where else "", params
 
 
-def _query_distinct(pq, col, filters, cap=2000):
+def _query_distinct(pq, col, filters, q="", cap=2000):
     """Distinct display values of one column, honouring the OTHER columns'
     filters (matching how Google Sheets narrows the value list). Returns up to
-    `cap` values sorted, plus a truncated flag."""
+    `cap` values (numbers first in numeric order, then text) with per-value row
+    counts, plus a truncated flag. `q` narrows to values containing it — the
+    client falls back to this when its capped list can't answer a search."""
     con = _duck()
     con.execute(f"CREATE VIEW t AS SELECT * FROM read_parquet({_q(pq)})")
     where, params = _filters_sql([f for f in (filters or []) if int(f["c"]) != col])
+    q = str(q).strip()
+    if q:
+        esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where = (where + " AND" if where else " WHERE") + \
+            f" coalesce(CAST(c{col} AS VARCHAR), '') ILIKE ? ESCAPE '\\'"
+        params = params + [f"%{esc}%"]
     rows = con.execute(
-        f"SELECT DISTINCT coalesce(CAST(c{col} AS VARCHAR), '') AS v FROM t{where} "
-        f"ORDER BY v LIMIT ?",
+        f"SELECT coalesce(CAST(c{col} AS VARCHAR), '') AS v, count(*) AS n FROM t{where} "
+        f"GROUP BY v ORDER BY TRY_CAST(v AS DOUBLE) NULLS LAST, v LIMIT ?",
         params + [cap + 1],
     ).fetchall()
-    vals = [r[0] for r in rows]
-    return {"values": vals[:cap], "truncated": len(vals) > cap}
+    truncated = len(rows) > cap
+    rows = rows[:cap]
+    return {"values": [r[0] for r in rows], "counts": [r[1] for r in rows],
+            "truncated": truncated}
 
 
 def _query_rows(pq, ncols, offset, limit, sort, filters):
@@ -977,6 +987,7 @@ def main(
     sort: str = "",
     filters: str = "",
     col: int = -1,
+    q: str = "",
 ):
     if action == "load":
         if not file:
@@ -995,7 +1006,7 @@ def main(
         _, sh = _sheet_meta(meta, sheet)
         return _query_distinct(
             _sheet_parquet(file, sh), int(col),
-            json.loads(filters) if filters else None,
+            json.loads(filters) if filters else None, q,
         )
     if action == "save":
         return _save(file, json.loads(data), expected_mtime)
