@@ -1738,6 +1738,30 @@
     if (chartData) requestAnimationFrame(resizeCanvas);
   }).observe(document.documentElement, { attributeFilter: ["data-theme"] });
 
+  tailToggle.addEventListener("click", () => {
+    const state = currentState();
+    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
+    const turningOn = !state.tail;
+    if (turningOn) {
+      tailEndOffset = number(size);
+      tailPageOffset = Math.max(0, tailEndOffset - 65536);
+    }
+    // Tail only polls in the lines view (pollTail/syncTailTimer both guard on
+    // it), so turning tail on from Patterns must switch back to lines or the
+    // button reads as pressed while nothing updates and autoReload sits off.
+    setParams({ page: tailPageOffset, back: "", tail: turningOn ? "1" : "0", view: turningOn ? "lines" : state.view });
+  });
+
+  // No-op while already on lines: `page` is part of dataKey, so resetting it
+  // on a redundant click would abandon the current offset (including a
+  // tail-established end-of-file position) and force a full reload for a
+  // click that looks like it did nothing.
+  linesTab.addEventListener("click", () => {
+    if (currentState().view === "lines") return;
+    setParams({ view: "lines", page: "0", back: "" });
+  });
+  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+
   levelList.addEventListener("click", (event) => {
     const button = event.target.closest("[data-level]");
     if (!button || !overviewData) return;
