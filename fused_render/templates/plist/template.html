@@ -1,36 +1,63 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Property list preview</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --bg: #131417;
+    --error: #ff6b6b;
+    --fg-dim: #6b7075;
+    --skel-dot: #3a3d42;
+    --skel-base: #23282e;
+    --skel-shine: #2f353d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --bg: #ffffff;
+    --error: #c62828;
+    --fg-dim: #7b8088;
+    --skel-dot: #c9ccd2;
+    --skel-base: #e7e9ed;
+    --skel-shine: #dbdee4;
+  }
   html, body { height: 100%; margin: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     font-size: 13px;
-    color: #e8eaed;
-    background: #131417;
+    color: var(--fg);
+    background: var(--bg);
   }
   #frame { width: 100%; height: 100%; border: 0; display: block; }
-  #status { padding: 24px; color: #9aa0a6; }
-  #status.error { color: #ff6b6b; }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); }
   /* Loading skeleton: shape mirrors the property-list tree the reader is about
      to render (indented key/value rows), since the real content is another
      template's JSON tree view embedded via iframe once conversion finishes. */
   .skel-tree { display: flex; flex-direction: column; gap: 11px; margin-bottom: 16px; }
   .skel-row { display: flex; align-items: center; gap: 8px; padding-left: calc(var(--indent, 0) * 18px); }
-  .skel-dot { width: 4px; height: 4px; border-radius: 50%; background: #3a3d42; flex: none; }
+  .skel-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--skel-dot); flex: none; }
   .skel-bar {
     height: 11px;
     border-radius: 3px;
-    background: linear-gradient(90deg, #23282e 25%, #2f353d 50%, #23282e 75%);
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
     background-size: 200% 100%;
     animation: skel-shimmer 1.2s ease-in-out infinite;
     flex: none;
   }
   .skel-val { opacity: 0.7; }
-  .skel-label { font-size: 12px; color: #6b7075; }
+  .skel-label { font-size: 12px; color: var(--fg-dim); }
   @keyframes skel-shimmer {
     from { background-position: 200% 0; }
     to { background-position: -200% 0; }

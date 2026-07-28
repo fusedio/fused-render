@@ -899,9 +899,14 @@
       n.innerHTML =
         (opts.checked === undefined ? "" :
           `<input type="checkbox" title="show/hide layer" ${opts.checked ? "checked" : ""}>`) +
-        `<span class="ico">${ico}</span><span>${label}</span>` +
-        `<span class="cnt">${cnt || ""}</span>` +
         (opts.remove ? `<span class="x" title="remove from scene">✕</span>` : "");
+      const icoEl = document.createElement("span"); icoEl.className = "ico"; icoEl.textContent = ico;
+      const labelEl = document.createElement("span"); labelEl.textContent = label;
+      const cntEl = document.createElement("span"); cntEl.className = "cnt"; cntEl.textContent = cnt || "";
+      const removeEl = n.querySelector(".x");
+      n.insertBefore(cntEl, removeEl || null);
+      n.insertBefore(labelEl, cntEl);
+      n.insertBefore(icoEl, labelEl);
       el.tree.appendChild(n);
       const cb = n.querySelector("input");
       if (cb) {
@@ -1694,8 +1699,10 @@
     const row = (ico, label, sz, cls) => {
       const r = document.createElement("div");
       r.className = "fmRow" + (cls ? " " + cls : "");
-      r.innerHTML = `<span class="ico">${ico}</span><span>${label}</span>` +
-                    (sz ? `<span class="sz">${sz}</span>` : "");
+      const icoEl = document.createElement("span"); icoEl.className = "ico"; icoEl.textContent = ico;
+      const labelEl = document.createElement("span"); labelEl.textContent = label;
+      r.append(icoEl, labelEl);
+      if (sz) { const szEl = document.createElement("span"); szEl.className = "sz"; szEl.textContent = sz; r.append(szEl); }
       el.fmList.appendChild(r);
       return r;
     };

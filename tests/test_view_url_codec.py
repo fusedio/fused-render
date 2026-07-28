@@ -7,6 +7,7 @@ these tests run (and must pass) on Windows, macOS, and Linux alike.
 import pytest
 
 from fused_render._view_url_codec import (
+    canonical_fs_path,
     is_launch_url,
     open_target_path,
     open_target_url,
@@ -142,6 +143,34 @@ def test_open_target_http_url_fails_loudly():
 def test_open_target_unknown_scheme_fails_loudly():
     with pytest.raises(OSError):
         open_target_path("ftp://example.com/pub/data.csv")
+
+
+def test_canonical_fs_path_normalizes_only_drive_paths():
+    """The rule the call log stores and compares by (D147).
+
+    A drive path becomes forward-slashed; a POSIX path is returned untouched
+    even when it contains a backslash, because there a backslash is a legal
+    filename character. That second half is why this is not a plain
+    `.replace("\\\\", "/")` — an unconditional replace corrupts the POSIX name.
+    """
+    assert canonical_fs_path("C:\\Users\\foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
+    assert canonical_fs_path("c:\\data\\x.py") == "c:/data/x.py"
+    # Mixed separators, as os.path.join on Windows readily produces.
+    assert canonical_fs_path("C:/Users/foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
+    # POSIX: a literal backslash in a filename MUST survive.
+    assert canonical_fs_path("/app/we\\ird.html") == "/app/we\\ird.html"
+    assert canonical_fs_path("/app/mine.html") == "/app/mine.html"
+    # A bare fragment (what `calls --entrypoint sine.py` passes) is not a path
+    # to normalize and must pass through for the substring filter to work.
+    assert canonical_fs_path("sine.py") == "sine.py"
+    # A UNC path is not a drive path; it keeps its separators (view_url_path
+    # percent-encodes it as one segment).
+    assert canonical_fs_path("\\\\server\\share\\x.py") == "\\\\server\\share\\x.py"
+
+
+def test_canonical_fs_path_is_idempotent():
+    once = canonical_fs_path("C:\\Users\\foo\\a.py")
+    assert canonical_fs_path(once) == once
 
 
 def test_is_launch_url_classification():

@@ -169,7 +169,44 @@ Why this shape:
 - The control writes the param and nothing else; `onChange` is the single re-render path — no double-render logic, no drift between URL and UI.
 - Values passed to `runPython` can stay strings; annotations on `main` coerce them.
 
-Style: views render inside a dark-themed explorer. Match it (dark background, light text) unless the user wants otherwise; there is no imposed CSS — the iframe is a blank canvas.
+## Style and theming
+
+There is no imposed CSS — the iframe is a blank canvas, and by default **nothing is written into your document**: no class, no attribute, no stylesheet. But the explorer around it is not fixed. It follows the OS light/dark preference, with a Light/Dark override in Preferences → Appearance, so a hardcoded palette will sooner or later sit inside the opposite one.
+
+Pick one of these and commit to it — the failure mode is picking none and half-following:
+
+**1. Fixed palette.** Fine for a view with its own strong look (a dark map, a photo grid). Just don't pretend to follow.
+
+**2. Follow the app** — one attribute, no JS. Put `data-fused-theme="shell"` on your `<html>` and the injected runtime resolves the app's setting, writes `data-theme="light"`/`"dark"` on that same element before your stylesheet is even parsed, and keeps it in step afterwards — including an in-app pin, an OS flip mid-session, and a change made in another window. Author against the attribute:
+
+```html
+<html data-fused-theme="shell">
+```
+```css
+:root       { color-scheme: dark;  --bg: #101318; --text: #dce2ea; --line: #2a303a; }
+:root[data-theme="light"]
+            { color-scheme: light; --bg: #f7f8fa; --text: #1a1f27; --line: #d8dce3; }
+body        { background: var(--bg); color: var(--text); }
+```
+
+This is what the built-in templates use (`SPEC.md` §30, AP-8/AP-9), and it is the only option that agrees with the app when the user pins Light or Dark.
+
+**3. Follow the desktop** — `@media (prefers-color-scheme: light)` around the second `:root`, same tokens, no attribute. Tracks the OS, which is what the app's default System mode tracks too, so the two agree for the setting almost nobody changes. It does *not* see an in-app pin.
+
+**4. Your own switcher.** Put the choice in a param (`fused.params.set("theme", …)`) so it is bookmarkable like the rest of your view state, and drive the same one `data-theme` attribute from it. **Don't combine this with option 2** — the runtime re-applies on every storage/OS event, so your button would silently lose to the app setting. That is exactly why the built-in log viewer dropped its own button.
+
+Whatever you pick, two rules make the second palette actually work:
+
+- **Every colour comes from a token.** Two blocks defining *the same token set*, and no colour literal anywhere else in the stylesheet. A stray `#1a1f27` in a rule is one the other mode cannot repaint — and it shows up as an unreadable smear, not an obvious bug.
+- **Colours you hand to JS don't follow.** Canvas fills, chart ramps, maplibre paint expressions — `var()` does not resolve inside a JS string. Read them at *draw* time and redraw when the attribute changes:
+
+  ```js
+  const token = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  new MutationObserver(() => redraw())
+    .observe(document.documentElement, { attributeFilter: ["data-theme"] });
+  ```
+
+Do not read the app's own `localStorage` key. It is private, it is not part of `window.fused`, and a view that reads it becomes a second copy of a resolution rule that will drift from the first — options 2 and 3 both get you the answer without one.
 
 ## Preview templates (views for a file format)
 
@@ -207,6 +244,44 @@ Path encoding: the fs path rides in the URL after the prefix with its **leading 
 
 Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
 
+## Verifying your work: the call log
+
+The overlay and the browser console only exist while someone is looking at the
+page. Every API call a page makes is also **recorded** — so after the page has
+been opened you can check what actually happened, from a terminal, without a
+browser:
+
+```
+fused-render calls --page /abs/path/to/page.html --since 15m
+fused-render calls --failed --since 1h        # only what broke
+fused-render calls --json                     # digest as JSON
+fused-render calls --follow --page <page>      # block until the next calls land
+```
+
+Read the digest, not the raw records — it is a per-target rollup (count, p50,
+p95, errors) plus any failures in full, with each failure's traceback and the
+exact params that produced it.
+
+**You cannot render the page yourself** — nothing executes its JavaScript from
+a terminal. So the loop is: write the files → test the `.py` directly if you
+want (`fused.runPython`'s target is just a `main()`) → ask the user to open the
+page → read the log. `--follow` makes that one round trip instead of two.
+
+What the record count tells you, before you read anything else:
+
+| What you see | What it means |
+|---|---|
+| calls, all `ok` | It works. Report the timings. |
+| **zero records** | The page never called Python — its **JS** failed first. Look for a `page error` in the output: that is `window.onerror`, with the message and line number. |
+| one `error` | Python raised. The traceback and params are in the record. |
+| far more calls than interactions | A render loop — usually an `onChange` handler that calls `params.set` without a guard, so each write re-triggers itself. |
+| a high `stale` count | The page is issuing calls it throws away (superseded by the next one). Normal for a slider drag; suspicious otherwise. |
+
+The same data is in the **Calls** view mode on any page that has records
+(charts + the per-target table), and the raw store is JSONL under
+`~/.fused-render/logs/<app>/` (one directory per app; whole-store queries glob `logs/*/*.calls.jsonl`) if you want to `jq` it. Parameters are recorded by
+default, so treat the log as containing whatever your page passes around.
+
 ## Long-running work and the 60 s timeout
 
 Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
@@ -231,3 +306,4 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
 - `writeFile` without `expectedMtime` on an *existing* file → silently clobbers whatever is on disk now. Fine for new files; for edits, arm the lock and handle `.type === "conflict"`.
 - Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
+- Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.

@@ -53,8 +53,8 @@ def _reap_test_rcd_daemons():
     tracked = []  # (pid, home) recorded this session
     original = mounts.write_rcd_state
 
-    def _tracking_write_rcd_state(port, pid, log_path=None):
-        original(port, pid, log_path)
+    def _tracking_write_rcd_state(port, pid, log_path=None, auth=None):
+        original(port, pid, log_path, auth)
         try:
             tracked.append((pid, mounts.storage.home_dir()))
         except Exception:

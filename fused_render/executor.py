@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 import traceback
 
 from ._binding import bind_params
@@ -63,8 +64,19 @@ DEFAULT_TIMEOUT = 60.0
 # the way a spawned interpreter would. They stay first-party and touch only the
 # single file passed in; a batch is applied atomically (temp+os.replace for
 # flat files, one transaction for SQLite) so a failure leaves the file intact.
+_BUNDLED_TEMPLATES_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
+
 INPROCESS_HELPERS = frozenset(
-    os.path.realpath(os.path.join(_TEMPLATES_DIR, *parts))
+    os.path.realpath(os.path.join(base, *parts))
+    # BOTH the staged copy (what normally runs) and the bundled original. They
+    # are the same first-party file, and listing only the staged one meant a run
+    # served from the package directory fell to the subprocess path silently —
+    # a per-poll spawn for the readers, and outright failure for a helper that
+    # imports the package. A user FORK under ~/.fused-render/templates/ is
+    # deliberately not here: once the user can edit it, it is user code and
+    # keeps the subprocess timeout and isolation.
+    for base in (_TEMPLATES_DIR, _BUNDLED_TEMPLATES_DIR)
     for parts in (
         ("duckdb", "reader.py"),
         ("duckdb", "writer.py"),
@@ -78,12 +90,96 @@ INPROCESS_HELPERS = frozenset(
 )
 
 
+# Exactly starlette's JSONResponse.render kwargs — `dumps_result` below IS the
+# response encoding for the in-process path, so its bytes must match what
+# JSONResponse would have produced down to separators/escaping.
+_JSON_KW = {"ensure_ascii": False, "allow_nan": False, "separators": (",", ":")}
+
+
+class _PreEncodedRun(dict):
+    """A run result whose `result` payload is already serialized (D72).
+
+    The in-process path has to serialize main()'s return value anyway, to tell
+    a non-JSON-serializable result apart with a useful message. A parquet
+    structure dump is many MB, so serializing it again on the way out of
+    /api/run doubled the cost of every request. This carries that one encoded
+    string alongside the live payload: dict consumers still read
+    `result["result"]` as a real object, and `dumps_result` splices the string
+    straight into the response body instead of re-encoding it.
+    """
+
+    __slots__ = ("payload_json",)
+
+    def __init__(self, mapping: dict, payload_json: str):
+        super().__init__(mapping)
+        self.payload_json = payload_json
+
+
+def dumps_result(result: dict) -> str:
+    """Render a run result as the /api/run response body.
+
+    Byte-identical to `json.dumps(result, **_JSON_KW)` (a flat object is just
+    "key":value joined by commas), except that a `_PreEncodedRun`'s payload is
+    reused verbatim rather than serialized a second time.
+    """
+    payload_json = getattr(result, "payload_json", None)
+    if payload_json is None:
+        return json.dumps(result, **_JSON_KW)
+    return "{%s}" % ",".join(
+        "%s:%s" % (
+            json.dumps(key, **_JSON_KW),
+            payload_json if key == "result" else json.dumps(value, **_JSON_KW),
+        )
+        for key, value in result.items()
+    )
+
+
 def _error(err_type: str, message: str, detail: str = "") -> dict:
     return {
         "ok": False,
         "error": {"type": err_type, "message": message, "traceback": detail},
         "stdout": "",
     }
+
+
+def _child_env() -> dict:
+    """The worker's environment, with THIS package's location on PYTHONPATH.
+
+    The worker is spawned as a script, so its `sys.path[0]` is the package
+    directory rather than its parent, and `import fused_render` resolves there
+    only when the package happens to be pip-installed into `sys.executable`.
+    A first-party helper that delegates to the package (the call-log reader
+    reads the store through `fused_render.calls`) otherwise fails with
+    *No module named 'fused_render'* — reported from the Calls view, while
+    log_studio's stdlib-only reader was unaffected.
+
+    Handing the path down from the PARENT rather than deriving it in the child
+    is the load-bearing part: this process IS the package, so it knows where the
+    package is even when the child's own `__file__` arithmetic cannot say (a
+    frozen or relocated layout), and it applies to a worker script that has not
+    itself been updated. `_child.py` keeps its own fallback for direct
+    invocation, but this is the path that has to be right.
+
+    APPENDED, matching `_child.py`'s own `sys.path.append` of the same value —
+    the two halves of this fix must not disagree about precedence. Prepending
+    looked harmless because `run()` still puts the user's module directory at
+    `sys.path[0]`, but it shadows the user's *PYTHONPATH* rather than their
+    script's folder, and on an installed layout `parent` IS site-packages: in
+    front of PYTHONPATH that reverses the one override PYTHONPATH exists to
+    provide, for every module, not just this package. Appending fixes the
+    missing import just as well — the entry only has to be reachable, not first
+    — and can no longer displace anything the caller already had.
+
+    Skipped entirely when the caller already has it, so a nested run cannot
+    grow the variable one copy per level.
+    """
+    parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    existing = os.environ.get("PYTHONPATH") or ""
+    entries = existing.split(os.pathsep) if existing else []
+    if parent in entries:
+        return {**os.environ}
+    return {**os.environ,
+            "PYTHONPATH": (existing + os.pathsep if existing else "") + parent}
 
 
 def _is_builtin_helper(path: str) -> bool:
@@ -127,14 +223,23 @@ def _run_inprocess(path: str, params: dict) -> dict:
                 f"{os.path.basename(path)} does not define a callable 'main' function"
             )
         result = fn(**bind_params(fn, params))
+        # Serialize once: this pass both validates the payload (so a bad return
+        # gets the message below instead of an opaque 500 from the response
+        # encoder) and *is* the bytes /api/run sends, via dumps_result. A
+        # multi-MB structure dump used to be encoded twice per request.
         try:
-            json.dumps(result)
+            payload_json = json.dumps(result, **_JSON_KW)
         except (TypeError, ValueError):
             raise TypeError(
                 f"main() returned {type(result).__name__}, which is not JSON-serializable; "
                 "return dict/list/str/number/bool/None (e.g. df.to_dict('records'))"
             ) from None
-        return {"ok": True, "result": result, "stdout": ""}
+        # Union of two sides of a merge: #290's pre-encoded payload (encode a
+        # multi-MB result once, not twice) AND the explicit empty `stderr` the
+        # call log's records rely on (in-process helpers capture no stderr, and
+        # the record contract wants the field present-and-empty, not absent).
+        return _PreEncodedRun(
+            {"ok": True, "result": result, "stdout": "", "stderr": ""}, payload_json)
     except BaseException as e:  # noqa: BLE001 — mirror the child's catch-all
         return {
             "ok": False,
@@ -144,11 +249,18 @@ def _run_inprocess(path: str, params: dict) -> dict:
                 "traceback": traceback.format_exc(),
             },
             "stdout": "",
+            "stderr": "",
         }
 
 
 def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    # Time the run here so this engine reports `duration_ms` like the fused one
+    # (engine.py) does. Without it the call log's `run_ms` is mysteriously
+    # empty for the DEFAULT engine, which reads as a bug rather than a gap —
+    # and the two engines' numbers stop being comparable.
+    started = time.monotonic()
     result = _run_python(path, params, timeout)
+    result.setdefault("duration_ms", round((time.monotonic() - started) * 1000))
     if not result.get("ok"):
         # A failed run is the common "something wrong with right-click open"
         # symptom, and the browser only flashes it in an error overlay. Record
@@ -182,6 +294,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_child_env(),
             # close_fds=False forces CPython to spawn via posix_spawn instead of
             # fork()+exec (verified: the default close_fds=True takes the fork
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy
@@ -211,9 +324,17 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
     lines = proc.stdout.strip().splitlines()
     if lines:
         try:
-            return json.loads(lines[-1])
+            parsed = json.loads(lines[-1])
         except json.JSONDecodeError:
             pass
+        else:
+            # The worker's own stderr, which _child.py never captures (it
+            # redirects only stdout, to keep the result protocol clean) — so a
+            # warning or a C-library message printed by a run is otherwise
+            # lost. Tail, not head: the end is where the failure is.
+            if isinstance(parsed, dict) and proc.stderr:
+                parsed.setdefault("stderr", proc.stderr[-4000:])
+            return parsed
     return _error(
         "ExecutorError",
         f"worker exited with code {proc.returncode} without producing a result",

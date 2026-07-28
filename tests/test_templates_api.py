@@ -10,6 +10,7 @@ templates keep resolving from the conftest-staged .core-templates dir.
 import io
 import json
 import os
+import urllib.parse
 import zipfile
 
 import pytest
@@ -1024,7 +1025,7 @@ def test_commit_applies_bindings_appending_to_core_list(ctx):
         {"key": ".myext", "template": "fresh"},
     ]
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "fresh"]
+    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "fresh"]
     assert reg[".myext"] == ["fresh"]
 
 
@@ -1095,7 +1096,7 @@ def test_commit_binding_reenables_disabled_key_with_core_list(ctx):
         headers=FUSED,
     ).json()
     assert body["bindingsApplied"] == [{"key": ".csv", "template": "fresh"}]
-    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "fresh"]
+    assert ctx.read_registry()[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "fresh"]
 
 
 def test_commit_binding_already_bound_is_noop(ctx):
@@ -1176,7 +1177,7 @@ def test_new_template_appends_to_existing_core_default(ctx):
     )
     assert resp.status_code == 200
     reg = ctx.read_registry()
-    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "annotate", "mycsv"]
+    assert reg[".csv"] == ["duckdb", "csv", "excel", "code", "reader", "annotate", "mycsv"]
 
 
 def test_new_template_appends_to_existing_user_override(ctx):
@@ -1309,44 +1310,47 @@ def test_new_template_requires_fused_header(ctx):
     assert not (ctx.udir / "myview").exists()
 
 
-# --------------------------------------------------------- open in Claude (macOS)
+# --------------------------------------------------------- open in Claude (claude-cli:// deep link)
 
 
-def test_open_in_claude_success(ctx, monkeypatch):
+def test_open_in_claude_success(ctx):
     ctx.make_template("myview")
-    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
-    monkeypatch.setattr(templates_api.shutil, "which", lambda _c: "/fake/bin/claude")
-    calls = []
-    monkeypatch.setattr(templates_api.subprocess, "run", lambda *a, **k: calls.append((a, k)))
     resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
-    # osascript invoked with a `do script` that cd's into the template folder
-    # and runs the located claude binary.
-    (argv,), _kw = calls[0]
-    assert argv[0] == "osascript"
-    joined = " ".join(argv)
-    assert str(ctx.udir / "myview") in joined
-    assert "/fake/bin/claude" in joined
+    expected = "claude-cli://open?cwd=" + urllib.parse.quote(os.path.abspath(str(ctx.udir / "myview")))
+    assert resp.json() == {"url": expected}
 
 
-def test_open_in_claude_non_darwin_errors(ctx, monkeypatch):
-    ctx.make_template("myview")
-    monkeypatch.setattr(templates_api.sys, "platform", "linux")
-    resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "myview"}, headers=FUSED)
-    assert resp.status_code == 400
-    assert "macOS" in resp.json()["error"]
+def test_open_in_claude_encodes_space_in_path(ctx):
+    ctx.make_template("my view")
+    resp = ctx.client.post(
+        "/api/templates/open-in-claude", json={"name": "my view"}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    url = resp.json()["url"]
+    assert "%20" in url
+    assert " " not in url
 
 
-def test_open_in_claude_missing_template_404(ctx, monkeypatch):
-    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
+def test_open_in_claude_encodes_unicode_path(ctx):
+    ctx.make_template("my-view-☃")
+    resp = ctx.client.post(
+        "/api/templates/open-in-claude", json={"name": "my-view-☃"}, headers=FUSED
+    )
+    assert resp.status_code == 200
+    url = resp.json()["url"]
+    assert url.startswith("claude-cli://open?cwd=")
+    assert "%" in url
+    assert "☃" not in url
+
+
+def test_open_in_claude_missing_template_404(ctx):
     resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "nope"}, headers=FUSED)
     assert resp.status_code == 404
 
 
-def test_open_in_claude_core_template_refused(ctx, monkeypatch):
+def test_open_in_claude_core_template_refused(ctx):
     # 'code' is a core template (no user folder) -> 404, core folder untouched.
-    monkeypatch.setattr(templates_api.sys, "platform", "darwin")
     resp = ctx.client.post("/api/templates/open-in-claude", json={"name": "code"}, headers=FUSED)
     assert resp.status_code == 404
 

@@ -129,6 +129,23 @@ export async function freePastePath(parentDir: string, name: string, isDir: bool
   return join(dir, candidate);
 }
 
+// claude-cli:// deep link for a listing entry — Claude Code registers this
+// scheme OS-wide (see templates_api.api_open_in_claude, which builds the same
+// cwd shape for a template folder, but no starter q there). A dir opens with
+// its own path as cwd; a file opens with its parent as cwd. Both prime a
+// starter prompt telling Claude to load fused-render's skills first — a file's
+// prompt names it in quotes (not @-mention: names with spaces don't parse as
+// one mention) — with two trailing newlines so the user's actual ask lands on
+// a fresh line below (not auto-sent — the user still hits enter).
+export function claudeDeepLink(path: string, isDir: boolean, name: string, parentDir: string): string {
+  if (isDir) {
+    const q = "This is a fused-render project — load its skills first.\n\n";
+    return "claude-cli://open?cwd=" + encodeURIComponent(path) + "&q=" + encodeURIComponent(q);
+  }
+  const q = `This is a fused-render project — load its skills first, then read "${name}".\n\n`;
+  return "claude-cli://open?cwd=" + encodeURIComponent(normDir(parentDir)) + "&q=" + encodeURIComponent(q);
+}
+
 // Write text to the system clipboard; resolves true on success, false when the
 // Clipboard API is missing or the write is denied. Callers decide whether to
 // toast (a failure stays silent — the path is still reachable via Reveal).
@@ -142,15 +159,34 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+// Drop every path that lives INSIDE another path of the same set, keeping the
+// outermost ancestors (input order preserved).
+// Needed because a search result list is a flat, recursive walk of the subtree:
+// one shift-click / Cmd+A can select a folder AND entries inside it. A batch op
+// that then walks the set entry by entry breaks on the descendants — the move or
+// delete of the ancestor already took them, so the next call hits a path that no
+// longer exists and reports a failure for work that actually succeeded.
+// Acting on the ancestor alone is also the correct intent: moving/copying/
+// removing a folder carries its contents along.
+// Prefix + "/" is the same containment test clearClipboardIfDeleted uses; the
+// self-comparison guard keeps a path from pruning itself.
+export function pruneDescendantPaths(paths: string[]): string[] {
+  return paths.filter((p) => !paths.some((other) => other !== p && p.startsWith(other + "/")));
+}
+
 // After a successful delete/trash, drop the module clipboard if it points at
 // the removed entry — either the exact path, or something inside it when a
 // directory was deleted (prefix + separator). Otherwise a later Paste of that
 // cut/copy would target a source that no longer exists.
+// A multi-entry clipboard only drops the paths that were removed; it clears
+// entirely once nothing it referenced survives (the empty-list state is spelled
+// null — see the Clipboard invariant).
 export function clearClipboardIfDeleted(deleted: string): void {
   const clip = getClipboard();
-  if (clip && (clip.path === deleted || clip.path.startsWith(deleted + "/"))) {
-    setClipboard(null);
-  }
+  if (!clip) return;
+  const kept = clip.paths.filter((p) => p !== deleted && !p.startsWith(deleted + "/"));
+  if (kept.length === clip.paths.length) return;
+  setClipboard(kept.length ? { ...clip, paths: kept } : null);
 }
 
 // After a successful rename/move, repoint the module clipboard if it was
@@ -163,11 +199,19 @@ export function clearClipboardIfDeleted(deleted: string): void {
 export function remapClipboardPath(oldPath: string, newPath: string): void {
   const clip = getClipboard();
   if (!clip) return;
-  if (clip.path === oldPath) {
-    setClipboard({ ...clip, path: newPath });
-  } else if (clip.path.startsWith(oldPath + "/")) {
-    setClipboard({ ...clip, path: newPath + clip.path.slice(oldPath.length) });
-  }
+  let changed = false;
+  const paths = clip.paths.map((p) => {
+    if (p === oldPath) {
+      changed = true;
+      return newPath;
+    }
+    if (p.startsWith(oldPath + "/")) {
+      changed = true;
+      return newPath + p.slice(oldPath.length);
+    }
+    return p;
+  });
+  if (changed) setClipboard({ ...clip, paths });
 }
 
 // Turn a raw fs-action failure into a human sentence for the toast. The server

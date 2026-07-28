@@ -1,90 +1,145 @@
 <!DOCTYPE html>
-<html>
+<html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
 <title>Vector preview</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
 <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
 <style>
-  :root { color-scheme: dark; }
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --panel-bg: rgba(19,20,23,.92);
+    --status-bg: rgba(19,20,23,.9);
+    --popup-bg: rgba(19,20,23,.97);
+    --tip-bg: rgba(12,13,15,.94);
+    --tip-border: #3a3d44;
+    --btn-bg: #2b5fd9;
+    --btn-hover: #3a6ee8;
+    --ghost-hover-border: #4a4d55;
+    --ok-bg: #1f7a4c;
+    --ok-hover: #269159;
+    --err-fg: #ff7b72;
+    --link: #8ab4ff;
+    --row-line: #1e2025;
+    --cell-line: #23262c;
+    --th-bg: #17181c;
+    --sz-fg: #6b7178;
+    --crumb-sep: #4b5058;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --panel-bg: rgba(255,255,255,.94);
+    --status-bg: rgba(255,255,255,.92);
+    --popup-bg: rgba(255,255,255,.97);
+    --tip-bg: rgba(255,255,255,.96);
+    --tip-border: #c9ccd2;
+    --btn-bg: #2f6fd0;
+    --btn-hover: #2560bb;
+    --ghost-hover-border: #b6bac1;
+    --ok-bg: #1f7a4c;
+    --ok-hover: #17693f;
+    --err-fg: #c62828;
+    --link: #1c5fb8;
+    --row-line: #e9ebef;
+    --cell-line: #e4e7eb;
+    --th-bg: #eceef1;
+    --sz-fg: #7b8088;
+    --crumb-sep: #a8adb5;
+  }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #e8eaed; background: #131417; font-size: 13px; }
+    color: var(--fg); background: var(--bg); font-size: 13px; }
   #map { position: absolute; inset: 0; }
-  .panel { position: absolute; background: rgba(19,20,23,.92); border: 1px solid #2a2d33;
+  .panel { position: absolute; background: var(--panel-bg); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(6px); z-index: 10; }
   #topbar { top: 10px; left: 10px; right: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  #topbar label { color: #9aa0a6; margin: 0 2px 0 6px; }
-  input[type=text], select { font: inherit; color: #e8eaed; background: #1b1d21;
-    border: 1px solid #2a2d33; border-radius: 6px; padding: 4px 8px; }
+  #topbar label { color: var(--fg-muted); margin: 0 2px 0 6px; }
+  input[type=text], select { font: inherit; color: var(--fg); background: var(--bg-alt);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
   #path { flex: 1; min-width: 200px; }
-  button { font: inherit; color: #e8eaed; background: #2b5fd9; border: 1px solid #2b5fd9;
+  button { font: inherit; color: var(--fg); background: var(--btn-bg); border: 1px solid var(--btn-bg);
     border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  button:hover { background: #3a6ee8; }
-  button.ghost { background: transparent; border-color: #2a2d33; color: #9aa0a6; }
-  button.ghost:hover { color: #e8eaed; border-color: #4a4d55; }
-  button.accent { background: #1f7a4c; border-color: #1f7a4c; }
-  button.accent:hover { background: #269159; }
+  button:hover { background: var(--btn-hover); }
+  button.ghost { background: transparent; border-color: var(--border); color: var(--fg-muted); }
+  button.ghost:hover { color: var(--fg); border-color: var(--ghost-hover-border); }
+  button.accent { background: var(--ok-bg); border-color: var(--ok-bg); }
+  button.accent:hover { background: var(--ok-hover); }
   button:disabled { opacity: .5; cursor: default; }
   #status { position: absolute; left: 50%; top: 64px; transform: translateX(-50%);
-    background: rgba(19,20,23,.9); border: 1px solid #2a2d33; border-radius: 999px;
-    padding: 4px 14px; color: #9aa0a6; z-index: 20; display: none; max-width: 80%; }
-  #status.err { color: #ff7b72; display: block; }
+    background: var(--status-bg); border: 1px solid var(--border); border-radius: 999px;
+    padding: 4px 14px; color: var(--fg-muted); z-index: 20; display: none; max-width: 80%; }
+  #status.err { color: var(--err-fg); display: block; }
   #status.loading { animation: statusPulse 1.4s ease-in-out infinite; }
   @keyframes statusPulse { 0%, 100% { opacity: .6; } 50% { opacity: 1; } }
-  #status a { color: #8ab4ff; }
+  #status a { color: var(--link); }
   /* Slim indeterminate progress bar under the topbar — fires while a vector
      file (or a GeoParquet conversion) is in flight. 2px so toggling it never
      shifts layout; the map/basemap underneath stays visible the whole time. */
   #loadbar { position: absolute; left: 10px; right: 10px; top: 54px; height: 2px;
     overflow: hidden; z-index: 15; pointer-events: none; }
   #loadbar::before { content: ""; display: block; height: 100%; width: 35%; border-radius: 2px;
-    background: linear-gradient(90deg, transparent, #2b5fd9, transparent);
+    background: linear-gradient(90deg, transparent, var(--btn-bg), transparent);
     transform: translateX(-120%); opacity: 0; }
   #loadbar.active::before { opacity: 1; animation: loadbar-slide 1.1s ease-in-out infinite; }
   @keyframes loadbar-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
   /* Shimmering skeleton bar reused by the explorer row list, and the info/
      attribute-table side panels while their data hasn't landed yet. */
   .sk-bar { display: inline-block; vertical-align: middle; border-radius: 3px;
-    background: linear-gradient(90deg, #1e2025 25%, #2a2d33 50%, #1e2025 75%);
+    background: linear-gradient(90deg, var(--row-line) 25%, var(--border) 50%, var(--row-line) 75%);
     background-size: 200% 100%; animation: vec-shimmer 1.2s ease-in-out infinite; }
   @keyframes vec-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
   #metaPanel { right: 10px; top: 58px; width: 360px; max-height: 62vh; overflow: auto; display: none; }
   #metaPanel h2, #tablePanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #9aa0a6; margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
+    color: var(--fg-muted); margin: 0 0 6px; display: flex; justify-content: space-between; align-items: center; }
   #metaPanel table, #tablePanel table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  #metaPanel td, #tablePanel td, #tablePanel th { padding: 3px 6px; border-bottom: 1px solid #23262c;
+  #metaPanel td, #tablePanel td, #tablePanel th { padding: 3px 6px; border-bottom: 1px solid var(--cell-line);
     vertical-align: top; word-break: break-word; text-align: left; }
-  #metaPanel td:first-child { color: #9aa0a6; white-space: nowrap; }
+  #metaPanel td:first-child { color: var(--fg-muted); white-space: nowrap; }
   #tablePanel { left: 10px; bottom: 26px; right: 370px; max-height: 32vh; overflow: auto; display: none; }
-  #tablePanel th { color: #9aa0a6; position: sticky; top: -10px; background: #17181c; }
+  #tablePanel th { color: var(--fg-muted); position: sticky; top: -10px; background: var(--th-bg); }
   #mapTip { position: fixed; pointer-events: none; z-index: 40; display: none;
-    background: rgba(12,13,15,.94); border: 1px solid #3a3d44; border-radius: 6px;
+    background: var(--tip-bg); border: 1px solid var(--tip-border); border-radius: 6px;
     padding: 6px 9px; font-size: 11px; font-variant-numeric: tabular-nums;
-    max-width: 300px; color: #e8eaed; }
-  #mapTip .t { color: #8ab4ff; font-weight: 600; margin-bottom: 2px; }
+    max-width: 300px; color: var(--fg); }
+  #mapTip .t { color: var(--link); font-weight: 600; margin-bottom: 2px; }
   #mapTip td { padding: 1px 5px 1px 0; vertical-align: top; }
-  #mapTip td:first-child { color: #9aa0a6; white-space: nowrap; }
-  .maplibregl-popup-content { background: rgba(19,20,23,.97); color: #e8eaed;
-    border: 1px solid #2a2d33; border-radius: 8px; font-size: 12px; max-height: 40vh;
+  #mapTip td:first-child { color: var(--fg-muted); white-space: nowrap; }
+  .maplibregl-popup-content { background: var(--popup-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px; font-size: 12px; max-height: 40vh;
     overflow: auto; padding: 10px 12px; font-family: inherit; }
   .maplibregl-popup-content table { border-collapse: collapse; }
-  .maplibregl-popup-content td { padding: 2px 8px 2px 0; border-bottom: 1px solid #23262c; }
-  .maplibregl-popup-content td:first-child { color: #9aa0a6; white-space: nowrap; }
-  .maplibregl-popup-close-button { color: #8ab4ff; font-size: 16px; }
-  .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #2a2d33; }
-  .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #2a2d33; }
+  .maplibregl-popup-content td { padding: 2px 8px 2px 0; border-bottom: 1px solid var(--cell-line); }
+  .maplibregl-popup-content td:first-child { color: var(--fg-muted); white-space: nowrap; }
+  .maplibregl-popup-close-button { color: var(--link); font-size: 16px; }
+  .maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--border); }
+  .maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--border); }
   #explorer { left: 10px; top: 58px; width: 420px; max-height: 65vh; display: none; z-index: 30; }
-  #crumbs { font-size: 12px; margin-bottom: 8px; color: #9aa0a6; }
-  #crumbs a { color: #8ab4ff; cursor: pointer; }
-  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  #crumbs { font-size: 12px; margin-bottom: 8px; color: var(--fg-muted); }
+  #crumbs a { color: var(--link); cursor: pointer; }
+  #explorerList { max-height: 48vh; overflow: auto; border: 1px solid var(--cell-line); border-radius: 6px; }
   .row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer;
-    font-size: 13px; border-bottom: 1px solid #1e2025; }
-  .row:hover { background: #23262c; }
+    font-size: 13px; border-bottom: 1px solid var(--row-line); }
+  .row:hover { background: var(--cell-line); }
   .row .ic { width: 18px; text-align: center; }
   .row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .sz { color: #6b7178; font-size: 11px; }
+  .row .sz { color: var(--sz-fg); font-size: 11px; }
   input[type=range] { vertical-align: middle; width: 90px; }
 </style>
 </head>
@@ -110,12 +165,12 @@
   <div class="panel" id="explorer">
     <div id="crumbs"></div>
     <div id="explorerList"></div>
-    <label style="display:block;margin-top:8px;color:#9aa0a6;font-size:12px">
+    <label style="display:block;margin-top:8px;color:var(--fg-muted);font-size:12px">
       <input type="checkbox" id="showAll" /> show all files</label>
   </div>
 
-  <div class="panel" id="metaPanel"><h2>Layer info <a id="metaClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="metaBody"></div></div>
-  <div class="panel" id="tablePanel"><h2>Attributes (first rows) <a id="tableClose" style="cursor:pointer;color:#8ab4ff">×</a></h2><div id="tableBody"></div></div>
+  <div class="panel" id="metaPanel"><h2>Layer info <a id="metaClose" style="cursor:pointer;color:var(--link)">×</a></h2><div id="metaBody"></div></div>
+  <div class="panel" id="tablePanel"><h2>Attributes (first rows) <a id="tableClose" style="cursor:pointer;color:var(--link)">×</a></h2><div id="tableBody"></div></div>
   <div id="mapTip"></div>
 
 <script>
@@ -269,7 +324,7 @@ map.on('mousemove', e => {
   const more = keys.length - lead.length - rest.length;
   els.mapTip.innerHTML = `<div class="t">Feature #${hoverId}</div><table>` +
     [...lead, ...rest].map(k => `<tr><td>${k}</td><td>${props[k] ?? '—'}</td></tr>`).join('') +
-    '</table>' + (more > 0 ? `<div style="color:#6b7178">… ${more} more — click for all</div>` : '');
+    '</table>' + (more > 0 ? `<div style="color:var(--sz-fg)">… ${more} more — click for all</div>` : '');
   els.mapTip.style.display = 'block';
   const pad = 14;
   const x = Math.min(e.originalEvent.clientX + pad, window.innerWidth - 310);
@@ -289,7 +344,7 @@ map.on('click', e => {
   if (!feats.length) return;
   popup = new maplibregl.Popup({maxWidth: '340px'})
     .setLngLat(e.lngLat)
-    .setHTML(`<div style="color:#8ab4ff;font-weight:600;margin-bottom:4px">Feature #${feats[0].id}</div>` +
+    .setHTML(`<div style="color:var(--link);font-weight:600;margin-bottom:4px">Feature #${feats[0].id}</div>` +
              featHTML(feats[0].properties))
     .addTo(map);
 });
@@ -315,7 +370,7 @@ function renderMeta(){
     data.schema.map(s => `<tr><td>${s.name}</td><td>${s.dtype}</td></tr>`).join('') + '</table>';
 }
 function renderTable(){
-  if (!data || !data.table.length){ els.tableBody.innerHTML = '<span style="color:#6b7178">no attributes</span>'; return; }
+  if (!data || !data.table.length){ els.tableBody.innerHTML = '<span style="color:var(--sz-fg)">no attributes</span>'; return; }
   const cols = data.schema.map(s => s.name);
   els.tableBody.innerHTML = '<table><tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>' +
     data.table.map(r => '<tr>' + cols.map(c => `<td>${r[c] ?? '—'}</td>`).join('') + '</tr>').join('') + '</table>';
@@ -383,13 +438,13 @@ async function refreshExplorer(dir){
   const r = await fused.runPython('./browse.py', { dir, exts: '.shp,.kml,.kmz,.gpx,.geojson,.gpkg,.fgb', show_all: P.showAll() ? 'true' : 'false', src: rawURL(dir) }).catch(() => null);
   if (!r || r.error){ els.crumbs.innerHTML = prevCrumbs; els.explorerList.innerHTML = prevList; return; }
   els.crumbs.innerHTML = r.crumbs.map(c =>
-    `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:#4b5058"> / </span>');
+    `<a data-p="${c.path}">${c.label || '/'}</a>`).join('<span style="color:var(--crumb-sep)"> / </span>');
   els.crumbs.querySelectorAll('a').forEach(a => a.onclick = () => refreshExplorer(a.dataset.p));
   const entries = [...(r.dirs || []), ...(r.files || [])];
   els.explorerList.innerHTML = entries.map(e =>
     `<div class="row" data-p="${e.path}" data-d="${e.is_dir ? 1 : 0}">
        <span class="ic">${e.is_dir ? '📁' : '🗂'}</span><span class="nm">${e.name}</span>
-       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
+       <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:var(--sz-fg)">empty</div>';
   els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
     if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
     else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }

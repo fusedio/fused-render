@@ -316,9 +316,10 @@ def test_open_default_apps_raises_on_linux(monkeypatch):
 def test_alert_is_a_no_op_when_tk_cannot_start(monkeypatch):
     # On a display-less session Tk() raises TclError; alert() is the unguarded
     # fatal-error reporter in __main__.py and must degrade to a no-op, not crash.
+    # Some minimal/sandboxed Python builds ship without the tkinter stdlib
+    # module at all (no display, no Tk libs) — skip rather than fail there.
+    tkinter = pytest.importorskip("tkinter")
     monkeypatch.setattr(ui.shutil, "which", lambda tool: None)  # force the tkinter path
-
-    import tkinter
 
     def boom():
         raise tkinter.TclError("no display name and no $DISPLAY environment variable")

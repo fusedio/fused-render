@@ -2,12 +2,19 @@
 
 The Preferences page's backend (SPEC §20): a tiny persisted preference store
 (shell/storage, beside bookmarks.json/deployments.json) plus the derived,
-read-only facts the page shows next to it (log location, engine
-availability/forcing).
+read-only facts the page shows next to it (engine availability/forcing).
 
-Two preferences are persisted: **deploy_enabled** (whether the preview-header
-Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``) and
-the **execution engine** for /api/run:
+The app's own log is deliberately NOT in this payload: it is disposable
+temp-dir output (D68) whose only affordance was a reveal button, and the
+desktop tray's "Open app logs" already covers that. Since the call store moved to
+~/.fused-render/logs, a second "Logs" heading here read as the call log's
+settings rather than as a separate thing.
+
+Three preferences are persisted: **deploy_enabled** (whether the preview-header
+Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
+**reader_enabled** (whether the Reader listen-to-files accessibility mode is
+offered — opt-in, default off; see ``reader_enabled``), and the **execution
+engine** for /api/run:
 
   * ``"builtin"`` (default) — the built-in executor: fresh subprocess per
     call, the environment that launched the server (D70's builtin-by-default
@@ -34,12 +41,13 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render.logs import log_dir, log_path
 from fused_render.shell import storage
 
 router = APIRouter()
 
 VALID_ENGINES = ("builtin", "fused")
+VALID_CALLS_PARAMS = ("full", "keys", "off")
+DEFAULT_CALLS_RETENTION_DAYS = 14
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -76,6 +84,54 @@ def deploy_enabled() -> bool:
     don't deploy. Any non-`true` stored value (missing/legacy) reads as off.
     """
     return read_prefs().get("deploy_enabled") is True
+
+
+def reader_enabled() -> bool:
+    """Whether the Reader (listen-to-files) mode is offered (default off — opt-in).
+
+    Reader is an accessibility affordance: a preview mode that reads text files
+    and PDFs aloud. It's off until the user turns it on from the Preferences
+    page, at which point the reader template's condition.py gate (SPEC CT-12)
+    starts allowing the mode on the file types it's bound to. This is a global
+    feature switch, not a per-file sniff — the gate ignores the target path and
+    consults only this value. Any non-`true` stored value (missing/legacy)
+    reads as off.
+    """
+    return read_prefs().get("reader_enabled") is True
+
+
+def calls_enabled() -> bool:
+    """Whether the app call log records anything (default ON — see calls.py).
+
+    On by default because a diagnostic that has to be switched on before the
+    thing you wanted to diagnose is worthless: the interesting call already
+    happened. `FUSED_RENDER_CALLS=0` is the process-level off switch that beats
+    this pref. Any non-`false` stored value (including missing) reads as on.
+    """
+    return read_prefs().get("calls_enabled") is not False
+
+
+def calls_params_mode() -> str:
+    """How much of a run's params the log keeps: full | keys | off.
+
+    Default `full`: params are the inputs the author's own code already
+    received and are usually the whole repro (the same named trade-off the
+    serve plane's error records make), and locally they are already sitting in
+    the URL bar. `keys` keeps only the key names for a page whose param is a
+    secret; `off` keeps nothing.
+    """
+    value = read_prefs().get("calls_params")
+    return value if value in VALID_CALLS_PARAMS else "full"
+
+
+def calls_retention_days() -> int:
+    """How long call-log files are kept (default 14, matching the serve plane's
+    `errors/` lifecycle rule). 0 disables age-based pruning — the directory
+    size cap in calls.sweep() still applies."""
+    value = read_prefs().get("calls_retention_days")
+    if isinstance(value, int) and 0 <= value <= 3_650:
+        return value
+    return DEFAULT_CALLS_RETENTION_DAYS
 
 
 def fused_engine_available() -> bool:
@@ -135,12 +191,89 @@ def engine_state() -> dict:
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
-        # Where this process is logging (logs.py): the page's "open the logs
-        # location" action reveals `path` via the existing /api/fs/reveal.
-        "log": {"path": log_path(), "dir": log_dir()},
         # Whether the preview-header Deploy affordance is shown (opt-in).
         "deploy": {"enabled": deploy_enabled()},
+        # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
+        "reader": {"enabled": reader_enabled()},
+        # The app call log (calls.py): capture state, param redaction, retention.
+        # `dir` lets the page reveal the store through the existing
+        # /api/fs/reveal, exactly as `log.path` does.
+        "calls": {
+            # The STORED prefs — what a PUT round-trips, and what applies once
+            # any process override is removed. What is actually in force is the
+            # `effective_*` pair below; they differ whenever an env var wins.
+            "enabled": calls_enabled(),
+            "params": calls_params_mode(),
+            "retention_days": calls_retention_days(),
+            **_calls_store(),
+            **_calls_effective(),
+        },
     }
+
+
+def _calls_store() -> dict:
+    """Where the call store is, and whether it is there yet.
+
+    The writer creates the directory on its first append, so between "capture
+    on" and "a page actually called something" the path in `dir` does not
+    exist. `dir_exists` is reported rather than papered over by creating it
+    here: this is a GET, and a read that provisions storage is a side effect in
+    the wrong place — the lazy create belongs to the writer (`_append`), which
+    is also what keeps an empty store from appearing for someone who never
+    records a call. The UI uses the flag to say "nothing recorded yet" instead
+    of sending the explorer to a path that will fail to stat.
+    """
+    # Imported lazily: calls.py imports this module (for the prefs above), so a
+    # module-scope import here would be a cycle.
+    from fused_render import calls
+
+    path = calls.store_dir()
+    return {"dir": path, "dir_exists": os.path.isdir(path)}
+
+
+def _calls_effective() -> dict:
+    """What capture and retention are *actually* doing, and what forced them.
+
+    `FUSED_RENDER_CALLS` and `FUSED_RENDER_CALLS_RETENTION_DAYS` beat the stored
+    prefs inside `calls.enabled()`/`calls.retention_days()`, so reporting only
+    the stored values lets the page show capture as on while the process has it
+    off — the exact failure `engine_state()` exists to prevent, in the same
+    payload. Same treatment here: `effective_*` comes from **the resolvers the
+    writer itself calls**, never a second copy of the precedence rule, so the
+    page cannot report a state the log isn't in; `*_forced_by` carries the raw
+    env value so the UI can name what is overriding — and is null unless that
+    value is genuinely in force, which is not the same as being set (`_forced_by`).
+
+    Only these two are overridable — the param-redaction mode has no env var, so
+    it gets no pair rather than a misleading always-null one.
+    """
+    # Imported lazily: calls.py imports this module, so a module-scope import
+    # here would be a cycle.
+    from fused_render import calls
+
+    return {
+        "effective_enabled": calls.enabled(),
+        "enabled_forced_by": _forced_by(calls.DISABLE_ENV, calls.enabled_override()),
+        "effective_retention_days": calls.retention_days(),
+        "retention_forced_by": _forced_by(
+            calls.RETENTION_DAYS_ENV, calls.retention_days_override()
+        ),
+    }
+
+
+def _forced_by(env_name: str, override) -> str | None:
+    """The raw value of `env_name` when it is what's actually in force, else None.
+
+    Gated on the writer's override resolver rather than on the variable merely
+    being *set*, because for retention those differ: `calls.retention_days()`
+    ignores an empty or non-numeric FUSED_RENDER_CALLS_RETENTION_DAYS and keeps
+    using the pref. A `forced_by` derived from presence alone then disables the
+    UI control and blames the variable for a window it is not setting — leaving
+    the user unable to change retention from the page and unable to fix it by
+    editing a variable that was never in force (D148). Same shape as the
+    `effective_*` values above: ask the writer, don't re-derive.
+    """
+    return os.environ.get(env_name) if override is not None else None
 
 
 @router.get("/api/prefs")
@@ -172,12 +305,49 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse({"error": "'deploy_enabled' must be a boolean"}, status_code=400)
         prefs["deploy_enabled"] = value
         changed = True
+    if "reader_enabled" in body:
+        value = body.get("reader_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'reader_enabled' must be a boolean"}, status_code=400)
+        prefs["reader_enabled"] = value
+        changed = True
+    if "calls_enabled" in body:
+        value = body.get("calls_enabled")
+        if not isinstance(value, bool):
+            return JSONResponse({"error": "'calls_enabled' must be a boolean"}, status_code=400)
+        prefs["calls_enabled"] = value
+        changed = True
+    if "calls_params" in body:
+        value = body.get("calls_params")
+        if value not in VALID_CALLS_PARAMS:
+            return JSONResponse(
+                {"error": f"'calls_params' must be one of: {', '.join(VALID_CALLS_PARAMS)}"},
+                status_code=400,
+            )
+        prefs["calls_params"] = value
+        changed = True
+    if "calls_retention_days" in body:
+        value = body.get("calls_retention_days")
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 3_650:
+            return JSONResponse(
+                {"error": "'calls_retention_days' must be an integer between 0 and 3650"},
+                status_code=400,
+            )
+        prefs["calls_retention_days"] = value
+        changed = True
     if not changed:
         return JSONResponse(
-            {"error": "no known preference in request (expected 'engine' and/or 'deploy_enabled')"},
+            {"error": "no known preference in request (expected 'engine', "
+                      "'deploy_enabled', 'reader_enabled', 'calls_enabled', "
+                      "'calls_params' and/or 'calls_retention_days')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    # The call log caches this snapshot for a second to keep prefs.json off its
+    # hot path; drop it so a toggle here is visible on the very next call.
+    from fused_render import calls as _calls
+
+    _calls.invalidate_prefs_cache()
     # The new state, so the page re-renders from the response (the engine pref
     # is persisted even while FUSED_RENDER_ENGINE forces — it applies once the
     # override is removed; the response's forced_by says so).

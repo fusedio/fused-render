@@ -108,14 +108,19 @@ def _write_canvas(dir_path, name="canvas.toml", body=CANVAS_TOML):
 def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     p = _write_canvas(tmp_path / "cv")
     m, error = modes(str(p))
-    assert m == ["canvas", "code", "annotate"]
+    assert m == ["canvas", "code", "reader", "annotate"]
     assert error is None
     entries, _ = server._templates_for(str(p), False)
     assert entries[0]["path"].endswith("canvas/template.html")
     assert entries[0]["icon"] is not None
     # stat only MARKS the gate (deferred CT-12) …
-    assert entries[0].get("conditional") is True
-    assert all("conditional" not in e for e in entries[1:])
+    by_mode = {e["mode"]: e for e in entries}
+    assert by_mode["canvas"].get("conditional") is True
+    # `reader` carries its own global feature-switch gate (accessibility opt-in),
+    # so it too is marked conditional; the unconditional modes are not.
+    assert by_mode["reader"].get("conditional") is True
+    assert "conditional" not in by_mode["code"]
+    assert "conditional" not in by_mode["annotate"]
     # … and the background verdict allows a genuine canvas.
     allowed, err = canvas_verdict(str(p))
     assert allowed is True
@@ -127,7 +132,7 @@ def test_plain_toml_denied_canvas_mode(tmp_path):
     p.write_text("[tool.black]\nline-length = 88\n")
     m, error = modes(str(p))
     # stat still lists canvas (marked conditional, gate not run at stat time)
-    assert m == ["canvas", "code", "annotate"]
+    assert m == ["canvas", "code", "reader", "annotate"]
     assert error is None
     allowed, err = canvas_verdict(str(p))
     assert allowed is False  # basename pre-check denies it

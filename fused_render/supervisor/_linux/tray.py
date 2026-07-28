@@ -8,8 +8,10 @@ AppIndicator extension — renders the icon. No X11/XEmbed, so it works on Wayla
 This file is split into two layers so the logic is testable without a bus:
 
 - Pure helpers (this section): `_icon_pixmap` (PNG/ICO → ARGB32 pixmap),
-  `_menu_layout` (the dbusmenu tree), and `_dispatch_event` (menu id → the same
-  `TrayAction` queue the Windows backend feeds, or the inline login toggle).
+  `_tint_for_color_scheme`/`_color_scheme_from_reply`/`_apply_tint` (the glyph
+  tint follows the desktop's light/dark preference — D135), `_menu_layout` (the
+  dbusmenu tree), and `_dispatch_event` (menu id → the same `TrayAction` queue
+  the Windows backend feeds, or the inline login toggle).
 - The D-Bus glue (`run()` and the ServiceInterface classes) is thin and calls
   into the helpers above.
 
@@ -25,13 +27,22 @@ from fused_render.supervisor.paths import DesktopPaths
 from fused_render.supervisor.tray import TrayAction, TrayHandle, _State
 
 # The macOS "template" diamond: a black glyph on a transparent background. macOS
-# tints it white in the menu bar; waybar/StatusNotifier has no such template
-# auto-tinting, so _icon_pixmap recolors it to white itself (see _tint_white).
+# tints it per menu-bar appearance automatically; waybar/StatusNotifier has no
+# such template auto-tinting, so _icon_pixmap recolors it itself (see _tint).
 _ICON_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "menubar-template.png"
 
 # Panel-tray render size. Hosts scale as needed; a single 22px pixmap is the
 # conventional freedesktop tray size and keeps the ARGB payload small.
 _ICON_SIZE = 22
+
+# The two glyph tints, both derived from the one bundled template PNG — no extra
+# image asset. White is the default and the fallback: it is what the tray always
+# emitted, and it is what a panel of unknown colour is most likely to need
+# (panels are dark far more often than light). The dark tint is deliberately not
+# pure black — a near-black reads as a glyph rather than a hole on the
+# off-white/grey panels light themes actually use.
+_TINT_WHITE = (255, 255, 255)
+_TINT_DARK = (28, 30, 34)
 
 # Stable dbusmenu item ids. The host echoes these back in Event, so they must be
 # fixed. 0 is the (invisible) root the host asks for in GetLayout.
@@ -74,32 +85,141 @@ def _pack_argb32(image) -> tuple[int, int, bytes]:
     return image.width, image.height, bytes(argb)
 
 
-def _tint_white(image):
-    """Map every pixel of an RGBA image to white (255, 255, 255) while keeping
-    its original alpha. Turns the black-on-transparent macOS template glyph into
-    a white-on-transparent one. White (255,255,255) is symmetric under any R/B
-    swap, so the emitted pixmap is correct regardless of channel order."""
+def _tint(image, rgb: tuple[int, int, int]):
+    """Map every pixel of an RGBA image to `rgb` while keeping its original
+    alpha. Turns the black-on-transparent macOS template glyph into a flat
+    single-colour glyph of the requested tint."""
     from PIL import Image
 
     alpha = image.getchannel("A")
-    white = Image.new("RGBA", image.size, (255, 255, 255, 0))
-    white.putalpha(alpha)
-    return white
+    tinted = Image.new("RGBA", image.size, (*rgb, 0))
+    tinted.putalpha(alpha)
+    return tinted
 
 
-@functools.lru_cache(maxsize=1)
-def _icon_pixmap(path) -> tuple[int, int, bytes]:
-    """Load `path`, tint it white, scale to `_ICON_SIZE`, and repack to the SNI
-    IconPixmap ARGB32 payload. The white glyph assumes a dark bar: waybar/SNI has
-    no template auto-tinting like macOS, so an untinted glyph would be invisible
-    (or a colored blob) on a typically dark panel — we emit white ourselves.
-    Cached: bring-up retries forever on watcher-less sessions, and the decoded
-    pixmap for the one bundled icon never changes."""
+def _tint_white(image):
+    """The dark-panel tint. White (255,255,255) is symmetric under any R/B swap,
+    so the emitted pixmap is correct regardless of channel order."""
+    return _tint(image, _TINT_WHITE)
+
+
+# Two variants at most (white / dark), so both fit and neither evicts the other.
+# Caching still matters: bring-up retries forever on watcher-less sessions and
+# would otherwise re-decode the PNG on every attempt. Keyed on the tint as well
+# as the path, because the pixmap now changes at runtime.
+@functools.lru_cache(maxsize=2)
+def _icon_pixmap(path, tint: tuple[int, int, int] = _TINT_WHITE) -> tuple[int, int, bytes]:
+    """Load `path`, tint it, scale to `_ICON_SIZE`, and repack to the SNI
+    IconPixmap ARGB32 payload. SNI has no template auto-tinting like macOS, so an
+    untinted glyph would be invisible (or a coloured blob) on the panel — we pick
+    the contrasting tint ourselves from the desktop's colour-scheme preference
+    (see `_tint_for_color_scheme`). The default is white, which is both today's
+    appearance and the fallback whenever no preference can be read."""
     from PIL import Image
 
     image = Image.open(path).convert("RGBA")
-    image = _tint_white(image).resize((_ICON_SIZE, _ICON_SIZE))
+    image = _tint(image, tint).resize((_ICON_SIZE, _ICON_SIZE))
     return _pack_argb32(image)
+
+
+# --- Desktop colour scheme (XDG portal) --------------------------------------
+#
+# `org.freedesktop.portal.Settings.Read("org.freedesktop.appearance",
+# "color-scheme")` is the standard cross-desktop signal: 0 = no preference,
+# 1 = prefer dark, 2 = prefer light. Everything here is best-effort — a missing
+# portal, a D-Bus error, a timeout or a malformed reply all resolve to "no
+# preference", which keeps the white glyph the tray has always emitted. Icon
+# tinting is cosmetic; it must never be able to stop the tray appearing.
+
+_PORTAL_NAME = "org.freedesktop.portal.Desktop"
+_PORTAL_PATH = "/org/freedesktop/portal/desktop"
+_SETTINGS_INTERFACE = "org.freedesktop.portal.Settings"
+_APPEARANCE_NAMESPACE = "org.freedesktop.appearance"
+_COLOR_SCHEME_KEY = "color-scheme"
+
+_NO_PREFERENCE = 0
+_PREFER_LIGHT = 2
+
+
+def _color_scheme_from_reply(reply) -> int:
+    """Unwrap the portal's `Read` reply to a plain colour-scheme int.
+
+    The reply is a Variant, and some portal builds nest a second Variant inside
+    it. Anything that isn't an int in the spec's 0..2 range — a string, a bool, a
+    value from a future revision, or nothing at all — reads as no preference."""
+    for _ in range(4):  # bounded: never chase a self-referential value
+        if not hasattr(reply, "value"):
+            break
+        reply = reply.value
+    if isinstance(reply, bool) or not isinstance(reply, int):
+        return _NO_PREFERENCE
+    return reply if 0 <= reply <= 2 else _NO_PREFERENCE
+
+
+def _tint_for_color_scheme(value) -> tuple[int, int, int]:
+    """Glyph tint contrasting with the panel the preference implies. Only an
+    explicit "prefer light" earns the dark glyph; no preference, prefer dark, an
+    unknown value and a failed read all keep white."""
+    return _TINT_DARK if value == _PREFER_LIGHT else _TINT_WHITE
+
+
+def _is_color_scheme_change(namespace: str, key: str) -> bool:
+    """Whether a portal `SettingChanged` signal is the appearance colour scheme.
+    The portal emits every namespace on the one signal, so this filters."""
+    return namespace == _APPEARANCE_NAMESPACE and key == _COLOR_SCHEME_KEY
+
+
+def _apply_tint(sni, pixmap_ref: list, tint: tuple[int, int, int]) -> None:
+    """Swap the pixmap the SNI's IconPixmap property serves, and tell the host to
+    redraw — but only when the tint actually changed, so a chatty portal can't
+    make the panel churn. The `NewIcon` emit is guarded: the pixmap has already
+    advanced, and a bus error while notifying must not escape into the portal
+    callback and take the tray's event loop with it."""
+    pixmap = _icon_pixmap(_ICON_PATH, tint)
+    if pixmap_ref[0] == pixmap:
+        return
+    pixmap_ref[0] = pixmap
+    try:
+        sni.NewIcon()
+    except Exception:  # noqa: BLE001 - cosmetic; the icon updates on next redraw
+        pass
+
+
+async def _read_color_scheme(connection) -> int:
+    """The desktop's current colour-scheme preference, or 0 when it can't be
+    read. Never raises."""
+    try:
+        introspection = await connection.introspect(_PORTAL_NAME, _PORTAL_PATH)
+        settings = connection.get_proxy_object(
+            _PORTAL_NAME, _PORTAL_PATH, introspection
+        ).get_interface(_SETTINGS_INTERFACE)
+        return _color_scheme_from_reply(
+            await settings.call_read(_APPEARANCE_NAMESPACE, _COLOR_SCHEME_KEY)
+        )
+    except Exception:  # noqa: BLE001 - no portal / error / timeout → no preference
+        return _NO_PREFERENCE
+
+
+async def _subscribe_color_scheme(connection, paths: DesktopPaths, sni, pixmap_ref: list) -> None:
+    """Re-tint and re-emit the icon whenever the desktop appearance changes
+    mid-session. Only the pixmap changes: the status item is never re-registered,
+    so the icon never blinks out of the panel. A missing portal is logged and
+    ignored — the glyph then just stays whatever it was for the session."""
+    try:
+        introspection = await connection.introspect(_PORTAL_NAME, _PORTAL_PATH)
+        settings = connection.get_proxy_object(
+            _PORTAL_NAME, _PORTAL_PATH, introspection
+        ).get_interface(_SETTINGS_INTERFACE)
+    except Exception as error:  # noqa: BLE001 - logged; tray bring-up continues
+        paths.log(f"tray: no appearance portal, icon stays light-on-dark: {error}")
+        return
+
+    def _on_setting_changed(namespace, key, value):
+        # Called on the loop thread by dbus-fast's message handling.
+        if _is_color_scheme_change(namespace, key):
+            _apply_tint(sni, pixmap_ref, _tint_for_color_scheme(_color_scheme_from_reply(value)))
+
+    settings.on_setting_changed(_on_setting_changed)
 
 
 def _item(item_id: int, properties: dict) -> dict:
@@ -121,7 +241,7 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
         _item(_ID_SEP1, {"type": "separator", "visible": True}),
         _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
         _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
-        _item(_ID_OPEN_LOGS, {"label": "Open logs", "enabled": True, "visible": True}),
+        _item(_ID_OPEN_LOGS, {"label": "Open app logs", "enabled": True, "visible": True}),
         _item(
             _ID_LOGIN,
             {
@@ -203,14 +323,20 @@ def _props_to_variants(properties: dict) -> dict:
     return {key: Variant(_MENU_PROP_TYPES[key], value) for key, value in properties.items()}
 
 
-def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
+def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref, pixmap_ref=None):
     """Build the two ServiceInterface instances. Defined inside a function so the
     dbus_fast import (and the ServiceInterface subclassing it drives) happens
-    only on the tray thread, never at module import."""
+    only on the tray thread, never at module import.
+
+    `pixmap_ref` is a one-element list holding the ARGB payload IconPixmap
+    serves; `_apply_tint` swaps it when the desktop appearance changes and emits
+    NewIcon, so the property must read through the ref rather than capture a
+    value. Defaults to the white glyph for callers that don't re-tint."""
     from dbus_fast import Variant
     from dbus_fast.service import PropertyAccess, ServiceInterface, dbus_property, method, signal
 
-    icon_pixmap = _icon_pixmap(_ICON_PATH)
+    if pixmap_ref is None:
+        pixmap_ref = [_icon_pixmap(_ICON_PATH)]
 
     class StatusNotifierItem(ServiceInterface):
         def __init__(self):
@@ -238,8 +364,14 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref):
 
         @dbus_property(access=PropertyAccess.READ)
         def IconPixmap(self) -> "a(iiay)":  # noqa: N802,F821
-            width, height, data = icon_pixmap
+            width, height, data = pixmap_ref[0]
             return [[width, height, data]]
+
+        @signal()
+        def NewIcon(self):  # noqa: N802
+            """SNI's "the icon changed, re-read it" notification. Emitted by
+            `_apply_tint` after a desktop appearance change, so the host
+            redraws without the status item being re-registered."""
 
         @dbus_property(access=PropertyAccess.READ)
         def ToolTip(self) -> "(sa(iiay)ss)":  # noqa: N802,F821
@@ -470,7 +602,15 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
         # forever by tray.start()) must disconnect here or every retry leaks a
         # bus connection.
         try:
-            sni, menu = _make_interfaces(port, state, handle, paths, set_enabled, revision_ref)
+            # Pick the glyph tint from the desktop's colour-scheme preference
+            # BEFORE exporting, so the very first IconPixmap read is already
+            # right and no white-on-white frame is ever served. A missing portal
+            # resolves to the white glyph, i.e. the historical behaviour.
+            tint = _tint_for_color_scheme(await _read_color_scheme(connection))
+            pixmap_ref = [_icon_pixmap(_ICON_PATH, tint)]
+            sni, menu = _make_interfaces(
+                port, state, handle, paths, set_enabled, revision_ref, pixmap_ref
+            )
             connection.export(_SNI_PATH, sni)
             connection.export(_MENU_PATH, menu)
             await connection.request_name(f"org.kde.StatusNotifierItem-{os.getpid()}-1")
@@ -480,6 +620,9 @@ def run(port: int, state: _State, handle: TrayHandle, paths: DesktopPaths) -> No
             # host needs a fresh RegisterStatusNotifierItem or the icon is
             # gone forever. Watch for the name changing owners.
             await _subscribe_watcher_restarts(connection, loop, paths)
+            # Follow the desktop appearance live: a mid-session light/dark flip
+            # re-tints and re-emits the icon, no restart, no re-registration.
+            await _subscribe_color_scheme(connection, paths, sni, pixmap_ref)
         except BaseException:
             try:
                 connection.disconnect()

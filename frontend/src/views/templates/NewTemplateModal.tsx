@@ -4,6 +4,7 @@ import type { NewTemplateResult } from "../../lib/api";
 import { Modal } from "../../components/modal/Modal";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { TextInput } from "../../components/field/fields";
+import { isMod } from "../../lib/platform";
 
 // Scaffold a new user template. Name is required (nonempty, no "/"); extensions
 // are optional dot-keys the new template gets appended to — additive only, it
@@ -85,7 +86,7 @@ export function NewTemplateModal({
   const canCreate = trimmedName.length > 0 && !nameError && !busy;
 
   // Cmd/Ctrl+Enter submits from any field when the name is valid.
-  const isSubmitChord = (e: React.KeyboardEvent) => e.key === "Enter" && (e.metaKey || e.ctrlKey);
+  const isSubmitChord = (e: React.KeyboardEvent) => e.key === "Enter" && isMod(e);
 
   const onNameKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Enter") return;
@@ -139,7 +140,8 @@ export function NewTemplateModal({
     setOpening(true);
     setOpenError(null);
     try {
-      await openTemplateInClaude(templateName);
+      const { url } = await openTemplateInClaude(templateName);
+      window.location.href = url;
       if (alive.current) onClose();
     } catch (e) {
       if (alive.current) setOpenError((e as Error).message);

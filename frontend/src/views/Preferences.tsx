@@ -1,8 +1,14 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
 // from the sidebar's bottom-left gear. Two tabs (D125):
-//   Render preferences — Logs, Execution engine, Deploy to Fused account
-//     (the opt-in Deploy-button toggle), Tour. Always present; the default
-//     (clean URL).
+//   Render preferences — Appearance, Call log (capture/redaction/retention for
+//     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
+//     toggle), Accessibility, and last Execution engine. Always present; the
+//     default (clean URL). No Tour button — the tour still runs itself on a
+//     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
+//     preference. The app's OWN log is not here either: it is disposable
+//     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
+//     second "Logs" heading next to the Call log section only ever read as the
+//     call log's own settings.
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
@@ -11,53 +17,73 @@
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.
 import { useEffect, useState } from "react";
-import { getPrefs, putDeployEnabled, putEnginePref, revealPath } from "../lib/api";
-import type { Prefs } from "../lib/api";
-import { navigateUrl } from "../lib/router";
+import {
+  getPrefs,
+  putCallsEnabled,
+  putCallsParamsMode,
+  putCallsRetentionDays,
+  putDeployEnabled,
+  putEnginePref,
+  putReaderEnabled,
+} from "../lib/api";
+import type { CallsParamsMode, Prefs } from "../lib/api";
+import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
-import { startTour } from "../lib/tour";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
 type PrefsTab = "render" | "account";
 
-function TourSection() {
+// The one section on this page that is deliberately NOT server-backed. Every
+// other control here round-trips /api/prefs (shell/prefs.py); Appearance is
+// per-browser-profile localStorage["fused-render:theme"] by decision — SPEC §30
+// AP-1 / D134 — so a browser tab and the desktop window can legitimately hold
+// different choices, and there is no server store to keep in sync. Writes are
+// synchronous, hence no busy/locked/error plumbing.
+function AppearanceSection() {
+  const [pref, setPref] = useThemePref();
   return (
     <section className="prefs-section">
-      <h2>Tour</h2>
+      <h2>Appearance</h2>
       <p className="deploy-muted">
-        A short guided walkthrough of the interface. It also runs automatically on your first
-        visit.
+        Light or dark for this app. Stored in this browser profile, so each browser and the
+        desktop window remember their own choice. Applies immediately.
       </p>
-      <button type="button" onClick={() => startTour()}>
-        Start tour
-      </button>
-    </section>
-  );
-}
-
-function LogsSection({ prefs }: { prefs: Prefs }) {
-  const [error, setError] = useState<string | null>(null);
-  const reveal = async () => {
-    setError(null);
-    try {
-      await revealPath(prefs.log.path);
-    } catch (e) {
-      // e.g. the file rotated away, or an unsupported platform.
-      setError((e as Error).message);
-    }
-  };
-  return (
-    <section className="prefs-section">
-      <h2>Logs</h2>
-      <p className="deploy-muted">
-        This server writes its log to <code>{prefs.log.path}</code> (a file per run; set{" "}
-        <code>FUSED_RENDER_LOG_DIR</code> to keep logs somewhere persistent).
-      </p>
-      <button type="button" onClick={reveal}>
-        Open logs location
-      </button>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "system"}
+          onChange={() => setPref("system")}
+        />
+        <span>
+          <b>System</b> — follows your desktop appearance, including a scheduled day/night
+          switch.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "light"}
+          onChange={() => setPref("light")}
+        />
+        <span>
+          <b>Light</b> — always light, whatever your desktop is set to.
+        </span>
+      </label>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name="appearance"
+          checked={pref === "dark"}
+          onChange={() => setPref("dark")}
+        />
+        <span>
+          <b>Dark</b> — always dark, whatever your desktop is set to.
+        </span>
+      </label>
     </section>
   );
 }
@@ -181,6 +207,191 @@ function DeployToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   );
 }
 
+function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.reader.enabled;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putReaderEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
+          them aloud.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
+  );
+}
+
+function AccessibilitySection({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  return (
+    <section className="prefs-section">
+      <h2>Accessibility</h2>
+      <ReaderToggle prefs={prefs} onChange={onChange} />
+    </section>
+  );
+}
+
+// The retention window as the "Currently keeping ..." line says it, matching
+// the select's own option labels so the forced value reads like a choice.
+function describeRetention(days: number): string {
+  if (days === 0) return "until the size cap";
+  return days === 1 ? "1 day" : `${days} days`;
+}
+
+function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const calls = prefs.calls;
+  // Same shape as the Engine section's `locked`: a non-null raw env value means
+  // the process overrides the pref, so the control is shown but not actionable.
+  // Non-null is the server's assertion that the variable is actually IN FORCE,
+  // not merely set — it withholds the value when the writer ignores it (an empty
+  // or non-numeric retention window, say). So never re-derive this from the
+  // value's shape here: a client-side "is it a number?" check is the second copy
+  // of a rule the writer already owns, and lockout is what it costs to get wrong.
+  const enabledLocked = calls.enabled_forced_by !== null;
+  const retentionLocked = calls.retention_forced_by !== null;
+
+  const apply = async (fn: () => Promise<Prefs>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await fn());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Call log</h2>
+      <p className="deploy-muted">
+        Records every API call your pages make — each <code>runPython</code>, <code>readFile</code>,{" "}
+        <code>stat</code> and <code>writeFile</code>, with its duration, result size, output and
+        any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
+        a per-target breakdown; <code>fused-render calls</code> reads the same log from a terminal.
+      </p>
+      {/* The checkbox shows the STORED pref and the muted line below shows what
+          is actually in force, exactly as the Engine section does: the control
+          reflects the choice you made (and what a PUT round-trips), the line
+          reports reality. They diverge whenever FUSED_RENDER_CALLS wins, and
+          the control is disabled then so the discrepancy can't be acted on. */}
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={calls.enabled}
+          disabled={busy || enabledLocked}
+          onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
+        />
+        <span>
+          <b>Record API calls</b> made by pages rendered in this app.
+        </span>
+      </label>
+      <div className="deploy-muted">
+        Currently <b>{calls.effective_enabled ? "recording" : "not recording"}</b>
+        {enabledLocked && (
+          <>
+            {" "}
+            — locked by <code>FUSED_RENDER_CALLS={calls.enabled_forced_by}</code> for this process;
+            the checkbox applies once the variable is removed.
+          </>
+        )}
+      </div>
+      <div className="prefs-field">
+        <label>
+          Parameters{" "}
+          {/* Gated on what is actually recording, not on the stored pref —
+              otherwise an env-forced off state leaves these live, and an
+              env-forced on state greys them out while calls are landing. */}
+          <select
+            value={calls.params}
+            disabled={busy || !calls.effective_enabled}
+            onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
+          >
+            <option value="full">Record values</option>
+            <option value="keys">Record names only</option>
+            <option value="off">Record nothing</option>
+          </select>
+        </label>
+        <p className="deploy-muted">
+          A run's parameters are usually the whole repro, so they are recorded by default — they
+          are already visible in the URL. Switch to names-only if a page passes a secret as a
+          parameter.
+        </p>
+      </div>
+      <div className="prefs-field">
+        <label>
+          Keep for{" "}
+          <select
+            value={String(calls.retention_days)}
+            disabled={busy || !calls.effective_enabled || retentionLocked}
+            onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
+          >
+            <option value="1">1 day</option>
+            <option value="7">7 days</option>
+            <option value="14">14 days</option>
+            <option value="90">90 days</option>
+            <option value="0">Until the size cap</option>
+          </select>
+        </label>
+        {retentionLocked && (
+          <p className="deploy-muted">
+            Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked by{" "}
+            <code>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</code> for this
+            process; the choice above applies once the variable is removed.
+          </p>
+        )}
+      </div>
+      <p className="deploy-muted">
+        Stored at <code>{calls.dir}</code>
+        {calls.dir_exists ? "." : " — no calls recorded yet, so the folder does not exist."}
+      </p>
+      {/* Navigates IN-APP, not to the OS file manager: the explorer is how you
+          reach the Calls view — open the folder, click a .calls.jsonl, and it
+          renders in the same viewer the mode switcher offers.
+
+          Disabled until the store exists: the writer creates it on its first
+          append, so browsing beforehand navigates to a path that fails to stat
+          — an error card where the answer is simply "nothing has run yet",
+          which is also the answer to "why has no page got a Calls mode?". */}
+      <button
+        type="button"
+        disabled={!calls.dir_exists}
+        title={calls.dir_exists ? undefined : "No calls have been recorded yet"}
+        onClick={() => navigate(calls.dir, { isDir: true })}
+      >
+        Browse call logs
+      </button>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
 function DeploymentsSection({
   prefs,
   onChange,
@@ -264,14 +475,19 @@ export default function Preferences() {
           <div className="prefs-tabpanel">
             {tab === "render" && (
               <>
-                <LogsSection prefs={prefs} />
-                <EngineSection prefs={prefs} onChange={setPrefs} />
+                <AppearanceSection />
+                <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <DeploymentsSection
                   prefs={prefs}
                   onChange={setPrefs}
                   onOpenAccount={() => setTab("account")}
                 />
-                <TourSection />
+                <AccessibilitySection prefs={prefs} onChange={setPrefs} />
+                {/* Last: the engine is the setting a user is least likely to
+                    come here to change (builtin is right for almost everyone,
+                    and an env var pins it in the cases that matter), so it does
+                    not deserve the position above the ones they do. */}
+                <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
