@@ -234,31 +234,29 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
           ⚠
         </span>
       )}
-      <span className="bookmark-actions">
-        {/* While the inline rename input is open, "Save to disk" and "Rename"
-            are hidden: the input needs the row's full width, and both actions
-            would fight the edit in progress (save would snapshot the pre-edit
-            name; rename is what's already happening). Delete stays — it's the
-            one action that still makes sense mid-edit. */}
-        {!isRenaming && (
-          <>
-            <button
-              className="icon-btn save-btn"
-              title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
-              disabled={!savePath}
-              onClick={onSave}
-            >
-              {justSaved ? "✓" : "💾︎"}
-            </button>
-            <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
-              ✎
-            </button>
-          </>
-        )}
-        <button className="icon-btn delete-btn" title="Delete" onClick={onDelete}>
-          ✕
-        </button>
-      </span>
+      {/* While the inline rename input is open the whole action cluster is
+          gone: the input wants the row's full width, and every one of the
+          three fights the edit in progress — save would snapshot the pre-edit
+          name, rename is what's already happening, and delete would destroy
+          the row being named. Commit or Escape first. */}
+      {!isRenaming && (
+        <span className="bookmark-actions">
+          <button
+            className="icon-btn save-btn"
+            title={savePath ? `Save to ${savePath}` : "Not savable: no common folder"}
+            disabled={!savePath}
+            onClick={onSave}
+          >
+            {justSaved ? "✓" : "💾︎"}
+          </button>
+          <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
+            ✎
+          </button>
+          <button className="icon-btn delete-btn" title="Delete" onClick={onDelete}>
+            ✕
+          </button>
+        </span>
+      )}
     </div>
   );
 }
@@ -301,14 +299,17 @@ function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphCli
         <span className="bookmark-name folder-name">{folder.name}</span>
       )}
       <span className="folder-count">{folder.children.length}</span>
-      <span className="bookmark-actions">
-        <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
-          ✎
-        </button>
-        <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
-          ✕
-        </button>
-      </span>
+      {/* Hidden mid-rename for the same reason as a bookmark row's cluster. */}
+      {!isRenaming && (
+        <span className="bookmark-actions">
+          <button className="icon-btn rename-btn" title="Rename" onClick={onRename}>
+            ✎
+          </button>
+          <button className="icon-btn delete-btn" title="Delete folder and contents" onClick={onDelete}>
+            ✕
+          </button>
+        </span>
+      )}
     </div>
   );
 }
