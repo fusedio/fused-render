@@ -49,6 +49,48 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # production dies-with-server behavior).
 export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
 
+# Same treatment for the bundled AI proxy (SPEC RH-12): keep it alive across the
+# watchfiles restarts that fire on every .py edit, so a connected Claude/ChatGPT
+# login and the proxy's warm state survive an edit instead of being torn down and
+# respawned each time. Production leaves this unset (quitting the app reaps it).
+export FUSED_RENDER_AI_PROXY_PERSIST="${FUSED_RENDER_AI_PROXY_PERSIST:-1}"
+
+# A dev checkout has no bundled cli-proxy-api — that binary is staged into the
+# payload at build time (build_dmg.sh), so nothing resolves it here and the AI
+# accounts tab would have no proxy to manage. Stage the pinned release into
+# build/ on first run and point the resolver at it, so dev matches a packaged
+# build. Kept in build/ (gitignored, shared with the DMG's own staging dir) and
+# skipped entirely when already present, so this costs one ~19MB download once
+# per version. Respect an already-set value: a caller who has their own
+# CLIProxyAPI can point at it, and FUSED_RENDER_AI_BASE_URL still bypasses
+# supervision altogether.
+if [[ -z "${FUSED_RENDER_AI_PROXY_BIN:-}" && -z "${FUSED_RENDER_AI_BASE_URL:-}" ]]; then
+  # Keep in step with CLIPROXY_VERSION in scripts/build_dmg.sh.
+  DEV_CLIPROXY_VERSION="7.2.104"
+  DEV_CLIPROXY_SHA256="3d52c292af57ea7114bacf35fb1b76c9552448940d3e9f10d39c1ec57229c0e0"
+  DEV_CLIPROXY_BIN="$REPO_ROOT/build/cli-proxy-api-bin/${DEV_CLIPROXY_VERSION}/cli-proxy-api"
+  if [[ ! -x "$DEV_CLIPROXY_BIN" ]]; then
+    # Best-effort: a download failure must not stop the dev loop — everything
+    # except the AI accounts tab works without it, so warn and carry on.
+    echo "==> staging cli-proxy-api ${DEV_CLIPROXY_VERSION} for the AI accounts tab (one-time)"
+    if _dev_dl="$(mktemp -d)" \
+      && curl -fsSL "https://github.com/router-for-me/CLIProxyAPI/releases/download/v${DEV_CLIPROXY_VERSION}/CLIProxyAPI_${DEV_CLIPROXY_VERSION}_darwin_aarch64.tar.gz" \
+           -o "$_dev_dl/cliproxy.tar.gz" \
+      && [[ "$(shasum -a 256 "$_dev_dl/cliproxy.tar.gz" | cut -d' ' -f1)" == "$DEV_CLIPROXY_SHA256" ]] \
+      && tar -xzf "$_dev_dl/cliproxy.tar.gz" -C "$_dev_dl" \
+      && mkdir -p "$(dirname "$DEV_CLIPROXY_BIN")" \
+      && cp "$_dev_dl/cli-proxy-api" "$DEV_CLIPROXY_BIN" \
+      && chmod +x "$DEV_CLIPROXY_BIN"; then
+      rm -rf "$_dev_dl"
+    else
+      rm -rf "${_dev_dl:-}"
+      echo "    WARNING: could not stage cli-proxy-api — the AI accounts tab will"
+      echo "             report no proxy. Everything else runs normally."
+    fi
+  fi
+  [[ -x "$DEV_CLIPROXY_BIN" ]] && export FUSED_RENDER_AI_PROXY_BIN="$DEV_CLIPROXY_BIN"
+fi
+
 # Isolate each branch/worktree onto its own port + state dir. Without this every
 # dev.sh run (main checkout and every worktree) defaults to the baseline port
 # 1777 and clobbers the same ~/.fused-render state, so a server left running in
