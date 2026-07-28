@@ -79,6 +79,9 @@ jobs:
             windows_desktop:
               - 'fused_render/supervisor/**'
               - 'fused_render/winopen.py'
+              # the claude template's win32 spawn/liveness/cancel paths (D160)
+              - 'fused_render/templates/claude/agent.py'
+              - 'fused_render/templates/shared/procutil.py'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
               - *windows_packaging
@@ -277,10 +280,12 @@ jobs:
         run: bash scripts/build_linux_appimage.sh
 
   # Windows desktop supervisor (docs/PYTHON_SUPERVISOR_SPEC.md). The _win32
-  # backend, the Explorer "Open with" entry point (winopen.py), and the
-  # ed25519-signed update-manifest verifier run here on real Windows — the Linux
-  # matrix never exercises them. No shell-dist dependency: none of these tests
-  # start the HTTP server (create_app), so the frontend artifact isn't needed.
+  # backend, the Explorer "Open with" entry point (winopen.py), the
+  # ed25519-signed update-manifest verifier, and the claude template's win32
+  # spawn/liveness/cancel paths (D160) run here on real Windows — the Linux
+  # matrix only ever simulates them. No shell-dist dependency: none of these
+  # tests start the HTTP server (create_app), so the frontend artifact isn't
+  # needed.
   windows-desktop:
     needs: detect-changes
     if: needs.detect-changes.outputs.windows_desktop == 'true'
@@ -304,6 +309,7 @@ jobs:
           tests/test_win_supervisor_update.py
           tests/test_windows_registry.py
           tests/test_winopen.py
+          tests/test_claude_agent_windows.py
 
       # Dropped from the windows runner image (actions/runner-images#11644); the
       # build script finds ISCC.exe where choco installs it. Setup copied from

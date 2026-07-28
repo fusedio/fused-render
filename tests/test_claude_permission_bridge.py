@@ -136,7 +136,7 @@ def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, serv
     assert req["tool_use_id"] == "toolu_01"
     # The id is minted server-side, never taken from the CLI's tool_use_id:
     # it is joined into a path.
-    assert agent._safe_name(req["id"]) and req["id"] != "toolu_01"
+    assert not agent._bad_id(req["id"]) and req["id"] != "toolu_01"
 
     assert agent._write_decision(str(perm_dir), req["id"],
                                  {"decision": "allow", "scope": "once"})
@@ -489,6 +489,33 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     # in first and reports an MCP timeout instead of "nobody answered".
     assert entry["timeout"] > agent.PERMISSION_WAIT * 1000
     assert entry["env"]["FUSED_RENDER_PERMISSION_TIMEOUT"] == str(agent.PERMISSION_WAIT)
+
+
+def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(tmp_path):
+    """The optional fused engine (D69) `exec`s this module into a namespace
+    with no `__file__` — it only puts the script's dir first on sys.path. A
+    bare `os.path.dirname(__file__)` is therefore a NameError for anyone with
+    the `fused` extra installed, which is how a live chat answered a first
+    message with "name '__file__' is not defined".
+    """
+    template_dir = os.path.abspath(TEMPLATE_DIR)
+    source = open(os.path.join(template_dir, "agent.py"), encoding="utf-8").read()
+
+    ns = {"__name__": "__fused_engine__"}
+    assert "__file__" not in ns, "the point of this test is that it is absent"
+
+    sys.path.insert(0, template_dir)  # the engine's preamble, verbatim in spirit
+    try:
+        exec(compile(source, os.path.join(template_dir, "agent.py"), "exec"), ns)
+    finally:
+        sys.path.remove(template_dir)
+
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm")
+    config = json.loads(open(ns["_write_mcp_config"](str(run_dir))).read())
+    server = config["mcpServers"][ns["PERMISSION_SERVER"]]["args"][0]
+    assert os.path.isfile(server), f"resolved to a non-existent path: {server}"
+    assert os.path.basename(server) == "permission_server.py"
 
 
 def test_template_wires_the_decide_action(agent):
