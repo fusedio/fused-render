@@ -164,6 +164,7 @@
   #filterMenu .fm-opt:hover { background: var(--btn); }
   #filterMenu .fm-opt span { overflow: hidden; text-overflow: ellipsis; }
   #filterMenu .fm-opt.blank span { color: var(--faint); font-style: italic; }
+  #filterMenu .fm-opt .fm-cnt { margin-left: auto; flex: none; color: var(--faint); font-size: 10px; }
   #filterMenu .fm-note { color: var(--faint); font-size: 11px; padding: 2px 6px; }
   #filterMenu .fm-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px 2px 2px; }
   td.cell {
@@ -294,12 +295,12 @@
   .fm-opt.skel .skel-bar, .fitem.skel .skel-bar { height: 11px; }
 </style>
 </head>
-<body>
+<body data-theme="light">
   <div id="topbar">
     <span id="fileName">Excel editor</span>
     <span id="ro" hidden></span>
     <span id="savedState"></span><span id="status"></span>
-    <button class="tb" id="themeBtn" title="Toggle light / dark theme">◐ Light</button>
+    <button class="tb" id="themeBtn" title="Toggle light / dark theme">◑ Dark</button>
   </div>
 
   <div id="menubar">
@@ -1034,15 +1035,26 @@ function positionFilterMenu(m, anchor) {
   if (top + mh > window.innerHeight - 8) top = Math.max(8, window.innerHeight - mh - 8);
   m.style.left = left + "px"; m.style.top = top + "px";
 }
+function numAwareCmp(a, b) {   // numbers first in numeric order, then text
+  // whole-string numeric test (NUM_RE), matching the reader's TRY_CAST ordering:
+  // loose parseFloat would rank "12abc" as a number here but text server-side
+  const ta = String(a).trim(), tb = String(b).trim();
+  const an = NUM_RE.test(ta), bn = NUM_RE.test(tb);
+  if (an && bn) return parseFloat(ta) - parseFloat(tb);
+  if (an !== bn) return an ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
 function distinctSmall(sh, col) {
   ensureValues();
   const others = compileFilters(activeFilters(sh).filter((f) => f.c !== col));
-  const set = new Set();
+  const counts = new Map();
   for (let r = 1; r < nRows(); r++) {
     if (others.length && !rowPassesFilters(r, others)) continue;
-    set.add(String(cellDisplay(r, col)));
+    const v = String(cellDisplay(r, col));
+    counts.set(v, (counts.get(v) || 0) + 1);
   }
-  return { values: [...set].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), truncated: false };
+  const values = [...counts.keys()].sort(numAwareCmp);
+  return { values, counts: values.map((v) => counts.get(v)), truncated: false };
 }
 // Condition types map to the criteria string the reader already understands.
 const FM_CONDS = [
@@ -1079,14 +1091,14 @@ async function openFilterMenu(c, anchor) {
   m.style.display = "block";
   m.innerHTML = fmSkelHtml();
   positionFilterMenu(m, anchor);
-  let values, truncated = false;
+  let values, counts, truncated = false;
   try {
     if (sh.big) {
       const res = await pyRun({ action: "distinct", file: currentFile(), sheet: sh.name,
         col: String(c), filters: JSON.stringify(activeFilters(sh).filter((f) => f.c !== c)) });
-      values = res.values; truncated = res.truncated;
+      values = res.values; counts = res.counts; truncated = res.truncated;
     } else {
-      ({ values, truncated } = distinctSmall(sh, c));
+      ({ values, counts, truncated } = distinctSmall(sh, c));
     }
   } catch (err) {
     if (seq === fmSeq) m.innerHTML = `<div class="fm-note">Could not load values: ${escHtml(err.message || String(err))}</div>`;
@@ -1095,17 +1107,21 @@ async function openFilterMenu(c, anchor) {
   if (seq !== fmSeq || m.style.display === "none") return;   // superseded / closed
   const fv = sh.filterVal && sh.filterVal[c];
   const listed = new Set((fv && fv.vals || []).map(String));
-  const checked = new Set();
-  values.forEach((v) => {
-    const inList = listed.has(String(v));
-    // no filter -> all checked; include -> only listed; exclude -> all but listed
-    if (!fv || !fv.vals || !fv.vals.length || (fv.mode === "include" ? inList : !inList)) checked.add(v);
-  });
-  fmState = { c, values, checked };
-  buildFilterMenu(m, anchor, truncated);
+  // no filter -> checked; include -> only listed; exclude -> all but listed.
+  // Kept as a function: a truncated list grows lazily via server search, and
+  // late-arriving values need the same defaulting.
+  const defaultCheck = (v) => !fv || !fv.vals || !fv.vals.length ||
+    (fv.mode === "include" ? listed.has(String(v)) : !listed.has(String(v)));
+  const checked = new Set(values.filter(defaultCheck));
+  const countOf = new Map(values.map((v, i) => [String(v), counts ? counts[i] : 0]));
+  // bulkMode: an empty-search Select all / Clear overrides defaultCheck for
+  // values not yet discovered, so a later server-search hit lands in the same
+  // state as the values the bulk action already touched.
+  fmState = { c, values, checked, countOf, defaultCheck, truncated, bulkMode: null };
+  buildFilterMenu(m, anchor);
 }
-function buildFilterMenu(m, anchor, truncated) {
-  const sh = S(), c = fmState.c, values = fmState.values;
+function buildFilterMenu(m, anchor) {
+  const sh = S(), c = fmState.c, values = fmState.values, truncated = fmState.truncated;
   m.innerHTML = "";
   const sortRow = (cls, txt, dir) => {
     const d = document.createElement("div"); d.className = "fm-sort"; d.textContent = txt;
@@ -1145,29 +1161,75 @@ function buildFilterMenu(m, anchor, truncated) {
   toggle.append(selAll, clrAll); m.appendChild(toggle);
 
   const list = document.createElement("div"); list.className = "fm-list"; m.appendChild(list);
-  const shownValues = () => {
-    const q = search.value.trim().toLowerCase();
-    return q ? values.filter((v) => String(v).toLowerCase().includes(q)) : values;
-  };
+  const note = document.createElement("div"); note.className = "fm-note";
+  const setNote = (txt) => { note.textContent = txt || ""; note.style.display = txt ? "" : "none"; };
+  setNote(truncated ? `Showing first ${fmtInt(values.length)} values only` : "");
+  let shown = values;   // the currently displayed values (search-narrowed)
   const renderList = () => {
     list.innerHTML = "";
-    const shown = shownValues();
     shown.forEach((v) => {
       const opt = document.createElement("label");
       opt.className = "fm-opt" + (v === "" ? " blank" : "");
       const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = fmState.checked.has(v);
       cb.onchange = () => { cb.checked ? fmState.checked.add(v) : fmState.checked.delete(v); };
       const span = document.createElement("span"); span.textContent = v === "" ? "(blank)" : v;
-      opt.append(cb, span); list.appendChild(opt);
+      opt.append(cb, span);
+      const n = fmState.countOf.get(String(v));
+      if (n) {
+        const cnt = document.createElement("span"); cnt.className = "fm-cnt"; cnt.textContent = fmtInt(n);
+        opt.appendChild(cnt);
+      }
+      list.appendChild(opt);
     });
     if (!shown.length) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = "No matching values"; list.appendChild(n); }
   };
-  search.oninput = renderList;
-  selAll.onclick = () => { shownValues().forEach((v) => fmState.checked.add(v)); renderList(); };
-  clrAll.onclick = () => { shownValues().forEach((v) => fmState.checked.delete(v)); renderList(); };
+  const refresh = () => {
+    const q = search.value.trim();
+    shown = q ? values.filter((v) => String(v).toLowerCase().includes(q.toLowerCase())) : values;
+    renderList();
+    setNote(!q && truncated ? `Showing first ${fmtInt(values.length)} values only` : "");
+    // A capped list can't answer a search locally — ask the server, and fold
+    // any newly discovered values into the menu's state. They default to the
+    // current checklist intent: an empty-search Select all / Clear (bulkMode)
+    // wins over the saved filter rule, so late hits land in the same state as
+    // the values that bulk action already touched.
+    if (q && sh.big && truncated) {
+      clearTimeout(search._t);
+      const myState = fmState;
+      search._t = setTimeout(async () => {
+        try {
+          const res = await pyRun({ action: "distinct", file: currentFile(), sheet: sh.name,
+            col: String(c), q, filters: JSON.stringify(activeFilters(sh).filter((f) => f.c !== c)) });
+          if (fmState !== myState || search.value.trim() !== q) return;   // closed / retyped
+          res.values.forEach((v, i) => {
+            if (!fmState.countOf.has(String(v))) {
+              values.push(v);
+              const def = fmState.bulkMode === "all" ? true
+                : fmState.bulkMode === "none" ? false : fmState.defaultCheck(v);
+              if (def) fmState.checked.add(v);
+            }
+            fmState.countOf.set(String(v), res.counts[i]);
+          });
+          shown = res.values;
+          renderList();
+          setNote(res.truncated
+            ? `Showing first ${fmtInt(res.values.length)} matches — refine the search` : "");
+        } catch { /* keep the locally narrowed list */ }
+      }, 300);
+    }
+  };
+  search.oninput = refresh;
+  selAll.onclick = () => {
+    if (!search.value.trim()) fmState.bulkMode = "all";
+    shown.forEach((v) => fmState.checked.add(v)); renderList();
+  };
+  clrAll.onclick = () => {
+    if (!search.value.trim()) fmState.bulkMode = "none";
+    shown.forEach((v) => fmState.checked.delete(v)); renderList();
+  };
   renderList();
 
-  if (truncated) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = `Showing first ${fmtInt(values.length)} values only`; m.appendChild(n); }
+  m.appendChild(note);
 
   const foot = document.createElement("div"); foot.className = "fm-foot";
   const cancel = document.createElement("button"); cancel.className = "action"; cancel.textContent = "Cancel";
@@ -1470,7 +1532,13 @@ function updateChip() {
   const el = $("modeChip");
   if (!book) { el.textContent = ""; return; }
   const sh = S();
-  if (!sh.big) { el.textContent = ""; $("fmtSel").disabled = false; return; }
+  if (!sh.big) {
+    // visibleRowIdx counts the always-visible header row; -1 keeps the two sides comparable
+    el.textContent = sh.filterOn && activeFilters(sh).length
+      ? `${fmtInt(visibleRowIdx().length - 1)} of ${fmtInt(nRows() - 1)} rows match` : "";
+    $("fmtSel").disabled = false;
+    return;
+  }
   const filtered = sh.matched !== sh.nrows ? `<b>${fmtInt(sh.matched)}</b> match of ` : "";
   el.innerHTML = `${filtered}<b>${fmtInt(sh.nrows)}</b> rows × ${sh.ncols} · DuckDB · ${fmtInt(sh.loaded.length)} loaded`;
   $("fmtSel").disabled = true;
@@ -1604,6 +1672,7 @@ function renderTabs() {
 }
 function switchSheet(i) {
   commitEdit();
+  closeFilterMenu();   // an open menu would apply its filter to the new sheet
   cur = i; renderLimit = RENDER_CAP; invalidateValues();
   sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
   fused.params.set("sheet", book.sheets[i].name);
@@ -2444,7 +2513,7 @@ function applyTheme(t) {
   $("themeBtn").textContent = t === "light" ? "◑ Dark" : "◐ Light";
   try { localStorage.setItem("excel-theme", t); } catch {}
 }
-applyTheme((() => { try { return localStorage.getItem("excel-theme") || "dark"; } catch { return "dark"; } })());
+applyTheme((() => { try { return localStorage.getItem("excel-theme") || "light"; } catch { return "light"; } })());
 $("themeBtn").addEventListener("click", () =>
   applyTheme(document.body.dataset.theme === "light" ? "dark" : "light"));
 
