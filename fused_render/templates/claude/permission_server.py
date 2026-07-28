@@ -82,8 +82,15 @@ def _request_id() -> str:
 
 
 def _write_atomic(path: str, data: dict) -> None:
+    """Write a request file, atomically and `rw-------`.
+
+    0600 from the create itself rather than a chmod afterwards, so the file is
+    never briefly readable: a request body is the whole tool payload — the
+    command, the content being written, the web input — and the run tree sits
+    under a temp root that is world-readable on a typical Linux box."""
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)  # a poll must never read a half-written request
 
@@ -138,13 +145,15 @@ def _await_decision(req_id: str) -> dict:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(timeout, fh)
     except OSError:
-        # Same reasoning as agent.py's writer: an empty file holds the latch
-        # while never parsing, so drop it rather than leaving the request
-        # permanently unanswerable on disk.
-        try:
-            os.unlink(res_path)
-        except OSError:
-            pass
+        # Deliberately NOT the unlink agent.py's writer does on the same
+        # failure. There the write is the only thing that happened and nobody
+        # has been told anything, so freeing the claim lets a retry succeed.
+        # Here the verdict has ALREADY gone back to claude in the return below
+        # — releasing the latch would let a later Allow land on disk and the
+        # card would read "✓ Allowed" for a tool that was refused. Keeping the
+        # claim costs a card that ends up reading "could not record that
+        # decision", which is the truth.
+        pass
     return timeout
 
 
@@ -277,7 +286,10 @@ def main() -> int:
         _log("permission_server.py: missing perm-dir argument")
         return 2
     try:
-        os.makedirs(PERM_DIR, exist_ok=True)
+        # 0700 for the same reason the files are 0600 — agent.py normally
+        # created this already, but the mode must not depend on who got here
+        # first (and `mode` reaches the leaf only, which is all we make).
+        os.makedirs(PERM_DIR, mode=0o700, exist_ok=True)
     except OSError as exc:
         _log("permission_server.py: cannot use %s (%s)" % (PERM_DIR, exc))
         return 2

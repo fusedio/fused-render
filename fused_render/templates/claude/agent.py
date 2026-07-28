@@ -94,6 +94,12 @@ PERMISSION_SERVER = "fused_approvals"
 PERMISSION_TOOL = "approve"
 
 
+_DEFAULT_WAIT = 3600
+# (wait + 60) * 1000 has to stay inside the int32 millisecond ceiling the CLI
+# clamps a per-server MCP timeout to (2147483647).
+_MAX_WAIT = 2147423
+
+
 def _permission_wait() -> int:
     """Seconds an unanswered request waits before denying itself.
 
@@ -106,9 +112,18 @@ def _permission_wait() -> int:
     raw = os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT")
     try:
         seconds = int(float(raw))
-    except (TypeError, ValueError):
-        return 3600
-    return seconds if seconds >= 1 else 3600
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is the one that is easy to miss: `int(float("inf"))`
+        # raises it and it is NOT a ValueError, so `inf` (or 1e400, which
+        # floats to inf) crashed this module at *import* — taking down every
+        # action in the template, not just the one that reads the setting.
+        return _DEFAULT_WAIT
+    if seconds < 1:
+        return _DEFAULT_WAIT
+    # A bigger number is not a longer wait past this point: the CLI clamps a
+    # per-server MCP timeout to int32 milliseconds, and _write_mcp_config sends
+    # (wait + 60) * 1000, so anything above this is just out of range.
+    return min(seconds, _MAX_WAIT)
 
 
 PERMISSION_WAIT = _permission_wait()
@@ -346,6 +361,45 @@ def _perm_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "perm")
 
 
+def _private_dir(path: str) -> None:
+    """Create `path` and any missing parents as `rwx------`.
+
+    The run tree lives under the shared temp root, and on a typical Linux box
+    that means /tmp with a default 0755 for anything created in it — while a
+    run dir holds the entire conversation: `out.jsonl` is the transcript,
+    `meta.json` the user's message, and `perm/*.req.json` every tool payload
+    there is (commands, edited file content, web inputs). None of it should be
+    readable by another local account. macOS' per-user temp root happens to
+    make the exposure moot there, which is exactly why it cannot be relied on.
+
+    Levels are created one at a time because `os.makedirs` has applied `mode`
+    to the leaf only since 3.7. Existing directories are deliberately NOT
+    chmod'ed: the chain starts at a directory we do not own (tightening the
+    temp root would be a far worse bug than the one being fixed), and the run
+    dir underneath — always freshly created here, always 0700 — is the level
+    that actually contains the data.
+    """
+    missing = []
+    head = os.path.abspath(path)
+    while head and not os.path.isdir(head):
+        head, tail = os.path.split(head)
+        if not tail:
+            break
+        missing.append(tail)
+    for tail in reversed(missing):
+        head = os.path.join(head, tail)
+        os.mkdir(head, 0o700)
+
+
+def _private_open(path: str):
+    """`open(path, "w")` for a run-dir file, created `rw-------` whatever the
+    umask is. Belt and braces next to the 0700 directory: the mode is set by
+    the create itself, so the file is never briefly world-readable."""
+    return os.fdopen(
+        os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+        "w", encoding="utf-8")
+
+
 def _write_mcp_config(run_dir: str) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt, written into the run dir. Returns its path (for --mcp-config).
@@ -357,7 +411,7 @@ def _write_mcp_config(run_dir: str) -> str:
     behind the shim at the top of this file that covers both engines."""
     path = os.path.join(run_dir, "mcp.json")
     server = os.path.join(HERE, "permission_server.py")
-    with open(path, "w", encoding="utf-8") as fh:
+    with _private_open(path) as fh:
         json.dump({"mcpServers": {PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
@@ -565,8 +619,8 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
-    os.makedirs(run_dir)
-    os.makedirs(_perm_dir(run_dir))
+    _private_dir(run_dir)
+    _private_dir(_perm_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -598,17 +652,17 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     # poll() records the session into the sidecar once claude reports its id;
     # it needs the file + first message, so stash them with the run.
-    with open(os.path.join(run_dir, "meta.json"), "w", encoding="utf-8") as f:
+    with _private_open(os.path.join(run_dir, "meta.json")) as f:
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id}, f)
 
-    with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as out, \
-         open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err:
+    with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
+         _private_open(os.path.join(run_dir, "err.log")) as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
                                 stdin=subprocess.DEVNULL,
                                 **_DETACH)
-    with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
+    with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
 

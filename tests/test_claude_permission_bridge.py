@@ -18,13 +18,13 @@ else:
 The claude CLI itself is never invoked here: the MCP server is driven directly
 over its stdio JSON-RPC, which is exactly the surface the CLI talks to.
 """
-import ast
 import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import stat
 import sys
 import threading
 import time
@@ -41,31 +41,6 @@ def _load(name):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
-
-
-def _source_constant(module, name):
-    """Read a module-level constant out of a template helper's SOURCE.
-
-    Parsed rather than imported, and permission_server is why. It runs as a
-    subprocess — that is how the CLI runs it and how every test here drives it
-    — so coverage cannot see the statements it executes across that process
-    boundary. Importing it in-process just to read one constant put it in the
-    coverage report as a ~20%-covered file, which reads as "the approval server
-    is barely tested" when it is in fact exercised end to end over its real
-    stdio protocol. Reading the source keeps the assertion exactly as strong
-    without the misleading row.
-    """
-    source = open(os.path.join(TEMPLATE_DIR, module + ".py"), encoding="utf-8").read()
-    for node in ast.parse(source).body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
-            continue
-        value = node.value
-        if isinstance(value, ast.Call) and getattr(value.func, "id", "") == "frozenset":
-            value = value.args[0]
-        return set(ast.literal_eval(value))
-    raise AssertionError(f"{module}.py has no top-level {name}")
 
 
 @pytest.fixture
@@ -238,6 +213,39 @@ def test_the_server_only_emits_a_mode_it_recognises(tmp_path, server, mode):
     payload = _result_payload(sink[0])
     assert payload["behavior"] == "allow"
     assert "updatedPermissions" not in payload, f"{mode!r} reached the CLI"
+
+
+def test_a_failed_timeout_write_keeps_the_latch_claimed(tmp_path, monkeypatch):
+    """The server must NOT free the claim the way agent.py's writer does.
+
+    agent.py unlinks on a failed write because nobody has been told anything
+    yet, so a retry should be able to win the latch. Here the verdict has
+    already gone back to claude — releasing it would let a later Allow land on
+    disk and the card would read "✓ Allowed" for a tool that was refused.
+    """
+    srv = _load("permission_server")
+    monkeypatch.setattr(srv, "PERM_DIR", str(tmp_path))
+    monkeypatch.setattr(srv, "WAIT_TIMEOUT", 0.05)
+    real_fdopen = os.fdopen
+
+    def boom(fd, *a, **kw):
+        real_fdopen(fd, *a, **kw).close()
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(srv.os, "fdopen", boom)
+    assert srv._await_decision("req-1") == {"decision": "deny", "reason": "timeout"}
+    assert os.path.exists(os.path.join(tmp_path, "req-1.res.json")), (
+        "the claim was released after claude had already been answered")
+
+
+def test_a_successful_timeout_write_records_the_verdict(tmp_path, monkeypatch):
+    """The other half: the ordinary path still writes a readable deny."""
+    srv = _load("permission_server")
+    monkeypatch.setattr(srv, "PERM_DIR", str(tmp_path))
+    monkeypatch.setattr(srv, "WAIT_TIMEOUT", 0.05)
+    assert srv._await_decision("req-1") == {"decision": "deny", "reason": "timeout"}
+    assert json.loads((tmp_path / "req-1.res.json").read_text()) == {
+        "decision": "deny", "reason": "timeout"}
 
 
 def test_deny_carries_a_message_because_the_cli_requires_one(tmp_path, server):
@@ -710,8 +718,7 @@ def test_only_a_switchable_mode_is_recorded_and_only_alongside_an_allow(
 def test_the_three_switchable_mode_lists_agree(agent):
     """agent.py validates it, permission_server re-validates it, and the card
     offers it — three copies, so a test holds them together (D146)."""
-    assert set(agent.SWITCHABLE_MODES) == _source_constant(
-        "permission_server", "SWITCHABLE_MODES")
+    assert set(agent.SWITCHABLE_MODES) == set(_load("permission_server").SWITCHABLE_MODES)
     # every switchable mode must also be a mode the picker can spawn with,
     # or a card could leave the session somewhere the next turn cannot
     assert set(agent.SWITCHABLE_MODES) <= set(agent.PERMISSION_MODES)
@@ -755,6 +762,16 @@ def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
     ("-30", 3600),
     ("banana", 3600),
     (None, 3600),
+    # int(float("inf")) raises OverflowError, which is NOT a ValueError — these
+    # crashed the module at import, taking down every action in the template
+    # rather than falling back the way the docstring promises.
+    ("inf", 3600),
+    ("-inf", 3600),
+    ("nan", 3600),
+    ("1e400", 3600),
+    # valid but past the int32-millisecond ceiling the CLI clamps the
+    # per-server MCP timeout to; a bigger number is not a longer wait
+    ("99999999999", 2147423),
 ])
 def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env, expected):
     """`FUSED_RENDER_PERMISSION_TIMEOUT` is read by permission_server, but
@@ -919,6 +936,52 @@ def test_grep_still_shows_its_scope_alongside_the_pattern():
     summary = _summarize("Grep", {"pattern": "TODO", "path": "/src", "glob": "*.py"})
     assert "TODO" in summary["body"]
     assert "/src" in summary["sub"] and "*.py" in summary["sub"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_the_run_tree_is_not_readable_by_other_local_accounts(agent, tmp_path,
+                                                              monkeypatch):
+    """A run dir is the whole conversation — out.jsonl is the transcript,
+    meta.json the user's message, perm/*.req.json every tool payload — and it
+    lives under a temp root that is world-readable on a typical Linux box.
+    Default modes (0755/0644) handed all of it to any other local account.
+    macOS' per-user temp root hides the problem there; it is not a fix.
+    """
+    monkeypatch.setattr(os, "umask", lambda _mask: 0o022)  # a permissive umask
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+
+    class _Proc:
+        pid = 4242
+
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    run_id = agent._start(str(target), "hi", "", "", "")["run_id"]
+    run_dir = os.path.join(agent.RUNS, run_id)
+
+    for d in (run_dir, agent._perm_dir(run_dir)):
+        mode = stat.S_IMODE(os.stat(d).st_mode)
+        assert mode == 0o700, f"{d} is {oct(mode)}, readable beyond this user"
+    for name in ("meta.json", "out.jsonl", "err.log", "pid", "mcp.json"):
+        path = os.path.join(run_dir, name)
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        assert mode == 0o600, f"{name} is {oct(mode)}"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_a_parked_request_file_is_private(tmp_path, server):
+    """The request body is the tool payload itself, so it must land 0600 — set
+    by the create, never a chmod after the content is already on disk."""
+    perm_dir = tmp_path / "perm"
+    sink = []
+    server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Bash", "input": {"command": "echo secret"}}}, sink)
+    req = _wait_for_request(perm_dir)
+    mode = stat.S_IMODE(os.stat(perm_dir / (req["id"] + ".req.json")).st_mode)
+    assert mode == 0o600, f"request file is {oct(mode)}"
+    assert stat.S_IMODE(os.stat(perm_dir).st_mode) == 0o700
 
 
 def test_template_wires_the_decide_action(agent):
