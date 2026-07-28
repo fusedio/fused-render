@@ -42,10 +42,20 @@ NOTE_SUFFIXES = (".md", ".markdown")
 # silently dropped.
 MAX_NOTE_BYTES = 256 * 1024
 
-# Hard caps on a single walk. Exceeding either is reported so the UI can say
-# the graph is partial rather than quietly showing a subset (MD-10).
+# Hard caps on what a single walk RECORDS. Exceeding either is reported so the
+# UI can say the graph is partial rather than quietly showing a subset (MD-10).
 MAX_FILES = 5000
 MAX_ASSETS = 5000
+
+# Hard cap on what a single walk ENUMERATES — every directory entry it visits,
+# note or not. The two caps above bound only the lists that come back, which is
+# not the same thing: a tree of 20k generated files beside one note used to be
+# `readdir`'d in full for nothing, and this walk runs on EVERY .md open (a warm
+# open is stat-only, so the walk is the steady-state cost of opening a note).
+# 20k is ~15x the largest real tree measured (openfused visits ~1.4k entries,
+# this repo ~0.6k), so no vault or docs repo trips it, and it holds the
+# pathological case to tens of milliseconds instead of the size of a monorepo.
+MAX_ENTRIES = 20000
 
 # Directories a note vault never means to include. Dotdirs cover .git/.obsidian;
 # the rest are the usual vendored trees whose bundled markdown is noise.
@@ -541,22 +551,41 @@ def _read_text(path: str) -> str:
         return handle.read()
 
 
-def _walk(root: str, max_bytes: int, max_files: int, max_assets: int) -> dict:
+def _walk(root: str, max_bytes: int, max_files: int, max_assets: int,
+          max_entries: int = MAX_ENTRIES) -> dict:
     """The walk's facts, with nothing parsed: which notes exist and how big/old
     each one is. Split from parsing so the index can decide, per file, whether a
     read is needed at all (MD-8) — a warm walk is stat-only.
 
     Deterministic: directories and files are visited in sorted order, so a cap
     that fires drops the same tail every time rather than an arbitrary subset.
+    That is also why `max_entries` is checked per entry but the tail is only
+    abandoned at a directory boundary: sorting a directory needs its whole
+    listing, so the listing is read either way — what the budget stops is every
+    directory BELOW the point it ran out, which is where the cost lives.
+
+    Every cap that fires sets `truncated`, including the asset cap: a walk that
+    kept nothing while still enumerating is the exact failure MD-10 forbids,
+    since both the note view and the folder graph render their "partial" notice
+    off this flag alone. Only the caps that make further walking pointless stop
+    it, though — a full asset list is reported and walked past, because notes are
+    the payload and dropping them to save asset slots would be the worse trade.
     """
     found = {}      # rel -> (abs path, mtime_ns, size)
     assets = []
     skipped_large = []
     truncated = False
+    stop = False    # a cap that makes the rest of the tree pointless to visit
+    entries = 0     # every directory entry visited, note or not
 
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d))
+        entries += len(dirnames)
         for name in sorted(filenames):
+            entries += 1
+            if entries > max_entries:
+                truncated = stop = True
+                break
             if name.startswith("."):
                 continue
             full = os.path.join(dirpath, name)
@@ -564,9 +593,11 @@ def _walk(root: str, max_bytes: int, max_files: int, max_assets: int) -> dict:
             if not _is_note(name):
                 if len(assets) < max_assets:
                     assets.append(rel)
+                else:
+                    truncated = True
                 continue
             if len(found) >= max_files:
-                truncated = True
+                truncated = stop = True
                 break
             try:
                 stat = os.stat(full)
@@ -576,7 +607,7 @@ def _walk(root: str, max_bytes: int, max_files: int, max_assets: int) -> dict:
                 skipped_large.append(rel)
                 continue
             found[rel] = (full, stat.st_mtime_ns, stat.st_size)
-        if truncated:
+        if stop:
             break
 
     return {"found": found, "assets": assets, "truncated": truncated,
@@ -606,7 +637,7 @@ def _assemble(root: str, walk: dict, notes: dict) -> dict:
 
 
 def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
-              max_assets: int = MAX_ASSETS) -> dict:
+              max_assets: int = MAX_ASSETS, max_entries: int = MAX_ENTRIES) -> dict:
     """Walk `root` and parse every note under it, with no cache involved.
 
     Returns `{"root", "notes": {relpath: row}, "assets": [relpath], "truncated",
@@ -614,7 +645,7 @@ def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_F
     """
     root = os.path.abspath(root)
     _refuse_mounts(root)
-    walk = _walk(root, max_bytes, max_files, max_assets)
+    walk = _walk(root, max_bytes, max_files, max_assets, max_entries)
     notes = {}
     for rel, (full, mtime_ns, size) in walk["found"].items():
         row = _row(full, mtime_ns, size)
@@ -743,7 +774,7 @@ def index_rows(root: str) -> dict:
 
 
 def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
-                 max_assets: int = MAX_ASSETS) -> dict:
+                 max_assets: int = MAX_ASSETS, max_entries: int = MAX_ENTRIES) -> dict:
     """`scan_root`, but reading unchanged notes out of the on-disk index.
 
     Cold: one walk plus N reads. Warm: one stat-only walk plus reads for changed
@@ -757,7 +788,7 @@ def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MA
     # Before anything, including creating the index dir: the walk below is the
     # operation that must never happen on a mount (MD-11).
     _refuse_mounts(root)
-    walk = _walk(root, max_bytes, max_files, max_assets)
+    walk = _walk(root, max_bytes, max_files, max_assets, max_entries)
     found = walk["found"]
 
     conn = _connect(root)

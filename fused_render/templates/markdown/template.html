@@ -1685,8 +1685,11 @@
       // Caps are reported, never silently applied (MD-10).
       const notices = [];
       if (notes.truncated) {
-        notices.push(`Only the first ${notes.notes} notes under
-          ${escapeHtml(notes.root)} were scanned, so some backlinks may be missing.`);
+        // Any cap can set `truncated` — notes, assets, or the walk's total-entry
+        // budget — so the wording says a cap fired without claiming which.
+        notices.push(`Partial scan: ${notes.notes} note(s) under
+          ${escapeHtml(notes.root)} were indexed before the walk hit a cap, so some
+          backlinks or embeds may be missing.`);
       }
       if ((notes.skipped_large || []).length) {
         notices.push(`${notes.skipped_large.length} file(s) were too large to parse
@@ -1933,7 +1936,7 @@
         return;
       }
       graphNoteEl.hidden = !data.truncated;
-      if (data.truncated) graphNoteEl.textContent = "Partial: the walk hit its file cap.";
+      if (data.truncated) graphNoteEl.textContent = "Partial: the walk hit a cap.";
       graphCountEl.textContent = `${data.nodes.length} of ${data.total_notes} notes`;
       canvas.setData(data);
     }

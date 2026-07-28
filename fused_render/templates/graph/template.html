@@ -276,7 +276,7 @@
       payload = data;
       const notices = [];
       if (data.truncated) {
-        notices.push("Partial graph: the walk stopped at its file cap.");
+        notices.push("Partial graph: the walk stopped at a cap.");
       }
       if ((data.skipped_large || []).length) {
         notices.push(`${data.skipped_large.length} file(s) were too large to parse

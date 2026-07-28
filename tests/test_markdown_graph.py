@@ -227,6 +227,94 @@ def test_scan_stops_at_the_file_cap_and_says_so(graph, tmp_path):
     assert graph.scan_root(root)["truncated"] is False
 
 
+@contextlib.contextmanager
+def _counting_scandir(counter):
+    """Count every directory entry the walk actually pulls off the disk.
+
+    `os.walk` drives `os.scandir`, so wrapping it measures the real work rather
+    than what came back in the payload — which is the whole point: a cap that
+    bounds only what is RECORDED leaves the walk enumerating the rest of the
+    tree for nothing.
+    """
+    real = os.scandir
+
+    class Counting:  # scandir's iterator is also a context manager
+        def __init__(self, it):
+            self._it = it
+
+        def __enter__(self):
+            self._it.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._it.__exit__(*exc)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            entry = next(self._it)
+            counter.append(entry.name)
+            return entry
+
+        def close(self):
+            self._it.close()
+
+    with mock.patch.object(os, "scandir",
+                           lambda path=".", *a, **k: Counting(real(path, *a, **k))):
+        yield
+
+
+def test_the_walk_stops_enumerating_once_its_entry_budget_is_spent(graph, tmp_path):
+    """The budget has to bound what is WALKED, not just what is recorded.
+
+    MAX_FILES only ever counted notes, so a tree of generated files beside one
+    note was `readdir`'d in full — cost O(entire tree) — and still came back
+    `truncated=False`. This walk runs on every `.md` open and a warm open is
+    stat-only, so it IS the steady-state cost of opening a note: if the bound on
+    entries visited regresses, opening one note in a monorepo pays for the whole
+    monorepo, silently.
+    """
+    files = {"note.md": "[[note]]\n"}
+    files.update({"gen/d%02d/f%02d.js" % (d, f): "x"
+                  for d in range(40) for f in range(30)})
+    root = _vault(tmp_path, files)  # 1200 generated files, 40 directories
+
+    seen = []
+    with _counting_scandir(seen):
+        scan = graph.scan_root(root, max_entries=100)
+    assert scan["truncated"] is True
+    # A directory's listing is read whole (sorted order is the determinism
+    # guarantee), so the bound is per-directory-coarse, not exact — but it must
+    # be a small multiple of the budget rather than the size of the tree.
+    assert len(seen) < 3 * 100, len(seen)
+
+    # The control: the same tree under the real budget is scanned in full, so
+    # what the test pins is the budget and not the tree's shape.
+    seen_full = []
+    with _counting_scandir(seen_full):
+        full = graph.scan_root(root)
+    assert full["truncated"] is False
+    assert len(seen_full) > 1200
+    assert len(full["assets"]) == 1200
+
+
+def test_a_dropped_asset_is_reported_as_truncation_too(graph, tmp_path):
+    """Hitting the asset cap used to leave `truncated` False.
+
+    Assets past MAX_ASSETS were dropped on the floor while the walk carried on
+    recording nothing, so by the walk's own accounting nothing had been lost and
+    the "partial" notice both views render off `truncated` never fired. Silent
+    truncation is exactly what MD-10 forbids.
+    """
+    files = {"note.md": "![[f00.js]]\n"}
+    files.update({"gen/f%02d.js" % n: "x" for n in range(40)})
+    root = _vault(tmp_path, files)
+    scan = graph.scan_root(root, max_assets=2)
+    assert len(scan["assets"]) == 2
+    assert scan["truncated"] is True
+
+
 # --------------------------------------------------------------- the note API
 
 
