@@ -165,9 +165,19 @@ carries numpy/pandas/pyarrow.
 
 macOS notarization needs no new work: the signing loop enumerates every nested
 Mach-O by magic bytes and signs each with the hardened runtime, so a new binary
-under `Contents/Resources/bin/` is picked up automatically. Worth an explicit
-check that a Go binary accepts the existing entitlements, since Go binaries have
-historically needed care with hardened runtime.
+under `Contents/Resources/bin/` is picked up automatically. Still worth
+confirming on the first signed build that a Go binary is happy with the existing
+entitlements — Go binaries have historically needed care under hardened runtime.
+
+Windows needs no `installer.iss` change: the whole `python\` tree is staged by a
+recursive wildcard, which is already how `rclone.exe` arrives.
+
+Known gap, deliberately not closed here: `ActivatePayload`'s "payload is
+incomplete" check (`installer.iss:247-255`) verifies `python.exe`, `uv.exe`,
+`win32job.pyd` and friends but **not** `rclone.exe`, and so not
+`cli-proxy-api.exe` either. A truncated build would therefore install and only
+fail later, at the point of use. Widening that check is worth doing for both
+binaries at once rather than adding ours alone, so it belongs in its own change.
 
 ## Open questions
 
