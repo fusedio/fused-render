@@ -891,6 +891,23 @@ function summarizePermission(tool, input) {
   return out("", keys.length ? JSON.stringify(inp, null, 2) : "");
 }
 
+// Whatever summarizePermission did not render. Allow authorises the WHOLE
+// input, so a key the curated view has no case for must not be silently
+// dropped — it gets shown verbatim rather than trusted to be unimportant.
+// Returns null when the summary already covered everything.
+//
+// Object.fromEntries, not `{}` + assignment. The input is model-authored JSON
+// and arrives through res.json(), which — like JSON.parse — DEFINES an own
+// `__proto__` key. Assigning that key instead reaches Object.prototype's
+// legacy setter, which creates no own property, so the field would vanish
+// from this dump while updatedInput still authorises it. fromEntries defines,
+// so `__proto__` reaches the card like any other leftover key.
+function leftoverInput(input, covered) {
+  const seen = covered || [];
+  const rest = Object.keys(input || {}).filter((k) => seen.indexOf(k) < 0);
+  return rest.length ? Object.fromEntries(rest.map((k) => [k, input[k]])) : null;
+}
+
 function buildPermCard(p, run_id) {
   const toolName = p.tool || "a tool";
   const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
@@ -917,13 +934,8 @@ function buildPermCard(p, run_id) {
     pre.textContent = body;
     el.appendChild(pre);
   }
-  // Whatever the summary above did not render. Allow authorises the WHOLE
-  // input, so a key the curated view has no case for must not be silently
-  // dropped — it gets shown verbatim rather than trusted to be unimportant.
-  const rest = Object.keys(p.input || {}).filter((k) => (covered || []).indexOf(k) < 0);
-  if (rest.length) {
-    const extra = {};
-    rest.forEach((k) => { extra[k] = p.input[k]; });
+  const extra = leftoverInput(p.input, covered);
+  if (extra) {
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(extra, null, 2);
     el.appendChild(pre);

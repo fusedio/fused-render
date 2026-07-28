@@ -953,6 +953,23 @@ def test_both_sides_of_an_alternation_reach_the_card(tool, tool_input):
             "it would vanish from the card while updatedInput still authorises it")
 
 
+def _leftover(raw_input_json, covered):
+    """Run the card's real `leftoverInput` over one tool input.
+
+    The input is handed over as a JSON *string* parsed inside node rather than
+    as a JS literal, because the bug this guards against only exists for keys
+    the JSON parser DEFINES — a literal would go through assignment and hide it.
+    """
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    start = html.index("function leftoverInput(")
+    fn = html[start:html.index("function buildPermCard(", start)]
+    script = fn + "\nconsole.log(JSON.stringify(leftoverInput(JSON.parse(%s), %s)));" % (
+        json.dumps(raw_input_json), json.dumps(covered))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
 def test_no_input_key_is_dropped_from_the_card():
     """Allow authorises the whole input, so a key the curated summary has no
     case for must still be visible rather than assumed unimportant."""
@@ -962,11 +979,53 @@ def test_no_input_key_is_dropped_from_the_card():
     summary = _summarize("Bash", {"command": "ls", "description": "d",
                                   "run_in_background": True, "timeout": 900})
     assert set(summary["covered"]) == {"command", "description"}
-    leftover = {"run_in_background", "timeout"} - set(summary["covered"])
-    assert leftover, "this test is only meaningful while those keys are uncovered"
-    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
-    assert "const rest = Object.keys(p.input || {})" in html
-    assert "JSON.stringify(extra, null, 2)" in html
+    extra = _leftover(json.dumps({"command": "ls", "description": "d",
+                                  "run_in_background": True, "timeout": 900}),
+                      summary["covered"])
+    assert extra == {"run_in_background": True, "timeout": 900}
+
+
+def test_a_proto_key_is_not_swallowed_by_the_prototype_setter():
+    """A model-authored input may carry an own `__proto__` key.
+
+    It reaches the page through res.json(), which — like JSON.parse — defines
+    that key as an ordinary own property, so Object.keys lists it and the
+    leftover dump is on the hook for showing it. Building the dump by
+    ASSIGNING it into `{}` instead hits Object.prototype's legacy `__proto__`
+    setter: no own property is created, the field renders as `{}`, and the
+    user approves a payload the card told them was empty — permission_server
+    returns updatedInput unchanged, so the field is authorised regardless.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own summariser")
+    raw = '{"command": "ls", "__proto__": {"evil": "rm -rf ~/Documents"}}'
+    extra = _leftover(raw, ["command"])
+    assert extra is not None, "the __proto__ field vanished from the card entirely"
+    assert extra.get("__proto__") == {"evil": "rm -rf ~/Documents"}, (
+        "the card would render an empty object while updatedInput still "
+        f"authorises the field; got {extra!r}")
+
+
+@pytest.mark.parametrize("raw,covered,expected", [
+    # `__proto__` is the only name the setter actually swallows, and it does so
+    # for an object AND for a primitive — the latter is the quieter half, since
+    # the setter simply ignores it without even changing a prototype. Both of
+    # these render as `{}` before the fix.
+    ('{"__proto__": "a string"}', [], {"__proto__": "a string"}),
+    ('{"__proto__": {"o": 1}, "k": 2}', ["k"], {"__proto__": {"o": 1}}),
+    # Controls. These pass under the assignment form too — kept so the fix is
+    # pinned to preserving ordinary behaviour rather than only to the bug:
+    # other Object.prototype names are plain data properties that shadow fine…
+    ('{"toString": "shadowed", "b": 2}', ["b"], {"toString": "shadowed"}),
+    ('{"constructor": {"x": 1}}', [], {"constructor": {"x": 1}}),
+    # …and a fully covered input must still yield no second <pre>.
+    ('{"a": 1}', ["a"], None),
+    ('{}', [], None),
+])
+def test_the_leftover_dump_survives_prototype_named_keys(raw, covered, expected):
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own summariser")
+    assert _leftover(raw, covered) == expected
 
 
 def test_grep_still_shows_its_scope_alongside_the_pattern():

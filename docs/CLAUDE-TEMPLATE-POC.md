@@ -185,11 +185,20 @@ claude (headless)                    agent.py / browser
   hand-listed: naming both sides of an `a || b` (`file_path || path`,
   `url || query`) marked the loser covered too, so the leftover dump skipped
   it, the card never showed it, and `updatedInput` authorised it regardless —
-  the same hole arriving through the mechanism built to close it. All of it is
-  pinned by a node probe that runs the card's own `summarizePermission` over a
+  the same hole arriving through the mechanism built to close it. The dump
+  itself is built with **`Object.fromEntries`, never `{}` + assignment**, for a
+  related reason: the input reaches the page through `res.json()`, which — like
+  `JSON.parse` — *defines* an own `__proto__` key, so `Object.keys` lists it and
+  the dump is on the hook for it; *assigning* that one key instead reaches
+  `Object.prototype`'s legacy setter, which creates no own property, so the
+  field renders as an empty `{}` while `updatedInput` authorises it in full.
+  `fromEntries` defines, so it survives. All of it is pinned by a node probe
+  that runs the card's own `summarizePermission` and `leftoverInput` over a
   table of tool inputs — including a 5 KB command whose last line is the
   destructive one, a `Grep` whose `pattern` used to vanish whenever a `path`
-  was set, and a `Read` carrying both `file_path` and `path`.
+  was set, a `Read` carrying both `file_path` and `path`, and an input whose
+  `__proto__` is parsed *inside* node (a JS literal would go through assignment
+  and hide the very case under test).
 - **Decisions are a one-way latch.** `O_EXCL`, first writer wins: a
   double-click, or a cancel landing on a card that was just allowed, must not
   overwrite a verdict the tool may already have acted on. Anything that is not
