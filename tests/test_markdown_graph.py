@@ -763,3 +763,48 @@ def test_an_unwritable_index_home_still_answers_from_a_plain_walk(graph, tmp_pat
     out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
     assert out["error"] is None
     assert [b["rel"] for b in out["backlinks"]] == []
+
+
+# --------------------------------------------- client-facing paths (Windows)
+
+
+def test_a_payload_path_is_forward_slash_even_from_a_windows_root(graph):
+    """Every path in a payload is POSIX-shaped, whatever the platform.
+
+    The filesystem side rightly uses native separators — `os.path.abspath`
+    returns `C:\\Users\\me\\vault` on Windows — but the template splits and
+    re-joins these values on "/", and the shell's canonical form for a Windows
+    file is the drive path `C:/Users/…`. A native separator crossing the
+    boundary is silently mis-split at the other end, so it is converted once,
+    here. Driven directly rather than through a payload so the Windows shape is
+    exercised on every platform.
+    """
+    assert graph._client_path("C:\\Users\\me\\vault") == "C:/Users/me/vault"
+    assert graph._client_join("C:\\Users\\me\\vault", "docs/a.md") == \
+        "C:/Users/me/vault/docs/a.md"
+    # A POSIX root is already in that form and must come back untouched.
+    assert graph._client_join("/home/me/vault", "docs/a.md") == \
+        "/home/me/vault/docs/a.md"
+    # No empty segment when the root carries a trailing slash, and no trailing
+    # slash when there is no rel to append.
+    assert graph._client_join("/home/me/vault/", "a.md") == "/home/me/vault/a.md"
+    assert graph._client_join("/home/me/vault", "") == "/home/me/vault"
+
+
+def test_every_path_a_payload_carries_uses_forward_slashes(graph, tmp_path, home):
+    """The contract at the boundary, over all three payloads at once."""
+    root = _vault(tmp_path, {
+        "A.md": "# A\n[[docs/B]] and ![[missing.png]]\n",
+        "docs/B.md": "# B\n[[A]]\n",
+    })
+    note = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
+    found = [note["root"]]
+    found += [link["path"] for link in note["links"] if link["path"]]
+    found += [back["path"] for back in note["backlinks"] if back["path"]]
+    cands = graph.main(action="candidates", root=root)
+    found += [cands["root"]] + [row["path"] for row in cands["notes"]]
+    graphed = graph.main(action="graph", root=root)
+    found += [graphed["root"]]
+    found += [node["path"] for node in graphed["nodes"] if node["path"]]
+    assert found, "the payloads carried no paths at all — the assertion is empty"
+    assert [p for p in found if "\\" in p] == []

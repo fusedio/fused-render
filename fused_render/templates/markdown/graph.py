@@ -393,6 +393,30 @@ def _stem(rel: str) -> str:
     return rel
 
 
+def _client_path(path: str) -> str:
+    """An absolute path in the form the PAGE speaks: forward slashes throughout.
+
+    Everything above this line does filesystem work and rightly uses native
+    separators — `os.path.abspath` hands back `C:\\Users\\me\\vault` on Windows.
+    But every path that crosses into a payload is then split and re-joined on
+    "/" by the template, and the shell's own canonical form for a Windows file
+    is the drive path `C:/Users/…`. A native separator therefore survives the
+    trip only to be mis-split at the other end, so it is converted exactly once,
+    here, at the boundary.
+    """
+    return path.replace("\\", "/") if path else path
+
+
+def _client_join(root: str, rel: str) -> str:
+    """`root` + a vault-relative `rel`, as one client-facing absolute path.
+
+    Pure string work on purpose: `os.path.join` would reintroduce the native
+    separator this exists to remove, and `rel` is already POSIX by construction.
+    """
+    base = _client_path(root).rstrip("/")
+    return base + "/" + rel if rel else base
+
+
 def _normalize_target(target: str) -> str:
     target = (target or "").strip().replace("\\", "/")
     while target.startswith("./"):
@@ -818,7 +842,7 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
         row = parse_note(_read_text(os.path.join(root, rel)))
 
     def absolute(target_rel):
-        return os.path.join(root, target_rel.replace("/", os.sep)) if target_rel else None
+        return _client_join(root, target_rel) if target_rel else None
 
     links = []
     for link in _resolved_links(rel, row, note_index, asset_index):
@@ -849,7 +873,7 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
             })
     return {
         "error": None,
-        "root": root,
+        "root": _client_path(root),
         "rel": rel,
         "title": _display_title(rel, row),
         "headings": row["headings"],
@@ -896,14 +920,14 @@ def _candidates_payload(root: str, scan: dict) -> dict:
         tags.update(row["tags"])
         rows.append({
             "rel": rel,
-            "path": os.path.join(root, rel.replace("/", os.sep)),
+            "path": _client_join(root, rel),
             "title": _display_title(rel, row),
             "link": _link_form(rel, paths, index),
             "headings": row["headings"],
         })
     return {
         "error": None,
-        "root": root,
+        "root": _client_path(root),
         "notes": rows,
         "tags": sorted(tags),
         "assets": scan["assets"],
@@ -931,7 +955,7 @@ def _graph_nodes_and_edges(root: str, scan: dict):
             "id": rel,
             "kind": "note",
             "label": _display_title(rel, notes[rel]),
-            "path": os.path.join(root, rel.replace("/", os.sep)),
+            "path": _client_join(root, rel),
             "degree": 0,
         }
 
@@ -1012,7 +1036,7 @@ def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
         nodes[edge["target"]]["degree"] += 1
     return {
         "error": None,
-        "root": root,
+        "root": _client_path(root),
         "focus": focus,
         "depth": depth,
         "nodes": [nodes[node] for node in sorted(nodes)],

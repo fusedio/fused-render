@@ -317,6 +317,28 @@ def test_creating_a_ghost_refuses_a_degenerate_name(create_ghost):
         in create_ghost
 
 
+def test_resolving_a_path_leaves_a_windows_drive_root_alone(source):
+    """`/C:/Users/…` is not a path anything here can write.
+
+    A leading "/" is right for POSIX and wrong for Windows, whose canonical form
+    in this app is the drive path `C:/Users/…` — and the wrongness is not
+    cosmetic: `createGhost` compares its result against `notes.root`, so a
+    spurious leading slash failed the boundary check and refused EVERY create on
+    Windows. Both surfaces that resolve a path carry the guard, and the docs,
+    excel and slides templates carry the same idiom.
+    """
+    graph_template = os.path.join(
+        os.path.dirname(TEMPLATE), "..", "graph", "template.html")
+    with open(graph_template, encoding="utf-8") as handle:
+        graph_source = handle.read()
+    guard = 'return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;'
+    for text, where in ((source, "the note view"), (graph_source, "the graph mode")):
+        assert "function resolvePath" in text, where
+        assert guard in text, where
+        # The unconditional prefix this replaced.
+        assert 'return "/" + out.join("/");' not in text, where
+
+
 def test_the_create_path_reads_the_ghost_target_not_its_label(source, canvas_source):
     # `label` is a display string (a real note's is its title). Driving a write
     # off it is fragile by construction.

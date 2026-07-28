@@ -609,6 +609,11 @@
 
     // Join an absolute POSIX dir with a relative path and collapse "." / ".."
     // segments — pure string work (no fs access; paths are absolute POSIX).
+    // A leading "/" is right for a POSIX path and WRONG for a Windows one: the
+    // shell's canonical form there is the drive path `C:/Users/…` with no
+    // leading slash, so prefixing one produced `/C:/…` — which then failed the
+    // scan-root boundary check in createGhost and refused every create on
+    // Windows. Same guard the docs, excel and slides templates carry.
     function resolvePath(dir, rel) {
       const out = [];
       for (const p of dir.split("/").concat(rel.split("/"))) {
@@ -616,7 +621,8 @@
         if (p === "..") out.pop();
         else out.push(p);
       }
-      return "/" + out.join("/");
+      const joined = out.join("/");
+      return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;
     }
 
     // A malformed escape ("%zz") throws rather than decoding; the authored text

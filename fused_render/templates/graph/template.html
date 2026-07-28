@@ -166,6 +166,10 @@
 
     // Join an absolute POSIX dir with a relative path and collapse "." / ".."
     // segments — pure string work, the same helper the note view uses.
+    // No leading "/" on a Windows drive path (`C:/Users/…` is the shell's
+    // canonical form) — `/C:/…` would fail createGhost's root boundary check and
+    // refuse every create there. Mirrors the note view's copy deliberately:
+    // both surfaces must agree about where a target lands.
     function resolvePath(dir, rel) {
       const out = [];
       for (const p of dir.split("/").concat(rel.split("/"))) {
@@ -173,7 +177,8 @@
         if (p === "..") out.pop();
         else out.push(p);
       }
-      return "/" + out.join("/");
+      const joined = out.join("/");
+      return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;
     }
 
     // Creating a missing note from the graph is the same affordance the note
