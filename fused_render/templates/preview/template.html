@@ -492,7 +492,10 @@
       return [...ENTRIES].sort((a, b) => {
         const aDot = a.name.startsWith("."), bDot = b.name.startsWith(".");
         if (aDot !== bDot) return aDot ? 1 : -1;              // dot entries last
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;  // dirs first
+        // Name sort is purely alphabetical — folders and files interleave.
+        // size/mtime still group dirs first (a dir has no size). Mirrors
+        // views/Listing.tsx sortEntries.
+        if (sortKey !== "name" && a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
         let c;
         if (sortKey === "size") c = (a.size ?? -1) - (b.size ?? -1);
         else if (sortKey === "mtime") c = (a.mtime ?? 0) - (b.mtime ?? 0);
