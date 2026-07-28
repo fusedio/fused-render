@@ -1752,7 +1752,14 @@
     setParams({ page: tailPageOffset, back: "", tail: turningOn ? "1" : "0", view: turningOn ? "lines" : state.view });
   });
 
-  linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
+  // No-op while already on lines: `page` is part of dataKey, so resetting it
+  // on a redundant click would abandon the current offset (including a
+  // tail-established end-of-file position) and force a full reload for a
+  // click that looks like it did nothing.
+  linesTab.addEventListener("click", () => {
+    if (currentState().view === "lines") return;
+    setParams({ view: "lines", page: "0", back: "" });
+  });
   patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
 
   levelList.addEventListener("click", (event) => {
