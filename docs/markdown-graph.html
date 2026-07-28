@@ -111,6 +111,30 @@
 
 <p>Today <code>markdown/template.html</code> does one thing: <code>marked.parse(await fused.readFile(file))</code> into a div. No editing, no <code>[[wikilinks]]</code>, no backlinks, no graph. This describes the replacement — the same view, plus an editor and a link layer, plus a folder-level graph built from the same index.</p>
 
+<div class="note">
+  <strong>Status — what was built (2026-07-28).</strong>
+  Steps 1, 3 and 4 of the order of work are done, and step 2 up to but not
+  including Live Preview. Shipped: the link layer with resolution and backlinks,
+  the CM6 rebuild with the markdown grammar, a Source editing surface with
+  Obsidian's autosave semantics, the editor keymap and the <code>[[</code>
+  popup, the sqlite index, the local graph panel, and the folder-level
+  <code>graph</code> mode with its gate. The contract is <code>SPEC.md</code>
+  §32 (MD-1..MD-22); the decisions are D153..D157.
+  <br /><br />
+  <strong>Deliberately not built</strong>, each recorded in MD-18a/MD-12 rather
+  than left implied: <em>Live Preview decorations</em> (the vendored primitives
+  are in place and <code>view=live</code> is accepted as an alias of Source, so
+  a saved URL degrades instead of breaking); the frontmatter properties table;
+  inline note embeds (an embedded note renders as a link — no second parse, no
+  recursion); <em>paste or drop an image</em>, because
+  <code>fused.writeFile</code> takes UTF-8 text only and a binary attachment
+  write needs a runtime change first; <code>.fused-graph.json</code> tuning and
+  gitignore-awareness of the walk; the default-mode / default-view settings with
+  a persisted per-file override (view state is in <code>fused.params</code>
+  instead, which is shareable but not sticky); and step 5's watch-registry
+  subscription — see the two divergences below.
+</div>
+
 <h2>Three surfaces, one template</h2>
 
 <div class="cols">
@@ -132,7 +156,7 @@
 <pre><code>".md":       ["markdown", "code", "reader", "annotate"]   <span class="k">// markdown now = read+write+links</span>
 "/":         ["_listing", "graph", "preview", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
 
-<p>The folder mode gets a <code>condition.py</code> (SPEC CT-12) so it only offers itself where notes exist. That gate must <strong>never</strong> list or walk the directory — same rule <code>zarr_aoi/condition.py</code> documents. Cheap bounded probes only (a couple of <code>os.path.isfile</code> checks for a likely note, e.g. <code>README.md</code> / <code>index.md</code>), fail closed.</p>
+<p>The folder mode gets a <code>condition.py</code> (SPEC CT-12) so it only offers itself where notes exist — as built, where an <em>entry-point</em> note exists (<code>README.md</code>, <code>index.md</code>, <code>Home.md</code>, <code>notes.md</code>), since telling "notes exist" from anything else needs the listing this rule forbids. The cost is one-directional: a notes folder with no entry point is not offered the mode, while the local graph panel in the note view still works. That gate must <strong>never</strong> list or walk the directory — same rule <code>zarr_aoi/condition.py</code> documents. Cheap bounded probes only (a couple of <code>os.path.isfile</code> checks for a likely note, e.g. <code>README.md</code> / <code>index.md</code>), fail closed.</p>
 
 <h2>Reading and writing — Obsidian parity</h2>
 
@@ -172,7 +196,7 @@
 <p>Two more places Obsidian has nothing to copy, because it has no mount layer:</p>
 <ul>
   <li><strong>Read-only detection reads the shell's persisted <code>read_only</code> flag</strong>, not <code>os.access</code>. On an rclone mount with <code>CacheMode=full</code> a doomed write succeeds locally and only 403s later on async upload — so the editor opens disabled rather than apologising afterwards.</li>
-  <li><strong>Watch-driven reload</strong> is what implements the silent-reload-when-clean rule; it stays suppressed while dirty.</li>
+  <li><strong>Watch-driven reload</strong> was the plan for the silent-reload-when-clean rule. <em>As built it is event-driven instead:</em> the view calls <code>fused.autoReload(false)</code> and re-stats on focus / visibility change, plus at the next save through the <code>expectedMtime</code> lock. A stat ticker was rejected outright — polling is exactly the traffic that killed a mount in the <code>fs/events</code> stat-storm incident, and branching on mount-ness inside the template would break the rule that templates stay mount-agnostic. The cost is that an external change is noticed a moment later rather than instantly; the rule itself (clean → silent reload, dirty → banner) is unchanged. This also stands in for step 5 of the order of work.</li>
 </ul>
 
 <h3>Editing behaviours to match</h3>
@@ -226,7 +250,7 @@
   <tr><td><code>](./rel.md)</code></td><td>Ordinary markdown links count as edges too</td></tr>
 </table>
 
-<p><strong>Resolution: shortest path that's unambiguous.</strong> Match on basename first; if two notes share a basename, require enough path to disambiguate. Unresolved targets become dim <em>ghost</em> nodes in the graph and dashed links in the text — clicking one offers to create the file, which is only possible because this template can write.</p>
+<p><strong>Resolution: shortest path that's unambiguous.</strong> As built, the tiers are tried longest-context-first — sibling folder, then vault root, then path suffix, then bare basename, case-insensitively with the extension optional — and a tie at any tier resolves to <em>nothing</em> rather than to the nearest file, which is where this deliberately differs from Obsidian: picking one of two <code>Design.md</code>s would make the graph assert an edge the author never wrote. Unresolved targets become dim <em>ghost</em> nodes in the graph and dashed links in the text — clicking one offers to create the file, which is only possible because this template can write.</p>
 
 <div class="note warn">
   <strong>Resolve at read time, never at index time.</strong>
@@ -287,7 +311,7 @@
 
 <h2>Rendering the graph</h2>
 
-<p>No force-layout library is vendored today. Either vendor <code>d3-force</code> (~15 KB) or hand-roll an O(n²) sim; both are fine to ~1500 nodes on a Canvas 2D surface. Behaviour worth copying from Obsidian: node radius ∝ degree, labels fading past a zoom threshold, hover highlighting the neighbourhood, drag-to-pin, ghost nodes dimmed. Clicking a node navigates to that note. Graph state — depth, filters, focus — goes through <code>fused.params</code>, so a graph view is URL-shareable, which Obsidian's isn't.</p>
+<p><em>As built: hand-rolled, and shared.</em> The sim and every interaction rule live in <code>templates/shared/graph-canvas.js</code>, served from the existing <code>/template-shared/</code> mount and driven by both graph surfaces — extracted the moment the second one appeared, so they cannot drift into two versions. Nothing was vendored. The original choice was open: either vendor <code>d3-force</code> (~15 KB) or hand-roll an O(n²) sim; both are fine to ~1500 nodes on a Canvas 2D surface. Behaviour worth copying from Obsidian: node radius ∝ degree, labels fading past a zoom threshold, hover highlighting the neighbourhood, drag-to-pin, ghost nodes dimmed. Clicking a node navigates to that note. Graph state — depth, filters, focus — goes through <code>fused.params</code>, so a graph view is URL-shareable, which Obsidian's isn't.</p>
 
 <h2>Order of work</h2>
 
