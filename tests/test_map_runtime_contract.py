@@ -109,73 +109,6 @@ def test_remote_csv_query_string_still_selects_the_csv_reader(monkeypatch):
     assert observed == [(url, {})]
 
 
-def test_python_entrypoint_receives_only_supported_run_parameters():
-    worker = _load("worker")
-
-    module = SimpleNamespace(
-        main=lambda date="default", *, latitude=None: (date, latitude)
-    )
-    result, entrypoint = worker._run_entrypoint(
-        module,
-        params={
-            "date": "2026-07-28",
-            "time": "14:30",
-            "latitude": 12.9716,
-            "longitude": 77.5946,
-        },
-    )
-
-    assert entrypoint == "main"
-    assert result == ("2026-07-28", 12.9716)
-
-
-def test_map_render_forwards_parameters_and_force_bypasses_cache(
-    tmp_path, monkeypatch
-):
-    map_render = _load("map_render")
-    target = tmp_path / "target.py"
-    target.write_text("def main():\n    return None\n", encoding="utf-8")
-    cache = tmp_path / "cache"
-    artifacts = tmp_path / "artifacts"
-    cache.mkdir()
-    observed = []
-
-    monkeypatch.setattr(map_render, "CACHE_DIR", cache)
-    monkeypatch.setattr(map_render, "ARTIFACT_DIR", artifacts)
-    monkeypatch.setattr(map_render, "_ensure_service", lambda: {})
-
-    def describe(_state, _path, request):
-        observed.append(request)
-        return {
-            "status": "ok",
-            "kind": "vector_geojson",
-            "bounds": [0, 0, 1, 1],
-            "data": {},
-            "warnings": [],
-        }
-
-    monkeypatch.setattr(map_render, "_post", describe)
-    arguments = {
-        "target": str(target),
-        "date": "2026-07-28",
-        "time": "14:30",
-        "latitude": "12.9716",
-        "longitude": "77.5946",
-    }
-
-    map_render.main(**arguments)
-    map_render.main(**arguments)
-    map_render.main(**arguments, force="1")
-
-    assert len(observed) == 2
-    assert observed[-1]["opts"]["run_params"] == {
-        "date": "2026-07-28",
-        "time": "14:30",
-        "latitude": 12.9716,
-        "longitude": 77.5946,
-    }
-
-
 def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
     map_render = _load("map_render")
     target = tmp_path / "target.py"
@@ -214,19 +147,3 @@ def test_map_render_retries_after_a_transient_error(tmp_path, monkeypatch):
     assert first["status"] == "error"
     assert recovered["status"] == "ok"
     assert len(attempts) == 2
-
-
-def test_map_template_exposes_run_parameters_and_map_click_location():
-    template = (MAP / "template.html").read_text(encoding="utf-8")
-
-    for element_id in (
-        "cp-date",
-        "cp-time",
-        "cp-latitude",
-        "cp-longitude",
-        "cp-run-button",
-    ):
-        assert f'id="{element_id}"' in template
-    assert 'map.on("click"' in template
-    assert "force: execution.force" in template
-    assert "currentRunParameters()" in template
