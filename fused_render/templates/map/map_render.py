@@ -23,6 +23,11 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "map_render.py")
 
 HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from geo_paths import is_managed_mount
+
 CACHE_DIR = Path(
     os.environ.get(
         "FUSED_RENDER_MAP_CACHE",
@@ -79,7 +84,14 @@ def _requires_vector_service(target: str, source_url: str = "") -> bool:
     normalized = target.lower().split("?", 1)[0]
     if not normalized.endswith(VECTOR_SUFFIXES):
         return False
-    if source_url or target.lower().startswith(URL_PREFIXES):
+    if target.lower().startswith(URL_PREFIXES) or is_managed_mount(target):
+        return True
+    if os.path.isfile(target):
+        try:
+            return os.path.getsize(target) >= VECTOR_ONESHOT_MAX_BYTES
+        except OSError:
+            return False
+    if source_url:
         return True
     try:
         return os.path.getsize(target) >= VECTOR_ONESHOT_MAX_BYTES

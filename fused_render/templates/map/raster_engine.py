@@ -108,6 +108,21 @@ def _source_size(source: str) -> int | None:
         return None
 
 
+def _source_fingerprint(
+    target: str,
+    source: str,
+    source_size: int | None,
+    locator: str,
+) -> str:
+    identity = f"{target}|{source}"
+    if not source.startswith(("http://", "https://", "s3://", "/vsi")):
+        identity += f"|{source_size}"
+    if not locator.startswith("/vsi") and os.path.isfile(locator):
+        source_stat = os.stat(locator)
+        identity += f"|{source_stat.st_size}|{source_stat.st_mtime_ns}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
 def _ranges(data: Any) -> list[list[float]]:
     import numpy as np
 
@@ -447,15 +462,9 @@ class RasterEngine:
                     minzoom, maxzoom = int(reader.minzoom), int(reader.maxzoom)
 
             source_size = _source_size(source)
-            source_identity = f"{target}|{source}|{source_size}"
-            if not locator.startswith("/vsi") and os.path.isfile(locator):
-                source_stat = os.stat(locator)
-                source_identity += (
-                    f"|{source_stat.st_size}|{source_stat.st_mtime_ns}"
-                )
-            fingerprint = hashlib.sha256(
-                source_identity.encode("utf-8")
-            ).hexdigest()[:20]
+            fingerprint = _source_fingerprint(
+                target, source, source_size, locator
+            )
             record = RasterSource(
                 source_id=fingerprint,
                 target=target,
@@ -498,7 +507,7 @@ class RasterEngine:
                         }
             except Exception:
                 pass
-        elif preview_derivative.exists():
+        if record.optimized_path is None and preview_derivative.exists():
             try:
                 with rasterio.open(preview_derivative) as cached:
                     if cached.crs is not None and cached.count:

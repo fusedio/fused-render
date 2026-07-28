@@ -421,6 +421,9 @@ def test_cached_preview_is_reused_without_restarting_preparation(
         time.sleep(0.1)
     assert job["status"] == "available", job
     assert Path(job["preview_path"]).is_file()
+    # A partial/crashed full optimization must not mask the valid preview.
+    invalid_derivative = cache_dir / "optimized" / f"{source_id}.tif"
+    invalid_derivative.write_bytes(b"invalid derivative")
 
     fresh = RasterEngine(
         cache_dir=str(cache_dir),
@@ -442,6 +445,21 @@ def test_cached_preview_is_reused_without_restarting_preparation(
     assert not any(
         "being prepared" in notice for notice in reloaded["warnings"]
     )
+
+
+def test_remote_source_fingerprint_does_not_depend_on_head_size():
+    target = r"C:\mounted\scene.tif"
+    source = "http://127.0.0.1:1777/api/fs/raw?path=scene.tif"
+    locator = "/vsicurl/http://127.0.0.1:64606/upstream/source/scene.tif"
+
+    with_size = raster_engine._source_fingerprint(
+        target, source, 1_000_000, locator
+    )
+    without_size = raster_engine._source_fingerprint(
+        target, source, None, locator
+    )
+
+    assert with_size == without_size
 
 
 def test_local_file_bypasses_the_loopback_range_proxy(tmp_path, monkeypatch):

@@ -145,6 +145,19 @@ def test_small_vector_can_use_geojson_fallback_on_an_old_runtime(
     ) is None
 
 
+def test_small_local_vector_keeps_oneshot_fallback_when_ui_supplies_proxy(
+    tmp_path,
+):
+    map_render = _load("map_render")
+    source = tmp_path / "small.gpkg"
+    source.write_bytes(b"small")
+
+    assert not map_render._requires_vector_service(
+        str(source),
+        "http://127.0.0.1:1777/api/fs/raw?path=small.gpkg",
+    )
+
+
 def test_map_daemon_follower_never_steals_a_fresh_start_lock(
     monkeypatch,
     tmp_path,
@@ -153,6 +166,7 @@ def test_map_daemon_follower_never_steals_a_fresh_start_lock(
     start_lock = tmp_path / "daemon-start.lock"
     start_lock.write_text("owner", encoding="utf-8")
     monkeypatch.setattr(map_render, "START_LOCK", start_lock)
+    monkeypatch.setattr(map_render, "_read_state", lambda: None)
     monkeypatch.setattr(map_render, "_claim_start_lock", lambda: False)
     monkeypatch.setattr(map_render, "_wait_for_service", lambda _timeout: None)
 
