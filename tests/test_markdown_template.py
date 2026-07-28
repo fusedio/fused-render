@@ -174,6 +174,46 @@ def test_resolution_is_never_recomputed_in_the_page(source):
     assert "resolved.set(link.target, link)" in source
 
 
+def test_an_unscanned_note_says_so_instead_of_showing_an_empty_panel(source):
+    # A hidden backlinks section reads as "no backlinks", which is an answer that
+    # was never computed — the sidebar says why instead, in graph.py's own words
+    # (MD-11). The existing #notice styling carries it.
+    body = source[source.index("function renderSidebar"):]
+    body = body[:body.index("\n    async function refreshLinks")]
+    assert "linksEl.hidden = true" not in body
+    assert '"Backlinks need a folder scan. " + scanNotice' in body
+    assert "scanNotice = data.message" in source
+
+
+def test_the_page_never_invents_a_resolution_when_no_scan_ran(source):
+    # MD-6: resolution is graph.py's. The unknown state must not be papered over
+    # with a fallback rule here — the only allowed answers are graph.py's map and
+    # "we do not know".
+    widget = source[source.index("function wikilinkWidget"):]
+    widget = widget[:widget.index("\n    // `[label](target)`")]
+    assert "const known = resolved !== null;" in widget
+    assert "a.className = \"wl wl-unknown\";" in widget
+    # No create offer and no path guess in the unknown branch.
+    unknown = widget[widget.index("if (!known) {"):widget.index("} else if (!path)")]
+    assert "dataset" not in unknown
+    assert "resolvePath" not in unknown
+
+
+def test_editing_and_saving_do_not_depend_on_the_scan(source):
+    # The "view works on a mount" half (MD-11): one bounded read and one bounded
+    # write, neither of which consults the link layer.
+    save = source[source.index("async function doSave"):]
+    save = save[:save.index("\n    function showConflict")]
+    assert "fused.writeFile(file, body, { expectedMtime: mtime })" in save
+    assert "notes" not in save.split("await refreshLinks();")[0]
+    # And a relative markdown link resolves in the page against the note's own
+    # folder, which needs no scan at all (MD-4a).
+    link = source[source.index("function markdownLinkWidget"):]
+    link = link[:link.index("\n    // `![alt](src)`")]
+    assert "resolvePath(noteDir()" in link
+    assert "resolved" not in link
+
+
 def test_the_editor_follows_the_shell_appearance_without_a_rebuild(source):
     assert "CM.StateEffect.reconfigure.of" in source
     assert 'attributeFilter: ["data-theme"]' in source

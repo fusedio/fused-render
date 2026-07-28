@@ -14,7 +14,22 @@
 // building the set is itself the check that the reveal rule, the tree walk and
 // the two regex passes cannot collide.
 //
-// Usage: node live-preview-probe.mjs <template.html> <doc.md> [caretPos]
+// Usage: node live-preview-probe.mjs <template.html> <doc.md> [caretPos] [optsJson]
+//
+// optsJson (all optional):
+//   {"scanned": true}       graph.py answered with a real scan, so every link
+//                           target's resolution is KNOWN. Without it the stub
+//                           answers `{error: "no_scan"}` — what a mount-backed
+//                           root, a refused scan or a failed one produces — and
+//                           resolution is UNKNOWN, which must not render as
+//                           "missing" (MD-11).
+//   {"params": {"edit":"0"}} what fused.params.get returns, so a mode held in a
+//                           param (MD-20) can be driven from here.
+//
+// Each widget's DOM is built and reported too (class, title, dataset, text):
+// what a wikilink renders AS is the behaviour, and it is not visible in either
+// the decoration range or the widget key.
+//
 // Must run from this directory — module resolution needs ./node_modules.
 import fs from "node:fs";
 import {
@@ -54,8 +69,22 @@ globalThis.CM = {
   autocompletion, indentMore, indentLess, markdown, markdownLanguage,
   markdownKeymap, basicSetup: [], oneDark: [],
 };
+// Enough of an element for a widget builder to fill in and for us to read back.
+// Not a DOM: no layout, no events, no tree semantics beyond appendChild.
+function fakeElement(tag) {
+  return {
+    tagName: tag.toUpperCase(),
+    className: "", title: "", textContent: "", href: "", src: "", alt: "",
+    type: "", checked: false, disabled: false,
+    dataset: {}, style: {}, children: [],
+    classList: { add() {}, remove() {}, toggle() {} },
+    appendChild(child) { this.children.push(child); return child; },
+    addEventListener() {},
+  };
+}
+
 globalThis.document = {
-  getElementById: stub, createElement: stub, addEventListener() {},
+  getElementById: stub, createElement: fakeElement, addEventListener() {},
   querySelectorAll: () => [], documentElement: { getAttribute: () => "dark" },
   visibilityState: "visible",
 };
@@ -64,23 +93,63 @@ globalThis.MutationObserver = class { observe() {} disconnect() {} };
 globalThis.sessionStorage = { getItem: () => null, setItem() {} };
 globalThis.fusedRoBadge = { update() {} };
 globalThis.fusedGraph = { create: () => ({ setData() {}, nudge() {} }) };
+const [templatePath, docPath, caretArg, optsArg] = process.argv.slice(2);
+const opts = JSON.parse(optsArg || "{}");
+const doc = fs.readFileSync(docPath, "utf8");
+
+// A stand-in for graph.py's `note` answer, so the SCANNED state can be probed
+// too — the unscanned one is the default because that is what a mount gives.
+// The rule is deliberately crude and local to this harness: every `[[target]]`
+// in the document resolves, except one whose name says it should not. Real
+// resolution is graph.py's and is tested against graph.py (MD-6).
+const UNRESOLVED_HERE = /ghost|missing|gone/i;
+function fakeNoteScan() {
+  const links = [];
+  for (const match of doc.matchAll(/!?\[\[([^\[\]\n]+?)\]\]/g)) {
+    const target = match[1].split("|")[0].split("#")[0].trim();
+    const named = /\.[a-z0-9]+$/i.test(target);
+    links.push({
+      target,
+      path: UNRESOLVED_HERE.test(target)
+        ? null : "/vault/" + target + (named ? "" : ".md"),
+      title: "Title of " + target,
+      heading: "", label: "", embed: match[0].startsWith("!"), wiki: true,
+    });
+  }
+  return {
+    error: null, root: "/vault", rel: "note.md", title: "note",
+    headings: [], tags: [], links, backlinks: [],
+    notes: 1, truncated: false, skipped_large: [], parser_version: 0,
+  };
+}
+
 globalThis.fused = {
   autoReload() {},
   rawUrl: (p) => "/api/fs/raw?path=" + p,
-  params: { get: () => "", getAll: () => ({}), set() {}, onChange() {} },
+  params: {
+    get: (name) => (opts.params || {})[name] || "",
+    getAll: () => opts.params || {},
+    set() {}, onChange() {},
+  },
   async stat() { return { mtime: 1, size: 1, writable: true }; },
   async readFile() { return ""; },
   async writeFile() { return { mtime: 2 }; },
-  async runPython() { return { error: "no_scan" }; },
+  async runPython(_py, args) {
+    if (!opts.scanned) return { error: "no_scan", message: "not scanned here" };
+    return args.action === "note" ? fakeNoteScan() : { error: "no_scan" };
+  },
 };
 
-const [templatePath, docPath, caretArg] = process.argv.slice(2);
 const html = fs.readFileSync(templatePath, "utf8");
 const script = html.split("<script>\n")[1].split("</script>")[0];
-const { buildDecorations } = new Function(
-  script + "\nreturn { buildDecorations };")();
+const { buildDecorations, refreshLinks } = new Function(
+  script + "\nreturn { buildDecorations, refreshLinks };")();
 
-const doc = fs.readFileSync(docPath, "utf8");
+// The template's own load() bailed (no `_file`), so the link facts are asked for
+// explicitly here — through the real refreshLinks, so the page's own
+// error-vs-payload branch is what decides between known and unknown.
+if (opts.scanned) await refreshLinks();
+
 const caret = Math.min(Number(caretArg || 0), doc.length);
 const state = EditorState.create({
   doc,
@@ -98,6 +167,23 @@ ensureSyntaxTree(state, doc.length, 10000);
 // keeps this harness honest about the shape the template actually uses.
 const set = buildDecorations(state);
 
+// A widget's toDOM only needs a view for taskWidget's click handler, which is
+// never fired here.
+const fakeView = { state, posAtDOM: () => 0, dispatch() {} };
+
+function widgetDom(widget) {
+  const node = widget.toDOM(fakeView);
+  return {
+    tag: (node.tagName || "").toLowerCase(),
+    cls: node.className || "",
+    title: node.title || "",
+    data: node.dataset || {},
+    text: node.textContent || "",
+    src: node.src || "",
+    href: node.href || "",
+  };
+}
+
 const decorations = [];
 for (const iter = set.iter(); iter.value; iter.next()) {
   const spec = iter.value.spec;
@@ -111,6 +197,8 @@ for (const iter = set.iter(); iter.value; iter.next()) {
     kind,
     cls: spec.class || (spec.widget ? spec.widget.key : null),
     text: doc.slice(iter.from, iter.to),
+    dom: spec.widget ? widgetDom(spec.widget) : null,
   });
 }
-process.stdout.write(JSON.stringify({ caret, decorations }, null, 1));
+process.stdout.write(JSON.stringify(
+  { caret, scanned: opts.scanned === true, decorations }, null, 1));

@@ -2764,7 +2764,24 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   treat a failed import as *refuse* rather than *guess*. The gate is the UX;
   the module is the guarantee. Reading and writing a single `.md` on a mount
   stays fully supported — that is one bounded read and one bounded write, which
-  is what every template already does.
+  is what every template already does. A relative markdown link still navigates
+  (the page resolves it against the note's own folder, MD-4a, which needs no
+  scan).
+- **MD-11a** **Unknown is not the same as missing.** On the no-scan path —
+  a mount, a refused scan, a failed one — the page holds no resolution map at
+  all, and that state is **three-valued, not two**: "scanned, and this target did
+  not resolve" is a ghost (dashed, click-to-create, MD-4); "not scanned, so
+  resolution is unknown" is **inert** — no ghost styling, no `data-create`, no
+  create-on-click, and a title saying targets are not resolved here. A ghost
+  there asserts the target does not exist when nothing ever looked, and offers to
+  create a note that may be sitting next to this one. The unknown flag is part of
+  the widget's reuse key, so a scan landing later replaces the inert links
+  (MD-9). The **sidebar** says the same thing rather than hiding an empty
+  backlinks list — an empty list reads as "nothing links here", which is also an
+  answer nobody computed — and it says it in `graph.py`'s own words, so a mount
+  refusal, a note outside its root and a crashed scan each read as themselves.
+  The page still resolves **nothing** itself (MD-6): the only two answers it can
+  render are graph.py's map and "we do not know".
 - **MD-12** **Scope is the vault the note sits in, found by climbing to a
   marker.** The folder mode's scope is still the folder you are standing in,
   which matches the explorer and needs no setup. The **note view** does not use

@@ -194,14 +194,23 @@
   }
   .wl:hover { border-bottom-color: var(--accent); }
   .wl-ghost { color: var(--ghost); border-bottom: 1px dashed var(--ghost); }
-  .wl-embed-missing {
+  /* Unknown, not missing (MD-11): no scan ran, so this link is inert. Muted and
+     underlined like a link that is simply not clickable — deliberately NOT the
+     dashed ghost, which means "scanned, and this target is not there". */
+  .wl-unknown {
+    color: var(--fg-muted);
+    cursor: default;
+    border-bottom: 1px solid var(--border);
+  }
+  .wl-unknown:hover { border-bottom-color: var(--border); }
+  .wl-embed-missing, .wl-embed-unknown {
     display: inline-block;
     padding: 2px 8px;
-    border: 1px dashed var(--ghost);
     border-radius: 4px;
-    color: var(--ghost);
     font-size: 13px;
   }
+  .wl-embed-missing { border: 1px dashed var(--ghost); color: var(--ghost); }
+  .wl-embed-unknown { border: 1px solid var(--border); color: var(--fg-muted); }
   .tag {
     display: inline-block;
     padding: 0 6px;
@@ -440,8 +449,11 @@
     // The note's link facts, from graph.py. Resolution happens THERE, on the
     // candidate set that exists right now (MD-6) — this page never resolves a
     // target itself, so the note view and the graph views cannot disagree.
+    // `resolved` is a three-state: a Map when a scan answered, and null when no
+    // scan ran — which means resolution is UNKNOWN, not "nothing resolved".
     let notes = null;
     let resolved = null;
+    let scanNotice = "";  // graph.py's reason, when it had one
 
     function escapeHtml(s) {
       return String(s)
@@ -543,6 +555,11 @@
 
     const relinkEffect = CM.StateEffect.define();
 
+    // Shown on every link when no scan ran (see wikilinkWidget). One sentence,
+    // and it says what is unknown rather than what is wrong.
+    const UNRESOLVED_HERE =
+      "Link targets are not resolved here — this note's folder was not scanned.";
+
     // Node names whose text is code, and therefore never a link or a tag.
     const CODE_NODES = new Set([
       "InlineCode", "CodeText", "FencedCode", "CodeBlock", "CodeMark", "CodeInfo",
@@ -615,16 +632,29 @@
 
     // ---- widget builders ----------------------------------------------------
 
-    // A wikilink resolved by graph.py, or a dim ghost that offers to create the
-    // note. Both carry the attributes the one delegated click handler listens
-    // for, so every link surface in this template navigates by one code path.
+    // A wikilink resolved by graph.py, a dim ghost that offers to create the
+    // note, or — when no scan ran at all — an inert link that claims nothing.
+    // The resolved ones carry the attributes the one delegated click handler
+    // listens for, so every link surface in this template navigates by one code
+    // path.
+    //
+    // THREE states, not two (MD-11). "Scanned, and this target did not resolve"
+    // is a ghost: dashed, and clicking it creates the note. "Not scanned, so
+    // resolution is unknown" is neither — on a remote mount, or after a refused
+    // or failed scan, `resolved` is null and nothing was ever looked up. Drawing
+    // a ghost there asserts the target does not exist when we never looked, and
+    // offers to create a note that may be sitting right next to this one.
     function wikilinkWidget(raw) {
       const [target, heading, label] = splitInner(raw.replace(/^!?\[\[|\]\]$/g, ""));
       const embed = raw.startsWith("!");
-      const row = resolved ? resolved.get(target) : undefined;
+      const known = resolved !== null;
+      const row = known ? resolved.get(target) : undefined;
       const path = row ? row.path : null;
       const shown = label || target + (heading ? " > " + heading : "");
-      const key = "wl:" + (embed ? "!" : "") + raw + "|" + (path || "");
+      // `known` belongs in the key: widgets are reused across rebuilds by key,
+      // so an inert link has to be replaced when a scan finally lands (MD-9).
+      const key = "wl:" + (embed ? "!" : "") + raw + "|" + (path || "")
+        + (known ? "|k" : "|u");
       return new DomWidget(key, () => {
         if (embed && path && !isNote(path)) {
           const img = document.createElement("img");
@@ -635,12 +665,19 @@
         }
         if (embed && !path) {
           const span = document.createElement("span");
-          span.className = "wl-embed-missing";
-          span.textContent = "Missing embed: " + target;
+          // Unknown reads as "we did not look", not as "it is missing".
+          span.className = known ? "wl-embed-missing" : "wl-embed-unknown";
+          span.textContent = known
+            ? "Missing embed: " + target : "Embed: " + target;
+          if (!known) span.title = UNRESOLVED_HERE;
           return span;
         }
         const a = document.createElement("a");
-        if (!path) {
+        if (!known) {
+          // Inert: no ghost styling, no data-create, nothing to click.
+          a.className = "wl wl-unknown";
+          a.title = UNRESOLVED_HERE;
+        } else if (!path) {
           // Unresolved: a ghost, and clicking it creates the note — Obsidian's
           // behaviour, and only possible because this template writes.
           a.className = "wl wl-ghost";
@@ -1428,7 +1465,17 @@
       const tagsEl = document.getElementById("tags");
       const noticeEl = document.getElementById("notice");
       if (!notes) {
-        linksEl.hidden = true;
+        // Say WHY rather than hiding the section. An empty backlinks panel reads
+        // as "nothing links here", which is an answer we never computed — the
+        // same mistake the ghost rendering used to make (MD-11).
+        linksEl.hidden = false;
+        tagsEl.innerHTML = "";
+        listEl.innerHTML = "";
+        document.getElementById("links-head").textContent = "Backlinks";
+        // graph.py's own words for why, so a mount refusal, a note outside its
+        // root and a failed scan each read as themselves.
+        noticeEl.textContent = "Backlinks need a folder scan. " + scanNotice;
+        noticeEl.hidden = false;
         return;
       }
       linksEl.hidden = false;
@@ -1469,11 +1516,15 @@
         if (data.error) {
           // A mount-backed root, or a note outside its root: the document still
           // renders and stays editable, the link layer just has nothing to say
-          // (MD-11). Reading and writing one file never needed the walk.
+          // (MD-11). Reading and writing one file never needed the walk. Note
+          // `resolved = null` means UNKNOWN, not "nothing resolved" — every
+          // wikilink renders inert rather than as a ghost.
           notes = null;
           resolved = null;
+          scanNotice = data.message || UNRESOLVED_HERE;
         } else {
           notes = data;
+          scanNotice = "";
           resolved = new Map();
           for (const link of data.links) {
             if (!resolved.has(link.target)) resolved.set(link.target, link);
@@ -1482,6 +1533,7 @@
       } catch (err) {
         notes = null;
         resolved = null;
+        scanNotice = "The folder scan failed: " + (err.message || String(err));
       }
       renderSidebar();
       // Every ghost may just have become a real link (or the reverse), and the

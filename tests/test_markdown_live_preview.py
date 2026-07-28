@@ -81,16 +81,22 @@ def note_file(tmp_path_factory):
     return str(path)
 
 
-def decorate(note_file, caret=0):
+def decorate(note_file, caret=0, scanned=False, params=None):
     """The decoration set the template would render, with the caret at `caret`.
 
     Reaching a parsed result at all is itself an assertion: CodeMirror rejects a
     decoration set whose replacements overlap, so every caret position exercised
     here also proves the tree walk and the two regex passes do not collide.
+
+    `scanned` decides whether graph.py answered with a real scan. The default is
+    UNSCANNED, because that is what a mount-backed root, a refused scan and a
+    failed one all produce — and it is the state most of this file runs in.
+    `params` drives fused.params, so a param-held mode can be exercised.
     """
     _require_node()
+    opts = {"scanned": bool(scanned), "params": params or {}}
     proc = subprocess.run(
-        ["node", PROBE, TEMPLATE, note_file, str(caret)],
+        ["node", PROBE, TEMPLATE, note_file, str(caret), json.dumps(opts)],
         cwd=VENDOR, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)["decorations"]
@@ -100,6 +106,13 @@ def at(decorations, text, kind=None):
     """Every decoration whose covered text is exactly `text`."""
     return [d for d in decorations
             if d["text"] == text and (kind is None or d["kind"] == kind)]
+
+
+def dom(decorations, text):
+    """The DOM one widget renders — what a link IS, not merely where it is."""
+    found = at(decorations, text, "widget")
+    assert len(found) == 1, found
+    return found[0]["dom"]
 
 
 # ------------------------------------------------------ the reveal rule (MD-18a)
@@ -187,6 +200,59 @@ def test_a_table_and_a_rule_yield_to_the_caret(note_file):
     assert not at(inside, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     # A different line's rule is unaffected — reveal is per-line, not per-doc.
     assert at(inside, "---", "widget")
+
+
+# ------------------------------- unknown is not missing (MD-11) --------------
+#
+# Every test above runs UNSCANNED, which is what a mount-backed root gives: no
+# walk happened, so no target's resolution is known. That must not be rendered
+# as "this note does not exist" — the page would be asserting something it never
+# checked, and offering to create a note that may well be sitting right there.
+
+
+def test_an_unscanned_note_renders_its_wikilinks_inert(note_file):
+    unknown = decorate(note_file, caret=0)
+    # It still renders as a wikilink rather than raw `[[…]]` source…
+    link = dom(unknown, "[[Wiki Link|label]]")
+    assert link["text"] == "label"
+    # …but it claims nothing about the target, and cannot create it.
+    assert "wl-ghost" not in link["cls"]
+    assert "create" not in link["data"]
+    assert "path" not in link["data"]
+    assert "not resolved" in link["title"].lower()
+    # The one that WOULD be a ghost after a scan is treated identically here:
+    # unknown is unknown, whatever the name.
+    assert dom(unknown, "[[Ghost]]")["cls"] == dom(unknown, "[[Wiki Link|label]]")["cls"]
+
+
+def test_an_unscanned_embed_does_not_claim_the_target_is_missing(note_file):
+    embed = dom(decorate(note_file, caret=0), "![[embed.png]]")
+    assert "Missing" not in embed["text"]
+    assert "create" not in embed["data"]
+    assert "not resolved" in embed["title"].lower()
+
+
+def test_a_scanned_note_resolves_links_and_ghosts_the_rest(note_file):
+    scanned = decorate(note_file, caret=0, scanned=True)
+    link = dom(scanned, "[[Wiki Link|label]]")
+    assert link["data"]["path"] == "/vault/Wiki Link.md"
+    assert link["cls"] == "wl"
+    # A ghost is the CORRECT rendering once a scan has actually looked: dashed,
+    # and clicking it creates the note (MD-4).
+    ghost = dom(scanned, "[[Ghost]]")
+    assert "wl-ghost" in ghost["cls"]
+    assert ghost["data"]["create"] == "Ghost"
+    assert "click to create" in ghost["title"].lower()
+    # And a resolved embed is the image itself.
+    assert dom(scanned, "![[embed.png]]")["tag"] == "img"
+
+
+def test_the_two_states_are_told_apart_by_the_widget_key(note_file):
+    # Widgets are reused across rebuilds by key, so the key has to change when a
+    # scan lands or a stale inert link would survive the refresh (MD-9).
+    unknown = at(decorate(note_file, caret=0), "[[Ghost]]", "widget")[0]
+    scanned = at(decorate(note_file, caret=0, scanned=True), "[[Ghost]]", "widget")[0]
+    assert unknown["cls"] != scanned["cls"]
 
 
 # --------------------------------------------------- what must NOT render
