@@ -1741,11 +1741,15 @@
   tailToggle.addEventListener("click", () => {
     const state = currentState();
     const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
-    if (!state.tail) {
+    const turningOn = !state.tail;
+    if (turningOn) {
       tailEndOffset = number(size);
       tailPageOffset = Math.max(0, tailEndOffset - 65536);
     }
-    setParams({ page: tailPageOffset, back: "", tail: state.tail ? "0" : "1" });
+    // Tail only polls in the lines view (pollTail/syncTailTimer both guard on
+    // it), so turning tail on from Patterns must switch back to lines or the
+    // button reads as pressed while nothing updates and autoReload sits off.
+    setParams({ page: tailPageOffset, back: "", tail: turningOn ? "1" : "0", view: turningOn ? "lines" : state.view });
   });
 
   linesTab.addEventListener("click", () => setParams({ view: "lines", page: "0", back: "" }));
