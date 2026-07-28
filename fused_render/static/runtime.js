@@ -7,6 +7,10 @@
  *     stale slider scrubs with no author effort. opts.key regroups the channel;
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
+ *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
+ *     Ask an AI model via the shell's /api/ai relay to a local OpenAI-compatible
+ *     proxy. opts: systemPrompt, model, effort ("low"|"medium"|"high"),
+ *     maxTokens. Local-only — not available on hosted/exported pages.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -693,6 +697,41 @@
       });
   }
 
+  // Ask an AI model: the shell relays to a local OpenAI-compatible proxy
+  // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
+  // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error"),
+  // mirroring runPython's rejection style. opts:
+  //   { systemPrompt, model, effort: "low"|"medium"|"high", maxTokens }
+  // No latest-wins channel: an AI call is never a scrub, and cancelling a
+  // half-billed completion buys nothing — calls run fully concurrent.
+  function ai(prompt, opts) {
+    opts = opts || {};
+    if (typeof prompt !== "string" || !prompt.trim()) {
+      const err = new Error("fused.ai(prompt): prompt must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = { prompt: prompt };
+    if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
+    if (opts.model !== undefined) body.model = opts.model;
+    if (opts.effort !== undefined) body.effort = opts.effort;
+    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+    return fetch("/api/ai", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.ok) {
+          const err = new Error(data.error && data.error.message);
+          err.type = data.error && data.error.type;
+          throw err;
+        }
+        return data.result;
+      });
+  }
+
   // --- Auto-reload (SPEC §13.3) ---------------------------------------------
   // This page watches a set of files via the SSE change feed; on any change it
   // reloads THIS frame (honest re-execution — we can't replay what the page did
@@ -850,6 +889,7 @@
     stat,
     readFile,
     writeFile,
+    ai,
     autoReload,
     params: { get, getAll, set, onChange },
   };
