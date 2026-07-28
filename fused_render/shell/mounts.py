@@ -450,9 +450,6 @@ def _rcd_state_path() -> str:
 # it keeps working until it is replaced.
 _RCD_RC_USER = "fused-render"
 
-_rcd_auth_lock = threading.Lock()
-_rcd_auth_cache: dict[int, tuple[str, str]] = {}
-
 
 def _rcd_auth(port: int) -> tuple[str, str] | None:
     """The (user, pass) recorded for the daemon on `port`, or None when it has
@@ -460,38 +457,31 @@ def _rcd_auth(port: int) -> tuple[str, str] | None:
 
     Checked against rcd.json first, then the central registry — the reaper
     probes daemons belonging to OTHER homes, whose rcd.json we cannot read.
-    Successful lookups are memoized per port because _rc runs on every
-    rc-routed call; a miss is not cached, so the spawn path (which writes
-    state only after the daemon answers) heals itself on the next call."""
-    with _rcd_auth_lock:
-        hit = _rcd_auth_cache.get(port)
-    if hit is not None:
-        return hit
-    found = None
+
+    Deliberately NOT memoized. rcd is shared per-home and outlives us, so the
+    daemon on a given port can be replaced — with a new secret — by another
+    process at any time, and a cache keyed on the port alone would pin this
+    process to the dead secret: every call 401s, _live_rcd_port reads that as
+    "no daemon", and _ensure_rcd_locked spawns a second rcd that nothing owns
+    (precisely the orphan the registry and reaper exist to clean up). Keying
+    on (port, pid) like _live_port_cache would not help either — the pid comes
+    out of the same file the credential does, so a correct lookup has to read
+    it regardless.
+
+    The read is free in practice: _live_rcd_port already reads this exact file
+    unconditionally on every rc-routed call (its memo skips the ~3s core/pid
+    probe, not the file), so the state file is page-cached and this adds no
+    round trip. The file is the single source of truth for the daemon's
+    identity AND its credential, which keeps the two from drifting apart."""
     state = storage.read_json(_rcd_state_path())
     if isinstance(state, dict) and state.get("port") == port and state.get("rc_pass"):
-        found = (state.get("rc_user") or _RCD_RC_USER, state["rc_pass"])
-    else:
-        reg = storage.read_json(_rcd_registry_path())
-        if isinstance(reg, list):
-            for e in reg:
-                if isinstance(e, dict) and e.get("port") == port and e.get("rc_pass"):
-                    found = (e.get("rc_user") or _RCD_RC_USER, e["rc_pass"])
-                    break
-    if found is not None:
-        with _rcd_auth_lock:
-            _rcd_auth_cache[port] = found
-    return found
-
-
-def _forget_rcd_auth(port: int | None = None) -> None:
-    """Drop memoized credentials — for `port` (a fresh daemon may reuse a port
-    with a NEW secret) or, with no argument, entirely."""
-    with _rcd_auth_lock:
-        if port is None:
-            _rcd_auth_cache.clear()
-        else:
-            _rcd_auth_cache.pop(port, None)
+        return (state.get("rc_user") or _RCD_RC_USER, state["rc_pass"])
+    reg = storage.read_json(_rcd_registry_path())
+    if isinstance(reg, list):
+        for e in reg:
+            if isinstance(e, dict) and e.get("port") == port and e.get("rc_pass"):
+                return (e.get("rc_user") or _RCD_RC_USER, e["rc_pass"])
+    return None
 
 
 def _rcd_registry_path() -> str:
@@ -713,9 +703,6 @@ def write_rcd_state(port: int, pid: int, log_path: str | None = None,
     if auth:
         state["rc_user"], state["rc_pass"] = auth
     storage.write_json(_rcd_state_path(), state)
-    # A new daemon may land on a recycled port with a different secret, so the
-    # memoized credentials for that port must not survive this write.
-    _forget_rcd_auth(port)
     # Also record in the central registry so a future run can reap this daemon
     # even after its home dir (and this rcd.json) is deleted (INCIDENT: leaked
     # rcd daemons outliving pytest runs / deleted worktrees for days).

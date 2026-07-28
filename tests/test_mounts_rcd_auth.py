@@ -35,13 +35,6 @@ def home(tmp_path, monkeypatch):
     return home
 
 
-@pytest.fixture(autouse=True)
-def _clear_auth_cache():
-    mounts_mod._forget_rcd_auth()
-    yield
-    mounts_mod._forget_rcd_auth()
-
-
 class _FakePopen:
     """Captures the argv and env of the would-be rcd spawn."""
 
@@ -176,7 +169,51 @@ def test_rc_omits_auth_for_a_daemon_recorded_without_one(home):
 
 
 def test_a_new_daemon_on_a_recycled_port_is_not_called_with_the_old_secret(home):
+    """rcd is shared per-home and outlives us, so ANOTHER process can replace
+    the daemon on a port with one holding a different secret. The lookup must
+    follow the state file rather than remember a per-port answer: pinning the
+    dead secret 401s every call, _live_rcd_port reads that as "no daemon", and
+    the spawn path starts a second rcd that nothing owns."""
     mounts_mod.write_rcd_state(5555, 1, auth=("fused-render", "old"))
     assert mounts_mod._rcd_auth(5555) == ("fused-render", "old")
+    # Same port, new pid, new secret — as if another process respawned it.
     mounts_mod.write_rcd_state(5555, 2, auth=("fused-render", "new"))
     assert mounts_mod._rcd_auth(5555) == ("fused-render", "new")
+
+
+def test_the_lookup_never_serves_a_secret_the_state_file_no_longer_has(home):
+    """The state file is the single source of truth. Anything remembered
+    across calls can outlive what it describes."""
+    mounts_mod.write_rcd_state(5556, 1, auth=("fused-render", "s1"))
+    assert mounts_mod._rcd_auth(5556) == ("fused-render", "s1")
+    # A daemon replaced by one with NO secret (a downgrade, or a pre-auth
+    # daemon adopted after ours died) must stop being called with the old one.
+    mounts_mod.write_rcd_state(5556, 2)
+    assert mounts_mod._rcd_auth(5556) is None
+
+
+def test_concurrent_state_writes_never_pin_a_stale_secret(home):
+    """A reader racing a writer must not be able to publish the pre-write
+    secret after the write lands — the failure mode a read-then-fill cache
+    has, and the reason there is no cache."""
+    import threading
+
+    mounts_mod.write_rcd_state(5557, 1, auth=("fused-render", "gen0"))
+    stop = threading.Event()
+    seen = []
+
+    def reader():
+        while not stop.is_set():
+            seen.append(mounts_mod._rcd_auth(5557))
+
+    t = threading.Thread(target=reader, daemon=True)
+    t.start()
+    for i in range(1, 40):
+        mounts_mod.write_rcd_state(5557, i, auth=("fused-render", f"gen{i}"))
+    stop.set()
+    t.join(timeout=10)
+
+    # Every observation must be a real generation (or None mid-write), and the
+    # settled value must be the last one written — never an earlier one.
+    assert mounts_mod._rcd_auth(5557) == ("fused-render", "gen39")
+    assert all(s is None or s[1].startswith("gen") for s in seen)
