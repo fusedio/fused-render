@@ -1,138 +1,245 @@
-"""List runnable / renderable entries in a directory for the viewer sidebar.
+"""Mount-safe filesystem discovery for the Map Viewer file-picker modal."""
+from __future__ import annotations
 
-main(dir="") -> {dir, parent, entries:[{name, path, kind, ext}]}
-Default dir is the user's home. Pass any absolute directory to browse.
-"""
+import json
 import os
+import string
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
 
-_DEFAULT_DIR = os.path.expanduser("~")
 
-RASTER = (".tif", ".tiff", ".vrt", ".jp2", ".img")
-VECTOR = (".geojson", ".json", ".shp", ".gpkg", ".fgb", ".kml", ".gml")
-TABLE = (".parquet", ".geoparquet", ".csv")
+RASTER = (
+    ".tif",
+    ".tiff",
+    ".cog",
+    ".vrt",
+    ".jp2",
+    ".j2k",
+    ".img",
+    ".ntf",
+    ".nitf",
+    ".dem",
+    ".dt0",
+    ".dt1",
+    ".dt2",
+    ".hgt",
+    ".grd",
+    ".nc",
+    ".hdf",
+    ".h5",
+)
+VECTOR = (
+    ".geojson",
+    ".json",
+    ".shp",
+    ".gpkg",
+    ".fgb",
+    ".kml",
+    ".gml",
+    ".tab",
+    ".mif",
+    ".dxf",
+)
+TABLE = (".parquet", ".geoparquet", ".csv", ".tsv", ".xlsx", ".xls")
 PMTILES = (".pmtiles",)
+QUOTE_PAIRS = {'"': '"', "'": "'", "\u201c": "\u201d", "\u2018": "\u2019"}
 
 
-def _kind(name):
-    low = name.lower()
-    if low.endswith(".py"):
+def clean_path(value: str) -> str:
+    """Remove clipboard quoting and expand only local path syntax."""
+    cleaned = str(value or "").strip()
+    while (
+        len(cleaned) >= 2
+        and cleaned[0] in QUOTE_PAIRS
+        and cleaned[-1] == QUOTE_PAIRS[cleaned[0]]
+    ):
+        cleaned = cleaned[1:-1].strip()
+    return os.path.expandvars(os.path.expanduser(cleaned))
+
+
+def kind(name: str) -> str:
+    lowered = name.lower()
+    if lowered.endswith(".py"):
         return "python"
-    if low.endswith(PMTILES):
+    if lowered.endswith(PMTILES):
         return "pmtiles"
-    if low.endswith(RASTER):
+    if lowered.endswith(RASTER):
         return "raster"
-    if low.endswith(VECTOR):
+    if lowered.endswith(VECTOR):
         return "vector"
-    if low.endswith(TABLE):
+    if lowered.endswith(TABLE):
         return "table"
     return "other"
 
 
-# --- mount-safe directory listing ------------------------------------------
-# A kernel listing (os.listdir/os.scandir/os.walk) on a path under a remote
-# rclone NFS mount forces rclone to enumerate the ENTIRE parent S3 prefix and
-# can DROP the mount, wedging the server. This module stays mount-AGNOSTIC:
-# it never imports shell.mounts and never matches mount paths. Instead the UI
-# passes `src` (server origin + /api/fs/raw?path=) and we ask the server whether
-# a path is remote (/api/fs/stat); if so we list it via the mount-routed,
-# paginated /api/fs/list — never through the kernel. _server_url + _stat are
-# copied verbatim from pyramid/overview_pyramid.py.
-import json as _json
-import urllib.error as _urlerr
-import urllib.parse as _urlparse
-import urllib.request as _urlreq
+def roots() -> list[dict[str, str]]:
+    """Return native filesystem entry points without example-only locations."""
+    locations: list[dict[str, str]] = []
+    home = Path.home()
+    if home.is_dir():
+        locations.append({"name": "Home", "path": str(home), "kind": "home"})
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if drive.is_dir():
+                locations.append(
+                    {"name": f"{letter}:", "path": str(drive), "kind": "drive"}
+                )
+    else:
+        locations.append({"name": "Computer", "path": os.sep, "kind": "root"})
+    deduplicated: dict[str, dict[str, str]] = {}
+    for location in locations:
+        deduplicated.setdefault(os.path.normcase(location["path"]), location)
+    return list(deduplicated.values())
 
 
-def _server_url(src, endpoint, path):
-    u = _urlparse.urlsplit(src)
-    return (f"{u.scheme}://{u.netloc}{endpoint}?path="
-            + _urlparse.quote(path))
+def _server_url(src: str, endpoint: str, path: str) -> str:
+    origin = urllib.parse.urlsplit(src)
+    return (
+        f"{origin.scheme}://{origin.netloc}{endpoint}?path="
+        + urllib.parse.quote(path)
+    )
 
 
-def _stat(src, path):
-    url = _server_url(src, "/api/fs/stat", path)
+def _stat(src: str, path: str) -> tuple[str, dict[str, Any] | None]:
     try:
-        with _urlreq.urlopen(url, timeout=10) as r:
-            return ("ok", _json.load(r))
-    except _urlerr.HTTPError as e:
-        if e.code == 404:
-            return ("missing", None)
-        return ("unreachable", None)
-    except Exception:  # noqa: BLE001 — any network error -> fall back to local
-        return ("unreachable", None)
+        with urllib.request.urlopen(
+            _server_url(src, "/api/fs/stat", path), timeout=10
+        ) as response:
+            return "ok", json.load(response)
+    except urllib.error.HTTPError as error:
+        return ("missing", None) if error.code == 404 else ("unreachable", None)
+    except Exception:
+        return "unreachable", None
 
 
-def _remote_dir(src, path):
-    """True iff the server says `path` is a remote (mount-backed) directory.
-    No src / unreachable / missing -> False (presume local, kernel listing OK)."""
-    if not src or not path:
-        return False
-    status, meta = _stat(src, path)
-    return status == "ok" and bool(meta.get("remote"))
-
-
-def _list_remote(src, path, cap=5000):
-    """List `path` via the server's mount-routed, paginated /api/fs/list — never
-    the kernel. Follows the cursor up to `cap` entries so a huge S3 prefix
-    returns a bounded page set instead of tripping the NFS deadman."""
-    entries, cursor, truncated = [], "", False
+def _list_remote(src: str, path: str, cap: int = 5000) -> list[dict[str, Any]]:
+    """Use the mount-routed API and never fall back to a kernel listing."""
+    entries: list[dict[str, Any]] = []
+    cursor = ""
     while True:
         url = _server_url(src, "/api/fs/list", path)
         if cursor:
-            url += "&cursor=" + _urlparse.quote(cursor)
-        with _urlreq.urlopen(url, timeout=30) as r:
-            payload = _json.load(r)
+            url += "&cursor=" + urllib.parse.quote(cursor)
+        with urllib.request.urlopen(url, timeout=30) as response:
+            payload = json.load(response)
         entries.extend(payload.get("entries") or [])
-        truncated = bool(payload.get("truncated"))
         cursor = payload.get("cursor") or ""
-        if len(entries) >= cap or not truncated or not cursor:
-            break
-    return entries, truncated
+        if len(entries) >= cap or not payload.get("truncated") or not cursor:
+            return entries[:cap]
 
 
-def main(dir: str = "", src: str = ""):
-    base = os.path.abspath(os.path.expanduser(dir.strip())) if dir else _DEFAULT_DIR
-
-    if _remote_dir(src, base):
-        # Mount-backed dir: list via /api/fs/list, never a kernel scan.
-        try:
-            ents, _ = _list_remote(src, base)
-        except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc), "dir": base, "entries": []}
-        entries = []
-        for ent in ents:
-            name = ent["name"]
-            if name.startswith(".") or name in ("__pycache__",):
-                continue
-            full = os.path.join(base, name)
-            if ent.get("is_dir"):
-                entries.append({"name": name, "path": full, "kind": "dir", "ext": ""})
-                continue
-            _, ext = os.path.splitext(name)
-            k = _kind(name)
-            if k == "other":
-                continue
-            entries.append({"name": name, "path": full, "kind": k, "ext": ext.lower()})
-        entries.sort(key=lambda e: (e["kind"] != "dir", e["name"].lower()))
-        return {"dir": base, "parent": os.path.dirname(base), "entries": entries}
-
-    if not os.path.isdir(base):
-        return {"error": f"Not a directory: {base}", "dir": base, "entries": []}
-
+def _payload(
+    directory: str,
+    triples: list[tuple[str, bool, int | None]],
+    *,
+    selected: str = "",
+) -> dict[str, Any]:
     entries = []
-    for name in sorted(os.listdir(base), key=str.lower):
-        if name.startswith(".") or name in ("__pycache__",):
+    for name, is_directory, size in triples:
+        full = os.path.join(directory, name)
+        item_kind = "dir" if is_directory else kind(name)
+        if item_kind == "other":
             continue
-        full = os.path.join(base, name)
-        if os.path.isdir(full):
-            entries.append({"name": name, "path": full, "kind": "dir", "ext": ""})
-            continue
-        _, ext = os.path.splitext(name)
-        k = _kind(name)
-        if k == "other":
-            continue  # only show things we might render / navigate
-        entries.append({"name": name, "path": full, "kind": k, "ext": ext.lower()})
+        entries.append(
+            {
+                "name": name,
+                "path": full,
+                "kind": item_kind,
+                "ext": "" if is_directory else os.path.splitext(name)[1].lower(),
+                "size": None if is_directory else size,
+                "hidden": name.startswith("."),
+                "selectable": not is_directory and item_kind != "other",
+            }
+        )
+    entries.sort(key=lambda entry: (entry["kind"] != "dir", entry["name"].lower()))
+    result: dict[str, Any] = {
+        "dir": directory,
+        "parent": os.path.dirname(directory) or directory,
+        "entries": entries,
+        "roots": roots(),
+    }
+    if selected:
+        result["selected"] = selected
+        result["selected_kind"] = kind(os.path.basename(selected))
+    return result
 
-    # dirs first, then files
-    entries.sort(key=lambda e: (e["kind"] != "dir", e["name"].lower()))
-    return {"dir": base, "parent": os.path.dirname(base), "entries": entries}
+
+def _local_payload(requested: str) -> dict[str, Any]:
+    path = Path(requested)
+    selected = ""
+    if path.is_file():
+        selected = str(path)
+        path = path.parent
+    if not path.is_dir():
+        return {
+            "error": f"Not found: {path}",
+            "dir": str(path),
+            "entries": [],
+            "roots": roots(),
+        }
+    triples: list[tuple[str, bool, int | None]] = []
+    try:
+        children = list(path.iterdir())
+    except (OSError, PermissionError) as error:
+        return {
+            "error": f"Could not list directory: {path}",
+            "detail": str(error),
+            "dir": str(path),
+            "entries": [],
+            "roots": roots(),
+        }
+    for child in children:
+        try:
+            is_directory = child.is_dir()
+            is_file = child.is_file()
+            if not is_directory and not is_file:
+                continue
+            size = None if is_directory else child.stat().st_size
+        except OSError:
+            continue
+        triples.append((child.name, is_directory, size))
+    return _payload(str(path), triples, selected=selected)
+
+
+def main(dir: str = "", src: str = "") -> dict[str, Any]:
+    requested = os.path.abspath(clean_path(dir) or str(Path.home()))
+    if src:
+        status, metadata = _stat(src, requested)
+        if status == "missing":
+            return {
+                "error": f"Not found: {requested}",
+                "dir": requested,
+                "entries": [],
+                "roots": roots(),
+            }
+        if status == "ok" and metadata and metadata.get("remote"):
+            selected = ""
+            directory = requested
+            if not metadata.get("is_dir", True):
+                selected = requested
+                directory = os.path.dirname(requested) or os.path.sep
+            try:
+                remote_entries = _list_remote(src, directory)
+            except Exception as error:
+                return {
+                    "error": f"Could not list remote directory: {directory}",
+                    "detail": str(error),
+                    "dir": directory,
+                    "entries": [],
+                    "roots": roots(),
+                }
+            triples = [
+                (
+                    str(entry.get("name") or ""),
+                    bool(entry.get("is_dir")),
+                    entry.get("size"),
+                )
+                for entry in remote_entries
+                if entry.get("name")
+            ]
+            return _payload(directory, triples, selected=selected)
+    return _local_payload(requested)

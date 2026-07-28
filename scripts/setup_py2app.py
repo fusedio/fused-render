@@ -119,6 +119,10 @@ OPTIONS = {
         "openpyxl", "et_xmlfile",
         "shapely",
         "geopandas", "pyogrio", "pyproj",
+        # Map Viewer's range-first raster engine. Force the packages into the
+        # app because the template imports them dynamically in a child process.
+        "rasterio", "rio_tiler", "morecantile", "color_operations", "pystac",
+        "cachetools", "attrs", "httpx2", "httpcore2", "numexpr", "xlrd",
         "requests", "urllib3", "certifi", "charset_normalizer", "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
