@@ -71,6 +71,32 @@ with `state` but no `code` is a `400 code or error is required`.
 Consequence: **success must be confirmed by observing `auth-files` grow a new
 entry**, not by the callback's status code. Our client polls the listing.
 
+### Callback ports are fixed — and free for us to bind
+
+The `redirect_uri` is hardcoded per provider and **cannot be moved**: passing
+`port`, `callback_port`, `oauth_callback_port`, `redirect_uri`, or `no_browser`
+as query params to the auth-url route leaves it unchanged.
+
+| Provider | Redirect URI |
+|---|---|
+| Claude (`anthropic`) | `http://localhost:54545/callback` |
+| ChatGPT (`codex`) | `http://localhost:1455/auth/callback` |
+
+Since the proxy does not itself listen there, **our app can bind those ports for
+the duration of a login** and capture the `code` out of the browser's redirect
+directly, then hand it to `oauth-callback`. That is what makes a one-click
+"Connect account" possible: without it, the browser would land on a dead port
+and the user would have to copy a code out of a failed page's URL bar.
+
+The ports being fixed also means two logins cannot run concurrently, and a login
+cannot proceed if something else already holds the port (notably the user's own
+separately-installed proxy mid-login). Both are states the UI has to report
+rather than hang on.
+
+Requested scopes, for the record: Claude asks for `user:profile user:inference
+user:sessions:claude_code …`; Codex asks for `openid email profile
+offline_access`.
+
 ## Credential listing shape
 
 `GET /v0/management/auth-files` → `{"files": [...]}`, one entry per credential:
