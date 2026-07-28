@@ -21,6 +21,7 @@ import io
 import json
 import os
 import shutil
+import stat as stat_mod
 import struct
 import sys
 import time
@@ -53,6 +54,30 @@ class Progress:
 
     def fail(self, message):
         self.update("error", 100, message, done=True, error=message)
+
+
+def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
+    return stat_mod.S_ISLNK(info.external_attr >> 16)
+
+
+def _reject_reason(info: zipfile.ZipInfo, dest_dir: str) -> str | None:
+    """Why this zip entry is unsafe to extract, or None if it is safe. Guards
+    zip-slip (absolute paths, `..` escapes, out-of-root targets) and symlink
+    entries."""
+    name = info.filename
+    if _is_symlink_entry(info):
+        return f"symlink entry not allowed: {name!r}"
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or os.path.isabs(name):
+        return f"absolute path not allowed: {name!r}"
+    parts = normalized.split("/")
+    if any(p == ".." for p in parts):
+        return f"path escape ('..') not allowed: {name!r}"
+    target = os.path.normpath(os.path.join(dest_dir, normalized))
+    root = os.path.normpath(dest_dir)
+    if target != root and not target.startswith(root + os.sep):
+        return f"path escapes the destination directory: {name!r}"
+    return None
 
 
 # ------------------------------------------------------------ nurec layer ---
@@ -680,14 +705,20 @@ def convert(source, cache_dir, budget, crop=1):
         nurec_name = next((n for n in names if n.endswith(".nurec")), None)
         prog.update("extract", 0, "extracting usd layers")
         root_layer = None
-        for n in names:
-            if n.endswith((".usda", ".usd", ".usdc")):
-                dest = os.path.join(src_dir, n)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                with open(dest, "wb") as f:
-                    f.write(zf.read(n))
-                if root_layer is None or n == "default.usda":
-                    root_layer = dest
+        for info in zf.infolist():
+            n = info.filename
+            if not n.endswith((".usda", ".usd", ".usdc")):
+                continue
+            reason = _reject_reason(info, src_dir)
+            if reason is not None:
+                prog.fail(f"unsafe zip entry: {reason}")
+                return
+            dest = os.path.join(src_dir, n)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(zf.read(n))
+            if root_layer is None or n == "default.usda":
+                root_layer = dest
         stage_path = root_layer
 
     # ---- gaussian layer

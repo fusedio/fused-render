@@ -851,13 +851,20 @@ function renderCaption(e) {
   cap.append(hint);
 }
 function renderInfo(e) {
-  const rows = [], kv = (k, v) => rows.push('<div class="kv"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>');
+  const body = q("infoBody");
+  body.innerHTML = "";
+  const kv = (k, v) => {
+    const row = document.createElement("div"); row.className = "kv";
+    const kEl = document.createElement("span"); kEl.className = "k"; kEl.textContent = k;
+    const vEl = document.createElement("span"); vEl.className = "v"; vEl.textContent = v;
+    row.append(kEl, vEl);
+    body.append(row);
+  };
   kv("Name", e.file.name); kv("Size", fmtBytes(e.file.size));
   if (e.image) kv("Dimensions", e.image.w + " × " + e.image.h);
   if (e.image && e.image.format) kv("Format", e.image.format);
   kv("Modified", new Date(e.file.mtime * 1000).toLocaleString());
   for (const key in LABELS) if (e.exif[key]) kv(LABELS[key], e.exif[key]);
-  q("infoBody").innerHTML = rows.join("");
 }
 function closeLightbox() { q("lb").classList.remove("open"); q("lbImg").src = ""; lbCurrentPath = ""; resetZoom(); }
 function navTo(delta) { const idx = currentIndex(); if (idx < 0) return; const j = idx + delta; if (j < 0 || j >= items.length) return; P.set("photo", items[j].name); }

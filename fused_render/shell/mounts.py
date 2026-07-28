@@ -4890,23 +4890,27 @@ def create_remote(body: dict = Body(...), x_fused: str | None = Header(default=N
     if not bin_:
         return JSONResponse({"error": "rclone is not installed"}, status_code=502)
     p = body.get("params") or {}
-    cmd = [
-        bin_, "config", "create", name, "s3",
-        "provider", p.get("provider") or "Other",
-        "access_key_id", p.get("access_key_id") or "",
-        "secret_access_key", p.get("secret_access_key") or "",
-        "env_auth", "false",
-    ]
+    parameters = {
+        "provider": p.get("provider") or "Other",
+        "access_key_id": p.get("access_key_id") or "",
+        "secret_access_key": p.get("secret_access_key") or "",
+        "env_auth": "false",
+    }
     if p.get("endpoint"):
-        cmd += ["endpoint", p["endpoint"]]
+        parameters["endpoint"] = p["endpoint"]
     if p.get("region"):
-        cmd += ["region", p["region"]]
+        parameters["region"] = p["region"]
+    # Created through the rc daemon (JSON over loopback HTTP) rather than
+    # `rclone config create` on argv: the latter would put the plaintext
+    # secret_access_key in the process's command line, visible to any other
+    # local user via `ps` (same rationale as the rcd auth secret in
+    # _rcd_child_env).
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
-    if r.returncode != 0:
-        return JSONResponse({"error": (r.stderr or r.stdout or "").strip()[-500:]}, status_code=502)
+        port = ensure_rcd()
+        _rc(port, "config/create",
+            {"name": name, "type": "s3", "parameters": parameters}, timeout=30)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)[-500:]}, status_code=502)
     _invalidate_upstream_caches()  # new/changed keys must be picked up without restart
     return {"ok": True, "name": name + ":"}
 
