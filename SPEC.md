@@ -2936,19 +2936,38 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
   document, which a full-height editor has no room for. Backlinks and tags
   scroll in the upper section; the graph canvas and its depth control sit below.
-  One toggle opens both: they answer the same question about the open note.
+  One toggle opens both: they answer the same question about the open note. The
+  panel is **resizable** by dragging a thin handle on its left edge (15rem to
+  45rem, arrow keys on the focused handle too), and the width is persisted in
+  **`localStorage`, deliberately not in params**: params are the state a shared
+  URL should reproduce (MD-20), and how wide someone dragged their panel is
+  window furniture that a link must not carry. Each resize `nudge()`s the canvas,
+  which is a fixed-size bitmap and does not otherwise learn that its box moved.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
   appeared, so the sim and the interaction rules cannot drift into two versions.
   A hand-rolled O(n²) spring layout on Canvas 2D: no force library is vendored,
   and at the node counts these views reach the naive sim is well inside budget.
-  Behaviours copied from Obsidian: node radius scales with degree, labels fade
-  past a zoom threshold, hover lights the neighbourhood, drag pins a node, ghost
-  nodes are dim with dashed edges, a click opens the note (a ghost click creates
-  it). Colours are read from the CSS custom properties **at draw time**, because
-  `var()` cannot resolve inside a canvas `fillStyle`, and a `data-theme` change
-  redraws (§30).
+  Behaviours copied from Obsidian: the settling layout is **fitted to the
+  canvas**, node radius scales with degree, labels fade past a zoom threshold,
+  hover lights the neighbourhood, drag pins a node, ghost nodes are dim with
+  dashed edges, a click opens the note (a ghost click creates it). Colours are
+  read from the CSS custom properties **at draw time**, because `var()` cannot
+  resolve inside a canvas `fillStyle`, and a `data-theme` change redraws (§30).
+  **Spacing is set for the label, not the node** — a label is drawn above its
+  node and an 11px one is 60-100px wide, so the original ~80px equilibrium put
+  every label on top of its neighbour. Roughly doubled (rest 135, repulsion
+  4600). The spacing is **not** scaled per surface, because the fit-to-canvas
+  makes a uniform scale invisible: what differs between a 320px panel and a full
+  window is the zoom. Two bounds keep the folder surface honest, where the same
+  sim can be handed hundreds of notes: nodes are **seeded on a disc sized to the
+  node count** rather than all on one small ring, and there is a **per-step speed
+  ceiling** — velocity accumulates across steps and the repulsion sum grows with
+  node count, so without one the first frames threw a large graph thousands of
+  pixels apart and it cooled before it could recover. The fit yields permanently
+  as soon as the user pans, zooms or drags, and is not reset by new data, because
+  every autosave re-sends the graph (MD-9).
 - **MD-20** **Graph state is params.** Panel open, depth, filter and
   tag-visibility all live in `fused.params`, so a graph view is refresh-proof
   and **URL-shareable** — which Obsidian's is not. Nodes are notes, per-**name**

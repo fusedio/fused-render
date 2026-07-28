@@ -259,6 +259,7 @@
   .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
   .corner-btn svg { width: 14px; height: 14px; display: block; }
   #side {
+    position: relative;
     width: 21rem;
     flex: none;
     display: none;
@@ -268,6 +269,26 @@
     background: var(--bg-alt);
   }
   #side.on { display: flex; }
+  /* The drag handle. Sits ON the border rather than taking a column of its own,
+     so the panel's usable width is what the user set. */
+  #side-grip {
+    position: absolute;
+    left: -3px;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    z-index: 6;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  #side-grip:hover, #side-grip:focus-visible {
+    background: var(--accent);
+    opacity: 0.4;
+    outline: none;
+  }
   .side-head {
     display: flex;
     align-items: center;
@@ -415,6 +436,7 @@
       </button>
     </div>
     <aside id="side">
+      <button id="side-grip" type="button" aria-label="Resize side panel"></button>
       <div class="side-head" id="links-head">Backlinks</div>
       <div id="links" hidden>
         <div id="tags"></div>
@@ -1684,6 +1706,63 @@
       onCreateGhost: (label) => void createGhost(label),
     });
 
+    // ---- the panel's width --------------------------------------------------
+    // Persisted in localStorage and deliberately NOT in fused.params. Params are
+    // the view state a shared URL should reproduce (MD-20) — which note, which
+    // heading, sidebar open, graph depth, read-only or editing. How wide someone
+    // dragged their panel is personal window furniture, and inheriting it from
+    // a link would be a bug, not a feature.
+    const gripEl = document.getElementById("side-grip");
+    const SIDE_KEY = "fused-md-side-width";
+    const SIDE_MIN = 15 * 16;   // 15rem — narrower and the backlink rows wrap badly
+    const SIDE_MAX = 45 * 16;   // 45rem — wider and the note itself is squeezed
+
+    function applySideWidth(px, persist) {
+      const width = Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(px)));
+      sideEl.style.width = width + "px";
+      // A canvas is a fixed-size bitmap: its backing store only follows its CSS
+      // box when something tells it to, and nudge() is that (it re-measures and
+      // re-runs the sim, which also re-frames the graph for the new shape).
+      canvas.nudge();
+      if (persist) {
+        try { localStorage.setItem(SIDE_KEY, String(width)); }
+        catch (e) { /* private mode — the width is a nicety */ }
+      }
+    }
+
+    function storedSideWidth() {
+      try {
+        const raw = parseInt(localStorage.getItem(SIDE_KEY) || "", 10);
+        return Number.isFinite(raw) ? raw : 0;
+      } catch (e) { return 0; }
+    }
+
+    gripEl.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const startWidth = sideEl.getBoundingClientRect().width;
+      gripEl.setPointerCapture(event.pointerId);
+      // Dragging LEFT widens: the panel is on the right, so its width grows as
+      // the pointer moves away from it.
+      const onMove = (move) => applySideWidth(startWidth + (startX - move.clientX), false);
+      const onUp = () => {
+        gripEl.removeEventListener("pointermove", onMove);
+        gripEl.removeEventListener("pointerup", onUp);
+        gripEl.removeEventListener("pointercancel", onUp);
+        applySideWidth(sideEl.getBoundingClientRect().width, true);
+      };
+      gripEl.addEventListener("pointermove", onMove);
+      gripEl.addEventListener("pointerup", onUp);
+      gripEl.addEventListener("pointercancel", onUp);
+    });
+
+    gripEl.addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowLeft" ? 16 : event.key === "ArrowRight" ? -16 : 0;
+      if (!step) return;
+      event.preventDefault();
+      applySideWidth(sideEl.getBoundingClientRect().width + step, true);
+    });
+
     function graphOn() { return fused.params.get("graph") === "1"; }
     function graphDepth() {
       const n = parseInt(fused.params.get("depth") || "1", 10);
@@ -1757,6 +1836,10 @@
       toggleEl.setAttribute("aria-pressed", String(on));
       depthEl.value = String(graphDepth());
       if (on) {
+        // A stored width is applied here rather than at load: the panel has no
+        // box at all while it is hidden, so measuring or nudging then is moot.
+        const stored = storedSideWidth();
+        if (stored) applySideWidth(stored, false);
         canvas.nudge(); // the canvas had zero size while the panel was hidden
         void loadGraph();
       }

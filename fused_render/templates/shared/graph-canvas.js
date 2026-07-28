@@ -14,7 +14,8 @@
  * neighbourhood, or a folder's notes) the naive sim is well inside budget —
  * vendoring one would be a dependency bought for nothing.
  *
- * Behaviours copied from Obsidian's graph: node radius scales with degree,
+ * Behaviours copied from Obsidian's graph: the layout is fitted to the canvas
+ * once it settles, node radius scales with degree,
  * labels fade out past a zoom threshold, hovering lights the neighbourhood,
  * dragging pins a node, ghost nodes are dim with dashed edges, clicking a node
  * opens it. Colours are read from CSS custom properties AT DRAW TIME, because
@@ -44,8 +45,27 @@
     var alpha = 0;
     var frame = null;
     var dead = false;
+    var userFramed = false; // the user panned, zoomed or dragged
 
     function radius(node) { return 3.5 + Math.sqrt(node.degree) * 2.6; }
+
+    /* ---- how far apart nodes settle ------------------------------------------
+     * The graph was too dense to read. Linked notes settled ~80px apart (spring
+     * rest 70, repulsion 1400) and an 11px label is 60-100px wide, so labels
+     * collided at the default zoom. The spacing that matters here is LABEL
+     * width, not node radius: a label is drawn ABOVE its node, not inside it.
+     * Roughly doubled, which puts linked notes ~145px apart.
+     *
+     * One sim serves both surfaces (the note view's panel and the folder mode,
+     * D157) and their node counts differ by orders of magnitude — but the
+     * spacing does NOT need to be scaled per surface, because frameAll() fits
+     * the layout to the canvas: scaling the whole layout uniformly changes
+     * nothing about what reaches the screen. What varies per surface is the
+     * ZOOM, which is exactly the knob that should vary.
+     */
+    var REST = 135;
+    var REPULSION = 4600;
+    var MAX_SPEED = 22;   // px per step, before alpha
 
     function neighbours(node) {
       var set = {};
@@ -61,6 +81,8 @@
       var rect = canvas.getBoundingClientRect();
       var cx = rect.width / 2;
       var cy = rect.height / 2;
+      var repulsion = REPULSION;
+      var rest = REST;
       var i, j;
       for (i = 0; i < nodes.length; i++) {
         var a = nodes[i];
@@ -72,7 +94,7 @@
           var d2 = dx * dx + dy * dy;
           if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.01; }
           var d = Math.sqrt(d2);
-          var push = 1400 / d2;
+          var push = repulsion / d2;
           a.vx += (dx / d) * push;
           a.vy += (dy / d) * push;
         }
@@ -84,7 +106,7 @@
         var ex = edge.b.x - edge.a.x;
         var ey = edge.b.y - edge.a.y;
         var ed = Math.max(1, Math.sqrt(ex * ex + ey * ey));
-        var pull = (ed - 70) * 0.02;
+        var pull = (ed - rest) * 0.02;
         edge.a.vx += (ex / ed) * pull;
         edge.a.vy += (ey / ed) * pull;
         edge.b.vx -= (ex / ed) * pull;
@@ -93,6 +115,16 @@
       for (i = 0; i < nodes.length; i++) {
         var n = nodes[i];
         if (n.pinned || n === drag) { n.vx = 0; n.vy = 0; continue; }
+        // Speed ceiling. The repulsion sum grows with node count, and velocity
+        // accumulates across steps (damped only after the move), so a folder of
+        // hundreds threw nodes thousands of pixels apart in the first few frames
+        // and then cooled before it could come back — a graph that "flies apart"
+        // and lands mostly off-screen. Small graphs never reach this.
+        var speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+        if (speed > MAX_SPEED) {
+          n.vx = (n.vx / speed) * MAX_SPEED;
+          n.vy = (n.vy / speed) * MAX_SPEED;
+        }
         n.x += n.vx * alpha;
         n.y += n.vy * alpha;
         n.vx *= 0.82;
@@ -136,7 +168,7 @@
       }
       ctx.setLineDash([]);
 
-      var labels = zoom > 0.75;
+      var labels = zoom > 0.7;
       ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
       ctx.textAlign = "center";
       for (i = 0; i < nodes.length; i++) {
@@ -156,6 +188,39 @@
       }
     }
 
+    /* Fit the whole graph to the canvas while the sim is still settling.
+     * The layout above is sized for READABILITY, not for the surface it lands on
+     * — so without this a comfortably-spaced neighbourhood would sit half outside
+     * a narrow sidebar, and a folder of hundreds would run off the window. It is
+     * also what makes the same spacing serve both surfaces: what differs between
+     * a 320px panel and a full window is the zoom, not the layout.
+     *
+     * Bounded both ways (0.15 to 1.5, so a two-node graph is not blown up and a
+     * huge one still resolves to something), and it stops the moment the user
+     * pans, zooms or drags — their framing is never fought over. Deliberately not
+     * reset by setData: every autosave re-sends the graph (MD-9), and resetting
+     * would yank the view out from under someone mid-read. */
+    function frameAll() {
+      if (userFramed || !nodes.length) return;
+      var rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (var i = 0; i < nodes.length; i++) {
+        minX = Math.min(minX, nodes[i].x);
+        maxX = Math.max(maxX, nodes[i].x);
+        minY = Math.min(minY, nodes[i].y);
+        maxY = Math.max(maxY, nodes[i].y);
+      }
+      // Padding leaves room for a label, which is drawn above the node and
+      // centred on it, so it overhangs the bounding box on three sides.
+      var pad = 32;
+      zoom = Math.min(1.5, Math.max(0.15, Math.min(
+        rect.width / (maxX - minX + pad * 2),
+        rect.height / (maxY - minY + pad * 2))));
+      ox = rect.width / 2 - ((minX + maxX) / 2) * zoom;
+      oy = rect.height / 2 - ((minY + maxY) / 2) * zoom;
+    }
+
     function run() {
       if (frame || dead) return;
       frame = requestAnimationFrame(function tick() {
@@ -163,6 +228,7 @@
         if (dead) return;
         if (alpha > 0.02 || drag) {
           step();
+          frameAll();
           frame = requestAnimationFrame(tick);
         }
         draw();
@@ -174,14 +240,25 @@
       var cx = rect.width / 2 || 160;
       var cy = rect.height / 2 || 160;
       var byId = {};
+      var count = Math.max(1, (payload.nodes || []).length);
+      // Seeded on a sunflower spiral over a disc whose area is proportional to
+      // the node count, rather than all on one 70px ring. The ring was fine for
+      // a handful and catastrophic for a folder: hundreds of nodes started
+      // metres-deep inside each other, and the repulsion needed to separate them
+      // blew the layout apart faster than it could cool, ending several thousand
+      // pixels wide. Starting at roughly the density the sim wants means it
+      // relaxes instead of exploding.
+      var disc = REST * Math.sqrt(count / Math.PI) * 0.8;
+      var GOLDEN = Math.PI * (3 - Math.sqrt(5));
       nodes = (payload.nodes || []).map(function (node, i) {
-        var angle = (i / Math.max(1, payload.nodes.length)) * Math.PI * 2;
+        var angle = i * GOLDEN;
+        var at = disc * Math.sqrt((i + 0.5) / count);
         var focused = node.id === payload.focus;
         var seeded = {
           id: node.id, kind: node.kind, label: node.label,
           path: node.path, degree: node.degree,
-          x: focused ? cx : cx + Math.cos(angle) * 70,
-          y: focused ? cy : cy + Math.sin(angle) * 70,
+          x: focused ? cx : cx + Math.cos(angle) * at,
+          y: focused ? cy : cy + Math.sin(angle) * at,
           vx: 0, vy: 0,
           // The focus is pinned at the centre: a local graph is *about* one
           // note, so letting the sim carry it away loses the point.
@@ -236,6 +313,7 @@
 
     function onDown(event) {
       var found = at(event);
+      userFramed = true; // hands on: stop auto-framing from here on
       if (found.node) {
         drag = found.node;
         drag.pinned = true; // drag-to-pin
@@ -255,6 +333,7 @@
 
     function onWheel(event) {
       event.preventDefault();
+      userFramed = true;
       var rect = canvas.getBoundingClientRect();
       var px = event.clientX - rect.left;
       var py = event.clientY - rect.top;

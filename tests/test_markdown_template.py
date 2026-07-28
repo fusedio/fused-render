@@ -397,10 +397,54 @@ def test_graph_colours_are_read_at_draw_time_not_baked(canvas_source):
 
 def test_the_graph_behaviours_obsidian_has_are_present(canvas_source):
     assert "function radius(node)" in canvas_source          # radius from degree
-    assert "var labels = zoom > 0.75" in canvas_source       # labels fade
+    assert "var labels = zoom > 0.7" in canvas_source        # labels fade
     assert "drag.pinned = true" in canvas_source             # drag-to-pin
     assert "neighbours(hover)" in canvas_source              # hover highlighting
     assert "[3, 3]" in canvas_source                         # dashed ghost edges
+
+
+def test_the_layout_leaves_room_for_labels_and_then_frames_itself(canvas_source):
+    """The two halves of "the graph is too dense to read", which only work
+    together: spacing wide enough for an 11px label, and a fit-to-canvas so the
+    wider layout does not simply fall off the edge of a narrow sidebar.
+
+    One sim serves both surfaces (D157), and the spacing is deliberately NOT
+    scaled per surface — uniformly scaling a layout that gets fitted to the
+    canvas changes nothing on screen. The zoom is what varies.
+    """
+    assert "var REST = 135;" in canvas_source
+    assert "var REPULSION = 4600;" in canvas_source
+    assert "function frameAll()" in canvas_source
+    # Only ever zooms out, and never past a floor.
+    assert "zoom = Math.min(1.5, Math.max(0.15," in canvas_source
+    # And it yields to the user the moment they touch the canvas.
+    assert "if (userFramed || !nodes.length) return;" in canvas_source
+    assert canvas_source.count("userFramed = true") == 2      # pan/drag, and wheel
+
+
+def test_a_big_folder_graph_cannot_fly_apart(canvas_source):
+    # The same sim serves a folder of hundreds. Velocity accumulates across steps
+    # and the repulsion sum grows with node count, so without a ceiling the first
+    # few frames threw nodes thousands of pixels out and the sim cooled before it
+    # could recover. Seeding on a disc sized to the node count is the other half.
+    assert "var MAX_SPEED = 22;" in canvas_source
+    assert "if (speed > MAX_SPEED)" in canvas_source
+    assert "Math.sqrt(count / Math.PI)" in canvas_source
+
+
+def test_the_panel_width_is_a_preference_not_view_state(source):
+    # localStorage, NOT fused.params: params are what a shared URL reproduces
+    # (MD-20), and window furniture is not that.
+    assert 'id="side-grip"' in source
+    body = source[source.index("const gripEl"):]
+    body = body[:body.index("function graphOn()")]
+    assert 'localStorage.setItem(SIDE_KEY' in body
+    assert 'fused.params.set("side' not in source
+    assert "const SIDE_MIN = 15 * 16;" in body and "const SIDE_MAX = 45 * 16;" in body
+    # The canvas is a bitmap and has to be told its box changed.
+    assert "canvas.nudge();" in body
+    # Keyboard-reachable, since the handle is a real button already.
+    assert 'event.key === "ArrowLeft"' in body
 
 
 def test_a_saved_note_refreshes_the_open_graph(source):
