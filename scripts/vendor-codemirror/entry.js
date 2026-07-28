@@ -8,6 +8,21 @@ import { EditorView, basicSetup } from "codemirror";
 // lives in @codemirror/view; StateField/StateEffect/RangeSet in @codemirror/state.
 import { Decoration } from "@codemirror/view";
 import { EditorState, StateField, StateEffect, RangeSet } from "@codemirror/state";
+// MD-13: the markdown template's Live Preview is a decoration set over the CM6
+// document — the same mechanism Obsidian's is — so it needs the widget/plugin
+// primitives (WidgetType, ViewPlugin, MatchDecorator), a keymap to hang the
+// editing behaviours off, selection/range builders, syntaxTree to ask the
+// markdown grammar what a range IS, and the completion API for the `[[` popup.
+import { WidgetType, ViewPlugin, MatchDecorator, keymap } from "@codemirror/view";
+import { EditorSelection, RangeSetBuilder, Prec } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
+import { autocompletion } from "@codemirror/autocomplete";
+import { indentMore, indentLess } from "@codemirror/commands";
+// GFM is what `markdownLanguage` adds over the CommonMark base (tables, task
+// lists, strikethrough, autolinks), so the template passes it as the base.
+// `markdownKeymap` is Obsidian's smart-list behaviour already written: Enter
+// continues a list marker and renumbers, Backspace deletes back through one.
+import { markdown, markdownLanguage, markdownKeymap } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
 import { javascript } from "@codemirror/lang-javascript";
 import { json } from "@codemirror/lang-json";
@@ -34,6 +49,21 @@ export {
   StateField,
   StateEffect,
   RangeSet,
+  // MD-13: markdown Live Preview / editor behaviours.
+  WidgetType,
+  ViewPlugin,
+  MatchDecorator,
+  keymap,
+  EditorSelection,
+  RangeSetBuilder,
+  Prec,
+  syntaxTree,
+  autocompletion,
+  indentMore,
+  indentLess,
+  markdown,
+  markdownLanguage,
+  markdownKeymap,
   python,
   javascript,
   json,
