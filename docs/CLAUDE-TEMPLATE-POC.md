@@ -144,6 +144,17 @@ claude (headless)                    agent.py / browser
   name**: the wire hands us no permission *suggestions*, and inventing our own
   `Bash(rm -rf *)`-style patterns would be a hand-rolled matcher in the one
   place that must not have one.
+- **…and it is only offered where a whole-tool grant is proportionate**
+  (`WHOLE_TOOL_GRANTABLE`: `Edit`, `Write`, `Read`, `Glob`, `Grep`,
+  `NotebookEdit`). Those are the repeat-heavy file tools this template exists
+  to drive, where the grant is the difference between one click and eight.
+  Bash, the web tools, and everything unrecognised (MCP tools included) get
+  **Allow/Deny only** — each such call is its own action with its own blast
+  radius, so one `gh pr diff` is no reason to hand over every command for the
+  rest of the turn, and a blanket Bash grant is close to switching approvals
+  off. The middle ground the CLI's own prompt offers — a rule narrowed to
+  *that* command — is unavailable to us for the reason above, so the honest
+  choice is all-or-nothing per tool, defaulting to nothing.
 - **Nobody home:** an unanswered request denies itself after
   `FUSED_RENDER_PERMISSION_TIMEOUT` (1 h) and writes that verdict down, so a
   re-attaching frame doesn't render buttons that lead nowhere. The per-server

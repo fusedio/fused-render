@@ -518,6 +518,22 @@ def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(t
     assert os.path.basename(server) == "permission_server.py"
 
 
+def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
+    """"Allow all Bash in this reply" hands over every command for the rest of
+    the turn — not a proportionate second option next to one `gh pr diff`, and
+    close to switching approvals off. Only the repeat-heavy file tools carry
+    the whole-tool grant; anything unlisted (Bash, the web tools, MCP tools)
+    gets Allow/Deny."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    listed = html.split("const WHOLE_TOOL_GRANTABLE = new Set([")[1].split("]);")[0]
+    granted = {t.strip().strip('"') for t in listed.split(",") if t.strip()}
+    assert granted == {"Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit"}
+    for tool in ("Bash", "WebFetch", "WebSearch", "Task", "mcp__other__thing"):
+        assert tool not in granted
+    # and the button is actually gated on that set, not just declared next to it
+    assert "WHOLE_TOOL_GRANTABLE.has(p.tool)" in html
+
+
 def test_template_wires_the_decide_action(agent):
     html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
     assert 'action: "decide"' in html

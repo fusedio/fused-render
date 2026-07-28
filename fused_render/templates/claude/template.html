@@ -773,6 +773,24 @@ function addError(text) {
 // clicked the subprocess is genuinely blocked — the card IS the prompt.
 const permCards = new Map();  // request id -> card handle, cleared with the log
 
+// Tools where "allow all of these for the rest of the reply" is a
+// proportionate offer: the file read/edit ones this template exists to drive,
+// which a single reply calls over and over against the same target, and where
+// the grant is the difference between one click and eight.
+//
+// Everything else — Bash, the web tools, Task, and every unrecognised or MCP
+// tool — gets Allow/Deny only. Each of those calls is its own distinct action
+// with its own blast radius, so one `gh pr diff` is no reason to hand over
+// every command for the rest of the turn; a blanket Bash grant is close to
+// switching approvals off. Narrowing the rule to that ONE command instead is
+// what the CLI's own prompt does, but it computes those suggestions on its
+// side and the --permission-prompt-tool wire never sends them (see the POC
+// notes) — so the honest options here are all-or-nothing, and unknown tools
+// default to nothing.
+const WHOLE_TOOL_GRANTABLE = new Set([
+  "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
+]);
+
 // What the user is actually being asked to allow. Every field goes in through
 // textContent — tool input is model-authored text and must never be parsed as
 // markup (the same rule the rest of this view follows).
@@ -885,9 +903,12 @@ function buildPermCard(p, run_id) {
   // "this reply", not "this session": each turn is a fresh `claude -p
   // --resume`, and the rule the allow installs lives in that process (see the
   // POC notes) — so it covers the rest of this reply and no further.
-  [["Allow", "allow", "once", "primary"],
-   ["Allow all " + label + " in this reply", "allow", "session", ""],
-   ["Deny", "deny", "once", ""]].forEach(([text, decision, scope, cls]) => {
+  const choices = [["Allow", "allow", "once", "primary"]];
+  if (WHOLE_TOOL_GRANTABLE.has(p.tool)) {
+    choices.push(["Allow all " + label + " in this reply", "allow", "session", ""]);
+  }
+  choices.push(["Deny", "deny", "once", ""]);
+  choices.forEach(([text, decision, scope, cls]) => {
     const b = document.createElement("button");
     b.type = "button";
     if (cls) b.className = cls;
