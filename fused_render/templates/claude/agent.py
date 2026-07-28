@@ -43,6 +43,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -382,6 +383,50 @@ def _perm_dir(run_dir: str) -> str:
     return os.path.join(run_dir, "perm")
 
 
+def _within_our_tree(path: str) -> bool:
+    """Whether `path` is our runs root or something under it — i.e. a
+    directory we are responsible for, rather than the system's temp root."""
+    root = os.path.dirname(RUNS)
+    return os.path.abspath(path) == root or \
+        os.path.abspath(path).startswith(root + os.sep)
+
+
+def _require_private(path: str) -> None:
+    """Refuse a directory in our tree that we did not make, or that anyone
+    else can write to.
+
+    The temp root is world-writable, and our path under it is *predictable* —
+    `fused_render_claude-<uid>` names the victim. So another account can
+    pre-create it, or `runs` inside it, before we ever run. Adopting that hands
+    them the parent of every run dir, and the parent is enough: the sticky bit
+    that stops one account renaming another's entry protects OUR entries in
+    /tmp, but it is not inherited by a directory THEY created. They can rename
+    the 0700 run dir aside the instant after `mkdir` returns and leave a
+    world-readable one in its place, and the transcript, the user's message
+    and every tool payload get written into it. The 0700 means nothing if the
+    thing above it is theirs.
+
+    `lstat`, not `stat`: a symlink is not a directory we own, however good its
+    target looks. Raising is the right outcome — an attacker who plants the
+    directory can deny us the chat, but a loud failure is not a disclosure.
+    """
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(
+            "%s is not a directory (a symlink or file is in the way)" % path)
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return  # Windows: no uid model here, and its temp dir is already per-user
+    if st.st_uid != geteuid():
+        raise PermissionError(
+            "%s belongs to uid %d, not %d — refusing to keep this conversation "
+            "under a directory another account controls" % (path, st.st_uid, geteuid()))
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise PermissionError(
+            "%s is writable by others (mode %04o) — refusing to keep this "
+            "conversation there" % (path, stat.S_IMODE(st.st_mode)))
+
+
 def _private_dir(path: str) -> None:
     """Create `path` and any missing parents as `rwx------`.
 
@@ -400,11 +445,11 @@ def _private_dir(path: str) -> None:
     dir underneath — always freshly created here, always 0700 — is the level
     that actually contains the data.
 
-    Parents tolerate losing the race, the leaf does not. `fused_render_claude`
-    and `runs` are shared by every run, so two templates starting their first
-    run at once both find them missing and both call mkdir — and the loser
-    used to abort `_start`, so the user's message simply never sent. Whoever
-    won is fine as long as what landed is a directory. The **leaf** stays an
+    Parents tolerate losing the race, the leaf does not. Our root and `runs`
+    are shared by every run of ours, so two templates starting their first run
+    at once both find them missing and both call mkdir — and the loser used to
+    abort `_start`, so the user's message simply never sent. Whoever won is
+    fine, PROVIDED it is ours (`_require_private`). The **leaf** stays an
     exclusive create: it is this run's private 0700 boundary, so finding one
     already there means a run-id collision or somebody else's directory, and
     quietly adopting it is the wrong answer.
@@ -417,13 +462,19 @@ def _private_dir(path: str) -> None:
         if not tail:
             break
         missing.append(tail)
+    # `head` is the deepest thing that already exists. Anything from our own
+    # root downwards has to be vouched for before we build on it; above that
+    # is the temp root, which belongs to the system.
+    if _within_our_tree(head):
+        _require_private(head)
     for tail in reversed(missing):
         head = os.path.join(head, tail)
         try:
             os.mkdir(head, 0o700)
         except FileExistsError:
-            if not os.path.isdir(head):
-                raise  # a *file* is in the way, which no retry will fix
+            # Somebody got here first. A concurrent run of ours is fine; a
+            # directory another account planted is not.
+            _require_private(head)
     os.mkdir(path, 0o700)
 
 

@@ -841,40 +841,54 @@ function summarizePermission(tool, input) {
   const inp = input && typeof input === "object" ? input : {};
   const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
   const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+
+  // `covered` is derived from what was actually READ, never hand-listed.
+  // Naming both sides of an `a || b` as covered hid whichever one lost: the
+  // leftover dump skipped it, the card never showed it, and updatedInput
+  // authorised it anyway — the same "approve what you cannot see" hole as the
+  // truncation, arriving through the mechanism built to close that one.
+  const used = [];
+  const show = (k) => { if (k in inp) used.push(k); return str(inp[k]); };
+  const pick = (...keys) => {           // an alternation: record only the winner
+    for (const k of keys) if (inp[k]) { used.push(k); return str(inp[k]); }
+    return "";
+  };
+  const out = (sub, body) => ({ sub, body, covered: used });
+
   switch (tool) {
     case "Bash":
-      return { sub: str(inp.description), body: str(inp.command),
-               covered: ["command", "description"] };
-    case "Edit":
-      return { sub: str(inp.file_path) + (inp.replace_all ? "  (every occurrence)" : ""),
-               body: mark(inp.old_string, "-") + "\n" + mark(inp.new_string, "+"),
-               covered: ["file_path", "old_string", "new_string", "replace_all"] };
+      return out(show("description"), show("command"));
+    case "Edit": {
+      const path = show("file_path");
+      show("replace_all");  // rendered as the annotation below, so it is covered
+      return out(path + (inp.replace_all ? "  (every occurrence)" : ""),
+                 mark(show("old_string"), "-") + "\n" + mark(show("new_string"), "+"));
+    }
     case "Write":
-      return { sub: str(inp.file_path), body: str(inp.content),
-               covered: ["file_path", "content"] };
+      return out(show("file_path"), show("content"));
     case "NotebookEdit":
-      return { sub: str(inp.notebook_path), body: str(inp.new_source),
-               covered: ["notebook_path", "new_source"] };
+      return out(show("notebook_path"), show("new_source"));
     case "Read":
-      return { sub: str(inp.file_path || inp.path), body: "",
-               covered: ["file_path", "path"] };
+      return out(pick("file_path", "path"), "");
     // The pattern IS the request for these two — where it searches is scope,
     // what it searches for is the thing being authorised. Falling back through
     // `path || pattern` meant any request that named a path hid its query
     // entirely, so the card asked you to approve a search you could not see.
     case "Glob":
-    case "Grep":
-      return { sub: [str(inp.path), inp.glob ? "in " + str(inp.glob) : ""]
-                      .filter(Boolean).join("  "),
-               body: str(inp.pattern), covered: ["pattern", "path", "glob"] };
+    case "Grep": {
+      const where = show("path");
+      const glob = show("glob");
+      return out([where, glob ? "in " + glob : ""].filter(Boolean).join("  "),
+                 show("pattern"));
+    }
     case "WebFetch":
     case "WebSearch":
-      return { sub: str(inp.url || inp.query), body: str(inp.prompt),
-               covered: ["url", "query", "prompt"] };
+      return out(pick("url", "query"), show("prompt"));
   }
+  // Unknown tool: the whole object is the body, so every key is covered.
   const keys = Object.keys(inp);
-  return { sub: "", body: keys.length ? JSON.stringify(inp, null, 2) : "",
-           covered: keys };
+  used.push(...keys);
+  return out("", keys.length ? JSON.stringify(inp, null, 2) : "");
 }
 
 function buildPermCard(p, run_id) {

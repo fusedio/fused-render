@@ -153,9 +153,20 @@ claude (headless)                    agent.py / browser
   - **parents tolerate losing a race, the leaf does not.** Two runs starting at
     once both find the root missing and both `mkdir`; the loser used to abort
     `_start`, so one chat never sent its message (reproduced: 2 of 8 concurrent
-    first runs). An existing parent is accepted once confirmed to be a
-    directory. The run dir stays an exclusive create — it is the private
-    boundary, so one already there is a collision, not something to adopt.
+    first runs). An existing parent is accepted once `_require_private` vouches
+    for it. The run dir stays an exclusive create — it is the private boundary,
+    so one already there is a collision, not something to adopt.
+  - **an existing parent is verified, not trusted** (`_require_private`: real
+    directory by `lstat`, owned by our euid, no group/other write). The path is
+    *predictable* — `fused_render_claude-<uid>` names the victim — so another
+    account can pre-create it under a world-writable temp root, and owning the
+    parent is enough: the sticky bit that stops one account renaming another's
+    entry protects **our** entries in `/tmp` but is **not inherited** by a
+    directory *they* made, so they can rename the `0700` run dir aside the
+    instant after `mkdir` returns and leave a world-readable one, and the
+    transcript is written into it. Failing loudly is the right outcome — an
+    attacker who plants the directory can deny the chat, but a refusal is not a
+    disclosure.
 
   Existing directories are deliberately *not* chmod'ed: the chain starts at a
   directory we do not own, and tightening the temp root would be a worse bug
@@ -169,10 +180,16 @@ claude (headless)                    agent.py / browser
   therefore hold: nothing is truncated (the `<pre>` is `max-height` +
   `overflow: auto`, which makes length a *scrolling* problem, not a disclosure
   one), and every `input` key the curated summary has no case for is rendered
-  verbatim underneath it rather than assumed unimportant. Both are pinned by a
-  node probe that runs the card's own `summarizePermission` over a table of
-  tool inputs — including a 5 KB command whose last line is the destructive
-  one, and a `Grep` whose `pattern` used to vanish whenever a `path` was set.
+  verbatim underneath it rather than assumed unimportant. That second rule
+  needs `covered` to be **derived from the keys actually read**, never
+  hand-listed: naming both sides of an `a || b` (`file_path || path`,
+  `url || query`) marked the loser covered too, so the leftover dump skipped
+  it, the card never showed it, and `updatedInput` authorised it regardless —
+  the same hole arriving through the mechanism built to close it. All of it is
+  pinned by a node probe that runs the card's own `summarizePermission` over a
+  table of tool inputs — including a 5 KB command whose last line is the
+  destructive one, a `Grep` whose `pattern` used to vanish whenever a `path`
+  was set, and a `Read` carrying both `file_path` and `path`.
 - **Decisions are a one-way latch.** `O_EXCL`, first writer wins: a
   double-click, or a cancel landing on a card that was just allowed, must not
   overwrite a verdict the tool may already have acted on. Anything that is not

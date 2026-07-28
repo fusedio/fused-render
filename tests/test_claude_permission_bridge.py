@@ -930,6 +930,29 @@ def test_a_long_payload_is_shown_whole_not_truncated(tool, field):
     assert "…" not in shown, "an ellipsis means something was hidden"
 
 
+@pytest.mark.parametrize("tool,tool_input", [
+    # `a || b` renders one side and used to mark BOTH covered, so the loser was
+    # skipped by the leftover dump too — invisible on the card, authorised by
+    # updatedInput all the same. Which side wins does not matter; that every
+    # value reaches the card one way or the other does.
+    ("Read", {"file_path": "/shown.txt", "path": "/etc/shadow"}),
+    ("WebFetch", {"url": "https://shown.test", "query": "exfiltrate", "prompt": "p"}),
+    ("WebSearch", {"query": "shown", "url": "https://hidden.test"}),
+    ("Grep", {"pattern": "p", "path": "/a", "glob": "*.pem"}),
+])
+def test_both_sides_of_an_alternation_reach_the_card(tool, tool_input):
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own summariser")
+    summary = _summarize(tool, tool_input)
+    shown = (summary["sub"] or "") + "\n" + (summary["body"] or "")
+    for key, value in tool_input.items():
+        rendered = value in shown
+        left_over = key not in summary["covered"]  # buildPermCard prints these
+        assert rendered or left_over, (
+            f"{tool}.{key}={value!r} is claimed as covered but never rendered — "
+            "it would vanish from the card while updatedInput still authorises it")
+
+
 def test_no_input_key_is_dropped_from_the_card():
     """Allow authorises the whole input, so a key the curated summary has no
     case for must still be visible rather than assumed unimportant."""
@@ -1067,6 +1090,70 @@ def test_the_run_dir_itself_is_still_an_exclusive_create(agent, tmp_path):
     os.makedirs(run_dir)
     with pytest.raises(FileExistsError):
         agent._private_dir(str(run_dir))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX uids")
+def test_a_parent_owned_by_someone_else_is_refused(agent, tmp_path, monkeypatch):
+    """Our path under the temp root is predictable — `fused_render_claude-<uid>`
+    names the victim — so another account can pre-create it. Adopting theirs
+    hands them the parent of every run dir, and the sticky bit that protects
+    our entries in /tmp is not inherited by a directory they made: they can
+    rename the 0700 leaf aside right after mkdir and leave a world-readable
+    one, and the transcript lands in it.
+    """
+    planted = tmp_path / "fused_render_claude-1000" / "runs"
+    os.makedirs(planted)
+    monkeypatch.setattr(agent, "RUNS", str(planted))
+    real_lstat = os.lstat
+    other = os.geteuid() + 1
+
+    def lying_lstat(p):
+        st = real_lstat(p)
+        if str(p) == str(planted):  # as if another account had made it
+            return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
+                                   other, st.st_gid, st.st_size,
+                                   st.st_atime, st.st_mtime, st.st_ctime))
+        return st
+
+    monkeypatch.setattr(agent.os, "lstat", lying_lstat)
+    with pytest.raises(PermissionError, match="another account"):
+        agent._private_dir(str(planted / "20260101-000000-abcdef"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_a_world_writable_parent_is_refused(agent, tmp_path, monkeypatch):
+    """Ours by uid but writable by everyone is the same hole: anyone can still
+    swap the run dir out from under us."""
+    planted = tmp_path / "fused_render_claude-x" / "runs"
+    os.makedirs(planted)
+    os.chmod(planted, 0o777)
+    monkeypatch.setattr(agent, "RUNS", str(planted))
+    with pytest.raises(PermissionError, match="writable by others"):
+        agent._private_dir(str(planted / "20260101-000000-abcdef"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+def test_a_symlinked_parent_is_refused(agent, tmp_path, monkeypatch):
+    """lstat, not stat: a symlink is not a directory we own, however good its
+    target looks — following it would put the transcript wherever it points."""
+    elsewhere = tmp_path / "attacker"
+    os.makedirs(elsewhere, mode=0o700)
+    root = tmp_path / "fused_render_claude-x"
+    os.makedirs(root, mode=0o700)
+    os.symlink(elsewhere, root / "runs")
+    monkeypatch.setattr(agent, "RUNS", str(root / "runs"))
+    with pytest.raises(NotADirectoryError):
+        agent._private_dir(str(root / "runs" / "20260101-000000-abcdef"))
+
+
+def test_our_own_parents_are_accepted(agent, tmp_path, monkeypatch):
+    """The check must not reject the ordinary case it exists to protect."""
+    runs = tmp_path / "fused_render_claude-x" / "runs"
+    os.makedirs(runs, mode=0o700)
+    monkeypatch.setattr(agent, "RUNS", str(runs))
+    run_dir = str(runs / "20260101-000000-abcdef")
+    agent._private_dir(run_dir)
+    assert os.path.isdir(run_dir)
 
 
 def test_a_file_blocking_a_parent_still_raises(agent, tmp_path):
