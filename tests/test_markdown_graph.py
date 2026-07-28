@@ -299,6 +299,36 @@ def test_the_walk_stops_enumerating_once_its_entry_budget_is_spent(graph, tmp_pa
     assert len(full["assets"]) == 1200
 
 
+def test_the_entry_budget_bounds_a_tree_of_directories_with_no_files(graph, tmp_path):
+    """Directories cost a listing each, whether or not they hold any files.
+
+    The budget counted them (`entries += len(dirnames)`) but only TESTED itself
+    inside the per-file loop, so a subtree of empty directories never reached
+    the test: 30,300 of them walked in full, in 573 ms, and still reported
+    `truncated=False`. Silently walking past a cap is the specific thing MD-10
+    forbids — and the shape that missed it is exactly this one, which is why the
+    file-heavy test above is not enough on its own.
+    """
+    root = _vault(tmp_path, {"note.md": "# n\n"})
+    for outer in range(30):
+        for inner in range(30):
+            os.makedirs(os.path.join(root, "gen", "d%02d" % outer, "e%02d" % inner))
+
+    seen = []
+    with _counting_scandir(seen):
+        scan = graph.scan_root(root, max_entries=100)
+    assert scan["truncated"] is True
+    # Per-directory-coarse, as above: a small multiple of the budget, not the
+    # size of the tree (931 directories here).
+    assert len(seen) < 3 * 100, len(seen)
+
+    # The control, again: under the real budget this tree is walked whole, so
+    # what the test pins is the budget rather than the tree.
+    full = graph.scan_root(root)
+    assert full["truncated"] is False
+    assert len(full["notes"]) == 1
+
+
 def test_a_dropped_asset_is_reported_as_truncation_too(graph, tmp_path):
     """Hitting the asset cap used to leave `truncated` False.
 

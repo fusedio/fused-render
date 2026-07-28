@@ -609,6 +609,16 @@ def _walk(root: str, max_bytes: int, max_files: int, max_assets: int,
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d))
         entries += len(dirnames)
+        # The budget is tested HERE as well as per file, and the second test is
+        # the load-bearing one: a subtree of directories holding no files never
+        # enters the loop below, so with the test only there a directory-only
+        # tree spent the whole budget and kept walking — 30k empty directories
+        # listed in full, reporting `truncated=False`. Each directory costs a
+        # listing whether or not it holds a file, which is what the budget is
+        # counting.
+        if entries > max_entries:
+            truncated = stop = True
+            break
         for name in sorted(filenames):
             entries += 1
             if entries > max_entries:
