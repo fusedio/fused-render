@@ -89,8 +89,16 @@ _LITERAL_CALL = {
 # (an occurrence not covered by the literal match above).
 _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITERAL_CALL}
 
-# Unsupported API surface: present in an exported page => hard error.
-_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat)\s*\(")
+# Unsupported API surface: present in an exported page => hard error. Each
+# entry maps to the reason a hosted page can't have it (writeFile/stat: no
+# filesystem behind a served artifact; ai: the relay targets a proxy on the
+# author's own machine, which a hosted page can't reach).
+_UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai)\s*\(")
+_UNSUPPORTED_REASON = {
+    "writeFile": "a served artifact is immutable and has no filesystem",
+    "stat": "a served artifact is immutable and has no filesystem",
+    "ai": "it relays to a proxy on the local machine, which a hosted page cannot reach",
+}
 
 # Bundle v2 payload directory. Every bundled file lives at ``<PAYLOAD>/<page-relative
 # path>`` — one directory mirroring the author's folder, instead of the v1 ``code/``/
@@ -560,8 +568,8 @@ def plan_export(
     for m in _UNSUPPORTED.finditer(html):
         api = m.group(1)
         plan.errors.append(
-            f"fused.{api}() is not supported on a hosted page (a served artifact is "
-            "immutable and has no filesystem); remove it before exporting"
+            f"fused.{api}() is not supported on a hosted page "
+            f"({_UNSUPPORTED_REASON[api]}); remove it before exporting"
         )
 
     dyn_run = _dynamic_call_count(html, "runPython")
