@@ -15,9 +15,10 @@ landing + terminal-style chat) that talks to the local Claude Code CLI
 
 ```
 fused_render/templates/claude/
-├── template.html   # chat UI; adapted from the internal chat sandbox POC
-├── agent.py        # runPython backend: start/poll/sessions/history/cancel; stdlib only
-└── icon.svg        # monochrome asterisk for the mode switcher
+├── template.html          # chat UI; adapted from the internal chat sandbox POC
+├── agent.py               # runPython backend: start/poll/decide/sessions/history/cancel; stdlib only
+├── permission_server.py   # one-tool stdio MCP server: the approval bridge (stdlib only)
+└── icon.svg               # monochrome asterisk for the mode switcher
 ```
 
 ## How it works
@@ -84,17 +85,235 @@ fused_render/templates/claude/
   this one's. History also runs `_migrate_session` first (like `start`), so
   opening a moved file's saved session shows its turns immediately instead
   of appearing empty until the first new message triggers migration.
-- **Permissions:** spawned with `--permission-mode acceptEdits` so headless
-  Claude can actually edit the file (non-interactive runs can't answer
-  permission prompts; the default would stall/deny every Edit).
+- **Permissions — the chat window IS the prompt** (see the next section).
+  No `--permission-mode`: the default (ask) is answerable now.
+
+## Approvals: the permission bridge (2026-07-28)
+
+Headless `claude -p` has no terminal to prompt on. The POC's answer was
+`--permission-mode acceptEdits`, which bought silent edits anywhere on disk
+*and still left everything else broken*: a Bash/WebFetch/Write call the
+session's rules didn't already allow came back
+`tool requires user interaction; no prompt available in headless mode` — an
+invisible refusal. The user saw Claude decline, with no prompt and no reason.
+
+`--permission-prompt-tool` names an MCP tool the CLI calls **instead of**
+prompting, and `permission_server.py` is that tool:
+
+```
+claude (headless)                    agent.py / browser
+   │  needs to run Edit
+   ├─► mcp__fused_approvals__approve
+   │      └─ writes  perm/<id>.req.json ──────► poll → card with Allow/Deny
+   │         …blocks…                             │
+   │         reads   perm/<id>.res.json ◄─────────┘ decide
+   └─◄ {"behavior": "allow", "updatedInput": …}
+```
+
+- **The card is the prompt.** While one is unanswered the subprocess is
+  genuinely blocked, `poll` reports `phase: "awaiting"`, and the status line
+  reads "Waiting for your approval…".
+- **How many cards you get is a picker** (`permission` URL param, next to
+  model/effort), mapping onto the CLI's own `--permission-mode`:
+
+  | label | mode | measured against CLI 2.1.220 |
+  |---|---|---|
+  | ask every time *(default)* | *(none)* | `Edit` **and** `Write` both carded |
+  | auto-accept edits | `acceptEdits` | edit applied with no card; `WebFetch` still carded |
+  | Claude decides | `auto` | its classifier vouched for the edit + write; escalates what it won't |
+
+  The bridge stays wired in **all three** — the mode only decides how much is
+  auto-approved *before* the prompt tool is consulted, and whatever is left has
+  to stay answerable or it is a silent refusal again. `bypassPermissions` is
+  deliberately not on the menu, and an unknown value falls back to the
+  strictest: more auto-approval is opted into, never handed over by a mangled
+  param. "Claude decides" is a *broader* opt-in, not a blanket one.
+- **Wire shape** (CLI 2.1.220): in `{tool_name, input, tool_use_id}`, out a
+  *single* text block whose text is JSON — `{"behavior": "allow",
+  "updatedInput": …}` or `{"behavior": "deny", "message": …}` (the message is
+  required). Anything else and the CLI raises "Permission prompt tool returned
+  an invalid result". Pinned by `tests/test_claude_permission_bridge.py`,
+  which drives the server over its stdio JSON-RPC without invoking claude.
+- **Request ids are ours, not the CLI's `tool_use_id`** — the id is joined into
+  a path, and a name we minted cannot escape the perm dir.
+- **The run tree is per-user and `0700`, its files `0600`.** A run dir holds the
+  whole conversation — `out.jsonl` is the transcript, `meta.json` the user's
+  message, `perm/*.req.json` every tool payload — and it lives under the shared
+  temp root, which on a typical Linux box means default `0755`/`0644` and any
+  other local account can read all of it. Three rules follow:
+  - the root is **`fused_render_claude-<uid>`**, not a name every account
+    shares. One shared root cannot be both private and usable: at `0700` the
+    first user to open a chat owns the namespace and everybody else is locked
+    out of creating runs at all, and anything writable by them is either a
+    world-writable directory we created or the disclosure the `0700` exists to
+    prevent. Windows' temp dir is already per-user, so the suffix is POSIX-only.
+  - modes are set by the `mkdir`/`open` itself, never a `chmod` after the
+    content lands, and `os.makedirs`' `mode` reaches only the leaf since 3.7 —
+    hence `_private_dir` creating each level in turn.
+  - **parents tolerate losing a race, the leaf does not.** Two runs starting at
+    once both find the root missing and both `mkdir`; the loser used to abort
+    `_start`, so one chat never sent its message (reproduced: 2 of 8 concurrent
+    first runs). An existing parent is accepted once `_require_private` vouches
+    for it. The run dir stays an exclusive create — it is the private boundary,
+    so one already there is a collision, not something to adopt.
+  - **an existing parent is verified, not trusted** (`_require_private`: real
+    directory by `lstat`, owned by our euid, no group/other write). The path is
+    *predictable* — `fused_render_claude-<uid>` names the victim — so another
+    account can pre-create it under a world-writable temp root, and owning the
+    parent is enough: the sticky bit that stops one account renaming another's
+    entry protects **our** entries in `/tmp` but is **not inherited** by a
+    directory *they* made, so they can rename the `0700` run dir aside the
+    instant after `mkdir` returns and leave a world-readable one, and the
+    transcript is written into it. Failing loudly is the right outcome — an
+    attacker who plants the directory can deny the chat, but a refusal is not a
+    disclosure.
+
+  Existing directories are deliberately *not* chmod'ed: the chain starts at a
+  directory we do not own, and tightening the temp root would be a worse bug
+  than the one being fixed. macOS' per-user temp root makes the original
+  exposure moot there, which is exactly why it could not be relied on.
+- **The card shows the whole input, and that is a security property.** An Allow
+  returns `updatedInput` **unchanged**, so anything the card elided would still
+  run. The input is model-authored, so a prompt-injected model that knows where
+  a cut falls can put something benign in front of it and the real payload
+  behind it — the user clicks Allow on the part they can read. Two rules
+  therefore hold: nothing is truncated (the `<pre>` is `max-height` +
+  `overflow: auto`, which makes length a *scrolling* problem, not a disclosure
+  one), and every `input` key the curated summary has no case for is rendered
+  verbatim underneath it rather than assumed unimportant. That second rule
+  needs `covered` to be **derived from what was actually rendered**, never
+  hand-listed and never merely "read". Naming both sides of an `a || b`
+  (`file_path || path`, `url || query`) marked the loser covered too, so the
+  leftover dump skipped it, the card never showed it, and `updatedInput`
+  authorised it regardless — the same hole arriving through the mechanism
+  built to close it. **Rendered has to mean non-empty**, for the same reason:
+  the card emits a `<pre>` only for a truthy body, so a key claimed as covered
+  while rendering as nothing was hidden from *both* surfaces — and the sharp
+  case is a `Write` whose `content` is `""`, which truncates the file while
+  the card shows a bare path, indistinguishable from an ordinary path-only
+  approve. Empty values now fall through to the leftover dump, which prints
+  them as the `""` they are. The dump
+  itself is built with **`Object.fromEntries`, never `{}` + assignment**, for a
+  related reason: the input reaches the page through `res.json()`, which — like
+  `JSON.parse` — *defines* an own `__proto__` key, so `Object.keys` lists it and
+  the dump is on the hook for it; *assigning* that one key instead reaches
+  `Object.prototype`'s legacy setter, which creates no own property, so the
+  field renders as an empty `{}` while `updatedInput` authorises it in full.
+  `fromEntries` defines, so it survives. All of it is pinned by a node probe
+  that runs the card's own `summarizePermission` and `leftoverInput` over a
+  table of tool inputs — including a 5 KB command whose last line is the
+  destructive one, a `Grep` whose `pattern` used to vanish whenever a `path`
+  was set, a `Read` carrying both `file_path` and `path`, and an input whose
+  `__proto__` is parsed *inside* node (a JS literal would go through assignment
+  and hide the very case under test).
+- **Decisions are a one-way latch.** `O_EXCL`, first writer wins: a
+  double-click, or a cancel landing on a card that was just allowed, must not
+  overwrite a verdict the tool may already have acted on. Anything that is not
+  the exact string `allow` fails closed.
+- **A lost race is waited out, never guessed.** `O_EXCL` makes the file's
+  *existence* the latch while its content lands a moment later, so for a few
+  microseconds it is there and unparseable. Both readers that lose the create
+  treat that as a write in flight (`DECISION_WRITE_WINDOW`, 2 s) rather than as
+  "nobody answered" — reading it the second way is how the loser of a
+  double-click reported *its own* verdict, and how the server's timeout could
+  hand claude a deny for a tool the user had just allowed. `poll` is the one
+  reader that never waits: it runs every 400 ms, so it reports the request as
+  still pending and the next tick corrects it. A writer that dies after the
+  create unlinks the file it claimed, since an empty one holds the latch
+  forever while never parsing — **but only in `agent.py`**. The server's
+  timeout write deliberately keeps its claim on the same failure: by then the
+  verdict has already gone back to claude, and freeing the latch would let a
+  later Allow land and the card read "✓ Allowed" for a tool that was refused.
+  The rule is *release a claim only while nobody has been told an answer yet*. The UI follows the same rule — a card re-renders
+  when the polled verdict differs from the one the click rendered
+  optimistically, so the file is always what the label ends up showing.
+- **"Allow all X in this reply"** returns `updatedPermissions: [{type:
+  "addRules", rules: [{toolName}], behavior: "allow", destination: "session"}]`
+  — the CLI's own rule engine does the matching. The rule is the **bare tool
+  name**: the wire hands us no permission *suggestions*, and inventing our own
+  `Bash(rm -rf *)`-style patterns would be a hand-rolled matcher in the one
+  place that must not have one.
+- **…and it is only offered where a whole-tool grant is proportionate**
+  (`WHOLE_TOOL_GRANTABLE`: `Edit`, `Write`, `Read`, `Glob`, `Grep`,
+  `NotebookEdit`). Those are the repeat-heavy file tools this template exists
+  to drive, where the grant is the difference between one click and eight.
+  Bash, the web tools, and everything unrecognised (MCP tools included) get
+  **Allow/Deny only** — each such call is its own action with its own blast
+  radius, so one `gh pr diff` is no reason to hand over every command for the
+  rest of the turn, and a blanket Bash grant is close to switching approvals
+  off. The middle ground the CLI's own prompt offers — a rule narrowed to
+  *that* command — is unavailable to us for the reason above, so the honest
+  choice is all-or-nothing per tool, defaulting to nothing.
+- **…and it is enforced in `agent.py`, not only on the card.** The page is a
+  view, and a view is the wrong place for the only copy of a security-relevant
+  rule — any other caller of `decide` would otherwise get the session-wide Bash
+  grant the UI never offers. `WHOLE_TOOL_GRANTABLE` exists on both sides and a
+  test asserts the two lists are identical (D146: a duplicated rule needs a
+  test, not a comment). A session scope asked for on an ungrantable tool
+  **narrows to allow-once** rather than erroring, and the effective scope is
+  reported back.
+- **It is a rule, not a mode.** The update is `addRules` for one `toolName`;
+  the CLI's separate `setMode` update is a different button (below). Verified
+  end to end: after allow-all on an `Edit`, a second `Edit` went through
+  untouched and a `Write` in the same turn still parked its own card.
+- **"Allow, and let Claude decide from here"** is that other button — the same
+  `updatedPermissions` channel carrying `setMode` instead of `addRules`, which
+  re-points the **running** session rather than adding one rule to it.
+  Measured: a turn that carded `Edit`/`Write`/`Write` in the strictest mode
+  carded only the `Edit` once the first card switched. It is offered only while
+  a stricter mode is in force (pointless once you are already in `auto`), only
+  alongside an *allow* (a deny that loosened the mode would be incoherent), and
+  only for `SWITCHABLE_MODES` — `bypassPermissions` is unreachable from a card
+  by any route, re-validated in `permission_server` because that is the side
+  that hands the CLI its payload. The click also writes the `permission` param,
+  because a `setMode` dies with the process exactly like a session rule and the
+  next turn would otherwise go back to asking.
+- **"While a stricter mode is in force" means the *run's* mode, not the
+  picker's.** They are different facts and conflating them removed the button
+  at the one moment it mattered: the picker applies to the next spawn, so
+  setting it to "Claude decides" mid-turn leaves the live session strict and
+  still carding, while every card built afterwards concluded it was already in
+  `auto` and dropped the switch — the only control that could actually deliver
+  what the user had just asked for. `poll` therefore reports `mode`, derived
+  (`_live_mode`) rather than stored: the mode recorded in `meta.json` at spawn,
+  re-pointed by each *allow* whose `setMode` reached disk, ordered by
+  `created_at` because request ids lead with `HH%M%S` and misorder across
+  midnight. A deny that asks for a mode anyway, or a mode outside
+  `SWITCHABLE_MODES`, moves nothing — claude was never told about it. An absent
+  `mode` still shows the button, because the two failure directions are not
+  symmetric: offering it needlessly costs a no-op click, hiding it needlessly
+  is the bug.
+- **Nobody home:** an unanswered request denies itself after
+  `FUSED_RENDER_PERMISSION_TIMEOUT` (default 1 h, read in `agent.py` *and*
+  `permission_server.py` — the former stamps the resolved value into
+  `mcp.json`, so a constant there would silently overwrite whatever the user
+  set) and writes that verdict down, so a re-attaching frame doesn't render
+  buttons that lead nowhere. The per-server `timeout` in the generated
+  `mcp.json` is set *above* that, so our sentence wins over the CLI's
+  MCP-timeout error. `cancel` releases every parked request before killing the
+  process group.
+- **A run that ends latches its leftovers.** `poll` marking an unanswered
+  request `expired` **writes** that to the latch rather than only labelling the
+  payload, and `decide` records an expiry instead of the click once the run is
+  no longer alive. Both orderings otherwise ended with a click landing on disk
+  after the run died and the card reading "✓ Allowed" for a tool claude never
+  ran (Bugbot, PR #308).
+- **Side effect handled:** naming a permission-prompt tool also un-gates
+  `AskUserQuestion` and `ExitPlanMode`, which the CLI otherwise disables in
+  headless mode. This chat renders neither, so `--disallowed-tools` keeps them
+  off — the change is about tool approvals and nothing else.
 
 ## Deliberate simplifications / tradeoffs (revisit later)
 
-1. **`acceptEdits` without confirmation UI.** Claude edits files (anywhere,
-   if the user insists) with no approval step in the browser. Right POC
-   call, wrong product call — a real version wants a permission bridge
-   (e.g. `--permission-prompt-tool` via MCP, or the Agent SDK's canUseTool)
-   surfacing approvals in the chat UI.
+1. **"This reply", not "this session".** Each turn is a fresh
+   `claude -p --resume`, and a `destination: "session"` rule lives in *that
+   process* — verified: turn 2 asks again. So the second button is honestly
+   labelled "Allow all X in this reply". Making it stick across turns means a
+   grant store of our own (keyed by session id, replayed as `--allowedTools` on
+   the next `--resume`) — deliberately not built here, because a durable,
+   invisible, un-revokable grant is a bigger design call than this fix.
+   Approvals are also not narrowed (allow-all-Bash, never `Bash(npm test:*)`),
+   for the reason above.
 2. **Polling over push.** 400 ms `runPython` polls = one fresh Python
    subprocess per poll. Wasteful but fits the executor contract with zero
    server changes. A real version wants a server-side run manager +
@@ -123,9 +342,12 @@ fused_render/templates/claude/
    not move; fork semantics deemed reasonable for copied files).
    Cross-*machine* transfer would need the transcript embedded in the
    sidecar — out of scope.
-6. **Only text turns render.** Tool calls/diffs stream past invisibly (a
-   "Working…" spinner phase is the only signal). Showing tool activity
-   (edits made to the file!) inline is the obvious next feature.
+6. **Only text turns — and approval cards — render.** A tool call that needs
+   permission now shows up as a card (tool name + a per-tool summary: the Bash
+   command, the Edit's `-`/`+` lines, the Write's content). An *allowed* one
+   still streams past invisibly behind the "Working…" spinner, and cards are
+   not in the transcript, so they vanish on a reload of a finished session.
+   Showing all tool activity inline is still the obvious next feature.
 7. **`claude` binary discovery:** `FUSED_RENDER_CLAUDE_BIN` (explicit
    override, mirroring `FUSED_RENDER_RCLONE_BIN`), then `shutil.which`, then
    the platform's install locations — `~/.local/bin`, `/opt/homebrew/bin`,
@@ -143,9 +365,14 @@ fused_render/templates/claude/
     bookmark or pane layout restores the exact conversation (nice), but
     switching modes keeps them on the shell URL (documented registry quirk;
     `session_id` is meaningless to other templates but harmless).
-11. **No tests for agent.py.** It shells out to a user-installed CLI;
-    meaningful tests need a fake `claude` binary. The registry/test pin
-    covers resolution (`.html` → `_render, code, claude`).
+11. **Tests stop at the CLI boundary.** `agent.py` shells out to a
+    user-installed binary, so nothing here runs `claude`:
+    `test_claude_agent_sidecar.py` covers the sidecar,
+    `test_claude_permission_bridge.py` drives `permission_server.py` over its
+    own stdio JSON-RPC and asserts the spawn line, and the registry test pins
+    resolution (`.html` → `_render, code, claude`). What no test can catch is
+    the CLI changing its side of the wire — the flag names, the result schema,
+    or which tools a prompt tool un-gates.
 
 ## Windows
 
