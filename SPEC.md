@@ -1213,6 +1213,28 @@ never imports server).
   exchanged it and a failed exchange is only visible afterwards. One login at a time (the
   callback ports are fixed, so this is structural, not a policy); an in-flight attempt is
   cancellable, and an attempt started elsewhere is reported rather than silently blocking.
+  A **settled** attempt is neither: it stays readable through the status route so its
+  outcome isn't lost, but it must not read as in-flight — doing so left every Connect
+  button disabled after the first login, making the second provider unconnectable.
+  **Both providers can be connected at once**; they are independent credentials.
+- **PF-13** A provider can equally be authenticated with an **API key**, pasted in the same
+  tab. Keys are config-level credentials, not files in the proxy's auth dir, so they are
+  listed and removed separately from OAuth accounts (a key has no session to expire and no
+  browser to reconnect through). A full key **never leaves the server**: responses carry
+  only a short masked hint, and every mutation is keyed on the server-assigned
+  `auth_index`, so a key never appears in a URL, a log, or shell history. Writes are
+  **read back and verified** rather than trusted — the proxy accepts a Codex key with no
+  `base-url` and then silently discards it, so a write that doesn't survive the re-read is
+  reported as a failure instead of a phantom success.
+- **PF-14** How multiple credentials for one provider are used is a **visible setting**,
+  written explicitly into the proxy's config rather than inherited by omission:
+  `round-robin` (the upstream default) pools OAuth logins and API keys as **peers** and
+  rotates across them with failover on rate limits; `fill-first` drains one before moving
+  to the next, which is what "prefer this credential, fall back to that one" actually
+  requires. Note there is no built-in OAuth-over-key precedence to inherit — the upstream
+  treats them as equals — hence exposing the choice rather than asserting one. The proxy
+  reads config only at spawn, so changing this **restarts** it (respawning lazily on next
+  use).
 
 ### 20.6 Template registry view
 
