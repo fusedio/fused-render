@@ -219,3 +219,50 @@ def test_the_graph_behaviours_obsidian_has_are_present(canvas_source):
 def test_a_saved_note_refreshes_the_open_graph(source):
     assert "if (graphOn()) void loadGraph();" in source
     assert "candidates = null;" in source
+
+
+@pytest.fixture(scope="module")
+def rewrite_links(source):
+    """The body of rewriteRelativeLinks, so the assertions below are local."""
+    body = source[source.index("function rewriteRelativeLinks"):]
+    return body[:body.index("\n    }")]
+
+
+def test_a_relative_markdown_link_is_rewritten_for_the_shell(source):
+    # `[CONTRIBUTING](../CONTRIBUTING.md)` is authored against the note's own
+    # folder, but this document is served at /render?path=…, so the browser
+    # would resolve it against the server root and miss the file entirely
+    # (MD-4a). Images already had this treatment; anchors did not.
+    assert "rewriteRelativeLinks(docEl, file);" in source
+
+
+def test_a_relative_link_navigates_through_the_wikilink_handler(rewrite_links):
+    # data-path is what the one delegated click handler already listens for, so
+    # a relative link and a wikilink reach the shell by the same code path —
+    # including the pre-navigation flush that protects unsaved edits.
+    assert "dataset.path" in rewrite_links
+    # A real href too, so hover preview and ⌘-click behave like normal links.
+    assert "urlForFsPath(" in rewrite_links
+    assert "resolvePath(dir," in rewrite_links
+
+
+def test_external_and_in_page_links_are_left_alone(rewrite_links):
+    # Absolute paths, any scheme (http:, mailto:, data:) and a bare #anchor are
+    # not vault paths; rewriting them would break them. MD-3 draws the same
+    # line for what counts as an edge.
+    assert r"^(#|\/|[a-z][a-z0-9+.-]*:)" in rewrite_links
+
+
+def test_a_percent_escaped_link_resolves_to_the_real_path(source, rewrite_links):
+    # marked percent-encodes the href it emits, so `[x](./My%20Note.md)` must be
+    # decoded before it is joined onto the note's folder or the path won't exist.
+    assert "decodeMaybe(" in rewrite_links
+    # And a malformed escape must not throw the whole render away.
+    assert "function decodeMaybe(value)" in source
+    assert "catch (e) { return value; }" in source
+
+
+def test_a_relative_link_can_carry_a_heading(rewrite_links):
+    # `](./other.md#Install)` hands the heading over as a param, exactly as a
+    # `[[Note#Heading]]` wikilink does (MD-4).
+    assert "dataset.heading" in rewrite_links

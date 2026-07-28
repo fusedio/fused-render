@@ -2669,6 +2669,21 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   note** (MD-16 makes that possible). An `![[embed]]` resolves through the same
   tiers over the folder's non-note files, so a picture in an `img/` subfolder is
   found from anywhere.
+- **MD-4a** **A relative link is rewritten for the shell.** The rendered
+  document is served at `/render?path=…`, so a browser resolves
+  `](../CONTRIBUTING.md)` against the *server root* and misses the file — the
+  same trap `rewriteRelativeImages` already avoided for `<img>`, and the reason
+  anchors need `rewriteRelativeLinks`. Each in-vault relative anchor is given
+  `data-path` (plus `data-heading` for a `#Heading` suffix), which is what the
+  one delegated click handler already listens for, so a relative link and a
+  wikilink navigate by the same route and get the same pre-navigation flush of
+  unsaved edits. A real `href` is set alongside it so hover and ⌘-click behave
+  like ordinary links. Percent-escapes are decoded first (`marked` emits them),
+  and a malformed escape falls back to the authored text rather than throwing
+  the render away. Left untouched, matching MD-3's line for what is an edge:
+  absolute paths, any scheme, and a bare `#anchor`. **No extension filter** —
+  the shell opens any path with its own template, so a link to a `.png` or a
+  subfolder is as navigable as one to a note.
 - **MD-5** **Backlinks** are computed by resolving every other note's links and
   keeping the ones that land on this note — never from a stored reverse index,
   for the reason in MD-6. Each carries the linking note's title, relative path

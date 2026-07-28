@@ -943,6 +943,7 @@
       // is the user's own and renders with full HTML powers, like any view.
       docEl.innerHTML = marked.parse(currentText());
       rewriteRelativeImages(docEl, file);
+      rewriteRelativeLinks(docEl, file);
       enableTaskBoxes(docEl);
       scrollToHeading(docEl);
     }
@@ -1009,6 +1010,45 @@
         if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
         img.src = fused.rawUrl(resolvePath(dir, src));
       }
+    }
+
+    // The anchor equivalent of rewriteRelativeImages, and needed for the same
+    // reason: `[CONTRIBUTING](../CONTRIBUTING.md)` is authored against the
+    // note's own folder, but this document is served at /render?path=…, so the
+    // browser resolves it against the server root and misses the file (MD-4a).
+    // Every in-vault relative link is handed `data-path`, which is what the one
+    // delegated click handler already listens for — so a relative link and a
+    // wikilink navigate by the same path, including the flush that protects
+    // unsaved edits. A real href is set too, so hover and ⌘-click behave.
+    //
+    // No extension filter: the shell opens any path with its own template, so a
+    // link to a .png, a .pdf or a subfolder is as navigable as one to a note.
+    function rewriteRelativeLinks(root, path) {
+      const dir = path.slice(0, path.lastIndexOf("/"));
+      for (const anchor of root.querySelectorAll("a[href]")) {
+        const href = anchor.getAttribute("href") || "";
+        // Absolute paths, any scheme (http:, mailto:, data:) and a bare
+        // #anchor are not vault paths — rewriting them would break them. MD-3
+        // draws this same line for what counts as an edge.
+        if (/^(#|\/|[a-z][a-z0-9+.-]*:)/i.test(href)) continue;
+        const hash = href.indexOf("#");
+        const target = hash === -1 ? href : href.slice(0, hash);
+        if (!target) continue;
+        // marked percent-encodes what it emits, so `./My%20Note.md` has to be
+        // decoded before it is joined onto the note's folder.
+        const heading = hash === -1 ? "" : decodeMaybe(href.slice(hash + 1));
+        const resolved = resolvePath(dir, decodeMaybe(target));
+        anchor.dataset.path = resolved;
+        if (heading) anchor.dataset.heading = heading;
+        anchor.setAttribute("href", urlForFsPath(
+          resolved, heading ? "heading=" + encodeURIComponent(heading) : ""));
+      }
+    }
+
+    // A malformed escape ("%zz") throws rather than decoding; the authored text
+    // is the best remaining guess at what the author meant.
+    function decodeMaybe(value) {
+      try { return decodeURIComponent(value); } catch (e) { return value; }
     }
 
     function scrollToHeading(root) {
