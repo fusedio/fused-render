@@ -349,3 +349,114 @@ def test_candidates_refuses_a_mount_backed_root(graph, tmp_path, monkeypatch):
 
     monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
     assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
+
+
+# --------------------------------------------------------------- the index
+
+
+@pytest.fixture()
+def home(tmp_path, monkeypatch):
+    """Point the index at a tmp home, the way every other home-backed test does.
+
+    Also asserts the thing the fixture exists for: the index resolves against
+    `home_dir()` on each call, so FUSED_RENDER_HOME overrides work (MD-7).
+    """
+    h = tmp_path / "home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(h))
+    return str(h)
+
+
+def test_the_index_lives_under_home_dir_keyed_by_the_real_root(graph, tmp_path, home):
+    root = _vault(tmp_path / "vault", {"A.md": "x\n"})
+    path = graph.index_path(root)
+    assert path.startswith(os.path.join(home, "graph") + os.sep)
+    assert path.endswith(".sqlite")
+    # A symlink to the same folder is the same index — the key is realpath.
+    link = str(tmp_path / "alias")
+    try:
+        os.symlink(root, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    assert graph.index_path(link) == path
+
+
+def test_a_warm_scan_reparses_nothing(graph, tmp_path, home, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "[[B]]\n", "B.md": "# B\n"})
+    first = graph.scan_indexed(root)
+    assert sorted(first["notes"]) == ["A.md", "B.md"]
+
+    reads = []
+    real = graph._read_text
+    monkeypatch.setattr(graph, "_read_text", lambda p: (reads.append(p), real(p))[1])
+    warm = graph.scan_indexed(root)
+    assert reads == []
+    assert warm["notes"] == first["notes"]
+
+
+def test_a_changed_note_is_the_only_one_reparsed(graph, tmp_path, home, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "[[B]]\n", "B.md": "# B\n"})
+    graph.scan_indexed(root)
+    changed = tmp_path / "A.md"
+    changed.write_text("[[B]] and [[C]]\n", encoding="utf-8")
+    os.utime(changed, (0, 0))  # a different mtime_ns is the whole invalidation test
+
+    reads = []
+    real = graph._read_text
+    monkeypatch.setattr(graph, "_read_text", lambda p: (reads.append(p), real(p))[1])
+    warm = graph.scan_indexed(root)
+    assert reads == [str(changed)]
+    assert [link["target"] for link in warm["notes"]["A.md"]["links"]] == ["B", "C"]
+
+
+def test_a_deleted_note_leaves_the_assembly_and_the_index(graph, tmp_path, home):
+    root = _vault(tmp_path, {"A.md": "x\n", "B.md": "x\n"})
+    graph.scan_indexed(root)
+    os.remove(tmp_path / "B.md")
+    assert sorted(graph.scan_indexed(root)["notes"]) == ["A.md"]
+    assert sorted(graph.index_rows(root)) == ["A.md"]
+
+
+def test_bumping_the_parser_version_invalidates_every_row(graph, tmp_path, home, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "x\n"})
+    graph.scan_indexed(root)
+    monkeypatch.setattr(graph, "PARSER_VERSION", graph.PARSER_VERSION + 1)
+
+    reads = []
+    real = graph._read_text
+    monkeypatch.setattr(graph, "_read_text", lambda p: (reads.append(p), real(p))[1])
+    graph.scan_indexed(root)
+    assert reads == [str(tmp_path / "A.md")]
+
+
+def test_the_index_stores_its_root_so_a_wrong_db_is_detectable(graph, tmp_path, home):
+    root = _vault(tmp_path / "one", {"A.md": "x\n"})
+    graph.scan_indexed(root)
+    assert graph.index_meta(root)["root"] == os.path.realpath(root)
+
+    # Simulate a moved folder / hash collision: the same db file, a different
+    # root. The rows must be discarded rather than attributed to this vault.
+    other = _vault(tmp_path / "two", {"Z.md": "x\n"})
+    import shutil
+
+    shutil.copyfile(graph.index_path(root), graph.index_path(other))
+    assert sorted(graph.scan_indexed(other)["notes"]) == ["Z.md"]
+    assert graph.index_meta(other)["root"] == os.path.realpath(other)
+
+
+def test_a_corrupt_index_falls_back_to_a_full_walk(graph, tmp_path, home):
+    root = _vault(tmp_path, {"A.md": "# A\n"})
+    graph.scan_indexed(root)
+    with open(graph.index_path(root), "wb") as handle:
+        handle.write(b"not a database")
+    # The index is a cache: an unusable one costs a walk, never a failure.
+    assert list(graph.scan_indexed(root)["notes"]) == ["A.md"]
+
+
+def test_the_index_is_never_touched_for_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
+    root = _vault(tmp_path, {"A.md": "x\n"})
+    from fused_render.shell import mounts
+
+    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    with pytest.raises(graph.MountUnsupported):
+        graph.scan_indexed(root)
+    assert not os.path.exists(os.path.join(home, "graph"))

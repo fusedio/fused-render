@@ -383,19 +383,15 @@ def _read_text(path: str) -> str:
         return handle.read()
 
 
-def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
-              max_assets: int = MAX_ASSETS) -> dict:
-    """Walk `root` and parse every note under it.
+def _walk(root: str, max_bytes: int, max_files: int, max_assets: int) -> dict:
+    """The walk's facts, with nothing parsed: which notes exist and how big/old
+    each one is. Split from parsing so the index can decide, per file, whether a
+    read is needed at all (MD-8) — a warm walk is stat-only.
 
-    Returns `{"root", "notes": {relpath: row}, "assets": [relpath], "truncated",
-    "skipped_large"}`. Refuses a mount-backed root before walking (MD-11).
     Deterministic: directories and files are visited in sorted order, so a cap
     that fires drops the same tail every time rather than an arbitrary subset.
     """
-    root = os.path.abspath(root)
-    _refuse_mounts(root)
-
-    notes = {}
+    found = {}      # rel -> (abs path, mtime_ns, size)
     assets = []
     skipped_large = []
     truncated = False
@@ -411,7 +407,7 @@ def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_F
                 if len(assets) < max_assets:
                     assets.append(rel)
                 continue
-            if len(notes) >= max_files:
+            if len(found) >= max_files:
                 truncated = True
                 break
             try:
@@ -421,24 +417,235 @@ def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_F
             if stat.st_size > max_bytes:
                 skipped_large.append(rel)
                 continue
-            try:
-                text = _read_text(full)
-            except OSError:
-                continue
-            row = parse_note(text)
-            row["mtime_ns"] = stat.st_mtime_ns
-            row["size"] = stat.st_size
-            notes[rel] = row
+            found[rel] = (full, stat.st_mtime_ns, stat.st_size)
         if truncated:
             break
 
+    return {"found": found, "assets": assets, "truncated": truncated,
+            "skipped_large": skipped_large}
+
+
+def _row(full: str, mtime_ns: int, size: int):
+    """Parse one note into an index row, or None when it cannot be read."""
+    try:
+        text = _read_text(full)
+    except OSError:
+        return None
+    row = parse_note(text)
+    row["mtime_ns"] = mtime_ns
+    row["size"] = size
+    return row
+
+
+def _assemble(root: str, walk: dict, notes: dict) -> dict:
     return {
         "root": root,
         "notes": notes,
-        "assets": assets,
-        "truncated": truncated,
-        "skipped_large": skipped_large,
+        "assets": walk["assets"],
+        "truncated": walk["truncated"],
+        "skipped_large": walk["skipped_large"],
     }
+
+
+def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
+              max_assets: int = MAX_ASSETS) -> dict:
+    """Walk `root` and parse every note under it, with no cache involved.
+
+    Returns `{"root", "notes": {relpath: row}, "assets": [relpath], "truncated",
+    "skipped_large"}`. Refuses a mount-backed root before walking (MD-11).
+    """
+    root = os.path.abspath(root)
+    _refuse_mounts(root)
+    walk = _walk(root, max_bytes, max_files, max_assets)
+    notes = {}
+    for rel, (full, mtime_ns, size) in walk["found"].items():
+        row = _row(full, mtime_ns, size)
+        if row is not None:
+            notes[rel] = row
+    return _assemble(root, walk, notes)
+
+
+# ----------------------------------------------------------------- the index
+#
+# Tier 1 of the three-tier story (MD-8): per-file parses are cached on disk,
+# the graph itself never is. A row is invalid when `(mtime_ns, size)` differs
+# from disk, or when `parser_version` moved — which invalidates everything at
+# once, so changing parse_note needs no migration.
+#
+# The index is a CACHE. Every failure mode — no sqlite, a corrupt file, a
+# read-only home — costs a full walk and nothing else; none of them may turn
+# into an error the user sees.
+
+SCHEMA_VERSION = 1
+
+_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)",
+    "CREATE TABLE IF NOT EXISTS notes ("
+    " rel TEXT PRIMARY KEY, mtime_ns INTEGER NOT NULL,"
+    " size INTEGER NOT NULL, data TEXT NOT NULL)",
+)
+
+
+def index_dir() -> str:
+    """`~/.fused-render/graph`, resolved against `home_dir()` each call so
+    FUSED_RENDER_HOME overrides (and the per-branch nesting) work — the
+    established pattern from core_templates.CORE_TEMPLATES_DIR."""
+    from fused_render.shell.storage import home_dir
+
+    return os.path.join(home_dir(), "graph")
+
+
+def index_path(root: str) -> str:
+    """The index file for `root`: `<index_dir>/<sha256 of realpath>.sqlite`.
+
+    Keyed on realpath so a symlink and its target share one index, and never an
+    in-folder sidecar — no repo pollution, nothing to gitignore. The absolute
+    root is also stored INSIDE the db (see `index_meta`), so a moved folder or a
+    hash collision is detectable rather than silently mis-attributed.
+    """
+    import hashlib
+
+    real = os.path.realpath(root)
+    digest = hashlib.sha256(real.encode("utf-8", "surrogateescape")).hexdigest()
+    return os.path.join(index_dir(), digest + ".sqlite")
+
+
+def _connect(root: str):
+    """An open, schema-current connection whose rows belong to `root`, or None.
+
+    Any unusable db is discarded and rebuilt once; a second failure gives up and
+    returns None so the caller does a plain walk.
+    """
+    import sqlite3
+
+    path = index_path(root)
+    real = os.path.realpath(root)
+    for attempt in (0, 1):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            conn = sqlite3.connect(path)
+            for statement in _SCHEMA:
+                conn.execute(statement)
+            meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+            stale = (
+                meta.get("root") != real
+                or meta.get("parser_version") != str(PARSER_VERSION)
+                or meta.get("schema_version") != str(SCHEMA_VERSION)
+            )
+            if stale:
+                conn.execute("DELETE FROM notes")
+                conn.executemany(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (("root", real), ("parser_version", str(PARSER_VERSION)),
+                     ("schema_version", str(SCHEMA_VERSION))))
+                conn.commit()
+            return conn
+        except Exception:  # noqa: BLE001 — a cache failure is never fatal
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            if attempt == 0:
+                try:
+                    os.remove(path)
+                except OSError:
+                    return None
+            else:
+                return None
+    return None
+
+
+def index_meta(root: str) -> dict:
+    """The index's own metadata (`root`, `parser_version`, `schema_version`)."""
+    conn = _connect(root)
+    if conn is None:
+        return {}
+    try:
+        return dict(conn.execute("SELECT key, value FROM meta").fetchall())
+    finally:
+        conn.close()
+
+
+def index_rows(root: str) -> dict:
+    """`{rel: (mtime_ns, size)}` currently cached for `root`."""
+    conn = _connect(root)
+    if conn is None:
+        return {}
+    try:
+        return {rel: (mtime_ns, size) for rel, mtime_ns, size
+                in conn.execute("SELECT rel, mtime_ns, size FROM notes")}
+    finally:
+        conn.close()
+
+
+def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
+                 max_assets: int = MAX_ASSETS) -> dict:
+    """`scan_root`, but reading unchanged notes out of the on-disk index.
+
+    Cold: one walk plus N reads. Warm: one stat-only walk plus reads for changed
+    files, typically zero. Deletions are free — the assembly only uses rows the
+    current walk found — and the rows for vanished files are dropped so the db
+    cannot grow without bound.
+    """
+    import json
+
+    root = os.path.abspath(root)
+    # Before anything, including creating the index dir: the walk below is the
+    # operation that must never happen on a mount (MD-11).
+    _refuse_mounts(root)
+    walk = _walk(root, max_bytes, max_files, max_assets)
+    found = walk["found"]
+
+    conn = _connect(root)
+    if conn is None:
+        notes = {}
+        for rel, (full, mtime_ns, size) in found.items():
+            row = _row(full, mtime_ns, size)
+            if row is not None:
+                notes[rel] = row
+        return _assemble(root, walk, notes)
+
+    try:
+        cached = {}
+        for rel, mtime_ns, size, data in conn.execute(
+                "SELECT rel, mtime_ns, size, data FROM notes"):
+            cached[rel] = (mtime_ns, size, data)
+
+        notes = {}
+        writes = []
+        for rel, (full, mtime_ns, size) in found.items():
+            hit = cached.get(rel)
+            if hit is not None and hit[0] == mtime_ns and hit[1] == size:
+                try:
+                    row = json.loads(hit[2])
+                except ValueError:
+                    row = None
+                if isinstance(row, dict):
+                    notes[rel] = row
+                    continue
+            row = _row(full, mtime_ns, size)
+            if row is None:
+                continue
+            notes[rel] = row
+            writes.append((rel, mtime_ns, size, json.dumps(row)))
+
+        gone = [(rel,) for rel in cached if rel not in found]
+        if writes or gone:
+            conn.executemany(
+                "INSERT OR REPLACE INTO notes (rel, mtime_ns, size, data)"
+                " VALUES (?, ?, ?, ?)", writes)
+            conn.executemany("DELETE FROM notes WHERE rel = ?", gone)
+            conn.commit()
+        return _assemble(root, walk, notes)
+    except Exception:  # noqa: BLE001 — the cache never fails the caller
+        notes = {}
+        for rel, (full, mtime_ns, size) in found.items():
+            row = _row(full, mtime_ns, size)
+            if row is not None:
+                notes[rel] = row
+        return _assemble(root, walk, notes)
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------- the API
@@ -600,7 +807,7 @@ def main(action: str = "note", file: str = "", root: str = ""):
             return _error("outside_root", f"{file} is not under {root}")
 
     try:
-        scan = scan_root(root)
+        scan = scan_indexed(root)
     except MountUnsupported as exc:
         return _error("mount_unsupported", str(exc))
     if action == "candidates":
