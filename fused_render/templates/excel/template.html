@@ -1114,7 +1114,10 @@ async function openFilterMenu(c, anchor) {
     (fv.mode === "include" ? listed.has(String(v)) : !listed.has(String(v)));
   const checked = new Set(values.filter(defaultCheck));
   const countOf = new Map(values.map((v, i) => [String(v), counts ? counts[i] : 0]));
-  fmState = { c, values, checked, countOf, defaultCheck, truncated };
+  // bulkMode: an empty-search Select all / Clear overrides defaultCheck for
+  // values not yet discovered, so a later server-search hit lands in the same
+  // state as the values the bulk action already touched.
+  fmState = { c, values, checked, countOf, defaultCheck, truncated, bulkMode: null };
   buildFilterMenu(m, anchor);
 }
 function buildFilterMenu(m, anchor) {
@@ -1158,6 +1161,9 @@ function buildFilterMenu(m, anchor) {
   toggle.append(selAll, clrAll); m.appendChild(toggle);
 
   const list = document.createElement("div"); list.className = "fm-list"; m.appendChild(list);
+  const note = document.createElement("div"); note.className = "fm-note";
+  const setNote = (txt) => { note.textContent = txt || ""; note.style.display = txt ? "" : "none"; };
+  setNote(truncated ? `Showing first ${fmtInt(values.length)} values only` : "");
   let shown = values;   // the currently displayed values (search-narrowed)
   const renderList = () => {
     list.innerHTML = "";
@@ -1181,9 +1187,12 @@ function buildFilterMenu(m, anchor) {
     const q = search.value.trim();
     shown = q ? values.filter((v) => String(v).toLowerCase().includes(q.toLowerCase())) : values;
     renderList();
+    setNote(!q && truncated ? `Showing first ${fmtInt(values.length)} values only` : "");
     // A capped list can't answer a search locally — ask the server, and fold
-    // any newly discovered values into the menu's state (default-checked by
-    // the same rule as the initial list, so OK-time math stays correct).
+    // any newly discovered values into the menu's state. They default to the
+    // current checklist intent: an empty-search Select all / Clear (bulkMode)
+    // wins over the saved filter rule, so late hits land in the same state as
+    // the values that bulk action already touched.
     if (q && sh.big && truncated) {
       clearTimeout(search._t);
       const myState = fmState;
@@ -1195,22 +1204,32 @@ function buildFilterMenu(m, anchor) {
           res.values.forEach((v, i) => {
             if (!fmState.countOf.has(String(v))) {
               values.push(v);
-              if (fmState.defaultCheck(v)) fmState.checked.add(v);
+              const def = fmState.bulkMode === "all" ? true
+                : fmState.bulkMode === "none" ? false : fmState.defaultCheck(v);
+              if (def) fmState.checked.add(v);
             }
             fmState.countOf.set(String(v), res.counts[i]);
           });
           shown = res.values;
           renderList();
+          setNote(res.truncated
+            ? `Showing first ${fmtInt(res.values.length)} matches — refine the search` : "");
         } catch { /* keep the locally narrowed list */ }
       }, 300);
     }
   };
   search.oninput = refresh;
-  selAll.onclick = () => { shown.forEach((v) => fmState.checked.add(v)); renderList(); };
-  clrAll.onclick = () => { shown.forEach((v) => fmState.checked.delete(v)); renderList(); };
+  selAll.onclick = () => {
+    if (!search.value.trim()) fmState.bulkMode = "all";
+    shown.forEach((v) => fmState.checked.add(v)); renderList();
+  };
+  clrAll.onclick = () => {
+    if (!search.value.trim()) fmState.bulkMode = "none";
+    shown.forEach((v) => fmState.checked.delete(v)); renderList();
+  };
   renderList();
 
-  if (truncated) { const n = document.createElement("div"); n.className = "fm-note"; n.textContent = `Showing first ${fmtInt(values.length)} values only`; m.appendChild(n); }
+  m.appendChild(note);
 
   const foot = document.createElement("div"); foot.className = "fm-foot";
   const cancel = document.createElement("button"); cancel.className = "action"; cancel.textContent = "Cancel";
