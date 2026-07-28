@@ -80,6 +80,18 @@ the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
 persistent instead. (Not to be confused with the **call log** below, which is
 durable, has settings, and lives in `~/.fused-render/logs/`.)
 
+## AI calls (`fused.ai`)
+
+Pages can ask an AI model with `fused.ai(prompt, opts?)`. The server relays the
+call to a **local OpenAI-compatible proxy** — nothing leaves your machine unless
+the proxy you run sends it somewhere. The proxy's base URL defaults to
+`http://127.0.0.1:8317`; set the `ai_base_url` key in
+`~/.fused-render/prefs.json` to change it persistently, or set
+`FUSED_RENDER_AI_BASE_URL` to override per process. If the proxy isn't running,
+calls reject with an `ai_unavailable` error naming the URL that was tried.
+`fused.ai` is local-only: exported/hosted pages can't use it (see
+[EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
+
 ## Export for hosted serving
 
 The **Deploy** button (see [Deploy to a hosted URL](../README.md#deploy-to-a-hosted-url)
@@ -91,7 +103,7 @@ can serve — see [EXPORT.md](EXPORT.md) for the bundle format and rules.
 ## Call log
 
 The app records every API call your pages make — each `fused.runPython`,
-`readFile`, `stat` and `writeFile` — with its duration, result size, the
+`readFile`, `stat`, `writeFile` and `ai` — with its duration, result size, the
 `print()` output, and any traceback. It answers the questions a page can't
 otherwise: which of your `.py` files is slow, whether a run errored while you
 weren't looking, and whether the page is quietly re-running Python far more
