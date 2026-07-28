@@ -86,7 +86,10 @@
   }
   .divider:hover, .divider.dragging { background: var(--border); }
   .preview-pane {
-    flex: 0 0 400px;
+    /* Default to the larger half: the pane holds real rendered content (a
+       file's view, or a folder's lone app), so it earns more room than the
+       name/size/mtime columns on the left. */
+    flex: 0 0 55%;
     min-width: 220px;
     max-width: 65%;
     overflow: auto;
@@ -95,7 +98,17 @@
     background: var(--bg-alt);
     border-left: 1px solid var(--border);
   }
-  #preview-frame { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+  /* Fills whatever the pane has left — the whole pane for a file preview, the
+     space under the header bar for a folder's embedded app. flex (not
+     height:100%) so the header can't push it past the pane's bottom edge. */
+  #preview-frame {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    border: 0;
+    display: block;
+    background: var(--bg);
+  }
 
   table.listing-table { width: 100%; border-collapse: collapse; }
   table.listing-table th {
@@ -196,6 +209,64 @@
     cursor: pointer;
   }
   .pane-center button:hover { background: var(--bg-alt); }
+
+  /* Folder preview: a slim bar above the embedded app carrying its name and
+     the "Open app" action, then the app itself edge-to-edge below. */
+  .pane-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+  }
+  .pane-header .icon { flex: 0 0 auto; display: inline-flex; }
+  .pane-header .name {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg);
+  }
+  .pane-header button {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    border: 1px solid rgba(229, 255, 68, 0.35);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .pane-header button:hover { background: var(--sel); }
+
+  /* Folder preview fallback: the folder's own entries, read-only. Narrower
+     padding than the main table since it lives in the smaller pane. */
+  .mini-wrap { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+  .mini-body { flex: 1 1 auto; overflow: auto; }
+  table.mini-list { width: 100%; border-collapse: collapse; }
+  table.mini-list td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.mini-list tr.row { cursor: pointer; }
+  table.mini-list tr.row:hover { background: var(--sel); }
+  table.mini-list tr.row.ignored td.name { opacity: 0.5; }
+  table.mini-list td.name { display: flex; align-items: center; gap: 8px; }
+  table.mini-list td.name .label { overflow: hidden; text-overflow: ellipsis; }
+  table.mini-list td.size {
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    width: 1%;
+  }
+  table.mini-list td.status-message { padding: 14px 10px; }
 </style>
 </head>
 <body>
@@ -384,6 +455,14 @@
     function openInShell(absPath, isDir) {
       window.top.location.href = urlForPath(absPath, isDir ? "?_mode=preview" : "");
     }
+    // "Open app" hands the file to a NEW top-level tab. Always the plain
+    // /view/ route, never /embed/ — an embed URL is meant to be framed by a
+    // host page, so it would be the wrong thing to land in a fresh tab.
+    function openInNewTab(absPath) {
+      const enc = absPath.replace(/^\/+/, "").split("/").filter(Boolean)
+        .map(encodeURIComponent).join("/");
+      window.open("/view/" + enc, "_blank", "noopener");
+    }
 
     // --- Preview pane --------------------------------------------------------
     function showPlaceholder(html) {
@@ -397,15 +476,97 @@
       previewPaneEl.innerHTML = `<div class="pane-skel"></div>`;
     }
 
-    function previewFolder(entry) {
-      showPlaceholder(
-        `<div class="big-icon">${iconSvg(entry.name, true)}</div>` +
-        `<div class="title">${escapeHtml(entry.name)}</div>` +
-        `<div class="hint">Folder — double-click to open</div>` +
-        `<button type="button" id="open-folder-btn">Open folder</button>`
-      );
+    // A folder previews as an APP when its top level holds exactly one
+    // .html/.htm file — the same rule the shell uses for its "Open as app"
+    // button (FileIcons.tsx isAppEntry + Listing.tsx onSingleApp), so a folder
+    // reads the same way here as it does when opened.
+    function isAppEntry(name, isDir) {
+      return !isDir && EXT_VARIANT[extOf(name)] === "html";
+    }
+
+    async function previewFolder(entry) {
+      showPaneSkeleton();
+      let data;
+      try {
+        const res = await fetch("/api/fs/list?path=" + encodeURIComponent(entry.path));
+        data = await res.json();
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+      } catch (err) {
+        if (selectedPath !== entry.path) return; // superseded by another click
+        showPlaceholder(`<div class="status-message error">Couldn't read folder: ` +
+          `${escapeHtml(err.message || String(err))}</div>`);
+        return;
+      }
+      if (selectedPath !== entry.path) return;
+
+      const dir = (data.path || entry.path).replace(/\/+$/, "");
+      const children = (data.entries || []).map((e) => ({ ...e, path: dir + "/" + e.name }));
+      // A truncated listing is only a partial page (server cap), so a lone HTML
+      // match in it doesn't prove it is the folder's ONLY one — fall through to
+      // the file list rather than render a maybe-wrong app (mirrors
+      // Listing.tsx's onSingleApp guard).
+      const apps = children.filter((e) => isAppEntry(e.name, e.is_dir));
+      if (!data.truncated && apps.length === 1) previewFolderApp(entry, apps[0]);
+      else previewFolderList(entry, children, !!data.truncated);
+    }
+
+    // Exactly one html inside: render THAT file in the pane (its own template,
+    // same pipeline as previewFile) under a bar naming it, plus an "Open app"
+    // button that hands it to a new tab.
+    function previewFolderApp(entry, app) {
+      previewPaneEl.innerHTML =
+        `<div class="pane-header">` +
+        `<span class="icon">${iconSvg(app.name, false)}</span>` +
+        `<span class="name" title="${escapeHtml(app.name)}">${escapeHtml(app.name)}</span>` +
+        `<button type="button" id="open-app-btn">Open app</button>` +
+        `</div>`;
+      const btn = document.getElementById("open-app-btn");
+      if (btn) btn.addEventListener("click", () => openInNewTab(app.path));
+      const frame = document.createElement("iframe");
+      frame.id = "preview-frame";
+      frame.src = `/render?path=${encodeURIComponent(app.path)}`;
+      previewPaneEl.appendChild(frame);
+    }
+
+    // No single html (zero, or several): show what the folder holds, so the
+    // pane still answers "what's in here?" without a navigation.
+    function previewFolderList(entry, children, truncated) {
+      const rows = children.slice().sort((a, b) => {
+        const aDot = a.name.startsWith("."), bDot = b.name.startsWith(".");
+        if (aDot !== bDot) return aDot ? 1 : -1;
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+      let body = rows.length === 0
+        ? `<tr><td colspan="2" class="status-message">Empty folder</td></tr>`
+        : rows.map((r) =>
+            `<tr class="row${r.ignored ? " ignored" : ""}" data-path="${escapeHtml(r.path)}" ` +
+            `data-dir="${r.is_dir ? 1 : 0}">` +
+            `<td class="name"><span class="icon">${iconSvg(r.name, r.is_dir)}</span>` +
+            `<span class="label">${escapeHtml(r.name)}</span></td>` +
+            `<td class="size">${escapeHtml(r.is_dir ? "" : formatSize(r.size))}</td></tr>`).join("");
+      if (truncated) {
+        body += `<tr><td colspan="2" class="status-message">` +
+          `Showing first ${rows.length} entries — folder listing is partial.</td></tr>`;
+      }
+      previewPaneEl.innerHTML =
+        `<div class="pane-header">` +
+        `<span class="icon">${iconSvg(entry.name, true)}</span>` +
+        `<span class="name" title="${escapeHtml(entry.name)}">${escapeHtml(entry.name)}</span>` +
+        `<button type="button" id="open-folder-btn">Open folder</button>` +
+        `</div>` +
+        `<div class="mini-wrap"><div class="mini-body">` +
+        `<table class="mini-list"><tbody>${body}</tbody></table></div></div>`;
       const btn = document.getElementById("open-folder-btn");
       if (btn) btn.addEventListener("click", () => openInShell(entry.path, true));
+      // Clicking a child navigates the shell to it — the user is already one
+      // level in, so a click here means "go there" (files open in their view,
+      // folders back into this preview).
+      previewPaneEl.querySelectorAll("table.mini-list tr.row").forEach((tr) => {
+        tr.addEventListener("click", () => {
+          openInShell(tr.getAttribute("data-path"), tr.getAttribute("data-dir") === "1");
+        });
+      });
     }
 
     // Reuse the app's own template pipeline: stat the clicked file to discover
