@@ -112,27 +112,36 @@
 <p>Today <code>markdown/template.html</code> does one thing: <code>marked.parse(await fused.readFile(file))</code> into a div. No editing, no <code>[[wikilinks]]</code>, no backlinks, no graph. This describes the replacement — the same view, plus an editor and a link layer, plus a folder-level graph built from the same index.</p>
 
 <div class="note">
-  <strong>Status — what was built (2026-07-28).</strong>
-  Steps 1, 3 and 4 of the order of work are done, and step 2 up to but not
-  including Live Preview. Shipped: the link layer with resolution and backlinks,
-  the CM6 rebuild with the markdown grammar, a Source editing surface with
-  Obsidian's autosave semantics, the editor keymap and the <code>[[</code>
-  popup, the sqlite index, the local graph panel, and the folder-level
-  <code>graph</code> mode with its gate. The contract is <code>SPEC.md</code>
-  §32 (MD-1..MD-22); the decisions are D153..D157.
+  <strong>Status — what was built (2026-07-28), and how it diverged from this
+  plan.</strong>
+  Everything below shipped, with one deliberate change of shape: the template is
+  <strong>one Live Preview surface</strong>, not three view modes. The
+  Reading/Source switcher described further down was built and then removed, and
+  with it <code>marked</code>, the whole rendered-HTML pipeline, the
+  <code>view</code> param and <code>⌘E</code>. The persistent toolbar is gone
+  too; backlinks moved off a footer into a right sidebar shared with the graph,
+  behind one small toggle. <code>code</code> is untouched and still registered
+  for <code>.md</code>. The contract is <code>SPEC.md</code> §32
+  (MD-1..MD-22); the decisions are D153..D158.
   <br /><br />
-  <strong>Deliberately not built</strong>, each recorded in MD-18a/MD-12 rather
-  than left implied: <em>Live Preview decorations</em> (the vendored primitives
-  are in place and <code>view=live</code> is accepted as an alias of Source, so
-  a saved URL degrades instead of breaking); the frontmatter properties table;
-  inline note embeds (an embedded note renders as a link — no second parse, no
-  recursion); <em>paste or drop an image</em>, because
-  <code>fused.writeFile</code> takes UTF-8 text only and a binary attachment
-  write needs a runtime change first; <code>.fused-graph.json</code> tuning and
-  gitignore-awareness of the walk; the default-mode / default-view settings with
-  a persisted per-file override (view state is in <code>fused.params</code>
-  instead, which is shareable but not sticky); and step 5's watch-registry
-  subscription — see the two divergences below.
+  <strong>Why one surface</strong> rather than copying Obsidian's split: in
+  Obsidian, Reading and Editing are leaves of a single
+  <code>MarkdownView</code>, so <code>⌘E</code> keeps the editor instance — and
+  with it the caret and the undo history. Here a mode is a <em>template swap</em>,
+  so the same toggle costs more and buys less. A read-only file gives the reading
+  view for free: identical decorations over a locked buffer.
+  <br /><br />
+  <strong>Deliberately not built</strong>, each recorded in MD-18b/MD-12 rather
+  than left implied: the frontmatter properties table (the block is dimmed
+  instead); inline note embeds (an embedded note renders as a link — no second
+  parse, no recursion); inline markup <em>inside a table cell</em>, which a
+  decoration cannot reach because it cannot span into a widget's DOM;
+  <em>paste or drop an image</em>, because <code>fused.writeFile</code> takes
+  UTF-8 text only and a binary attachment write needs a runtime change first;
+  <code>.fused-graph.json</code> tuning and gitignore-awareness of the walk;
+  sticky default-mode settings (view state is in <code>fused.params</code>,
+  which is shareable but not sticky); and step 5's watch-registry subscription —
+  see the two divergences below.
 </div>
 
 <h2>Three surfaces, one template</h2>
@@ -140,11 +149,11 @@
 <div class="cols">
   <div class="card">
     <h3>Note view <span class="tag">.md</span></h3>
-    <p>Rendered markdown with resolved <code>[[wikilinks]]</code>, a backlinks footer, and an edit toggle. The default mode for <code>.md</code>.</p>
+    <p>A Live Preview editor: always editable, markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
   </div>
   <div class="card">
     <h3>Local graph <span class="tag">.md</span></h3>
-    <p>Neighborhood of the open note — BFS to depth <var>N</var>. A side panel in the note view, toggled, depth in the URL.</p>
+    <p>Neighborhood of the open note — BFS to depth <var>N</var>. In the right sidebar under the backlinks, toggled, depth in the URL.</p>
   </div>
   <div class="card">
     <h3>Vault graph <span class="tag">/</span></h3>
@@ -162,27 +171,23 @@
 
 <p>Read/write behaviour follows Obsidian explicitly. That is a reachable target rather than an aspiration, because Obsidian's editor <em>is</em> CodeMirror 6 — and <code>templates/vendor/codemirror.bundle.js</code> is CodeMirror 6, built from <code>scripts/vendor-codemirror/entry.js</code>, with <code>Decoration</code>/<code>StateField</code>/<code>StateEffect</code>/<code>RangeSet</code> already exported for annotate mode. Live Preview is a decoration set over a CM6 document, not a WYSIWYG DOM; the mechanism we already ship is the mechanism Obsidian uses.</p>
 
-<h3>Three view modes, as Obsidian has them</h3>
+<h3>One view mode <span class="k">— as built; see the status note above</span></h3>
+
+<p><strong>Live Preview only.</strong> An editable CM6 document where markup is replaced by rendered widgets — <em>except</em> on the lines the selection touches, where the raw source is revealed so it can be edited. Headings size up with <code>#</code> hidden; bold/italic/strike/inline-code lose their markers and keep their styling; code fences keep their markers and gain the embedded language's highlighting; blockquotes, bullets, rules, pipe tables, images, links, wikilinks, embeds, ghosts and tags all render.</p>
+
+<p>What a range <em>is</em> comes from <code>syntaxTree</code>, so no block parser is duplicated in JS. Wikilinks and tags are not in the grammar, so they are matched by regex and then checked against the tree — which is where MD-3's code-masking rule holds on this side.</p>
 
 <table>
-  <tr><th>Mode</th><th>What it is</th><th>Key</th></tr>
-  <tr>
-    <td><strong>Live Preview</strong><br /><span class="k">default</span></td>
-    <td>Editable CM6 document where markup is replaced by rendered widgets — <em>except</em> on the line or selection holding the cursor, where the raw source is revealed. Headings size up with <code>#</code> hidden, tables/code fences/embeds render as block widgets, links render clickable.</td>
-    <td rowspan="2"><code>⌘E</code> toggles<br />Reading ↔ Editing</td>
-  </tr>
-  <tr>
-    <td><strong>Source</strong></td>
-    <td>Raw markdown with syntax highlighting. Same editor, decorations off.</td>
-  </tr>
-  <tr>
-    <td><strong>Reading</strong></td>
-    <td>Fully rendered, non-editable — today's template, essentially unchanged.</td>
-    <td></td>
-  </tr>
+  <tr><th>Interaction</th><th>Behaviour</th></tr>
+  <tr><td>Click a link</td><td>Follows it — the widget is opaque, so the caret does not land in it.</td></tr>
+  <tr><td>Click an image, table or tag</td><td>Puts the caret inside: the source appears, which is how the content is edited.</td></tr>
+  <tr><td>Click a checkbox</td><td>Toggles and writes back. It stays a control even under the caret, as in Obsidian.</td></tr>
+  <tr><td>Read-only file</td><td>Same decorations over a locked buffer — this is the reading view.</td></tr>
 </table>
 
-<p>Like Obsidian: a default editing mode (Live Preview or Source) and a default view for new tabs (Editing or Reading) as settings, with a per-file override that persists. In Live Preview a single click on a link follows it; clicking a rendered checkbox toggles it and writes back to the file.</p>
+<p>Frontmatter is the one place the grammar cannot be trusted: it has no frontmatter rule, and <code>---\ntitle: x\n---</code> parses as a <code>HorizontalRule</code> followed by a <code>SetextHeading2</code>, so YAML rendered as a rule plus a large heading. The block is found by a line scan, dimmed, and every tree decoration inside it suppressed.</p>
+
+<p>Because this layer's correctness lives entirely in what the grammar calls each range, it is covered by <strong>running it</strong>: <code>scripts/vendor-codemirror/live-preview-probe.mjs</code> executes the real builder against the real grammar headlessly, and <code>tests/test_markdown_live_preview.py</code> asserts over the decoration set it produces. Two real bugs — the frontmatter case above, and <code>Link</code>/<code>Image</code> nodes wrapping wikilink brackets, which silently rendered <em>no</em> wikilinks — were found that way after the source read correctly.</p>
 
 <h3>Saving — Obsidian's model, not ours</h3>
 

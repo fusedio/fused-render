@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8" />
 <title>Markdown</title>
-<script src="/template-assets/marked.min.js"></script>
 <script src="/template-assets/codemirror.bundle.js"></script>
 <script src="/template-shared/ro-badge.js"></script>
 <script src="/template-shared/graph-canvas.js"></script>
@@ -55,43 +54,11 @@
     background: var(--bg);
   }
 
-  /* ---- toolbar ---------------------------------------------------------- */
-  #bar {
-    display: none;
-    align-items: center;
-    gap: 10px;
-    flex: none;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-alt);
-    font-size: 12px;
-    color: var(--fg-muted);
-  }
-  #filename { color: var(--fg); font-weight: 600; }
-  #bar .spacer { flex: 1; }
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-  .seg button {
-    border: none;
-    background: transparent;
-    color: var(--fg-muted);
-    font: inherit;
-    padding: 3px 9px;
-    cursor: pointer;
-  }
-  .seg button + button { border-left: 1px solid var(--border); }
-  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
-  #toggle-graph {
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--fg-muted);
-    font: inherit;
-    padding: 3px 9px;
-    cursor: pointer;
-  }
-  #toggle-graph[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
-
-  /* ---- the reload-or-keep banner (MD-17) -------------------------------- */
+  /* ---- the reload-or-keep banner (MD-17) --------------------------------
+     The only chrome that ever occupies a row of its own, and only while a
+     conflict is unresolved: there is no persistent toolbar in this view
+     (MD-2a) — the shell's own breadcrumb already names the file, and
+     Obsidian shows no save state at all. */
   #conflict {
     display: none;
     align-items: center;
@@ -114,51 +81,109 @@
   }
   #conflict button:hover { border-color: var(--accent); }
 
-  /* ---- surfaces --------------------------------------------------------- */
-  #surfaces { flex: 1; min-height: 0; overflow: auto; }
-  #page { max-width: 46rem; margin: 0 auto; padding: 40px 24px 80px; }
-  #editor-wrap { display: none; }
-  #editor-wrap.on { display: block; }
-  #doc-wrap.off { display: none; }
+  /* A failure needs to be seen; a successful save does not (MD-16). This slot
+     is empty — and therefore invisible — in the ordinary case. */
+  #save-state {
+    position: fixed;
+    right: 12px;
+    bottom: 10px;
+    z-index: 6;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    font-size: 12px;
+  }
+  #save-state:empty { display: none; }
+  #save-state.error { color: var(--error); border-color: var(--error); }
+  #ro-wrap { position: fixed; left: 12px; bottom: 10px; z-index: 6; }
 
-  #doc h1, #doc h2 {
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 0.3em;
+  /* ---- surface ----------------------------------------------------------- */
+  #split { flex: 1; display: flex; min-height: 0; position: relative; }
+  #surfaces { flex: 1; min-width: 0; min-height: 0; display: flex; }
+  #editor-wrap { flex: 1; min-width: 0; }
+  #status { flex: 1; padding: 24px; color: var(--fg-muted); }
+  #status[hidden] { display: none; }
+  #status.error { color: var(--error); }
+  #status a { color: var(--accent); }
+
+  /* ---- the editor IS the document (MD-18a) ------------------------------
+     One surface, always editable. No line numbers, no fold gutter and no
+     active-line stripe: this is prose, and the chrome a code editor wants is
+     exactly what a Live Preview must not show. */
+  .cm-editor { height: 100%; font-size: 16px; }
+  .cm-editor.cm-focused { outline: none; }
+  .cm-editor .cm-scroller {
+    overflow: auto;
+    font-family: inherit;
+    line-height: 1.65;
   }
-  #doc h1, #doc h2, #doc h3, #doc h4, #doc h5, #doc h6 {
-    margin-top: 1.5em;
-    margin-bottom: 0.6em;
-    line-height: 1.25;
+  .cm-editor .cm-content {
+    max-width: 46rem;
+    margin: 0 auto;
+    padding: 40px 24px 40vh;
+    caret-color: var(--accent);
+  }
+  .cm-editor .cm-gutters { display: none; }
+  .cm-editor .cm-activeLine { background: transparent; }
+  .cm-editor .cm-activeLineGutter { background: transparent; }
+  .cm-editor .cm-line { padding: 0 2px; }
+
+  /* Live Preview marks. Every rule here styles a range of the SOURCE — there
+     is no second rendered copy of the document to style. */
+  .lp-h1, .lp-h2, .lp-h3, .lp-h4, .lp-h5, .lp-h6 {
     font-weight: 600;
+    line-height: 1.3;
   }
-  #doc a { color: var(--accent); }
-  #doc code {
+  .lp-h1 { font-size: 1.9em; }
+  .lp-h2 { font-size: 1.55em; }
+  .lp-h3 { font-size: 1.3em; }
+  .lp-h4 { font-size: 1.13em; }
+  .lp-h5 { font-size: 1em; }
+  .lp-h6 { font-size: 0.94em; color: var(--fg-muted); }
+  .lp-bold { font-weight: 700; }
+  .lp-italic { font-style: italic; }
+  .lp-strike { text-decoration: line-through; color: var(--fg-muted); }
+  .lp-code {
     font-family: ui-monospace, Menlo, Consolas, monospace;
-    font-size: 85%;
+    font-size: 0.86em;
     background: var(--bg-alt);
     border: 1px solid var(--border);
     border-radius: 4px;
-    padding: 0.15em 0.4em;
+    padding: 0.1em 0.32em;
   }
-  #doc pre {
+  .lp-fence-line {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.86em;
     background: var(--bg-alt);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-    overflow-x: auto;
   }
-  #doc pre code { background: none; border: none; padding: 0; font-size: 90%; }
-  #doc blockquote {
-    margin: 1em 0;
-    padding: 0 1em;
-    color: var(--fg-muted);
+  .lp-quote-line {
     border-left: 3px solid var(--border);
+    padding-left: 12px;
+    color: var(--fg-muted);
   }
-  #doc table { border-collapse: collapse; display: block; overflow-x: auto; }
-  #doc th, #doc td { border: 1px solid var(--border); padding: 6px 12px; }
-  #doc th { background: var(--bg-alt); }
-  #doc img { max-width: 100%; }
-  #doc hr { border: none; border-top: 1px solid var(--border); }
+  .lp-mark { color: var(--fg-muted); opacity: 0.6; }
+  .lp-fm-line { color: var(--fg-muted); font-size: 0.86em; }
+  .lp-bullet { color: var(--accent); }
+  .lp-hr {
+    display: inline-block;
+    width: 100%;
+    border: none;
+    border-top: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .lp-img { max-width: 100%; border-radius: 4px; vertical-align: middle; }
+  .lp-task { vertical-align: middle; margin: 0 6px 0 0; accent-color: var(--accent); }
+  .lp-table {
+    border-collapse: collapse;
+    font-size: 0.92em;
+    margin: 2px 0;
+  }
+  .lp-table th, .lp-table td { border: 1px solid var(--border); padding: 5px 11px; }
+  .lp-table th { background: var(--bg-alt); text-align: left; }
+  .lp-link { color: var(--accent); text-decoration: none; }
+  .lp-link:hover { text-decoration: underline; }
 
   /* Wikilinks, ghosts and tags — the link layer (SPEC §32, MD-3/MD-4). */
   .wl {
@@ -185,104 +210,116 @@
     border: 1px solid var(--border);
     color: var(--fg-muted);
     font-size: 87%;
+    cursor: text;
   }
 
-  /* ---- backlinks footer ------------------------------------------------- */
-  #links {
-    max-width: 46rem;
-    margin: 0 auto;
-    padding: 18px 24px 60px;
-    border-top: 1px solid var(--border);
-  }
-  #links[hidden] { display: none; }
-  #links h2 {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+  /* ---- right sidebar: backlinks + graph (MD-19) -------------------------- */
+  #toggle-graph {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
     color: var(--fg-muted);
-    font-weight: 600;
-    margin: 0 0 10px;
+    cursor: pointer;
   }
+  #toggle-graph:hover { color: var(--fg); border-color: var(--accent); }
+  #toggle-graph[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  #toggle-graph svg { width: 14px; height: 14px; display: block; }
+  #side {
+    width: 21rem;
+    flex: none;
+    display: none;
+    flex-direction: column;
+    min-height: 0;
+    border-left: 1px solid var(--border);
+    background: var(--bg-alt);
+  }
+  #side.on { display: flex; }
+  .side-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+  .side-head .spacer { flex: 1; }
+  #links-head { padding-right: 40px; } /* clear of the floating toggle */
+  #links { flex: 1; min-height: 0; overflow: auto; padding: 10px; }
+  #links[hidden] { display: none; }
   .bl {
     display: block;
     width: 100%;
     text-align: left;
-    padding: 8px 10px;
+    padding: 7px 9px;
     margin-bottom: 6px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: var(--bg-alt);
+    background: var(--bg);
     color: var(--fg);
     font: inherit;
+    font-size: 13px;
     cursor: pointer;
   }
   .bl:hover { border-color: var(--accent); }
   .bl-title { font-weight: 600; }
-  .bl-path { color: var(--fg-muted); font-size: 12px; margin-left: 8px; }
-  .bl-empty { color: var(--fg-muted); font-size: 13px; }
-  #tags { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .bl-path { display: block; color: var(--fg-muted); font-size: 11px; }
+  .bl-empty { color: var(--fg-muted); font-size: 12px; }
+  #tags { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
-    margin: 14px 0 0;
-    padding: 8px 12px;
+    margin: 12px 0 0;
+    padding: 8px 10px;
     border: 1px solid var(--border);
     border-left: 3px solid var(--warn);
     border-radius: 0 6px 6px 0;
-    background: var(--bg-alt);
+    background: var(--bg);
     color: var(--fg-muted);
-    font-size: 13px;
+    font-size: 12px;
   }
   #notice[hidden] { display: none; }
-
-  #status { padding: 24px; color: var(--fg-muted); }
-  #status.error { color: var(--error); }
-  #status a { color: var(--accent); }
-  #save-state { min-width: 5.5em; }
-  #save-state.error { color: var(--error); }
-
-  /* ---- editor ----------------------------------------------------------- */
-  .cm-editor { font-size: 14px; }
-  .cm-editor .cm-content {
-    max-width: 46rem;
-    margin: 0 auto;
-    padding: 32px 24px 80px;
-    font-family: ui-monospace, Menlo, Consolas, monospace;
-  }
-  .cm-editor.cm-focused { outline: none; }
-
-  /* ---- graph panel (MD-19) ---------------------------------------------- */
-  #split { flex: 1; display: flex; min-height: 0; }
-  #graph-panel {
-    width: 22rem;
+  #graph-sec {
     flex: none;
-    display: none;
-    flex-direction: column;
-    border-left: 1px solid var(--border);
-    background: var(--bg-alt);
-  }
-  #graph-panel.on { display: flex; }
-  #graph-head {
+    height: 45%;
+    min-height: 12rem;
     display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    font-size: 12px;
-    color: var(--fg-muted);
+    flex-direction: column;
+    border-top: 1px solid var(--border);
   }
-  #graph-head .spacer { flex: 1; }
   #graph-canvas { flex: 1; width: 100%; display: block; cursor: grab; }
-  #graph-note { padding: 8px 10px; font-size: 12px; color: var(--fg-muted); }
+  #graph-note { flex: none; padding: 6px 10px; font-size: 11px; color: var(--fg-muted); }
   #graph-note[hidden] { display: none; }
+  #graph-count { text-transform: none; letter-spacing: 0; font-weight: 400; }
   #depth {
     background: var(--bg);
     color: var(--fg);
     border: 1px solid var(--border);
     border-radius: 5px;
     font: inherit;
+    font-size: 11px;
     padding: 1px 4px;
   }
 
   /* ---- skeleton --------------------------------------------------------- */
+  #skel { flex: 1; max-width: 46rem; margin: 0 auto; padding: 40px 24px; }
+  #skel[hidden] { display: none; }
   .skel-bar {
     height: 14px;
     margin: 0 0 14px;
@@ -309,68 +346,66 @@
 </style>
 </head>
 <body>
-  <div id="bar">
-    <span id="filename"></span>
-    <span id="save-state"></span>
-    <span id="ro" hidden></span>
-    <span class="spacer"></span>
-    <span class="seg" id="modes">
-      <button data-view="source" aria-pressed="false" title="Source (Cmd/Ctrl+E)">Source</button>
-      <button data-view="reading" aria-pressed="false" title="Reading (Cmd/Ctrl+E)">Reading</button>
-    </span>
-    <button id="toggle-graph" aria-pressed="false" title="Local graph">Graph</button>
-  </div>
   <div id="conflict">
     <span id="conflict-text">This note changed on disk while you were editing it.</span>
     <button id="reload">Reload from disk</button>
     <button id="keep">Keep my version</button>
   </div>
   <div id="split">
-  <div id="surfaces">
-    <div id="doc-wrap">
-      <div id="page">
-        <div id="doc">
-          <div id="skel" aria-hidden="true">
-            <div class="skel-bar skel-h1"></div>
-            <div class="skel-bar" style="width:94%"></div>
-            <div class="skel-bar" style="width:82%"></div>
-            <div class="skel-bar" style="width:88%"></div>
-            <div class="skel-bar skel-h2"></div>
-            <div class="skel-bar" style="width:76%"></div>
-            <div class="skel-bar" style="width:91%"></div>
-            <div class="skel-bar" style="width:65%"></div>
-            <div class="skel-code"></div>
-            <div class="skel-bar" style="width:60%; margin-left:24px"></div>
-            <div class="skel-bar" style="width:70%; margin-left:24px"></div>
-            <div class="skel-bar" style="width:85%"></div>
-          </div>
-        </div>
+    <div id="surfaces">
+      <div id="skel" aria-hidden="true">
+        <div class="skel-bar skel-h1"></div>
+        <div class="skel-bar" style="width:94%"></div>
+        <div class="skel-bar" style="width:82%"></div>
+        <div class="skel-bar" style="width:88%"></div>
+        <div class="skel-bar skel-h2"></div>
+        <div class="skel-bar" style="width:76%"></div>
+        <div class="skel-bar" style="width:91%"></div>
+        <div class="skel-bar" style="width:65%"></div>
+        <div class="skel-code"></div>
+        <div class="skel-bar" style="width:60%; margin-left:24px"></div>
+        <div class="skel-bar" style="width:70%; margin-left:24px"></div>
+        <div class="skel-bar" style="width:85%"></div>
       </div>
+      <div id="status" hidden></div>
+      <div id="editor-wrap"></div>
     </div>
-    <div id="editor-wrap"></div>
-    <div id="links" hidden>
-      <div id="tags"></div>
-      <h2 id="bl-heading">Backlinks</h2>
-      <div id="bl-list"></div>
-      <div id="notice" hidden></div>
-    </div>
+    <button id="toggle-graph" aria-pressed="false" title="Backlinks and graph">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="round" aria-hidden="true">
+        <path d="M4.6 4.9 L11 3.2 M4.9 6 L7.4 11.4" />
+        <circle cx="3.6" cy="4.4" r="2" />
+        <circle cx="12.4" cy="2.8" r="1.6" />
+        <circle cx="8.4" cy="12.6" r="1.9" />
+      </svg>
+    </button>
+    <aside id="side">
+      <div class="side-head" id="links-head">Backlinks</div>
+      <div id="links" hidden>
+        <div id="tags"></div>
+        <div id="bl-list"></div>
+        <div id="notice" hidden></div>
+      </div>
+      <div id="graph-sec">
+        <div class="side-head">
+          <span>Graph</span>
+          <span id="graph-count"></span>
+          <span class="spacer"></span>
+          <label>depth
+            <select id="depth">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </label>
+        </div>
+        <canvas id="graph-canvas"></canvas>
+        <div id="graph-note" hidden></div>
+      </div>
+    </aside>
   </div>
-  <aside id="graph-panel">
-    <div id="graph-head">
-      <span id="graph-count"></span>
-      <span class="spacer"></span>
-      <label>depth
-        <select id="depth">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-        </select>
-      </label>
-    </div>
-    <canvas id="graph-canvas"></canvas>
-    <div id="graph-note" hidden></div>
-  </aside>
-  </div>
+  <div id="save-state"></div>
+  <div id="ro-wrap"><span id="ro" hidden></span></div>
   <script>
     // This view owns its own saves and its own reload rule (MD-16/MD-17), so
     // the runtime's blanket reload-on-change must stay out of the way — it
@@ -382,19 +417,13 @@
     // Obsidian's idle autosave interval. Not configurable, deliberately: the
     // whole point of copying Obsidian here is the absence of save ceremony.
     const AUTOSAVE_MS = 2000;
-    // "live" is Live Preview, added on top of the same editor in a later step;
-    // it behaves as Source until then, which is why only two buttons show.
-    const VIEWS = ["live", "source", "reading"];
 
-    const barEl = document.getElementById("bar");
-    const filenameEl = document.getElementById("filename");
-    const saveStateEl = document.getElementById("save-state");
     const conflictEl = document.getElementById("conflict");
     const conflictTextEl = document.getElementById("conflict-text");
-    const docEl = document.getElementById("doc");
-    const docWrapEl = document.getElementById("doc-wrap");
+    const saveStateEl = document.getElementById("save-state");
+    const statusEl = document.getElementById("status");
+    const skelEl = document.getElementById("skel");
     const editorWrapEl = document.getElementById("editor-wrap");
-    const surfacesEl = document.getElementById("surfaces");
 
     let file = null;
     let text = "";        // last text loaded from (or written to) disk
@@ -405,7 +434,6 @@
     let savePromise = null;
     let saveTimer = null;
     let view = null;      // the live CodeMirror view, or null
-    let mode = "reading";
     let themeObserver = null;
     let themedDark = true;
 
@@ -434,6 +462,15 @@
       }
       return "/" + out.join("/");
     }
+
+    // A malformed escape ("%zz") throws rather than decoding; the authored text
+    // is the best remaining guess at what the author meant.
+    function decodeMaybe(value) {
+      try { return decodeURIComponent(value); } catch (e) { return value; }
+    }
+
+    function noteDir() { return file ? file.slice(0, file.lastIndexOf("/")) : ""; }
+    function isNote(path) { return /\.(md|markdown)$/i.test(path || ""); }
 
     // ---- shell navigation ---------------------------------------------------
     // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
@@ -470,17 +507,11 @@
 
     // A link to `Note#Heading` navigates to the note and hands the heading over
     // as an ordinary param, so the target view can scroll to it and the URL
-    // stays shareable — which is also how this view receives it (see render()).
+    // stays shareable — which is also how this view receives it (see load()).
     function openNote(path, heading) {
       navigateShell(path, heading ? "heading=" + encodeURIComponent(heading) : "");
     }
 
-    // ---- marked extensions --------------------------------------------------
-    // Wikilinks and tags are tokenized by marked itself rather than by a
-    // pre-pass over the source. That is why there is no second copy of
-    // graph.py's code-masking rule here: marked already knows it is inside a
-    // fenced block or a code span and never offers those characters to an
-    // inline tokenizer.
     // `Target#Heading|label` → [target, heading, label]. Both parts optional.
     function splitInner(inner) {
       const pipe = inner.indexOf("|");
@@ -494,63 +525,473 @@
       ];
     }
 
-    const wikilinkExtension = {
-      name: "wikilink",
-      level: "inline",
-      start(src) { return src.indexOf("[["); },
-      tokenizer(src) {
-        const match = /^(!?)\[\[([^\[\]\n]+?)\]\]/.exec(src);
-        if (!match) return undefined;
-        const [target, heading, label] = splitInner(match[2]);
-        return { type: "wikilink", raw: match[0], embed: !!match[1], target, heading, label };
-      },
-      renderer(token) { return renderWikilink(token); },
+    // ======================================================================
+    // Live Preview (MD-18a)
+    // ======================================================================
+    // Obsidian's mechanism rather than an approximation of it: ONE decoration
+    // set over the CM6 document. Markup is replaced by a widget or hidden
+    // everywhere except the lines the selection touches, where the raw source
+    // comes back so it can be edited. There is no second rendered copy of the
+    // document, which is precisely what lets one surface both read and write
+    // (MD-1) — no mode switch, and no caret to hand between two views.
+    //
+    // What a range IS comes from the vendored markdown grammar via syntaxTree,
+    // so this file holds no block parser. Wikilinks and tags are not part of
+    // that grammar, so they are matched by regex and then checked AGAINST the
+    // tree, which is how MD-3's code-masking rule holds here without a second
+    // copy of it.
+
+    const relinkEffect = CM.StateEffect.define();
+
+    // Node names whose text is code, and therefore never a link or a tag.
+    const CODE_NODES = new Set([
+      "InlineCode", "CodeText", "FencedCode", "CodeBlock", "CodeMark", "CodeInfo",
+    ]);
+    // A `#` inside a URL is a fragment, not a tag. This must NOT include Link
+    // or Image: the grammar wraps the inner brackets of `[[Wiki]]` in a Link
+    // node and of `![[embed]]` in an Image node, so treating those as
+    // non-linkable would silently stop every wikilink from rendering.
+    const URL_NODES = new Set(["URL", "Autolink"]);
+
+    const HEADINGS = {
+      ATXHeading1: 1, ATXHeading2: 2, ATXHeading3: 3,
+      ATXHeading4: 4, ATXHeading5: 5, ATXHeading6: 6,
+      SetextHeading1: 1, SetextHeading2: 2,
     };
-
-    const tagExtension = {
-      name: "hashtag",
-      level: "inline",
-      // Only a `#` at the start of the remaining source or after whitespace or
-      // an opening bracket can be a tag. Without that guard `start()` would
-      // point into the middle of a URL (".../#section") and split it in two.
-      start(src) {
-        const match = /(^|[\s(\[])#[A-Za-z_]/.exec(src);
-        return match ? match.index + (match[1] ? 1 : 0) : undefined;
-      },
-      tokenizer(src) {
-        const match = /^#([A-Za-z_][\w/-]*)/.exec(src);
-        return match ? { type: "hashtag", raw: match[0], tag: match[1] } : undefined;
-      },
-      renderer(token) { return `<span class="tag">#${escapeHtml(token.tag)}</span>`; },
+    const EMPHASIS = {
+      StrongEmphasis: "lp-bold",
+      Emphasis: "lp-italic",
+      Strikethrough: "lp-strike",
     };
+    const EMPHASIS_MARKS = new Set(["EmphasisMark", "StrikethroughMark"]);
 
-    function isNote(path) { return /\.(md|markdown)$/i.test(path || ""); }
-
-    function renderWikilink(token) {
-      const row = resolved ? resolved.get(token.target) : undefined;
-      const path = row ? row.path : null;
-      const label = token.label || token.target + (token.heading ? " > " + token.heading : "");
-      if (token.embed) {
-        if (!path) {
-          return `<span class="wl-embed-missing">Missing embed: ${escapeHtml(token.target)}</span>`;
-        }
-        if (isNote(path)) {
-          // A note embedded in a note links to it rather than inlining the
-          // whole document, which would need a second parse and could recurse.
-          return `<a class="wl" data-path="${escapeHtml(path)}">${escapeHtml(label)}</a>`;
-        }
-        return `<img src="${escapeHtml(fused.rawUrl(path))}" alt="${escapeHtml(token.target)}" />`;
+    // A widget is identified by `key` so CM can reuse the DOM across rebuilds
+    // instead of replacing every widget on every keystroke.
+    class DomWidget extends CM.WidgetType {
+      constructor(key, build, opaque) {
+        super();
+        this.key = key;
+        this.build = build;
+        // `true` keeps CM's own event handling off the widget, so a click
+        // reaches the delegated navigation handler instead of moving the
+        // caret. `false` is what makes a widget click-to-edit: the caret
+        // lands inside it, the line becomes selected, and the source shows.
+        this.opaque = opaque === true;
       }
-      if (!path) {
-        return `<a class="wl wl-ghost" data-create="${escapeHtml(token.target)}"
-          title="Unresolved — click to create this note">${escapeHtml(label)}</a>`;
-      }
-      const heading = token.heading ? ` data-heading="${escapeHtml(token.heading)}"` : "";
-      const title = row && row.title ? ` title="${escapeHtml(row.title)}"` : "";
-      return `<a class="wl" data-path="${escapeHtml(path)}"${heading}${title}>${escapeHtml(label)}</a>`;
+      eq(other) { return other.key === this.key; }
+      toDOM(editorView) { return this.build(editorView); }
+      ignoreEvent() { return this.opaque; }
     }
 
-    marked.use({ extensions: [wikilinkExtension, tagExtension], gfm: true });
+    function lineClass(state, from, to, cls) {
+      const out = [];
+      const first = state.doc.lineAt(from).number;
+      const last = state.doc.lineAt(Math.min(to, state.doc.length)).number;
+      for (let n = first; n <= last; n++) {
+        out.push(CM.Decoration.line({ class: cls }).range(state.doc.line(n).from));
+      }
+      return out;
+    }
+
+    // Which lines have the caret (or a selection) on them: the reveal rule.
+    // Line-level, matching Obsidian — putting the caret on a line un-renders
+    // that whole line's markup, not just the one node under the cursor.
+    function selectedLines(state) {
+      const lines = new Set();
+      for (const range of state.selection.ranges) {
+        const first = state.doc.lineAt(range.from).number;
+        const last = state.doc.lineAt(range.to).number;
+        for (let n = first; n <= last; n++) lines.add(n);
+      }
+      return lines;
+    }
+
+    function touched(state, lines, from, to) {
+      const first = state.doc.lineAt(from).number;
+      const last = state.doc.lineAt(Math.min(to, state.doc.length)).number;
+      for (let n = first; n <= last; n++) if (lines.has(n)) return true;
+      return false;
+    }
+
+    // ---- widget builders ----------------------------------------------------
+
+    // A wikilink resolved by graph.py, or a dim ghost that offers to create the
+    // note. Both carry the attributes the one delegated click handler listens
+    // for, so every link surface in this template navigates by one code path.
+    function wikilinkWidget(raw) {
+      const [target, heading, label] = splitInner(raw.replace(/^!?\[\[|\]\]$/g, ""));
+      const embed = raw.startsWith("!");
+      const row = resolved ? resolved.get(target) : undefined;
+      const path = row ? row.path : null;
+      const shown = label || target + (heading ? " > " + heading : "");
+      const key = "wl:" + (embed ? "!" : "") + raw + "|" + (path || "");
+      return new DomWidget(key, () => {
+        if (embed && path && !isNote(path)) {
+          const img = document.createElement("img");
+          img.className = "lp-img";
+          img.src = fused.rawUrl(path);
+          img.alt = target;
+          return img;
+        }
+        if (embed && !path) {
+          const span = document.createElement("span");
+          span.className = "wl-embed-missing";
+          span.textContent = "Missing embed: " + target;
+          return span;
+        }
+        const a = document.createElement("a");
+        if (!path) {
+          // Unresolved: a ghost, and clicking it creates the note — Obsidian's
+          // behaviour, and only possible because this template writes.
+          a.className = "wl wl-ghost";
+          a.dataset.create = target;
+          a.title = "Unresolved — click to create this note";
+        } else {
+          a.className = "wl";
+          a.dataset.path = path;
+          if (heading) a.dataset.heading = heading;
+          if (row && row.title) a.title = row.title;
+          a.href = urlForFsPath(path, heading ? "heading=" + encodeURIComponent(heading) : "");
+        }
+        // A note embedded in a note links to it rather than inlining the whole
+        // document, which would need a second parse and could recurse.
+        a.textContent = shown;
+        return a;
+      }, true);
+    }
+
+    // `[label](target)`. An in-vault relative target is resolved against the
+    // note's own folder and handed `data-path`, for the reason MD-4a records:
+    // this document is served at /render?path=…, so a browser-relative href
+    // resolves against the server root and misses the file entirely. A real
+    // href is set too, so hover preview and ⌘-click behave like normal links.
+    //
+    // No extension filter: the shell opens any path with its own template, so a
+    // link to a .png, a .pdf or a subfolder is as navigable as one to a note.
+    function markdownLinkWidget(label, href) {
+      const key = "ln:" + label + "|" + href;
+      return new DomWidget(key, () => {
+        const a = document.createElement("a");
+        a.className = "lp-link";
+        a.textContent = label || href;
+        // Absolute paths, any scheme (http:, mailto:, data:) and a bare
+        // #anchor are not vault paths — rewriting them would break them. MD-3
+        // draws this same line for what counts as an edge.
+        if (/^(#|\/|[a-z][a-z0-9+.-]*:)/i.test(href)) {
+          a.href = href;
+          a.target = "_blank";
+          a.rel = "noopener";
+          return a;
+        }
+        const hash = href.indexOf("#");
+        const target = hash === -1 ? href : href.slice(0, hash);
+        if (!target) { a.href = href; return a; }
+        const heading = hash === -1 ? "" : decodeMaybe(href.slice(hash + 1));
+        const path = resolvePath(noteDir(), decodeMaybe(target));
+        a.dataset.path = path;
+        if (heading) a.dataset.heading = heading;
+        a.href = urlForFsPath(path, heading ? "heading=" + encodeURIComponent(heading) : "");
+        return a;
+      }, true);
+    }
+
+    // `![alt](src)`. Click-to-edit rather than opaque: the caret lands in the
+    // source so the path can be fixed, which is the only way to edit it now
+    // that there is no separate source mode.
+    function imageWidget(alt, src) {
+      const key = "im:" + alt + "|" + src;
+      return new DomWidget(key, () => {
+        const img = document.createElement("img");
+        img.className = "lp-img";
+        img.alt = alt;
+        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) img.src = src;   // http:, data:, file:
+        else if (src.startsWith("/")) img.src = fused.rawUrl(src);
+        else img.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        return img;
+      }, false);
+    }
+
+    // A task checkbox is clickable and writes back, as in Obsidian — and it
+    // stays rendered even with the caret on its line, also as in Obsidian.
+    // The position comes from posAtDOM at click time rather than from a count
+    // of markers in the document, so an edit between render and click cannot
+    // tick the wrong box.
+    function taskWidget(checked) {
+      return new DomWidget("task:" + checked, (editorView) => {
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.className = "lp-task";
+        box.checked = checked;
+        box.disabled = !writable;
+        if (!writable) return box;
+        box.addEventListener("mousedown", (e) => e.stopPropagation());
+        box.addEventListener("change", () => {
+          const at = editorView.posAtDOM(box);
+          const line = editorView.state.doc.lineAt(at);
+          const offset = line.text.indexOf("[", at - line.from);
+          if (offset === -1) return;
+          const inner = line.from + offset + 1;
+          editorView.dispatch({
+            changes: { from: inner, to: inner + 1, insert: box.checked ? "x" : " " },
+          });
+          void save();
+        });
+        return box;
+      }, true);
+    }
+
+    function hrWidget() {
+      return new DomWidget("hr", () => {
+        const hr = document.createElement("hr");
+        hr.className = "lp-hr";
+        return hr;
+      }, false);
+    }
+
+    // A pipe table rendered as a table. Cell text is shown verbatim — inline
+    // markup inside a cell is not decorated, because a decoration cannot span
+    // into a widget's DOM. Clicking the table puts the caret in the source,
+    // which is where a cell is edited.
+    function tableWidget(source) {
+      return new DomWidget("tb:" + source, () => {
+        const rows = source.split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          // The alignment row (`|---|:--:|`) is structure, not content.
+          .filter((line) => !(/^[\s|:-]+$/.test(line) && line.includes("-")))
+          .map((line) => line.replace(/^\|/, "").replace(/\|$/, "")
+            .split("|").map((cell) => cell.trim()));
+        const table = document.createElement("table");
+        table.className = "lp-table";
+        rows.forEach((cells, index) => {
+          const tr = document.createElement("tr");
+          for (const cell of cells) {
+            const td = document.createElement(index === 0 ? "th" : "td");
+            td.textContent = cell;
+            tr.appendChild(td);
+          }
+          table.appendChild(tr);
+        });
+        return table;
+      }, false);
+    }
+
+    function tagWidget(tag) {
+      return new DomWidget("tg:" + tag, () => {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = "#" + tag;
+        return span;
+      }, false);
+    }
+
+    // ---- the decoration set -------------------------------------------------
+
+    const WIKILINK_RE = /!?\[\[([^\[\]\n]+?)\]\]/g;
+    const TAG_RE = /(^|[\s(\[])#([A-Za-z_][\w/-]*)/g;
+
+    function within(tree, pos, names) {
+      for (let node = tree.resolveInner(pos, 1); node; node = node.parent) {
+        if (names.has(node.name)) return true;
+      }
+      return false;
+    }
+
+    function buildDecorations(editorView) {
+      const state = editorView.state;
+      const lines = selectedLines(state);
+      const tree = CM.syntaxTree(state);
+      const out = [];
+      // CM rejects overlapping replacements, so every replaced range is
+      // recorded as it is made and the regex passes below skip anything that
+      // would land inside one. Decorations are built as Ranges via
+      // `.range(from, to)`, the shape Decoration.set takes; a replacement may
+      // span line breaks as an inline decoration, whereas `block: true` would
+      // additionally demand exact line boundaries and throw without them.
+      const blocked = [];
+      function pushMark(from, to, cls) {
+        if (from >= to) return;
+        out.push(CM.Decoration.mark({ class: cls }).range(from, to));
+      }
+      function pushHide(from, to) {
+        if (from >= to) return;
+        out.push(CM.Decoration.replace({}).range(from, to));
+        blocked.push([from, to]);
+      }
+      function pushWidget(from, to, widget) {
+        out.push(CM.Decoration.replace({ widget }).range(from, to));
+        blocked.push([from, to]);
+      }
+      const isBlocked = (from, to) => blocked.some(([a, b]) => from < b && to > a);
+
+      // Frontmatter is not part of the vendored grammar, and what the grammar
+      // makes of it instead is actively wrong: `---` opens as a HorizontalRule
+      // and `title: x\n---` closes as a SetextHeading2, so a YAML block would
+      // render as a rule followed by a large heading. It is therefore matched
+      // by a line scan, decorated as dim monospace, and — the part that
+      // matters — every tree decoration inside it is suppressed below.
+      // Dimmed rather than hidden: a properties table is separate work
+      // (MD-18b), and a silently invisible block is worse than a plain one.
+      let frontmatterEnd = -1;
+      if (state.doc.lines > 1 && state.doc.line(1).text.trim() === "---") {
+        for (let n = 2; n <= state.doc.lines; n++) {
+          if (state.doc.line(n).text.trim() === "---") {
+            frontmatterEnd = state.doc.line(n).to;
+            break;
+          }
+        }
+        if (frontmatterEnd !== -1) {
+          out.push(...lineClass(state, 0, frontmatterEnd, "lp-fm-line"));
+        }
+      }
+
+      for (const { from, to } of editorView.visibleRanges) {
+        tree.iterate({
+          from, to,
+          enter: (node) => {
+            const name = node.name;
+            // Inside frontmatter the grammar's answer is wrong (see above), so
+            // nothing it says about this range is acted on.
+            if (name !== "Document" && node.to <= frontmatterEnd) return false;
+            const open = touched(state, lines, node.from, node.to);
+
+            if (HEADINGS[name]) {
+              pushMark(node.from, node.to, "lp-h" + HEADINGS[name]);
+              return true; // descend: the HeaderMark child is hidden below
+            }
+            if (name === "HeaderMark") {
+              const parent = node.node.parent;
+              if (!parent || !HEADINGS[parent.name]) return false;
+              if (touched(state, lines, parent.from, parent.to)) {
+                pushMark(node.from, node.to, "lp-mark");
+                return false;
+              }
+              // Swallow the space after `##` too, or the text starts indented.
+              const after = state.doc.sliceString(node.to, node.to + 1);
+              pushHide(node.from, node.to + (after === " " ? 1 : 0));
+              return false;
+            }
+            if (EMPHASIS[name]) {
+              pushMark(node.from, node.to, EMPHASIS[name]);
+              return true;
+            }
+            if (EMPHASIS_MARKS.has(name)) {
+              if (open) pushMark(node.from, node.to, "lp-mark");
+              else pushHide(node.from, node.to);
+              return false;
+            }
+            if (name === "InlineCode") {
+              pushMark(node.from, node.to, "lp-code");
+              return true;
+            }
+            if (name === "CodeMark") {
+              const parent = node.node.parent;
+              // Only an inline span's backticks vanish; a fence keeps its
+              // markers, exactly as Obsidian does.
+              if (!parent || parent.name !== "InlineCode") return false;
+              if (open) pushMark(node.from, node.to, "lp-mark");
+              else pushHide(node.from, node.to);
+              return false;
+            }
+            if (name === "FencedCode" || name === "CodeBlock") {
+              out.push(...lineClass(state, node.from, node.to, "lp-fence-line"));
+              return true; // let the embedded language highlight inside
+            }
+            if (name === "Blockquote") {
+              out.push(...lineClass(state, node.from, node.to, "lp-quote-line"));
+              return true;
+            }
+            if (name === "QuoteMark") {
+              if (open) pushMark(node.from, node.to, "lp-mark");
+              else {
+                const after = state.doc.sliceString(node.to, node.to + 1);
+                pushHide(node.from, node.to + (after === " " ? 1 : 0));
+              }
+              return false;
+            }
+            if (name === "ListMark") {
+              pushMark(node.from, node.to, "lp-bullet");
+              return false;
+            }
+            if (name === "TaskMarker") {
+              // Rendered even with the caret on its line — as in Obsidian, a
+              // checkbox is a control, not markup you edit by hand.
+              const checked = /[xX]/.test(state.doc.sliceString(node.from, node.to));
+              pushWidget(node.from, node.to, taskWidget(checked));
+              return false;
+            }
+            if (name === "HorizontalRule") {
+              if (open) return false;
+              pushWidget(node.from, node.to, hrWidget());
+              return false;
+            }
+            if (name === "Table") {
+              if (open) return true;
+              pushWidget(node.from, node.to,
+                tableWidget(state.doc.sliceString(node.from, node.to)));
+              return false;
+            }
+            if (name === "Image" || name === "Link") {
+              if (open) return true;
+              const raw = state.doc.sliceString(node.from, node.to);
+              const match = /^(!?)\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
+              // No match means this is not a plain inline link: a reference
+              // link, a titled link, or — the common case — the inner brackets
+              // of a `[[wikilink]]`, which the regex pass below owns.
+              if (!match) return true;
+              pushWidget(node.from, node.to, match[1]
+                ? imageWidget(match[2], match[3])
+                : markdownLinkWidget(match[2], match[3]));
+              return false;
+            }
+            return true;
+          },
+        });
+      }
+
+      // Wikilinks and tags are not in the grammar, so they are matched by regex
+      // and then checked AGAINST the tree: a `[[x]]` inside a fence or a `#tag`
+      // inside a URL stays literal, which is the same line graph.py draws over
+      // the same text (MD-3). A `[[` inside frontmatter is not a link either.
+      for (const { from, to } of editorView.visibleRanges) {
+        const chunk = state.doc.sliceString(from, to);
+        WIKILINK_RE.lastIndex = 0;
+        let match;
+        while ((match = WIKILINK_RE.exec(chunk))) {
+          const start = from + match.index;
+          const end = start + match[0].length;
+          if (start < frontmatterEnd) continue;
+          if (isBlocked(start, end) || within(tree, start + 2, CODE_NODES)) continue;
+          if (touched(state, lines, start, end)) continue;
+          pushWidget(start, end, wikilinkWidget(match[0]));
+        }
+        TAG_RE.lastIndex = 0;
+        while ((match = TAG_RE.exec(chunk))) {
+          const start = from + match.index + match[1].length;
+          const end = start + match[2].length + 1;
+          if (start < frontmatterEnd) continue;
+          if (isBlocked(start, end)) continue;
+          if (within(tree, start + 1, CODE_NODES)
+              || within(tree, start + 1, URL_NODES)) continue;
+          if (touched(state, lines, start, end)) continue;
+          pushWidget(start, end, tagWidget(match[2]));
+        }
+      }
+
+      return CM.Decoration.set(out, true);
+    }
+
+    const livePreview = CM.ViewPlugin.fromClass(class {
+      constructor(editorView) { this.decorations = buildDecorations(editorView); }
+      update(update) {
+        const relinked = update.transactions.some(
+          (tr) => tr.effects.some((e) => e.is(relinkEffect)));
+        if (update.docChanged || update.viewportChanged
+            || update.selectionSet || relinked) {
+          this.decorations = buildDecorations(update.view);
+        }
+      }
+    }, { decorations: (plugin) => plugin.decorations });
 
     // ---- saving: Obsidian's model (MD-16) ----------------------------------
     // No save button, no dirty dot, no prompt. Autosave on an idle timer, on
@@ -642,7 +1083,6 @@
         }
         setDirty(false);
         await refreshLinks();
-        if (mode === "reading") renderReading();
       } catch (err) {
         saveStateEl.textContent = "Reload failed: " + (err.message || "");
         saveStateEl.classList.add("error");
@@ -696,7 +1136,6 @@
       if (view) buildEditor(view.state.doc.toString()); // rebuild with the lock on
     }
 
-    // ---- surfaces -----------------------------------------------------------
     function wantsDark() {
       return document.documentElement.getAttribute("data-theme") !== "light";
     }
@@ -707,13 +1146,13 @@
     // and blockquote continuation are NOT reimplemented here: they are
     // `markdownKeymap` from the markdown grammar we vendored, which is the same
     // code Obsidian's own editor runs.
-    function toggleWrap(view, marker) {
-      const state = view.state;
+    function toggleWrap(editorView, marker) {
+      const state = editorView.state;
       const { from, to } = state.selection.main;
       const pre = state.sliceDoc(Math.max(0, from - marker.length), from);
       const post = state.sliceDoc(to, Math.min(state.doc.length, to + marker.length));
       if (pre === marker && post === marker) {
-        view.dispatch({
+        editorView.dispatch({
           changes: [
             { from: from - marker.length, to: from },
             { from: to, to: to + marker.length },
@@ -721,7 +1160,7 @@
           selection: { anchor: from - marker.length, head: to - marker.length },
         });
       } else {
-        view.dispatch({
+        editorView.dispatch({
           changes: [{ from, insert: marker }, { from: to, insert: marker }],
           selection: { anchor: from + marker.length, head: to + marker.length },
         });
@@ -729,13 +1168,13 @@
       return true;
     }
 
-    function insertLink(view) {
-      const { from, to } = view.state.selection.main;
-      const selected = view.state.sliceDoc(from, to);
+    function insertLink(editorView) {
+      const { from, to } = editorView.state.selection.main;
+      const selected = editorView.state.sliceDoc(from, to);
       const isUrl = /^[a-z][a-z0-9+.-]*:\/\/\S*$/i.test(selected);
-      const text = isUrl ? `[](${selected})` : `[${selected}]()`;
-      view.dispatch({
-        changes: { from, to, insert: text },
+      const inserted = isUrl ? `[](${selected})` : `[${selected}]()`;
+      editorView.dispatch({
+        changes: { from, to, insert: inserted },
         selection: { anchor: isUrl ? from + 1 : from + selected.length + 3 },
       });
       return true;
@@ -743,17 +1182,19 @@
 
     // Cmd+Enter toggles the task on this line, adds a checkbox to a plain list
     // item, or makes the line a task — the three states Obsidian cycles.
-    function toggleCheckbox(view) {
-      const line = view.state.doc.lineAt(view.state.selection.main.head);
+    function toggleCheckbox(editorView) {
+      const line = editorView.state.doc.lineAt(editorView.state.selection.main.head);
       const box = /^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]/.exec(line.text);
       if (box) {
         const at = line.from + box[1].length + 1;
-        view.dispatch({ changes: { from: at, to: at + 1, insert: box[2] === " " ? "x" : " " } });
+        editorView.dispatch({
+          changes: { from: at, to: at + 1, insert: box[2] === " " ? "x" : " " },
+        });
         return true;
       }
       const bullet = /^(\s*(?:[-*+]|\d+[.)])\s+)/.exec(line.text);
       const indent = /^\s*/.exec(line.text)[0];
-      view.dispatch({
+      editorView.dispatch({
         changes: bullet
           ? { from: line.from + bullet[1].length, insert: "[ ] " }
           : { from: line.from + indent.length, insert: "- [ ] " },
@@ -850,7 +1291,7 @@
         return { from, options: headingOptions(headings, notePart) };
       }
 
-      // `#tag` — same guard the renderer uses, so a URL fragment is not a tag.
+      // `#tag` — same guard the decoration uses, so a URL fragment is not a tag.
       const tag = /(?:^|[\s(\[])#([A-Za-z_][\w/-]*)?$/.exec(before);
       if (tag) {
         const typed = tag[1] || "";
@@ -876,6 +1317,7 @@
         CM.Prec.high(CM.keymap.of(CM.markdownKeymap.concat(editorKeymap))),
         CM.Prec.high(CM.autocompletion({ override: [markdownCompletions] })),
         pasteHandler,
+        livePreview,
         CM.EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           setDirty(true);
@@ -887,7 +1329,8 @@
         // the UI honest up front. On an rclone mount with CacheMode=full a
         // doomed write even succeeds locally and only 403s later on upload, so
         // this reads the shell's persisted read_only flag through
-        // stat.writable rather than os.access (MD-15).
+        // stat.writable rather than os.access (MD-15). Decorations still
+        // render: a locked buffer is what "reading view" is now (MD-1).
         base.push(CM.EditorView.editable.of(false));
         base.push(CM.EditorState.readOnly.of(true));
       }
@@ -897,14 +1340,14 @@
     function buildEditor(body) {
       const previous = view;
       const selection = previous ? previous.state.selection.main.head : cursorMemory();
-      const scroll = surfacesEl.scrollTop;
+      const scroll = previous ? previous.scrollDOM.scrollTop : 0;
       previous?.destroy();
       editorWrapEl.innerHTML = "";
       const extensions = editorExtensions();
       view = new CM.EditorView({ doc: body, extensions, parent: editorWrapEl });
       const at = Math.min(selection, view.state.doc.length);
       view.dispatch({ selection: { anchor: at } });
-      surfacesEl.scrollTop = scroll;
+      view.scrollDOM.scrollTop = scroll;
 
       // A live appearance change reconfigures the RUNNING view — rebuilding it
       // would throw away unsaved edits, the caret and the scroll position.
@@ -938,150 +1381,27 @@
       catch (e) { /* private mode — the memory is a nicety */ }
     }
 
-    function renderReading() {
-      // No sanitizer by design — local trust model (DECISIONS.md D3); the file
-      // is the user's own and renders with full HTML powers, like any view.
-      docEl.innerHTML = marked.parse(currentText());
-      rewriteRelativeImages(docEl, file);
-      rewriteRelativeLinks(docEl, file);
-      enableTaskBoxes(docEl);
-      scrollToHeading(docEl);
-    }
-
-    // A rendered checkbox is clickable and writes back to the file, as in
-    // Obsidian. The nth checkbox in the DOM is the nth task marker in the
-    // source — a positional match, which is exactly why it is computed against
-    // the text being rendered rather than remembered from an earlier parse.
-    const TASK_MARKER = /^([ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm;
-
-    function enableTaskBoxes(root) {
-      const boxes = root.querySelectorAll('input[type="checkbox"]');
-      boxes.forEach((box, position) => {
-        box.disabled = !writable;
-        if (!writable) return;
-        box.addEventListener("change", () => void toggleTaskAt(position, box.checked));
-      });
-    }
-
-    async function toggleTaskAt(position, checked) {
-      const body = currentText();
-      let index = 0;
-      let updated = null;
-      TASK_MARKER.lastIndex = 0;
-      body.replace(TASK_MARKER, (whole, head, state, tail, offset) => {
-        if (index++ === position) {
-          updated = body.slice(0, offset) + head + (checked ? "x" : " ") + tail
-            + body.slice(offset + whole.length);
-        }
-        return whole;
-      });
-      if (updated === null) return;
-      if (view) {
-        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: updated } });
-        await save();
-      } else {
-        text = updated;
-        try {
-          const st = await fused.writeFile(file, updated, { expectedMtime: mtime });
-          mtime = st.mtime;
-          await refreshLinks();
-        } catch (err) {
-          if (err.type === "conflict") {
-            showConflict("This note changed on disk, so the checkbox was not written.");
-          }
-          return;
-        }
-      }
-      renderReading();
-    }
-
-    function currentText() {
-      return view ? view.state.doc.toString() : text;
-    }
-
-    // Rewrite <img> tags whose markdown-authored src is relative. The page URL
-    // is /render?path=…, so a browser-relative src resolves against the server
-    // root, not the markdown file's directory — it would 404. Uses
-    // getAttribute("src") (the authored value); .src is already absolutized.
-    function rewriteRelativeImages(root, path) {
-      const dir = path.slice(0, path.lastIndexOf("/"));
-      for (const img of root.querySelectorAll("img")) {
-        const src = img.getAttribute("src") || "";
-        if (/^(\/|https?:|data:|file:)/i.test(src)) continue;
-        img.src = fused.rawUrl(resolvePath(dir, src));
-      }
-    }
-
-    // The anchor equivalent of rewriteRelativeImages, and needed for the same
-    // reason: `[CONTRIBUTING](../CONTRIBUTING.md)` is authored against the
-    // note's own folder, but this document is served at /render?path=…, so the
-    // browser resolves it against the server root and misses the file (MD-4a).
-    // Every in-vault relative link is handed `data-path`, which is what the one
-    // delegated click handler already listens for — so a relative link and a
-    // wikilink navigate by the same path, including the flush that protects
-    // unsaved edits. A real href is set too, so hover and ⌘-click behave.
-    //
-    // No extension filter: the shell opens any path with its own template, so a
-    // link to a .png, a .pdf or a subfolder is as navigable as one to a note.
-    function rewriteRelativeLinks(root, path) {
-      const dir = path.slice(0, path.lastIndexOf("/"));
-      for (const anchor of root.querySelectorAll("a[href]")) {
-        const href = anchor.getAttribute("href") || "";
-        // Absolute paths, any scheme (http:, mailto:, data:) and a bare
-        // #anchor are not vault paths — rewriting them would break them. MD-3
-        // draws this same line for what counts as an edge.
-        if (/^(#|\/|[a-z][a-z0-9+.-]*:)/i.test(href)) continue;
-        const hash = href.indexOf("#");
-        const target = hash === -1 ? href : href.slice(0, hash);
-        if (!target) continue;
-        // marked percent-encodes what it emits, so `./My%20Note.md` has to be
-        // decoded before it is joined onto the note's folder.
-        const heading = hash === -1 ? "" : decodeMaybe(href.slice(hash + 1));
-        const resolved = resolvePath(dir, decodeMaybe(target));
-        anchor.dataset.path = resolved;
-        if (heading) anchor.dataset.heading = heading;
-        anchor.setAttribute("href", urlForFsPath(
-          resolved, heading ? "heading=" + encodeURIComponent(heading) : ""));
-      }
-    }
-
-    // A malformed escape ("%zz") throws rather than decoding; the authored text
-    // is the best remaining guess at what the author meant.
-    function decodeMaybe(value) {
-      try { return decodeURIComponent(value); } catch (e) { return value; }
-    }
-
-    function scrollToHeading(root) {
+    // `?heading=` is how a `[[Note#Heading]]` link arrives. There are no
+    // rendered headings to scan any more, so the doc itself is the index:
+    // scroll the matching ATX line into view without moving the caret onto it,
+    // which would un-render that line the moment you arrived.
+    function scrollToHeading() {
       const wanted = (fused.params.get("heading") || "").trim().toLowerCase();
-      if (!wanted) return;
-      for (const el of root.querySelectorAll("h1, h2, h3, h4, h5, h6")) {
-        if (el.textContent.trim().toLowerCase() === wanted) {
-          el.scrollIntoView({ block: "start" });
+      if (!wanted || !view) return;
+      const doc = view.state.doc;
+      for (let n = 1; n <= doc.lines; n++) {
+        const match = /^#{1,6}\s+(.*)$/.exec(doc.line(n).text);
+        if (match && match[1].trim().toLowerCase() === wanted) {
+          view.dispatch({
+            effects: CM.EditorView.scrollIntoView(doc.line(n).from, { y: "start" }),
+          });
           return;
         }
       }
     }
 
-    async function applyMode(next) {
-      if (!VIEWS.includes(next)) next = "reading";
-      if (next !== "reading" && !view) buildEditor(text);
-      if (next === "reading") {
-        // Leaving an editing surface flushes, exactly as switching file does.
-        rememberCursor();
-        await save();
-        renderReading();
-      }
-      mode = next;
-      docWrapEl.classList.toggle("off", next !== "reading");
-      editorWrapEl.classList.toggle("on", next !== "reading");
-      for (const button of document.querySelectorAll("#modes button")) {
-        button.setAttribute("aria-pressed", String(button.dataset.view === next));
-      }
-      if (next !== "reading") view.focus();
-    }
-
-    // ---- the backlinks footer ----------------------------------------------
-    function renderFooter() {
+    // ---- backlinks, in the sidebar ------------------------------------------
+    function renderSidebar() {
       const linksEl = document.getElementById("links");
       const listEl = document.getElementById("bl-list");
       const tagsEl = document.getElementById("tags");
@@ -1095,7 +1415,7 @@
         .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
 
       const rows = notes.backlinks || [];
-      document.getElementById("bl-heading").textContent =
+      document.getElementById("links-head").textContent =
         rows.length ? `Backlinks (${rows.length})` : "Backlinks";
       listEl.innerHTML = rows.length
         ? rows.map((row) => `
@@ -1142,7 +1462,10 @@
         notes = null;
         resolved = null;
       }
-      renderFooter();
+      renderSidebar();
+      // Every ghost may just have become a real link (or the reverse), and the
+      // decorations were built against the old answer.
+      view?.dispatch({ effects: relinkEffect.of(null) });
       return notes;
     }
 
@@ -1152,7 +1475,7 @@
       if (!notes) return;
       const clean = target.replace(/\\/g, "/").replace(/^\.\//, "");
       const name = /\.(md|markdown)$/i.test(clean) ? clean : clean + ".md";
-      const base = clean.includes("/") ? notes.root : file.slice(0, file.lastIndexOf("/"));
+      const base = clean.includes("/") ? notes.root : noteDir();
       const path = resolvePath(base, name);
       try {
         const st = await fused.stat(path);
@@ -1168,8 +1491,8 @@
       openNote(path, "");
     }
 
-    // One delegated handler for every link surface: rendered wikilinks and
-    // backlink rows both carry data-path; ghosts carry data-create.
+    // One delegated handler for every link surface: wikilink and markdown-link
+    // widgets and backlink rows all carry data-path; ghosts carry data-create.
     document.addEventListener("click", (event) => {
       const create = event.target.closest("[data-create]");
       if (create) {
@@ -1183,25 +1506,17 @@
       openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
     });
 
-    for (const button of document.querySelectorAll("#modes button")) {
-      button.addEventListener("click", () => fused.params.set("view", button.dataset.view));
-    }
     document.getElementById("reload").addEventListener("click", () => void reloadFromDisk());
     document.getElementById("keep").addEventListener("click", () => void keepMine());
 
     // Cmd/Ctrl+S forces the flush early — it is not "the save", because the
-    // idle timer and the blur hook already saved. Cmd/Ctrl+E toggles
-    // reading/editing, as in Obsidian.
+    // idle timer and the blur hook already saved. There is no Cmd/Ctrl+E: with
+    // one surface there is nothing to toggle to (MD-1).
     window.addEventListener("keydown", (event) => {
       if (!(event.metaKey || event.ctrlKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === "s") {
-        event.preventDefault();
-        void save();
-      } else if (key === "e") {
-        event.preventDefault();
-        fused.params.set("view", mode === "reading" ? "source" : "reading");
-      }
+      if (event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      void save();
     });
 
     // Flush on focus loss and on tab switch, then look for an external change
@@ -1227,11 +1542,12 @@
       return { ok: !dirty && conflictEl.style.display !== "flex" };
     };
 
-    // ---- local graph panel (MD-19) -----------------------------------------
+    // ---- the sidebar's graph (MD-19) ---------------------------------------
     // The canvas, the sim and every interaction rule live in
     // /template-shared/graph-canvas.js, shared with the folder-level `graph`
     // mode — one implementation, so the two surfaces cannot drift apart.
-    const panelEl = document.getElementById("graph-panel");
+    const sideEl = document.getElementById("side");
+    const toggleEl = document.getElementById("toggle-graph");
     const canvasEl = document.getElementById("graph-canvas");
     const graphCountEl = document.getElementById("graph-count");
     const graphNoteEl = document.getElementById("graph-note");
@@ -1275,15 +1591,18 @@
       canvas.setData(data);
     }
 
-    document.getElementById("toggle-graph").addEventListener("click", () => {
+    toggleEl.addEventListener("click", () => {
       fused.params.set("graph", graphOn() ? "0" : "1");
     });
     depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
 
-    function applyGraphPanel() {
+    // One toggle for the whole sidebar: backlinks and the graph are the same
+    // panel, as they are in Obsidian's right sidebar. The state lives in a
+    // param, so an open sidebar is part of a shareable URL.
+    function applySidebar() {
       const on = graphOn();
-      panelEl.classList.toggle("on", on);
-      document.getElementById("toggle-graph").setAttribute("aria-pressed", String(on));
+      sideEl.classList.toggle("on", on);
+      toggleEl.setAttribute("aria-pressed", String(on));
       depthEl.value = String(graphDepth());
       if (on) {
         canvas.nudge(); // the canvas had zero size while the panel was hidden
@@ -1291,56 +1610,60 @@
       }
     }
 
+    function fail(html, isError) {
+      skelEl.hidden = true;
+      statusEl.hidden = false;
+      statusEl.classList.toggle("error", isError === true);
+      statusEl.innerHTML = html;
+    }
+
     // ---- load --------------------------------------------------------------
     async function load() {
       file = fused.params.get("_file");
       if (!file) {
-        docEl.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        fail("No file selected (missing _file param).", true);
         return;
       }
       const rawUrl = fused.rawUrl(file);
       try {
         const st = await fused.stat(file);
         if (st.size !== null && st.size !== undefined && st.size > MAX_BYTES) {
-          docEl.innerHTML = `<div id="status">File is too large to render inline (${st.size.toLocaleString()} bytes).
-            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          fail(`File is too large to edit inline (${st.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a>`, false);
           return;
         }
         text = await fused.readFile(file);
         mtime = st.mtime;
         writable = st.writable !== false; // absent field (older server) → editable
       } catch (err) {
-        docEl.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        fail(`Failed to load file: ${escapeHtml(err.message)}`, true);
         return;
       }
 
-      filenameEl.textContent = file.split("/").pop();
-      barEl.style.display = "flex";
       fusedRoBadge.update(document.getElementById("ro"),
         writable ? "" : "Read-only",
         writable ? "" : "This file can't be written, so the editor opens locked.");
 
-      // The link scan runs alongside the first render; a failed or refused scan
-      // degrades to plain markdown rather than blocking the document.
-      await Promise.all([applyMode(fused.params.get("view") || "reading"), refreshLinks()]);
-      // The first render ran before the scan resolved, so re-render now that
-      // the wikilink renderer has the resolved targets in hand.
-      if (mode === "reading") renderReading();
+      skelEl.hidden = true;
+      buildEditor(text);
+      scrollToHeading();
+      // The link scan runs alongside the first build; a failed or refused scan
+      // degrades to plain markdown rather than blocking the document, and
+      // refreshLinks re-decorates once it lands.
+      await refreshLinks();
       lastGraph = (fused.params.get("graph") || "0") + "/" + (fused.params.get("depth") || "1");
-      applyGraphPanel();
+      applySidebar();
     }
 
-    // Params are the state: the mode switcher, the graph toggle and the depth
-    // all write params, and this is the single re-render path — which is also
-    // what makes a graph view URL-shareable, unlike Obsidian's.
+    // Params are the state: the sidebar toggle and the depth both write params,
+    // and this is the single re-render path — which is also what makes a graph
+    // view URL-shareable, unlike Obsidian's.
     let lastGraph = null;
     fused.params.onChange((params) => {
-      const next = params.view || "reading";
-      if (next !== mode) void applyMode(next);
       const key = (params.graph || "0") + "/" + (params.depth || "1");
       if (key !== lastGraph) {
         lastGraph = key;
-        applyGraphPanel();
+        applySidebar();
       }
     });
 

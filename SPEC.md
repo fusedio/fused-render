@@ -2633,19 +2633,38 @@ Goal: `.md` stops being read-only. One template reads, writes, resolves
 behaviour copied from Obsidian rather than invented. Design + rationale:
 `docs/markdown-graph.html`.
 
-- **MD-1** **Three surfaces, one data module.** The **note view** (`markdown`,
-  the `.md` default) renders a note with resolved wikilinks, a backlinks footer
-  and an editable surface; the **local graph** is a panel inside it, the
-  neighbourhood of the open note; the **folder graph** (`graph`) is a directory
-  mode showing every note under the folder you are standing in. All three read
-  `templates/markdown/graph.py` — one module owns parsing, resolution and
-  assembly, so no two surfaces can disagree about what a link is or where it
-  points. The folder mode calls it as `../markdown/graph.py` (`/api/run`
-  resolves a relative `py` against the page's directory) rather than shipping a
-  second copy.
+- **MD-1** **One surface, not a reading mode and a writing mode.** The **note
+  view** (`markdown`, the `.md` default) is a **Live Preview editor and nothing
+  else**: always editable, markup rendered in place, and no mode switcher.
+  Obsidian splits Reading view from Editing view; this deliberately does not,
+  because a mode switch here is a *template swap* rather than a sub-mode of one
+  persistent editor — the caret and the undo history would not survive it, so
+  the toggle would cost more than it does in Obsidian and buy less. A read-only
+  file is the reading view: the same decorations over a locked buffer (MD-15),
+  which unifies that path instead of branching it. The **local graph** is a
+  panel inside the view (MD-19), and the **folder graph** (`graph`) is a
+  directory mode over every note under the folder you are standing in. All
+  three read `templates/markdown/graph.py` — one module owns parsing,
+  resolution and assembly, so no two surfaces can disagree about what a link is
+  or where it points. The folder mode calls it as `../markdown/graph.py`
+  (`/api/run` resolves a relative `py` against the page's directory) rather
+  than shipping a second copy.
+- **MD-2a** **No toolbar.** The shell's own breadcrumb already names the open
+  file, and Obsidian shows no save state, no dirty indicator and no mode
+  buttons — which left the bar holding nothing. What survived it went where it
+  belongs: the read-only badge floats (the shared `ro-badge.js` idiom), a save
+  *failure* floats as a pill and is invisible when there is nothing to say, and
+  the reload-or-keep banner (MD-17) takes a row only while a conflict is
+  unresolved. The single piece of persistent chrome is a 26px sidebar toggle
+  pinned to the top-right corner.
 - **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
-  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays as
-  the plain-text escape hatch. The universal `/` directory key gains `graph`:
+  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
+  **unchanged** as the raw-source escape hatch. Two editors for one extension
+  with two save models is accepted rather than reconciled: `code` is the
+  generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
+  is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
+  `code` for a `.md` asked for code behaviour. The universal `/` directory key
+  gains `graph`:
   `["_listing", "graph", "preview", "zarr_aoi"]`. `graph` ships a `condition.py`
   (CT-12), so `_listing` remains the immediate default and the graph joins the
   switcher only where the background gate allows it (PT-8).
@@ -2656,9 +2675,15 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`,
   `#tag`, and an ordinary relative markdown link `](./rel.md)` — a URL, a
   `mailto:` and a bare `#anchor` do not. `[[#Heading]]` is an anchor inside the
-  same note, not an edge. The rendered surface does **not** re-implement the
-  masking rule: the template registers wikilinks and tags as `marked` inline
-  extensions, and `marked` already knows what is inside a fence.
+  same note, not an edge. The editing surface does **not** re-implement the
+  masking rule: wikilinks and tags are not in the vendored markdown grammar, so
+  they are matched by regex and then checked **against the syntax tree** — a
+  match inside `InlineCode`/`CodeText`/`FencedCode` is not a link, and a `#`
+  inside a `URL` is a fragment. The tree is asked what a range *is*; no second
+  block parser exists in JS. The guard must **not** list `Link`/`Image`: the
+  grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
+  `![[embed]]` in an `Image` node, so including them silently renders no
+  wikilinks at all (found by executing it — see MD-18a).
 - **MD-4** **Resolution: the shortest path that is unambiguous.** Tried in
   order — relative to the linking note's own folder, then from the vault root,
   then as a path suffix, then as a bare basename — case-insensitively, with the
@@ -2669,21 +2694,25 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   note** (MD-16 makes that possible). An `![[embed]]` resolves through the same
   tiers over the folder's non-note files, so a picture in an `img/` subfolder is
   found from anywhere.
-- **MD-4a** **A relative link is rewritten for the shell.** The rendered
-  document is served at `/render?path=…`, so a browser resolves
-  `](../CONTRIBUTING.md)` against the *server root* and misses the file — the
-  same trap `rewriteRelativeImages` already avoided for `<img>`, and the reason
-  anchors need `rewriteRelativeLinks`. Each in-vault relative anchor is given
-  `data-path` (plus `data-heading` for a `#Heading` suffix), which is what the
-  one delegated click handler already listens for, so a relative link and a
-  wikilink navigate by the same route and get the same pre-navigation flush of
-  unsaved edits. A real `href` is set alongside it so hover and ⌘-click behave
-  like ordinary links. Percent-escapes are decoded first (`marked` emits them),
-  and a malformed escape falls back to the authored text rather than throwing
-  the render away. Left untouched, matching MD-3's line for what is an edge:
-  absolute paths, any scheme, and a bare `#anchor`. **No extension filter** —
-  the shell opens any path with its own template, so a link to a `.png` or a
-  subfolder is as navigable as one to a note.
+- **MD-4a** **A relative link is resolved for the shell.** The document is
+  served at `/render?path=…`, so a browser resolves `](../CONTRIBUTING.md)`
+  against the *server root* and misses the file. The link's widget therefore
+  resolves the target against the note's own folder and sets `data-path` (plus
+  `data-heading` for a `#Heading` suffix), which is what the one delegated click
+  handler already listens for — so a relative link and a wikilink navigate by
+  the same route and get the same pre-navigation flush of unsaved edits. A real
+  `href` is set alongside it so hover and ⌘-click behave like ordinary links.
+  Percent-escapes are decoded first, and a malformed escape falls back to the
+  authored text rather than throwing the decoration pass away. Left untouched,
+  matching MD-3's line for what is an edge: absolute paths, any scheme (opened
+  in a new tab), and a bare `#anchor`. **No extension filter** — the shell opens
+  any path with its own template, so a link to a `.png` or a subfolder is as
+  navigable as one to a note.
+- **MD-4b** **An arriving `?heading=` scrolls, it does not select.** There are no
+  rendered headings to scan, so the document is the index: the matching ATX line
+  is found by text and scrolled into view with `scrollIntoView`. The caret is
+  deliberately **not** moved onto it — that would reveal the heading's own
+  markup the instant you arrived.
 - **MD-5** **Backlinks** are computed by resolving every other note's links and
   keeping the ones that land on this note — never from a stored reverse index,
   for the reason in MD-6. Each carries the linking note's title, relative path
@@ -2791,20 +2820,60 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   not a hand-rolled copy; auto-pairing comes from `basicSetup`'s
   `closeBrackets`. On top: `Tab`/`⇧Tab` indent and outdent list items, `⌘B`/`⌘I`/
   `⌘K` as **toggles**, `⌘⏎` cycling a line through task states, pasting a URL
-  over a selection making a link of it, `⌘E` toggling reading↔editing, and the
-  caret position remembered per file. A **rendered checkbox** is clickable and
-  writes back (the nth box is the nth task marker in the text being rendered),
-  disabled on a read-only file.
-- **MD-18a** *Not built:* **Live Preview decorations.** The vendored primitives
-  are in place (MD-13) and the design is settled — a decoration set over the CM6
-  document, which is what Obsidian's Live Preview is — but the mode itself is
-  not written. `view=live` is accepted and currently resolves to **Source**, so
-  a URL saved against a later version degrades rather than breaks; only Source
-  and Reading are offered as buttons. Also not built: a frontmatter properties
-  table, inline note embeds (an embedded note renders as a link, which avoids a
-  second parse and a recursion), and paste-or-drop of an image —
+  over a selection making a link of it, and the caret position remembered per
+  file. There is no `⌘E`: with one surface there is nothing to toggle to (MD-1).
+  A **rendered checkbox** is clickable and writes back, disabled on a read-only
+  file; its position comes from `posAtDOM` at click time rather than from a
+  count of markers in the source, so an edit between render and click cannot
+  tick the wrong box.
+- **MD-18a** **Live Preview.** One `Decoration` set over the CM6 document —
+  Obsidian's own mechanism, not an approximation of it. Markup is replaced by a
+  widget or hidden everywhere except the lines the selection touches, where the
+  raw source returns so it can be edited; reveal is **per line**, matching
+  Obsidian, so putting the caret on a line un-renders that whole line rather
+  than one node. Covered: headings, bold/italic/strikethrough/inline code,
+  fenced blocks (markers kept and the embedded language highlighted, as in
+  Obsidian), blockquotes, list bullets, horizontal rules, pipe tables,
+  `[label](target)` links, `![alt](src)` images, wikilinks/embeds/ghosts and
+  tags. **What a range is comes from `syntaxTree`**, so this template holds no
+  block parser (MD-3).
+  Two behaviours are deliberately unlike the rest: a **checkbox stays rendered**
+  under the caret, because it is a control and not markup you edit by hand; and
+  widgets whose *content* needs editing (image, table, tag) are **click-to-edit**
+  — a click lands the caret inside them and the source appears — whereas links
+  are opaque so a click navigates.
+  **Frontmatter is a special case with a real trap:** the vendored grammar has
+  no frontmatter rule, and what it produces instead is actively wrong —
+  `---\ntitle: x\n---` parses as a `HorizontalRule` followed by a
+  `SetextHeading2`, so YAML rendered as a horizontal rule plus a large heading.
+  The block is therefore found by a line scan, dimmed, and **every tree
+  decoration inside it suppressed**. Dimmed rather than hidden because a
+  properties table is separate work (MD-18b) and a silently invisible block is
+  worse than a plain one.
+  Because CM *throws* on a decoration set whose replacements overlap, every
+  replaced range is recorded as it is made and the regex passes skip anything
+  landing inside one; a `block: true` replacement is avoided entirely, since it
+  additionally demands exact line boundaries.
+  This is the one part of the template whose correctness is invisible in a diff
+  — it depends entirely on what the grammar calls each range, and the grammar
+  was wrong twice in ways no source assertion would have caught (the frontmatter
+  case above, and `Link`/`Image` wrapping wikilink brackets, MD-3). It is
+  therefore covered by **execution**: `scripts/vendor-codemirror/live-preview-probe.mjs`
+  runs the real builder against the real grammar headlessly and
+  `tests/test_markdown_live_preview.py` asserts over the resulting decoration
+  set. Those tests skip where the gitignored vendor `node_modules` is absent.
+- **MD-18b** *Not built:* a frontmatter properties table; inline note embeds (an
+  embedded note renders as a link, which avoids a second parse and a
+  recursion); inline markup **inside a table cell**, which a decoration cannot
+  reach because it cannot span into a widget's DOM (clicking the table shows the
+  source, which is where a cell is edited); and paste-or-drop of an image —
   `fused.writeFile` takes UTF-8 text only, so a binary attachment write needs a
   runtime change first.
+- **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
+  Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
+  document, which a full-height editor has no room for. Backlinks and tags
+  scroll in the upper section; the graph canvas and its depth control sit below.
+  One toggle opens both: they answer the same question about the open note.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one

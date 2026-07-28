@@ -1,20 +1,25 @@
-"""Source-contract tests for the markdown template's editor (SPEC §32).
+"""Source-contract tests for the markdown template (SPEC §32).
 
-Nothing in the suite executes template JS, so — like the `runtime.js` wiring
-assertions (D137) — these pin the invariants that are easy to regress silently
-and impossible to see in a diff review of a 900-line template:
+These pin the invariants that are easy to regress silently and impossible to
+see in a diff review of a long template, the way the `runtime.js` wiring
+assertions do (D137):
 
+* one surface (MD-1): the template is a Live Preview editor and nothing else —
+  no reading/source mode switcher, no toolbar, no ⌘E, and no second render
+  pipeline over the same document;
 * the Obsidian save model (MD-16): no save button, no dirty indicator, an idle
   timer plus blur/tab-switch, and ⌘S as a flush rather than *the* save;
 * the one deviation (MD-17): a dirty buffer whose mtime moved gets a
   reload-or-keep banner instead of last-write-wins;
 * read-only comes off `stat.writable` — the shell's persisted `read_only` flag —
   never `os.access` (MD-15);
-* the link layer tokenizes through marked's extension hooks, so the
-  code-masking rule in `graph.py` has no second copy in JS (MD-3).
+* the link layer asks the vendored grammar what a range is, so the code-masking
+  rule in `graph.py` has no second parser in JS (MD-3).
 
-The behavioural coverage for what a link IS and where it points lives in
-tests/test_markdown_graph.py, against the Python that decides both.
+Behavioural coverage lives next door and does not stop at the source:
+tests/test_markdown_live_preview.py runs the real decoration builder against
+the real grammar, and tests/test_markdown_graph.py covers what a link IS and
+where it points, against the Python that decides both.
 """
 import os
 
@@ -29,6 +34,35 @@ TEMPLATE = os.path.join(
 def source():
     with open(TEMPLATE, encoding="utf-8") as handle:
         return handle.read()
+
+
+# ------------------------------------------------------- one surface (MD-1)
+
+
+def test_there_is_no_reading_or_source_mode_switcher(source):
+    # The template is a single Live Preview surface. A mode switcher would mean
+    # two renderings of one document and two places for the caret to be.
+    assert "data-view" not in source
+    assert "applyMode" not in source
+    assert 'fused.params.set("view"' not in source
+
+
+def test_there_is_no_toolbar(source):
+    # The shell's breadcrumb already names the file and Obsidian shows no save
+    # state, so the bar had nothing left to hold (MD-2a). The reload-or-keep
+    # banner is not a toolbar: it appears only while a conflict is unresolved.
+    assert 'id="bar"' not in source
+    assert 'id="filename"' not in source
+    assert 'id="conflict"' in source
+
+
+def test_there_is_no_second_render_pipeline(source):
+    # marked and the HTML rewrites it needed are gone: a Live Preview decorates
+    # the source document, so there is no rendered copy to post-process.
+    assert "marked" not in source
+    assert "rewriteRelativeImages" not in source
+    assert "rewriteRelativeLinks" not in source
+    assert "innerHTML = marked" not in source
 
 
 def test_the_editor_opts_out_of_the_runtime_reload(source):
@@ -52,8 +86,10 @@ def test_there_is_no_save_button_and_no_dirty_indicator(source):
 
 
 def test_cmd_s_forces_the_flush_rather_than_being_the_save(source):
-    assert 'key === "s"' in source
+    assert 'event.key.toLowerCase() !== "s"' in source
     assert "void save();" in source
+    # And there is no ⌘E: with one surface there is nothing to toggle to.
+    assert 'key === "e"' not in source
 
 
 def test_writes_are_locked_to_the_last_known_mtime(source):
@@ -89,11 +125,20 @@ def test_read_only_comes_from_stat_writable_not_os_access(source):
     assert "lockEditor(" in source
 
 
-def test_the_link_layer_tokenizes_through_marked_extensions(source):
-    # A pre-pass over the source would need a second copy of graph.py's
-    # code-masking rule; marked already knows what is inside a fence.
-    assert "marked.use({ extensions: [wikilinkExtension, tagExtension]" in source
-    assert 'level: "inline"' in source
+def test_the_link_layer_asks_the_grammar_what_a_range_is(source):
+    # Wikilinks and tags are not in the markdown grammar, so they are matched by
+    # regex — but whether a match COUNTS is answered by the tree, not by a
+    # second block parser. That is what keeps graph.py's code-masking rule
+    # (MD-3) from having a rival implementation in JS.
+    assert "CM.syntaxTree(state)" in source
+    assert "within(tree, start + 2, CODE_NODES)" in source
+    assert "within(tree, start + 1, URL_NODES)" in source
+    # And the guard must not list Link/Image: the grammar wraps `[[Wiki]]`'s
+    # inner brackets in a Link node, so doing so hides every wikilink. The
+    # behavioural half of this is in test_markdown_live_preview.py.
+    code_nodes = source[source.index("const CODE_NODES"):]
+    code_nodes = code_nodes[:code_nodes.index("]);")]
+    assert '"Link"' not in code_nodes and '"Image"' not in code_nodes
 
 
 def test_resolution_is_never_recomputed_in_the_page(source):
@@ -157,11 +202,15 @@ def test_the_popup_inserts_the_form_graph_py_says_resolves(source):
     assert "label: note.link" in source
 
 
-def test_a_rendered_checkbox_writes_back_and_is_locked_when_read_only(source):
-    body = source[source.index("function enableTaskBoxes"):]
+def test_a_checkbox_writes_back_and_is_locked_when_read_only(source):
+    body = source[source.index("function taskWidget"):]
     body = body[:body.index("\n    }")]
     assert "box.disabled = !writable;" in body
-    assert "toggleTaskAt(position, box.checked)" in body
+    # The position comes from the DOM at click time. The previous rendering
+    # counted markers in the source and matched the nth checkbox to the nth
+    # marker, which an edit between render and click could get wrong.
+    assert "editorView.posAtDOM(box)" in body
+    assert "void save();" in body
 
 
 # ------------------------------------------------------- graph panel (MD-19)
@@ -183,9 +232,21 @@ def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
     assert 'fused.params.get("graph") === "1"' in source
 
 
+def test_backlinks_and_the_graph_are_one_sidebar_behind_one_toggle(source):
+    # Obsidian's right sidebar, and the only chrome this view has: a 26px
+    # toggle pinned to the right edge, plus the panel it opens.
+    assert 'id="side"' in source
+    assert 'id="toggle-graph"' in source
+    assert 'id="links"' in source and 'id="graph-canvas"' in source
+    body = source[source.index("function applySidebar"):]
+    body = body[:body.index("\n    }")]
+    assert 'sideEl.classList.toggle("on", on)' in body
+    assert 'toggleEl.setAttribute("aria-pressed", String(on))' in body
+
+
 def test_the_panel_asks_for_a_bounded_neighbourhood(source):
     body = source[source.index("async function loadGraph"):]
-    body = body[:body.index("\n    document.getElementById(\"toggle-graph\")")]
+    body = body[:body.index("\n    toggleEl.addEventListener")]
     assert 'action: "graph"' in body
     assert "depth: String(graphDepth())" in body
     # A refused root is reported, not drawn as an empty graph.
@@ -221,48 +282,57 @@ def test_a_saved_note_refreshes_the_open_graph(source):
     assert "candidates = null;" in source
 
 
+# ------------------------------------------ relative markdown links (MD-4a)
+
+
 @pytest.fixture(scope="module")
-def rewrite_links(source):
-    """The body of rewriteRelativeLinks, so the assertions below are local."""
-    body = source[source.index("function rewriteRelativeLinks"):]
+def link_widget(source):
+    """The body of markdownLinkWidget, so the assertions below are local."""
+    body = source[source.index("function markdownLinkWidget"):]
     return body[:body.index("\n    }")]
 
 
-def test_a_relative_markdown_link_is_rewritten_for_the_shell(source):
+def test_a_relative_link_navigates_through_the_wikilink_handler(link_widget):
     # `[CONTRIBUTING](../CONTRIBUTING.md)` is authored against the note's own
     # folder, but this document is served at /render?path=…, so the browser
     # would resolve it against the server root and miss the file entirely
-    # (MD-4a). Images already had this treatment; anchors did not.
-    assert "rewriteRelativeLinks(docEl, file);" in source
-
-
-def test_a_relative_link_navigates_through_the_wikilink_handler(rewrite_links):
-    # data-path is what the one delegated click handler already listens for, so
-    # a relative link and a wikilink reach the shell by the same code path —
-    # including the pre-navigation flush that protects unsaved edits.
-    assert "dataset.path" in rewrite_links
+    # (MD-4a). data-path is what the one delegated click handler already
+    # listens for, so a relative link and a wikilink reach the shell by the
+    # same code path — including the flush that protects unsaved edits.
+    assert "a.dataset.path = path;" in link_widget
     # A real href too, so hover preview and ⌘-click behave like normal links.
-    assert "urlForFsPath(" in rewrite_links
-    assert "resolvePath(dir," in rewrite_links
+    assert "urlForFsPath(" in link_widget
+    assert "resolvePath(noteDir()," in link_widget
 
 
-def test_external_and_in_page_links_are_left_alone(rewrite_links):
+def test_external_and_in_page_links_are_left_alone(link_widget):
     # Absolute paths, any scheme (http:, mailto:, data:) and a bare #anchor are
     # not vault paths; rewriting them would break them. MD-3 draws the same
     # line for what counts as an edge.
-    assert r"^(#|\/|[a-z][a-z0-9+.-]*:)" in rewrite_links
+    assert r"^(#|\/|[a-z][a-z0-9+.-]*:)" in link_widget
+    assert 'a.target = "_blank"' in link_widget
 
 
-def test_a_percent_escaped_link_resolves_to_the_real_path(source, rewrite_links):
-    # marked percent-encodes the href it emits, so `[x](./My%20Note.md)` must be
-    # decoded before it is joined onto the note's folder or the path won't exist.
-    assert "decodeMaybe(" in rewrite_links
-    # And a malformed escape must not throw the whole render away.
+def test_a_percent_escaped_link_resolves_to_the_real_path(source, link_widget):
+    # An authored `[x](./My%20Note.md)` has to be decoded before it is joined
+    # onto the note's folder, or the path won't exist.
+    assert "decodeMaybe(" in link_widget
+    # And a malformed escape must not throw the whole decoration pass away.
     assert "function decodeMaybe(value)" in source
     assert "catch (e) { return value; }" in source
 
 
-def test_a_relative_link_can_carry_a_heading(rewrite_links):
+def test_a_relative_link_can_carry_a_heading(link_widget):
     # `](./other.md#Install)` hands the heading over as a param, exactly as a
     # `[[Note#Heading]]` wikilink does (MD-4).
-    assert "dataset.heading" in rewrite_links
+    assert "a.dataset.heading = heading;" in link_widget
+
+
+def test_an_arriving_heading_scrolls_without_moving_the_caret(source):
+    # There are no rendered headings to scan any more, so the document is the
+    # index. The caret must NOT be moved onto the heading: that would reveal
+    # its markup the instant you arrived.
+    body = source[source.index("function scrollToHeading"):]
+    body = body[:body.index("\n    }")]
+    assert "CM.EditorView.scrollIntoView(" in body
+    assert "selection" not in body
