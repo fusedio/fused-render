@@ -73,6 +73,12 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 # the same race _rcd_lock exists to close for rclone's rcd.
 _lock = threading.Lock()
 
+# The Popen handle for an instance THIS process spawned, kept solely so the
+# child can be reaped after we signal it (see _reap_child). None when the live
+# instance was spawned by some earlier process — that case needs no reaping,
+# since a child is only ever a zombie to its own parent.
+_child: subprocess.Popen | None = None
+
 
 def _state_dir() -> str:
     return os.path.join(storage.home_dir(), "ai-proxy")
@@ -156,11 +162,41 @@ def _should_persist() -> bool:
     return os.environ.get("FUSED_RENDER_AI_PROXY_PERSIST") not in (None, "", "0")
 
 
+def _reap_child(pid: int) -> None:
+    """Collect the exit status of a child THIS process spawned, so a killed
+    instance stops being a zombie.
+
+    Without this, os.kill(pid, 0) keeps succeeding for a dead-but-unreaped
+    child — a zombie is still a process table entry — so _pid_alive reports
+    it alive forever and _kill_current_ai_proxy escalates SIGTERM to SIGKILL
+    and then raises "did not exit", for a process that in fact died on the
+    first signal. Measured: a 10s stall plus a bogus error on every quit.
+
+    Only the spawning process can reap, hence the pid guard: a stale handle
+    from a different instance must not be waited on. Non-blocking-ish by
+    design (the child is already signalled, so the wait returns at once) with
+    a bounded timeout so a wedged child can never hang app teardown."""
+    global _child
+    proc = _child
+    if proc is None or proc.pid != pid:
+        return
+    try:
+        proc.wait(timeout=_KILL_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return  # genuinely still running, or already reaped elsewhere
+    _child = None
+
+
 def _pid_alive(pid: int) -> bool:
-    """True if `pid` names a running process. Duplicated from
-    mounts._pid_alive rather than imported: this module is meant to stand on
-    its own (transport-only, no coupling to rclone's daemon), and the check
-    itself is generic OS plumbing, not rcd-specific."""
+    """True if `pid` names a running process.
+
+    Adapted from mounts._pid_alive rather than imported (this module stays
+    decoupled from rclone's daemon internals, and the check is generic OS
+    plumbing). One deliberate difference: on POSIX a zombie — a child that
+    has exited but whose status nobody collected — still answers
+    os.kill(pid, 0), so this would call a dead process alive. Callers that
+    signal a child of ours reap it first via _reap_child; see the note there
+    for the 10s-stall-and-false-error this closes."""
     if not pid or pid <= 0:
         return False
     if sys.platform == "win32":
@@ -405,6 +441,14 @@ def _ensure_locked() -> tuple[str, str, str]:
             # Production (unset): a normal child, reaped with the app.
             start_new_session=_should_persist(),
         )
+    # Keep the handle: a Popen whose child we later signal must be WAITED on,
+    # or the dead child lingers as a zombie — and a zombie still answers
+    # os.kill(pid, 0), so _pid_alive would keep reporting it alive and the
+    # teardown poll below would spin its full timeout and then wrongly report
+    # "did not exit after SIGKILL" for a process that died instantly. Storing
+    # it is what lets _reap_child() actually collect the exit status.
+    global _child
+    _child = proc
 
     deadline = time.time() + _STARTUP_TIMEOUT_S
     while time.time() < deadline:
@@ -453,6 +497,11 @@ def _kill_current_ai_proxy() -> None:
             if not _pid_alive(pid):
                 return
             raise RuntimeError(f"failed to signal ai-proxy pid {pid}: {e}") from e
+        # Reap before polling: if this is our own child it is now a zombie,
+        # which _pid_alive cannot distinguish from a live process, so without
+        # this the loop below would run its full timeout on an already-dead
+        # instance and then raise a false "did not exit".
+        _reap_child(pid)
         deadline = time.time() + _KILL_TIMEOUT_S
         while time.time() < deadline:
             if not _pid_alive(pid):
@@ -518,11 +567,16 @@ def management_request(method: str, path: str, body: dict | None = None,
     `management_key` — the account-management surface's own secret,
     distinct from the api_key fused.ai() traffic uses (see module docstring).
 
-    Raises RuntimeError. A 404 specifically reads as "this proxy build
-    doesn't support account management from the app" per the doc's
-    version-skew note, rather than a bare HTTPError — we pin one verified
-    version, but a mismatched bundled binary should degrade gracefully, not
-    crash the accounts UI."""
+    Raises RuntimeError. A 404 is ambiguous on this API and the two cases
+    are told apart by the BODY, not the status code alone (verified against
+    the real binary): an unrouted path (a route this build genuinely lacks)
+    is Gin's bare NoRoute 404 with an EMPTY body, whereas a business-logic
+    404 on a route that exists (e.g. auth-files DELETE for an unknown name)
+    carries a normal `{"error": "..."}` JSON body. Only the empty-body case
+    is reported as "this proxy build doesn't support account management from
+    the app" per the doc's version-skew note; a 404 WITH an error body is
+    just that error, raised like any other non-2xx — conflating the two
+    would misreport an ordinary "no such credential" as a version mismatch."""
     base_url, _api_key, management_key = ensure_ai_proxy()
     url = base_url.rstrip("/") + "/v0/management" + path
     data = json.dumps(body).encode() if body is not None else None
@@ -535,16 +589,18 @@ def management_request(method: str, path: str, body: dict | None = None,
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        if e.code == 404:
+        raw = e.read() or b""
+        try:
+            detail = json.loads(raw).get("error", "") if raw else ""
+        except (ValueError, AttributeError):
+            detail = ""
+        if e.code == 404 and not detail:
             raise RuntimeError(
                 "this proxy build does not support account management from "
-                "the app (404 on a management route) — it may be a "
-                "different version than this app was built against"
+                "the app (404 with no error body on a management route) — "
+                "it may be a different version than this app was built "
+                "against"
             ) from e
-        try:
-            detail = json.loads(e.read() or b"{}").get("error", "")
-        except ValueError:
-            detail = ""
         raise RuntimeError(
             detail or f"ai-proxy management {method} {path}: HTTP {e.code}"
         ) from e
