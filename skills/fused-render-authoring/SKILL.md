@@ -19,10 +19,12 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    ├─ fused.params            ← string key/values mirrored into the browser URL
    │        └─ ?limit=50      ← refresh/bookmark restores exact view state
    │
-   └─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
+   ├─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
+   │
+   └─ fused.ai("...")          ← relays to local AI proxy, returns {text, model, usage}
 ```
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through a local proxy, and two auxiliary members, `fused.env` and `fused.autoReload` — all covered in the table below). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through a local proxy — it gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -100,7 +102,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, writable, remote, templates}` (`templates` is the ordered mode-list array, usually irrelevant to page code; `writable` is false for read-only files — check it before offering an edit UI; `remote` is true for files on a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). Use for size guards before reading big files, and to capture `mtime` before editing. |
 | `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. A read-only file rejects with `.type === "readonly"` (check `stat().writable` first to avoid it). Omit `expectedMtime` to write unconditionally — also how you create a new file. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
 | `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
-| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. The server relays to a **local OpenAI-compatible proxy** (default `http://127.0.0.1:8317`; `FUSED_RENDER_AI_BASE_URL` env or the `ai_base_url` pref override). `opts`: `systemPrompt` (string), `model` (id, default `claude-haiku-4-5-20251001`), `effort` (`"low"`\|`"medium"`\|`"high"` → max_tokens 1024/4096/16384, default medium), `maxTokens` (explicit override). Rejects with an `Error` whose `.type` is `"bad_request"` (empty prompt / bad options), `"ai_unavailable"` (proxy not running — message names the URL it tried), or `"ai_error"` (proxy returned an error). **No stale-cancel channel** — calls run fully concurrent (an AI call is never a slider scrub). **Local-only**: unsupported on exported/hosted pages (the exporter rejects a page that calls it, SPEC RH-11) — gate with `fused.env === "local"`. |
+| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Relays to a local OpenAI-compatible proxy; local-only. See the **"AI calls"** section below for the options, error types, and the worked pattern. |
 | `fused.env` | String `"local"` (this local server) vs `"hosted"` (the exported/hosted runtime). Branch on it only if a view must behave differently when exported. |
 | `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
 
@@ -127,6 +129,77 @@ try {
   else throw err;
 }
 ```
+
+## AI calls (`fused.ai`)
+
+`fused.ai(prompt, opts?)` asks an AI model and resolves with `{text, model, usage}`. The page never talks to a model directly: the server relays the call to a **local OpenAI-compatible proxy** — default `http://127.0.0.1:8317`, overridable with the `FUSED_RENDER_AI_BASE_URL` env var or the `ai_base_url` pref. That makes it **local-only**: an exported/hosted page has no local proxy to reach, so the exporter rejects any page that calls `fused.ai` (SPEC RH-11). If a view must survive export, gate the AI UI on `fused.env === "local"` and keep the string `fused.ai(` out of the code path entirely (the exporter matches the call textually).
+
+Options:
+
+| Option | Meaning |
+|---|---|
+| `systemPrompt` | System message (string). Put role + ground rules here; put the data + question in `prompt`. |
+| `model` | Model id. Default `claude-haiku-4-5-20251001`. |
+| `effort` | `"low"` \| `"medium"` \| `"high"` → max_tokens 1024 / 4096 / 16384. Default medium. |
+| `maxTokens` | Explicit token cap; overrides `effort`. |
+
+Rejections carry an `Error` with `.type`:
+
+| `.type` | Cause | UI response |
+|---|---|---|
+| `ai_unavailable` | Proxy not running — message names the URL it tried. | Friendly "AI proxy not running" state, not a raw overlay. |
+| `bad_request` | Empty prompt / bad options. | Fix the call; surfacing it usually means a bug in your page. |
+| `ai_error` | Proxy reached but returned an error (bad model id, upstream failure). | Show `err.message`. |
+
+The canonical shape — compute data in Python, reduce it to **compact aggregates**, and hand the model those, never the raw dataset (a full table blows the token budget and drowns the signal):
+
+```js
+const data = await fused.runPython("./data.py", { days });   // full dataset for the UI
+const context = JSON.stringify({                              // aggregates only, for the model
+  total_revenue: data.total_revenue,
+  revenue_by_region: data.by_region,
+  daily_revenue: data.by_day,
+});
+
+async function ask(question) {
+  const btn = document.getElementById("go"), out = document.getElementById("answer");
+  btn.disabled = true;                    // fused.ai has NO stale-cancel — guard double-submits yourself
+  out.textContent = "Thinking…";
+  try {
+    const res = await fused.ai(
+      "Data (JSON):\n" + context + "\n\nQuestion: " + question,
+      {
+        systemPrompt: "You are a data analyst. Answer ONLY from the provided JSON data. " +
+                      "Cite figures. A few sentences at most.",
+        effort: "low",
+      }
+    );
+    out.textContent = res.text;           // res.model / res.usage available for a meta line
+  } catch (err) {
+    if (err.type === "ai_unavailable")      out.textContent = "AI proxy not running — " + err.message;
+    else if (err.type === "bad_request")    out.textContent = "Bad request: " + err.message;
+    else                                    out.textContent = (err.type || "error") + ": " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+```
+
+Two behaviors that differ from `runPython`, each for a reason:
+
+- **No stale-cancel channel.** An AI call is never a slider scrub — you asked a question and want the answer — so calls run fully concurrent. The flip side: nothing stops a double-click from firing two paid calls. Disable the button while a call is in flight (as above).
+- **The relay times out at 120 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
+
+When a call fails, check the proxy before blaming the page — same probe style as `/api/run`:
+
+```bash
+curl -s http://127.0.0.1:8317/v1/models        # proxy up? (use your overridden URL if set)
+curl -s -X POST http://127.0.0.1:1777/api/ai -H 'X-Fused: 1' \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "Reply with exactly the word pong.", "effort": "low"}'
+```
+
+The first failing means the proxy isn't running (that's `ai_unavailable`, not your bug); the second exercises the exact relay the page uses. Full worked example — dataset, chart, Ask-AI box, typed-error UI: `examples_seed/ai_demo/`.
 
 ## The canonical wiring pattern
 
@@ -307,5 +380,8 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
 - `writeFile` without `expectedMtime` on an *existing* file → silently clobbers whatever is on disk now. Fine for new files; for edits, arm the lock and handle `.type === "conflict"`.
 - Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
-- `fused.ai` rejecting with `.type === "ai_unavailable"` → the local AI proxy isn't running (the message names the URL it tried); show that state in the UI instead of a raw overlay. And don't dump a full dataset into the prompt — send compact aggregates (see `examples_seed/ai_demo/`).
+- `fused.ai` rejecting with `.type === "ai_unavailable"` → the local AI proxy isn't running (the message names the URL it tried); show that state in the UI instead of a raw overlay.
+- Dumping the full dataset into a `fused.ai` prompt → token blowout and a worse answer; reduce to compact aggregates first (see "AI calls" above and `examples_seed/ai_demo/`).
+- Forgetting `fused.ai` has no stale-cancel → a double-click fires two concurrent calls; disable the button while one is in flight.
+- Calling `fused.ai` on a page meant for export → the exporter rejects it (SPEC RH-11); gate on `fused.env === "local"`.
 - Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.
