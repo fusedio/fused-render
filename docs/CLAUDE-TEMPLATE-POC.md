@@ -179,10 +179,21 @@ claude (headless)                    agent.py / browser
   **narrows to allow-once** rather than erroring, and the effective scope is
   reported back.
 - **It is a rule, not a mode.** The update is `addRules` for one `toolName`;
-  the CLI's separate `setMode` update — the one that would turn on `auto` — is
-  never sent. Verified end to end: after allow-all on an `Edit`, a second
-  `Edit` went through untouched and a `Write` in the same turn still parked its
-  own card.
+  the CLI's separate `setMode` update is a different button (below). Verified
+  end to end: after allow-all on an `Edit`, a second `Edit` went through
+  untouched and a `Write` in the same turn still parked its own card.
+- **"Allow, and let Claude decide from here"** is that other button — the same
+  `updatedPermissions` channel carrying `setMode` instead of `addRules`, which
+  re-points the **running** session rather than adding one rule to it.
+  Measured: a turn that carded `Edit`/`Write`/`Write` in the strictest mode
+  carded only the `Edit` once the first card switched. It is offered only while
+  a stricter mode is in force (pointless once you are already in `auto`), only
+  alongside an *allow* (a deny that loosened the mode would be incoherent), and
+  only for `SWITCHABLE_MODES` — `bypassPermissions` is unreachable from a card
+  by any route, re-validated in `permission_server` because that is the side
+  that hands the CLI its payload. The click also writes the `permission` param,
+  because a `setMode` dies with the process exactly like a session rule and the
+  next turn would otherwise go back to asking.
 - **Nobody home:** an unanswered request denies itself after
   `FUSED_RENDER_PERMISSION_TIMEOUT` (default 1 h, read in `agent.py` *and*
   `permission_server.py` — the former stamps the resolved value into

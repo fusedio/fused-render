@@ -892,17 +892,19 @@ function buildPermCard(p, run_id) {
   // label. Same-verdict repeats (a poll replaying a decision already shown)
   // are the common case and still no-op.
   let shown = "";
-  function resolve(decision, scope) {
-    const key = decision + "/" + (scope || "");
+  function resolve(decision, scope, mode) {
+    const key = decision + "/" + (scope || "") + "/" + (mode || "");
     if (key === shown) return;
     shown = key;
     actions.remove();
     el.classList.add("resolved");
     if (decision === "allow") {
       status.className = "perm-status allow";
-      status.textContent = scope === "session"
-        ? "✓ Allowed — not asking again for " + label + " in this reply"
-        : "✓ Allowed";
+      status.textContent = mode
+        ? "✓ Allowed — approvals set to \u201c" + (PERMISSION_LABELS[mode] || mode) + "\u201d"
+        : scope === "session"
+          ? "✓ Allowed — not asking again for " + label + " in this reply"
+          : "✓ Allowed";
     } else if (decision === "expired") {
       status.className = "perm-status expired";
       status.textContent = "◦ Unanswered — the reply ended before you decided";
@@ -912,18 +914,24 @@ function buildPermCard(p, run_id) {
     }
   }
 
-  async function send(decision, scope) {
+  async function send(decision, scope, mode) {
     actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
     status.className = "perm-status";
     status.textContent = "sending…";
     try {
       const res = await fused.runPython("./agent.py", {
         action: "decide", run_id, request_id: p.id, decision, scope,
+        mode: mode || "",
       }, { key: null });
       if (res && res.error) throw new Error(res.error);
+      // A mode switch is for the rest of the CONVERSATION, not just this run:
+      // the setMode update dies with the process like any session rule, so the
+      // picker has to carry it into the next turn's spawn too.
+      if (res && res.mode) { fused.params.set("permission", res.mode); syncSelects(); }
       // agent.py answers with what landed on disk, which is not necessarily
       // what this button asked for (first writer wins on a double-click).
-      resolve((res && res.decision) || decision, (res && res.scope) || scope);
+      resolve((res && res.decision) || decision, (res && res.scope) || scope,
+              (res && res.mode) || "");
     } catch (err) {
       // The subprocess is still blocked, so the buttons have to come back.
       actions.querySelectorAll("button").forEach((b) => { b.disabled = false; });
@@ -935,17 +943,28 @@ function buildPermCard(p, run_id) {
   // "this reply", not "this session": each turn is a fresh `claude -p
   // --resume`, and the rule the allow installs lives in that process (see the
   // POC notes) — so it covers the rest of this reply and no further.
-  const choices = [["Allow", "allow", "once", "primary"]];
+  const choices = [["Allow", "allow", "once", "", "primary"]];
   if (WHOLE_TOOL_GRANTABLE.has(p.tool)) {
-    choices.push(["Allow all " + label + " in this reply", "allow", "session", ""]);
+    choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
   }
-  choices.push(["Deny", "deny", "once", ""]);
-  choices.forEach(([text, decision, scope, cls]) => {
+  // Escalate the MODE from the card, not just this one request: the same
+  // updatedPermissions channel carries a `setMode` beside the `addRules` the
+  // button above sends. Pointless once you are already there, so it is only
+  // offered while a stricter mode is in force — and it switches to "Claude
+  // decides", never to a blanket bypass, so every later request is still
+  // judged, just not by you.
+  if ((fused.params.get("permission") || DEFAULT_PERMISSION) !== "auto") {
+    choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
+  }
+  choices.push(["Deny", "deny", "once", "", ""]);
+  choices.forEach(([text, decision, scope, mode, cls]) => {
     const b = document.createElement("button");
     b.type = "button";
     if (cls) b.className = cls;
     b.textContent = text;
-    b.onclick = () => send(decision, scope);
+    if (mode) b.title = "Stops asking for what Claude judges safe; it still "
+                      + "escalates anything it will not vouch for.";
+    b.onclick = () => send(decision, scope, mode);
     actions.appendChild(b);
   });
 
@@ -970,7 +989,7 @@ function syncPermissions(list, run_id, working) {
       else log.appendChild(card.el);
       log.scrollTop = log.scrollHeight;
     }
-    if (p.decision) card.resolve(p.decision, p.scope);
+    if (p.decision) card.resolve(p.decision, p.scope, p.mode);
   }
 }
 

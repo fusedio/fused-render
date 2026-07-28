@@ -21,6 +21,7 @@ over its stdio JSON-RPC, which is exactly the surface the CLI talks to.
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -168,6 +169,48 @@ def test_session_scope_adds_a_session_rule_for_that_tool(tmp_path, server):
         "behavior": "allow",
         "destination": "session",
     }]
+
+
+def test_a_mode_switch_rides_back_as_a_setMode_update(tmp_path, server):
+    """"Allow, and let Claude decide from here" re-points the RUNNING session
+    through the sibling of the addRules update. Verified against the real CLI
+    too: starting in the strictest mode, a turn that carded Edit/Write/Write
+    carded only the Edit once the first card switched the mode."""
+    perm_dir = tmp_path / "perm"
+    sink = []
+    reader = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Edit", "input": {"file_path": "/x.html"}}}, sink)
+    req = _wait_for_request(perm_dir)
+    (perm_dir / (req["id"] + ".res.json")).write_text(
+        json.dumps({"decision": "allow", "scope": "once", "mode": "auto"}))
+    reader.join(timeout=10)
+
+    payload = _result_payload(sink[0])
+    assert payload["behavior"] == "allow"
+    assert payload["updatedPermissions"] == [
+        {"type": "setMode", "mode": "auto", "destination": "session"}]
+
+
+@pytest.mark.parametrize("mode", ["bypassPermissions", "plan", "dontAsk",
+                                  "default", "", "AUTO", "auto "])
+def test_the_server_only_emits_a_mode_it_recognises(tmp_path, server, mode):
+    """This side hands the CLI its payload, so it re-validates rather than
+    trusting the decision file. `bypassPermissions` is the one that matters:
+    it must be unreachable from a card by any route."""
+    perm_dir = tmp_path / "perm"
+    sink = []
+    reader = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Edit", "input": {}}}, sink)
+    req = _wait_for_request(perm_dir)
+    (perm_dir / (req["id"] + ".res.json")).write_text(
+        json.dumps({"decision": "allow", "scope": "once", "mode": mode}))
+    reader.join(timeout=10)
+
+    payload = _result_payload(sink[0])
+    assert payload["behavior"] == "allow"
+    assert "updatedPermissions" not in payload, f"{mode!r} reached the CLI"
 
 
 def test_deny_carries_a_message_because_the_cli_requires_one(tmp_path, server):
@@ -613,6 +656,45 @@ def test_session_scope_is_refused_server_side_for_an_ungrantable_tool(agent, tmp
     # ...and the tools that DO carry the offer are untouched by the guard.
     edit = agent._decide("run", "req-edit", "allow", "session")
     assert edit["scope"] == "session", edit
+
+
+@pytest.mark.parametrize("decision,mode,recorded", [
+    ("allow", "auto", "auto"),
+    ("allow", "acceptEdits", "acceptEdits"),
+    ("allow", "bypassPermissions", ""),   # not switchable, dropped
+    ("allow", "prompt", ""),              # tightening is the picker's job
+    ("allow", "nonsense", ""),
+    ("deny", "auto", ""),                 # a deny that loosened the mode is incoherent
+])
+def test_only_a_switchable_mode_is_recorded_and_only_alongside_an_allow(
+        agent, tmp_path, decision, mode, recorded):
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Edit", "input": {}}, fh)
+    monkey_runs(agent, tmp_path)
+    monkeypatch_alive(agent)
+
+    out = agent._decide("run", "req-1", decision, "once", mode)
+    assert out["mode"] == recorded, out
+    assert agent._read_decision(
+        agent._perm_dir(run_dir), "req-1").get("mode", "") == recorded
+
+
+def test_the_three_switchable_mode_lists_agree(agent):
+    """agent.py validates it, permission_server re-validates it, and the card
+    offers it — three copies, so a test holds them together (D146)."""
+    server = _load("permission_server")
+    assert set(agent.SWITCHABLE_MODES) == set(server.SWITCHABLE_MODES)
+    # every switchable mode must also be a mode the picker can spawn with,
+    # or a card could leave the session somewhere the next turn cannot
+    assert set(agent.SWITCHABLE_MODES) <= set(agent.PERMISSION_MODES)
+    assert "bypassPermissions" not in agent.SWITCHABLE_MODES
+
+    # Every non-empty mode the card's choice table can send.
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    offered = {m for m in re.findall(r'"(?:allow|deny)", "(?:once|session)", "(\w*)"', html) if m}
+    assert offered, "the card no longer offers a mode switch at all"
+    assert offered <= set(agent.SWITCHABLE_MODES), offered
 
 
 def test_an_unreadable_request_cannot_win_a_session_grant(agent, tmp_path):

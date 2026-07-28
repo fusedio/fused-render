@@ -139,6 +139,14 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 PERMISSION_MODES = {"prompt": None, "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
 
+# Modes a card may switch the RUNNING session to, via a `setMode` permission
+# update (the sibling of the `addRules` one "allow all" sends). Only the two
+# that loosen toward Claude judging for itself: "prompt" is not here because
+# tightening mid-turn is what the picker is for, and `bypassPermissions` is not
+# here for the same reason it is absent from the picker — the goal is having
+# Claude evaluate the request, not having nobody evaluate it.
+SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
+
 
 def _claude_bin() -> str:
     """Path to the claude executable to run.
@@ -392,6 +400,7 @@ def _permissions(run_dir: str) -> list:
             "created_at": req.get("created_at") or 0,
             "decision": str(res.get("decision") or ""),
             "scope": str(res.get("scope") or ""),
+            "mode": str(res.get("mode") or ""),
         })
     return out
 
@@ -473,7 +482,8 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
     return True
 
 
-def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
+def _decide(run_id: str, request_id: str, decision: str, scope: str,
+            mode: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -495,6 +505,12 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
             scope = "once"
         payload = {"decision": verdict,
                    "scope": "session" if scope == "session" else "once"}
+        # "…and stop asking": switch the running session's mode as well. Only
+        # ever alongside an allow (a deny that also loosened the mode would be
+        # incoherent), and only to a mode on the short switchable list — an
+        # unrecognised one is dropped, never passed through to the CLI.
+        if verdict == "allow" and mode in SWITCHABLE_MODES:
+            payload["mode"] = mode
     else:
         # The run is over, so nothing will ever read this answer. Record the
         # expiry rather than the click: an Allow that was in flight when the
@@ -513,7 +529,8 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str) -> dict:
         return {"error": "could not record that decision"}
     return {"decided": request_id,
             "decision": str(res["decision"]),
-            "scope": str(res.get("scope") or "")}
+            "scope": str(res.get("scope") or ""),
+            "mode": str(res.get("mode") or "")}
 
 
 def _deny_pending(run_dir: str, reason: str) -> None:
@@ -848,7 +865,7 @@ def _cancel(run_id: str) -> dict:
 def main(action: str = "start", file: str = "", message: str = "",
          session_id: str = "", model: str = "", effort: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
-         scope: str = "once", permission_mode: str = "") -> dict:
+         scope: str = "once", permission_mode: str = "", mode: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -858,7 +875,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "poll":
         return _poll(run_id)
     if action == "decide":
-        return _decide(run_id, request_id, decision, scope)
+        return _decide(run_id, request_id, decision, scope, mode)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}

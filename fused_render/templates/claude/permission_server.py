@@ -49,6 +49,9 @@ POLL_INTERVAL = 0.15
 # How long a decision file that exists but has not parsed is treated as a write
 # in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
 DECISION_WRITE_WINDOW = 2.0
+# Modes a card may switch the running session to. Mirrors SWITCHABLE_MODES in
+# agent.py; a test asserts the two agree. Never `bypassPermissions`.
+SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 
 PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
 
@@ -151,18 +154,31 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
     if verdict == "allow":
         result = {"behavior": "allow", "updatedInput": tool_input,
                   "decisionClassification": "user_temporary"}
+        updates = []
         if decision.get("scope") == "session":
             # Let the CLI's rule engine own the matching from here on. Rule is
             # the bare tool name (no ruleContent): the wire gives us no
             # permission *suggestions* to narrow it with, and inventing our own
             # pattern — Bash(rm -rf *) prefix-matching and friends — is exactly
             # the hand-rolled matcher this defers to Claude Code instead.
-            result["updatedPermissions"] = [{
+            updates.append({
                 "type": "addRules",
                 "rules": [{"toolName": tool_name}],
                 "behavior": "allow",
                 "destination": "session",
-            }]
+            })
+        # "…and stop asking": the sibling update type, which re-points the
+        # running session's permission mode. Re-validated here and not merely
+        # trusted from the decision file, because this is the side that hands
+        # the CLI its payload — an unlisted mode must never reach it.
+        if decision.get("mode") in SWITCHABLE_MODES:
+            updates.append({
+                "type": "setMode",
+                "mode": decision["mode"],
+                "destination": "session",
+            })
+        if updates:
+            result["updatedPermissions"] = updates
             result["decisionClassification"] = "user_permanent"
         return result
 
