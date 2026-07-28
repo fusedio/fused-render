@@ -166,7 +166,10 @@ function sortEntries(entries: FsEntry[], sort: SortKey, order: SortOrder): FsEnt
     const aDot = a.name.startsWith(".");
     const bDot = b.name.startsWith(".");
     if (aDot !== bDot) return aDot ? 1 : -1; // dot entries always group last
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1; // dirs group first within each
+    // Name sort is purely alphabetical — folders and files interleave. The
+    // size/mtime sorts still group dirs first: a dir has no size and its mtime
+    // means something different from a file's, so mixing them there is noise.
+    if (sort !== "name" && a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
     let cmp: number;
     if (sort === "size") cmp = (a.size ?? -1) - (b.size ?? -1);
     else if (sort === "mtime") cmp = (a.mtime ?? 0) - (b.mtime ?? 0);
