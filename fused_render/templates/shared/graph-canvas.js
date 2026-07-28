@@ -47,6 +47,18 @@
     var dead = false;
     var userFramed = false; // the user panned, zoomed or dragged
 
+    /* A press that TRAVELLED is a drag, not a click. The browser dispatches
+     * `click` whenever the press and the release share an element, however far
+     * the pointer moved in between, and `at()` then finds the node sitting under
+     * the pointer at its new position — so without this, repositioning a node
+     * opened it, which in the note view means leaving the document being edited.
+     * A threshold rather than a "did any mousemove arrive" flag, because a mouse
+     * that shifts a pixel between press and release is still a click. */
+    var DRAG_SLOP = 3;  // px of pointer travel
+    var pressX = 0;
+    var pressY = 0;
+    var moved = false;
+
     function radius(node) { return 3.5 + Math.sqrt(node.degree) * 2.6; }
 
     /* ---- how far apart nodes settle ------------------------------------------
@@ -245,6 +257,18 @@
       var cy = rect.height / 2 || 160;
       var byId = {};
       var count = Math.max(1, (payload.nodes || []).length);
+      /* Positions are CARRIED OVER for ids we already have. Load-bearing, and
+       * the obvious "simplification" (map every node onto the spiral, alpha = 1,
+       * done) is what this replaced: every autosave re-sends the graph (MD-9),
+       * so with a full re-seed the layout restarted every 2 seconds while you
+       * typed — the same "yank the view out from under someone mid-read"
+       * frameAll refuses to do, arriving by another door. Velocity and the pin
+       * come across too: a node you dragged into place stays put, and one still
+       * settling does not lose its momentum mid-flight. */
+      var previous = {};
+      var previousCount = nodes.length;
+      for (var p = 0; p < nodes.length; p++) previous[nodes[p].id] = nodes[p];
+      var fresh = 0;   // ids we have never laid out
       // Seeded on a sunflower spiral over a disc whose area is proportional to
       // the node count, rather than all on one 70px ring. The ring was fine for
       // a handful and catastrophic for a folder: hundreds of nodes started
@@ -258,18 +282,21 @@
         var angle = i * GOLDEN;
         var at = disc * Math.sqrt((i + 0.5) / count);
         var focused = node.id === payload.focus;
+        var kept = previous[node.id];
+        if (!kept) fresh++;
         var seeded = {
           id: node.id, kind: node.kind, label: node.label,
           // `label` is a DISPLAY string (a note's is its title); `target` is the
           // authored link target a ghost was made from. Creating a note is a
           // path operation, so it reads target and never label.
           path: node.path, target: node.target, degree: node.degree,
-          x: focused ? cx : cx + Math.cos(angle) * at,
-          y: focused ? cy : cy + Math.sin(angle) * at,
-          vx: 0, vy: 0,
+          x: kept ? kept.x : (focused ? cx : cx + Math.cos(angle) * at),
+          y: kept ? kept.y : (focused ? cy : cy + Math.sin(angle) * at),
+          vx: kept ? kept.vx : 0, vy: kept ? kept.vy : 0,
           // The focus is pinned at the centre: a local graph is *about* one
-          // note, so letting the sim carry it away loses the point.
-          pinned: focused, focus: focused,
+          // note, so letting the sim carry it away loses the point. A pin the
+          // user set by dragging survives a re-send for the same reason.
+          pinned: focused || (kept ? kept.pinned : false), focus: focused,
         };
         byId[node.id] = seeded;
         return seeded;
@@ -277,7 +304,14 @@
       edges = (payload.edges || []).map(function (edge) {
         return { kind: edge.kind, a: byId[edge.source], b: byId[edge.target] };
       }).filter(function (edge) { return edge.a && edge.b; });
-      alpha = 1;
+      /* How hard to re-anneal, in proportion to what actually changed. A first
+       * payload gets the full run. A re-send that added or dropped nodes gets a
+       * partial one — enough for the newcomers to find room, not enough to throw
+       * the settled layout away. A re-send with the same node set gets none at
+       * all: `run()` still draws once (it draws whether or not it steps), which
+       * is all a label or degree change needs. */
+      if (!previousCount) alpha = 1;
+      else if (fresh || nodes.length !== previousCount) alpha = Math.max(alpha, 0.3);
       run();
     }
 
@@ -298,6 +332,11 @@
 
     function onMove(event) {
       var found = at(event);
+      if ((drag || pan) && !moved) {
+        var tx = event.clientX - pressX;
+        var ty = event.clientY - pressY;
+        if (tx * tx + ty * ty > DRAG_SLOP * DRAG_SLOP) moved = true;
+      }
       if (drag) {
         drag.x = found.x;
         drag.y = found.y;
@@ -321,6 +360,9 @@
     function onDown(event) {
       var found = at(event);
       userFramed = true; // hands on: stop auto-framing from here on
+      pressX = event.clientX;
+      pressY = event.clientY;
+      moved = false;
       if (found.node) {
         drag = found.node;
         drag.pinned = true; // drag-to-pin
@@ -332,6 +374,7 @@
     function onUp() { drag = null; pan = null; }
 
     function onClick(event) {
+      if (moved) return; // that was a drag or a pan; see DRAG_SLOP
       var found = at(event);
       if (!found.node) return;
       if (found.node.kind === "note" && found.node.path) onOpenNote(found.node.path);
