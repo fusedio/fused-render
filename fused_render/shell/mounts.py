@@ -451,6 +451,34 @@ def _rcd_state_path() -> str:
 _RCD_RC_USER = "fused-render"
 
 
+def _rcd_child_env(auth: tuple[str, str]) -> dict:
+    """The rcd child's environment: ours inherited, but with the whole
+    RCLONE_RC_* namespace REPLACED rather than merged.
+
+    rclone configures every flag from an env var named after it, so an
+    inherited RCLONE_RC_* can reconfigure the very interface we are trying to
+    lock down — and setting our own two keys on top of os.environ does not
+    displace the others. Verified against rclone v1.74.4: an inherited
+    RCLONE_RC_ALLOW_ORIGIN=* makes the daemon answer with
+    `Access-Control-Allow-Origin: *` AND `Access-Control-Allow-Headers:
+    Authorization`, which hands a foreign page the ability to READ replies —
+    removing the read-blindness the loopback boundary otherwise leaves intact.
+    RCLONE_RC_NO_AUTH=true and RCLONE_RC_USER_FROM_HEADER happened not to beat
+    an explicit user/pass in that version, but that is version-dependent luck,
+    not a property to build on.
+
+    Nothing in this repo sets RCLONE_RC_*; the rc interface is entirely ours to
+    configure, so the safe rule is that none of it comes from ambient env. The
+    rest of RCLONE_* (RCLONE_CONFIG, RCLONE_CONFIG_PASS, ...) is legitimate
+    user configuration for the remotes themselves and is inherited untouched.
+    RCLONE_RC_NO_AUTH is pinned to "false" explicitly rather than merely
+    dropped, so the intent survives a future default flip."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("RCLONE_RC_")}
+    env["RCLONE_RC_USER"], env["RCLONE_RC_PASS"] = auth
+    env["RCLONE_RC_NO_AUTH"] = "false"
+    return env
+
+
 def _rcd_auth(port: int) -> tuple[str, str] | None:
     """The (user, pass) recorded for the daemon on `port`, or None when it has
     none on record (pre-auth daemon, or state not written yet).
@@ -990,7 +1018,9 @@ def _ensure_rcd_locked() -> int:
     # per-daemon secret, handed over in the ENVIRONMENT rather than on argv so
     # it is not visible in `ps` to other local users. Without it the daemon is
     # an unauthenticated filesystem API that any page in the user's browser can
-    # drive blind with a no-preflight cross-origin POST.
+    # drive blind with a no-preflight cross-origin POST. _rcd_child_env also
+    # clears the inherited RCLONE_RC_* namespace, which could otherwise
+    # reconfigure the interface out from under us.
     auth = (_RCD_RC_USER, secrets.token_urlsafe(32))
     subprocess.Popen(
         [bin_, "rcd", "--use-server-modtime",
@@ -998,7 +1028,7 @@ def _ensure_rcd_locked() -> int:
          f"--log-file={log_path}", "--log-level", "INFO"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env={**os.environ, "RCLONE_RC_USER": auth[0], "RCLONE_RC_PASS": auth[1]},
+        env=_rcd_child_env(auth),
         # Dev (FUSED_RENDER_RCLONE_PERSIST set): setsid into its own session so
         # the daemon outlives watchfiles server restarts. Production (unset):
         # stay a normal child so app teardown reaps it (on Linux via the

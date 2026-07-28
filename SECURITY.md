@@ -79,7 +79,24 @@ and neither changes the trust model above:
   auth on every call; the secret is handed to the child in the environment
   (`RCLONE_RC_USER`/`RCLONE_RC_PASS`), never on argv, so it does not appear in
   `ps`. Like the tile-daemon token it is recorded in the daemon's state file
-  and is only as private as the local filesystem.
+  and is only as private as the local filesystem. The child's environment also
+  has the whole `RCLONE_RC_*` namespace replaced rather than merged: rclone
+  configures every flag from an env var named after it, so an inherited
+  `RCLONE_RC_ALLOW_ORIGIN` would otherwise make the daemon answer with
+  `Access-Control-Allow-Origin: *` and hand a foreign page the ability to read
+  replies.
+- **`/api/fs/raw` never serves a document on the app's origin.** The route
+  reads any absolute path with a content-type guessed from its name, and it is
+  a plain GET, so a foreign page can *navigate* the browser to it (navigation
+  is not subject to CORS) and get a local `.html` executing as a first-party
+  page — inside the trust boundary, able to send `X-Fused` to `/api/run`. D4's
+  concession is about an `.html` file *you* open; this is one the attacker
+  picks. So every response from that route carries `X-Content-Type-Options:
+  nosniff`, and the scriptable types (`text/html`, `application/xhtml+xml`,
+  `image/svg+xml`) are downgraded to `text/plain` when — and only when —
+  `Sec-Fetch-Dest`/`Sec-Fetch-Mode` say the request is a document or frame
+  load. Subresource fetches are untouched, so a template reading the endpoint
+  as data, or an `<img>` pointing at an SVG icon, behaves exactly as before.
 
 ## Network / supply chain
 

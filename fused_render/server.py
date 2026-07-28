@@ -1771,6 +1771,59 @@ _PROXY_HEADERS = ("content-length", "content-range", "content-type",
                   "accept-ranges", "last-modified", "etag")
 
 
+# Media types a browser will EXECUTE as a document rather than display as data.
+_SCRIPTABLE_MEDIA = frozenset((
+    "text/html", "application/xhtml+xml", "image/svg+xml"))
+
+# Fetch destinations that make the response a document on THIS origin: a
+# top-level navigation, or a frame of one.
+_DOCUMENT_DESTS = frozenset(("document", "iframe", "frame", "embed", "object"))
+
+
+def _harden_raw(resp, request: Request):
+    """Stop /api/fs/raw from handing a page the app's own origin.
+
+    /api/fs/raw serves any absolute path with a content-type guessed from its
+    name, and it is a plain GET with no X-Fused, so it is top-level navigable
+    — and navigation is not subject to CORS. A foreign site can therefore point
+    the browser at a .html file it arranged to be on disk (a drive-by download
+    into ~/Downloads names the file for it) and get that file running as a
+    FIRST-PARTY document on http://127.0.0.1:<port>. From there it is inside
+    the trust boundary: it can send X-Fused: 1 and POST /api/run.
+
+    D4 concedes that an .html file *you open* runs same-origin. That is about
+    the user choosing the file; here the attacker chooses it, so the concession
+    does not stretch to cover it.
+
+    Two measures, both applied to every response this route produces:
+
+      * `nosniff` unconditionally — every in-tree consumer reads this endpoint
+        as data (.text()/.arrayBuffer()), so none of them can be hurt by it;
+
+      * scriptable types are downgraded to text/plain ONLY when the request is
+        a document load. The threat is navigating or framing; an <img src> at
+        an SVG cannot execute script, and coercing it would break a working
+        case to fix one that does not exist. Sec-Fetch-Dest is the right signal
+        and this file already relies on browsers always sending Sec-Fetch-*
+        (see the 307 branch in api_fs_raw). Sec-Fetch-Mode is checked too, for
+        a browser that sends the mode but not the dest.
+
+    Redirects are left alone: the 307 points at the object store, a foreign
+    origin, and is already gated to non-browser clients."""
+    if 300 <= resp.status_code < 400:
+        return resp
+    resp.headers["x-content-type-options"] = "nosniff"
+    dest = request.headers.get("sec-fetch-dest", "").lower()
+    mode = request.headers.get("sec-fetch-mode", "").lower()
+    if dest in _DOCUMENT_DESTS or mode == "navigate":
+        media = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if media in _SCRIPTABLE_MEDIA:
+            # Keep serving the bytes — a download still saves the real file
+            # under its own name — just never as a document on this origin.
+            resp.headers["content-type"] = "text/plain; charset=utf-8"
+    return resp
+
+
 def _proxy_raw(upstream: str, request: Request):
     """Forward one GET/HEAD (with its Range header) to a mount's localhost
     rclone serve and stream the answer back. None when the serve can't be
@@ -3533,6 +3586,16 @@ def create_app(start_dir: str) -> FastAPI:
     @app.api_route("/api/fs/raw", methods=["GET", "HEAD"])
     async def api_fs_raw(path: str, request: Request, base: str | None = None,
                          pooled: str | None = None):
+        # Every response this route can produce goes through _harden_raw: the
+        # read has four exits (HEAD, the 307, the proxied mount read, and the
+        # local file) and three of them can put a scriptable content-type on
+        # this origin, so the hardening lives at the single choke point rather
+        # than being repeated — and cannot be missed by a new exit.
+        return _harden_raw(
+            await _api_fs_raw_read(path, request, base, pooled), request)
+
+    async def _api_fs_raw_read(path: str, request: Request, base: str | None,
+                               pooled: str | None):
         # Page-relative resolution (SPEC RH-1): a *relative* `path` is resolved against
         # the directory of `base` — the page's own absolute path, sent by the runtime's
         # fused.rawUrl(), the same contract /api/run uses via `html` (see the resolve at

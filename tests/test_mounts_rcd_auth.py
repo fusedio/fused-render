@@ -83,6 +83,50 @@ def test_secret_goes_in_the_env_not_argv(home, spawn):
     assert env["PATH"] == os.environ["PATH"]  # inherits the rest of the env
 
 
+def test_inherited_rclone_rc_env_cannot_reconfigure_the_interface(
+        home, spawn, monkeypatch):
+    """rclone configures every flag from an env var named after it, so an
+    inherited RCLONE_RC_* can undo the lock-down — and merging our two keys
+    onto os.environ does not displace the others.
+
+    RCLONE_RC_ALLOW_ORIGIN is the one that bites (verified against v1.74.4):
+    it makes the daemon answer with `Access-Control-Allow-Origin: *` and
+    `Access-Control-Allow-Headers: Authorization`, so a foreign page can READ
+    replies — removing the read-blindness the loopback boundary otherwise
+    leaves intact. NO_AUTH and USER_FROM_HEADER happened not to beat an
+    explicit user/pass in that version, but that is version-dependent luck."""
+    for var in ("RCLONE_RC_NO_AUTH", "RCLONE_RC_ALLOW_ORIGIN",
+                "RCLONE_RC_USER_FROM_HEADER", "RCLONE_RC_HTPASSWD",
+                "RCLONE_RC_ADDR"):
+        monkeypatch.setenv(var, "hostile")
+    calls, _ = spawn
+    mounts_mod.ensure_rcd()
+    [(_argv, kw)] = calls
+    env = kw["env"]
+
+    assert env["RCLONE_RC_USER"] == mounts_mod._RCD_RC_USER
+    assert env["RCLONE_RC_PASS"] != "hostile"
+    assert env["RCLONE_RC_NO_AUTH"] == "false"  # pinned, not merely dropped
+    leaked = {k: v for k, v in env.items()
+              if k.startswith("RCLONE_RC_") and v == "hostile"}
+    assert not leaked, f"inherited rc config reached the daemon: {sorted(leaked)}"
+
+
+def test_unrelated_rclone_config_is_still_inherited(home, spawn, monkeypatch):
+    """Only the RC namespace is replaced. RCLONE_CONFIG and friends are the
+    user's real configuration for the remotes themselves — clearing those
+    would break every credentialed mount."""
+    monkeypatch.setenv("RCLONE_CONFIG", "/some/rclone.conf")
+    monkeypatch.setenv("RCLONE_CONFIG_PASS", "hunter2")
+    calls, _ = spawn
+    mounts_mod.ensure_rcd()
+    [(_argv, kw)] = calls
+
+    assert kw["env"]["RCLONE_CONFIG"] == "/some/rclone.conf"
+    assert kw["env"]["RCLONE_CONFIG_PASS"] == "hunter2"
+    assert kw["env"]["PATH"] == os.environ["PATH"]
+
+
 def test_each_daemon_gets_a_fresh_secret(home, spawn):
     calls, _ = spawn
     mounts_mod.ensure_rcd()
