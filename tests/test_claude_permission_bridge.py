@@ -600,6 +600,88 @@ def test_poll_reports_awaiting_while_a_request_is_parked(agent, tmp_path, monkey
     assert data["permissions"][0]["tool"] == "Edit"
 
 
+def _run_awaiting_in_mode(agent, tmp_path, monkeypatch, spawn_mode):
+    """A live run, spawned in `spawn_mode`, with one unanswered request."""
+    run_dir = _run_dir(agent, tmp_path)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/x.html", "message": "hi", "resumed_from": "",
+                   "mode": spawn_mode}, fh)
+    with open(os.path.join(agent._perm_dir(run_dir), "req-1.req.json"), "w") as fh:
+        json.dump({"id": "req-1", "tool": "Edit", "input": {"file_path": "/x"},
+                   "created_at": 1000.0}, fh)
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "system", "session_id": "s"}) + "\n")
+    monkey_runs(agent, tmp_path)
+    monkeypatch.setattr(agent, "_alive", lambda _: True)
+    return run_dir
+
+
+@pytest.mark.parametrize("spawn_mode", ["prompt", "acceptEdits", "auto"])
+def test_poll_reports_the_mode_the_run_is_actually_in(agent, tmp_path, monkeypatch,
+                                                      spawn_mode):
+    """The card's mode-switch button is gated on this, so it has to describe the
+    RUNNING process — not the picker, which only applies to the next spawn."""
+    _run_awaiting_in_mode(agent, tmp_path, monkeypatch, spawn_mode)
+    assert agent._poll("run")["mode"] == spawn_mode
+
+
+def test_the_live_mode_follows_a_setmode_that_reached_disk(agent, tmp_path,
+                                                           monkeypatch):
+    """An allow carrying `mode` re-points the running session, so every later
+    card must see the new mode — otherwise the button keeps offering a switch
+    that already happened."""
+    run_dir = _run_awaiting_in_mode(agent, tmp_path, monkeypatch, "prompt")
+    assert agent._poll("run")["mode"] == "prompt"
+
+    out = agent._decide("run", "req-1", "allow", "once", mode="auto")
+    assert out["mode"] == "auto", out
+    assert agent._poll("run")["mode"] == "auto"
+
+
+def test_a_denied_or_dropped_mode_switch_does_not_move_the_live_mode(
+        agent, tmp_path, monkeypatch):
+    """Only a switch claude was actually told about counts. A deny never
+    carries one, and an unrecognised mode is dropped before it reaches the CLI
+    — reporting either as live would hide the button while the session is
+    still strict, which is the failure this whole field exists to prevent."""
+    run_dir = _run_awaiting_in_mode(agent, tmp_path, monkeypatch, "prompt")
+    perm_dir = agent._perm_dir(run_dir)
+
+    # a deny that asks for a mode anyway
+    agent._decide("run", "req-1", "deny", "once", mode="auto")
+    assert agent._poll("run")["mode"] == "prompt"
+
+    # an unrecognised mode, and the one mode a card may never reach
+    for bad in ("bypassPermissions", "nonsense", ""):
+        os.unlink(os.path.join(perm_dir, "req-1.res.json"))
+        agent._decide("run", "req-1", "allow", "once", mode=bad)
+        assert agent._poll("run")["mode"] == "prompt", bad
+
+
+def test_the_live_mode_ignores_the_pickers_param(agent, tmp_path, monkeypatch):
+    """The reported bug, at its source: the two are different facts, and only
+    one of them describes the process that is currently carding."""
+    _run_awaiting_in_mode(agent, tmp_path, monkeypatch, "prompt")
+    # There is no way to ask agent.py about the picker — which is the point.
+    # `mode` is derived from meta + the decisions on disk and nothing else.
+    assert agent._poll("run")["mode"] == "prompt"
+    assert agent._live_mode({"mode": "auto"}, []) == "auto"
+    assert agent._live_mode({}, []) == agent.DEFAULT_PERMISSION_MODE
+    assert agent._live_mode({"mode": "nonsense"}, []) == agent.DEFAULT_PERMISSION_MODE
+
+
+def test_start_records_the_mode_it_spawned_with(agent, tmp_path, monkeypatch):
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda *a, **k: type("P", (), {"pid": 4321})())
+    run_id = agent._start(str(target), "hi", "", "", "", "acceptEdits")["run_id"]
+    meta = json.load(open(os.path.join(agent.RUNS, run_id, "meta.json")))
+    assert meta["mode"] == "acceptEdits"
+
+
 def test_malformed_request_files_are_skipped_not_fatal(agent, tmp_path):
     run_dir = _run_dir(agent, tmp_path)
     perm_dir = agent._perm_dir(run_dir)
@@ -767,8 +849,13 @@ def test_a_whole_tool_grant_is_not_offered_for_bash_and_friends(agent):
     assert granted == {"Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit"}
     for tool in ("Bash", "WebFetch", "WebSearch", "Task", "mcp__other__thing"):
         assert tool not in granted
-    # and the button is actually gated on that set, not just declared next to it
-    assert "WHOLE_TOOL_GRANTABLE.has(p.tool)" in html
+    # That the button is actually *gated* on this set — rather than the set
+    # merely being declared nearby — is asserted by running the page's own
+    # `permChoices`, in
+    # test_the_page_offers_allow_all_only_where_the_backend_would_honour_it.
+    # It used to be a substring check here, which broke the moment the gate was
+    # extracted to a function: the code was still correct, the assertion was
+    # just reading the wrong thing.
 
 
 @pytest.mark.parametrize("env,expected", [
@@ -848,6 +935,67 @@ def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
     # the bridge stays wired whatever the mode — whatever is NOT auto-approved
     # still has to be answerable, or it is a silent refusal again
     assert "--permission-prompt-tool" in cmd
+
+
+def _perm_choices(tool, live_mode):
+    """Run the card's real `permChoices` and return the button texts."""
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    consts = "\n".join([
+        html[html.index("const DEFAULT_PERMISSION = "):].split("\n")[0],
+        html[html.index("const WHOLE_TOOL_GRANTABLE = new Set(["):
+             html.index("]);", html.index("const WHOLE_TOOL_GRANTABLE")) + 3],
+    ])
+    start = html.index("function permChoices(")
+    fn = html[start:html.index("function buildPermCard(", start)]
+    script = consts + "\n" + fn + (
+        "\nconsole.log(JSON.stringify(permChoices(%s, 'X', %s).map((c) => c[0])));"
+        % (json.dumps(tool), json.dumps(live_mode)))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+_SWITCH = "Allow, and let Claude decide from here"
+
+
+@pytest.mark.parametrize("live_mode", ["prompt", "acceptEdits", "", None])
+def test_the_mode_switch_is_offered_while_the_run_is_still_strict(live_mode):
+    """Gated on the mode the RUN is in, not the picker's param.
+
+    Changing the picker to "Claude decides" mid-turn does not touch the running
+    process — it applies to the next spawn — so the session keeps carding in
+    the strict mode it was started in. Reading the param here hid this button
+    at exactly that moment, which is when it is the only control that can
+    deliver what the user just asked for. An absent/unknown mode still offers
+    it: a needless button is a no-op click, a missing one is the bug.
+    """
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own button builder")
+    assert _SWITCH in _perm_choices("Bash", live_mode)
+
+
+def test_the_mode_switch_is_dropped_once_the_run_is_already_auto():
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own button builder")
+    choices = _perm_choices("Bash", "auto")
+    assert _SWITCH not in choices
+    assert choices == ["Allow", "Deny"]
+
+
+@pytest.mark.parametrize("tool,grantable", [
+    ("Edit", True), ("Write", True), ("Read", True), ("Glob", True),
+    ("Grep", True), ("NotebookEdit", True),
+    ("Bash", False), ("WebFetch", False), ("mcp__x__y", False),
+])
+def test_the_page_offers_allow_all_only_where_the_backend_would_honour_it(
+        agent, tool, grantable):
+    """The card's allowlist and `agent.py`'s must agree (D146) — asserted by
+    running the page's own gate rather than by re-reading its source."""
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the card's own button builder")
+    offered = any(c.startswith("Allow all ") for c in _perm_choices(tool, "prompt"))
+    assert offered == grantable
+    assert offered == (tool in agent.WHOLE_TOOL_GRANTABLE)
 
 
 def test_the_selector_and_the_backend_offer_the_same_modes(agent):

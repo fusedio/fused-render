@@ -31,7 +31,8 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
-          "permissions": [{"id", "tool", "input", "decision", "scope"}, ...]}
+          "permissions": [{"id", "tool", "input", "decision", "scope"}, ...],
+          "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session")        -> {"decided": ..., "decision": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
@@ -674,6 +675,32 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
             "mode": str(res.get("mode") or "")}
 
 
+def _live_mode(meta: dict, permissions: list) -> str:
+    """The mode the RUNNING claude process is actually in.
+
+    Not the same thing as the picker's `permission` param, and conflating the
+    two hid the one control that can fix it (Bugbot, PR #308): the picker takes
+    effect at the next spawn, so switching it to "Claude decides" mid-turn left
+    the live session in the strict mode, still carding — while the card's
+    "Allow, and let Claude decide from here" button, gated on that param,
+    vanished from every card built afterwards.
+
+    Derived rather than stored, so it survives a re-attach and cannot drift
+    from the decisions claude actually received: the spawn mode, re-pointed by
+    each allow whose `setMode` reached disk, in the order they were answered.
+    """
+    mode = meta.get("mode")
+    if mode not in PERMISSION_MODES:
+        mode = DEFAULT_PERMISSION_MODE
+    switches = [p for p in permissions
+                if p.get("decision") == "allow" and p.get("mode") in SWITCHABLE_MODES]
+    # by created_at, not by id: ids lead with HH%M%S, which misorders a run
+    # spanning midnight.
+    for perm in sorted(switches, key=lambda p: p.get("created_at") or 0):
+        mode = perm["mode"]
+    return mode
+
+
 def _deny_pending(run_dir: str, reason: str) -> None:
     """Release every unanswered request so the blocked claude subprocess stops
     waiting on a window that is not coming back."""
@@ -739,9 +766,13 @@ def _start(file: str, message: str, session_id: str, model: str,
 
     # poll() records the session into the sidecar once claude reports its id;
     # it needs the file + first message, so stash them with the run.
+    # `mode` is the mode this process was SPAWNED with, and it is recorded
+    # because nothing else can reconstruct it: the picker's URL param is what
+    # the *next* turn will use, so reading that back mid-turn describes a
+    # session that does not exist yet. See `_live_mode`.
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
         json.dump({"file": file, "message": message,
-                   "resumed_from": session_id}, f)
+                   "resumed_from": session_id, "mode": mode}, f)
 
     with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
          _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -903,7 +934,8 @@ def _poll(run_id: str) -> dict:
         text = result_text
     return {"text": text, "done": done, "session_id": new_session, "error": error,
             "tokens": tokens_done + tokens_current, "phase": phase,
-            "message": meta.get("message", ""), "permissions": permissions}
+            "message": meta.get("message", ""), "permissions": permissions,
+            "mode": _live_mode(meta, permissions)}
 
 
 # ------------------------------------------------------- sessions & history

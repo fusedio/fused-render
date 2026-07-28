@@ -261,6 +261,21 @@ claude (headless)                    agent.py / browser
   that hands the CLI its payload. The click also writes the `permission` param,
   because a `setMode` dies with the process exactly like a session rule and the
   next turn would otherwise go back to asking.
+- **"While a stricter mode is in force" means the *run's* mode, not the
+  picker's.** They are different facts and conflating them removed the button
+  at the one moment it mattered: the picker applies to the next spawn, so
+  setting it to "Claude decides" mid-turn leaves the live session strict and
+  still carding, while every card built afterwards concluded it was already in
+  `auto` and dropped the switch — the only control that could actually deliver
+  what the user had just asked for. `poll` therefore reports `mode`, derived
+  (`_live_mode`) rather than stored: the mode recorded in `meta.json` at spawn,
+  re-pointed by each *allow* whose `setMode` reached disk, ordered by
+  `created_at` because request ids lead with `HH%M%S` and misorder across
+  midnight. A deny that asks for a mode anyway, or a mode outside
+  `SWITCHABLE_MODES`, moves nothing — claude was never told about it. An absent
+  `mode` still shows the button, because the two failure directions are not
+  symmetric: offering it needlessly costs a no-op click, hiding it needlessly
+  is the bug.
 - **Nobody home:** an unanswered request denies itself after
   `FUSED_RENDER_PERMISSION_TIMEOUT` (default 1 h, read in `agent.py` *and*
   `permission_server.py` — the former stamps the resolved value into

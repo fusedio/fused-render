@@ -908,7 +908,37 @@ function leftoverInput(input, covered) {
   return rest.length ? Object.fromEntries(rest.map((k) => [k, input[k]])) : null;
 }
 
-function buildPermCard(p, run_id) {
+// The buttons a card offers, as [text, decision, scope, mode, class].
+//
+// `liveMode` is the mode the run is ACTUALLY in, as reported by poll — never
+// the picker's `permission` param. The picker applies to the next spawn, so
+// switching it to "Claude decides" mid-turn used to hide the mode-switch
+// button while the live session stayed strict and kept carding, removing the
+// one control that could grant what the user had just asked for (Bugbot,
+// PR #308). An absent mode still shows it: offering the button needlessly
+// costs a no-op click, hiding it needlessly is the bug.
+function permChoices(tool, label, liveMode) {
+  // "this reply", not "this session": each turn is a fresh `claude -p
+  // --resume`, and the rule the allow installs lives in that process (see the
+  // POC notes) — so it covers the rest of this reply and no further.
+  const choices = [["Allow", "allow", "once", "", "primary"]];
+  if (WHOLE_TOOL_GRANTABLE.has(tool)) {
+    choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
+  }
+  // Escalate the MODE from the card, not just this one request: the same
+  // updatedPermissions channel carries a `setMode` beside the `addRules` the
+  // button above sends. Pointless once you are already there, so it is only
+  // offered while a stricter mode is in force — and it switches to "Claude
+  // decides", never to a blanket bypass, so every later request is still
+  // judged, just not by you.
+  if ((liveMode || DEFAULT_PERMISSION) !== "auto") {
+    choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
+  }
+  choices.push(["Deny", "deny", "once", "", ""]);
+  return choices;
+}
+
+function buildPermCard(p, run_id, liveMode) {
   const toolName = p.tool || "a tool";
   const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
 
@@ -1002,24 +1032,7 @@ function buildPermCard(p, run_id) {
     }
   }
 
-  // "this reply", not "this session": each turn is a fresh `claude -p
-  // --resume`, and the rule the allow installs lives in that process (see the
-  // POC notes) — so it covers the rest of this reply and no further.
-  const choices = [["Allow", "allow", "once", "", "primary"]];
-  if (WHOLE_TOOL_GRANTABLE.has(p.tool)) {
-    choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
-  }
-  // Escalate the MODE from the card, not just this one request: the same
-  // updatedPermissions channel carries a `setMode` beside the `addRules` the
-  // button above sends. Pointless once you are already there, so it is only
-  // offered while a stricter mode is in force — and it switches to "Claude
-  // decides", never to a blanket bypass, so every later request is still
-  // judged, just not by you.
-  if ((fused.params.get("permission") || DEFAULT_PERMISSION) !== "auto") {
-    choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
-  }
-  choices.push(["Deny", "deny", "once", "", ""]);
-  choices.forEach(([text, decision, scope, mode, cls]) => {
+  permChoices(p.tool, label, liveMode).forEach(([text, decision, scope, mode, cls]) => {
     const b = document.createElement("button");
     b.type = "button";
     if (cls) b.className = cls;
@@ -1036,12 +1049,12 @@ function buildPermCard(p, run_id) {
 // Reconcile the poll's request list with what is on screen: new requests get a
 // card, answered ones get their verdict. Idempotent — poll replays the whole
 // list every 400 ms.
-function syncPermissions(list, run_id, working) {
+function syncPermissions(list, run_id, working, liveMode) {
   for (const p of list || []) {
     if (!p || !p.id) continue;
     let card = permCards.get(p.id);
     if (!card) {
-      card = buildPermCard(p, run_id);
+      card = buildPermCard(p, run_id, liveMode);
       permCards.set(p.id, card);
     }
     if (!card.el.isConnected) {
@@ -1194,7 +1207,7 @@ async function pollLoop(run_id) {
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking");
-      syncPermissions(data.permissions, run_id, w);
+      syncPermissions(data.permissions, run_id, w, data.mode);
       if (data.text) {
         if (!reply) {
           reply = addAssistant("");
