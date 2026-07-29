@@ -29,6 +29,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -40,15 +41,32 @@ def _claude_bin() -> str:
     found = shutil.which("claude")
     if found:
         return found
+    # On Windows the launcher is claude.exe or an npm claude.cmd shim
+    # (shutil.which covers this on PATH via PATHEXT; the dir probe must too).
+    # Keep the candidate list in lockstep with server._claude_bin (pinned by
+    # test_server_ai.py).
+    suffixes = ("", ".exe", ".cmd", ".bat") if sys.platform == "win32" else ("",)
     for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                       "/usr/local/bin/claude"):
-        candidate = os.path.expanduser(candidate)
-        if os.path.exists(candidate):
-            return candidate
+        for suffix in suffixes:
+            path = os.path.expanduser(candidate) + suffix
+            if os.path.exists(path):
+                return path
     raise FileNotFoundError(
         "claude CLI not found — install Claude Code or put `claude` on the "
         "PATH of the environment that launched fused-render"
     )
+
+
+def _claude_argv_prefix(bin_path: str) -> list[str]:
+    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess cannot run
+    directly — only cmd.exe can. Still an argv list, never a shell string.
+    Lockstep with server._claude_argv_prefix."""
+    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", bin_path]
+    return [bin_path]
 
 
 def _system_prompt(file: str) -> str:
@@ -221,7 +239,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
 
-    cmd = [_claude_bin(), "-p", message,
+    cmd = _claude_argv_prefix(_claude_bin()) + ["-p", message,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
            "--append-system-prompt", _system_prompt(file),

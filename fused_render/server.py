@@ -873,12 +873,28 @@ def _claude_bin() -> str | None:
     found = shutil.which("claude")
     if found:
         return found
+    # On Windows the launcher is claude.exe or an npm claude.cmd shim
+    # (shutil.which covers this on PATH via PATHEXT; the dir probe must too).
+    suffixes = ("", ".exe", ".cmd", ".bat") if sys.platform == "win32" else ("",)
     for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                       "/usr/local/bin/claude"):
-        candidate = os.path.expanduser(candidate)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+        for suffix in suffixes:
+            path = os.path.expanduser(candidate) + suffix
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
     return None
+
+
+def _claude_argv_prefix(bin_path: str) -> list[str]:
+    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess (and so
+    create_subprocess_exec) cannot run directly — only cmd.exe can. Still an
+    argv list, never a shell string: the prompt is on stdin and every other
+    arg is ours, but the discipline stands."""
+    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", bin_path]
+    return [bin_path]
 
 
 async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
@@ -960,8 +976,8 @@ async def _ai_relay(body: dict) -> JSONResponse:
     # The prompt goes over stdin, not argv: -p with no positional prompt reads
     # it from the pipe, and a data-heavy prompt (the documented fused.ai
     # pattern embeds JSON aggregates) can exceed the OS argv limit.
-    argv = [
-        bin_path, "-p",
+    argv = _claude_argv_prefix(bin_path) + [
+        "-p",
         "--output-format", "json",
         "--model", model,
         "--system-prompt", system_prompt,

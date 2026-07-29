@@ -290,6 +290,50 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     assert server._claude_bin() == str(bin_path)
 
 
+def test_claude_bin_fallback_probes_windows_launchers(monkeypatch, tmp_path):
+    # On win32 the launcher is claude.exe or an npm claude.cmd shim; the dir
+    # probe must try those suffixes (which() already does via PATHEXT).
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    shim = home / ".local" / "bin" / "claude.cmd"
+    shim.write_text("@echo off\n")
+    shim.chmod(0o755)
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(server.os.path, "expanduser",
+                        lambda p: p.replace("~", str(home), 1))
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    assert server._claude_bin() == str(shim)
+    # Not probed off-win32: bare `claude` is the only POSIX candidate.
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    assert server._claude_bin() is None
+
+
+def test_claude_argv_prefix_wraps_windows_shims(monkeypatch):
+    # CreateProcess can't run a .cmd/.bat shim directly — only cmd.exe can.
+    # A real .exe (and everything off-win32) execs as itself.
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    assert server._claude_argv_prefix(r"C:\u\claude.CMD") == [
+        "cmd.exe", "/c", r"C:\u\claude.CMD"]
+    assert server._claude_argv_prefix(r"C:\u\claude.bat") == [
+        "cmd.exe", "/c", r"C:\u\claude.bat"]
+    assert server._claude_argv_prefix(r"C:\u\claude.exe") == [r"C:\u\claude.exe"]
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    assert server._claude_argv_prefix("/usr/local/bin/claude.cmd") == [
+        "/usr/local/bin/claude.cmd"]
+
+
+def test_relay_runs_windows_shims_through_cmd(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", r"C:\npm\claude.cmd")
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    _relay({"prompt": "hello"})
+    (argv, _, _, _), = fake.calls
+    assert argv[:3] == ["cmd.exe", "/c", r"C:\npm\claude.cmd"]
+
+
 def test_claude_bin_fallback_dirs_match_the_chat_template(monkeypatch):
     # server._claude_bin deliberately duplicates the chat template's resolver
     # (templates are standalone user-forkable code the server never imports).
@@ -306,6 +350,12 @@ def test_claude_bin_fallback_dirs_match_the_chat_template(monkeypatch):
 
     assert candidates(server._claude_bin) == candidates(agent._claude_bin)
     assert len(candidates(server._claude_bin)) == 3
+
+    # The Windows shim wrapping is duplicated the same way — pin behaviour.
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    for p in (r"C:\u\claude.cmd", r"C:\u\claude.exe", r"C:\u\claude.bat"):
+        assert server._claude_argv_prefix(p) == agent._claude_argv_prefix(p)
 
 
 def test_relay_uses_the_overridden_binary(monkeypatch):
