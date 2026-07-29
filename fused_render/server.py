@@ -866,15 +866,19 @@ def _claude_bin() -> str | None:
     return shutil.which("claude")
 
 
-async def _run_claude_cli(argv: list[str], env: dict, timeout: float):
+async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
+                          stdin_text: str = ""):
     """Run the claude CLI once; return (returncode, stdout, stderr) as text.
 
     The single subprocess hop, module-level so tests can patch it — the same
-    discipline as _fs_stat/_fs_write. Raises asyncio.TimeoutError after
-    `timeout` seconds (the process is killed first)."""
+    discipline as _fs_stat/_fs_write. `stdin_text` is written to the process
+    and the pipe closed (communicate) — the prompt travels this way because
+    argv has an OS size cap (~32K on Windows, ARG_MAX elsewhere) that a
+    data-heavy prompt can blow. Raises asyncio.TimeoutError after `timeout`
+    seconds (the process is killed first)."""
     proc = await asyncio.create_subprocess_exec(
         *argv, env=env,
-        stdin=asyncio.subprocess.DEVNULL,  # -p never reads stdin; inheriting it can stall
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         # close_fds=False forces the posix_spawn path instead of fork()+exec:
         # fork() runs PROJ's pthread_atfork child handler against the server's
@@ -885,7 +889,8 @@ async def _run_claude_cli(argv: list[str], env: dict, timeout: float):
         # a windowless server must not flash a console window per call
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(stdin_text.encode("utf-8")), timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
@@ -906,7 +911,11 @@ async def _ai_relay(body: dict) -> JSONResponse:
             "bad_request", "request body must include 'prompt': a non-empty string",
             status=400)
 
-    model = body.get("model") or _AI_DEFAULT_MODEL
+    model = body.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        return _ai_error(
+            "bad_request", "'model' must be a non-empty string", status=400)
+    model = model or _AI_DEFAULT_MODEL
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORT_TOKENS:
         return _ai_error(
@@ -933,8 +942,11 @@ async def _ai_relay(body: dict) -> JSONResponse:
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
 
+    # The prompt goes over stdin, not argv: -p with no positional prompt reads
+    # it from the pipe, and a data-heavy prompt (the documented fused.ai
+    # pattern embeds JSON aggregates) can exceed the OS argv limit.
     argv = [
-        bin_path, "-p", prompt,
+        bin_path, "-p",
         "--output-format", "json",
         "--model", model,
         "--system-prompt", system_prompt,
@@ -947,7 +959,7 @@ async def _ai_relay(body: dict) -> JSONResponse:
     env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
     try:
         returncode, stdout, stderr = await _run_claude_cli(
-            argv, env, _AI_TIMEOUT_S)
+            argv, env, _AI_TIMEOUT_S, stdin_text=prompt)
     except asyncio.TimeoutError:
         return _ai_error(
             "timeout", f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")

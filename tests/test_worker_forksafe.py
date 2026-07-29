@@ -192,14 +192,16 @@ def test_pyramid_build_worker_uses_posix_spawn(tmp_path, monkeypatch):
 
 def test_ai_claude_spawn_disables_fork(monkeypatch):
     """_run_claude_cli must pass close_fds=False -> posix_spawn, not
-    fork()+exec, and DEVNULL stdin (claude -p never reads it; inheriting the
-    server's stdin can stall the call)."""
+    fork()+exec, and a PIPE stdin fed through communicate() (the prompt
+    travels over stdin — argv has an OS size cap — and communicate closes
+    the pipe so the call can't stall)."""
     captured = {}
 
     class _Proc:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, input=None):
+            captured["input"] = input
             return b"{}", b""
 
     async def fake_exec(*argv, **kw):
@@ -207,8 +209,10 @@ def test_ai_claude_spawn_disables_fork(monkeypatch):
         return _Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-    asyncio.run(server._run_claude_cli(["claude", "-p", "x"], dict(os.environ), 5))
+    asyncio.run(server._run_claude_cli(
+        ["claude", "-p"], dict(os.environ), 5, stdin_text="hello"))
     assert captured.get("close_fds") is False, (
         "the ai spawn must pass close_fds=False so the claude CLI is spawned "
         "via posix_spawn (no atfork handlers), not fork()+exec")
-    assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+    assert captured.get("stdin") is asyncio.subprocess.PIPE
+    assert captured.get("input") == b"hello"

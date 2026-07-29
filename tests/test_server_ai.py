@@ -51,10 +51,10 @@ class _FakeCLI:
     def __init__(self, stdout="", returncode=0, stderr="", exc=None):
         self._result = (returncode, stdout, stderr)
         self._exc = exc
-        self.calls = []  # (argv, env, timeout) of every run
+        self.calls = []  # (argv, env, timeout, stdin_text) of every run
 
-    async def __call__(self, argv, env, timeout):
-        self.calls.append((argv, env, timeout))
+    async def __call__(self, argv, env, timeout, stdin_text=""):
+        self.calls.append((argv, env, timeout, stdin_text))
         if self._exc is not None:
             raise self._exc
         return self._result
@@ -86,12 +86,15 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
     assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
-    # One CLI invocation: the prompt as argv, the default model, the default
-    # system prompt, a bare one-shot (no tools, no settings, no session), and
-    # the medium effort default carried as the max-output-tokens env var.
-    (argv, env, timeout), = fake.calls
+    # One CLI invocation: the prompt over stdin (argv has an OS size cap), the
+    # default model, the default system prompt, a bare one-shot (no tools, no
+    # settings, no session), and the medium effort default carried as the
+    # max-output-tokens env var.
+    (argv, env, timeout, stdin_text), = fake.calls
     assert argv[0] == "/usr/local/bin/claude"
-    assert _flag(argv, "-p") == "hello"
+    assert "-p" in argv
+    assert stdin_text == "hello"
+    assert "hello" not in argv  # prompt travels over stdin, never argv
     assert _flag(argv, "--output-format") == "json"
     assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
     assert _flag(argv, "--system-prompt") == server._AI_DEFAULT_SYSTEM_PROMPT
@@ -107,7 +110,7 @@ def test_relay_options_reach_the_cli(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
-    (argv, env, _), = fake.calls
+    (argv, env, _, _), = fake.calls
     assert _flag(argv, "--model") == "claude-sonnet-5"
     assert _flag(argv, "--system-prompt") == "be terse"
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"  # effort: high
@@ -116,7 +119,7 @@ def test_relay_options_reach_the_cli(monkeypatch):
 def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
-    (_, env, _), = fake.calls
+    (_, env, _, _), = fake.calls
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "99"
 
 
@@ -145,7 +148,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     fake = _cli_ok(monkeypatch, dict(
         _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
     resp = _relay({"prompt": "hello", "model": "sonnet"})
-    (argv, _, _), = fake.calls
+    (argv, _, _, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
     assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
 
@@ -169,12 +172,29 @@ def test_relay_rejects_bad_prompt(monkeypatch, body):
     assert fake.calls == []  # never reached the CLI
 
 
+def test_relay_large_prompt_travels_over_stdin(monkeypatch):
+    # The documented fused.ai pattern embeds JSON aggregates in the prompt; a
+    # ~200KB one would blow the OS argv cap (~32K Windows), so it must never
+    # appear in argv.
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    big = "x" * 200_000
+    resp = _relay({"prompt": big})
+    assert resp.status_code == 200
+    (argv, _, _, stdin_text), = fake.calls
+    assert stdin_text == big
+    assert all(len(a) < 1000 for a in argv)
+
+
 def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     for body in ({"prompt": "x", "effort": "extreme"},
                  {"prompt": "x", "max_tokens": 0},
                  {"prompt": "x", "max_tokens": True},
-                 {"prompt": "x", "max_tokens": "many"}):
+                 {"prompt": "x", "max_tokens": "many"},
+                 {"prompt": "x", "model": 42},
+                 {"prompt": "x", "model": ""},
+                 {"prompt": "x", "model": "   "},
+                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]}):
         resp = _relay(body)
         assert resp.status_code == 400
         assert _data(resp)["error"]["type"] == "bad_request"
@@ -254,7 +274,7 @@ def test_relay_uses_the_overridden_binary(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
     _relay({"prompt": "hello"})
-    (argv, _, _), = fake.calls
+    (argv, _, _, _), = fake.calls
     assert argv[0] == "/opt/custom/claude"
 
 
