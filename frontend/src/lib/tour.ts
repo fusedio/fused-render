@@ -8,6 +8,21 @@ import { IS_EMBED } from "./router";
 
 const SEEN_KEY = "fused.tour.seen";
 
+// Cross-document "a tour is on screen" flag: the bundled Learn page runs its
+// own first-open tour inside the preview iframe (same origin), and defers
+// while this is set so two tours never stack on one screen. Cleared eagerly
+// at module load so a reload mid-tour can't leave it stuck.
+const ACTIVE_KEY = "fused.tour.active";
+function setActiveFlag(on: boolean): void {
+  try {
+    if (on) localStorage.setItem(ACTIVE_KEY, "1");
+    else localStorage.removeItem(ACTIVE_KEY);
+  } catch {
+    /* localStorage may be unavailable */
+  }
+}
+setActiveFlag(false);
+
 // Every step targets a stable selector already present in the shell chrome.
 // Each description is one short, friendly sentence for a first-time user.
 const STEPS: DriveStep[] = [
@@ -23,6 +38,16 @@ const STEPS: DriveStep[] = [
     popover: {
       title: "Fused workspace",
       description: "Your Fused folder — example views and data live in here.",
+    },
+  },
+  {
+    // Only present once the builtin learn mount is attached (learnMountReady),
+    // so presentSteps() naturally drops it on dev checkouts without learn.zip.
+    element: "#learn-link",
+    popover: {
+      title: "Learn",
+      description:
+        "Guides, live demos, and example apps — the best place to start.",
     },
   },
   {
@@ -87,12 +112,20 @@ function runTour(steps: DriveStep[]): void {
     showProgress: true,
     allowClose: true,
     steps,
-    onDestroyed: () => {
+    // driver.js 1.6.0 never fires onDestroyed/onDeselected on dismissal (its
+    // destroy() clears the active step before the hook gate), so the tour was
+    // replaying on every load. onDestroyStarted is the one hook that fires on
+    // every dismissal path (Done, ESC, X, overlay click); it takes over the
+    // teardown: mark seen, then finish the destroy ourselves.
+    onDestroyStarted: (_el, _step, opts) => {
       active = null;
       markSeen();
+      setActiveFlag(false);
+      opts.driver.destroy();
     },
   });
   active = d;
+  setActiveFlag(true);
   d.drive();
 }
 
@@ -116,7 +149,23 @@ export function maybeAutoStartTour(): void {
   }
   if (seen) return;
   if (!document.querySelector("#sidebar")) return;
-  const steps = presentSteps();
-  if (steps.length === 0) return;
-  runTour(steps);
+  // The sidebar's Learn entry only mounts once the builtin learn mount is
+  // attached (Sidebar polls learn_mount_ready on a 2s interval), which
+  // usually lands after this 600ms-delayed call — wait briefly for it so the
+  // Learn step isn't silently dropped from the first-run tour. Start anyway
+  // after ~3s: dev checkouts without a learn.zip never grow the entry.
+  const deadline = performance.now() + 3000;
+  const tryStart = () => {
+    if (
+      !document.querySelector("#learn-link") &&
+      performance.now() < deadline
+    ) {
+      setTimeout(tryStart, 250);
+      return;
+    }
+    const steps = presentSteps();
+    if (steps.length === 0) return;
+    runTour(steps);
+  };
+  tryStart();
 }

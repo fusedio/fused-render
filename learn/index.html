@@ -526,6 +526,34 @@
     .navtiles, .ideagrid, .doors { grid-template-columns:1fr; }
     .cards { grid-template-columns:1fr; } .cards .feat { grid-column:auto; }
   }
+
+  /* ---------- first-open tour ---------- */
+  /* Spotlight = one fixed div sized to the target whose huge box-shadow dims
+     everything else. The veil is an invisible full-viewport layer under it
+     that soaks up presses outside the popover, so a dismissing click can
+     never also activate the page underneath. */
+  .ftour-veil { position:fixed; inset:0; z-index:89; }
+  .ftour-spot { position:fixed; z-index:90; border-radius:10px; pointer-events:none;
+       box-shadow:0 0 0 200vmax rgba(0,0,0,.62); border:1.5px solid var(--yellow);
+       transition:top .25s ease, left .25s ease, width .25s ease, height .25s ease; }
+  .ftour-pop { position:fixed; z-index:91; width:290px; max-width:calc(100vw - 32px);
+       background:var(--panel); border:1px solid var(--border); border-radius:12px;
+       padding:14px 16px 12px; box-shadow:0 18px 50px rgba(0,0,0,.55);
+       transition:top .25s ease, left .25s ease; }
+  .ftour-pop h5 { margin:0 0 4px; font-size:13px; color:var(--text); }
+  .ftour-pop h5 .y { color:var(--yellow); }
+  .ftour-pop p { margin:0 0 12px; font-size:12px; line-height:1.5; color:var(--dim); }
+  .ftour-foot { display:flex; align-items:center; gap:10px; }
+  .ftour-prog { font-size:10.5px; color:var(--mut); margin-right:auto; }
+  .ftour-foot button { appearance:none; font:inherit; font-size:11.5px; cursor:pointer;
+       border-radius:7px; padding:4px 11px; }
+  .ftour-skip { background:none; border:0; color:var(--mut); padding:4px 4px; }
+  .ftour-skip:hover { color:var(--text); }
+  .ftour-next { background:var(--yellow); border:0; color:#141414; font-weight:600; }
+  .ftour-next:hover { filter:brightness(1.06); }
+  @media (prefers-reduced-motion:reduce){
+    .ftour-spot, .ftour-pop { transition:none; }
+  }
 </style>
 </head>
 <body>
@@ -1196,6 +1224,10 @@ function setPageParam(slug, hash){
 function goto(slug, hash){ setPageParam(slug, hash); render(slug, hash); }
 
 function render(slug, hash){
+  // A landing page/viewport can leave the first-open tour with zero visible
+  // targets (e.g. narrow ?page=build: rail hidden, home sections inactive) —
+  // seen stays unset, so re-arm on every navigation until it actually runs.
+  retryLearnTourOnNav();
   const p = PAGES.find(x => x.slug === slug) || PAGES[0];
   PAGES.forEach(x => x.el.classList.toggle("active", x === p));
   $$("#nav a.top").forEach(a => a.classList.toggle("cur", a.dataset.slug === p.slug));
@@ -1567,11 +1599,157 @@ if (hasFused && fused.params){
   drawLevel("40");
 }
 
+/* ---------------- first-open tour ---------------- */
+/* Mirrors the shell's onboarding tour (frontend/src/lib/tour.ts) in spirit,
+   but lives in this standalone page: the shell's driver.js can't reach into
+   the rendered iframe. Steps whose target isn't visible are skipped, so the
+   tour survives any landing page (?page=…) and any viewport width. */
+const TOUR_KEY = "fused.learn.tour.seen";
+const TOUR_STEPS = [
+  { sel:".doors",      title:"Two ways in",        desc:"Open a file you already have, or build a tiny app — every guide hangs off one of these two doors." },
+  { sel:"#demoFrame",  title:"A live app, right here", desc:"This π demo is real Python running on your machine. Drag its slider after the tour." },
+  { sel:"#nav",        title:"All the guides",     desc:"Everything to learn lives in this rail, in reading order — the pager at the bottom of each page follows it too." },
+  { sel:"#searchHint", title:"Search the docs",    desc:"Press ⌘K anytime to jump straight to a topic." },
+];
+
+function tourSeen(){
+  try { return localStorage.getItem(TOUR_KEY) === "1"; } catch(e){ return false; }
+}
+function tourMarkSeen(){
+  try { localStorage.setItem(TOUR_KEY, "1"); } catch(e){ /* replays next time */ }
+}
+function tourVisible(el){
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+
+function startLearnTour(){
+  if (document.querySelector(".ftour-spot")) return; // already running
+  const steps = TOUR_STEPS
+    .map(s => Object.assign({}, s, { el: $(s.sel) }))
+    .filter(s => tourVisible(s.el));
+  if (!steps.length) return;
+
+  // The veil catches every press outside the popover (dismiss, like
+  // driver.js allowClose) so the click can't ALSO hit the page underneath —
+  // the spotlight itself is pointer-events:none and its box-shadow dimmer
+  // doesn't intercept anything.
+  const veil = document.createElement("div"); veil.className = "ftour-veil";
+  const spot = document.createElement("div"); spot.className = "ftour-spot";
+  const pop  = document.createElement("div"); pop.className = "ftour-pop";
+  document.body.append(veil, spot, pop);
+  let i = 0;
+
+  function place(){
+    const s = steps[i];
+    if (!tourVisible(s.el)) { end(); return; }
+    const r = s.el.getBoundingClientRect(), pad = 6;
+    spot.style.top    = (r.top - pad) + "px";
+    spot.style.left   = (r.left - pad) + "px";
+    spot.style.width  = (r.width + pad*2) + "px";
+    spot.style.height = (r.height + pad*2) + "px";
+    pop.innerHTML =
+      '<h5>'+s.title+'</h5><p>'+s.desc+'</p>'+
+      '<div class="ftour-foot"><span class="ftour-prog">'+(i+1)+' / '+steps.length+'</span>'+
+      '<button type="button" class="ftour-skip">Skip</button>'+
+      '<button type="button" class="ftour-next">'+(i === steps.length-1 ? "Done" : "Next")+'</button></div>';
+    pop.querySelector(".ftour-skip").addEventListener("click", end);
+    pop.querySelector(".ftour-next").addEventListener("click", next);
+    // popover below the spotlight when there's room, else above; clamped to
+    // the viewport horizontally (fixed rail targets sit at the right edge)
+    const pw = pop.offsetWidth, ph = pop.offsetHeight, gap = 10;
+    let top = r.bottom + pad + gap;
+    if (top + ph > innerHeight - 12) top = Math.max(12, r.top - pad - gap - ph);
+    let left = Math.min(Math.max(12, r.left), innerWidth - pw - 12);
+    pop.style.top = top + "px"; pop.style.left = left + "px";
+  }
+  function show(){
+    const s = steps[i];
+    // instant so place() measures the settled position right away
+    s.el.scrollIntoView({ behavior:"instant" in window ? "instant" : "auto", block:"center" });
+    place();
+  }
+  function next(){ if (i >= steps.length - 1) { end(); return; } i++; show(); }
+  function end(){
+    tourMarkSeen();
+    veil.remove(); spot.remove(); pop.remove();
+    removeEventListener("resize", place);
+    removeEventListener("scroll", onScroll, true);
+    document.removeEventListener("keydown", onKey, true);
+  }
+  function onScroll(){ place(); }
+  function onKey(e){
+    if (e.key === "Escape") { e.preventDefault(); end(); }
+    else if (e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); next(); }
+  }
+  // like driver.js allowClose: a press outside the popover dismisses — the
+  // veil swallows it so it can't reach whatever it landed over
+  veil.addEventListener("pointerdown", e => { e.preventDefault(); end(); });
+  addEventListener("resize", place);
+  addEventListener("scroll", onScroll, true);
+  document.addEventListener("keydown", onKey, true);
+  show();
+}
+
+/* One tour at a time: when this page is framed inside the app shell, the
+   shell runs its own onboarding tour over the whole window (it sets
+   fused.tour.active while driving and fused.tour.seen when done — same
+   origin, so both are readable here). Starting ours under it would stack
+   two spotlights on one screen; defer until the shell's tour is over. */
+function shellTourBlocking(){
+  if (window === window.parent) return false;
+  try {
+    if (!window.parent.document.querySelector("#sidebar")) return false; // framed, but not by the shell
+  } catch(e){ return false; } // cross-origin parent — no shell tour to collide with
+  try {
+    return localStorage.getItem("fused.tour.active") === "1"
+        || localStorage.getItem("fused.tour.seen") !== "1";
+  } catch(e){ return false; }
+}
+
+/* Called from render() on every navigation: if the boot-time auto-start
+   found nothing to point at (narrow viewport + non-home landing), the tour
+   is still unseen — try again on the page the user just moved to. Never
+   re-reads the tour=1 param, so a forced replay can't retrigger on nav. */
+let tourBootArmed = false; // boot's render() runs before maybeStartLearnTour — let it own the first attempt
+function retryLearnTourOnNav(){
+  if (!tourBootArmed) return;
+  if (tourSeen()) return;
+  if (document.querySelector(".ftour-spot")) return; // already on screen
+  if (shellTourBlocking()) return; // boot already armed the storage listener
+  setTimeout(() => {
+    if (!tourSeen() && !shellTourBlocking()) startLearnTour();
+  }, 400);
+}
+
+function maybeStartLearnTour(){
+  tourBootArmed = true;
+  const forced = currentParams().get("tour") === "1"; // forced replay/testing
+  if (!forced && tourSeen()) return;
+  const kick = () => setTimeout(() => {
+    if (forced || !tourSeen()) startLearnTour();
+  }, forced ? 400 : 700); // past first paint + the doors' entrance choreography
+  if (!shellTourBlocking()) { kick(); return; }
+  // storage events fire cross-document on the same origin, so the shell
+  // finishing its tour wakes us; the interval is a cheap safety net.
+  let iv = null;
+  const onChange = () => {
+    if (shellTourBlocking()) return;
+    removeEventListener("storage", onChange);
+    clearInterval(iv);
+    kick();
+  };
+  addEventListener("storage", onChange);
+  iv = setInterval(onChange, 1000);
+}
+
 /* ---------------- boot ---------------- */
 (function boot(){
   const slug = currentParams().get("page") || PAGES[0].slug;
   render(slug, location.hash ? location.hash.slice(1) : null);
   // hello() is primed lazily via maybeHello() when the Build page opens — see render().
+  maybeStartLearnTour();
 })();
 </script>
 </body>
