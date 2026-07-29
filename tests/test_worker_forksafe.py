@@ -22,6 +22,7 @@ The fix makes every worker spawn use `posix_spawn` instead of `fork()+exec`
 job). posix_spawn runs NO atfork handlers, so the crash path is gone. These
 tests lock that in: the spawns must not take the fork path.
 """
+import asyncio
 import json
 import os
 import subprocess
@@ -29,7 +30,7 @@ import sys
 
 import pytest
 
-from fused_render import executor
+from fused_render import executor, server
 from fused_render.templates.pyramid import overview_pyramid as op
 
 _POSIX = os.name == "posix"
@@ -183,3 +184,31 @@ def test_pyramid_build_worker_uses_posix_spawn(tmp_path, monkeypatch):
     assert res.get("status_key")
     assert captured["kw"].get("setsid") is True
     assert captured["path"] == "/fake/python"
+
+
+# --------------------------------------------------------------------------
+# /api/ai claude CLI spawn (server._run_claude_cli, async)
+# --------------------------------------------------------------------------
+
+def test_ai_claude_spawn_disables_fork(monkeypatch):
+    """_run_claude_cli must pass close_fds=False -> posix_spawn, not
+    fork()+exec, and DEVNULL stdin (claude -p never reads it; inheriting the
+    server's stdin can stall the call)."""
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"{}", b""
+
+    async def fake_exec(*argv, **kw):
+        captured.update(kw)
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    asyncio.run(server._run_claude_cli(["claude", "-p", "x"], dict(os.environ), 5))
+    assert captured.get("close_fds") is False, (
+        "the ai spawn must pass close_fds=False so the claude CLI is spawned "
+        "via posix_spawn (no atfork handlers), not fork()+exec")
+    assert captured.get("stdin") is asyncio.subprocess.DEVNULL

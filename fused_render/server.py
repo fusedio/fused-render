@@ -874,7 +874,16 @@ async def _run_claude_cli(argv: list[str], env: dict, timeout: float):
     `timeout` seconds (the process is killed first)."""
     proc = await asyncio.create_subprocess_exec(
         *argv, env=env,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdin=asyncio.subprocess.DEVNULL,  # -p never reads stdin; inheriting it can stall
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        # close_fds=False forces the posix_spawn path instead of fork()+exec:
+        # fork() runs PROJ's pthread_atfork child handler against the server's
+        # live proj.db SQLite handle and SIGSEGVs the child (exit -11). Same
+        # fix as executor.py's worker spawn — see the full story there and in
+        # tests/test_worker_forksafe.py.
+        close_fds=False,
+        # a windowless server must not flash a console window per call
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
