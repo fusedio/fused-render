@@ -260,17 +260,23 @@ jobs:
         # while providing none, so it is asserted twice over:
         #   * FUSED_RENDER_REQUIRE_FUSED_ENGINE turns engine.available() from a
         #     skip condition into an assertion (test_engine.py);
-        #   * these two files — the real-backend integration tests and the
-        #     cross-engine binding parity table — must report ZERO skips on
-        #     3.11 with the extra installed. Nothing in them has another reason
-        #     to skip, so any skip means the extra didn't take effect.
+        #   * these three files — the real-backend integration tests, the
+        #     cross-engine binding parity table, and the install-loader HTTP
+        #     surface — must report ZERO skips on 3.11 with the extra
+        #     installed. Nothing in them has another reason to skip, so any
+        #     skip means the extra didn't take effect. test_server_env_install
+        #     is listed because two of its tests skip without `fused` on the
+        #     matrix job, and they are the only coverage of "requirements come
+        #     from the .py, never the request body" — exactly the kind of
+        #     silent CI skip that let a broken bundle ship.
         # `shell: bash` for pipefail: without it the pipe into tee would hide
         # pytest's exit code.
         shell: bash
         env:
           FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: |
-          python -m pytest tests/test_engine.py tests/test_engine_parity.py -q -rs \
+          python -m pytest tests/test_engine.py tests/test_engine_parity.py \
+            tests/test_server_env_install.py -q -rs \
             | tee engine-tests.log
           if grep -qE '[0-9]+ skipped' engine-tests.log; then
             echo "::error::engine tests skipped in the job whose whole purpose is to run them"

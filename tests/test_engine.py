@@ -674,10 +674,19 @@ def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
 
 
 def _bundle_like_python(tmp_path):
-    """A python that can only find its stdlib+packages via PYTHONHOME.
+    """A python that can only find its stdlib AND one package via PYTHONHOME.
 
     py2app's shape, built with symlinks: ONE directory holding the stdlib and
-    site-packages flattened together.
+    site-packages flattened together. Returns (base_interpreter, home, sentinel).
+
+    The package is a sentinel this function WRITES, not a real distribution.
+    Borrowing `pandas` made the whole file environment-dependent and it failed
+    both ways in CI: on the runner where pandas is importable from the base
+    interpreter the bare stand-in found it (so the guard below fired, correctly);
+    on the runners where pandas is not installed at all there was nothing for the
+    wrapper to find (so the positive assertions could not pass). A sentinel that
+    exists ONLY inside the stand-in's lib dir makes both halves true by
+    construction, on every runner, with no dependency on what is installed.
     """
     import sysconfig
 
@@ -685,20 +694,23 @@ def _bundle_like_python(tmp_path):
     home = tmp_path / "fakebundle"
     libdir = home / "lib" / tag
     libdir.mkdir(parents=True)
-    for src in (sysconfig.get_paths()["stdlib"], sysconfig.get_paths()["purelib"]):
-        if not os.path.isdir(src):
-            continue
-        for name in os.listdir(src):
-            dst = libdir / name
-            if not dst.exists():
-                try:
-                    os.symlink(os.path.join(src, name), dst)
-                except OSError:
-                    pass
+    stdlib = sysconfig.get_paths()["stdlib"]
+    if not os.path.isdir(stdlib):
+        pytest.skip("no stdlib directory to model a bundle from")
+    for name in os.listdir(stdlib):
+        dst = libdir / name
+        if not dst.exists():
+            try:
+                os.symlink(os.path.join(stdlib, name), dst)
+            except OSError:
+                pass
+    # The app's "own package": importable only when PYTHONHOME points here.
+    sentinel = "fused_render_bundle_sentinel"
+    (libdir / f"{sentinel}.py").write_text("MARKER = 'from-the-bundle'\n")
     base = os.path.join(sys.base_prefix, "bin", "python3")
     if not os.path.exists(base):
         pytest.skip("no base interpreter to build a bundle-like stand-in from")
-    return base, str(home)
+    return base, str(home), sentinel
 
 
 def _stripped():
@@ -712,13 +724,13 @@ def bundle_like(tmp_path, monkeypatch):
     """This process as it is inside the .app: PYTHONHOME set, foreign raw prefix."""
     if os.name == "nt":
         pytest.skip("the wrapper is POSIX-only by design")
-    base, home = _bundle_like_python(tmp_path)
+    base, home, sentinel = _bundle_like_python(tmp_path)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", base)
     # The app claims the bundle's prefix, as py2app's launcher arranges.
     monkeypatch.setenv("PYTHONHOME", home)
     monkeypatch.setattr(sys, "prefix", home)
-    return base, home
+    return base, home, sentinel
 
 
 def test_the_stand_in_really_needs_pythonhome(tmp_path):
@@ -729,29 +741,32 @@ def test_the_stand_in_really_needs_pythonhome(tmp_path):
     """
     if os.name == "nt":
         pytest.skip("POSIX-only")
-    base, home = _bundle_like_python(tmp_path)
+    base, home, sentinel = _bundle_like_python(tmp_path)
     env = _stripped()
-    bare = subprocess.run([base, "-c", "import pandas"], capture_output=True,
+    bare = subprocess.run([base, "-c", f"import {sentinel}"], capture_output=True,
                           text=True, env=env, timeout=120)
-    assert bare.returncode != 0, "the stand-in must NOT find packages without PYTHONHOME"
+    assert bare.returncode != 0, (
+        "the stand-in must NOT find the app's package without PYTHONHOME, or every "
+        "test below it passes while testing nothing"
+    )
     with_home = subprocess.run(
-        [base, "-c", "import pandas,sys; print(sys.prefix)"],
+        [base, "-c", f"import {sentinel},sys; print(sys.prefix, {sentinel}.MARKER)"],
         capture_output=True, text=True, env=dict(env, PYTHONHOME=home), timeout=120,
     )
     assert with_home.returncode == 0, with_home.stderr
-    assert with_home.stdout.strip() == home
+    assert with_home.stdout.split() == [home, "from-the-bundle"]
 
 
 def test_a_bundle_like_interpreter_is_rescued_by_the_wrapper(bundle_like):
     """The macOS path end to end: rung 1 rejected, rung 2 accepted."""
-    base, home = bundle_like
+    base, home, sentinel = bundle_like
     resolved = engine.app_interpreter()
     assert resolved is not None, "the wrapper should have rescued this"
     assert resolved != base, "it must be the wrapper, not the rejected raw python"
     assert resolved == engine._wrapper_path()
 
     proc = subprocess.run(
-        [resolved, "-c", "import pandas,sys; print(sys.prefix)"],
+        [resolved, "-c", f"import {sentinel},sys; print(sys.prefix)"],
         capture_output=True, text=True, env=_stripped(), timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
@@ -785,6 +800,7 @@ def test_a_daemon_respawned_through_sys_executable_still_works(bundle_like):
     failure one level down, so it is asserted against the real spawn shape rather
     than inferred from sys.executable alone.
     """
+    _base, _home, sentinel = bundle_like
     resolved = engine.app_interpreter()
     assert resolved is not None
     grandchild = (
@@ -792,7 +808,7 @@ def test_a_daemon_respawned_through_sys_executable_still_works(bundle_like):
         "denv = {k: v for k, v in os.environ.items() "
         "if k not in ('PYTHONPATH', 'PYTHONHOME')}\n"
         "r = subprocess.run([sys.executable, '-c', "
-        "'import pandas; print(\"deep ok\")'], "
+        f"'import {sentinel}; print(\"deep ok\")'], "
         "capture_output=True, text=True, env=denv)\n"
         "print(r.returncode, (r.stdout or r.stderr).strip().splitlines()[-1])\n"
     )

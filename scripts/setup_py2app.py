@@ -345,6 +345,17 @@ OPTIONS = {
     # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
     # C-extension shape as _duckdb.
     "includes": ["_duckdb", "_cffi_backend"] + BUNDLED_INCLUDES,
+    # Skip py2app's "missing conditional import" report. Not cosmetic: that
+    # report `__import__`s every module name modulegraph could not resolve, in
+    # order to classify it, and catches only `Exception` — so a name whose import
+    # raises SystemExit (a package's `__main__`, a module that calls sys.exit at
+    # import time) terminates the build with NO traceback and no message, right
+    # after py2app's own codesign line makes it look like it succeeded. That is
+    # what a CI run did. The set of "missing" names depends on what is installed,
+    # so it differs per machine, which is why a local build passed. We never read
+    # this report; the unconditional one (which cannot be disabled, but does skip
+    # `.__main__` names) still prints anything actionable.
+    "no_report_missing_conditional_import": True,
     "plist": {
         "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
         "CFBundleName": f"FusedRender{branch_suffix()}",

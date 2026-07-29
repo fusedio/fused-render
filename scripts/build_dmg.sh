@@ -23,6 +23,27 @@
 # (executor.py/_child.py) keeps working completely unchanged (D33).
 set -euo pipefail
 
+# Every failure reports itself. `set -e` aborts with NO message when the failing
+# command is quiet — a bare `test -d`, a subshell whose child already printed
+# something that looked like success, or a process killed by a signal. That is
+# exactly how a CI run of this script died between py2app and the next step with
+# no error at all: the only clue was which `==>` heading had not printed yet.
+# One trap turns any such exit into a located failure, for this bug and the next.
+_build_failed() {
+  local status=$?
+  echo "" >&2
+  echo "FATAL: build_dmg.sh failed at line ${BASH_LINENO[0]:-?} (exit $status)" >&2
+  echo "       command: ${BASH_COMMAND}" >&2
+  if [[ $status -gt 128 ]]; then
+    echo "       exit > 128 means KILLED BY SIGNAL $((status - 128)) — most likely" >&2
+    echo "       the OS reclaiming memory, not a bug in the command itself." >&2
+  fi
+  echo "       disk:" >&2
+  df -h "${BUILD_DIR:-$PWD}" >&2 2>/dev/null || true
+  exit "$status"
+}
+trap _build_failed ERR
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -267,14 +288,36 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 # requires is no longer supported") against our real PEP 621 project file.
 # setup_py2app.py resolves REPO_ROOT itself, so cwd doesn't affect what gets
 # built - it just needs to not be a directory with its own pyproject.toml.
+# `|| PY2APP_STATUS=$?` rather than letting `set -e` abort inside the subshell:
+# py2app's last output is its own codesign success, so an abort here reads as
+# "the build stopped for no reason" — which is precisely what it did in CI.
+PY2APP_STATUS=0
 (
   cd "$BUILD_DIR"
   FUSED_RENDER_ICNS="$ICNS_PATH" "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
     --dist-dir "$PY2APP_DIST" \
     --bdist-base "$BUILD_DIR/py2app-build"
-)
+) || PY2APP_STATUS=$?
 
-test -d "$APP_DIR"
+if [[ $PY2APP_STATUS -ne 0 ]]; then
+  echo "FATAL: py2app exited $PY2APP_STATUS" >&2
+  if [[ $PY2APP_STATUS -gt 128 ]]; then
+    echo "       (killed by signal $((PY2APP_STATUS - 128)) — py2app can print a" >&2
+    echo "        successful-looking codesign line and then be killed; check memory" >&2
+    echo "        and disk below rather than reading the last line as success)" >&2
+  fi
+  df -h "$BUILD_DIR" >&2 2>/dev/null || true
+  exit "$PY2APP_STATUS"
+fi
+echo "==> py2app finished (exit 0)"
+df -h "$BUILD_DIR" | tail -1
+
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "FATAL: py2app reported success but $APP_DIR does not exist." >&2
+  echo "       py2app-dist contains:" >&2
+  ls -la "$PY2APP_DIST" >&2 2>/dev/null || echo "       (no $PY2APP_DIST at all)" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 4a. Prune dead weight from the bundle (D116). py2app's `packages` option

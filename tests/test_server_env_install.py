@@ -15,9 +15,26 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render import engine
 from fused_render.server import create_app
 
 HEADERS = {"X-Fused": "1"}
+
+# Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
+# `requirements_venv_id`/`venv_key` — deliberately, so the loader's key is the
+# backend's key and not a re-derivation. That makes `fused` a real requirement
+# for them, and the `test-python` matrix job does not install the extra.
+#
+# The skip is made LOUD rather than left silent: these two are the only coverage
+# of "requirements come from the .py, never the request body", and the
+# `fused-engine` job's zero-skip gate (.github/workflows/test.yml) lists this file
+# so a skip THERE fails the build. A silent CI skip is how this whole class of bug
+# reached a shipped DMG.
+requires_fused = pytest.mark.skipif(
+    not engine.available(),
+    reason="needs the `fused` extra for the backend's own venv-key helpers "
+           "(the fused-engine job asserts this does not skip)",
+)
 
 
 def _client(tmp_path):
@@ -75,6 +92,7 @@ def test_install_surfaces_a_malformed_header_instead_of_500ing(tmp_path):
     assert "PEP 723" in resp.json()["error"]
 
 
+@requires_fused
 def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monkeypatch):
     """The rule that keeps the loader's venv and the run's venv the same one."""
     client = _client(tmp_path)
@@ -100,6 +118,7 @@ def test_install_derives_requirements_from_the_file_not_the_body(tmp_path, monke
     assert started == [["imagecodecs", "pyproj"]]
 
 
+@requires_fused
 def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     """Same `py`/`html` contract /api/run uses, so the loader addresses the
     identical file the failed run did."""
