@@ -631,6 +631,36 @@ def test_relay_thinking_clamp_error_takes_the_respawn_path(monkeypatch):
     assert fake.procs[0].prompt == "hello"
 
 
+def test_relay_cancel_during_retry_discards_the_respawned_instance(monkeypatch):
+    # A client disconnect can land while the fresh-spawn retry is itself
+    # mid-configure/mid-turn. The retry's configure() has already set
+    # self._proc to the new live process by the time it raises, so a bare
+    # `except (_AiProcFailure, OSError, asyncio.TimeoutError)` around the
+    # retry lets CancelledError skip discard entirely and leaves _proc
+    # pointing at a process the next call's /clear would misread.
+    fake = _cli_ok(monkeypatch)
+    respawned = _FakeProc()
+    calls = []
+
+    async def fake_configure(model, system_prompt, effort):
+        calls.append(1)
+        if len(calls) == 1:
+            raise server._AiProcFailure("first attempt died")
+        # retry: configure() would have already assigned self._proc to the
+        # freshly spawned process before a cancel could land mid-reconfig
+        server._AI_SESSION._proc = respawned
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(server._AI_SESSION, "configure", fake_configure)
+
+    with pytest.raises(asyncio.CancelledError):
+        _relay({"prompt": "hello"})
+
+    assert len(calls) == 2  # first attempt, then the cancelled retry
+    assert server._AI_SESSION._proc is None  # discarded, not left live
+    assert respawned.killed
+
+
 def test_relay_persistent_control_rejection_is_an_ai_error(monkeypatch):
     # If EVERY instance rejects set_model (a future CLI dropping the field
     # for good), the one retry also fails and the caller gets a clean
