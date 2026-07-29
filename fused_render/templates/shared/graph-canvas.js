@@ -14,6 +14,15 @@
  * neighbourhood, or a folder's notes) the naive sim is well inside budget —
  * vendoring one would be a dependency bought for nothing.
  *
+ * The layout is LAYERED BY FOLDER, which is the one place this deliberately
+ * stops copying Obsidian (D163). A free force layout answers "what links to
+ * what" and nothing else, and the feedback on it was that the picture was
+ * unreadable: with every node free in both axes, position carried no meaning, so
+ * a web of a dozen notes told you less than the backlinks list did. Here the
+ * vertical axis is spent on something: one horizontal band per folder, ordered
+ * shallowest-first, so a node's height IS its place in the tree and a chain of
+ * links reads as a descent through it. Only x is simulated.
+ *
  * Behaviours copied from Obsidian's graph: the layout is fitted to the canvas
  * once it settles, node radius scales with degree,
  * labels fade out past a zoom threshold, hovering lights the neighbourhood,
@@ -79,6 +88,193 @@
     var REPULSION = 4600;
     var MAX_SPEED = 22;   // px per step, before alpha
 
+    /* ---- folder bands --------------------------------------------------------
+     * y belongs to the LAYOUT, not to the sim. Every node sits at the centreline
+     * of its folder's band, and only x is simulated — which is what makes height
+     * mean something (see the file header).
+     *
+     * One band per DISTINCT folder, not per depth number: two sibling folders
+     * are different places and get their own rows, which is the question being
+     * asked ("which folder is the note that links here in?"). Ordered by depth
+     * then name, so the ordering is stable across re-sends and reads top-down as
+     * the tree does.
+     *
+     * A node with no folder gets a trailing band: a ghost has no folder because
+     * it does not exist yet, and a tag never had one. They are kept OUT of the
+     * folder rows rather than lumped into the root's, which would claim they
+     * live at the top of the vault.
+     */
+    /* Band pitch is ADAPTIVE, between these two, and that is not a nicety.
+     * Banding makes a layout taller in proportion to how many folders it spans —
+     * this repo's own graph spans 14 — and a fixed airy pitch made the stack
+     * several times the canvas height, so frameAll zoomed out far enough to
+     * cross the `zoom > 0.7` threshold that hides node labels. The result was a
+     * graph whose folder legend was perfectly readable and whose nodes were
+     * anonymous dots: strictly worse than what it replaced. So the pitch shrinks
+     * to fit the surface, down to a floor that still clears a node and the label
+     * above it. A few bands stay airy; many get compact instead of illegible. */
+    /* A band is a BLOCK, not a line, and it is as tall as it needs to be.
+     *
+     * One row per folder was the first attempt and it failed twice over, both
+     * measured rather than guessed. Labels are drawn above their node and are
+     * 60-100px wide against a REST of 135, so a nine-note folder on one line ran
+     * its labels together — observed as "READMEauthoring", "catalogcomments".
+     * And nine nodes in a row is ~1080 world px, which in a 320px side panel
+     * fits only at a zoom far below the 0.7 threshold that hides node labels: a
+     * graph of anonymous dots, strictly worse than the free layout it replaced,
+     * which at least packed its nodes into a roughly square blob.
+     *
+     * So a band WRAPS. Its nodes are dealt across as many lanes as it takes for
+     * the row to fit the surface, and the band grows to hold them. Both failures
+     * fall out of the one mechanism: a wide window gives a folder a single airy
+     * line, a narrow panel gives the same folder a compact labelled block, and
+     * x-adjacent nodes are never in the same lane, so their labels cannot touch.
+     * This is the file's existing instinct — what should vary per surface is how
+     * the layout meets the canvas, not the spacing — applied to the lane count.
+     *
+     * LANE_GAP clears a node plus the 11px label above it. BAND_GAP is larger, so
+     * the space BETWEEN two folders always reads as bigger than the space between
+     * two lanes of one folder; that inequality is what keeps a band a band. */
+    /* 38 rather than 30 because a label is drawn ABOVE its node (at
+     * `y - radius - 4`) and so reaches up into the lane above it: at 30 the top
+     * of a label and the bottom of the node one lane up overlapped by a few
+     * pixels — visible in a screenshot as text grazing a dot. A lane has to clear
+     * a node radius plus the label's own height, not just the label. */
+    var LANE_GAP = 38;
+    var BAND_GAP = 52;
+
+    var LABEL_FONT = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+
+    /* In-row spacing is MEASURED, not assumed, and that is the last thing that
+     * made labels unreadable. REST is 135, chosen when a label was guessed at
+     * "60-100px" — but a note called `internal-requirements` renders ~150px wide,
+     * so at 135 apart its label ran straight through its neighbour's: observed as
+     * "READMEnal-requiremen". Guessing a wider constant only moves the threshold;
+     * the width is knowable, so it is asked for. `spread` is the in-lane spacing
+     * for the current payload and `widest` feeds frameAll's padding, because a
+     * label overhangs its node's bounding box by half its width and the fit was
+     * clipping the outermost ones off the canvas edge. */
+    var spread = REST;
+    var widest = 0;
+
+    function measureLabels(list) {
+      var ctx = canvas.getContext("2d");
+      ctx.font = LABEL_FONT;
+      var most = 0;
+      for (var i = 0; i < list.length; i++) {
+        // `measureText` is absent under the headless test harness, which is fine:
+        // no measurement means `spread` stays REST and the layout is the one the
+        // geometry tests already pin.
+        var m = ctx.measureText ? ctx.measureText(list[i].label || "") : null;
+        var w = (m && m.width) || 0;
+        if (w > most) most = w;
+      }
+      return most;
+    }
+    var GUTTER = 92;          // screen px reserved on the left for band names
+    // Keys for the two folderless bands. Leading slash so they cannot collide
+    // with a real one whatever a folder is called: these keys are vault-RELATIVE
+    // directories, which never begin with a separator.
+    var GHOST_BAND = "/ghost";
+    var TAG_BAND = "/tag";
+    // `y` is a band's label centreline; `top` its first lane; `lanes`/`cols` how
+    // its nodes are dealt. Keyed by band key.
+    var bands = {
+      order: [], y: Object.create(null), top: Object.create(null),
+      lanes: Object.create(null), cols: Object.create(null),
+      label: Object.create(null),
+    };
+
+    function bandKeyOf(node) {
+      if (node.kind === "ghost") return GHOST_BAND;
+      if (node.kind === "tag") return TAG_BAND;
+      // graph.py sends `dir` outright. The id fallback is for a payload from
+      // before it did — a note's id is its vault-relative path.
+      if (typeof node.dir === "string") return node.dir;
+      var slash = (node.id || "").lastIndexOf("/");
+      return slash === -1 ? "" : node.id.slice(0, slash);
+    }
+
+    function bandLabelOf(key) {
+      if (key === GHOST_BAND) return "unresolved";
+      if (key === TAG_BAND) return "tags";
+      return key === "" ? "root" : key + "/";
+    }
+
+    // [group, depth, name] — group puts the folderless bands last, depth puts
+    // the root first, name settles ties.
+    function bandRank(key) {
+      if (key === GHOST_BAND) return [2, 0, ""];
+      if (key === TAG_BAND) return [3, 0, ""];
+      return [1, key === "" ? 0 : key.split("/").length, key];
+    }
+
+    /* The band table for one payload: which folders are present, in what order,
+     * how many lanes each needs to fit the surface, and where each one sits. The
+     * whole stack is centred vertically, so a single-band graph lands where the
+     * old free layout put it. */
+    function layoutBands(list, rect) {
+      var seen = Object.create(null);
+      var keys = [];
+      var count = Object.create(null);
+      var i, key;
+      for (i = 0; i < list.length; i++) {
+        key = bandKeyOf(list[i]);
+        if (!seen[key]) { seen[key] = true; keys.push(key); }
+        count[key] = (count[key] || 0) + 1;
+      }
+      keys.sort(function (a, b) {
+        var ra = bandRank(a);
+        var rb = bandRank(b);
+        return ra[0] - rb[0] || ra[1] - rb[1]
+          || (ra[2] < rb[2] ? -1 : ra[2] > rb[2] ? 1 : 0);
+      });
+
+      /* How wide a row may be, in world units. The layout is fitted by zoom, so
+       * sizing the block to the canvas is what lands that zoom near 1 — which is
+       * what keeps node labels above their visibility threshold. The gutter is
+       * recomputed here rather than read from `gutterFor`, which reports on the
+       * bands that are still being replaced. */
+      var width = rect.width || 400;
+      var usable = Math.max(2 * spread, width - Math.min(GUTTER, width * 0.28));
+
+      var out = {
+        order: keys, y: Object.create(null), top: Object.create(null),
+        lanes: Object.create(null), cols: Object.create(null),
+        label: Object.create(null),
+      };
+      var heights = [];
+      var total = 0;
+      for (i = 0; i < keys.length; i++) {
+        key = keys[i];
+        var lanes = Math.max(1, Math.ceil(count[key] * spread / usable));
+        out.lanes[key] = lanes;
+        out.cols[key] = Math.ceil(count[key] / lanes);
+        out.label[key] = bandLabelOf(key);
+        heights[i] = lanes * LANE_GAP;
+        total += heights[i];
+      }
+      total += BAND_GAP * Math.max(0, keys.length - 1);
+
+      var y = (rect.height || 400) / 2 - total / 2;
+      for (i = 0; i < keys.length; i++) {
+        key = keys[i];
+        out.top[key] = y;
+        out.y[key] = y + heights[i] / 2;   // the label's centreline
+        y += heights[i] + BAND_GAP;
+      }
+      return out;
+    }
+
+    // The band names are drawn in screen space at the left edge, so the layout
+    // is fitted into what is left. Only claimed when names are actually drawn,
+    // and capped as a fraction of the width so a narrow sidebar is not mostly
+    // gutter.
+    function gutterFor(rect) {
+      if (!bands.order.length) return 0;
+      return Math.min(GUTTER, rect.width * 0.28);
+    }
+
     function neighbours(node) {
       var set = {};
       set[node.id] = true;
@@ -92,55 +288,89 @@
     function step() {
       var rect = canvas.getBoundingClientRect();
       var cx = rect.width / 2;
-      var cy = rect.height / 2;
-      var repulsion = REPULSION;
-      var rest = REST;
       var i, j;
       for (i = 0; i < nodes.length; i++) {
         var a = nodes[i];
         for (j = 0; j < nodes.length; j++) {
           if (i === j) continue;
           var b = nodes[j];
+          /* Repulsion is horizontal, and only within one LANE — the row a node
+           * actually shares. Two reasons, and the second was a real bug:
+           *
+           * Across BANDS it would be actively wrong, because two linked notes in
+           * different folders should be free to sit one directly above the other,
+           * and that column is the whole readability win.
+           *
+           * Across lanes of the SAME band it silently undid the wrap. Every node
+           * in a folder repelling every other in x spreads them into one wide
+           * row again no matter how they were seeded, so a nine-note folder
+           * settled ~1080px wide, frameAll zoomed out to fit it, and the zoom
+           * crossed the threshold that hides labels — the wrap computed
+           * correctly and then dissolved over the next few hundred frames.
+           * Confirmed by screenshot: bands named, nodes anonymous.
+           *
+           * Nodes in different lanes are already LANE_GAP apart vertically, which
+           * is what their labels need; nothing has to be solved in x. */
+          if (a.band !== b.band || a.lane !== b.lane) continue;
           var dx = a.x - b.x;
-          var dy = a.y - b.y;
-          var d2 = dx * dx + dy * dy;
-          if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.01; }
-          var d = Math.sqrt(d2);
-          var push = repulsion / d2;
-          a.vx += (dx / d) * push;
-          a.vy += (dy / d) * push;
+          var d2 = dx * dx;
+          if (d2 < 0.01) { dx = Math.random() - 0.5; d2 = 0.01; }
+          a.vx += (dx / Math.sqrt(d2)) * (REPULSION / d2);
         }
         a.vx += (cx - a.x) * 0.005;
-        a.vy += (cy - a.y) * 0.005;
       }
       for (i = 0; i < edges.length; i++) {
         var edge = edges[i];
         var ex = edge.b.x - edge.a.x;
-        var ey = edge.b.y - edge.a.y;
-        var ed = Math.max(1, Math.sqrt(ex * ex + ey * ey));
-        var pull = (ed - rest) * 0.02;
+        /* Three cases, and the middle one is a bug fix.
+         *
+         * Same LANE — side by side in one row, so hold them `spread` apart; both
+         * need label room, exactly as the free layout did.
+         *
+         * Same band, DIFFERENT lane — no horizontal force at all. Lanes within a
+         * band are an artifact of wrapping, not a layer of anything, so there is
+         * nothing for an alignment pull to mean. Applying one (as this did) was
+         * what collapsed a whole folder onto a single x: in a near-complete
+         * folder the many cross-lane pulls overwhelm the in-lane repulsion, the
+         * block converges to a column, and same-lane neighbours get squeezed to a
+         * fraction of `spread` — labels overlapping again, from the opposite
+         * direction. Their LANE_GAP of vertical offset is already their
+         * separation.
+         *
+         * Different BAND — pull toward ex = 0. This is the only alignment that
+         * carries meaning: a link descending from one folder to another reads as
+         * a column, which is the point of banding at all. */
+        var sameBand = edge.a.band === edge.b.band;
+        var sameLane = sameBand && edge.a.lane === edge.b.lane;
+        if (sameBand && !sameLane) continue;
+        var target = sameLane ? spread : 0;
+        var ed = Math.max(1, Math.abs(ex));
+        var pull = (ed - target) * 0.02;
         edge.a.vx += (ex / ed) * pull;
-        edge.a.vy += (ey / ed) * pull;
         edge.b.vx -= (ex / ed) * pull;
-        edge.b.vy -= (ey / ed) * pull;
       }
       for (i = 0; i < nodes.length; i++) {
         var n = nodes[i];
-        if (n.pinned || n === drag) { n.vx = 0; n.vy = 0; continue; }
-        // Speed ceiling. The repulsion sum grows with node count, and velocity
-        // accumulates across steps (damped only after the move), so a folder of
-        // hundreds threw nodes thousands of pixels apart in the first few frames
-        // and then cooled before it could come back — a graph that "flies apart"
-        // and lands mostly off-screen. Small graphs never reach this.
-        var speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
-        if (speed > MAX_SPEED) {
-          n.vx = (n.vx / speed) * MAX_SPEED;
-          n.vy = (n.vy / speed) * MAX_SPEED;
+        if (n.pinned || n === drag) {
+          n.vx = 0;
+        } else {
+          // Speed ceiling. The repulsion sum grows with node count, and velocity
+          // accumulates across steps (damped only after the move), so a folder of
+          // hundreds threw nodes thousands of pixels apart in the first few frames
+          // and then cooled before it could come back — a graph that "flies apart"
+          // and lands mostly off-screen. Small graphs never reach this.
+          var speed = Math.abs(n.vx);
+          if (speed > MAX_SPEED) n.vx = (n.vx / speed) * MAX_SPEED;
+          n.x += n.vx * alpha;
+          n.vx *= 0.82;
         }
-        n.x += n.vx * alpha;
-        n.y += n.vy * alpha;
-        n.vx *= 0.82;
-        n.vy *= 0.82;
+        /* y is the layout's answer, not the sim's. Eased rather than snapped so
+         * that a note whose folder changed glides to its new band instead of
+         * teleporting. A node the user dragged keeps the y they put it at —
+         * `pinned` alone cannot stand in for that, because the focus node is
+         * pinned by setData and must still sit in its own band. */
+        if (n !== drag && !n.userPinned) n.y += (n.bandY - n.y) * 0.2;
+        n.vy = 0;
       }
       alpha *= 0.99;
     }
@@ -156,8 +386,6 @@
       var ctx = canvas.getContext("2d");
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, rect.width, rect.height);
-      ctx.translate(ox, oy);
-      ctx.scale(zoom, zoom);
 
       var accent = token("--accent");
       var muted = token("--fg-muted");
@@ -170,10 +398,66 @@
       var near = hover ? neighbours(hover) : null;
       var i;
 
+      /* The band scaffolding is drawn in SCREEN space, and deliberately not in
+       * world space: a name that scaled with the zoom would be unreadable on a
+       * fitted folder graph and would slide off the left edge on any pan, and
+       * these names are the axis legend — if they are gone, the vertical axis
+       * means nothing again.
+       *
+       * The NAME is drawn even for a single band; only the separators need more
+       * than one. "Every note here is in widgets/specs/" is the answer to the
+       * question this layout exists to answer, and withholding it exactly when
+       * the neighbourhood happens to be one folder deep is withholding it in the
+       * common case. */
+      var named = bands.order.length > 0;
+      var multi = bands.order.length > 1;
+      if (multi) {
+        ctx.save();
+        ctx.strokeStyle = line;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.3;
+        for (i = 1; i < bands.order.length; i++) {
+          // One separator between each adjacent pair, in the empty BAND_GAP —
+          // never above the first band or below the last, where a lone rule
+          // would read as a boundary with nothing on the far side of it.
+          var cut = Math.round((bands.top[bands.order[i]] - BAND_GAP / 2) * zoom
+                               + oy) + 0.5;
+          if (cut < 0 || cut > rect.height) continue;
+          ctx.beginPath();
+          ctx.moveTo(0, cut);
+          ctx.lineTo(rect.width, cut);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.translate(ox, oy);
+      ctx.scale(zoom, zoom);
+
+      /* Edge weight falls away as the graph gets denser, and this is the fix for
+       * the second thing that made the picture unreadable. A folder whose notes
+       * all cross-reference each other is near-complete — nine notes carried
+       * ~30 edges — and drawn at uniform weight that is a hairball: the lines
+       * add up to more ink than the nodes, so the eye finds structure in the
+       * crossings rather than in the layout. No routing or bundling scheme fixes
+       * that, because the honest content of a near-complete graph is "these all
+       * link to each other", which no arrangement of 30 curves states better
+       * than a faint texture does.
+       *
+       * So: the more edges per node, the fainter they go. Hover is what makes an
+       * individual edge legible again — `near` already lights a neighbourhood,
+       * and against a recessive field that highlight now actually reads. The
+       * floor keeps a sparse graph looking exactly as it did. */
+      var density = edges.length / Math.max(1, nodes.length);
+      var wash = Math.max(0.22, Math.min(1, 1.5 / Math.max(1, density)));
       ctx.lineWidth = 1 / zoom;
       for (i = 0; i < edges.length; i++) {
         var edge = edges[i];
         var lit = near && near[edge.a.id] && near[edge.b.id];
+        // A lit edge is always full strength; only the resting field is washed
+        // out, and when anything is hovered the rest recedes further still.
+        ctx.globalAlpha = lit ? 1 : (near ? wash * 0.5 : wash);
         ctx.strokeStyle = lit ? accent : line;
         ctx.setLineDash(
           edge.a.kind === "ghost" || edge.b.kind === "ghost" ? [3, 3] : []);
@@ -182,10 +466,13 @@
         ctx.lineTo(edge.b.x, edge.b.y);
         ctx.stroke();
       }
+      ctx.globalAlpha = 1;
       ctx.setLineDash([]);
 
       var labels = zoom > 0.7;
-      ctx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
+      // The same font `measureLabels` measured with — a drift between the two
+      // would silently reintroduce the overlap that spacing exists to prevent.
+      ctx.font = LABEL_FONT;
       ctx.textAlign = "center";
       for (i = 0; i < nodes.length; i++) {
         var node = nodes[i];
@@ -201,6 +488,24 @@
           ctx.fillText(node.label, node.x, node.y - radius(node) - 4);
         }
         ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+
+      // Band names last, so no edge or node is drawn over the legend.
+      if (named) {
+        ctx.save();
+        ctx.font = "10px -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = muted;
+        ctx.globalAlpha = 0.8;
+        for (i = 0; i < bands.order.length; i++) {
+          var key = bands.order[i];
+          var ly = bands.y[key] * zoom + oy;
+          if (ly < 6 || ly > rect.height - 6) continue;
+          ctx.fillText(bands.label[key], 8, ly);
+        }
+        ctx.restore();
       }
     }
 
@@ -227,13 +532,28 @@
         minY = Math.min(minY, nodes[i].y);
         maxY = Math.max(maxY, nodes[i].y);
       }
-      // Padding leaves room for a label, which is drawn above the node and
-      // centred on it, so it overhangs the bounding box on three sides.
+      /* Padding leaves room for a label, which is drawn above the node and
+       * CENTRED on it, so it overhangs the bounding box by half its width either
+       * side. A flat 32 clipped real labels off the canvas edge — but reserving
+       * the full half-width is worse, and measurably so: in a 330px panel a
+       * ~130px label demands 130px of margin against a block only 200px wide, so
+       * the fit zooms out to 0.6, crosses the label threshold, and hides EVERY
+       * label to avoid clipping ONE. The allowance is therefore capped. The
+       * accepted cost is that the outermost long label can run past the edge;
+       * the alternative is a canvas of anonymous dots, and panning is right
+       * there. */
       var pad = 32;
+      var padX = pad + Math.min(widest / 2, 28);
+      // The band names occupy the left edge in screen space, so the graph is
+      // fitted into what remains and centred there — otherwise a fitted layout
+      // is centred on the whole canvas and its leftmost nodes sit under the
+      // legend.
+      var gutter = gutterFor(rect);
+      var usable = Math.max(40, rect.width - gutter);
       zoom = Math.min(1.5, Math.max(0.15, Math.min(
-        rect.width / (maxX - minX + pad * 2),
+        usable / (maxX - minX + padX * 2),
         rect.height / (maxY - minY + pad * 2))));
-      ox = rect.width / 2 - ((minX + maxX) / 2) * zoom;
+      ox = gutter + usable / 2 - ((minX + maxX) / 2) * zoom;
       oy = rect.height / 2 - ((minY + maxY) / 2) * zoom;
     }
 
@@ -254,9 +574,7 @@
     function setData(payload) {
       var rect = canvas.getBoundingClientRect();
       var cx = rect.width / 2 || 160;
-      var cy = rect.height / 2 || 160;
       var byId = {};
-      var count = Math.max(1, (payload.nodes || []).length);
       /* Positions are CARRIED OVER for ids we already have. Load-bearing, and
        * the obvious "simplification" (map every node onto the spiral, alpha = 1,
        * done) is what this replaced: every autosave re-sends the graph (MD-9),
@@ -269,38 +587,69 @@
       var previousCount = nodes.length;
       for (var p = 0; p < nodes.length; p++) previous[nodes[p].id] = nodes[p];
       var fresh = 0;   // ids we have never laid out
-      // Seeded on a sunflower spiral over a disc whose area is proportional to
-      // the node count, rather than all on one 70px ring. The ring was fine for
-      // a handful and catastrophic for a folder: hundreds of nodes started
-      // metres-deep inside each other, and the repulsion needed to separate them
-      // blew the layout apart faster than it could cool, ending several thousand
-      // pixels wide. Starting at roughly the density the sim wants means it
-      // relaxes instead of exploding.
-      var disc = REST * Math.sqrt(count / Math.PI) * 0.8;
-      var GOLDEN = Math.PI * (3 - Math.sqrt(5));
-      nodes = (payload.nodes || []).map(function (node, i) {
-        var angle = i * GOLDEN;
-        var at = disc * Math.sqrt((i + 0.5) / count);
+      /* Bands are recomputed per payload, before anything is seeded: a node's y
+       * is its band's centreline, so the table has to exist first. The whole
+       * spiral seeding this replaced is gone with the free layout — y is no
+       * longer the sim's to choose, so there is nothing to seed in it. */
+      /* Measured BEFORE the bands, because the lane count is derived from the
+       * in-row spacing and the spacing is derived from the widest label. */
+      widest = measureLabels(payload.nodes || []);
+      spread = Math.max(REST, widest + 20);
+      var next = layoutBands(payload.nodes || [], rect);
+      /* x is seeded as a tidy row per band, centred on the canvas. Spacing at
+       * REST means the row starts at roughly the density the sim wants, which is
+       * the same reason the old disc seeding existed: a band of hundreds all
+       * stacked on one x would need repulsion enough to blow the row apart
+       * faster than it could cool. */
+      var slot = Object.create(null);
+      var total = Object.create(null);
+      var keyOf = [];
+      var list = payload.nodes || [];
+      for (var q = 0; q < list.length; q++) {
+        keyOf[q] = bandKeyOf(list[q]);
+        total[keyOf[q]] = (total[keyOf[q]] || 0) + 1;
+      }
+      nodes = list.map(function (node, i) {
+        var key = keyOf[i];
+        var at = slot[key] = (slot[key] === undefined ? 0 : slot[key] + 1);
+        /* Deal round-robin: lane cycles fastest, so consecutive `at` — which are
+         * x-NEIGHBOURS, since the column advances only after a full cycle — are
+         * never in the same lane. That is precisely the property that stops two
+         * side-by-side labels from overlapping. */
+        var lanes = next.lanes[key];
+        var lane = at % lanes;
+        var col = Math.floor(at / lanes);
+        var bandY = next.top[key] + (lane + 0.5) * LANE_GAP;
         var focused = node.id === payload.focus;
         var kept = previous[node.id];
         if (!kept) fresh++;
         var seeded = {
           id: node.id, kind: node.kind, label: node.label,
-          // `label` is a DISPLAY string (a note's is its title); `target` is the
-          // authored link target a ghost was made from. Creating a note is a
+          // `label` is a DISPLAY string (a note's is its filename); `target` is
+          // the authored link target a ghost was made from. Creating a note is a
           // path operation, so it reads target and never label.
           path: node.path, target: node.target, degree: node.degree,
-          x: kept ? kept.x : (focused ? cx : cx + Math.cos(angle) * at),
-          y: kept ? kept.y : (focused ? cy : cy + Math.sin(angle) * at),
-          vx: kept ? kept.vx : 0, vy: kept ? kept.vy : 0,
-          // The focus is pinned at the centre: a local graph is *about* one
-          // note, so letting the sim carry it away loses the point. A pin the
-          // user set by dragging survives a re-send for the same reason.
-          pinned: focused || (kept ? kept.pinned : false), focus: focused,
+          band: key, lane: lane, bandY: bandY,
+          x: kept ? kept.x : (focused ? cx
+            : cx + (col - (next.cols[key] - 1) / 2) * spread),
+          /* y comes from the band, even for a node carried over — a note that
+           * moved folder belongs in its new row, and the ease in step() gets it
+           * there. The one exception is a node the user dragged: their placement
+           * is theirs to keep, on both axes. */
+          y: kept && kept.userPinned ? kept.y : bandY,
+          vx: kept ? kept.vx : 0, vy: 0,
+          // The focus is pinned horizontally at the centre: a local graph is
+          // *about* one note, so letting the sim carry it away loses the point.
+          // A pin the user set by dragging survives a re-send for the same
+          // reason, and `userPinned` is what distinguishes the two.
+          pinned: focused || (kept ? kept.pinned : false),
+          userPinned: kept ? kept.userPinned : false,
+          focus: focused,
         };
         byId[node.id] = seeded;
         return seeded;
       });
+      bands = next;
       edges = (payload.edges || []).map(function (edge) {
         return { kind: edge.kind, a: byId[edge.source], b: byId[edge.target] };
       }).filter(function (edge) { return edge.a && edge.b; });
@@ -365,7 +714,10 @@
       moved = false;
       if (found.node) {
         drag = found.node;
-        drag.pinned = true; // drag-to-pin
+        drag.pinned = true;     // drag-to-pin
+        // Drag-to-pin takes the y too: past this point the band no longer pulls
+        // this node, so a node lifted out of its row to be read stays lifted.
+        drag.userPinned = true;
       } else {
         pan = { x: event.clientX, y: event.clientY };
       }

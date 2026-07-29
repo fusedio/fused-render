@@ -1051,6 +1051,13 @@ def _graph_nodes_and_edges(root: str, scan: dict):
             "id": rel,
             "kind": "note",
             "label": _display_title(rel),
+            # The note's folder relative to the scan root, "" at the top. The
+            # canvas lays notes out in one horizontal band per folder, and this
+            # is what it bands on — stated outright rather than left for the
+            # client to recover by splitting an id, so "a node's id happens to
+            # be its relative path" stays an implementation detail of this
+            # module instead of becoming a wire contract.
+            "dir": rel.rsplit("/", 1)[0] if "/" in rel else "",
             "path": _client_join(root, rel),
             "degree": 0,
         }
@@ -1083,6 +1090,10 @@ def _graph_nodes_and_edges(root: str, scan: dict):
                     # the note is a path operation and must not be driven by
                     # whatever happens to be drawn on the canvas.
                     "target": _normalize_target(link["target"]),
+                    # No folder: it does not exist yet, so it is in none. `None`
+                    # rather than `""` — the top folder is a real place and a
+                    # ghost is not in it.
+                    "dir": None,
                     "path": None, "degree": 0})
                 add(rel, ghost, "embed" if link["embed"] else "link")
             elif target in nodes:
@@ -1093,7 +1104,7 @@ def _graph_nodes_and_edges(root: str, scan: dict):
             node = "tag:" + tag
             nodes.setdefault(node, {
                 "id": node, "kind": "tag", "label": "#" + tag,
-                "path": None, "degree": 0})
+                "dir": None, "path": None, "degree": 0})
             add(rel, node, "tag")
 
     return nodes, edges

@@ -672,10 +672,14 @@ def test_a_big_folder_graph_cannot_fly_apart(canvas_source):
     # The same sim serves a folder of hundreds. Velocity accumulates across steps
     # and the repulsion sum grows with node count, so without a ceiling the first
     # few frames threw nodes thousands of pixels out and the sim cooled before it
-    # could recover. Seeding on a disc sized to the node count is the other half.
+    # could recover.
     assert "var MAX_SPEED = 22;" in canvas_source
     assert "if (speed > MAX_SPEED)" in canvas_source
-    assert "Math.sqrt(count / Math.PI)" in canvas_source
+    # The seeding half of it is asserted by RUNNING the sim, in
+    # test_graph_canvas.py::test_a_big_folder_graph_settles_inside_its_bands —
+    # this used to look for the disc-seeding expression, which stopped existing
+    # when y became the layout's (D163) and only x needed seeding. A source
+    # assertion could not tell those two apart; the behavioural one can.
 
 
 def test_the_panel_width_is_a_preference_not_view_state(source):

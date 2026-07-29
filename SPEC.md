@@ -2996,18 +2996,44 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   read from the CSS custom properties **at draw time**, because `var()` cannot
   resolve inside a canvas `fillStyle`, and a `data-theme` change redraws (§30).
   **Spacing is set for the label, not the node** — a label is drawn above its
-  node and an 11px one is 60-100px wide, so the original ~80px equilibrium put
-  every label on top of its neighbour. Roughly doubled (rest 135, repulsion
-  4600). The spacing is **not** scaled per surface, because the fit-to-canvas
-  makes a uniform scale invisible: what differs between a 320px panel and a full
-  window is the zoom. Two bounds keep the folder surface honest, where the same
-  sim can be handed hundreds of notes: nodes are **seeded on a disc sized to the
-  node count** rather than all on one small ring, and there is a **per-step speed
-  ceiling** — velocity accumulates across steps and the repulsion sum grows with
-  node count, so without one the first frames threw a large graph thousands of
-  pixels apart and it cooled before it could recover. The fit yields permanently
-  as soon as the user pans, zooms or drags, and is not reset by new data, because
-  every autosave re-sends the graph (MD-9).
+  node, so node radius is the wrong unit. It is **measured**, not assumed: the
+  in-row pitch is `max(135, widest measured label + 20)`, because a constant
+  chosen for a "60-100px" label ran a 150px one straight through its neighbour.
+  A **per-step speed ceiling** keeps the folder surface honest where the same sim
+  can be handed hundreds of notes — velocity accumulates across steps and the
+  repulsion sum grows with node count, so without one the first frames threw a
+  large graph thousands of pixels apart and it cooled before it could recover.
+  The fit yields permanently as soon as the user pans, zooms or drags, and is not
+  reset by new data, because every autosave re-sends the graph (MD-9).
+- **MD-19a** **The layout is layered by folder, and only x is simulated**
+  (D163). This is the one place the graph deliberately stops copying Obsidian: a
+  free layout spends both axes on nothing in particular, and the feedback on it
+  was that the picture said less than the backlinks list. So the vertical axis
+  carries the tree. **One band per distinct folder** (not per depth number —
+  sibling folders are different places), ordered by depth then name, with the
+  folderless nodes in trailing `unresolved` and `tags` bands rather than lumped
+  into the root's. Band names are drawn in **screen space** at the left edge, so
+  the legend stays readable and on-screen at any zoom or pan; the name is drawn
+  even for a single band, because "these are all in `x/`" is the answer the
+  layout exists to give. `y` belongs to the layout — eased, never simulated —
+  except for a node the user dragged, which keeps the height they chose.
+  **A band is a block, not a line.** Its nodes are dealt round-robin across as
+  many lanes as the row needs to fit the surface, and the band grows to hold
+  them: a wide window gives a folder one airy line, a narrow panel the same
+  folder as a compact labelled block. One row per folder was tried first and
+  failed twice — labels ran together (`READMEauthoring`), and nine nodes in a row
+  is ~1080px, which in a 320px panel fits only below the zoom that hides labels.
+  Three force rules follow from lanes, and each is load-bearing: horizontal
+  repulsion applies **within one lane only** (band-wide repulsion silently
+  re-widened a wrapped band back into one row); an edge holds `spread` apart
+  **only within a lane**; an edge between **different bands** pulls toward
+  horizontal alignment, so a link descending the tree reads as a column; and an
+  edge between lanes of the **same** band applies no horizontal force at all,
+  since a lane is an artifact of wrapping and aligning across them collapsed a
+  whole folder onto a single x. **Edge weight falls away with density** — a
+  near-complete folder carried ~30 edges among 9 notes and drew as a hairball
+  with more ink than the nodes — so the resting field washes out in proportion to
+  edges-per-node and hover is what makes an individual link legible again.
 - **MD-20** **Graph state is params.** Panel open, depth, filter and
   tag-visibility all live in `fused.params`, so a graph view is refresh-proof
   and **URL-shareable** — which Obsidian's is not. Nodes are notes, per-**name**
