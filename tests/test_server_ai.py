@@ -52,9 +52,14 @@ class _FakeCLI:
         self._result = (returncode, stdout, stderr)
         self._exc = exc
         self.calls = []  # (argv, env, timeout, stdin_text) of every run
+        self.sp_contents = {}  # --system-prompt-file path -> its text AT CALL TIME
 
     async def __call__(self, argv, env, timeout, stdin_text=""):
         self.calls.append((argv, env, timeout, stdin_text))
+        # Snapshot the system-prompt file now — the relay deletes it after.
+        if "--system-prompt-file" in argv:
+            path = argv[argv.index("--system-prompt-file") + 1]
+            self.sp_contents[path] = Path(path).read_text(encoding="utf-8")
         if self._exc is not None:
             raise self._exc
         return self._result
@@ -97,7 +102,13 @@ def test_relay_happy_path(monkeypatch):
     assert "hello" not in argv  # prompt travels over stdin, never argv
     assert _flag(argv, "--output-format") == "json"
     assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
-    assert _flag(argv, "--system-prompt") == server._AI_DEFAULT_SYSTEM_PROMPT
+    # System prompt rides a temp FILE, never argv (cmd.exe re-parses argv on
+    # the Windows shim path; file content is immune). The file is gone after
+    # the call.
+    sp_path = _flag(argv, "--system-prompt-file")
+    assert fake.sp_contents[sp_path] == server._AI_DEFAULT_SYSTEM_PROMPT
+    assert not Path(sp_path).exists()
+    assert server._AI_DEFAULT_SYSTEM_PROMPT not in argv
     # Equals form as ONE token — a separate "" element is dropped by cmd.exe's
     # %* expansion behind a Windows .cmd shim, re-enabling tools/settings.
     assert "--tools=" in argv
@@ -115,7 +126,8 @@ def test_relay_options_reach_the_cli(monkeypatch):
             "model": "claude-sonnet-5", "effort": "high"})
     (argv, env, _, _), = fake.calls
     assert _flag(argv, "--model") == "claude-sonnet-5"
-    assert _flag(argv, "--system-prompt") == "be terse"
+    sp_path = _flag(argv, "--system-prompt-file")
+    assert fake.sp_contents[sp_path] == "be terse"
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"  # effort: high
 
 
@@ -197,7 +209,14 @@ def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
                  {"prompt": "x", "model": 42},
                  {"prompt": "x", "model": ""},
                  {"prompt": "x", "model": "   "},
-                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]}):
+                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]},
+                 # closed charset — argv is re-parsed by cmd.exe behind a
+                 # Windows .cmd shim, so metacharacters are a 400, not a pass
+                 {"prompt": "x", "model": "haiku&calc.exe"},
+                 {"prompt": "x", "model": "haiku|whoami"},
+                 {"prompt": "x", "model": "%TEMP%"},
+                 {"prompt": "x", "model": 'haiku"'},
+                 {"prompt": "x", "model": "haiku sonnet"}):
         resp = _relay(body)
         assert resp.status_code == 400
         assert _data(resp)["error"]["type"] == "bad_request"
@@ -234,10 +253,13 @@ def test_relay_nonzero_exit_is_ai_error(monkeypatch):
 
 
 def test_relay_timeout_is_timeout(monkeypatch):
-    _cli_ok(monkeypatch, exc=asyncio.TimeoutError())
+    fake = _cli_ok(monkeypatch, exc=asyncio.TimeoutError())
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     assert _data(resp)["error"]["type"] == "timeout"
+    # The system-prompt temp file is cleaned up on the failure path too.
+    (argv, _, _, _), = fake.calls
+    assert not Path(_flag(argv, "--system-prompt-file")).exists()
 
 
 def test_relay_unparseable_stdout_is_ai_error(monkeypatch):

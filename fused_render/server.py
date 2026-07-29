@@ -21,6 +21,7 @@ import logging
 from collections import deque
 import mimetypes
 import os
+import re
 import shutil
 import stat as stat_mod
 import subprocess
@@ -849,6 +850,11 @@ _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 120.0
 _AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
+# Model ids/aliases are a closed charset. This is a SECURITY boundary, not
+# just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
+# (whose quoting cannot be escaped reliably), so every argv element must be a
+# static literal, a tempdir path, or a value this regex admitted.
+_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -961,9 +967,12 @@ async def _ai_relay(body: dict) -> JSONResponse:
             status=400)
 
     model = body.get("model")
-    if model is not None and (not isinstance(model, str) or not model.strip()):
+    if model is not None and (
+            not isinstance(model, str) or not _AI_MODEL_RE.fullmatch(model)):
         return _ai_error(
-            "bad_request", "'model' must be a non-empty string", status=400)
+            "bad_request",
+            "'model' must be a model id or alias (letters, digits, . _ -)",
+            status=400)
     model = model or _AI_DEFAULT_MODEL
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORT_TOKENS:
@@ -991,35 +1000,53 @@ async def _ai_relay(body: dict) -> JSONResponse:
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
 
-    # The prompt goes over stdin, not argv: -p with no positional prompt reads
-    # it from the pipe, and a data-heavy prompt (the documented fused.ai
-    # pattern embeds JSON aggregates) can exceed the OS argv limit.
-    argv = _claude_argv_prefix(bin_path) + [
-        "-p",
-        "--output-format", "json",
-        "--model", model,
-        "--system-prompt", system_prompt,
-        # Single-token equals form, never a separate "" argv element: the
-        # Windows .cmd shim re-execs through cmd.exe, whose %* expansion drops
-        # empty args — the flags would then swallow the next token and leave
-        # tools/settings enabled. (Verified against claude 2.1.220: parses
-        # identically, same 544 input tokens.)
-        "--tools=",
-        "--setting-sources=",
-        "--no-session-persistence",
-        "--max-turns", "1",
-    ]
-    env = dict(os.environ)
-    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
+    # No user-controlled STRING may enter argv: on the Windows .cmd-shim path
+    # cmd.exe re-parses the whole line, and cmd-escaping arbitrary text is not
+    # reliably possible. The prompt goes over stdin (-p with no positional
+    # prompt reads the pipe — also dodges the OS argv size cap for the
+    # documented embed-JSON-aggregates pattern) and the system prompt goes via
+    # --system-prompt-file (verified against claude 2.1.220: identical parse
+    # and input tokens). What remains in argv: static literals, the
+    # charset-validated model, and our own tempdir path.
+    sp_file = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt",
+        prefix="fused_render_ai_sp_", delete=False)
     try:
-        returncode, stdout, stderr = await _run_claude_cli(
-            argv, env, _AI_TIMEOUT_S, stdin_text=prompt)
-    except asyncio.TimeoutError:
-        return _ai_error(
-            "timeout", f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
-    except OSError as exc:
-        return _ai_error(
-            "ai_unavailable", f"could not run the claude CLI at {bin_path}: {exc}")
+        sp_file.write(system_prompt)
+        sp_file.close()
+        argv = _claude_argv_prefix(bin_path) + [
+            "-p",
+            "--output-format", "json",
+            "--model", model,
+            "--system-prompt-file", sp_file.name,
+            # Single-token equals form, never a separate "" argv element: the
+            # cmd.exe %* expansion behind a .cmd shim drops empty args — the
+            # flags would then swallow the next token and leave tools/settings
+            # enabled. (Verified against claude 2.1.220: parses identically,
+            # same 544 input tokens.)
+            "--tools=",
+            "--setting-sources=",
+            "--no-session-persistence",
+            "--max-turns", "1",
+        ]
+        env = dict(os.environ)
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
+        try:
+            returncode, stdout, stderr = await _run_claude_cli(
+                argv, env, _AI_TIMEOUT_S, stdin_text=prompt)
+        except asyncio.TimeoutError:
+            return _ai_error(
+                "timeout",
+                f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+        except OSError as exc:
+            return _ai_error(
+                "ai_unavailable",
+                f"could not run the claude CLI at {bin_path}: {exc}")
+    finally:
+        try:
+            os.unlink(sp_file.name)
+        except OSError:
+            pass
     if returncode != 0:
         tail = (stderr or stdout).strip()[-500:]
         return _ai_error(
