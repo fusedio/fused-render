@@ -848,18 +848,22 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # ~1.5-2.5s — it dominated every call at haiku sizes. ONE persistent process
 # is therefore kept alive in --input-format stream-json mode and RECONFIGURED
 # per request over its stdin protocol (all probed on 2.1.220):
-#   /clear (a plain user message)      -> wipes conversation context, ~0.7s
-#   set_model control_request          -> swaps model AND system_prompt, ~0ms
-#   apply_flag_settings control_request-> sets effortLevel, ~10ms
+#   /clear (a plain user message)        -> wipes conversation context, ~0.7s
+#   set_model control_request            -> swaps model AND system_prompt, ~0ms
+#   set_max_thinking_tokens ctrl_request -> 0 clamps thinking on ANY model,
+#                                           null resets to session default
+#   apply_flag_settings control_request  -> sets effortLevel, ~10ms
 # Every call therefore sees an empty context (the /clear is what preserves
 # D159's isolation property), and only the first call after a crash or server
 # start pays a spawn. Requests are SERIALIZED through the one process (a
 # local single-user app; calls are seconds) rather than pooled.
 
-# `effort` passes straight through to Claude Code's own effort semantics
-# (the same code path as the interactive /effort command). Effort-capable
-# models (sonnet/opus class) honor it; haiku silently ignores it. /clear
-# resets it to the default, so it is re-applied per request when given.
+# `effort` medium/high/xhigh passes through to Claude Code's own effort
+# semantics (the same code path as the interactive /effort command) — only
+# effort-capable models (sonnet/opus class) honor effortLevel. Absent or
+# "low" means NO THINKING, enforced with the thinking-budget clamp, which
+# works on every model including haiku (the default, which otherwise thinks
+# by default in stream-json mode). See _AiSession.configure.
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
@@ -1149,10 +1153,9 @@ class _AiSession:
     control_request applies the request's model and system prompt (~0ms,
     sent unconditionally — every request fully specifies its own config, so
     the instance carries NO config state between requests, only the process
-    handle), and an apply_flag_settings control_request applies effortLevel
-    (~10ms, only when the caller gave effort — /clear resets it, so an
-    omitted effort correctly falls back to the default). All probed on
-    claude 2.1.220.
+    handle), and the thinking budget/effort pair is applied per request
+    (clamp to 0 for absent/low effort, reset-then-effortLevel otherwise —
+    see configure). All probed on claude 2.1.220.
 
     Requests are SERIALIZED by `lock`: a second concurrent fused.ai call
     waits for the first. Accepted tradeoff — this is a local single-user app,
@@ -1309,10 +1312,22 @@ class _AiSession:
         context isolation between fused.ai calls is not optional; set_model
         with model AND system_prompt unconditionally (~0ms — every request
         fully specifies its own config, no state carried between requests);
-        apply_flag_settings when effort was given (/clear resets it, so an
-        omitted effort correctly falls back to the default rather than
-        inheriting the last caller's). Raises _AiProcFailure/OSError — the
-        caller discards and retries once on a fresh spawn."""
+        then the thinking budget, unconditionally too (probed on 2.1.220):
+
+        - effort absent or "low": set_max_thinking_tokens 0 — the universal
+          no-thinking switch. It works on EVERY model, unlike effortLevel,
+          which non-effort-capable models (haiku, the default) silently
+          ignore — left to itself, haiku THINKS by default in stream-json
+          mode (a one-word answer measured 159 output tokens / ~5s). The
+          clamp alone suffices for "low"; no apply_flag_settings is sent
+          (the budget clamp overrides effortLevel anyway).
+        - effort medium|high|xhigh: set_max_thinking_tokens null — resets
+          the budget to the session default, mandatory every such request
+          because the clamp PERSISTS across /clear (unlike effortLevel,
+          which /clear resets) — then apply_flag_settings{effortLevel}.
+
+        Raises _AiProcFailure/OSError — the caller discards and retries
+        once on a fresh spawn."""
         if self._proc is None or self._proc.returncode is not None:
             await self._discard()
             await self._spawn(model, system_prompt)
@@ -1322,7 +1337,12 @@ class _AiSession:
         # form — the full prompt travels on every request.
         await self._control({"subtype": "set_model", "model": model,
                              "system_prompt": system_prompt})
-        if effort is not None:
+        if effort is None or effort == "low":
+            await self._control({"subtype": "set_max_thinking_tokens",
+                                 "max_thinking_tokens": 0})
+        else:
+            await self._control({"subtype": "set_max_thinking_tokens",
+                                 "max_thinking_tokens": None})
             await self._control({"subtype": "apply_flag_settings",
                                  "settings": {"effortLevel": effort}})
         return self._proc

@@ -318,11 +318,16 @@ def test_relay_happy_path(monkeypatch):
     proc, = fake.procs
     assert not proc.killed
     assert server._AI_SESSION._proc is proc
-    # ...and the request was preceded by /clear (context isolation) and an
-    # unconditional set_model (every request specifies its own config); no
-    # effort was requested, so no apply_flag_settings.
+    # ...and the request was preceded by /clear (context isolation), an
+    # unconditional set_model (every request specifies its own config), and
+    # the thinking clamp: absent effort means low/no-thinking, enforced with
+    # set_max_thinking_tokens 0 (works on every model — haiku ignores
+    # effortLevel and otherwise thinks by default in stream-json mode).
+    # No apply_flag_settings: the clamp alone is the "low" semantics.
     assert len(proc.clears) == 1
-    assert [c["subtype"] for c in proc.controls] == ["set_model"]
+    assert [c["subtype"] for c in proc.controls] == [
+        "set_model", "set_max_thinking_tokens"]
+    assert proc.controls[1]["max_thinking_tokens"] == 0
 
 
 def test_relay_writes_the_stream_json_user_message(monkeypatch):
@@ -336,8 +341,10 @@ def test_relay_writes_the_stream_json_user_message(monkeypatch):
 
 def test_relay_options_become_reconfiguration_requests(monkeypatch):
     # The request's model/system_prompt is applied to the RUNNING instance
-    # via set_model (both fields, one request) instead of a respawn; effort
-    # via apply_flag_settings. Order: /clear, set_model, effort, user turn.
+    # via set_model (both fields, one request) instead of a respawn. Real
+    # effort (medium+) first RESETS the thinking budget — a previous low
+    # request's clamp survives /clear, so null is mandatory — then applies
+    # effortLevel. Order: /clear, set_model, budget, effort, user turn.
     fake = _cli_ok(monkeypatch)
     proc = _FakeProc(turns=[_result_lines(), _result_lines()])
     _seed_session(proc)  # live instance
@@ -353,10 +360,13 @@ def test_relay_options_become_reconfiguration_requests(monkeypatch):
         return "turn"
 
     assert [kind(w) for w in proc.writes] == [
-        "clear", "set_model", "apply_flag_settings", "turn"]
-    set_model, effort = proc.controls
+        "clear", "set_model", "set_max_thinking_tokens",
+        "apply_flag_settings", "turn"]
+    set_model, budget, effort = proc.controls
     assert set_model == {"subtype": "set_model", "model": "claude-sonnet-5",
                          "system_prompt": "be terse"}
+    assert budget == {"subtype": "set_max_thinking_tokens",
+                      "max_thinking_tokens": None}  # reset, not clamp
     assert effort == {"subtype": "apply_flag_settings",
                       "settings": {"effortLevel": "high"}}
 
@@ -370,32 +380,46 @@ def test_relay_set_model_is_sent_on_every_request(monkeypatch):
     _relay({"prompt": "two"})
     proc, = fake.procs
     assert len(proc.clears) == 2
-    assert [c["subtype"] for c in proc.controls] == [
-        "set_model", "set_model"]
+    set_models = [c for c in proc.controls if c["subtype"] == "set_model"]
+    assert len(set_models) == 2
     assert all(c == {"subtype": "set_model",
                      "model": server._AI_DEFAULT_MODEL,
                      "system_prompt": server._AI_DEFAULT_SYSTEM_PROMPT}
-               for c in proc.controls)
+               for c in set_models)
 
 
-def test_relay_effort_rides_only_requests_that_gave_one(monkeypatch):
-    # /clear resets effortLevel — so effort is applied per request when the
-    # caller gave one, and correctly NOT touched when omitted (the /clear
-    # default stands; no stale effort leaks from the previous caller).
+def test_relay_effort_maps_to_thinking_budget_and_flag(monkeypatch):
+    # The per-request thinking/effort protocol (all probed on 2.1.220):
+    # absent or "low" -> clamp the thinking budget to 0 (the universal
+    # switch — haiku ignores effortLevel and thinks by default otherwise),
+    # no effortLevel; medium+ -> budget null (mandatory: a previous low
+    # request's clamp SURVIVES /clear) then effortLevel.
     fake = _cli_ok(monkeypatch, turns=[_result_lines(), _result_lines(),
-                                       _result_lines()])
+                                       _result_lines(), _result_lines()])
+    proc_controls = lambda: fake.procs[0].controls
+
+    def last_call(subtype):
+        return [c for c in proc_controls() if c["subtype"] == subtype]
+
     _relay({"prompt": "a", "effort": "low"})
-    proc, = fake.procs
+    assert last_call("set_max_thinking_tokens")[-1] == {
+        "subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0}
+    assert last_call("apply_flag_settings") == []  # clamp IS the low path
 
-    def efforts():
-        return [c for c in proc.controls
-                if c["subtype"] == "apply_flag_settings"]
+    _relay({"prompt": "b"})  # absent effort == low: clamp again, no flag
+    assert last_call("set_max_thinking_tokens")[-1][
+        "max_thinking_tokens"] == 0
+    assert last_call("apply_flag_settings") == []
 
-    assert efforts()[-1]["settings"] == {"effortLevel": "low"}
-    _relay({"prompt": "b"})  # no effort: no flag request rides this call
-    assert len(efforts()) == 1
-    _relay({"prompt": "c", "effort": "xhigh"})  # xhigh is a valid level now
-    assert efforts()[-1]["settings"] == {"effortLevel": "xhigh"}
+    _relay({"prompt": "c", "effort": "xhigh"})  # xhigh is a valid level
+    assert last_call("set_max_thinking_tokens")[-1][
+        "max_thinking_tokens"] is None  # un-clamp before effortLevel
+    assert last_call("apply_flag_settings")[-1]["settings"] == {
+        "effortLevel": "xhigh"}
+
+    _relay({"prompt": "d", "effort": "medium"})
+    assert last_call("apply_flag_settings")[-1]["settings"] == {
+        "effortLevel": "medium"}
 
 
 def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
@@ -584,11 +608,27 @@ def test_relay_control_error_respawns_with_argv_config(monkeypatch):
     (argv2, _), = fake.calls
     assert _flag(argv2, "--model") == "claude-sonnet-5"
     assert fake.system_prompts == ["be terse"]
-    # set_model still rides the retry (unconditional per request); here the
-    # fresh instance accepts it and the turn proceeds.
+    # set_model still rides the retry (unconditional per request), followed
+    # by the thinking clamp (no effort given = low); here the fresh instance
+    # accepts them and the turn proceeds.
     retry, = fake.procs
-    assert [c["subtype"] for c in retry.controls] == ["set_model"]
+    assert [c["subtype"] for c in retry.controls] == [
+        "set_model", "set_max_thinking_tokens"]
     assert retry.prompt == "hello"
+
+
+def test_relay_thinking_clamp_error_takes_the_respawn_path(monkeypatch):
+    # A rejected set_max_thinking_tokens goes down the same discard +
+    # respawn-once path as any other control error.
+    fake = _cli_ok(monkeypatch)
+    live = _FakeProc(control_error={
+        "set_max_thinking_tokens": "unknown control subtype"})
+    _seed_session(live)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert live.killed
+    assert len(fake.calls) == 1  # one respawn, then success
+    assert fake.procs[0].prompt == "hello"
 
 
 def test_relay_persistent_control_rejection_is_an_ai_error(monkeypatch):

@@ -133,7 +133,7 @@ fused.env
 const { text, model, usage } = await fused.ai(prompt, {
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
-  effort,                     // optional "low" | "medium" | "high" | "xhigh" — Claude Code effort
+  effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
   onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
 ```
@@ -167,10 +167,13 @@ const { text, model, usage } = await fused.ai(prompt, {
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
   an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
-  (`"low" | "medium" | "high" | "xhigh"`) passes through to **Claude Code's own
-  effort semantics** (the same setting as the interactive `/effort` command);
-  effort-capable models (sonnet/opus class) honor it, haiku silently ignores it.
-  Calls are accepted concurrently but
+  (`"low" | "medium" | "high" | "xhigh"`, **default `low`**): `low` — and an
+  omitted effort — means **no extended thinking**, enforced with a thinking-budget
+  clamp that works on every model; `medium`/`high`/`xhigh` pass through to
+  **Claude Code's own effort semantics** (the same setting as the interactive
+  `/effort` command) — effort-capable models (sonnet/opus class) honor it, while
+  haiku (the default model) ignores effortLevel, which is exactly why the low
+  path uses the budget clamp instead. Calls are accepted concurrently but
   **serialized** through one shared CLI process — a second simultaneous call
   waits for the first (a local single-user app; calls complete in seconds). No
   latest-wins channel (an AI call is never a slider scrub).

@@ -720,6 +720,8 @@
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
   // "timeout"), mirroring runPython's rejection style. opts:
   //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
+  // effort defaults to low = no extended thinking (fast, cheap); medium+
+  // enables Claude Code's own effort/thinking semantics.
   // onChunk(text) opts the call into streaming: it fires per text delta as
   // the model produces it, and the promise still resolves with the same
   // {text, model, usage} at the end. Without it the request/response is the
