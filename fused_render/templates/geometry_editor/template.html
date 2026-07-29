@@ -42,7 +42,7 @@
   #sidePanel > div { pointer-events: auto; }
   .card { background: rgba(19,20,23,.92); border: 1px solid #2a2d33; border-radius: 10px;
     padding: 9px 11px; backdrop-filter: blur(6px); }
-  .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  .card h2, #tablePanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
     color: #9aa0a6; margin: 0 0 7px; }
   #outPath { width: 100%; margin-bottom: 7px; font-size: 12px; }
   label.radio { display: inline-flex; gap: 5px; align-items: center; margin-right: 10px;
@@ -65,19 +65,19 @@
      panel on the right and the hintbar underneath. */
   #tablePanel { left: 10px; right: 310px; bottom: 42px; max-height: 34vh;
     display: none; flex-direction: column; padding: 9px 11px; }
-  #tablePanel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-    color: #9aa0a6; margin: 0 0 7px; display: flex; justify-content: space-between;
-    align-items: center; flex: none; }
+  #tablePanel h2 { display: flex; justify-content: space-between; align-items: center; flex: none; }
   #tablePanel h2 a { cursor: pointer; color: #8ab4ff; font-size: 14px; text-transform: none; }
   #tableNote { color: #6b7178; font-weight: 400; text-transform: none; letter-spacing: 0; }
   #tableScroll { overflow: auto; border: 1px solid #23262c; border-radius: 6px; }
+  #tableScroll .empty { padding: 8px; color: #6b7178; }
   #tablePanel table { border-collapse: collapse; width: 100%; font-size: 12px;
     font-variant-numeric: tabular-nums; }
   #tablePanel th, #tablePanel td { padding: 3px 8px; border-bottom: 1px solid #23262c;
     text-align: left; white-space: nowrap; max-width: 240px; overflow: hidden;
     text-overflow: ellipsis; }
   #tablePanel th { color: #9aa0a6; position: sticky; top: 0; background: #17181c; z-index: 1; }
-  #tablePanel tbody tr { cursor: pointer; }
+  /* scroll-margin keeps a scrollIntoView'd row clear of the sticky header */
+  #tablePanel tbody tr { cursor: pointer; scroll-margin-top: 26px; }
   #tablePanel tbody tr:hover { background: #23262c; }
   #tablePanel tbody tr.selrow { background: rgba(255,179,71,.16); }
   #tablePanel td.dim, #tablePanel td:first-child { color: #6b7178; }
@@ -323,10 +323,7 @@ function setVertex(geom, ri, vi, ll) {
 }
 
 /* ============================================================ rendering */
-function refreshData() {
-  map.getSource("data") && map.getSource("data").setData(FC || EMPTY);
-  renderTablePanel(); // attribute edits / add / delete / undo all land here
-}
+function refreshData()   { map.getSource("data") && map.getSource("data").setData(FC || EMPTY); }
 function refreshSel() {
   const src = map.getSource("sel"), h = map.getSource("handles"), m = map.getSource("mids");
   if (!src) return;
@@ -379,7 +376,7 @@ function undo() {
   FC = undoStack.pop();
   if (sel >= FC.features.length) sel = -1;
   editCount = Math.max(0, editCount - 1);
-  refreshAll(); syncButtons();
+  refreshAll(); renderTablePanel(); syncButtons();
 }
 function redo() {
   if (!redoStack.length) return;
@@ -387,7 +384,7 @@ function redo() {
   FC = redoStack.pop();
   if (sel >= FC.features.length) sel = -1;
   editCount++;
-  refreshAll(); syncButtons();
+  refreshAll(); renderTablePanel(); syncButtons();
 }
 function syncButtons() {
   $("undoBtn").disabled = !undoStack.length;
@@ -477,7 +474,7 @@ function wireMapEvents() {
 function selectFeature(idx) {
   sel = (typeof idx === "number" && idx >= 0) ? idx : -1;
   refreshSel(); syncButtons();
-  renderTablePanel(); tableFollowSelection();
+  updateTableSelection();
 }
 
 function deleteVertex(ri, vi) {
@@ -502,7 +499,7 @@ function deleteFeature() {
   FC.features.splice(sel, 1);
   reindex();
   sel = -1;
-  refreshAll(); syncButtons();
+  refreshAll(); renderTablePanel(); syncButtons();
 }
 
 function reindex() { FC.features.forEach((f, i) => { f.id = i; }); }
@@ -511,7 +508,7 @@ function addFeature(geometry) {
   const props = {};
   (META.columns || []).forEach(c => { props[c] = null; });
   FC.features.push({ type: "Feature", id: FC.features.length, properties: props, geometry });
-  refreshAll();
+  refreshAll(); renderTablePanel();
   selectFeature(FC.features.length - 1);
   toast("Feature added");
 }
@@ -602,7 +599,7 @@ function renderSelCard() {
       if (v === "") v = null;
       else if (typeof was === "number" && !isNaN(parseFloat(v))) v = parseFloat(v);
       f.properties[k] = v;
-      refreshData();
+      refreshData(); renderTablePanel();
     };
     $("props").append(kEl, inp);
   }
@@ -615,60 +612,74 @@ function renderSelCard() {
 // round-trip. Rows beyond TABLE_MAX_ROWS are dropped from the DOM only;
 // the header note says so.
 const TABLE_MAX_ROWS = 2000;
-function tableOpen() { return $("tablePanel").style.display === "flex"; }
+let tableOn = false, tableNoteBase = "";
 function toggleTable(show) {
-  const on = show === undefined ? !tableOpen() : show;
-  $("tablePanel").style.display = on ? "flex" : "none";
-  $("tableBtn").classList.toggle("on", on);
-  if (on) renderTablePanel();
+  tableOn = show === undefined ? !tableOn : show;
+  $("tablePanel").style.display = tableOn ? "flex" : "none";
+  $("tableBtn").classList.toggle("on", tableOn);
+  if (tableOn) renderTablePanel();
 }
+// Full rebuild — called only when table-visible data changes (load, prop
+// edit, add/delete feature, undo/redo). Selection moves go through
+// updateTableSelection() instead: two class toggles, not a 2000-row rebuild.
 function renderTablePanel() {
-  if (!tableOpen()) return;
+  if (!tableOn) return;
   if (!FC || !FC.features.length) {
+    tableNoteBase = "";
     $("tableNote").textContent = "";
-    $("tableScroll").innerHTML = '<div style="padding:8px;color:#6b7178">no features</div>';
+    $("tableScroll").innerHTML = '<div class="empty">no features</div>';
     return;
   }
   const cols = (META && META.columns) || [];
   const feats = FC.features.slice(0, TABLE_MAX_ROWS);
-  $("tableNote").textContent = FC.features.length > TABLE_MAX_ROWS
+  tableNoteBase = FC.features.length > TABLE_MAX_ROWS
     ? `showing first ${TABLE_MAX_ROWS.toLocaleString()} of ${FC.features.length.toLocaleString()} features`
     : `${FC.features.length.toLocaleString()} feature${FC.features.length > 1 ? "s" : ""}`;
   const head = "<tr><th>#</th><th>geometry</th>" +
     cols.map(c => `<th>${esc(c)}</th>`).join("") + "</tr>";
   const body = feats.map((f, i) => {
     const p = f.properties || {};
-    return `<tr data-i="${i}"${i === sel ? ' class="selrow"' : ""}><td>${i}</td>` +
+    return `<tr data-i="${i}"><td>${i}</td>` +
       `<td class="dim">${esc(f.geometry.type)}</td>` +
-      cols.map(c => p[c] === null || p[c] === undefined
-        ? '<td class="dim">—</td>' : `<td>${esc(p[c])}</td>`).join("") + "</tr>";
+      cols.map(c => p[c] == null ? '<td class="dim">—</td>' : `<td>${esc(p[c])}</td>`).join("") + "</tr>";
   }).join("");
   $("tableScroll").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  updateTableSelection();
+}
+function updateTableSelection() {
+  if (!tableOn) return;
+  const scroll = $("tableScroll");
+  const prev = scroll.querySelector("tr.selrow");
+  if (prev) prev.classList.remove("selrow");
+  const row = sel >= 0 ? scroll.querySelector(`tr[data-i="${sel}"]`) : null;
+  if (row) { row.classList.add("selrow"); row.scrollIntoView({ block: "nearest" }); }
+  // a selection past the row cap has no row to highlight — say so instead
+  // of letting the sync silently look broken
+  const offTable = sel >= TABLE_MAX_ROWS && FC && FC.features[sel];
+  $("tableNote").textContent = tableNoteBase + (offTable ? ` · #${sel} selected (beyond rows shown)` : "");
 }
 $("tableScroll").addEventListener("click", e => {
   const tr = e.target.closest("tr[data-i]");
-  if (tr) selectFeature(+tr.dataset.i);
+  if (!tr) return;
+  if (mode !== "edit") setMode("edit"); // cancel an in-progress draft — selection implies edit mode
+  selectFeature(+tr.dataset.i);
 });
 $("tableScroll").addEventListener("dblclick", e => {
   const tr = e.target.closest("tr[data-i]");
   if (!tr) return;
   const f = FC && FC.features[+tr.dataset.i];
   if (!f) return;
-  let w = 180, s = 90, ee = -180, n = -90;
-  ringsOf(f.geometry).forEach(r => {
-    const cs = r.point ? [f.geometry.coordinates] : r.coords;
-    cs.forEach(([x, y]) => { w = Math.min(w, x); s = Math.min(s, y); ee = Math.max(ee, x); n = Math.max(n, y); });
-  });
-  if (w <= ee) map.fitBounds([[w, s], [ee, n]], { padding: 90, duration: 500, maxZoom: 17 });
+  const b = new maplibregl.LngLatBounds();
+  (function ext(c) {
+    if (typeof c[0] === "number") b.extend([c[0], c[1]]);
+    else c.forEach(ext);
+  })(f.geometry.type === "GeometryCollection"
+      ? f.geometry.geometries.map(g => g.coordinates)
+      : f.geometry.coordinates);
+  if (!b.isEmpty()) map.fitBounds(b, { padding: 70, duration: 800, maxZoom: 17 });
 });
 $("tableBtn").onclick = () => toggleTable();
 $("tableClose").onclick = () => toggleTable(false);
-// keep the selected row in sight when selection comes from the map
-function tableFollowSelection() {
-  if (!tableOpen()) return;
-  const row = $("tableScroll").querySelector("tr.selrow");
-  if (row) row.scrollIntoView({ block: "nearest" });
-}
 
 /* ============================================================ python bridge */
 // key:null — geometry_io.py serves both load (read) and export (writes
@@ -698,7 +709,7 @@ async function loadFile(path) {
     sel = -1; undoStack = []; redoStack = []; editCount = 0; drag = null;
     setMode("edit");
     showLoadSkeleton(false);
-    refreshAll(); syncButtons(); renderLayerUI();
+    refreshAll(); renderTablePanel(); syncButtons(); renderLayerUI();
     const [w, s, e, n] = META.bounds;
     map.fitBounds([[w, s], [e, n]], { padding: 70, duration: 800, maxZoom: 17 });
     toast(`Loaded ${META.count} feature${META.count > 1 ? "s" : ""}`);
