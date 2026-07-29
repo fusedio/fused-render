@@ -126,6 +126,18 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
         assert f'"{package}"' not in setup
 
 
+def test_browsable_vector_formats_are_supported_by_every_loading_path():
+    discover = _load("discover")
+    classify = _load("geo_classify")
+    map_render = _load("map_render")
+    vector_engine = _load("vector_engine")
+
+    browsable = set(discover.VECTOR)
+    assert browsable <= set(map_render.VECTOR_SUFFIXES)
+    assert browsable <= set(vector_engine.VECTOR_SUFFIXES)
+    assert browsable <= set(classify.VECTOR_EXT)
+
+
 def test_optional_runtime_lists_only_missing_distributions(monkeypatch):
     optional_runtime = _load("optional_runtime")
     available = {"rasterio"}

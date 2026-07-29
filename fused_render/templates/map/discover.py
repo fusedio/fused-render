@@ -44,9 +44,6 @@ VECTOR = (
     ".fgb",
     ".kml",
     ".gml",
-    ".tab",
-    ".mif",
-    ".dxf",
 )
 TABLE = (".parquet", ".geoparquet", ".csv", ".tsv", ".xlsx", ".xls")
 PMTILES = (".pmtiles",)
