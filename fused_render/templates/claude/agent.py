@@ -212,6 +212,52 @@ def _claude_bin() -> str:
     )
 
 
+def _needs_cmd_shim(bin_path: str) -> bool:
+    """Whether `bin_path` can only be started through cmd.exe.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess cannot run
+    directly — only cmd.exe can."""
+    return sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat"))
+
+
+def _cmd_quote(arg: str) -> str:
+    """Quote one argument for the verbatim payload of `cmd /d /s /c "..."`.
+
+    EVERY element is quoted, not just the ones with spaces: /s stops cmd from
+    re-parsing the payload's quotes, but it does NOT stop cmd from acting on
+    metacharacters (& | > < ^), and a quoted run is where those are literal.
+    Windows paths cannot contain `"` and every other argv element here is a
+    static literal or charset-validated, so there is no inner quote to escape
+    — assert rather than silently produce a line that means something else."""
+    if '"' in arg:
+        raise ValueError(f"argument may not contain a double quote: {arg!r}")
+    return f'"{arg}"'
+
+
+def _popen_cmd(bin_path: str, args: list[str]):
+    """The `cmd` to hand subprocess.Popen: an argv list, or — behind a Windows
+    .cmd/.bat shim — one command STRING for cmd.exe.
+
+    A list would be joined by subprocess.list2cmdline, which quotes each
+    element that needs it. That is correct for a normal exe, but cmd.exe only
+    preserves inner quoting when the rest of its line carries exactly two
+    quote characters; a shim path with spaces plus any quoted argument makes
+    four, cmd falls through to its strip-the-outermost rule, and the command
+    is re-split at the spaces (the `C:\\Users\\John Doe` failure).
+
+    So build the line ourselves: /s makes cmd strip exactly the first and last
+    quote and treat everything between verbatim, which is the one documented
+    quoting rule that does not depend on how many quotes the payload holds.
+    /d skips AutoRun registry commands, which must not be able to inject
+    anything into this invocation.
+
+    """
+    if not _needs_cmd_shim(bin_path):
+        return [bin_path] + args
+    payload = " ".join(_cmd_quote(a) for a in [bin_path] + args)
+    return f'cmd.exe /d /s /c "{payload}"'
+
+
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -712,6 +758,12 @@ def _deny_pending(run_dir: str, reason: str) -> None:
 
 # ----------------------------------------------------------------- start/poll
 
+# Ids and model names that may enter argv are a closed charset. A SECURITY
+# boundary, not just validation: on the Windows .cmd-shim path cmd.exe
+# re-parses the whole line and cannot be escaped reliably, so argv must hold
+# only static literals, run_dir file paths, and values this regex admitted.
+_SAFE_TOKEN = re.compile(r"[A-Za-z0-9._-]+")
+
 # Detach the run so it outlives this 30 s executor subprocess. start_new_session
 # (setsid) is POSIX-only — Windows ignores it silently, where DETACHED_PROCESS +
 # CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors templates/docs, latex and
@@ -728,6 +780,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
+    for name, value in (("session_id", session_id), ("model", model),
+                        ("effort", effort)):
+        if value and not _SAFE_TOKEN.fullmatch(value):
+            return {"error": f"invalid {name!r} (letters, digits, . _ -)"}
     if session_id:
         _migrate_session(file, session_id)
 
@@ -743,26 +799,38 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    cmd = [_claude_bin(), "-p", message,
-           "--output-format", "stream-json",
-           "--verbose", "--include-partial-messages",
-           "--append-system-prompt", _system_prompt(file),
-           "--mcp-config", _write_mcp_config(run_dir),
-           "--permission-prompt-tool",
-           f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
-           # Naming a permission-prompt tool also un-gates AskUserQuestion and
-           # ExitPlanMode, which the CLI otherwise disables in headless mode.
-           # This chat renders neither a question picker nor a plan dialog, so
-           # keep them off: the change is about tool approvals and nothing else.
-           "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
+    # No user-controlled STRING enters argv (the cmd.exe re-parse above): the
+    # message goes over stdin (-p with no positional prompt reads the pipe)
+    # and the system prompt — it embeds the user's file path — rides a file in
+    # run_dir, cleaned up with the run.
+    sp_path = os.path.join(run_dir, "system_prompt.txt")
+    with open(sp_path, "w", encoding="utf-8") as f:
+        f.write(_system_prompt(file))
+    msg_path = os.path.join(run_dir, "message.txt")
+    with open(msg_path, "w", encoding="utf-8") as f:
+        f.write(message)
+
+    args = ["-p",
+            "--output-format", "stream-json",
+            "--verbose", "--include-partial-messages",
+            "--append-system-prompt-file", sp_path,
+            "--mcp-config", _write_mcp_config(run_dir),
+            "--permission-prompt-tool",
+            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
+            # Naming a permission-prompt tool also un-gates AskUserQuestion and
+            # ExitPlanMode, which the CLI otherwise disables in headless mode.
+            # This chat renders neither a question picker nor a plan dialog, so
+            # keep them off: the change is about tool approvals and nothing else.
+            "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
     if cli_mode:
-        cmd += ["--permission-mode", cli_mode]
+        args += ["--permission-mode", cli_mode]
     if session_id:
-        cmd += ["--resume", session_id]
+        args += ["--resume", session_id]
     if model:
-        cmd += ["--model", model]
+        args += ["--model", model]
     if effort:
-        cmd += ["--effort", effort]
+        args += ["--effort", effort]
+    cmd = _popen_cmd(_claude_bin(), args)
 
     # poll() records the session into the sidecar once claude reports its id;
     # it needs the file + first message, so stash them with the run.
@@ -774,11 +842,15 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id, "mode": mode}, f)
 
+    # stdin carries the message (HEAD's argv-safety: no user text on the
+    # command line); _DETACH covers both the detach and, on Windows, the
+    # no-console-window concern (DETACHED_PROCESS creates no console at all).
     with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-         _private_open(os.path.join(run_dir, "err.log")) as err:
+         _private_open(os.path.join(run_dir, "err.log")) as err, \
+         open(msg_path, encoding="utf-8") as msg_in:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
-                                stdin=subprocess.DEVNULL,
+                                stdin=msg_in,
                                 **_DETACH)
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))

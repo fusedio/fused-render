@@ -98,6 +98,202 @@ def test_missing_claude_error_names_the_override_and_the_locations(monkeypatch):
     assert (r"%USERPROFILE%\nope.exe" if os.name == "nt" else "/nope/claude") in message
 
 
+# ----------------------------------------------------------------- argv safety
+
+def _start_capturing(agent, tmp_path, monkeypatch, bin_path, message="hello",
+                     **kwargs):
+    """Run _start with Popen stubbed; return (cmd, popen_kwargs, run_dir)."""
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "_claude_bin", lambda: bin_path)
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kw
+        # stdin is an open file object at this point; read it before it closes
+        captured["stdin_text"] = kw["stdin"].read()
+        return FakeProc()
+
+    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
+    result = agent._start(str(target), message, kwargs.get("session_id", ""),
+                          kwargs.get("model", ""), kwargs.get("effort", ""),
+                          kwargs.get("permission_mode", ""))
+    assert "run_id" in result, result
+    return captured, os.path.join(str(tmp_path / "runs"), result["run_id"])
+
+
+def test_the_message_travels_over_stdin_not_argv(tmp_path, monkeypatch):
+    """A message is arbitrary user text. It must never reach the command line:
+    behind a .cmd shim cmd.exe re-parses that line, and cmd-escaping arbitrary
+    text is not reliably possible. `-p` with no positional prompt reads stdin."""
+    agent = _load_agent()
+    message = 'summarize & "quote" | this ^ %PATH%'
+    captured, _ = _start_capturing(
+        agent, tmp_path, monkeypatch, "/usr/local/bin/claude", message=message)
+    assert captured["stdin_text"] == message
+    assert message not in captured["cmd"]
+    assert captured["cmd"][-1] != message
+    # -p is present but carries no positional prompt after it
+    assert "-p" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("-p") + 1].startswith("--")
+
+
+def test_the_system_prompt_rides_a_file_in_the_run_dir(tmp_path, monkeypatch):
+    """The system prompt embeds the user's file path, so it is not argv-safe
+    either. It goes to a file that is cleaned up with the run."""
+    agent = _load_agent()
+    captured, run_dir = _start_capturing(
+        agent, tmp_path, monkeypatch, "/usr/local/bin/claude")
+    cmd = captured["cmd"]
+    sp_path = cmd[cmd.index("--append-system-prompt-file") + 1]
+    assert "--append-system-prompt" not in cmd  # the inline flag is gone
+    assert os.path.dirname(sp_path) == run_dir
+    with open(sp_path, encoding="utf-8") as f:
+        assert "sample.html" in f.read()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("session_id", "abc$(whoami)"),
+    ("model", "haiku & del *"),
+    ("effort", 'high"'),
+])
+def test_start_rejects_tokens_outside_the_argv_charset(tmp_path, monkeypatch,
+                                                       field, value):
+    """These three DO end up in argv, so they are held to a closed charset —
+    the security boundary that lets the rest of the line stay static."""
+    agent = _load_agent()
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+
+    def no_spawn(*args, **kwargs):
+        raise AssertionError("nothing may be spawned for a rejected token")
+
+    monkeypatch.setattr(agent.subprocess, "Popen", no_spawn)
+    kwargs = {"session_id": "", "model": "", "effort": "", field: value}
+    result = agent._start(str(target), "hi", kwargs["session_id"],
+                          kwargs["model"], kwargs["effort"])
+    assert field in result["error"]
+
+
+def test_start_accepts_the_tokens_we_actually_send(tmp_path, monkeypatch):
+    agent = _load_agent()
+    captured, _ = _start_capturing(
+        agent, tmp_path, monkeypatch, "/usr/local/bin/claude",
+        session_id="3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+        model="claude-haiku-4-5-20251001", effort="high")
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5-20251001"
+    assert cmd[cmd.index("--effort") + 1] == "high"
+
+
+def test_an_exe_is_execed_as_a_plain_argv_list(monkeypatch):
+    """Only a .cmd/.bat shim needs cmd.exe. A real .exe — and anything at all
+    off win32 — is spawned directly, where argv needs no quoting rules."""
+    agent = _load_agent()
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    assert agent._popen_cmd(r"C:\u\claude.exe", ["-p"]) == [
+        r"C:\u\claude.exe", "-p"]
+    monkeypatch.setattr(agent.sys, "platform", "darwin")
+    # a .cmd off win32 is not a shim, it is just a file with a funny name
+    assert agent._popen_cmd("/usr/local/bin/claude.cmd", ["-p"]) == [
+        "/usr/local/bin/claude.cmd", "-p"]
+
+
+def test_a_shim_is_a_single_cmd_string_with_one_outer_quote_pair(monkeypatch):
+    """The spaces bug: handing Popen the list ["cmd.exe", "/c", shim, ...]
+    lets list2cmdline quote each element that needs it. cmd.exe only preserves
+    inner quoting when the rest of its line holds exactly two quotes — a shim
+    path with spaces plus any quoted argument makes four, cmd strips the
+    outermost pair instead and re-splits at the spaces.
+
+    So we build the line: /s strips exactly the first and last quote and takes
+    everything between verbatim, whatever the payload contains."""
+    agent = _load_agent()
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    shim = r"C:\Users\John Doe\AppData\Roaming\npm\claude.cmd"
+    sp = r"C:\Users\John Doe\runs\r1\system_prompt.txt"
+    cmd = agent._popen_cmd(shim, ["-p", "--append-system-prompt-file", sp])
+
+    assert isinstance(cmd, str), (
+        "a shim invocation must be one command string — a list would be "
+        "re-joined by list2cmdline and mis-parsed by cmd.exe")
+    # /s: strip exactly the outer pair, rest verbatim. /d: no AutoRun injection.
+    assert cmd.startswith('cmd.exe /d /s /c "')
+    assert cmd.endswith('"')
+    # both space-bearing paths survive intact, each in its own quoted run
+    assert f'"{shim}"' in cmd
+    assert f'"{sp}"' in cmd
+    # the payload between the outer quotes is what cmd will execute verbatim
+    payload = cmd[len('cmd.exe /d /s /c "'):-1]
+    assert payload == f'"{shim}" "-p" "--append-system-prompt-file" "{sp}"'
+
+
+def test_every_shim_argument_is_quoted_so_metacharacters_stay_literal(monkeypatch):
+    """/s stops cmd re-parsing QUOTES, not metacharacters — & | > < ^ are
+    still live outside a quoted run. Quoting every element, not only the ones
+    with spaces, is what keeps them inert."""
+    agent = _load_agent()
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    cmd = agent._popen_cmd(r"C:\npm\claude.cmd", ["-p", "--verbose"])
+    payload = cmd[len('cmd.exe /d /s /c "'):-1]
+    for token in (r"C:\npm\claude.cmd", "-p", "--verbose"):
+        assert f'"{token}"' in payload
+    assert payload.replace('"', " ").split() == [
+        r"C:\npm\claude.cmd", "-p", "--verbose"]
+
+
+def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
+    """Nothing we send can contain a `"` (Windows paths cannot hold one, and
+    the rest is static or charset-validated). If that ever changes, fail loudly
+    rather than emit a line that means something else."""
+    agent = _load_agent()
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    with pytest.raises(ValueError):
+        agent._popen_cmd(r"C:\npm\claude.cmd", ['--model', 'a"b'])
+
+
+def test_start_behind_a_shim_with_spaces_produces_a_runnable_line(
+        tmp_path, monkeypatch):
+    """End to end through _start: a shim path with spaces AND a run_dir with
+    spaces (the reported C:\\Users\\John Doe shape) must still yield a single
+    correctly-quoted command string."""
+    _as_windows(monkeypatch)
+    agent = _load_agent()
+    monkeypatch.setattr(agent.sys, "platform", "win32")
+    spacey = tmp_path / "John Doe"
+    spacey.mkdir()
+    shim = r"C:\Users\John Doe\npm\claude.cmd"
+    target = spacey / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "_claude_bin", lambda: shim)
+    monkeypatch.setattr(agent, "RUNS", str(spacey / "my runs"))
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, **kw):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr(agent.subprocess, "Popen", fake_popen)
+    assert "run_id" in agent._start(str(target), "hello", "", "", "")
+    cmd = captured["cmd"]
+    assert isinstance(cmd, str)
+    assert cmd.startswith('cmd.exe /d /s /c "') and cmd.endswith('"')
+    assert f'"{shim}"' in cmd
+    # the system-prompt file lives under a directory with a space in it
+    sp = [t for t in cmd.split('"') if t.endswith("system_prompt.txt")]
+    assert sp and " " in sp[0]
+    assert f'"{sp[0]}"' in cmd
+
+
 # --------------------------------------------------------------------- detach
 
 def test_detach_kwargs_are_win32_flags_on_windows(monkeypatch):
