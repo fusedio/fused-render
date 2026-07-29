@@ -39,6 +39,14 @@ Actions
   extract_pages(doc,pages,name)            -> {name, path, size, dir}
   merge(sources,name,directory)            -> {name, path, dir}
   split(doc,mode,ranges,prefix,directory)  -> {files:[...], dir}
+  protect(doc,password,owner)              -> {name, path, size, dir}  (encrypted copy)
+  unlock(doc,password)                     -> {name, path, dir}  (decrypted copy)
+  ocr(doc,pages,language)                  -> {name, path, dir, ocr_pages, copied_pages}
+  pdf_to_word(doc,pages)                   -> {name, path, size, dir}
+  word_to_pdf(src)                         -> {name, path, dir}
+  excel_to_pdf(src)                        -> {name, path, dir}
+  images_to_pdf(sources,name,directory)    -> {name, path, dir}  (image file paths)
+  save_scan(images_b64,name,directory)     -> {name, path, dir}  (base64 captures)
   reveal(path)                             -> {ok}  (opens the OS file explorer)
   page_text(doc,page)                      -> {width, height, rotation, spans:[...]}
   undo(doc) / redo(doc)                    -> mutation contract shape
@@ -522,6 +530,7 @@ def _compress(doc, level):
     before = os.path.getsize(doc)
 
     def fn(path):
+        tmp = path + ".tmp"
         if level == "aggressive":
             import fitz
 
@@ -530,17 +539,410 @@ def _compress(doc, level):
             d = fitz.open(path)
             d.rewrite_images(dpi_threshold=200, dpi_target=150, quality=75)
             d.subset_fonts()
-            tmp = path + ".tmp"
             d.save(tmp, garbage=4, deflate=True, clean=True,
                    encryption=fitz.PDF_ENCRYPT_KEEP)
             d.close()
-            os.replace(tmp, path)
         else:
-            with pikepdf.open(path, allow_overwriting_input=True) as pdf:
-                pdf.save(path, compress_streams=True, recompress_flate=True,
+            with pikepdf.open(path) as pdf:
+                pdf.save(tmp, compress_streams=True, recompress_flate=True,
                          object_stream_mode=pikepdf.ObjectStreamMode.generate)
-        return {"before": before, "after": os.path.getsize(path)}
+        after = os.path.getsize(tmp)
+        # Recompression can GROW a file that is already well packed — keep the
+        # working copy untouched instead of recording a pointless mutation.
+        if after >= before:
+            os.remove(tmp)
+            raise ValueError(
+                f"already optimized — {level} compression would not shrink the file")
+        os.replace(tmp, path)
+        return {"before": before, "after": after}
     return fn(doc)
+
+
+# ------------------------------------------------------- protect / unlock
+def _protect(doc, password, owner):
+    """Encrypted (AES-256) copy next to the original; the original is untouched."""
+    import pikepdf
+
+    doc = os.path.abspath(doc)
+    if not password:
+        raise ValueError("a password is required")
+    stem = os.path.splitext(os.path.basename(doc))[0]
+    dest = _unique_path(os.path.dirname(doc), f"{stem}-protected.pdf")
+    with pikepdf.open(_cur_path(doc)) as pdf:
+        pdf.save(dest, encryption=pikepdf.Encryption(
+            user=password, owner=owner or password, R=6))
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+
+
+def _unlock(doc, password):
+    """Decrypted copy next to the original (never strips in place)."""
+    import pikepdf
+
+    doc = os.path.abspath(doc)
+    stem = os.path.splitext(os.path.basename(doc))[0]
+    dest = _unique_path(os.path.dirname(doc), f"{stem}-unlocked.pdf")
+    try:
+        with pikepdf.open(doc, password=password or "") as pdf:
+            pdf.save(dest)
+    except pikepdf.PasswordError:
+        raise ValueError("wrong password") from None
+    _add_to_library(dest)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "dir": _fwd(os.path.dirname(dest))}
+
+
+# ------------------------------------------------------------------------ ocr
+# PyMuPDF wheels ship MuPDF's embedded Tesseract; only the language model file
+# is needed. It is fetched once into DATA_ROOT (tessdata_fast, ~4 MB for eng).
+TESSDATA = os.path.join(DATA_ROOT, "tessdata")
+_TESSDATA_URL = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/{lang}.traineddata"
+
+
+def _ensure_tessdata(lang):
+    import urllib.request
+
+    if not re.fullmatch(r"[a-z_]{3,12}", lang or ""):
+        raise ValueError(f"bad OCR language code: {lang!r}")
+    os.makedirs(TESSDATA, exist_ok=True)
+    p = os.path.join(TESSDATA, f"{lang}.traineddata")
+    if os.path.exists(p):
+        return TESSDATA
+    req = urllib.request.Request(_TESSDATA_URL.format(lang=lang),
+                                 headers={"User-Agent": "fused-render-pdf/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+    except Exception as exc:  # noqa: BLE001 — surface any download failure as one message
+        raise ValueError(f"could not download OCR data for {lang!r} ({exc}) — "
+                         "check the connection and retry") from None
+    tmp = p + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, p)
+    return TESSDATA
+
+
+def _ocr(doc, pages, language):
+    """Searchable copy next to the original: pages that already have text are
+    copied through; image-only pages get an invisible OCR text layer."""
+    import fitz
+
+    doc = os.path.abspath(doc)
+    lang = (language or "eng").strip() or "eng"
+    tessdata = _ensure_tessdata(lang)
+    src = fitz.open(_cur_path(doc))
+    idxs = _parse_pages(pages, src.page_count)
+    todo = [i for i in idxs if not src[i].get_text().strip()] if not pages else idxs
+    if not todo:
+        src.close()
+        raise ValueError("every selected page already has a text layer — "
+                         "pass explicit pages to re-OCR them")
+    if len(todo) > 100:
+        src.close()
+        raise ValueError(f"{len(todo)} pages need OCR — run it in batches (e.g. 1-100)")
+    out = fitz.open()
+    todo_set = set(todo)
+    for i in range(src.page_count):
+        if i not in todo_set:
+            out.insert_pdf(src, from_page=i, to_page=i)
+            continue
+        pix = src[i].get_pixmap(dpi=200)
+        page_pdf = fitz.open("pdf", pix.pdfocr_tobytes(
+            compress=True, language=lang, tessdata=tessdata))
+        out.insert_pdf(page_pdf)
+        page_pdf.close()
+    stem = os.path.splitext(os.path.basename(doc))[0]
+    dest = _unique_path(os.path.dirname(doc), f"{stem}-searchable.pdf")
+    out.save(dest, garbage=3, deflate=True)
+    out.close()
+    copied = src.page_count - len(todo)
+    src.close()
+    _add_to_library(dest)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "dir": _fwd(os.path.dirname(dest)),
+            "ocr_pages": len(todo), "copied_pages": copied}
+
+
+# ----------------------------------------------------------- word / excel
+_XML_ESC = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}
+
+
+def _xesc(s):
+    return "".join(_XML_ESC.get(c, c) for c in s)
+
+
+def _pdf_to_word(doc, pages):
+    """Text-level .docx next to the original (stdlib OOXML writer — bold/italic/
+    size survive, exact layout does not; Word reflows the paragraphs)."""
+    import zipfile
+
+    import fitz
+
+    doc = os.path.abspath(doc)
+    d = fitz.open(_cur_path(doc))
+    idxs = _parse_pages(pages, d.page_count)
+    body = []
+    for k, i in enumerate(idxs):
+        if k:
+            body.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+        for block in d[i].get_text("dict")["blocks"]:
+            runs = []
+            for line in block.get("lines", []):
+                for s in line.get("spans", []):
+                    txt = s["text"]
+                    if not txt:
+                        continue
+                    props = []
+                    if s["flags"] & 16:
+                        props.append("<w:b/>")
+                    if s["flags"] & 2:
+                        props.append("<w:i/>")
+                    props.append(f'<w:sz w:val="{max(2, round(s["size"] * 2))}"/>')
+                    runs.append(f'<w:r><w:rPr>{"".join(props)}</w:rPr>'
+                                f'<w:t xml:space="preserve">{_xesc(txt)}</w:t></w:r>')
+                runs.append('<w:r><w:t xml:space="preserve"> </w:t></w:r>')
+            if runs:
+                body.append(f"<w:p>{''.join(runs[:-1])}</w:p>")
+    d.close()
+    if not body:
+        raise ValueError("no text found on the selected pages — "
+                         "run Make searchable (OCR) first if this is a scan")
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(body)}<w:sectPr/></w:body></w:document>")
+    stem = os.path.splitext(os.path.basename(doc))[0]
+    dest = _unique_path(os.path.dirname(doc), f"{stem}.docx")
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            "</Types>")
+        z.writestr("_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            "</Relationships>")
+        z.writestr("word/document.xml", document)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "size": os.path.getsize(dest), "dir": _fwd(os.path.dirname(dest))}
+
+
+def _find_soffice():
+    """LibreOffice, when installed — the max-fidelity converter for office docs."""
+    cand = shutil.which("soffice")
+    if cand:
+        return cand
+    for p in (r"C:\Program Files\LibreOffice\program\soffice.exe",
+              r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+              "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+              "/usr/bin/soffice"):
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _soffice_to_pdf(src, out_dir):
+    import subprocess
+
+    soffice = _find_soffice()
+    if not soffice:
+        return ""
+    before = set(os.listdir(out_dir))
+    subprocess.run([soffice, "--headless", "--convert-to", "pdf",
+                    "--outdir", out_dir, src],
+                   check=True, timeout=180, capture_output=True)
+    made = [f for f in os.listdir(out_dir)
+            if f not in before and f.lower().endswith(".pdf")]
+    return os.path.join(out_dir, made[0]) if made else ""
+
+
+_STORY_CSS = ("body{font-family:sans-serif;font-size:11pt;line-height:1.45}"
+              "h2{font-size:14pt;margin:14pt 0 6pt}"
+              "table{border-collapse:collapse;font-size:9pt}"
+              "td,th{border:0.5pt solid #999;padding:2pt 5pt}"
+              "th{background-color:#eee;font-weight:bold}")
+
+
+def _html_to_pdf(html, dest):
+    import fitz
+
+    story = fitz.Story(html=html, user_css=_STORY_CSS)
+    mediabox = fitz.paper_rect("a4")
+    where = mediabox + (36, 36, -36, -36)
+    writer = fitz.DocumentWriter(dest)
+    while True:
+        dev = writer.begin_page(mediabox)
+        more, _ = story.place(where)
+        story.draw(dev)
+        writer.end_page()
+        if not more:
+            break
+    writer.close()
+
+
+def _word_to_pdf(src):
+    """PDF copy next to the .docx: LibreOffice when installed (full fidelity),
+    else a stdlib docx parse laid out with fitz.Story (text + tables)."""
+    import tempfile
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    src = os.path.abspath(src)
+    if not os.path.isfile(src):
+        raise ValueError(f"no such file: {src}")
+    out_dir = os.path.dirname(src)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    dest = _unique_path(out_dir, f"{stem}.pdf")
+    with tempfile.TemporaryDirectory() as td:
+        made = _soffice_to_pdf(src, td)
+        if made:
+            shutil.copyfile(made, dest)
+            _add_to_library(dest)
+            return {"name": os.path.basename(dest), "path": _fwd(dest),
+                    "dir": _fwd(out_dir), "via": "libreoffice"}
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    try:
+        with zipfile.ZipFile(src) as z:
+            root = ET.fromstring(z.read("word/document.xml"))
+    except (zipfile.BadZipFile, KeyError):
+        raise ValueError("not a .docx file (older .doc needs LibreOffice installed)") from None
+
+    def para_html(p):
+        style = p.find(f"{W}pPr/{W}pStyle")
+        heading = style is not None and "eading" in (style.get(f"{W}val") or "")
+        parts = []
+        for r in p.iter(f"{W}r"):
+            txt = "".join(t.text or "" for t in r.iter(f"{W}t"))
+            if not txt:
+                continue
+            rpr = r.find(f"{W}rPr")
+            if rpr is not None and rpr.find(f"{W}b") is not None:
+                txt = f"<b>{_xesc(txt)}</b>"
+            elif rpr is not None and rpr.find(f"{W}i") is not None:
+                txt = f"<i>{_xesc(txt)}</i>"
+            else:
+                txt = _xesc(txt)
+            parts.append(txt)
+        inner = "".join(parts) or "&#160;"
+        return f"<h2>{inner}</h2>" if heading else f"<p>{inner}</p>"
+
+    chunks = []
+    for el in root.find(f"{W}body"):
+        if el.tag == f"{W}p":
+            chunks.append(para_html(el))
+        elif el.tag == f"{W}tbl":
+            rows = []
+            for tr in el.iter(f"{W}tr"):
+                cells = ["<td>" + _xesc(" ".join(
+                    "".join(t.text or "" for t in p.iter(f"{W}t"))
+                    for p in tc.iter(f"{W}p")).strip()) + "</td>"
+                    for tc in tr.findall(f"{W}tc")]
+                rows.append(f"<tr>{''.join(cells)}</tr>")
+            chunks.append(f"<table>{''.join(rows)}</table>")
+    if not chunks:
+        raise ValueError("the document has no readable content")
+    _html_to_pdf(f"<body>{''.join(chunks)}</body>", dest)
+    _add_to_library(dest)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "dir": _fwd(out_dir), "via": "builtin"}
+
+
+def _excel_to_pdf(src):
+    """PDF copy next to the workbook: LibreOffice when installed, else
+    openpyxl values rendered as one table per sheet with fitz.Story."""
+    import tempfile
+
+    src = os.path.abspath(src)
+    if not os.path.isfile(src):
+        raise ValueError(f"no such file: {src}")
+    out_dir = os.path.dirname(src)
+    stem = os.path.splitext(os.path.basename(src))[0]
+    dest = _unique_path(out_dir, f"{stem}.pdf")
+    with tempfile.TemporaryDirectory() as td:
+        made = _soffice_to_pdf(src, td)
+        if made:
+            shutil.copyfile(made, dest)
+            _add_to_library(dest)
+            return {"name": os.path.basename(dest), "path": _fwd(dest),
+                    "dir": _fwd(out_dir), "via": "libreoffice"}
+    try:
+        import openpyxl
+    except ImportError:
+        raise ValueError("Excel conversion needs openpyxl (or LibreOffice) — "
+                         "uv pip install openpyxl") from None
+    wb = openpyxl.load_workbook(src, data_only=True, read_only=True)
+    chunks = []
+    for ws in wb.worksheets:
+        rows = []
+        for r, row in enumerate(ws.iter_rows(values_only=True)):
+            if r >= 2000:
+                rows.append("<tr><td>… truncated at 2000 rows</td></tr>")
+                break
+            tag = "th" if r == 0 else "td"
+            cells = "".join(f"<{tag}>{_xesc('' if v is None else str(v))}</{tag}>"
+                            for v in row)
+            rows.append(f"<tr>{cells}</tr>")
+        if rows:
+            chunks.append(f"<h2>{_xesc(ws.title)}</h2><table>{''.join(rows)}</table>")
+    wb.close()
+    if not chunks:
+        raise ValueError("the workbook has no data to render")
+    _html_to_pdf(f"<body>{''.join(chunks)}</body>", dest)
+    _add_to_library(dest)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "dir": _fwd(out_dir), "via": "builtin"}
+
+
+# --------------------------------------------------------- images / scanning
+def _build_image_pdf(blobs, name, directory, default_dir):
+    import fitz
+
+    if not blobs:
+        raise ValueError("no images to save")
+    out_dir = _out_dir(directory, default_dir)
+    out = fitz.open()
+    for data in blobs:
+        pix = fitz.Pixmap(data)
+        w = 595.0  # A4 width in points; height keeps the capture's aspect
+        h = w * pix.height / max(1, pix.width)
+        page = out.new_page(width=w, height=h)
+        page.insert_image(page.rect, stream=data)
+    name = _safe_name(name, "scan")
+    if not name.lower().endswith(".pdf"):
+        name += ".pdf"
+    dest = _unique_path(out_dir, name)
+    out.save(dest, deflate=True)
+    out.close()
+    _add_to_library(dest)
+    return {"name": os.path.basename(dest), "path": _fwd(dest), "dir": _fwd(out_dir)}
+
+
+def _images_to_pdf(sources, name, directory):
+    paths = [os.path.abspath(p) for p in json.loads(sources)]
+    for p in paths:
+        if not os.path.isfile(p):
+            raise ValueError(f"no such file: {p}")
+    blobs = []
+    for p in paths:
+        with open(p, "rb") as f:
+            blobs.append(f.read())
+    default_dir = os.path.dirname(paths[0]) if paths else DOWNLOADS
+    if not name:
+        name = os.path.splitext(os.path.basename(paths[0]))[0] if paths else "images"
+    return _build_image_pdf(blobs, name, directory, default_dir)
+
+
+def _save_scan(images_b64, name, directory):
+    import base64
+
+    blobs = [base64.b64decode(b.split(",", 1)[-1]) for b in json.loads(images_b64)]
+    os.makedirs(DOWNLOADS, exist_ok=True)
+    return _build_image_pdf(blobs, name or "scan", directory, DOWNLOADS)
 
 
 # ------------------------------------------------------------------ text edit
@@ -779,7 +1181,8 @@ def _list_remote(origin, path, cap=5000):
     return entries, truncated
 
 
-def _listdir(path, origin=""):
+def _listdir(path, origin="", exts=""):
+    want = tuple(e.strip().lower() for e in (exts or ".pdf").split(",") if e.strip())
     path = os.path.abspath(os.path.expanduser(path or "~"))
     # Ask the server once: is this a remote (mount-backed) path, and is it a dir?
     status, meta = _stat(origin, path) if origin else ("", None)
@@ -803,7 +1206,7 @@ def _listdir(path, origin=""):
                 continue
             if ent.get("is_dir"):
                 dirs.append(name)
-            elif name.lower().endswith(".pdf"):
+            elif name.lower().endswith(want):
                 files.append({"name": name, "size": ent.get("size") or 0})
         dirs.sort(key=str.lower)
         files.sort(key=lambda f: f["name"].lower())
@@ -825,7 +1228,7 @@ def _listdir(path, origin=""):
         try:
             if os.path.isdir(full):
                 dirs.append(name)
-            elif name.lower().endswith(".pdf"):
+            elif name.lower().endswith(want):
                 files.append({"name": name, "size": os.path.getsize(full)})
         except OSError:
             continue
@@ -893,6 +1296,10 @@ def _health():
         out["pikepdf"] = pikepdf.__version__
     except Exception as e:
         out["ok"], out["pikepdf_error"] = False, str(e)
+    out["soffice"] = bool(_find_soffice())
+    out["ocr_langs"] = sorted(
+        f[:-len(".traineddata")] for f in os.listdir(TESSDATA)
+        if f.endswith(".traineddata")) if os.path.isdir(TESSDATA) else []
     return out
 
 
@@ -928,6 +1335,11 @@ def main(
     color: str = "",
     expected_mtime: str = "",
     force: int = 0,
+    password: str = "",
+    owner: str = "",
+    language: str = "",
+    images_b64: str = "",
+    exts: str = "",
 ):
     if action == "health":
         return _health()
@@ -966,7 +1378,7 @@ def main(
     if action == "listdir":
         # `src` on the listdir action carries the server ORIGIN (mount-safe
         # routing), distinct from its add_to_library meaning (a file path).
-        return _listdir(path, src)
+        return _listdir(path, src, exts)
     if action == "import_url":
         return _import_url(url, name)
     if action == "rename_doc":
@@ -1026,6 +1438,22 @@ def main(
         return _merge(sources, name, directory)
     if action == "split":
         return _split(doc, mode, ranges, prefix, directory)
+    if action == "protect":
+        return _protect(doc, password, owner)
+    if action == "unlock":
+        return _unlock(doc, password)
+    if action == "ocr":
+        return _ocr(doc, pages, language)
+    if action == "pdf_to_word":
+        return _pdf_to_word(doc, pages)
+    if action == "word_to_pdf":
+        return _word_to_pdf(src)
+    if action == "excel_to_pdf":
+        return _excel_to_pdf(src)
+    if action == "images_to_pdf":
+        return _images_to_pdf(sources, name, directory)
+    if action == "save_scan":
+        return _save_scan(images_b64, name, directory)
     if action == "reveal":
         p = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
         if not os.path.exists(p):

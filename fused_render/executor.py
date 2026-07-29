@@ -141,46 +141,6 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
     }
 
 
-def _child_env() -> dict:
-    """The worker's environment, with THIS package's location on PYTHONPATH.
-
-    The worker is spawned as a script, so its `sys.path[0]` is the package
-    directory rather than its parent, and `import fused_render` resolves there
-    only when the package happens to be pip-installed into `sys.executable`.
-    A first-party helper that delegates to the package (the call-log reader
-    reads the store through `fused_render.calls`) otherwise fails with
-    *No module named 'fused_render'* — reported from the Calls view, while
-    log_studio's stdlib-only reader was unaffected.
-
-    Handing the path down from the PARENT rather than deriving it in the child
-    is the load-bearing part: this process IS the package, so it knows where the
-    package is even when the child's own `__file__` arithmetic cannot say (a
-    frozen or relocated layout), and it applies to a worker script that has not
-    itself been updated. `_child.py` keeps its own fallback for direct
-    invocation, but this is the path that has to be right.
-
-    APPENDED, matching `_child.py`'s own `sys.path.append` of the same value —
-    the two halves of this fix must not disagree about precedence. Prepending
-    looked harmless because `run()` still puts the user's module directory at
-    `sys.path[0]`, but it shadows the user's *PYTHONPATH* rather than their
-    script's folder, and on an installed layout `parent` IS site-packages: in
-    front of PYTHONPATH that reverses the one override PYTHONPATH exists to
-    provide, for every module, not just this package. Appending fixes the
-    missing import just as well — the entry only has to be reachable, not first
-    — and can no longer displace anything the caller already had.
-
-    Skipped entirely when the caller already has it, so a nested run cannot
-    grow the variable one copy per level.
-    """
-    parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    existing = os.environ.get("PYTHONPATH") or ""
-    entries = existing.split(os.pathsep) if existing else []
-    if parent in entries:
-        return {**os.environ}
-    return {**os.environ,
-            "PYTHONPATH": (existing + os.pathsep if existing else "") + parent}
-
-
 def _is_builtin_helper(path: str) -> bool:
     """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
     duckdb/structure/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
@@ -293,7 +253,23 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=_child_env(),
+            # The child inherits os.environ untouched: no `env=` and, in
+            # particular, no PYTHONPATH injection. This used to append THIS
+            # package's parent dir so a helper could `import fused_render` from
+            # the child (the worker is spawned as a SCRIPT, so its sys.path[0] is
+            # the package dir rather than its parent). That existed for exactly
+            # one consumer, the call-log reader reading the store through
+            # `fused_render.calls`. Nothing under `templates/` imports
+            # `fused_render` any more — a template asks the app about its
+            # environment through `templates/shared/appenv.py`, env vars only
+            # (SPEC PY-15) — so the injection has no consumer left, and it was
+            # never dependable anyway: the fused local execution backend STRIPS
+            # PYTHONPATH/PYTHONHOME/VIRTUAL_ENV from its children for venv
+            # hermeticity, so a template leaning on it worked under this executor
+            # and silently took its fallback branch under the other engine.
+            # Keeping it would preserve exactly that divergence. `_child.py`
+            # dropped its matching `sys.path.append` in the same change — the two
+            # halves must not disagree.
             # close_fds=False forces CPython to spawn via posix_spawn instead of
             # fork()+exec (verified: the default close_fds=True takes the fork
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy

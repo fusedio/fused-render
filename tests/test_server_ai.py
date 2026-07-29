@@ -5,7 +5,7 @@ resolution (FUSED_RENDER_CLAUDE_BIN / PATH).
 The endpoint is driven through module-level `_ai_relay` with the subprocess
 hop (`_spawn_claude_stream`) mocked (the "avoid starlette TestClient"
 discipline of test_server_fs_write.py) — no test ever runs a real CLI. The
-mock is a fake process that SPEAKS the stdin reconfiguration protocol D167
+mock is a fake process that SPEAKS the stdin reconfiguration protocol D169
 drives the persistent instance with: it answers /clear with a
 conversation_reset + local result, control_requests with control_responses,
 and a user turn with its scripted delta/result lines. The runtime checks are
@@ -102,7 +102,7 @@ class _FakeStderr:
 
 class _FakeProc:
     """Stands in for the persistent process _spawn_claude_stream returns,
-    speaking the D167 stdin protocol: /clear -> conversation_reset + local
+    speaking the D169 stdin protocol: /clear -> conversation_reset + local
     result; control_request -> control_response; a user turn -> the next
     scripted `lines` batch (deltas + result). Also simulates dead/hung/
     broken-pipe states and records everything written for assertions."""
@@ -285,7 +285,7 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
     assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
-    # One CLI spawn: stream-json in and out (the D167 persistent-instance
+    # One CLI spawn: stream-json in and out (the D169 persistent-instance
     # spawn shape; --verbose is mandatory with stream-json output), the
     # prompt over stdin as a JSON user message (argv has an OS size cap),
     # the default model, the default system prompt, a bare completion engine

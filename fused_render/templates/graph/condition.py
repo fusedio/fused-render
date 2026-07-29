@@ -41,8 +41,9 @@ directory in the filesystem, which is what a content sniff would need a listing
 to avoid — is the failure worth preventing.
 
 Fails closed: any exception while probing returns False, and a path that isn't a
-directory is False. Self-contained apart from the one mount import — the module
-is exec'd standalone (not imported as part of a package).
+directory is False. Self-contained apart from `../shared/appenv.py` (itself
+stdlib-only, env vars only) for the mount check — the module is exec'd standalone
+(not imported as part of a package), so nothing here imports fused_render.
 """
 
 # The vault marker, in both casings (only a case-INSENSITIVE filesystem answers
@@ -57,11 +58,25 @@ _VAULT_INDEX = (
 
 def main(path: str) -> bool:
     import os
+    import sys
 
     try:
         # (1) A mount-backed path is refused before any probe: not offered, ever.
+        #
+        # Through `shared/appenv` (env vars only, stdlib only) rather than by
+        # importing fused_render, so the mount rule has ONE home for every
+        # template — this gate happens to be exec'd in-process by
+        # server._run_condition, where the package IS importable, but that is an
+        # implementation detail of the gate's host and not something a template
+        # may rely on (SPEC PY-15).
+        shared = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
+        # Guarded insert: _run_condition re-execs this module on EVERY stat, so an
+        # unconditional insert would grow sys.path without bound.
+        if shared not in sys.path:
+            sys.path.insert(0, shared)
         try:
-            from fused_render.shell.mounts import is_mount_backed
+            from appenv import is_mount_backed
         except Exception:  # noqa: BLE001 — cannot tell -> refuse (CT-12)
             return False
         if is_mount_backed(path):

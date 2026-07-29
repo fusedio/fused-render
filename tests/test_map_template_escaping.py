@@ -171,11 +171,13 @@ def test_the_known_untrusted_sinks_go_through_esc():
     that reintroduces one is named in the failure rather than only counted."""
     src = _src()
     for needle in (
-        '<span class="nm">${esc(e.name)}</span>',            # directory listing
-        '<span class="lg-nm" title="${esc(groupKey)}">',     # group path (attr)
-        '<span class="lc-nm" title="${esc(tp)}">${esc(L.name)}</span>',
+        "name.textContent = entry.name",                     # directory listing
+        "row.title = entry.path",                            # file path attribute
+        '<span class="lc-nm" title="${esc(L.target)}">${esc(L.name)}</span>',
+        "${esc(d.message || (d.error && d.error.message)",   # backend error
         '<b>${esc(title)}</b>',                              # toast title
         '${esc(String(msg).slice(0,300))}',                  # toast message
         '<div class="g1">${esc(name)}</div>',                # geocoder result
+        "${esc(path)}</div>",                                # code viewer path
     ):
         assert needle in src, f"map template no longer escapes: {needle}"

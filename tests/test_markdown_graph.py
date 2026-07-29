@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import inspect
 import os
+import sys
 from unittest import mock
 
 import pytest
@@ -32,6 +33,21 @@ def graph():
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture()
+def appenv(graph):
+    """`templates/shared/appenv.py`, the module graph.py asks about mounts.
+
+    Importing `graph` puts `../shared` on sys.path, so this is the SAME module
+    object the template's lazy `from appenv import is_mount_backed` resolves to —
+    patching an attribute here is patching what the template sees. Most mount
+    tests below drive `FUSED_RENDER_MOUNTS_DIR` instead, which is the real
+    contract; this exists for the one case that needs a detector saying "this
+    exact path and nothing under it"."""
+    import appenv as mod
+
     return mod
 
 
@@ -552,7 +568,7 @@ def test_the_climb_is_bounded_and_gives_up_rather_than_reaching_the_top(graph, t
     assert graph.vault_root(os.path.dirname(start)) == root
 
 
-def test_the_climb_stops_at_a_mount_boundary(graph, tmp_path, monkeypatch):
+def test_the_climb_stops_at_a_mount_boundary(graph, appenv, tmp_path, monkeypatch):
     """A remote mount must not become the scan root through the ascent (MD-11).
 
     The refusal in `_refuse_mounts` would catch it afterwards, but then opening a
@@ -563,13 +579,11 @@ def test_the_climb_stops_at_a_mount_boundary(graph, tmp_path, monkeypatch):
     start = os.path.join(root, "docs")
     assert graph.vault_root(start) == root  # the control: same tree, no mount
 
-    from fused_render.shell import mounts
-
     # Only the ancestor is mount-backed: `is_mount_backed` is prefix-based, so a
     # real mounts dir at `root` would make `start` mount-backed too and the test
     # would prove the wrong thing.
     monkeypatch.setattr(
-        mounts, "is_mount_backed", lambda path: os.path.abspath(path) == root)
+        appenv, "is_mount_backed", lambda path: os.path.abspath(path) == root)
     with _no_enumeration():
         assert graph.vault_root(start) == start
 
@@ -588,11 +602,9 @@ def test_a_note_on_a_mount_is_never_probed_at_all(graph, tmp_path, monkeypatch):
     `_has_vault_marker` is free to change which one it calls; what may not change
     is that none of them see the mount.
     """
-    from fused_render.shell import mounts
-
     root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
     start = os.path.join(root, "docs")
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
 
     touched = []
     real = {name: getattr(os.path, name) for name in ("isdir", "isfile", "exists")}
@@ -618,21 +630,55 @@ def test_a_note_on_a_mount_is_never_probed_at_all(graph, tmp_path, monkeypatch):
     assert out["error"] == "mount_unsupported"
 
 
-def test_an_unavailable_mount_detector_does_not_climb(graph, tmp_path, monkeypatch):
-    # "Cannot tell" reads as "do not ascend", the same way the gate and
-    # `_refuse_mounts` read it as "refuse".
+@contextlib.contextmanager
+def _no_appenv():
+    """Make `from appenv import ...` fail, i.e. mount detection unavailable.
+
+    This is a real shape, not a hypothetical: a copy of the template folder taken
+    without its `../shared/` sibling has no appenv at all. It used to be the
+    EVERYDAY shape under the fused engine (PYTHONPATH stripped => the old
+    `from fused_render.shell.mounts import ...` always failed), so the fail-closed
+    branch has to keep working now that it is the rare one."""
     import builtins
 
-    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
     real_import = builtins.__import__
 
     def blocked(name, *args, **kwargs):
-        if name == "fused_render.shell.mounts":
+        if name == "appenv":
             raise ImportError("blocked")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", blocked)
-    assert graph.vault_root(os.path.join(root, "docs")) == os.path.join(root, "docs")
+    saved = sys.modules.pop("appenv", None)
+    builtins.__import__ = blocked
+    try:
+        yield
+    finally:
+        builtins.__import__ = real_import
+        if saved is not None:
+            sys.modules["appenv"] = saved
+
+
+def test_an_unavailable_mount_detector_does_not_climb(graph, tmp_path):
+    # "Cannot tell" reads as "do not ascend", the same way the gate and
+    # `_refuse_mounts` read it as "refuse".
+    root = _vault(tmp_path, {".obsidian/app.json": "{}", "docs/note.md": "x\n"})
+    with _no_appenv():
+        assert graph.vault_root(os.path.join(root, "docs")) == os.path.join(root, "docs")
+
+
+def test_an_unavailable_mount_detector_refuses_the_walk(graph, tmp_path):
+    """The other half of MD-11's fail-closed rule: no detector => no walk.
+
+    `vault_root` merely declining to climb is not enough — `scan_root` is what
+    would actually `readdir` a remote, so it must refuse outright, and `main`
+    must surface that as `mount_unsupported` rather than a partial graph."""
+    root = _vault(tmp_path, {"A.md": "[[B]]\n"})
+    with _no_appenv():
+        with pytest.raises(graph.MountUnsupported):
+            graph.scan_root(root)
+        out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
+        assert out["error"] == "mount_unsupported"
+        assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
 
 
 def test_an_explicit_root_still_wins_over_the_marker(graph, tmp_path):
@@ -689,9 +735,9 @@ def test_a_mount_backed_root_is_refused_outright(graph, tmp_path, monkeypatch):
     so the graph refuses a mount-backed root instead of bounding the risk
     (MD-11/D156). A clear result, never a partial walk."""
     root = _vault(tmp_path, {"A.md": "[[B]]\n"})
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    # The contract path: the server exports the resolved mounts dir and appenv
+    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
     out = graph.main(action="note", file=os.path.join(root, "A.md"), root=root)
     assert out["error"] == "mount_unsupported"
     # And no walk happened: scan_root itself refuses, so nothing can slip past
@@ -703,9 +749,7 @@ def test_a_mount_backed_root_is_refused_outright(graph, tmp_path, monkeypatch):
 def test_a_local_root_is_not_refused_when_a_mounts_dir_merely_exists(
         graph, tmp_path, monkeypatch):
     root = _vault(tmp_path, {"A.md": "hi\n"})
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", str(tmp_path / "elsewhere"))
     assert graph.main(action="note", file=os.path.join(root, "A.md"), root=root)["error"] is None
 
 
@@ -759,9 +803,9 @@ def test_every_candidate_link_form_resolves_back_to_its_own_note(graph, tmp_path
 
 def test_candidates_refuses_a_mount_backed_root(graph, tmp_path, monkeypatch):
     root = _vault(tmp_path, {"A.md": "x\n"})
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    # The contract path: the server exports the resolved mounts dir and appenv
+    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
     assert graph.main(action="candidates", root=root)["error"] == "mount_unsupported"
 
 
@@ -868,9 +912,9 @@ def test_a_corrupt_index_falls_back_to_a_full_walk(graph, tmp_path, home):
 
 def test_the_index_is_never_touched_for_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
     root = _vault(tmp_path, {"A.md": "x\n"})
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    # The contract path: the server exports the resolved mounts dir and appenv
+    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
     with pytest.raises(graph.MountUnsupported):
         graph.scan_indexed(root)
     assert not os.path.exists(os.path.join(home, "graph"))
@@ -1016,9 +1060,9 @@ def test_an_embedded_asset_is_not_a_graph_node(graph, tmp_path, home):
 
 def test_the_graph_refuses_a_mount_backed_root(graph, tmp_path, home, monkeypatch):
     root = _vault(tmp_path, {"A.md": "x\n"})
-    from fused_render.shell import mounts
-
-    monkeypatch.setattr(mounts, "mounts_dir", lambda: root)
+    # The contract path: the server exports the resolved mounts dir and appenv
+    # reads it, so pointing the var at `root` makes the whole vault mount-backed.
+    monkeypatch.setenv("FUSED_RENDER_MOUNTS_DIR", root)
     out = graph.main(action="graph", root=root)
     assert out["error"] == "mount_unsupported"
     assert "remote mounts" in out["message"]

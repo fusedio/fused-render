@@ -844,7 +844,7 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # CLAUDE.md, --system-prompt-file REPLACES the shipped agent prompt, and
 # --no-session-persistence keeps everything off disk.
 #
-# LATENCY (D166/D167): the CLI is a Node program whose startup alone costs
+# LATENCY (D168/D169): the CLI is a Node program whose startup alone costs
 # ~1.5-2.5s — it dominated every call at haiku sizes. ONE persistent process
 # is therefore kept alive in --input-format stream-json mode and RECONFIGURED
 # per request over its stdin protocol (all probed on 2.1.220):
@@ -3688,6 +3688,33 @@ def set_server_origin_env(port: int, host: str = "127.0.0.1") -> str:
     return origin
 
 
+def export_app_env() -> None:
+    """Publish the resolved shell dirs so template children can find them
+    WITHOUT importing ``fused_render`` (SPEC PY-15 / D166).
+
+    Templates learn their environment through ``templates/shared/appenv.py``,
+    which reads only env vars. That indirection exists because the fused local
+    execution backend strips ``PYTHONPATH`` from child processes: a template's
+    guarded ``from fused_render.shell.mounts import ...`` then silently takes its
+    fallback branch and a mount-backed path gets treated as local. Env vars cross
+    that boundary intact.
+
+    Both values are exported ALREADY RESOLVED — ``home_dir()`` includes the
+    per-branch nesting (``FUSED_RENDER_BRANCH``) and ``mounts_dir()`` is
+    normpath'd — so no consumer re-implements those rules. Called from the same
+    place as ``set_server_origin_env``, i.e. before the server starts serving, so
+    every child process inherits them; the read-only mount list is exported
+    separately by ``shell.mounts.export_ro_mounts_env`` because it has to be
+    refreshed on every store write, not just at startup.
+    """
+    from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import storage as shell_storage
+
+    os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
+    os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
+    shell_mounts.export_ro_mounts_env()
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for
@@ -3724,7 +3751,7 @@ def create_app(start_dir: str) -> FastAPI:
         if client is not None:
             await client.aclose()
 
-    # Warm claude instance for fused.ai (D166/D167): pay the ~2s Node/CLI
+    # Warm claude instance for fused.ai (D168/D169): pay the ~2s Node/CLI
     # startup before the first request instead of inside it. Fire-and-forget —
     # server readiness never waits on it, and a missing binary just skips it.
     @app.on_event("startup")

@@ -29,6 +29,21 @@ Three rules shape the whole module:
 """
 import os
 import re
+import sys
+
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op.
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "graph.py")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# `../shared/appenv.py` is how this template asks the app about its environment
+# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
+# stays LAZY at each use site below so an unreachable appenv is still the
+# "cannot tell" case MD-11 turns into a refusal, rather than a module that
+# fails to load at all.
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
 
 # Bumped whenever parse_note's output shape or semantics change, so a stored
 # index row from an older parser is invalidated wholesale (MD-8).
@@ -113,14 +128,17 @@ class MountUnsupported(Exception):
 def _refuse_mounts(root: str) -> None:
     """Refuse a mount-backed root outright.
 
-    The detector is the app's own `shell.mounts.is_mount_backed` — the same one
-    `server._run_condition` and every fs route use — rather than a second copy
-    of the rule. An ImportError means we cannot tell, and "cannot tell" must
-    read as "refuse": a walk we were not allowed to do is the failure this
-    exists to prevent.
+    The detector is `shared/appenv.is_mount_backed`, a faithful port of the
+    app's `shell.mounts.is_mount_backed` that answers from `FUSED_RENDER_*`
+    instead of importing `fused_render`. It has to: this file runs as a child
+    process, and the fused local execution backend strips PYTHONPATH from those,
+    so the old `from fused_render.shell.mounts import ...` took its except branch
+    on EVERY run there and refused every root. An ImportError still means we
+    cannot tell, and "cannot tell" must read as "refuse": a walk we were not
+    allowed to do is the failure this exists to prevent.
     """
     try:
-        from fused_render.shell.mounts import is_mount_backed
+        from appenv import is_mount_backed
     except Exception as exc:  # noqa: BLE001 — cannot tell -> refuse
         raise MountUnsupported(f"mount detection unavailable: {exc}") from exc
     if is_mount_backed(root):
@@ -146,7 +164,7 @@ MAX_ASCENT = 8
 def _mount_detector():
     """`is_mount_backed`, or None when we cannot tell (MD-11's fail-closed rule)."""
     try:
-        from fused_render.shell.mounts import is_mount_backed
+        from appenv import is_mount_backed
     except Exception:  # noqa: BLE001 — cannot tell -> do not ascend
         return None
     return is_mount_backed
@@ -681,10 +699,14 @@ _SCHEMA = (
 
 
 def index_dir() -> str:
-    """`~/.fused-render/graph`, resolved against `home_dir()` each call so
+    """`~/.fused-render/graph`, resolved against `appenv.home_dir()` each call so
     FUSED_RENDER_HOME overrides (and the per-branch nesting) work — the
-    established pattern from core_templates.CORE_TEMPLATES_DIR."""
-    from fused_render.shell.storage import home_dir
+    established pattern from core_templates.CORE_TEMPLATES_DIR.
+
+    Per call, not cached: `appenv` reads the env every time, and this module can
+    be long-lived. The value arrives ALREADY branch-resolved from the server, so
+    nothing here re-derives the nesting."""
+    from appenv import home_dir
 
     return os.path.join(home_dir(), "graph")
 

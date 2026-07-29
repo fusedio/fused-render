@@ -110,3 +110,71 @@ def test_reader_template_ships_condition():
     files = os.listdir(d)
     assert "condition.py" in files
     assert "template.html" in files
+
+
+# ------------------------------------------------- the stdlib fallback (PY-15)
+# The gate prefers `shell.prefs` (it runs in-server, and the pref is not a mount
+# fact). Its fallback used to re-derive the per-branch home via
+# `fused_render._branch.branch_dir`; it now asks `shared/appenv`, which reads the
+# ALREADY branch-resolved FUSED_RENDER_HOME_DIR the server exports. These pin the
+# fallback specifically, because a child that cannot import fused_render at all
+# takes it on every call.
+
+def _no_prefs_module(monkeypatch):
+    """Force the fallback: make `from fused_render.shell import prefs` fail."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "fused_render.shell":
+            raise ImportError("blocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+
+
+def test_the_fallback_reads_the_exported_home_dir(home, tmp_path, monkeypatch):
+    """A branch-isolated server exports its own nested home, and the fallback must
+    read prefs.json from THERE — not from the baseline beside it."""
+    branch_home = tmp_path / "home" / "branches" / "feature-x"
+    branch_home.mkdir(parents=True)
+    (branch_home / "prefs.json").write_text(
+        json.dumps({"reader_enabled": True}), encoding="utf-8")
+    # The baseline home says off, so a wrong answer here is unambiguous.
+    (home / "prefs.json").write_text(
+        json.dumps({"reader_enabled": False}), encoding="utf-8")
+
+    cond = _load_condition()
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(branch_home))
+    _no_prefs_module(monkeypatch)
+    assert cond.main("/x.csv") is True
+
+
+def test_the_fallback_uses_the_baseline_home_when_nothing_was_exported(
+        home, monkeypatch):
+    _enable_reader(home)
+    cond = _load_condition()
+    _no_prefs_module(monkeypatch)
+    assert cond.main("/x.csv") is True
+
+
+def test_the_fallback_fails_closed_without_appenv(home, monkeypatch):
+    """No appenv AND no prefs module: the baseline home is the honest guess, and
+    an unreadable prefs.json is still False (CT-12)."""
+    import builtins
+    import sys
+
+    cond = _load_condition()
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name in ("appenv", "fused_render.shell"):
+            raise ImportError("blocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "appenv", raising=False)
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert cond.main("/x.csv") is False
+    _enable_reader(home)          # baseline home still readable => True
+    assert cond.main("/x.csv") is True

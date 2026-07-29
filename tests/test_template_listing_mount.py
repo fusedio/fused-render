@@ -18,6 +18,7 @@ listed directories from that template) was removed, and its reader's `list`/
 it must come back mount-routed and regain a case here.
 """
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -281,6 +282,23 @@ def pathfs():
 
 
 _DIR = "/definitely/not/here/on/disk/mnt-dir"
+
+
+def test_map_discover_remote_file_descends_to_parent(pathfs):
+    directory = os.path.abspath(_DIR)
+    file_path = os.path.join(directory, "scene.nitf")
+    server = pathfs(
+        directory,
+        [_ent("sub", is_dir=True), _ent("scene.nitf", size=10)],
+        file_path,
+    )
+
+    result = map_discover.main(dir=file_path, src=server.src)
+
+    assert "error" not in result
+    assert result["dir"] == directory
+    assert result["selected"] == file_path
+    assert result["selected_kind"] == "raster"
 
 
 def test_excel_listdir_remote_file_descends_to_parent(pathfs):

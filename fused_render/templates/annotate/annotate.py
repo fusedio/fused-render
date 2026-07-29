@@ -19,10 +19,11 @@ own (claudeSessions, bookmarkHistory, lastSession, ...) is preserved through a
 read-merge-write — a later claude turn round-trips them instead of clobbering
 them off disk.
 
-Stdlib only, save for one guarded lazy import: _sidecar_writable consults the
-shell's mount read_only flag (fused_render.shell.mounts) to detect a read-only
-remote mount, degrading to pure os.access when fused_render isn't importable
-(a standalone copy of this template). See _sidecar_writable.
+Stdlib only, save for one guarded lazy import of `../shared/appenv.py` (itself
+stdlib-only): _sidecar_writable consults the mount read_only flag through it to
+detect a read-only remote mount, degrading to pure os.access when appenv isn't
+reachable (a copy of this folder taken without its `shared/` sibling). See
+_sidecar_writable.
 
 Actions:
   main(action="record", file=..., comments=[...], deleted_ids=[...])
@@ -34,8 +35,18 @@ Actions:
 """
 import json
 import os
+import sys
 import tempfile
 import time
+
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op.
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "annotate.py")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
 
 
 # ------------------------------------------------------------- sidecar store
@@ -166,13 +177,15 @@ def _sidecar_writable(file: str) -> bool:
     CacheMode=full a write lands in the local VFS cache and only 403s at the
     async upload (the sidecar-write incident), so os.access would wave the
     doomed write through. Only the shell's persisted read_only flag can answer
-    this, so this reaches for a fused_render internal via a guarded lazy import
-    (cf. templates/zarr_aoi/tile_server.py) — a standalone copy of this
-    template with no fused_render on the path keeps the pure os.access
+    this, and it arrives via `shared/appenv` (FUSED_RENDER_RO_MOUNTS, re-exported
+    on every mount-store write) rather than by importing fused_render — a
+    template child under the fused engine has no PYTHONPATH, so that import
+    ALWAYS failed there and every read-only mount looked writable. A copy of this
+    folder taken without its `shared/` sibling still keeps the pure os.access
     behavior."""
     file = os.path.abspath(file)
     try:
-        from fused_render.shell.mounts import mount_read_only
+        from appenv import mount_read_only
         if mount_read_only(file):
             return False
     except Exception:

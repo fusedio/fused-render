@@ -35,10 +35,24 @@ import hashlib
 import json
 import math
 import os
-import re
 import sys
 import threading
 import time
+
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op.
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "tile_server.py")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# `../shared/` is on the path for BOTH halves of this file: main() runs as a
+# child of the server, and the `--serve` daemon runs from this same file in its
+# own uv venv (see _daemon_python) — neither can import fused_render, and both
+# need the shell dirs. appenv is stdlib-only, so the daemon's venv (numpy/zarr
+# only, no fused_render) can import it just fine.
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+import appenv
 
 STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
@@ -57,26 +71,7 @@ SPATIAL_X = {"lon", "longitude", "x", "xc", "rlon", "nav_lon"}
 
 
 def _me():
-    if "__file__" in globals():
-        return os.path.abspath(__file__)
-    return os.path.join(os.path.abspath(sys.path[0]), "tile_server.py")
-
-
-def _home_dir():
-    """Branch-aware ~/.fused-render, mirroring fused_render.shell.storage.home_dir
-    + _branch.branch_dir. The daemon runs in its own venv with no fused_render,
-    so the resolution is inlined; main() passes FUSED_RENDER_HOME and
-    FUSED_RENDER_BRANCH through the daemon's env, so a per-branch dev server
-    (state under ~/.fused-render/branches/<ref>/) is detected as a mount, not
-    misread as a plain local path. Keep the sanitize rule in lockstep with
-    _branch.sanitize (lowercase, collapse non-[a-z0-9] runs to '-', trim,
-    truncate to 12; main/master/head -> baseline)."""
-    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    raw = os.environ.get("FUSED_RENDER_BRANCH", "")
-    ref = ""
-    if raw and raw.lower() not in ("main", "master", "head"):
-        ref = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:12].rstrip("-")
-    return os.path.join(base, "branches", ref) if ref else base
+    return os.path.abspath(__file__)
 
 
 def _daemon_python():
@@ -137,19 +132,16 @@ def main(action: str = "ensure"):
         pass
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     log = os.path.join(os.path.dirname(STATE), "daemon.log")
+    # The daemon reads store bytes through the server's /api/fs/raw
+    # (resolve_source), so it needs the server's origin — inherited straight from
+    # this process's env, which the server sets unconditionally
+    # (server.set_server_origin_env) before it starts serving. There is
+    # deliberately NO fallback: the old `_branch.branch_port()` guess yields the
+    # baseline 1777, which is wrong under any --port override (the desktop
+    # launcher auto-picks a free port), so it pointed every read at a dead port
+    # and surfaced "No group found in store" from zarr. Absent ORIGIN now means
+    # "no server around", and resolve_source says so rather than guessing.
     env = dict(os.environ)
-    if "FUSED_RENDER_ORIGIN" not in env:
-        # The daemon reads store bytes through the server's /api/fs/raw
-        # (resolve_source), so it needs the server's origin. main() runs
-        # inside the server, where the port module is importable; the
-        # daemon's own venv has no fused_render, so pass it via env. The
-        # 1777 fallback matches _branch._BASE_PORT (baseline, no branch
-        # isolation).
-        try:
-            from fused_render._branch import branch_port
-            env["FUSED_RENDER_ORIGIN"] = f"http://127.0.0.1:{branch_port()}"
-        except ImportError:
-            pass
     with open(log, "ab") as lf:
         subprocess.Popen([_daemon_python(), _me(), "--serve"],
                          stdout=lf, stderr=lf, env=env,
@@ -346,7 +338,7 @@ def _serve():
             return {"kind": "http", "url": path, "storage_options": {},
                     "label": path}
         path = os.path.abspath(os.path.expanduser(path))
-        mroot = os.path.join(_home_dir(), "mounts") + os.sep
+        mroot = appenv.mounts_dir() + os.sep
         if path.startswith(mroot):
             # Default transport: the server's own ranged-read API. The server
             # decides how the bytes move (rclone-serve proxy, presigned 307,
@@ -356,8 +348,17 @@ def _serve():
             # (anonymous buckets only) for A/B comparison.
             if os.environ.get("ZARRAOI_TRANSPORT", "raw") != "s3":
                 from urllib.parse import quote
-                origin = os.environ.get("FUSED_RENDER_ORIGIN",
-                                        "http://127.0.0.1:1777")
+                origin = appenv.origin()
+                if not origin:
+                    # A mount path can only be read back through the server, so
+                    # without its origin there is nowhere to go. Say that (the
+                    # handler turns it into a 500 with this message) instead of
+                    # falling back to the baseline 1777, which is a dead port
+                    # under any --port override and fails as an opaque zarr
+                    # "No group found in store".
+                    raise RuntimeError(
+                        "FUSED_RENDER_ORIGIN is not set — a mount-backed store "
+                        "can only be read through the fused-render server")
                 return {"kind": "http",
                         "url": origin + "/api/fs/raw?path="
                         + quote(path, safe="/"),
@@ -367,7 +368,7 @@ def _serve():
             name, _, rest = rel.partition(os.sep)
             try:
                 mounts = json.load(open(os.path.join(
-                    _home_dir(), "mounts.json")))
+                    appenv.home_dir(), "mounts.json")))
             except (OSError, ValueError):
                 mounts = []
             ent = next((m for m in mounts if m.get("name") == name), None)
