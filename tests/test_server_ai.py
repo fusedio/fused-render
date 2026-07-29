@@ -848,6 +848,15 @@ def test_runtime_ai_rejects_empty_prompt_client_side():
     assert 'err.type = "bad_request"' in RUNTIME
 
 
+def test_runtime_ai_streams_on_onchunk():
+    # opts.onChunk switches the request to stream:true and reads the NDJSON
+    # body incrementally; partial lines are buffered across read() boundaries.
+    assert "opts.onChunk" in RUNTIME
+    assert "body.stream = true" in RUNTIME
+    assert "getReader()" in RUNTIME
+    assert 'buffer.split("\\n")' in RUNTIME
+
+
 # -- export stance -----------------------------------------------------------------
 
 
