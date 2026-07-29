@@ -2699,17 +2699,18 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
 - **MD-3** **What a link is.** Parsed from the source with **code elided**:
   `_mask_code` blanks fenced blocks, indented blocks, inline code spans and the
   YAML frontmatter to spaces of the same length, so offsets and line numbers
-  still line up and a `[[Note]]` in a code sample is not an edge. Six forms
-  count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`,
-  `#tag`, and an ordinary relative markdown link `](./rel.md)` — a URL, a
-  `mailto:` and a bare `#anchor` do not. `[[#Heading]]` is an anchor inside the
-  same note, not an edge. The editing surface does **not** re-implement the
-  masking rule: wikilinks and tags are not in the vendored markdown grammar, so
-  they are matched by regex and then checked **against the syntax tree** — a
-  match inside `InlineCode`/`CodeText`/`FencedCode` is not a link, and a `#`
-  inside a `URL` is a fragment. The tree is asked what a range *is*; no second
-  block parser exists in JS. The guard must **not** list `Link`/`Image`: the
-  grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
+  still line up and a `[[Note]]` in a code sample is not an edge. Five forms
+  count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`, and an
+  ordinary relative markdown link `](./rel.md)` — a URL, a `mailto:` and a bare
+  `#anchor` do not. `[[#Heading]]` is an anchor inside the same note, not an
+  edge. **There is no tag concept** (D165): an inline `#tag` and a frontmatter
+  `tags:` key are ordinary prose, parsed by nothing and drawn by nothing. The
+  editing surface does **not** re-implement the masking rule: wikilinks are not
+  in the vendored markdown grammar, so they are matched by regex and then
+  checked **against the syntax tree** — a match inside
+  `InlineCode`/`CodeText`/`FencedCode` is not a link. The tree is asked what a
+  range *is*; no second block parser exists in JS. The guard must **not** list
+  `Link`/`Image`: the grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
   `![[embed]]` in an `Image` node, so including them silently renders no
   wikilinks at all (found by executing it — see MD-18a).
 - **MD-3a** **What a note is called: its file, always.** Every `title` in every
@@ -2857,9 +2858,9 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   note in `v/docs/` linking `../spec/overview.md` got a ghost for every link
   leaving its folder and an empty backlinks panel, because nothing outside
   `v/docs` was ever scanned. The default root is therefore the **nearest
-  ancestor carrying a vault-root marker** — `.obsidian/`, `.fused-graph.json`,
-  or `.git` (a directory in a clone, a *file* in a worktree, so both shapes are
-  probed) — and the note's own directory when none is found. Never `$HOME`,
+  ancestor carrying a vault-root marker** — `.obsidian/` or `.git` (a directory
+  in a clone, a *file* in a worktree, so both shapes are probed) — and the
+  note's own directory when none is found. Never `$HOME`,
   never `/`. An explicit `root` param still wins; the ascent only supplies the
   default. **The ascent must not enumerate**: a fixed set of `isdir`/`isfile`
   probes per level and no `listdir`/`scandir`/`walk`/`glob` anywhere, the same
@@ -2871,10 +2872,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   "cannot tell", which reads as "do not climb". A wider root makes MD-10's
   `truncated` cap matter more, not less, so the "only the first N notes were
   scanned" notice stays surfaced in the sidebar. Dotdirs and the usual vendored
-  trees are still skipped by name inside the walk. *Not built:* the
-  `.fused-graph.json` file's **contents** (it counts as a marker but nothing
-  reads it yet: root override, include/exclude globs, colour groups, default
-  depth) and gitignore-awareness of the walk — both additive.
+  trees are still skipped by name inside the walk. A third marker,
+  `.fused-graph.json`, was specified here and is **gone** (D165): nothing ever
+  read it, so it was a marker only a fused user who had read this SPEC could
+  have placed. *Not built:* per-vault tuning of any kind (root override,
+  include/exclude globs, colour groups, default depth) and gitignore-awareness
+  of the walk — both additive.
 - **MD-13** **Vendoring.** One rebuild of `scripts/vendor-codemirror/` adds
   `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
   `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/
@@ -2882,8 +2885,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   `syntaxTree`, `autocompletion`, `indentMore`/`indentLess` and
   `markdown`/`markdownLanguage`/`markdownKeymap`. Anything not re-exported is
   tree-shaken, so `entry.js` is the whole gate on what the template can reach.
-- **MD-14** **Link authoring.** `[[`, `![[`, `[[#`, `[[note#` and `#tag`
-  complete from a `candidates` action off the **same scan the graph reads**, so
+- **MD-14** **Link authoring.** `[[`, `![[`, `[[#` and `[[note#` complete from a
+  `candidates` action off the **same scan the graph reads**, so
   the popup is free once the index exists and can never offer a note the graph
   disagrees about; cached ~5 s so a fast typist does not spawn a run per
   keystroke. What it inserts is the **shortest form that `resolve_link` itself
@@ -2937,12 +2940,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   than one node. Covered: headings, bold/italic/strikethrough/inline code,
   fenced blocks (markers kept and the embedded language highlighted, as in
   Obsidian), blockquotes, list bullets, horizontal rules, pipe tables,
-  `[label](target)` links, `![alt](src)` images, wikilinks/embeds/ghosts and
-  tags. **What a range is comes from `syntaxTree`**, so this template holds no
-  block parser (MD-3).
+  `[label](target)` links, `![alt](src)` images, and wikilinks/embeds/ghosts.
+  **What a range is comes from `syntaxTree`**, so this template holds no block
+  parser (MD-3).
   Two behaviours are deliberately unlike the rest: a **checkbox stays rendered**
   under the caret, because it is a control and not markup you edit by hand; and
-  widgets whose *content* needs editing (image, table, tag) are **click-to-edit**
+  widgets whose *content* needs editing (image, table) are **click-to-edit**
   — a click lands the caret inside them and the source appears — whereas links
   are opaque so a click navigates.
   **Frontmatter is a special case with a real trap:** the vendored grammar has
@@ -2974,8 +2977,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   runtime change first.
 - **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
-  document, which a full-height editor has no room for. Backlinks and tags
-  scroll in the upper section; the graph canvas and its depth control sit below.
+  document, which a full-height editor has no room for. Backlinks scroll in the
+  upper section; the graph canvas and its depth control sit below.
   One toggle opens both: they answer the same question about the open note. The
   panel is **resizable** by dragging a thin handle on its left edge (15rem to
   45rem, arrow keys on the focused handle too), and the width is persisted in
@@ -3019,7 +3022,7 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   picture said less than the backlinks list. So the vertical axis carries the
   tree. **One band per distinct folder** (not per depth number — sibling
   folders are different places), ordered by depth then name, with the
-  folderless nodes in trailing `unresolved` and `tags` bands rather than lumped
+  folderless ghost nodes in a trailing `unresolved` band rather than lumped
   into the root's. Band names are drawn in **screen space** at the left edge, so
   the legend stays readable and on-screen at any zoom or pan; the name is drawn
   even for a single band, because "these are all in `x/`" is the answer the
@@ -3044,12 +3047,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   the resting field washes out in proportion to edges-per-node; the focus
   note's own edges hold a step above the field, and hover is what makes any
   individual link fully legible again.
-- **MD-20** **Graph state is params.** Panel open, depth, filter and
-  tag-visibility all live in `fused.params`, so a graph view is refresh-proof
-  and **URL-shareable** — which Obsidian's is not. Nodes are notes, per-**name**
-  ghosts (five notes linking `[[Roadmap]]` share the node they are all asking
-  for) and tags; an embedded picture is deliberately **not** a node, or a vault
-  of screenshots would drown the graph. A focused graph BFSes out `depth` hops
+- **MD-20** **Graph state is params.** Panel open and depth live in
+  `fused.params`, so a graph view is refresh-proof and **URL-shareable** — which
+  Obsidian's is not. Nodes are notes and per-**name** ghosts (five notes linking
+  `[[Roadmap]]` share the node they are all asking for) and nothing else; an
+  embedded picture is deliberately **not** a node, or a vault of screenshots
+  would drown the graph. A focused graph BFSes out `depth` hops
   following edges in **both** directions, because an inbound link is as much a
   neighbour as an outbound one. `depth` also carries an **`all`** option, sent
   as the sentinel **`-1`**: a negative depth skips the neighbourhood filter

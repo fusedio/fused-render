@@ -67,6 +67,12 @@ const ctx = new Proxy({}, {
   get: (_target, key) => {
     if (key === "arc") return (x, y) => { drawn.arcs.push([x, y]); };
     if (key === "fillText") return (t, x, y) => { drawn.texts.push([t, x, y]); };
+    // Unmeasured by default — every label gets the SLOT_MIN slot, which is what
+    // the geometry tests below are pinned against. A test that needs WIDE
+    // labels (only the lane-cap one does) sets `LABEL_W` first.
+    if (key === "measureText") {
+      return (t) => (globalThis.LABEL_W ? { width: globalThis.LABEL_W(t) } : undefined);
+    }
     return () => {};
   },
   set: () => true,
@@ -283,26 +289,56 @@ def test_each_band_is_labelled_with_its_folder():
     assert drawn[-3:] == ["root", "docs/", "docs/deep/"]
 
 
-def test_a_ghost_and_a_tag_are_banded_below_every_real_folder():
-    # Neither has a folder — a ghost does not exist yet and a tag never did — so
-    # neither may be drawn in the root's row, which would claim it lives there.
+def test_a_ghost_is_banded_below_every_real_folder():
+    # A ghost has no folder — it does not exist yet — so it may not be drawn in
+    # the root's row, which would claim it lives there.
     got = _run("""
       g.setData({
         focus: null,
         nodes: TREE.nodes.concat([
-          { id: "ghost:x", kind: "ghost", label: "X", target: "X", dir: null, degree: 1 },
-          { id: "tag:t", kind: "tag", label: "#t", dir: null, degree: 1 }]),
+          { id: "ghost:x", kind: "ghost", label: "X", target: "X", dir: null, degree: 1 }]),
         edges: TREE.edges,
       });
       probe.push(snapshot());
     """)
     shot = got["probe"][0]
     ys = [y for _x, y in shot["arcs"]]
-    notes, ghost, tag = ys[:5], ys[5], ys[6]
+    notes, ghost = ys[:5], ys[5]
     assert ghost > max(notes)
-    assert tag > ghost
     names = [t for t, _x, _y in shot["texts"]]
-    assert names[-5:] == ["root", "docs/", "docs/deep/", "unresolved", "tags"]
+    assert names[-4:] == ["root", "docs/", "docs/deep/", "unresolved"]
+
+
+def test_a_band_never_grows_more_lanes_than_it_has_nodes():
+    """Long labels may not inflate a band with empty lanes.
+
+    Lane count was `ceil(total slot width / usable width)` with no cap, and a
+    band's height is `lanes * LANE_GAP` — so two very long labels asked for five
+    lanes, filled two, and the band still grew to five. Every band below it was
+    pushed down and `frameAll` zoomed the whole graph out to fit space nothing
+    was drawn in.
+    """
+    got = _run("""
+      globalThis.LABEL_W = (t) => t.length * 12;   // 60 chars ~ 720px, well over `usable`
+      const LONG = "x".repeat(60);
+      g.setData({
+        focus: null,
+        nodes: [
+          { id: "a.md", kind: "note", label: LONG + "1", dir: "", degree: 0 },
+          { id: "b.md", kind: "note", label: LONG + "2", dir: "", degree: 0 },
+          { id: "d/c.md", kind: "note", label: LONG + "3", dir: "d", degree: 0 },
+          { id: "d/e.md", kind: "note", label: LONG + "4", dir: "d", degree: 0 },
+        ],
+        edges: [],
+      });
+      probe.push(snapshot().arcs);
+    """)
+    ys = sorted(y for _x, y in got["probe"][0])
+    LANE_GAP, BAND_GAP = 40, 48
+    # Two bands of two nodes each: two lanes apiece, one BAND_GAP between them.
+    # Nodes sit half a lane in from each band's edge, so the outermost two are
+    # one lane closer together than the stack is tall.
+    assert ys[-1] - ys[0] == pytest.approx(3 * LANE_GAP + BAND_GAP)
 
 
 def test_the_first_layout_is_already_settled():

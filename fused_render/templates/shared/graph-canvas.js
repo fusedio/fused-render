@@ -119,11 +119,10 @@
       }
     }
 
-    // Keys for the two folderless bands. Leading slash so they cannot collide
-    // with a real one whatever a folder is called: these keys are vault-RELATIVE
+    // Key for the one folderless band. Leading slash so it cannot collide with
+    // a real one whatever a folder is called: these keys are vault-RELATIVE
     // directories, which never begin with a separator.
     var GHOST_BAND = "/ghost";
-    var TAG_BAND = "/tag";
     // `top`/`height` bound a band's fill; `y` centres its name. Keyed by band key.
     var bands = {
       order: [], y: Object.create(null), top: Object.create(null),
@@ -132,7 +131,6 @@
 
     function bandKeyOf(node) {
       if (node.kind === "ghost") return GHOST_BAND;
-      if (node.kind === "tag") return TAG_BAND;
       // graph.py sends `dir` outright. The id fallback is for a payload from
       // before it did — a note's id is its vault-relative path.
       if (typeof node.dir === "string") return node.dir;
@@ -142,15 +140,13 @@
 
     function bandLabelOf(key) {
       if (key === GHOST_BAND) return "unresolved";
-      if (key === TAG_BAND) return "tags";
       return key === "" ? "root" : key + "/";
     }
 
-    // [group, depth, name] — group puts the folderless bands last, depth puts
+    // [group, depth, name] — group puts the folderless band last, depth puts
     // the root first, name settles ties.
     function bandRank(key) {
       if (key === GHOST_BAND) return [2, 0, ""];
-      if (key === TAG_BAND) return [3, 0, ""];
       return [1, key === "" ? 0 : key.split("/").length, key];
     }
 
@@ -215,7 +211,13 @@
         var lanes = 1;
         var total = 0;
         for (var n = 0; n < row.length; n++) total += slotOf(row[n]);
-        lanes = Math.max(1, Math.ceil(total / usable));
+        /* Never more lanes than nodes. `ceil(total / usable)` answers "how many
+         * lanes would the slots need", which a band of two very long labels can
+         * push above its own node count — and since the band's height is
+         * `lanes * LANE_GAP`, the surplus lanes are EMPTY: the band grows,
+         * every band below it is pushed down, and frameAll zooms the whole
+         * graph out to fit space nothing is drawn in. */
+        lanes = Math.max(1, Math.min(row.length, Math.ceil(total / usable)));
         var cols = Math.ceil(row.length / lanes);
         var colW = [];
         for (n = 0; n < row.length; n++) {
@@ -498,7 +500,7 @@
         var inFocus = !near || near[node.id];
         ctx.globalAlpha = inFocus ? 1 : 0.25;
         ctx.fillStyle = node.kind === "ghost" ? ghost
-          : (node.focus || node.kind === "tag") ? accent : muted;
+          : node.focus ? accent : muted;
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius(node), 0, Math.PI * 2);
         ctx.fill();

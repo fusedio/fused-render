@@ -35,7 +35,9 @@ import re
 #
 # 2: `title` is gone from the row — a note's display name is its filename now,
 # so a frontmatter `title:` or a leading `# H1` no longer renames it.
-PARSER_VERSION = 2
+# 3: `tags` is gone from the row — the tag concept was removed (D165), so a
+# cached row still carrying it would feed tag nodes to a graph that has none.
+PARSER_VERSION = 3
 
 # What counts as a note. Both are bound to this template in registry.json.
 NOTE_SUFFIXES = (".md", ".markdown")
@@ -129,11 +131,11 @@ def _refuse_mounts(root: str) -> None:
 
 # ----------------------------------------------------------------- vault root
 
-# What marks the top of a vault. `.obsidian/` is Obsidian's own marker; the
-# other two are ours — the (still unbuilt) `.fused-graph.json` tuning file, and
-# `.git`, which is a DIRECTORY in a clone and a FILE in a worktree, so both
-# shapes are probed.
-VAULT_MARKERS = (".obsidian", ".fused-graph.json", ".git")
+# What marks the top of a vault. `.obsidian/` is Obsidian's own marker; `.git`
+# is a DIRECTORY in a clone and a FILE in a worktree, so both shapes are probed.
+# A third marker, `.fused-graph.json`, was dropped as never adopted (D165) —
+# these two cover every vault anyone actually keeps.
+VAULT_MARKERS = (".obsidian", ".git")
 
 # How far up the ascent may look. Deep enough for any real vault layout, and
 # shallow enough that a note in a deep temp path cannot drag the scan up to
@@ -244,10 +246,6 @@ _WIKILINK = re.compile(r"(?P<bang>!?)\[\[(?P<inner>[^\[\]\n]+?)\]\]")
 # `[label](target)` / `![alt](target)` with an optional "title".
 _MDLINK = re.compile(
     r"(?P<bang>!?)\[(?P<label>[^\]\n]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"\n]*\")?\)")
-# A hashtag: not preceded by a word char, `/` or another `#` (so `a#b` and the
-# second `#` of `## Heading` are out), and starting with a letter/underscore (so
-# `#1234` and a `# ` heading are out).
-_TAG = re.compile(r"(?<![\w/#])#(?P<tag>[A-Za-z_][\w/-]*)")
 _HEADING = re.compile(r"^(?P<hashes>#{1,6})[ \t]+(?P<text>.+?)[ \t]*#*[ \t]*$")
 
 # A markdown-link target that is not a path into this vault.
@@ -310,40 +308,6 @@ def _mask_code(text: str, frontmatter):
     return "\n".join(lines)
 
 
-def _parse_frontmatter(block: str) -> dict:
-    """The one frontmatter key this template reads: `tags`.
-
-    A deliberately tiny YAML subset (scalar, `[a, b]` flow list, `- a` block
-    list) rather than a parser: it is all we act on, and PyYAML is not in the
-    bundled set. It still parses every key it sees — narrowing the grammar to
-    one name would buy nothing and would make adding the next key a rewrite.
-    """
-    out = {}
-    key = None
-    for raw in block.split("\n"):
-        line = raw.rstrip()
-        if not line or line.strip() in ("---", "..."):
-            continue
-        item = re.match(r"^[ \t]*-[ \t]+(?P<value>.+)$", line)
-        if item is not None and key is not None:
-            out.setdefault(key, []).append(item.group("value").strip().strip("'\""))
-            continue
-        field = re.match(r"^(?P<key>[A-Za-z_][\w-]*)[ \t]*:[ \t]*(?P<value>.*)$", line)
-        if field is None:
-            continue
-        key = field.group("key").lower()
-        value = field.group("value").strip()
-        if not value:
-            out.setdefault(key, [])
-            continue
-        if value.startswith("[") and value.endswith("]"):
-            out[key] = [v.strip().strip("'\"") for v in value[1:-1].split(",") if v.strip()]
-        else:
-            out[key] = value.strip("'\"")
-        key = key if isinstance(out.get(key), list) else None
-    return out
-
-
 def _wikilink(match) -> dict:
     inner = match.group("inner")
     target, _, label = inner.partition("|")
@@ -378,8 +342,8 @@ def _mdlink(match):
 def parse_note(text: str) -> dict:
     """Everything one note contributes to the graph, from its source alone.
 
-    Returns `{"headings", "tags", "links"}`. `links` carries the RAW authored
-    target (MD-6) in document order.
+    Returns `{"headings", "links"}`. `links` carries the RAW authored target
+    (MD-6) in document order.
 
     No `title`: a note is named by its FILE, which parse_note cannot see and
     deliberately does not try to override. A frontmatter `title:` and a leading
@@ -392,7 +356,6 @@ def parse_note(text: str) -> dict:
     """
     frontmatter = _frontmatter_span(text)
     body = _mask_code(text, frontmatter)
-    meta = _parse_frontmatter(text[frontmatter[0]:frontmatter[1]]) if frontmatter else {}
 
     links = [_wikilink(m) for m in _WIKILINK.finditer(body)]
     # A wikilink is not an md-link, but `![[x]]`'s trailing `]]` cannot be
@@ -409,19 +372,6 @@ def parse_note(text: str) -> dict:
     for link in links:
         link.pop("offset")
 
-    tags = []
-    for match in _TAG.finditer(body):
-        tag = match.group("tag").rstrip("/")
-        if tag and tag not in tags:
-            tags.append(tag)
-    front_tags = meta.get("tags") or meta.get("tag") or []
-    if isinstance(front_tags, str):
-        front_tags = [t.strip() for t in front_tags.split(",")]
-    for tag in front_tags:
-        tag = str(tag).lstrip("#").rstrip("/").strip()
-        if tag and tag not in tags:
-            tags.append(tag)
-
     headings = []
     for line in body.split("\n"):
         match = _HEADING.match(line)
@@ -431,7 +381,6 @@ def parse_note(text: str) -> dict:
 
     return {
         "headings": headings,
-        "tags": tags,
         "links": links,
     }
 
@@ -974,7 +923,6 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
         "rel": rel,
         "title": _display_title(rel),
         "headings": row["headings"],
-        "tags": row["tags"],
         "links": links,
         "backlinks": backlinks,
         "notes": len(notes),
@@ -1001,7 +949,7 @@ def _link_form(rel: str, paths, index) -> str:
 
 
 def _candidates_payload(root: str, scan: dict) -> dict:
-    """Everything the `[[`, `[[note#` and `#tag` popups offer (MD-14).
+    """Everything the `[[` and `[[note#` popups offer (MD-14).
 
     Comes off the same scan the graph reads, so the popup is free once the walk
     has happened and can never suggest a note the graph does not know about.
@@ -1009,11 +957,9 @@ def _candidates_payload(root: str, scan: dict) -> dict:
     notes = scan["notes"]
     paths = list(notes)
     index = _candidate_index(paths)
-    tags = set()
     rows = []
     for rel in sorted(notes):
         row = notes[rel]
-        tags.update(row["tags"])
         rows.append({
             "rel": rel,
             "path": _client_join(root, rel),
@@ -1025,7 +971,6 @@ def _candidates_payload(root: str, scan: dict) -> dict:
         "error": None,
         "root": _client_path(root),
         "notes": rows,
-        "tags": sorted(tags),
         "assets": scan["assets"],
         "truncated": scan["truncated"],
         "parser_version": PARSER_VERSION,
@@ -1100,12 +1045,6 @@ def _graph_nodes_and_edges(root: str, scan: dict):
                 add(rel, target, "embed" if link["embed"] else "link")
             # else: the target is an asset (a picture), which is not a note and
             # would otherwise dominate a vault full of screenshots.
-        for tag in row["tags"]:
-            node = "tag:" + tag
-            nodes.setdefault(node, {
-                "id": node, "kind": "tag", "label": "#" + tag,
-                "dir": None, "path": None, "degree": 0})
-            add(rel, node, "tag")
 
     return nodes, edges
 

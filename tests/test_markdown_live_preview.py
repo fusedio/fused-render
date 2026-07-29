@@ -58,12 +58,12 @@ Some **bold** and *ital* and ~~strike~~ and `inline` text.
 
 ![alt](./img.png) and [lbl](../CONTRIBUTING.md#Install) and [ext](https://x.com)
 
-A [[Wiki Link|label]], a ![[embed.png]], a [[Ghost]] and a #tag here.
+A [[Wiki Link|label]], a ![[embed.png]] and a [[Ghost]] here.
 
 Back up to [[#Heading one]] in this same note.
 
 ```python
-x = "[[not a link]] #nottag"
+x = "[[not a link]]"
 ```
 """
 
@@ -183,7 +183,6 @@ def test_wikilinks_embeds_and_ghosts_all_render(note_file):
     assert at(plain, "[[Wiki Link|label]]", "widget")
     assert at(plain, "![[embed.png]]", "widget")
     assert at(plain, "[[Ghost]]", "widget")
-    assert at(plain, "#tag", "widget")
 
 
 def test_links_images_tables_rules_and_tasks_all_render(note_file):
@@ -311,7 +310,6 @@ def test_a_fenced_block_is_never_a_link_or_a_tag(note_file):
     # MD-3's code-masking rule, holding on this side too: graph.py would not
     # call these edges, so the page must not draw them.
     assert not at(plain, "[[not a link]]")
-    assert not at(plain, "#nottag")
     # The fence itself is styled as code, and keeps its own markers visible.
     assert [d for d in plain if d["cls"] == "lp-fence-line"]
     assert not at(plain, "```", "hide")
@@ -328,12 +326,17 @@ def test_frontmatter_is_dimmed_and_never_a_rule_or_a_heading(note_file):
     assert len(fm) == 4, fm  # ---, title, tags, ---
 
 
-def test_a_bare_url_fragment_is_not_a_tag(tmp_path):
+def test_a_hashtag_is_left_as_prose(tmp_path):
+    """The tag concept is gone (D165): a `#word` mid-line is text, not a chip.
+
+    The link decoration next to it still renders, so this is the absence of the
+    tag pass rather than the absence of the whole decoration set.
+    """
     path = tmp_path / "u.md"
     # The caret must sit on a different line from the content, or the reveal
     # rule correctly un-renders everything and the test proves nothing.
     path.write_text("top\n\nSee [docs](https://x.com/a#section) and #real\n",
                     encoding="utf-8")
     plain = decorate(str(path), caret=0)
-    assert at(plain, "#real", "widget"), "the sanity half: a real tag renders"
-    assert not at(plain, "#section")
+    assert at(plain, "[docs](https://x.com/a#section)", "widget")
+    assert not at(plain, "#real")

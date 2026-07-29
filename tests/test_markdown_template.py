@@ -208,13 +208,12 @@ def test_read_only_comes_from_stat_writable_not_os_access(source):
 
 
 def test_the_link_layer_asks_the_grammar_what_a_range_is(source):
-    # Wikilinks and tags are not in the markdown grammar, so they are matched by
-    # regex — but whether a match COUNTS is answered by the tree, not by a
-    # second block parser. That is what keeps graph.py's code-masking rule
-    # (MD-3) from having a rival implementation in JS.
+    # Wikilinks are not in the markdown grammar, so they are matched by regex —
+    # but whether a match COUNTS is answered by the tree, not by a second block
+    # parser. That is what keeps graph.py's code-masking rule (MD-3) from having
+    # a rival implementation in JS.
     assert "CM.syntaxTree(state)" in source
     assert "within(tree, start + 2, CODE_NODES)" in source
-    assert "within(tree, start + 1, URL_NODES)" in source
     # And the guard must not list Link/Image: the grammar wraps `[[Wiki]]`'s
     # inner brackets in a Link node, so doing so hides every wikilink. The
     # behavioural half of this is in test_markdown_live_preview.py.
@@ -490,12 +489,11 @@ def test_pasting_a_url_over_a_selection_makes_a_link(source):
     assert "`[${selected}](${url})`" in body
 
 
-def test_the_popup_offers_notes_headings_and_tags_from_the_same_scan(source):
+def test_the_popup_offers_notes_and_headings_from_the_same_scan(source):
     body = source[source.index("async function markdownCompletions"):]
     body = body[:body.index("\n    function editorExtensions")]
     assert "/\\[\\[([^\\[\\]\\n]*)$/" in body      # `[[` and `![[`
     assert "headingOptions(headings, notePart)" in body
-    assert "data.tags.map" in body
     assert 'action: "candidates"' in source
 
 
@@ -539,7 +537,7 @@ def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
 
 
 def test_the_graph_count_compares_notes_with_notes(source):
-    """`total_notes` counts notes; `nodes` also holds tag and ghost nodes.
+    """`total_notes` counts notes; `nodes` also holds ghost nodes.
 
     Comparing the two read "221 of 205 notes" once the `all` depth existed, and
     was quietly wrong at every depth before that. The count has to filter by
