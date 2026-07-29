@@ -166,7 +166,7 @@ const { text, model, usage } = await fused.ai(prompt, {
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
-  an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
+  an unexpected shape), or `"timeout"` (no answer within 600 s). `opts.effort`
   (`"low" | "medium" | "high" | "xhigh"`, **default `low`**): `low` — and an
   omitted effort — means **no extended thinking**, enforced with a thinking-budget
   clamp that works on every model; `medium`/`high`/`xhigh` pass through to

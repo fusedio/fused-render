@@ -867,7 +867,7 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
-_AI_TIMEOUT_S = 120.0
+_AI_TIMEOUT_S = 600.0
 # A reconfiguration step (/clear, set_model, effort) is local work; one that
 # takes longer than this means a wedged process — kill and respawn.
 _AI_CTRL_TIMEOUT_S = 10.0
