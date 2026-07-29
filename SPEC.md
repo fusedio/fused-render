@@ -133,8 +133,8 @@ fused.env
 const { text, model, usage } = await fused.ai(prompt, {
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
-  effort,                     // optional "low" | "medium" | "high" — max_tokens shorthand
-  maxTokens,                  // optional explicit max_tokens override
+  effort,                     // optional "low" | "medium" | "high" | "xhigh" (default low: no thinking)
+  onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
 ```
 
@@ -166,10 +166,27 @@ const { text, model, usage } = await fused.ai(prompt, {
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
-  an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
-  (`"low" | "medium" | "high"`) is a max-output-tokens shorthand (1024/4096/16384,
-  default medium); `opts.maxTokens` overrides it. Calls run fully concurrent — no
-  latest-wins channel (an AI call is never a slider scrub). No streaming (MVP).
+  an unexpected shape), or `"timeout"` (no answer within 600 s). `opts.effort`
+  (`"low" | "medium" | "high" | "xhigh"`, **default `low`**): `low` — and an
+  omitted effort — means **no extended thinking**, enforced with a thinking-budget
+  clamp that works on every model; `medium`/`high`/`xhigh` pass through to
+  **Claude Code's own effort semantics** (the same setting as the interactive
+  `/effort` command) — effort-capable models (sonnet/opus class) honor it, while
+  haiku (the default model) ignores effortLevel, which is exactly why the low
+  path uses the budget clamp instead. Calls are accepted concurrently but
+  **serialized** through one shared CLI process — a second simultaneous call
+  waits for the first (a local single-user app; calls complete in seconds). No
+  latest-wins channel (an AI call is never a slider scrub).
+  **Streaming**: `opts.onChunk(text)` fires per text delta as the model produces it
+  (the server relays `{"stream": true}` NDJSON chunks); the promise still resolves
+  with the same `{text, model, usage}` at the end, so streaming only changes when
+  the text arrives, not what the call returns. Errors after the first chunk reject
+  the promise with the same `.type` values. **Warm process** (D168/D169): the
+  server keeps ONE persistent claude CLI process and resets it between calls
+  (`/clear` wipes the conversation; model/system-prompt swaps ride a control
+  request) — its ~2s Node startup is paid once, so every call is warm, and each
+  call still sees an empty context: the reset is what carries the isolation the
+  old process-per-call design bought.
   **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
   page that calls it (§18.2) — gate with `fused.env === "local"` instead.
 

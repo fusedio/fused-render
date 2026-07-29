@@ -208,7 +208,7 @@ jobs:
   # job, CI had never run it: no job installed the `[fused]` extra, so every
   # engine.available()-gated test skipped and the green matrix said nothing
   # about it — the param-binding divergence and the missing script-venv
-  # dependencies fixed in D167/D168 would all have been caught here.
+  # dependencies fixed in D167/D170 would all have been caught here.
   #
   # A separate job rather than adding the extra to the matrix above, for two
   # reasons: the matrix must keep exercising the *built-in* engine (still the

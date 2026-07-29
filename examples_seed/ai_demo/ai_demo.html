@@ -192,6 +192,9 @@
       answer.classList.remove("error");
       answer.textContent = "Thinking…";
       meta.textContent = "";
+      // onChunk streams the answer in as it is written — "Thinking…" stands
+      // until the first delta lands, then the text takes over.
+      let acc = "";
       try {
         const res = await fused.ai(
           "Data (JSON):\n" + dataContext() + "\n\nQuestion: " + question,
@@ -201,6 +204,7 @@
               "no outside knowledge, no speculation beyond what the numbers show. " +
               "Be concrete: cite figures. A few sentences at most.",
             effort: "low",
+            onChunk: (text) => { acc += text; answer.textContent = acc; },
           }
         );
         answer.textContent = res.text;
