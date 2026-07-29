@@ -473,6 +473,36 @@ def _clean_error(error_text: str, script_path: str) -> str:
         return error_text
 
 
+def _needs_install_dict(requirements: list[str], abs_path: str) -> dict:
+    """The pre-flight answer for a header whose venv isn't built yet (PY-18).
+
+    Carries `needs_install` for the loader AND a populated `error` object, so a
+    client that knows nothing about the loader (an older page, a direct API
+    caller, the Calls log) still shows a real message naming the packages rather
+    than an undefined field.
+    """
+    from fused_render import envinstall
+
+    return {
+        "ok": False,
+        "needs_install": {
+            "key": envinstall.venv_key_for(requirements),
+            "requirements": requirements,
+            "py": abs_path,
+        },
+        "error": {
+            "type": "EnvNotInstalled",
+            "message": (
+                f"{os.path.basename(abs_path)} declares dependencies that are not "
+                f"installed yet: {', '.join(requirements)}. They need a one-time "
+                "download."
+            ),
+            "traceback": "",
+        },
+        "stdout": "",
+    }
+
+
 def _error_dict(err_type: str, message: str, tb: str = "") -> dict:
     # The built-in executor's wire shape, so all failures render uniformly.
     return {
@@ -523,6 +553,17 @@ async def run_python(path: str, params: dict) -> dict:
     # `requirements` are mutually exclusive upstream (the interpreter branch
     # ignores requirements silently), so they are never both set here.
     interpreter = app_interpreter() if not requirements else None
+
+    # Pre-flight (PY-18): a header whose venv does not exist yet needs a real
+    # download, which does not fit runPython's ~30s budget. Answer instead of
+    # blocking — the page shows the install loader, POSTs /api/env/install and
+    # retries. Only when there IS something to install: an existing venv runs
+    # straight through, so the normal case pays one marker stat.
+    if requirements:
+        from fused_render import envinstall
+
+        if not envinstall.is_installed(requirements):
+            return _needs_install_dict(requirements, abs_path=os.path.abspath(path))
 
     abs_path = os.path.abspath(path)
     try:

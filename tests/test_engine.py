@@ -594,6 +594,9 @@ def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
     )
     backend = _FakeBackend(_FakeResult(return_value="1"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    # Past the install-loader pre-flight (PY-18), which would otherwise answer
+    # `needs_install` for these two: this test is about what reaches the backend.
+    monkeypatch.setattr("fused_render.envinstall.is_installed", lambda reqs: True)
     asyncio.run(engine.run_python(str(target), {}))
     call = backend.calls[0]
     assert call["via"] == "execute"

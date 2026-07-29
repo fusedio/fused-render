@@ -4851,6 +4851,85 @@ def create_app(start_dir: str) -> FastAPI:
         # bytes are identical to JSONResponse's for every other result.
         return Response(content=dumps_result(result), media_type="application/json")
 
+    # --- the script-venv install loader (PY-18 / D173) -----------------------
+    #
+    # /api/run's pre-flight answers `needs_install` for a script whose PEP 723
+    # header names packages that are not installed yet, instead of blocking on a
+    # download that cannot fit runPython's ~30s budget. These three endpoints are
+    # what the page shell's loader then drives: start it, watch it, stop it.
+    #
+    # Requirements are always re-derived from the .py on disk here, never taken
+    # from the request: the key the loader fills has to be the key the run then
+    # looks for, and one source for both is the only way that stays true.
+
+    def _requirements_for(body: dict):
+        """(requirements, error_response) for a {py, html} body, or (None, resp)."""
+        py, html = body.get("py"), body.get("html")
+        if not py:
+            return None, _error("request body must include 'py': a path to a Python file")
+        if os.path.isabs(py):
+            resolved = py
+        elif html:
+            resolved = os.path.normpath(os.path.join(os.path.dirname(html), py))
+        else:
+            return None, _error(
+                "'py' is a relative path but 'html' was not provided; "
+                "either send an absolute 'py' path or include 'html' so it can be resolved"
+            )
+        if not os.path.isfile(resolved):
+            return None, _error(f"no such Python file: {resolved}")
+        from fused_render import engine as _engine
+
+        try:
+            with open(resolved, "r", encoding="utf-8") as f:
+                reqs = _engine.script_requirements(f.read())
+        except (OSError, ValueError) as e:
+            return None, _error(str(e))
+        return sorted(set(reqs)), None
+
+    @app.post("/api/env/install")
+    def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+        reqs, err = _requirements_for(body)
+        if err is not None:
+            return err
+        if not reqs:
+            return _error(
+                f"{os.path.basename(body.get('py', ''))} declares no `# /// script` "
+                "dependencies, so there is nothing to install — it runs on this "
+                "app's own interpreter"
+            )
+        from fused_render import envinstall
+
+        record = envinstall.start(reqs)
+        return JSONResponse({"ok": True, "key": envinstall.venv_key_for(reqs),
+                             "requirements": reqs, "progress": record})
+
+    @app.get("/api/env/progress")
+    def api_env_progress(key: str, x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+        from fused_render import envinstall
+
+        return JSONResponse({"ok": True, "key": key, "progress": envinstall.progress(key)})
+
+    @app.post("/api/env/cancel")
+    def api_env_cancel(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+        key = body.get("key")
+        if not isinstance(key, str) or not key:
+            return _error("request body must include 'key': the install to cancel")
+        from fused_render import envinstall
+
+        killed = envinstall.cancel(key)
+        return JSONResponse({"ok": True, "key": key, "cancelled": killed,
+                             "progress": envinstall.progress(key)})
+
     @app.post("/api/ai")
     async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
         # fused.ai() — validation and the claude CLI hop live in _ai_relay
