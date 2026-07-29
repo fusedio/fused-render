@@ -1,14 +1,8 @@
-# /// script
-# dependencies = ["rasterio"]
-# ///
-# rasterio is declared here even though only the /rmeta and /rtile handlers
-# import it (function-level, unguarded): the daemon is spawned with
-# `sys.executable`, so under the fused engine it runs in *this script's* venv —
-# whatever isn't in that venv or in engine.DEFAULT_REQUIREMENTS simply is not
-# there, and a raster tile request would 500 on ImportError. Everything else
-# the daemon uses (duckdb, geopandas → pyogrio, pandas, numpy, pillow) is in
-# DEFAULT_REQUIREMENTS; rasterio is not, because only the raster templates
-# need it (SPEC DM-2 — the [bundled] extra ships it for the packaged app).
+# No `# /// script` header here on purpose: this file is not a runPython
+# entrypoint (map_render.py imports it, calls main("ensure"), and spawns the
+# daemon with sys.executable into its own venv), and the engine only ever reads
+# the header of the file it is handed. The rasterio the /rmeta and /rtile
+# handlers need is therefore declared on map_render.py — see the note there.
 """Warm DuckDB-backed vector tile daemon for the map template.
 
 Each fused-render runPython call is a fresh subprocess (~700ms), too slow for

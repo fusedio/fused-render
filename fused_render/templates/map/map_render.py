@@ -1,3 +1,17 @@
+# /// script
+# dependencies = ["rasterio"]
+# ///
+# rasterio is declared *here*, on the runPython entrypoint, even though nothing
+# in this file imports it: the engine reads the PEP 723 header of the file it is
+# handed and of no other, so this is the only place a declaration has any
+# effect. It is needed by vector_tile_server.py's /rmeta and /rtile handlers
+# (unguarded, function-level `import rasterio`) — that module is imported here
+# and its daemon is spawned with `sys.executable`, i.e. into this script's venv.
+# A header on vector_tile_server.py itself would be inert, which is exactly the
+# mistake tests/test_engine_requirements.py now catches. Everything else the
+# daemon uses (duckdb, geopandas → pyogrio, pandas, numpy, pillow) is in
+# engine.DEFAULT_REQUIREMENTS; rasterio is not, because only the raster
+# templates need it (SPEC DM-2 — the [bundled] extra ships it for the app).
 """runPython target for the map template: classify a geospatial file into a
 map-layer descriptor (see geo_classify.py).
 

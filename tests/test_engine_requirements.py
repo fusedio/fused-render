@@ -15,6 +15,7 @@ guarded import degrades, an unguarded one 500s a tile request), never a
 startup error anyone would notice.
 """
 import ast
+import functools
 import os
 import re
 
@@ -43,9 +44,9 @@ _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 # venv — the header mechanism exists for this, and it keeps the shared venv
 # (built on first run, per requirement set) small.
 BUNDLED_NOT_DEFAULT = {
-    # Declared by the template that needs them (see their `# /// script`
-    # headers): slides/{engine,slides}.py, excel/reader.py, usd/reader.py,
-    # {geotiff/tile_server,map/vector_tile_server}.py,
+    # Declared by the *entrypoint* of the template that needs them (see their
+    # `# /// script` headers): slides/{engine,slides}.py, excel/reader.py,
+    # usd/reader.py, geotiff/tile_server.py, map/map_render.py,
     # {netcdf/grid_tile_server,zarr_aoi/tile_server}.py, pdf_studio/pdf.py,
     # log_studio/reader.py.
     "python-pptx",
@@ -101,15 +102,13 @@ _IMPORT_TO_DIST = {
     "botocore": "botocore",
 }
 
-# Files that are not entry points: they run inside a venv that another file's
-# header defined, because that file spawns them with `sys.executable` (which
-# under this engine *is* the script venv's python — the child inherits the
-# whole venv). Their deps therefore have to be declared over there.
-INHERITS_VENV_FROM = {
-    # usd/reader.py spawns convert_worker.py detached; its header carries
-    # numpy + msgpack for both. (pxr is fetched on demand — D119.)
-    os.path.join("usd", "convert_worker.py"): os.path.join("usd", "reader.py"),
-}
+# NOTE: there is deliberately no hand-maintained "this file inherits that
+# file's venv" table here. The first version of this test had one, listing a
+# single pair — and it promptly greenlit a `rasterio` header placed on
+# `map/vector_tile_server.py`, a file the engine never passes to run_python
+# (map_render.py imports it and calls its main()), so the header was inert and
+# the gap it was meant to close stayed open. The relationships are derived from
+# the source instead — see _invoked_by / _venv_roots.
 
 
 def _pyproject() -> dict:
@@ -157,6 +156,102 @@ def _template_files() -> list[str]:
     return sorted(out)
 
 
+def _module_refs(text: str) -> tuple[set[str], list[str]]:
+    """(top-level names this file imports, string literals it contains).
+
+    The second half is how a *spawn* is spotted: usd/reader.py doesn't import
+    convert_worker, it builds a path to "convert_worker.py" and hands it to
+    subprocess. Docstrings are excluded — a module docstring that merely
+    mentions a sibling ("served by a warm daemon (vector_tile_server.py)") is
+    prose, not an invocation, and counting it would invent invokers.
+    """
+    tree = ast.parse(text)
+    docstrings = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (
+            isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            docstrings.add(id(body[0].value))
+
+    mods, literals = set(), []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            mods.add(node.module.split(".")[0])
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
+            literals.append(node.value)
+    return mods, literals
+
+
+@functools.lru_cache(maxsize=1)
+def _template_graph() -> dict:
+    """Per-file header deps, imported distributions, and in-template invokers.
+
+    Built once for the whole module (the parametrized test would otherwise
+    re-parse every template file once per case).
+    """
+    files = _template_files()
+    texts = {}
+    for relpath in files:
+        with open(os.path.join(_TEMPLATES, relpath), encoding="utf-8") as f:
+            texts[relpath] = f.read()
+
+    refs = {r: _module_refs(t) for r, t in texts.items()}
+    invoked_by = {r: set() for r in files}
+    for relpath in files:
+        directory = os.path.dirname(relpath)
+        basename = os.path.basename(relpath)
+        modname = basename[: -len(".py")]
+        for other in files:
+            if other == relpath or os.path.dirname(other) != directory:
+                continue
+            mods, literals = refs[other]
+            # Two ways one template file puts another one on an interpreter:
+            # importing it as a sibling module, or naming its file to spawn it.
+            if modname in mods or any(basename in lit for lit in literals):
+                invoked_by[relpath].add(other)
+
+    return {
+        "files": files,
+        "header": {r: _header_deps(t) for r, t in texts.items()},
+        "imports": {r: _imported_dists(t) for r, t in texts.items()},
+        "invoked_by": invoked_by,
+    }
+
+
+def _venv_roots(relpath: str, graph: dict, _seen: frozenset = frozenset()) -> set[str]:
+    """The files whose PEP 723 header can decide the venv `relpath` runs in.
+
+    `engine.run_python` reads the header of the file it is *given* and of no
+    other, so a helper module or a spawned daemon runs under whatever its
+    caller declared. Walking `invoked_by` up to the callers that nothing else
+    invokes gives the set of entry points that can end up executing this file;
+    each of them has to cover it, since any of them may be the one that runs.
+
+    A file with a header of its own also counts as a root: a header is how a
+    file claims to be an entry point, so it is held to covering its own
+    imports too (that is the direct-invocation path).
+    """
+    if relpath in _seen:  # cyclic sibling imports: stop, don't recurse forever
+        return set()
+    seen = _seen | {relpath}
+    invokers = graph["invoked_by"][relpath]
+    roots = {relpath} if graph["header"][relpath] or not invokers else set()
+    for invoker in invokers:
+        roots |= _venv_roots(invoker, graph, seen)
+    return roots or {relpath}
+
+
 def test_default_requirements_relationship_to_pyproject():
     """DEFAULT_REQUIREMENTS vs `[bundled]` vs core `dependencies` — exactly.
 
@@ -183,24 +278,23 @@ def test_default_requirements_relationship_to_pyproject():
 def test_bundled_imports_are_reachable_under_the_fused_engine(relpath):
     """Every `[bundled]` distribution a template imports must be in the venv.
 
-    Covered by: DEFAULT_REQUIREMENTS (installed into every script venv), the
-    file's own PEP 723 header, or — for a worker/daemon — the header of the
-    file that spawns it. Anything else works only on the packaged app's
-    interpreter and silently stops working under the fused engine.
+    Checked against *every* entry point that can execute this file (see
+    _venv_roots), not against the file's own header: the engine reads the
+    header of the file it is handed and nothing else, so declaring a dependency
+    on a helper module or a spawned daemon has no effect at all — the classic
+    way this gap hides. What isn't covered works on the packaged app's
+    interpreter (which has all of `[bundled]`) and silently stops working here.
     """
-    path = os.path.join(_TEMPLATES, relpath)
-    with open(path, encoding="utf-8") as f:
-        text = f.read()
+    graph = _template_graph()
+    needed = graph["imports"][relpath]
+    defaults = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS}
 
-    covered = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS} | _header_deps(text)
-    parent = INHERITS_VENV_FROM.get(relpath)
-    if parent:
-        with open(os.path.join(_TEMPLATES, parent), encoding="utf-8") as f:
-            covered |= _header_deps(f.read())
-
-    missing = sorted(_imported_dists(text) - covered)
-    assert not missing, (
-        f"{relpath} imports {missing}, which its script venv would not contain. "
-        "Declare them in its `# /// script` header (preferred, if the template "
-        "is the only user), or add them to engine.DEFAULT_REQUIREMENTS."
-    )
+    for root in sorted(_venv_roots(relpath, graph)):
+        missing = sorted(needed - (defaults | graph["header"][root]))
+        assert not missing, (
+            f"{relpath} imports {missing}, which its script venv would not "
+            f"contain when it runs via {root}. Declare them in {root}'s "
+            "`# /// script` header (preferred, if that template is the only "
+            "user) — a header on a non-entrypoint file is never read — or add "
+            "them to engine.DEFAULT_REQUIREMENTS."
+        )
