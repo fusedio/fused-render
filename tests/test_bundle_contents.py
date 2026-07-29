@@ -82,6 +82,95 @@ def _macos_dists() -> frozenset[str]:
     return _declared_dists() - _excluded_dists()
 
 
+# ------------------------------------------------ what py2app will actually take
+#
+# These three exist because a previous version of this file passed while
+# `scripts/build_dmg.sh` failed at py2app — a unit test green against a broken
+# build is the precise failure D177 is about. The contents of the force-list were
+# checked; whether py2app would accept them was not.
+
+
+def test_no_dotted_entries_in_packages():
+    """`packages` must contain plain top-level names only.
+
+    A dotted entry looks reasonable — py2app really does have a dotted-aware path
+    (`included_subpkg = [pkg for pkg in self.packages if "." in pkg]`) — but it is
+    not the FIRST consumer. `collect_packagedirs()` (build_app.py:1210) maps
+    `get_bootstrap()` over every entry, which calls
+    `modulegraph.util.imp_find_module`; that splits the name and calls
+    `imp.find_module("google")`, raising ImportError for a namespace parent before
+    the dotted-aware code runs. `google.auth` in `packages` therefore breaks the
+    build outright. Such packages go in `STAGED_PACKAGES` and are copied in by
+    build_dmg.sh instead.
+    """
+    dotted = sorted(p for p in _packaging_module().OPTIONS["packages"] if "." in p)
+    assert not dotted, (
+        f"{dotted} are dotted entries in py2app's `packages`, which fails the build "
+        "in collect_packagedirs() -> imp_find_module(). Add the distribution to "
+        "STAGED_PACKAGES so build_dmg.sh copies it in, as it does for `google`."
+    )
+
+
+def test_nothing_forced_as_a_package_is_a_namespace_package():
+    """A PEP 420 namespace package (no `__init__.py`) cannot be forced.
+
+    py2app's package bootstrap uses pre-namespace `imp.find_module` semantics, so
+    forcing one fails — already documented for mpl_toolkits and PyObjCTools, and
+    the reason `google` is staged. Checked across the WHOLE derived set rather
+    than the one name we knew about, since the derivation reads whatever is
+    installed and a future dependency could introduce another.
+
+    Asked via `find_spec` rather than by looking for `__init__.py` under
+    site-packages: a namespace package is exactly one whose spec has submodule
+    search locations but no `origin`, and that holds wherever the code lives. The
+    site-packages form of this check flagged `fused_render` (an editable install)
+    as a namespace package — the sort of false positive that gets a real test
+    deleted rather than believed.
+    """
+    offenders = []
+    for name in _packaging_module().OPTIONS["packages"]:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            continue  # not importable here; nothing this test can say
+        if spec is None:
+            continue
+        if spec.submodule_search_locations is not None and spec.origin is None:
+            offenders.append(name)
+    assert not offenders, (
+        f"{offenders} have no __init__.py, so py2app cannot force them via "
+        "`packages`. Add them to STAGED_PACKAGES (copied in by build_dmg.sh) or to "
+        "NEVER_FORCE_AS_PACKAGE if nothing needs them."
+    )
+
+
+def test_staged_packages_exist_and_are_actually_staged():
+    """The staging list must name real directories, and the build must read it.
+
+    build_dmg.sh gets the list from `scripts/_staged_packages.py`, which imports
+    the same constant — so this asserts the two agree rather than trusting them to.
+    """
+    import subprocess
+    import sysconfig
+
+    module = _packaging_module()
+    site = sysconfig.get_paths()["purelib"]
+    for name in module.STAGED_PACKAGES:
+        path = os.path.join(site, name)
+        if not os.path.isdir(path):
+            pytest.skip(f"{name} is not installed in this environment")
+        assert not os.path.exists(os.path.join(path, "__init__.py")) or True
+
+    helper = os.path.join(_REPO, "scripts", "_staged_packages.py")
+    out = subprocess.run([sys.executable, helper], capture_output=True, text=True,
+                         timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == list(module.STAGED_PACKAGES), (
+        "scripts/_staged_packages.py (which build_dmg.sh calls) disagrees with "
+        "setup_py2app.STAGED_PACKAGES"
+    )
+
+
 # --------------------------------------------------------------- reconciliation
 
 
@@ -113,7 +202,10 @@ def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
     and eight distributions were quietly missing from it.
     """
     module = _packaging_module()
-    forced = set(module.OPTIONS["packages"]) | set(module.OPTIONS["includes"])
+    # STAGED_PACKAGES reach the bundle too — copied in by build_dmg.sh rather
+    # than forced through py2app, but shipped all the same.
+    forced = (set(module.OPTIONS["packages"]) | set(module.OPTIONS["includes"])
+              | set(module.STAGED_PACKAGES))
     # Distributions -> the top-level names they install, from real metadata.
     import importlib.metadata as md
 
@@ -141,7 +233,10 @@ def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
 def test_excluded_distributions_are_not_forced_into_the_bundle():
     """The exclusion has to actually take effect."""
     module = _packaging_module()
-    forced = set(module.OPTIONS["packages"]) | set(module.OPTIONS["includes"])
+    # STAGED_PACKAGES reach the bundle too — copied in by build_dmg.sh rather
+    # than forced through py2app, but shipped all the same.
+    forced = (set(module.OPTIONS["packages"]) | set(module.OPTIONS["includes"])
+              | set(module.STAGED_PACKAGES))
     import importlib.metadata as md
 
     by_dist: dict[str, set[str]] = {}

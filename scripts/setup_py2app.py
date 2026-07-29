@@ -111,12 +111,29 @@ NEVER_FORCE_AS_PACKAGE = {"mpl_toolkits", "PyObjCTools", "google", "__pycache__"
 # explicit `includes` list, and the derivation must not also force it.
 ALREADY_IN_INCLUDES = {"_duckdb", "_cffi_backend"}
 
-# google-auth's importable subpackages. Explicit because the parent is a
-# namespace package and the server's imports of it are lazy/in-function
-# (shell/gcssign.py), so modulegraph cannot trace them. `[bundled]`'s own
-# comment is the authority for shipping it at all: the cloud-auth chain was
-# folded into the bundled app precisely because "DMG users cannot pip install".
-GOOGLE_AUTH_SUBPACKAGES = ["google.auth", "google.oauth2"]
+# Packages copied into the bundle by build_dmg.sh AFTER py2app runs, instead of
+# being forced through `packages`.
+#
+# `google` (google-auth) is here because py2app cannot carry it either way:
+#   * as `"google"` it is a PEP 420 namespace package with no `__init__.py`, and
+#     py2app's package bootstrap cannot resolve those — the limitation already
+#     documented for mpl_toolkits and PyObjCTools below;
+#   * as `"google.auth"`/`"google.oauth2"` the build dies outright.
+#     `collect_packagedirs()` (build_app.py:1210) maps `get_bootstrap()` over
+#     EVERY entry of `self.packages`, dotted included, and that calls
+#     `modulegraph.util.imp_find_module`, which splits the name and calls
+#     `imp.find_module("google")` — ImportError, before py2app's own
+#     dotted-aware `included_subpkg` path is ever reached. Tried; it fails the
+#     build. `tests/test_bundle_contents.py` now rejects dotted entries so this
+#     cannot be reintroduced by a unit test that passes while the build breaks.
+#
+# Staging it explicitly is the same pattern as rclone and uv (steps 4d/4d-bis):
+# a plain copy, no modulegraph involvement, and the namespace parent comes along
+# by construction. `[bundled]`'s own comment is the authority for shipping it at
+# all — the cloud-auth chain was folded into the bundled app precisely because
+# "DMG users cannot pip install". Its dependencies (pyasn1, pyasn1-modules,
+# cryptography) are ordinary packages and stay in the derived list.
+STAGED_PACKAGES = ["google"]
 
 
 def _norm_dist(name):
@@ -226,7 +243,9 @@ def bundled_force_lists():
             else:
                 # Bare module or C extension: `includes`, never `packages`.
                 includes.add(import_name)
-    packages.update(GOOGLE_AUTH_SUBPACKAGES)
+    # STAGED_PACKAGES are deliberately NOT added here: py2app cannot carry them
+    # (see the constant), so build_dmg.sh copies them in afterwards.
+    packages.difference_update(STAGED_PACKAGES)
     return sorted(packages), sorted(includes)
 
 

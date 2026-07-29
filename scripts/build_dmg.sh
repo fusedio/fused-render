@@ -346,6 +346,47 @@ echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
 
 echo "==> bundle sanity: Mach-O-as-.py check"
 APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+
+# ---------------------------------------------------------------------------
+# 4a-bis. Stage the packages py2app cannot carry (setup_py2app.STAGED_PACKAGES).
+#     Today that is `google` (google-auth): a PEP 420 namespace package, which
+#     py2app's package bootstrap cannot resolve, and naming its subpackages
+#     dotted instead FAILS THE BUILD - collect_packagedirs() (build_app.py:1210)
+#     maps get_bootstrap() over every `packages` entry and
+#     modulegraph.util.imp_find_module then calls imp.find_module("google"),
+#     which raises. So it is copied straight in, the same explicit staging that
+#     rclone and uv get below. The list is read from setup_py2app.py so there is
+#     exactly one declaration of it.
+# ---------------------------------------------------------------------------
+
+STAGED_PACKAGES="$("$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_staged_packages.py")"
+if [[ -n "$STAGED_PACKAGES" ]]; then
+  BUILD_SITE="$("$BUILD_VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  for pkg in $STAGED_PACKAGES; do
+    SRC="$BUILD_SITE/$pkg"
+    if [[ ! -d "$SRC" ]]; then
+      echo "FATAL: staged package '$pkg' not found at $SRC" >&2
+      exit 1
+    fi
+    echo "==> staging package $pkg into the bundle"
+    rm -rf "$APP_PYLIB/$pkg"
+    cp -R "$SRC" "$APP_PYLIB/$pkg"
+    find "$APP_PYLIB/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+  done
+  # Prove it IMPORTS through the bundled interpreter, the way a run would. A
+  # copied directory python cannot import is exactly the failure this step
+  # exists to prevent, and it is invisible without an actual import.
+  GOOGLE_SMOKE="$(env PYTHONHOME="$APP_DIR/Contents/Resources" \
+    "$APP_DIR/Contents/MacOS/python" -c \
+    'import google.auth, google.oauth2; print("google-auth OK", google.auth.__version__)' 2>&1)"
+  if ! echo "$GOOGLE_SMOKE" | grep -q "google-auth OK"; then
+    echo "FATAL: staged google-auth does not import in the bundle:" >&2
+    echo "$GOOGLE_SMOKE" >&2
+    exit 1
+  fi
+  echo "    $GOOGLE_SMOKE"
+fi
+
 # find -exec ... {} + (not `xargs -I{}`, which aborts with "command line
 # cannot be assembled, too long" over a large file set - see the signing loop
 # below) enumerates >1M .py files whose first 4 bytes are a Mach-O magic.
