@@ -17,7 +17,6 @@ The invariants below are deliberately sourced from the PACKAGING SCRIPT, not fro
 `[bundled]`. Deriving a template's needs from `[bundled]` is precisely the bug:
 it claims things the bundle does not contain, so it cannot fail.
 """
-import ast
 import functools
 import importlib.util
 import os
@@ -50,6 +49,7 @@ def _packaging_module():
     """
     path = os.path.join(_REPO, "scripts", "setup_py2app.py")
     spec = importlib.util.spec_from_file_location("_setup_py2app_under_test", path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -158,9 +158,14 @@ def test_staged_packages_exist_and_are_actually_staged():
     for name in module.STAGED_PACKAGES:
         path = os.path.join(site, name)
         if not os.path.isdir(path):
-            pytest.skip(f"{name} is not installed in this environment")
-        assert not os.path.exists(os.path.join(path, "__init__.py")) or True
+            continue  # not installed here; the build's own FATAL check covers it
+        # `cp -R` of an empty directory succeeds silently, so assert there is
+        # something to copy. Not asserting the ABSENCE of __init__.py: staging is
+        # for what py2app cannot carry, and a regular package can qualify too.
+        assert os.listdir(path), f"{path} is empty; staging it would copy nothing"
 
+    # Runs even when nothing is installed locally: this half compares two
+    # declarations, and needs no package on disk.
     helper = os.path.join(_REPO, "scripts", "_staged_packages.py")
     out = subprocess.run([sys.executable, helper], capture_output=True, text=True,
                          timeout=120)
