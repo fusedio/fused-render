@@ -265,7 +265,7 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
         [sys.executable, "-c", "import time; time.sleep(600)"],
         start_new_session=detached,
     )
-    key = "cancelmecancelme"
+    key = "ca9ce11ed0000001"  # 16 hex: keys are validated now
     d = envinstall.progress_dir(key)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "progress.json"), "w", encoding="utf-8") as f:

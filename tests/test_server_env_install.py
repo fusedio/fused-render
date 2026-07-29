@@ -12,6 +12,7 @@ no error anywhere.
 """
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
@@ -119,9 +120,74 @@ def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
 def test_progress_for_an_unknown_key_is_null_not_an_error(tmp_path):
     """The poller must be able to ask about an install that never started."""
     client = _client(tmp_path)
-    resp = client.get("/api/env/progress?key=neverstarted", headers=HEADERS)
+    resp = client.get("/api/env/progress?key=0123456789abcdef", headers=HEADERS)
     assert resp.status_code == 200
     assert resp.json()["progress"] is None
+
+
+# --- `key` reaches the filesystem, and cancel() signals a pid out of it -------
+
+TRAVERSAL = "../../../../../../tmp/anything"
+
+
+@pytest.mark.parametrize("bad", [
+    TRAVERSAL,
+    "..",
+    "/etc/passwd",
+    "0123456789ABCDEF",          # uppercase is not a key we ever produce
+    "0123456789abcde",           # 15 chars
+    "0123456789abcdef0",         # 17 chars
+    "0123456789abcdeg",          # 'g' is not hex
+    "abc/../../def",
+    "",
+])
+def test_progress_rejects_a_key_that_is_not_a_key(tmp_path, bad):
+    """`/api/env/progress` would otherwise read any progress.json on the disk."""
+    client = _client(tmp_path)
+    resp = client.get(
+        "/api/env/progress", params={"key": bad}, headers=HEADERS
+    )
+    assert resp.status_code == 400, resp.text
+    assert "valid install key" in resp.json()["error"]
+
+
+@pytest.mark.parametrize("bad", [TRAVERSAL, "..", "/etc/passwd", ""])
+def test_cancel_rejects_a_key_that_is_not_a_key(tmp_path, bad):
+    """The dangerous one: cancel reads `pid` from the file and signals it.
+
+    `_kill` escalates to `os.killpg` for a process-group leader, so a traversal
+    here is not an information leak but an arbitrary-process-group kill.
+    """
+    client = _client(tmp_path)
+    resp = client.post("/api/env/cancel", json={"key": bad}, headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+
+
+def test_a_traversal_key_never_reaches_the_filesystem(tmp_path, monkeypatch):
+    """Asserted at the envinstall layer too, so no future caller can skip it."""
+    from fused_render import envinstall
+
+    assert envinstall.valid_key("431848ef8d0cdcdd") is True
+    assert envinstall.valid_key(TRAVERSAL) is False
+    with pytest.raises(ValueError, match="not a valid install key"):
+        envinstall.progress_dir(TRAVERSAL)
+    # And the two public readers stay quiet rather than raising into a handler.
+    assert envinstall.progress(TRAVERSAL) is None
+    assert envinstall.cancel(TRAVERSAL) is False
+
+
+def test_cancel_of_a_bad_key_signals_nothing(tmp_path, monkeypatch):
+    """The end the attack was aiming at: no process is ever signalled."""
+    from fused_render import envinstall
+
+    monkeypatch.setattr(
+        envinstall, "_kill", lambda pid: pytest.fail(f"signalled pid {pid}")
+    )
+    assert envinstall.cancel(TRAVERSAL) is False
+    client = _client(tmp_path)
+    assert client.post(
+        "/api/env/cancel", json={"key": TRAVERSAL}, headers=HEADERS
+    ).status_code == 400
 
 
 def test_progress_returns_the_record(tmp_path):
@@ -150,7 +216,7 @@ def test_cancel_needs_a_key(tmp_path):
 
 def test_cancel_of_an_unknown_key_is_a_clean_no_op(tmp_path):
     client = _client(tmp_path)
-    resp = client.post("/api/env/cancel", json={"key": "neverstarted"}, headers=HEADERS)
+    resp = client.post("/api/env/cancel", json={"key": "0123456789abcdef"}, headers=HEADERS)
     assert resp.status_code == 200
     assert resp.json()["cancelled"] is False
 

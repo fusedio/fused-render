@@ -4907,11 +4907,30 @@ def create_app(start_dir: str) -> FastAPI:
         return JSONResponse({"ok": True, "key": envinstall.venv_key_for(reqs),
                              "requirements": reqs, "progress": record})
 
+    # `key` comes straight off the wire and becomes a path component, so its
+    # shape is checked before anything touches the filesystem. _require_fused is
+    # not a containment boundary — it only blocks blind cross-origin POSTs, and
+    # the pages this app renders are same-origin by design. envinstall refuses a
+    # bad key too; this exists so the caller gets a 400 saying why rather than a
+    # silent "no such install".
+    def _checked_key(key):
+        from fused_render import envinstall
+
+        if not envinstall.valid_key(key):
+            return None, _error(
+                "'key' is not a valid install key (expected 16 lowercase hex "
+                "characters, as returned by /api/run's needs_install)"
+            )
+        return key, None
+
     @app.get("/api/env/progress")
     def api_env_progress(key: str, x_fused: str | None = Header(default=None)):
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
+        key, err = _checked_key(key)
+        if err is not None:
+            return err
         from fused_render import envinstall
 
         return JSONResponse({"ok": True, "key": key, "progress": envinstall.progress(key)})
@@ -4921,9 +4940,9 @@ def create_app(start_dir: str) -> FastAPI:
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard
-        key = body.get("key")
-        if not isinstance(key, str) or not key:
-            return _error("request body must include 'key': the install to cancel")
+        key, err = _checked_key(body.get("key"))
+        if err is not None:
+            return err
         from fused_render import envinstall
 
         killed = envinstall.cancel(key)

@@ -48,12 +48,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
 
 logger = logging.getLogger(__name__)
+
+# `venv_key` returns sha256(...)[:16], so every real key is 16 lowercase hex
+# characters. Anchored: `fullmatch` semantics via ^...$ on a value that reaches
+# the filesystem.
+_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
 
 # The marker `fused` writes once a venv is complete. A directory without it is
 # half-built and `ensure_requirements_venv` deletes and rebuilds it, so this —
@@ -112,6 +118,26 @@ def is_installed(requirements: list[str]) -> bool:
     return os.path.exists(os.path.join(venv_dir_for(requirements), READY_MARKER))
 
 
+def valid_key(key) -> bool:
+    """Is `key` shaped like a venv key this module could have produced?
+
+    Every real key is `venv_key`'s output: 16 lowercase hex characters. Anything
+    else is rejected before it can reach the filesystem, because `key` arrives
+    straight off the wire (`/api/env/progress?key=`, `/api/env/cancel`) and
+    `progress_dir` joins it onto a path.
+
+    `_require_fused` is NOT a containment boundary here — its own comment says it
+    "only blocks blind cross-origin POSTs", and every HTML page this app renders
+    is same-origin while rendering arbitrary local HTML is the whole product. So
+    `../../../..` in a key would otherwise read any `progress.json` on the disk,
+    and — much worse — `/api/env/cancel` would take the `pid` out of that
+    attacker-chosen file and hand it to `_kill`, which escalates to `os.killpg`
+    for a group leader. Validated here rather than at each endpoint so a future
+    caller cannot skip it.
+    """
+    return isinstance(key, str) and _KEY_RE.match(key) is not None
+
+
 def progress_dir(key: str) -> str:
     """Where a given install's `progress.json` and worker log live.
 
@@ -119,7 +145,14 @@ def progress_dir(key: str) -> str:
     per-branch state nests correctly), NOT inside the venv dir — a failed
     install deletes the venv dir, and the error is the one thing that must
     survive that.
+
+    Raises ValueError for a key that is not `valid_key`: this is the function
+    that turns a key into a path, so it is the right place to refuse.
     """
+    if not valid_key(key):
+        raise ValueError(
+            f"not a valid install key: {key!r} (expected 16 lowercase hex characters)"
+        )
     from fused_render.shell.storage import home_dir
 
     return os.path.join(home_dir(), "cache", "_env_install", key)
@@ -203,7 +236,12 @@ def progress(key: str) -> dict | None:
     reported as finished-with-an-error — the same liveness check
     `templates/docs/docs.py` does, and for the same reason: otherwise the page
     polls a dead installer forever.
+
+    An invalid key reads as "never started" rather than raising: no such install
+    can exist, and the endpoint rejects the shape separately.
     """
+    if not valid_key(key):
+        return None
     path = _progress_path(key)
     try:
         with open(path, encoding="utf-8") as f:
@@ -283,7 +321,12 @@ def cancel(key: str) -> bool:
     `ensure_requirements_venv` removes and rebuilds it on the next attempt. The
     record is marked done-with-an-error so the poller stops and the page can say
     what happened rather than falling silent.
+
+    An invalid key kills nothing. This is the endpoint that would otherwise read
+    a `pid` out of an attacker-chosen file and signal it (see `valid_key`).
     """
+    if not valid_key(key):
+        return False
     prog = progress(key)
     if not prog or prog.get("done"):
         return False
