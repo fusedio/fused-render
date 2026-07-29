@@ -52,6 +52,32 @@ CASES = [
     ),
     # Same thing without the __future__ import: a hand-quoted annotation.
     ("quoted-annotation", 'def main(n: "int" = 1):\n    return [n, type(n).__name__]\n', {"n": "5"}, {"result": [5, "int"]}),
+    # Resolving a string annotation must never be able to fail the run. A
+    # free-text annotation ("path to the file") is a real pattern in user pages
+    # and is not valid Python, so evaluating it raises SyntaxError — which is
+    # neither NameError nor TypeError, i.e. exactly the shape that escaped the
+    # first version of the fallback and turned a previously-ignored annotation
+    # into a hard bind-time failure on both engines.
+    (
+        "free-text-annotation",
+        'def main(path: "path to the file" = None):\n    return [path, type(path).__name__]\n',
+        {"path": "notes.txt"},
+        {"result": ["notes.txt", "str"]},
+    ),
+    # Same class, different exception: an annotation that evaluates but blows up.
+    (
+        "annotation-raises-while-evaluating",
+        'def main(x: "1 / 0" = None):\n    return [x, type(x).__name__]\n',
+        {"x": "7"},
+        {"result": ["7", "str"]},
+    ),
+    # And one that evaluates fine to something that simply isn't a type.
+    (
+        "annotation-is-not-a-type",
+        'def main(x: "3" = None):\n    return [x, type(x).__name__]\n',
+        {"x": "7"},
+        {"result": ["7", "str"]},
+    ),
     # An annotation naming something that does not exist at bind time must not
     # be fatal — it falls back to "no coercion", not a NameError.
     (

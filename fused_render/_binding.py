@@ -44,13 +44,20 @@ def bind_params(fn, params):
     # module with `from __future__ import annotations` (PEP 563) — or any
     # hand-quoted annotation — hands us the string "int" instead of `int`, and
     # every coercion rule below silently misses: the URL's "7" reaches main()
-    # as the string "7". Names that don't resolve (a TYPE_CHECKING-only import,
-    # a typo) raise NameError/TypeError here; that is not worth failing a run
-    # over, so fall back to the unevaluated signature — which means "no
-    # coercion for that param", the same as an un-annotated one.
+    # as the string "7".
+    #
+    # But eval_str *evaluates* those strings, and an annotation is allowed to be
+    # anything: `def main(path: "path to the file")` is a documentation habit,
+    # not a type, and evaluating it raises SyntaxError. Any exception here has
+    # to degrade to "no coercion for that param" — the same treatment an
+    # un-annotated param gets, and what this signature did before eval_str
+    # existed. Narrowing this to NameError/TypeError (the failures a
+    # TYPE_CHECKING-only import or a typo produce) is what turned a
+    # previously-ignored annotation into a hard bind-time failure that killed
+    # every call to the file, under both engines.
     try:
         sig = inspect.signature(fn, eval_str=True)
-    except (NameError, TypeError):
+    except Exception:  # noqa: BLE001 — an unevaluatable annotation is not fatal
         sig = inspect.signature(fn)
     has_var_kwargs = any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
