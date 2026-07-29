@@ -209,6 +209,8 @@ def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_run_claude_cli", fake)
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    # neutralize the install-dir fallbacks (the dev machine may really have one)
+    monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     data = _data(resp)
@@ -268,6 +270,42 @@ def test_claude_bin_env_override_beats_path(monkeypatch):
     assert server._claude_bin() == "/opt/custom/claude"
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN")
     assert server._claude_bin() == "/usr/bin/claude"
+
+
+def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
+    # A Finder/Dock-launched .app inherits a stripped PATH; the resolver must
+    # then try the usual install dirs (executable files only).
+    home = tmp_path / "home"
+    (home / ".local" / "bin").mkdir(parents=True)
+    bin_path = home / ".local" / "bin" / "claude"
+    bin_path.write_text("#!/bin/sh\n")
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(server.os.path, "expanduser",
+                        lambda p: p.replace("~", str(home), 1))
+
+    assert server._claude_bin() is None  # exists but not executable
+    bin_path.chmod(0o755)
+    assert server._claude_bin() == str(bin_path)
+
+
+def test_claude_bin_fallback_dirs_match_the_chat_template(monkeypatch):
+    # server._claude_bin deliberately duplicates the chat template's resolver
+    # (templates are standalone user-forkable code the server never imports).
+    # Pin the two candidate lists together so they can't drift (the D146
+    # discipline: a duplicate is held by a test, not a comment).
+    import inspect
+
+    from fused_render.templates.claude import agent
+
+    def candidates(fn):
+        src = inspect.getsource(fn)
+        return [c for c in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                            "/usr/local/bin/claude") if c in src]
+
+    assert candidates(server._claude_bin) == candidates(agent._claude_bin)
+    assert len(candidates(server._claude_bin)) == 3
 
 
 def test_relay_uses_the_overridden_binary(monkeypatch):

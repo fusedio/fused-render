@@ -859,11 +859,26 @@ def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
 
 
 def _claude_bin() -> str | None:
-    """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH."""
+    """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH,
+    else the usual install dirs.
+
+    The fallback dirs matter for the packaged app: a Finder/Dock-launched
+    .app inherits a stripped PATH that misses ~/.local/bin and Homebrew.
+    Mirrors templates/claude/agent.py's _claude_bin (kept as a duplicate on
+    purpose — templates are standalone user-forkable code the server never
+    imports); keep the candidate list in lockstep."""
     forced = os.environ.get(_AI_BIN_ENV)
     if forced:
         return forced
-    return shutil.which("claude")
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                      "/usr/local/bin/claude"):
+        candidate = os.path.expanduser(candidate)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
