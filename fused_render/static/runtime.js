@@ -12,8 +12,8 @@
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
  *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
- *     systemPrompt, model, effort ("low"|"medium"|"high"),
- *     maxTokens. Local-only — not available on hosted/exported pages.
+ *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
+ *     onChunk. Local-only — not available on hosted/exported pages.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -719,7 +719,13 @@
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
   // "timeout"), mirroring runPython's rejection style. opts:
-  //   { systemPrompt, model, effort: "low"|"medium"|"high", maxTokens }
+  //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
+  // effort defaults to low = no extended thinking (fast, cheap); medium+
+  // enables Claude Code's own effort/thinking semantics.
+  // onChunk(text) opts the call into streaming: it fires per text delta as
+  // the model produces it, and the promise still resolves with the same
+  // {text, model, usage} at the end. Without it the request/response is the
+  // plain JSON exchange it always was.
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
   // half-billed completion buys nothing — calls run fully concurrent.
   function ai(prompt, opts) {
@@ -733,21 +739,62 @@
     if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
-    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
-    return fetch("/api/ai", {
+    const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
+    if (onChunk) body.stream = true;
+    const req = fetch("/api/ai", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(body),
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (!data.ok) {
-          const err = new Error(data.error && data.error.message);
-          err.type = data.error && data.error.type;
-          throw err;
-        }
-        return data.result;
-      });
+    });
+    function fail(error) {
+      const err = new Error(error && error.message);
+      err.type = error && error.type;
+      throw err;
+    }
+    if (!onChunk) {
+      return req
+        .then((res) => res.json())
+        .then((data) => {
+          if (!data.ok) fail(data.error);
+          return data.result;
+        });
+    }
+    // Streaming: the body is NDJSON — {"type":"chunk","text"} lines, then a
+    // terminal {"type":"done"}. A chunk may split across read() boundaries,
+    // so buffer and cut on newlines. Errors BEFORE the stream starts arrive
+    // as ordinary non-200 JSON; after, as an ok:false done frame.
+    return req.then((res) => {
+      const ct = (res.headers.get("Content-Type") || "").indexOf("x-ndjson");
+      if (!res.ok || ct === -1) {
+        return res.json().then((data) => fail(data && data.error));
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = null;
+      function handleLine(line) {
+        if (!line.trim()) return;
+        const frame = JSON.parse(line);
+        if (frame.type === "chunk") onChunk(frame.text);
+        else if (frame.type === "done") finished = frame;
+      }
+      function pump() {
+        return reader.read().then(({ done, value }) => {
+          if (done) {
+            if (buffer) handleLine(buffer);
+            if (!finished) fail({ type: "ai_error", message: "stream ended without a done frame" });
+            if (!finished.ok) fail(finished.error);
+            return finished.result;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          lines.forEach(handleLine);
+          return pump();
+        });
+      }
+      return pump();
+    });
   }
 
   // --- Auto-reload (SPEC §13.3) ---------------------------------------------
