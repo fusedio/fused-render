@@ -28,7 +28,7 @@ Endpoints (GET, CORS *):
   /stats?file=[&reset=1]       -> live counters + recent op log
 """
 # /// script
-# dependencies = ["numpy", "zarr>=3.0.8", "s3fs", "gcsfs", "crc32c"]
+# dependencies = ["s3fs", "gcsfs", "crc32c"]
 # ///
 
 import hashlib

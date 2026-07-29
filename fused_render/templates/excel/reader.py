@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["fpdf2>=2.8.7"]
-# ///
 """Data ops for the excel editor view.
 
 Two data paths:

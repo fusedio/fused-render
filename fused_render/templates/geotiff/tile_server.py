@@ -27,7 +27,7 @@ Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
 # /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs", "rasterio"]
+# dependencies = ["pyproj", "imagecodecs"]
 # ///
 
 import io

@@ -44,21 +44,30 @@ _FRAME_LINE = re.compile(
 
 _backend = None
 
-# Installed into every script's venv on top of its PEP 723 dependencies, so the
-# built-in template readers (pyarrow, openpyxl…) work under this engine without
-# an inline header.
+# Installed into every script's venv on top of its PEP 723 dependencies. This is
+# where a **core template's** dependencies live: the built-in templates carry no
+# inline header for anything the app already ships (SPEC PY-16, D168).
 #
-# NOT a mirror of the `bundled` extra (SPEC DM-2) — it used to claim to be, and
-# was not, in ten places. The relationship is: this is the data stack common to
-# many templates; a dependency only one template needs stays in that template's
-# `# /// script` header (the header mechanism exists for exactly that, and it
-# keeps this venv small), and the server-only credential libs
-# (botocore/google-auth) never belong in a user-script venv at all. pyarrow and
-# duckdb are here but not in `[bundled]` because they are *core* dependencies —
-# the packaged interpreter gets them from the install, a fresh venv would not.
-# tests/test_engine_requirements.py enforces every clause of that, including the
-# part a comment cannot: that no template imports a bundled distribution its
-# venv would lack.
+# Why not one header per template, which is what the mechanism looks like it is
+# for: a venv is keyed on its sorted requirement set, so every distinct header
+# builds a SEPARATE venv — fifteen headers meant up to fifteen multi-minute `uv`
+# installs, each re-resolving this same base. One shared set collapses that to a
+# single venv shared by every core template, and since the packaged app's
+# interpreter already ships all of `[bundled]` (SPEC DM-2), matching it here is
+# parity rather than bloat. Headers stay the right answer for *user* pages and
+# for dependencies the app itself doesn't bundle.
+#
+# So this is close to `[bundled]` but not a copy of it, and the differences are
+# the interesting part:
+#   * pyarrow/duckdb are *core* dependencies rather than `[bundled]` ones — the
+#     packaged interpreter gets them from the install, a fresh venv would not;
+#   * botocore/google-auth are deliberately absent: the s3sign/gcssign
+#     credential chains run in the fused-render process, never in a script venv,
+#     and botocore alone is ~80 MB;
+#   * version floors are the strictest a template asks for (zarr>=3.0.8 is
+#     zarr_aoi's v3 store reader; `[bundled]` still says bare `zarr`).
+# tests/test_engine_requirements.py enforces all of that, including the part a
+# comment cannot: that no core template imports something its venv would lack.
 DEFAULT_REQUIREMENTS = [
     "numpy",
     "pandas",
@@ -72,6 +81,18 @@ DEFAULT_REQUIREMENTS = [
     "openpyxl",
     "shapely",
     "geopandas",
+    # Preview-template backends, folded in from the templates' own headers:
+    # rasterio (map + geotiff raster reads), zarr (netcdf/zarr_aoi),
+    # python-pptx/fpdf2 (slides, excel export), pymupdf/pikepdf (pdf_studio),
+    # msgpack (usd), drain3 (log_studio pattern mining).
+    "rasterio",
+    "zarr>=3.0.8",
+    "python-pptx",
+    "fpdf2>=2.8.7",
+    "pymupdf>=1.25",
+    "pikepdf>=9",
+    "msgpack>=1.0",
+    "drain3>=0.9.11",
 ]
 
 
