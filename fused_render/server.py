@@ -1144,7 +1144,10 @@ class _AiWarmPool:
         self._lock = asyncio.Lock()
         self._proc = None
         self._config = None
-        self._spawn_task = None  # keep a ref so the task isn't GC'd mid-flight
+        # Every in-flight prewarm task: refs so they aren't GC'd mid-flight,
+        # and the set shutdown() must cancel AND await — an abandoned spawn
+        # that already forked a claude process would otherwise leak it.
+        self._spawn_tasks = set()
 
     async def take(self, config):
         """The warm process if it matches `config` and is still alive, else
@@ -1165,18 +1168,28 @@ class _AiWarmPool:
 
         Called after every take() (win or lose) so the pool converges on the
         config actually in use. Never raises — a failed spawn just means the
-        next request pays the cold start, as before the pool existed."""
-        self._spawn_task = asyncio.ensure_future(self._spawn(config))
+        next request pays the cold start, as before the pool existed.
+        Concurrent prewarms are fine: whoever fills the slot first wins and
+        every loser reaps its own process (see _spawn)."""
+        task = asyncio.ensure_future(self._spawn(config))
+        self._spawn_tasks.add(task)
+        task.add_done_callback(self._spawn_tasks.discard)
 
     async def _spawn(self, config) -> None:
         try:
             proc = await _ai_spawn(*config)
         except OSError:
             return
-        async with self._lock:
-            if self._proc is None:
-                self._proc, self._config = proc, config
-                return
+        # From here a live process exists: it must end up either in the slot
+        # or reaped, even if this task is cancelled at the lock await.
+        try:
+            async with self._lock:
+                if self._proc is None:
+                    self._proc, self._config = proc, config
+                    return
+        except asyncio.CancelledError:
+            await asyncio.shield(_ai_reap(proc))
+            raise
         # someone else filled the slot first — one warm process is the cap
         await _ai_reap(proc)
 
@@ -1191,9 +1204,15 @@ class _AiWarmPool:
                       _AI_EFFORT_TOKENS["medium"]))
 
     async def shutdown(self) -> None:
-        task = self._spawn_task
-        if task is not None and not task.done():
+        # Cancel AND await every in-flight prewarm: a cancelled _spawn reaps
+        # the process it already created (or is still inside _ai_spawn, where
+        # no process exists yet). Awaiting is what makes that reap actually
+        # run before the loop closes.
+        tasks = [t for t in self._spawn_tasks if not t.done()]
+        for task in tasks:
             task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         async with self._lock:
             proc, self._proc, self._config = self._proc, None, None
         if proc is not None:
@@ -1356,16 +1375,19 @@ async def _ai_relay(body: dict):
 
         A warm process may have gone bad while idle in ways take()'s
         returncode check can't see (auth expired, wedged) — if it fails
-        before producing anything, retry ONCE on a fresh spawn, then fail
+        before DELIVERING anything, retry ONCE on a fresh spawn, then fail
         as a cold call would. `delivered` guards the retry: once a delta
-        reached the caller, replaying the prompt could emit text twice."""
+        reached the caller, replaying the prompt could emit text twice.
+        Deltas that arrive with no on_delta (non-streaming: the events flow
+        regardless, --include-partial-messages is always on) reach nobody,
+        so they never block the retry — only text the CLIENT saw does."""
         nonlocal proc
         delivered = False
 
         def deliver(text):
             nonlocal delivered
-            delivered = True
             if on_delta is not None:
+                delivered = True
                 on_delta(text)
 
         try:

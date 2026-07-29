@@ -421,6 +421,34 @@ def test_relay_warm_process_failing_midcall_retries_fresh_once(monkeypatch):
     assert fake.procs[0].message["message"]["content"][0]["text"] == "hello"
 
 
+def test_relay_nonstream_warm_failure_after_deltas_still_retries(monkeypatch):
+    # --include-partial-messages means deltas flow even when nobody streams
+    # them. A non-streaming call has no client that saw any text, so a warm
+    # process dying AFTER emitting deltas must still get the fresh retry —
+    # only text delivered to an actual onChunk reader blocks it.
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc(lines=[_delta_line("partial ")])  # deltas, then EOF
+    _seed_warm(warm, _default_config())
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert _data(resp)["result"]["text"] == "hi there"
+    assert len(fake.calls) == 1  # the retry spawn ran
+
+
+def test_relay_stream_warm_failure_after_delivery_does_not_retry(monkeypatch):
+    # Streaming is the case the retry guard exists for: the client already
+    # rendered "partial ", so replaying the prompt would emit text twice.
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc(lines=[_delta_line("partial ")], exit_code=1,
+                     stderr=b"died mid-answer")
+    _seed_warm(warm, _default_config())
+    _, frames = _stream({"prompt": "hello", "stream": True})
+    assert frames[0] == {"type": "chunk", "text": "partial "}
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is False
+    assert fake.calls == []  # no retry once text reached the client
+
+
 def test_relay_concurrent_requests_do_not_share_the_warm_process(monkeypatch):
     fake = _cli_ok(monkeypatch, prewarm=False)
     warm = _FakeProc()
@@ -448,7 +476,7 @@ def test_pool_prewarm_spawns_and_take_consumes(monkeypatch):
 
     async def go():
         pool.prewarm(config)
-        await pool._spawn_task
+        await asyncio.gather(*pool._spawn_tasks)
         assert pool._proc is fake.procs[0]
         # matching take() hands it out and empties the slot
         assert await pool.take(config) is fake.procs[0]
@@ -472,7 +500,7 @@ def test_pool_prewarm_default_skips_when_binary_missing(monkeypatch):
     monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
     pool = server._AiWarmPool()
     pool.prewarm_default()
-    assert pool._spawn_task is None
+    assert pool._spawn_tasks == set()
     assert fake.calls == []
 
 
@@ -483,6 +511,51 @@ def test_pool_shutdown_reaps_the_warm_process(monkeypatch):
     asyncio.run(pool.shutdown())
     assert warm.killed
     assert pool._proc is None
+
+
+def test_pool_shutdown_reaps_an_inflight_prewarm(monkeypatch):
+    # shutdown() while a prewarm holds a LIVE process but hasn't filed it in
+    # the slot yet (cancelled at the lock await): cancelling the task is not
+    # enough — that process must be reaped, not orphaned.
+    proc = _FakeProc()
+    fake = _FakeSpawn(factory=lambda: proc)
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    pool = server._AiWarmPool()
+
+    async def go():
+        # hold the pool lock so _spawn completes its spawn and then parks at
+        # `async with self._lock` — the exact window the leak lived in
+        async with pool._lock:
+            pool.prewarm(_default_config())
+            while not fake.procs:  # spawn ran, task now blocked on the lock
+                await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            for task in pool._spawn_tasks:
+                task.cancel()
+        await pool.shutdown()
+
+    asyncio.run(go())
+    assert proc.killed  # the in-flight prewarm's process did not leak
+    assert pool._spawn_tasks == set()
+    assert pool._proc is None
+
+
+def test_pool_repeated_prewarms_leak_no_process(monkeypatch):
+    # Back-to-back prewarms (every request fires one): the slot holds ONE
+    # process and every displaced spawn reaps its own — nothing orphaned.
+    fake = _FakeSpawn()
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    pool = server._AiWarmPool()
+
+    async def go():
+        for _ in range(3):
+            pool.prewarm(_default_config())
+        await asyncio.gather(*pool._spawn_tasks)
+        await pool.shutdown()
+
+    asyncio.run(go())
+    assert len(fake.procs) == 3
+    assert all(p.killed for p in fake.procs)  # slot winner reaped by shutdown
 
 
 # -- bad requests ---------------------------------------------------------------
