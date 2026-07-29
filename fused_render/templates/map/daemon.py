@@ -277,6 +277,7 @@ def main():
         base_url=f"http://127.0.0.1:{port}",
         token=token,
         locator=server.engine.locator,
+        cache_dir=args.cache,
     )
 
     state_path = Path(args.state)

@@ -128,8 +128,8 @@ def test_large_vector_reports_install_command_before_registering_tiles(
         "_vector_dependency_error",
         lambda: (
             "Optional support for streamed vector layers requires Python "
-            "packages that are not installed: mapbox-vector-tile.\n"
-            "uv pip install mapbox-vector-tile"
+            "packages that are not installed: pyarrow.\n"
+            "uv pip install pyarrow"
         ),
     )
     engine = vector_engine.VectorEngine(
@@ -146,7 +146,7 @@ def test_large_vector_reports_install_command_before_registering_tiles(
     )
 
     assert descriptor["status"] == "error"
-    assert "uv pip install mapbox-vector-tile" in descriptor["message"]
+    assert "uv pip install pyarrow" in descriptor["message"]
     assert engine.sources == {}
 
 
@@ -484,3 +484,13 @@ def test_map_frontend_uses_native_maplibre_vector_tiles():
     assert 'type: "vector"' in template
     assert '"source-layer": sourceLayer' in template
     assert "rebuildVectorTiles()" in template
+    assert 'map.on("idle"' in template
+
+
+def test_vector_engine_does_not_require_the_pure_python_mvt_stack():
+    vector_engine = _load("vector_engine")
+
+    assert "pyarrow" in vector_engine.VECTOR_RUNTIME
+    assert "mapbox_vector_tile" not in vector_engine.VECTOR_RUNTIME
+    assert "google.protobuf" not in vector_engine.VECTOR_RUNTIME
+    assert "pyclipper" not in vector_engine.VECTOR_RUNTIME

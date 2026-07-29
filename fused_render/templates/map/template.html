@@ -1269,6 +1269,17 @@ map.on("sourcedata", event => {
   L.tileLoading = false;
   renderLayerCards();
 });
+map.on("idle", () => {
+  let changed = false;
+  for (const L of state.layers.values()) {
+    if (!L.tileLoading) continue;
+    const d = L.descriptor;
+    if (!d || !["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) continue;
+    L.tileLoading = false;
+    changed = true;
+  }
+  if (changed) renderLayerCards();
+});
 map.on("error", event => {
   const L = tiledLayerForSource(event.sourceId);
   if (!L) return;

@@ -65,11 +65,12 @@ def _request(path: Path) -> dict:
     }
 
 
-def _engine() -> VectorEngine:
+def _engine(cache_dir=None) -> VectorEngine:
     return VectorEngine(
         base_url="http://127.0.0.1:9999",
         token="test-token",
         locator=lambda source, _target: source,
+        cache_dir=cache_dir,
     )
 
 
@@ -106,7 +107,9 @@ def test_large_geopackage_registers_without_whole_file_serialization(
     assert len(engine.sources) == 1
 
 
-def test_geopackage_tile_is_valid_and_feature_bounded(tmp_path, monkeypatch):
+def test_dense_geopackage_tile_is_a_complete_occupancy_overview(
+    tmp_path, monkeypatch
+):
     source = tmp_path / "segments.gpkg"
     _make_grid(source)
     monkeypatch.setattr(vector_engine, "VECTOR_TILE_MIN_FEATURES", 10)
@@ -119,8 +122,15 @@ def test_geopackage_tile_is_valid_and_feature_bounded(tmp_path, monkeypatch):
     decoded = mapbox_vector_tile.decode(tile)
     features = decoded["layer"]["features"]
 
-    assert 0 < len(features) <= 50
-    assert all("class" in feature["properties"] for feature in features)
+    assert features
+    assert all(
+        feature["properties"]["feature_count"] > 0
+        for feature in features
+    )
+    assert sum(
+        feature["properties"]["feature_count"]
+        for feature in features
+    ) >= 1600
     assert engine.tile(source_id, 0, 0, 0) is tile
 
 
@@ -170,6 +180,27 @@ def test_vector_tile_is_served_over_the_daemon_endpoint(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_native_tile_cache_survives_engine_restart(tmp_path, monkeypatch):
+    source = tmp_path / "segments.gpkg"
+    cache = tmp_path / "cache"
+    _make_grid(source, width=10, height=10)
+    monkeypatch.setattr(vector_engine, "VECTOR_TILE_MIN_FEATURES", 10)
+
+    first = _engine(cache)
+    descriptor = first.try_describe(_request(source))
+    tile = first.tile(descriptor["data"]["source_id"], 0, 0, 0)
+
+    second = _engine(cache)
+    descriptor = second.try_describe(_request(source))
+    monkeypatch.setattr(
+        second,
+        "_encode_tile",
+        lambda *_args: pytest.fail("disk-cached tile must not be re-encoded"),
+    )
+
+    assert second.tile(descriptor["data"]["source_id"], 0, 0, 0) == tile
 
 
 def test_vector_tile_endpoint_returns_json_when_encoding_fails():
