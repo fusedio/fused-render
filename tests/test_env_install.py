@@ -351,6 +351,45 @@ def test_a_resolver_failure_reaches_the_user_verbatim(tmp_path, monkeypatch):
 
 
 @requires_fused
+def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch):
+    """The zombie trap, which the pid-2**31-1 test below cannot see.
+
+    That test uses an impossible pid, so it only proves the "pid does not exist"
+    branch. A REAL worker is different: `start_new_session=True` does not reparent
+    it — it stays our child until someone waits on it — and a ZOMBIE answers
+    `os.kill(pid, 0)` successfully. So a worker that exited before writing `done`
+    (a bad import, a kill) read as "still running" indefinitely: `progress()`
+    never reaped it into an error, the page polled a corpse, and any bounded
+    waiter burned its whole timeout. Found while investigating a slow CI job —
+    which turned out to be legitimately slow, not hung, but the bug is real.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    dead = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"],
+                            start_new_session=True)
+    # A plain sleep, NOT `dead.poll()` / `dead.wait()`: those call waitpid and
+    # REAP the child, so polling for its exit destroys the very zombie this test
+    # needs. (First version of this test did exactly that and skipped itself even
+    # with the bug reintroduced — a test that cannot fail.)
+    time.sleep(1.5)
+    try:
+        os.kill(dead.pid, 0)
+    except ProcessLookupError:
+        pytest.skip("the child was reaped already; no zombie to model here")
+
+    key = "0123456789abcdef"
+    d = envinstall.progress_dir(key)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "progress.json"), "w", encoding="utf-8") as f:
+        json.dump({"stage": "spawn", "pct": 0, "detail": "", "done": False,
+                   "error": None, "pid": dead.pid, "ts": time.time()}, f)
+
+    assert envinstall._pid_alive(dead.pid) is False, "a zombie is not alive"
+    prog = envinstall.progress(key)
+    assert prog["done"] is True, "a dead worker must end the poll"
+    assert "unexpectedly" in prog["error"]
+
+
+@requires_fused
 def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch):
     """A killed installer must not leave the page polling forever.
 

@@ -223,6 +223,21 @@ def _pid_alive(pid: int) -> bool:
             capture_output=True, text=True,
         )
         return str(pid) in (out.stdout or "")
+    # Reap it first if it is OUR child. `start_new_session=True` does not
+    # reparent the worker — it stays our child until someone waits on it — and a
+    # ZOMBIE answers `os.kill(pid, 0)` successfully. So a worker that died before
+    # writing `done` (a bad import, a kill) would read as "still running"
+    # forever, and `progress()` would never reap it into an error: the page polls
+    # a corpse and any bounded waiter waits out its entire timeout. Nothing else
+    # waits on this pid — `_spawn` discards the Popen — so reaping here is safe
+    # and it is what makes "the installer exited unexpectedly" detectable at all.
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return False
+    except ChildProcessError:
+        pass  # not our child: another process spawned it, fall through to kill(0)
+    except OSError:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

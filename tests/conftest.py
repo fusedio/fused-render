@@ -144,30 +144,43 @@ def warm_fused_backend_venv(tmp_path_factory):
         if not envinstall.is_installed(requirements):
             envinstall.start(requirements)
             key = envinstall.venv_key_for(requirements)
-            deadline = time.monotonic() + 900
+            # Bounded and DIAGNOSTIC. `is_installed()` is the authority, not the
+            # progress record: the venv existing is the thing the tests need, and
+            # making bookkeeping the success condition is how a wait turns into a
+            # hang. The budget is minutes rather than the quarter hour this first
+            # had — a cold `uv venv` + install of one small package is seconds,
+            # and anything slower is broken, not busy. On timeout the worker's own
+            # log is printed, because "timed out" on its own says nothing.
+            deadline = time.monotonic() + 300
             progress = None
             while time.monotonic() < deadline:
+                if envinstall.is_installed(requirements):
+                    break
                 progress = envinstall.progress(key)
                 if progress and progress.get("done"):
                     break
                 time.sleep(0.2)
-            if not (progress and progress.get("done")):
-                pytest.fail(
-                    "timed out installing the warm script venv "
-                    f"({requirements}); last progress: {progress}"
-                )
-            if progress.get("error"):
+            if progress and progress.get("error"):
                 pytest.fail(
                     "could not build the fused backend's script venv, so the "
                     "real-backend tests would race on a half-built one: "
                     f"{progress['error']}"
                 )
-        if not envinstall.is_installed(requirements):
-            pytest.fail(
-                "the installer reported success but the venv for "
-                f"{requirements} is not marked ready — loader and backend "
-                "disagree about where it lives"
-            )
+            if not envinstall.is_installed(requirements):
+                log = os.path.join(envinstall.progress_dir(key), "worker.log")
+                tail = ""
+                try:
+                    with open(log, encoding="utf-8", errors="replace") as fh:
+                        tail = fh.read()[-4000:]
+                except OSError as e:
+                    tail = f"(no worker log: {e})"
+                pytest.fail(
+                    f"the warm script venv ({requirements}) was not built.\n"
+                    f"last progress: {progress}\n"
+                    f"venv dir: {envinstall.venv_dir_for(requirements)}\n"
+                    f"uv: {envinstall.uv_bin()}\n"
+                    f"--- worker.log ---\n{tail}"
+                )
     finally:
         # Released as soon as the venv exists — the lock serializes *creation*,
         # not the tests that use it.
