@@ -1,7 +1,14 @@
 # /// script
-# usd-core deliberately absent: convert_worker.py fetches it on demand (D119)
 # dependencies = ["numpy>=1.26", "msgpack>=1.0"]
 # ///
+# The block's body is TOML, so a prose line inside it is a parse error, not a
+# comment — this note used to sit between `# /// script` and `dependencies`,
+# which made script_requirements() raise and every call under the fused engine
+# fail with "invalid TOML in '# /// script' block". Notes go below the block.
+#
+# usd-core deliberately absent: convert_worker.py fetches it on demand (D119).
+# numpy + msgpack cover the worker too — reader.py spawns it detached with
+# sys.executable, i.e. into this venv.
 """Data/dispatch side of the usd preview template.
 
 Actions (all return JSON-native dicts):

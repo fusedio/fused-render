@@ -203,6 +203,89 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
 
+  # The optional fused execution engine (D69) — the engine the migration plan
+  # promotes to default, after which the built-in executor goes away. Until this
+  # job, CI had never run it: no job installed the `[fused]` extra, so every
+  # engine.available()-gated test skipped and the green matrix said nothing
+  # about it — the param-binding divergence and the missing script-venv
+  # dependencies fixed in D167/D170 would all have been caught here.
+  #
+  # A separate job rather than adding the extra to the matrix above, for two
+  # reasons: the matrix must keep exercising the *built-in* engine (still the
+  # default per PY-12), and the extra can't be added blanket anyway — its wheel
+  # is a direct URL marked `python_version >= "3.11"`, so on the matrix's 3.10
+  # entry it installs nothing at all and the job would silently prove nothing.
+  fused-engine:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite starts the HTTP server (create_app), which serves the built
+      # shell — same artifact dependency as test-python.
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 is the extra's floor (the wheel's marker) and the version the
+          # matrix job already reports coverage from.
+          python-version: "3.11"
+          # The pinned wheel itself is ~3 MB and S3 serves it without
+          # Cache-Control, so pip won't reuse it — but it pulls 27 unconditional
+          # dependencies (boto3, pandas, pyarrow, cryptography, …) that are
+          # ordinary PyPI wheels, and those are what this cache holds.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The backend builds each script's venv with `uv venv` + `uv pip install`
+      # when uv is on PATH (it falls back to `python -m venv` + pip otherwise,
+      # which works but is markedly slower). Same action the desktop jobs use.
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install fused-render (dev + fused extras)
+        run: pip install -e ".[dev,fused]"
+
+      # shell/mounts.py shells out to rclone (D102/D103), as in test-python.
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Prove the engine tests run rather than skip
+        # The failure mode this job exists to avoid is looking like coverage
+        # while providing none, so it is asserted twice over:
+        #   * FUSED_RENDER_REQUIRE_FUSED_ENGINE turns engine.available() from a
+        #     skip condition into an assertion (test_engine.py);
+        #   * these two files — the real-backend integration tests and the
+        #     cross-engine binding parity table — must report ZERO skips on
+        #     3.11 with the extra installed. Nothing in them has another reason
+        #     to skip, so any skip means the extra didn't take effect.
+        # `shell: bash` for pipefail: without it the pipe into tee would hide
+        # pytest's exit code.
+        shell: bash
+        env:
+          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
+        run: |
+          python -m pytest tests/test_engine.py tests/test_engine_parity.py -q -rs \
+            | tee engine-tests.log
+          if grep -qE '[0-9]+ skipped' engine-tests.log; then
+            echo "::error::engine tests skipped in the job whose whole purpose is to run them"
+            exit 1
+          fi
+
+      - name: Run the full suite with the fused engine installed
+        # Not just the engine files: `fused` being importable changes what
+        # server.py resolves (engine selection, /api/config) and what the
+        # deploy/pinned-wheel tests can see, so the whole suite is the honest
+        # check that installing the extra doesn't break anything else.
+        env:
+          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
+        run: python -m pytest tests/ -q
+
   # Linux desktop supervisor (docs/LINUX_DESKTOP_SPEC.md). With the
   # linux-desktop extra installed, the _linux backend tests EXECUTE here instead
   # of skipping as they do on macOS — this job is where gate (a) (no-orphans)
@@ -378,7 +461,7 @@ jobs:
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
-    needs: [detect-changes, frontend, test-python, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, fused-engine, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -391,9 +474,9 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these three always run (they gate on app only), so
+          # app fired ⇒ these four always run (they gate on app only), so
           # anything other than success is a failure.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.linux-desktop.result }}"; do
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1

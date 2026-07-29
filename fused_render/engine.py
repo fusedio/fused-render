@@ -44,10 +44,21 @@ _FRAME_LINE = re.compile(
 
 _backend = None
 
-# Installed into every script's venv on top of its PEP 723 dependencies.
-# Mirrors the `bundled` extra in pyproject.toml (SPEC DM-2) so the built-in
-# template readers (pyarrow, openpyxl) work under this engine without inline
-# headers. Keep the two lists in sync.
+# Installed into every script's venv on top of its PEP 723 dependencies, so the
+# built-in template readers (pyarrow, openpyxl…) work under this engine without
+# an inline header.
+#
+# NOT a mirror of the `bundled` extra (SPEC DM-2) — it used to claim to be, and
+# was not, in ten places. The relationship is: this is the data stack common to
+# many templates; a dependency only one template needs stays in that template's
+# `# /// script` header (the header mechanism exists for exactly that, and it
+# keeps this venv small), and the server-only credential libs
+# (botocore/google-auth) never belong in a user-script venv at all. pyarrow and
+# duckdb are here but not in `[bundled]` because they are *core* dependencies —
+# the packaged interpreter gets them from the install, a fresh venv would not.
+# tests/test_engine_requirements.py enforces every clause of that, including the
+# part a comment cannot: that no template imports a bundled distribution its
+# venv would lack.
 DEFAULT_REQUIREMENTS = [
     "numpy",
     "pandas",
@@ -135,6 +146,21 @@ def script_requirements(text: str) -> list[str]:
     return []
 
 
+def _binding_source() -> str:
+    """The text of `fused_render/_binding.py`, for embedding into the wrapper.
+
+    Read through importlib.resources rather than `__file__` + open() so it
+    still works when the package is inside a zip / frozen distribution (the
+    py2app and AppImage builds), where `_binding.py` is not a filesystem path.
+    Re-read per call rather than cached: it costs one small read on a code path
+    that is about to spawn a subprocess and build a venv, and a cache would go
+    stale under the dev server's edit-and-rerun loop.
+    """
+    from importlib.resources import files
+
+    return files("fused_render").joinpath("_binding.py").read_text(encoding="utf-8")
+
+
 def build_code(user_code: str, script_dir: str, script_path: str = "script") -> str:
     """Wrap user code so its imports/data paths resolve next to the .py, and
     bridge the bare-``main()`` contract.
@@ -153,7 +179,8 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
         against the script, params still get found);
       * otherwise — compat bridge — if the module defines a bare ``main()``,
         reads ``_params.json`` itself, coerces string params by ``main``'s
-        annotations (same table as the built-in executor's worker), chdirs,
+        annotations (using ``_binding.py``'s own source, embedded into the
+        wrapper because the child cannot import the package), chdirs,
         and sets ``result = main(**bound)``. ``main()`` wins even if the
         module also assigned a module-level ``result`` — the built-in
         executor's worker (``_child.py``) always calls ``main(**params)`` and
@@ -164,6 +191,7 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
         (extended with the fused-contract alternatives), so a file with no
         entrypoint fails identically under either engine.
     """
+    binding_source = _binding_source()
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
@@ -183,49 +211,29 @@ if _fused_udfs:
         return _fused_inner(*_a, **_k)
     _fused_udf._fn = _fused_chdir_call
 else:
-    import inspect as _fused_inspect
     import json as _fused_json
 
-    def _fused_coerce(_value, _ann):
-        if _ann is _fused_inspect.Parameter.empty:
-            return _value
-        try:
-            if _ann is bool:
-                if isinstance(_value, bool):
-                    return _value
-                if isinstance(_value, str):
-                    return _value.strip().lower() in ("1", "true", "yes", "on")
-                return bool(_value)
-            if _ann in (int, float, str) and not isinstance(_value, _ann):
-                return _ann(_value)
-        except (TypeError, ValueError) as _e:
-            raise TypeError("could not convert param to " + _ann.__name__ + ": " + str(_e))
-        return _value
-
-    def _fused_bind(_fn, _params):
-        try:
-            _sig = _fused_inspect.signature(_fn, eval_str=True)
-        except (NameError, TypeError):
-            _sig = _fused_inspect.signature(_fn)
-        _has_var_kw = any(
-            _p.kind is _fused_inspect.Parameter.VAR_KEYWORD for _p in _sig.parameters.values()
-        )
-        _kwargs = {{}}
-        for _nm, _p in _sig.parameters.items():
-            if _p.kind in (
-                _fused_inspect.Parameter.VAR_KEYWORD,
-                _fused_inspect.Parameter.VAR_POSITIONAL,
-            ):
-                continue
-            if _nm in _params:
-                _kwargs[_nm] = _fused_coerce(_params[_nm], _p.annotation)
-            elif _p.default is _fused_inspect.Parameter.empty:
-                raise TypeError("missing required param: " + repr(_nm))
-        if _has_var_kw:
-            for _k, _v in _params.items():
-                if _k not in _kwargs:
-                    _kwargs[_k] = _v
-        return _kwargs
+    # Param binding is `_binding.py`'s REAL source, embedded verbatim — not a
+    # re-implementation. The child cannot `import fused_render` (the local
+    # backend strips PYTHONPATH from the subprocess), which is why the logic
+    # has to travel inside the generated code at all; a hand-written copy of
+    # the same 40 lines is what drifted, and the drift was invisible — string
+    # annotations were coerced under this engine and passed through raw under
+    # the built-in one, so the same template returned "7" here and 7 there.
+    # Embedding the source means there is one implementation with two callers.
+    #
+    # exec'd into its own namespace rather than these globals: the user's
+    # module shares this global dict, and `coerce`/`bind_params`/`ParamError`
+    # are names a template could plausibly define itself (everything else the
+    # epilogue adds is `_fused_*`-prefixed for the same reason).
+    # __name__ = "__main__" so that ParamError.__module__ is a name traceback
+    # suppresses when printing the final line: the text stays
+    # "ParamError: missing required param: 'x'", which _split_error turns into
+    # the same error.type the built-in worker reports from type(e).__name__
+    # (PY-14 — both engines must surface one wire shape for one bad input).
+    _fused_binding_ns = {{"__name__": "__main__"}}
+    exec(compile({binding_source!r}, "<fused_render/_binding.py>", "exec"), _fused_binding_ns)
+    _fused_bind = _fused_binding_ns["bind_params"]
 
     def _fused_run_main():
         _fn = globals().get("main")
@@ -338,16 +346,21 @@ async def run_python(path: str, params: dict) -> dict:
     requirements = sorted(set(DEFAULT_REQUIREMENTS) | set(reqs))
 
     abs_path = os.path.abspath(path)
-    code = build_code(user_code, os.path.dirname(abs_path), abs_path)
     try:
+        # Inside the guard, not before it: build_code reads _binding.py's source
+        # off the package (importlib.resources), so a broken/partial install
+        # fails here — and every other failure in this function returns the house
+        # wire shape rather than raising into the request handler as a 500.
+        code = build_code(user_code, os.path.dirname(abs_path), abs_path)
         r = await get_backend().execute(
             code=code,
             requirements=requirements,
             input_files={"_params.json": json.dumps(params or {}).encode()},
         )
     except Exception:
-        # The backend itself blew up (import failure, venv/dep resolution,
-        # subprocess spawn…) — not the user's script. Return the same wire
+        # The engine itself blew up (wrapper construction, backend import,
+        # venv/dep resolution, subprocess spawn…) — not the user's script,
+        # whose own failures come back in `r.error`. Return the same wire
         # shape as every other failure so the page's error overlay (D17)
         # shows the full traceback, and log it so the log file has it too.
         logger.exception("fused engine execute failed for %s", path)
