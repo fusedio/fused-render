@@ -30,6 +30,70 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
 
+@pytest.fixture(scope="session")
+def warm_fused_backend_venv(tmp_path_factory):
+    """Build the fused backend's bare venv once, serialized across xdist workers.
+
+    Every real-backend test runs with `DEFAULT_REQUIREMENTS = []`, so they all
+    want the same *bare* venv under ~/.openfused/venvs. Creating it is guarded
+    only by an in-process lock inside `fused`, which is no guard at all against
+    `-n auto`: on a cold cache (a CI runner, always) N worker processes each
+    find no ready-marker, each start building the same directory, and the losers
+    die on `FileNotFoundError: <venv>/bin/python` mid-build. Cheap to reproduce —
+    `rm -rf` the venv and run the engine tests — and it fails the *tests*, which
+    reads as an engine bug rather than a test-harness race.
+
+    So the first worker to arrive builds it while the others wait on a lock file
+    in xdist's shared base temp dir (its `.parent` is common to all workers).
+    O_CREAT|O_EXCL rather than `filelock`: no dependency, and the only thing
+    needed is "exactly one process in here at a time".
+    """
+    import asyncio
+    import time
+
+    from fused_render import engine
+
+    if not engine.available():
+        return  # the tests that ask for this are skipped anyway
+
+    lock = tmp_path_factory.getbasetemp().parent / "fused-bare-venv.lock"
+    deadline = time.monotonic() + 300
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                # Don't hang the session on a lock a crashed worker left behind:
+                # break in and let the backend's own marker logic sort it out.
+                try:
+                    os.unlink(str(lock))
+                except OSError:
+                    pass
+                continue
+            time.sleep(0.2)
+    try:
+        # One trivial run through our own API (not fused internals) is what
+        # creates the venv; after this every worker's run hits the ready marker.
+        probe_dir = tmp_path_factory.mktemp("warm-venv")
+        probe = probe_dir / "warm.py"
+        probe.write_text("def main():\n    return 1\n")
+        original = engine.DEFAULT_REQUIREMENTS
+        engine.DEFAULT_REQUIREMENTS = []
+        try:
+            asyncio.run(engine.run_python(str(probe), {}))
+        finally:
+            engine.DEFAULT_REQUIREMENTS = original
+    finally:
+        # Released as soon as the venv exists — the lock serializes *creation*,
+        # not the tests that use it.
+        os.close(fd)
+        try:
+            os.unlink(str(lock))
+        except OSError:
+            pass
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.

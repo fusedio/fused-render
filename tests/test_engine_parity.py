@@ -143,6 +143,6 @@ def test_wrapper_binding_matches_builtin(tmp_path, case):
 
 @requires_fused
 @pytest.mark.parametrize("case", CASES, ids=IDS)
-def test_real_backend_binding_matches_builtin(tmp_path, case, monkeypatch):
+def test_real_backend_binding_matches_builtin(tmp_path, case, monkeypatch, warm_fused_backend_venv):
     _id, src, params, expected = case
     assert _fused_backend(tmp_path, src, params, monkeypatch) == expected

@@ -289,8 +289,28 @@ requires_fused = pytest.mark.skipif(
 )
 
 
+def test_ci_claiming_to_cover_this_engine_actually_runs_it():
+    """`engine.available()` must not be allowed to silently switch CI off.
+
+    Everything below gates on it, which is right for a dev machine or a matrix
+    entry without the extra — and wrong for the job that exists to run this
+    engine (.github/workflows/test.yml's `fused-engine`): a job that installs
+    `[fused]`, skips every test, and reports green is worse than no job. That
+    job sets FUSED_RENDER_REQUIRE_FUSED_ENGINE=1, which turns the skip
+    condition into an assertion here. Unset, this is a no-op.
+    """
+    if os.environ.get("FUSED_RENDER_REQUIRE_FUSED_ENGINE") != "1":
+        pytest.skip("only meaningful where the [fused] extra is expected")
+    assert engine.available(), (
+        "FUSED_RENDER_REQUIRE_FUSED_ENGINE=1 but the fused local backend is not "
+        "importable — the `[fused]` extra did not take effect (a direct-URL "
+        "wheel marked python_version >= '3.11': check the interpreter), so every "
+        "engine test would have skipped while the job reported success"
+    )
+
+
 @requires_fused
-def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
+def test_real_backend_runs_bare_main(monkeypatch, tmp_path, warm_fused_backend_venv):
     # Bare venv (no default data stack) so the test is fast and offline-safe.
     monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
     monkeypatch.setattr(engine, "_backend", None)
@@ -306,7 +326,7 @@ def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
 
 
 @requires_fused
-def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
+def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path, warm_fused_backend_venv):
     monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "boom.py"
