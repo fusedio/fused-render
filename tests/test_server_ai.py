@@ -3,10 +3,12 @@
 resolution (FUSED_RENDER_CLAUDE_BIN / PATH).
 
 The endpoint is driven through module-level `_ai_relay` with the subprocess
-hop (`_run_claude_cli`) mocked (the "avoid starlette TestClient" discipline of
-test_server_fs_write.py) — no test ever runs a real CLI. The runtime checks
-are string-contract checks over the shipped static/runtime.js, like
-test_runtime_cancellation.py.
+hop (`_spawn_claude_stream`) mocked (the "avoid starlette TestClient"
+discipline of test_server_fs_write.py) — no test ever runs a real CLI. The
+mock is a fake process with scripted stdout lines, since D160 drives the CLI
+in stream-json mode (spawn first, prompt later over stdin) to make the warm
+pool possible. The runtime checks are string-contract checks over the shipped
+static/runtime.js, like test_runtime_cancellation.py.
 """
 import asyncio
 import json
@@ -31,8 +33,9 @@ def _data(resp) -> dict:
     return json.loads(bytes(resp.body))
 
 
-# The real output shape of `claude -p ... --output-format json` (2.1.220),
-# trimmed to the fields the server reads plus a few it must ignore.
+# The real terminal `result` event of `claude -p ... --output-format
+# stream-json` (2.1.220), trimmed to the fields the server reads plus a few
+# it must ignore. Identical schema to the old --output-format json blob.
 _CLI_RESULT = {
     "type": "result",
     "subtype": "success",
@@ -46,45 +49,161 @@ _CLI_RESULT = {
 }
 
 
-class _FakeCLI:
-    """Stands in for server._run_claude_cli: canned (rc, stdout, stderr), or raises."""
+def _delta_line(text):
+    return json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta",
+        "delta": {"type": "text_delta", "text": text}}})
 
-    def __init__(self, stdout="", returncode=0, stderr="", exc=None):
-        self._result = (returncode, stdout, stderr)
+
+def _result_lines(payload=None, deltas=()):
+    """Scripted stdout for one turn: stream_event deltas, then the result."""
+    lines = [_delta_line(t) for t in deltas]
+    lines.append(json.dumps(payload if payload is not None else _CLI_RESULT))
+    return lines
+
+
+class _FakeStdin:
+    def __init__(self, proc):
+        self._proc = proc
+        self.written = b""
+
+    def write(self, data):
+        if self._proc.stdin_broken:
+            raise OSError("broken pipe")
+        self.written += data
+
+    async def drain(self):
+        pass
+
+
+class _FakeStdout:
+    def __init__(self, proc):
+        self._proc = proc
+
+    async def readline(self):
+        if self._proc.hang:
+            await asyncio.sleep(3600)
+        if self._proc._lines:
+            return self._proc._lines.pop(0).encode("utf-8") + b"\n"
+        self._proc.returncode = self._proc.exit_code  # EOF: process is done
+        return b""
+
+
+class _FakeStderr:
+    def __init__(self, proc):
+        self._proc = proc
+
+    async def read(self):
+        return self._proc.stderr_bytes
+
+
+class _FakeProc:
+    """Stands in for the process _spawn_claude_stream returns: scripted
+    stdout lines, captured stdin, and alive/dead simulation."""
+
+    def __init__(self, lines=None, exit_code=0, stderr=b"", hang=False,
+                 stdin_broken=False, returncode=None):
+        self._lines = list(lines if lines is not None else _result_lines())
+        self.exit_code = exit_code
+        self.stderr_bytes = stderr
+        self.hang = hang
+        self.stdin_broken = stdin_broken
+        self.returncode = returncode  # None = alive
+        self.pid = 4242
+        self.killed = False
+        self.stdin = _FakeStdin(self)
+        self.stdout = _FakeStdout(self)
+        self.stderr = _FakeStderr(self)
+
+    def kill(self):
+        self.killed = True
+        if self.returncode is None:
+            self.returncode = -9
+
+    async def wait(self):
+        if self.returncode is None:
+            self.returncode = self.exit_code
+        return self.returncode
+
+    @property
+    def message(self):
+        """The stream-json user message written to stdin, parsed."""
+        return json.loads(self.stdin.written)
+
+
+class _FakeSpawn:
+    """Stands in for server._spawn_claude_stream: hands out _FakeProcs (one
+    per spawn, from `factory`), or raises. `cmd` is an argv list, or one
+    command string on the Windows .cmd-shim path (matching _popen_cmd)."""
+
+    def __init__(self, factory=_FakeProc, exc=None):
+        self._factory = factory
         self._exc = exc
-        self.calls = []  # (argv, env, timeout, stdin_text) of every run
-        self.sp_contents = {}  # --system-prompt-file path -> its text AT CALL TIME
+        self.calls = []  # (cmd, env) of every spawn
+        self.procs = []  # every proc handed out
+        self.system_prompts = []  # --system-prompt-file content per spawn
 
-    async def __call__(self, argv, env, timeout, stdin_text=""):
-        self.calls.append((argv, env, timeout, stdin_text))
-        # Snapshot the system-prompt file now — the relay deletes it after.
-        if "--system-prompt-file" in argv:
-            path = argv[argv.index("--system-prompt-file") + 1]
-            self.sp_contents[path] = Path(path).read_text(encoding="utf-8")
+    async def __call__(self, cmd, env):
+        self.calls.append((cmd, env))
+        if isinstance(cmd, list) and "--system-prompt-file" in cmd:
+            # capture now: the temp file is unlinked when the proc is reaped
+            path = cmd[cmd.index("--system-prompt-file") + 1]
+            self.system_prompts.append(
+                Path(path).read_text(encoding="utf-8"))
         if self._exc is not None:
             raise self._exc
-        return self._result
+        proc = self._factory()
+        self.procs.append(proc)
+        return proc
 
 
-def _cli_ok(monkeypatch, payload=None, **kwargs):
+def _cli_ok(monkeypatch, payload=None, prewarm=True, **kwargs):
     if payload is not None:
-        kwargs["stdout"] = json.dumps(payload)
-    fake = _FakeCLI(**kwargs)
-    monkeypatch.setattr(server, "_run_claude_cli", fake)
-    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/local/bin/claude")
+        kwargs["lines"] = _result_lines(payload)
+    fake = _FakeSpawn(factory=lambda: _FakeProc(**kwargs)) \
+        if "exc" not in kwargs else _FakeSpawn(exc=kwargs["exc"])
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(server, "_AI_POOL", server._AiWarmPool())
+    if not prewarm:
+        monkeypatch.setattr(server._AI_POOL, "prewarm", lambda config: None)
+    monkeypatch.setattr(server.shutil, "which",
+                        lambda name: "/usr/local/bin/claude")
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     return fake
+
+
+def _default_config(bin_path="/usr/local/bin/claude"):
+    return (bin_path, server._AI_DEFAULT_MODEL,
+            server._AI_DEFAULT_SYSTEM_PROMPT,
+            server._AI_EFFORT_TOKENS["medium"])
+
+
+def _seed_warm(proc, config):
+    """Put a warm process in the pool as take() would find it."""
+    server._AI_POOL._proc = proc
+    server._AI_POOL._config = config
 
 
 def _flag(argv, name):
     return argv[argv.index(name) + 1]
 
 
+def _stream(body):
+    """Drive a streaming _relay to completion; return (resp, ndjson frames)."""
+    async def go():
+        resp = await server._ai_relay(body)
+        frames = []
+        async for chunk in resp.body_iterator:
+            frames.extend(json.loads(l) for l in chunk.splitlines() if l)
+        return resp, frames
+    return asyncio.run(go())
+
+
 # -- happy path -----------------------------------------------------------------
 
 
 def test_relay_happy_path(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 200
     data = _data(resp)
@@ -92,24 +211,23 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
     assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
-    # One CLI invocation: the prompt over stdin (argv has an OS size cap), the
-    # default model, the default system prompt, a bare one-shot (no tools, no
-    # settings, no session), and the medium effort default carried as the
+    # One CLI spawn: stream-json in and out (the D160 warm-pool spawn shape;
+    # --verbose is mandatory with stream-json output), the prompt over stdin
+    # as a JSON user message (argv has an OS size cap), the default model,
+    # the default system prompt, a bare one-shot (no tools, no settings, no
+    # session), and the medium effort default carried as the
     # max-output-tokens env var.
-    (argv, env, timeout, stdin_text), = fake.calls
+    (argv, env), = fake.calls
     assert argv[0] == "/usr/local/bin/claude"
     assert "-p" in argv
-    assert stdin_text == "hello"
-    assert "hello" not in argv  # prompt travels over stdin, never argv
-    assert _flag(argv, "--output-format") == "json"
+    assert _flag(argv, "--input-format") == "stream-json"
+    assert _flag(argv, "--output-format") == "stream-json"
+    assert "--include-partial-messages" in argv
+    assert "--verbose" in argv
     assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
-    # System prompt rides a temp FILE, never argv (cmd.exe re-parses argv on
-    # the Windows shim path; file content is immune). The file is gone after
-    # the call.
-    sp_path = _flag(argv, "--system-prompt-file")
-    assert fake.sp_contents[sp_path] == server._AI_DEFAULT_SYSTEM_PROMPT
-    assert not Path(sp_path).exists()
-    assert server._AI_DEFAULT_SYSTEM_PROMPT not in argv
+    # No user text in argv: the system prompt travels via a temp file
+    # (cmd.exe on the shim path re-parses argv; see _ai_cmd).
+    assert fake.system_prompts == [server._AI_DEFAULT_SYSTEM_PROMPT]
     # Equals form as ONE token — a separate "" element is dropped by cmd.exe's
     # %* expansion behind a Windows .cmd shim, re-enabling tools/settings.
     assert "--tools=" in argv
@@ -117,44 +235,58 @@ def test_relay_happy_path(monkeypatch):
     assert "" not in argv
     assert "--no-session-persistence" in argv
     assert _flag(argv, "--max-turns") == "1"
+    assert "hello" not in argv  # prompt travels over stdin, never argv
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
-    assert timeout == server._AI_TIMEOUT_S
+    assert env["MAX_THINKING_TOKENS"] == "0"  # stream-json defaults it ON
+    # The used process is never reused (context accumulates in-process).
+    proc, = fake.procs
+    assert proc.killed
+
+
+def test_relay_writes_the_stream_json_user_message(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    _relay({"prompt": "hello"})
+    proc, = fake.procs
+    assert proc.stdin.written.endswith(b"\n")
+    assert proc.message == {"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "hello"}]}}
 
 
 def test_relay_options_reach_the_cli(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
-    (argv, env, _, _), = fake.calls
+    (argv, env), = fake.calls
     assert _flag(argv, "--model") == "claude-sonnet-5"
-    sp_path = _flag(argv, "--system-prompt-file")
-    assert fake.sp_contents[sp_path] == "be terse"
+    assert fake.system_prompts == ["be terse"]
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"  # effort: high
+    assert env["MAX_THINKING_TOKENS"] == "0"
 
 
 def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
-    (_, env, _, _), = fake.calls
+    (_, env), = fake.calls
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "99"
+    assert env["MAX_THINKING_TOKENS"] == "0"
 
 
 def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
     # The schema guarantee (RH-11): usage is null or EXACTLY
     # {input_tokens, output_tokens} — extra CLI keys stripped, and a missing
     # or malformed block degrades to null rather than leaking through.
-    _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
+    _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)  # has cache_* extras
     usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
     assert usage == {"input_tokens": 3, "output_tokens": 2}
 
     for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
                 {"input_tokens": "3", "output_tokens": 2},        # wrong type
                 {"input_tokens": True, "output_tokens": 2}):      # bool
-        _cli_ok(monkeypatch, {**_CLI_RESULT, "usage": bad})
+        _cli_ok(monkeypatch, {**_CLI_RESULT, "usage": bad}, prewarm=False)
         assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
     payload = dict(_CLI_RESULT)
     del payload["usage"]
-    _cli_ok(monkeypatch, payload)
+    _cli_ok(monkeypatch, payload, prewarm=False)
     assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
 
 
@@ -162,11 +294,195 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     # A model alias goes to the CLI as-is, but the response echoes the full id
     # the CLI actually ran (the modelUsage key).
     fake = _cli_ok(monkeypatch, dict(
-        _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
+        _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}),
+        prewarm=False)
     resp = _relay({"prompt": "hello", "model": "sonnet"})
-    (argv, _, _, _), = fake.calls
+    (argv, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
     assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
+
+
+def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
+    # Warm processes always run --include-partial-messages (one spawn shape
+    # serves both modes); the extra stream_event lines are just skipped.
+    _cli_ok(monkeypatch, prewarm=False,
+            lines=_result_lines(deltas=["hi ", "there"]))
+    data = _data(_relay({"prompt": "hello"}))
+    assert data["ok"] is True
+    assert data["result"]["text"] == "hi there"
+
+
+# -- streaming ------------------------------------------------------------------
+
+
+def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
+    _cli_ok(monkeypatch, prewarm=False,
+            lines=_result_lines(deltas=["hi ", "there"]))
+    resp, frames = _stream({"prompt": "hello", "stream": True})
+    assert resp.status_code == 200
+    assert resp.media_type == "text/x-ndjson"
+    assert frames[:2] == [{"type": "chunk", "text": "hi "},
+                          {"type": "chunk", "text": "there"}]
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is True
+    # Same result schema as the non-streaming response.
+    assert done["result"] == {
+        "text": "hi there", "model": "claude-haiku-4-5-20251001",
+        "usage": {"input_tokens": 3, "output_tokens": 2}}
+
+
+def test_relay_stream_skips_thinking_deltas(monkeypatch):
+    thinking = json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta",
+        "delta": {"type": "thinking_delta", "thinking": "hmm"}}})
+    _cli_ok(monkeypatch, prewarm=False,
+            lines=[thinking, _delta_line("hi"), json.dumps(_CLI_RESULT)])
+    _, frames = _stream({"prompt": "x", "stream": True})
+    assert [f for f in frames if f["type"] == "chunk"] == [
+        {"type": "chunk", "text": "hi"}]
+
+
+def test_relay_stream_error_is_a_done_frame(monkeypatch):
+    # The process dies mid-stream: HTTP status is already 200, so the error
+    # travels as the terminal ok:false done frame.
+    _cli_ok(monkeypatch, prewarm=False,
+            lines=[_delta_line("hi")],  # then EOF, no result event
+            exit_code=1, stderr=b"something broke")
+    resp, frames = _stream({"prompt": "x", "stream": True})
+    assert resp.status_code == 200
+    assert frames[0] == {"type": "chunk", "text": "hi"}
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is False
+    assert done["error"]["type"] == "ai_error"
+    assert "something broke" in done["error"]["message"]
+
+
+def test_relay_stream_validation_errors_are_plain_json(monkeypatch):
+    # Validation happens before any streaming starts, so a bad body is the
+    # ordinary 400 JSON even with stream requested.
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    resp = _relay({"prompt": "", "stream": True})
+    assert resp.status_code == 400
+    assert _data(resp)["error"]["type"] == "bad_request"
+    resp = _relay({"prompt": "x", "stream": "yes"})
+    assert resp.status_code == 400
+    assert fake.calls == []
+
+
+# -- warm pool ------------------------------------------------------------------
+
+
+def test_relay_uses_the_prewarmed_process(monkeypatch):
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc()
+    _seed_warm(warm, _default_config())
+    prewarms = []
+    monkeypatch.setattr(server._AI_POOL, "prewarm", prewarms.append)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert fake.calls == []  # no fresh spawn: the warm process served it
+    assert warm.message["message"]["content"][0]["text"] == "hello"
+    assert warm.killed  # used once, then reaped
+    # A replacement prewarm was triggered for the config just used.
+    assert prewarms == [_default_config()]
+
+
+def test_relay_config_mismatch_spawns_fresh(monkeypatch):
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc()
+    _seed_warm(warm, _default_config())
+    resp = _relay({"prompt": "hello", "model": "claude-sonnet-5"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 1  # fresh spawn, warm process not usable
+    assert warm.stdin.written == b""  # the mismatched process saw no prompt
+    assert warm.killed  # ...and was reaped, not kept
+
+
+def test_relay_dead_warm_process_spawns_fresh(monkeypatch):
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc(returncode=1)  # died while idle (auth expiry, crash)
+    _seed_warm(warm, _default_config())
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 1
+    assert warm.stdin.written == b""
+
+
+def test_relay_warm_process_failing_midcall_retries_fresh_once(monkeypatch):
+    # take()'s returncode check can't see every way an idle process went bad;
+    # a warm process that fails before producing anything gets one fresh
+    # retry, invisible to the caller.
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc(stdin_broken=True)
+    _seed_warm(warm, _default_config())
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 1  # the retry spawn
+    assert fake.procs[0].message["message"]["content"][0]["text"] == "hello"
+
+
+def test_relay_concurrent_requests_do_not_share_the_warm_process(monkeypatch):
+    fake = _cli_ok(monkeypatch, prewarm=False)
+    warm = _FakeProc()
+    _seed_warm(warm, _default_config())
+
+    async def go():
+        return await asyncio.gather(
+            server._ai_relay({"prompt": "a"}),
+            server._ai_relay({"prompt": "b"}))
+
+    r1, r2 = asyncio.run(go())
+    assert _data(r1)["ok"] is True and _data(r2)["ok"] is True
+    # Exactly one of them got the warm process; the other spawned fresh.
+    assert len(fake.calls) == 1
+    prompts = {warm.message["message"]["content"][0]["text"],
+               fake.procs[0].message["message"]["content"][0]["text"]}
+    assert prompts == {"a", "b"}
+
+
+def test_pool_prewarm_spawns_and_take_consumes(monkeypatch):
+    fake = _FakeSpawn()
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    pool = server._AiWarmPool()
+    config = _default_config()
+
+    async def go():
+        pool.prewarm(config)
+        await pool._spawn_task
+        assert pool._proc is fake.procs[0]
+        # matching take() hands it out and empties the slot
+        assert await pool.take(config) is fake.procs[0]
+        assert await pool.take(config) is None
+        await pool.shutdown()
+
+    asyncio.run(go())
+    (argv, env), = fake.calls
+    assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
+    assert fake.system_prompts == [server._AI_DEFAULT_SYSTEM_PROMPT]
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
+    assert env["MAX_THINKING_TOKENS"] == "0"
+
+
+def test_pool_prewarm_default_skips_when_binary_missing(monkeypatch):
+    # Startup must not error on a machine without Claude Code installed.
+    fake = _FakeSpawn()
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
+    pool = server._AiWarmPool()
+    pool.prewarm_default()
+    assert pool._spawn_task is None
+    assert fake.calls == []
+
+
+def test_pool_shutdown_reaps_the_warm_process(monkeypatch):
+    pool = server._AiWarmPool()
+    warm = _FakeProc()
+    pool._proc, pool._config = warm, _default_config()
+    asyncio.run(pool.shutdown())
+    assert warm.killed
+    assert pool._proc is None
 
 
 # -- bad requests ---------------------------------------------------------------
@@ -179,7 +495,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     {"prompt": 42},           # wrong type
 ])
 def test_relay_rejects_bad_prompt(monkeypatch, body):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     resp = _relay(body)
     assert resp.status_code == 400
     data = _data(resp)
@@ -192,17 +508,18 @@ def test_relay_large_prompt_travels_over_stdin(monkeypatch):
     # The documented fused.ai pattern embeds JSON aggregates in the prompt; a
     # ~200KB one would blow the OS argv cap (~32K Windows), so it must never
     # appear in argv.
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     big = "x" * 200_000
     resp = _relay({"prompt": big})
     assert resp.status_code == 200
-    (argv, _, _, stdin_text), = fake.calls
-    assert stdin_text == big
+    (argv, _), = fake.calls
     assert all(len(a) < 1000 for a in argv)
+    proc, = fake.procs
+    assert proc.message["message"]["content"][0]["text"] == big
 
 
 def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     for body in ({"prompt": "x", "effort": "extreme"},
                  {"prompt": "x", "max_tokens": 0},
                  {"prompt": "x", "max_tokens": True},
@@ -210,14 +527,7 @@ def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
                  {"prompt": "x", "model": 42},
                  {"prompt": "x", "model": ""},
                  {"prompt": "x", "model": "   "},
-                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]},
-                 # closed charset — argv is re-parsed by cmd.exe behind a
-                 # Windows .cmd shim, so metacharacters are a 400, not a pass
-                 {"prompt": "x", "model": "haiku&calc.exe"},
-                 {"prompt": "x", "model": "haiku|whoami"},
-                 {"prompt": "x", "model": "%TEMP%"},
-                 {"prompt": "x", "model": 'haiku"'},
-                 {"prompt": "x", "model": "haiku sonnet"}):
+                 {"prompt": "x", "model": ["claude-haiku-4-5-20251001"]}):
         resp = _relay(body)
         assert resp.status_code == 400
         assert _data(resp)["error"]["type"] == "bad_request"
@@ -228,8 +538,9 @@ def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
 
 
 def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
-    fake = _FakeCLI(stdout=json.dumps(_CLI_RESULT))
-    monkeypatch.setattr(server, "_run_claude_cli", fake)
+    fake = _FakeSpawn()
+    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(server, "_AI_POOL", server._AiWarmPool())
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     # neutralize the install-dir fallbacks (the dev machine may really have one)
@@ -244,8 +555,16 @@ def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
     assert fake.calls == []
 
 
+def test_relay_spawn_oserror_is_ai_unavailable(monkeypatch):
+    _cli_ok(monkeypatch, prewarm=False, exc=OSError("exec format error"))
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 502
+    assert _data(resp)["error"]["type"] == "ai_unavailable"
+
+
 def test_relay_nonzero_exit_is_ai_error(monkeypatch):
-    _cli_ok(monkeypatch, returncode=1, stderr="Invalid model name: nope")
+    _cli_ok(monkeypatch, prewarm=False, lines=[], exit_code=1,
+            stderr=b"Invalid model name: nope")
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     data = _data(resp)
@@ -254,17 +573,17 @@ def test_relay_nonzero_exit_is_ai_error(monkeypatch):
 
 
 def test_relay_timeout_is_timeout(monkeypatch):
-    fake = _cli_ok(monkeypatch, exc=asyncio.TimeoutError())
+    _cli_ok(monkeypatch, prewarm=False, hang=True)
+    monkeypatch.setattr(server, "_AI_TIMEOUT_S", 0.05)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     assert _data(resp)["error"]["type"] == "timeout"
-    # The system-prompt temp file is cleaned up on the failure path too.
-    (argv, _, _, _), = fake.calls
-    assert not Path(_flag(argv, "--system-prompt-file")).exists()
 
 
 def test_relay_unparseable_stdout_is_ai_error(monkeypatch):
-    _cli_ok(monkeypatch, stdout="not json at all")
+    # Non-JSON noise between events is tolerated; a stream that ENDS without
+    # ever producing a result event is an error.
+    _cli_ok(monkeypatch, prewarm=False, lines=["not json at all"])
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["error"]["type"] == "ai_error"
 
@@ -272,7 +591,7 @@ def test_relay_unparseable_stdout_is_ai_error(monkeypatch):
 def test_relay_is_error_result_is_ai_error(monkeypatch):
     _cli_ok(monkeypatch, dict(
         _CLI_RESULT, is_error=True, subtype="error_during_execution",
-        result="something broke"))
+        result="something broke"), prewarm=False)
     resp = _relay({"prompt": "hello"})
     data = _data(resp)
     assert data["error"]["type"] == "ai_error"
@@ -280,9 +599,10 @@ def test_relay_is_error_result_is_ai_error(monkeypatch):
 
 
 def test_relay_stderr_warnings_are_ignored_on_success(monkeypatch):
-    # A zero exit with noise on stderr (connector notices etc.) is a success.
-    _cli_ok(monkeypatch, stdout=json.dumps(_CLI_RESULT),
-            stderr="Warning: some connector notice")
+    # A clean result with noise on stderr (connector notices etc.) is a
+    # success — stderr is only consulted when the process dies.
+    _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False,
+            stderr=b"Warning: some connector notice")
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["ok"] is True
 
@@ -399,14 +719,15 @@ def test_the_resolver_never_imports_the_chat_template():
 
 
 def test_relay_uses_the_overridden_binary(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
     _relay({"prompt": "hello"})
-    (argv, _, _, _), = fake.calls
+    (argv, _), = fake.calls
     assert argv[0] == "/opt/custom/claude"
 
 
 # -- the windows .cmd shim hop ----------------------------------------------------
+
 
 def test_a_plain_binary_is_execed_as_an_argv_list(monkeypatch):
     # Only a .cmd/.bat shim needs the cmd.exe hop. A real .exe — and anything
@@ -458,18 +779,22 @@ def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
 
 
 def test_relay_runs_windows_shims_through_cmd(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
     shim = r"C:\Users\John Doe\npm\claude.cmd"
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", shim)
+    # the reap path goes through taskkill on "win32" — neutralize it here
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(server.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
     # The event loop must exist before sys.platform reads "win32", or
     # asyncio.run tries to build the real Windows proactor loop on this box.
     loop = asyncio.new_event_loop()
+    monkeypatch.setattr(server.sys, "platform", "win32")
     try:
-        monkeypatch.setattr(server.sys, "platform", "win32")
         loop.run_until_complete(server._ai_relay({"prompt": "hello"}))
     finally:
         loop.close()
-    (cmd, _, _, _), = fake.calls
+    (cmd, _), = fake.calls
     assert isinstance(cmd, str)
     assert cmd.startswith(f'"{shim}" ')
     # the temp system-prompt path is quoted too — it lives under a Windows
@@ -487,9 +812,6 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
     class _Proc:
         returncode = 0
 
-        async def communicate(self, input=None):
-            return b"{}", b""
-
     async def fake_shell(cmd, **kw):
         seen["shell"] = cmd
         return _Proc()
@@ -502,12 +824,12 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     payload = '"C:\\p ath\\claude.cmd" "-p"'
-    asyncio.run(server._run_claude_cli(payload, dict(os.environ), 5))
+    asyncio.run(server._spawn_claude_stream(payload, dict(os.environ)))
     assert seen == {"shell": payload}
 
     seen.clear()
-    asyncio.run(server._run_claude_cli(["/usr/local/bin/claude", "-p"],
-                                       dict(os.environ), 5))
+    asyncio.run(server._spawn_claude_stream(["/usr/local/bin/claude", "-p"],
+                                            dict(os.environ)))
     assert seen == {"exec": ["/usr/local/bin/claude", "-p"]}
 
 
