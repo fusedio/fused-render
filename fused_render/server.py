@@ -828,21 +828,27 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
-# --- /api/ai — relay to a local OpenAI-compatible proxy ----------------------
+# --- /api/ai — inference through the Claude Code CLI --------------------------
 #
-# fused.ai(prompt, opts) lands here. The shell relays to a proxy the user runs
-# on their own machine (base URL from shell/prefs.ai_base_url, default the CLI
-# proxy at 127.0.0.1:8317) rather than pages fetching it directly: the page
-# stays origin-clean (no cross-origin call, no proxy URL baked into authored
-# HTML), and the relay is one place to grow config/limits later. Wire shape is
-# the house {ok, result, error:{type,message}} contract /api/run set. MVP: no
-# streaming.
+# fused.ai(prompt, opts) lands here. The shell invokes the `claude` binary the
+# user already has (Claude Code — its login is the credential) rather than
+# pages fetching a model directly: the page stays origin-clean (no API key or
+# endpoint baked into authored HTML), and the server is one place to grow
+# config/limits later. Wire shape is the house {ok, result,
+# error:{type,message}} contract /api/run set. MVP: no streaming.
+#
+# The CLI is driven as a pure one-shot completion: --tools "" disables every
+# built-in tool, --setting-sources "" skips user/project settings and
+# CLAUDE.md, --system-prompt REPLACES the shipped agent prompt, --max-turns 1
+# and --no-session-persistence keep it a single stateless call.
 
-# `effort` is author-facing shorthand; MVP maps it to max_tokens only (the
-# proxy's chat/completions shape has no portable reasoning-effort field).
+# `effort` is author-facing shorthand; MVP maps it to max output tokens only
+# (via CLAUDE_CODE_MAX_OUTPUT_TOKENS — the CLI has no per-call flag for it).
 _AI_EFFORT_TOKENS = {"low": 1024, "medium": 4096, "high": 16384}
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 120.0
+_AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -852,11 +858,39 @@ def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
     )
 
 
+def _claude_bin() -> str | None:
+    """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH."""
+    forced = os.environ.get(_AI_BIN_ENV)
+    if forced:
+        return forced
+    return shutil.which("claude")
+
+
+async def _run_claude_cli(argv: list[str], env: dict, timeout: float):
+    """Run the claude CLI once; return (returncode, stdout, stderr) as text.
+
+    The single subprocess hop, module-level so tests can patch it — the same
+    discipline as _fs_stat/_fs_write. Raises asyncio.TimeoutError after
+    `timeout` seconds (the process is killed first)."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, env=env,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
+    return (proc.returncode,
+            stdout.decode("utf-8", "replace"),
+            stderr.decode("utf-8", "replace"))
+
+
 async def _ai_relay(body: dict) -> JSONResponse:
-    """Validate an /api/ai body and relay it to the proxy's /v1/chat/completions.
+    """Validate an /api/ai body and run one claude CLI completion.
 
     Module-level (not a closure) so tests can drive it directly and mock the
-    HTTP hop — the same discipline as _fs_stat/_fs_write."""
+    subprocess hop (_run_claude_cli)."""
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _ai_error(
@@ -879,37 +913,67 @@ async def _ai_relay(body: dict) -> JSONResponse:
     if max_tokens is None:
         max_tokens = _AI_EFFORT_TOKENS[effort or "medium"]
 
-    messages = []
     system_prompt = body.get("system_prompt")
-    if isinstance(system_prompt, str) and system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    if not (isinstance(system_prompt, str) and system_prompt):
+        system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
 
-    base = shell_prefs.ai_base_url().rstrip("/")
-    url = base + "/v1/chat/completions"
-    payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(_AI_TIMEOUT_S)) as client:
-            r = await client.post(url, json=payload)
-    except httpx.HTTPError as exc:
+    bin_path = _claude_bin()
+    if not bin_path:
         return _ai_error(
             "ai_unavailable",
-            f"could not reach the AI proxy at {base} ({exc.__class__.__name__}); "
-            "is it running?")
-    if r.status_code != 200:
-        snippet = r.text[:500]
-        return _ai_error(
-            "ai_error", f"AI proxy returned HTTP {r.status_code}: {snippet}")
+            "claude binary not found on PATH; install Claude Code or set "
+            f"{_AI_BIN_ENV} to its location")
+
+    argv = [
+        bin_path, "-p", prompt,
+        "--output-format", "json",
+        "--model", model,
+        "--system-prompt", system_prompt,
+        "--tools", "",
+        "--setting-sources", "",
+        "--no-session-persistence",
+        "--max-turns", "1",
+    ]
+    env = dict(os.environ)
+    env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
     try:
-        data = r.json()
-        text = data["choices"][0]["message"]["content"]
+        returncode, stdout, stderr = await _run_claude_cli(
+            argv, env, _AI_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return _ai_error(
+            "timeout", f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+    except OSError as exc:
+        return _ai_error(
+            "ai_unavailable", f"could not run the claude CLI at {bin_path}: {exc}")
+    if returncode != 0:
+        tail = (stderr or stdout).strip()[-500:]
+        return _ai_error(
+            "ai_error", f"claude CLI exited with code {returncode}: {tail}")
+    # Stderr may carry warnings (connector notices etc.) — only the exit code
+    # and stdout decide the outcome.
+    try:
+        data = json.loads(stdout)
+        text = data["result"]
     except (ValueError, LookupError, TypeError):
         return _ai_error(
-            "ai_error", "AI proxy returned an unexpected response shape")
+            "ai_error", "claude CLI returned an unexpected response shape")
+    if data.get("is_error") or data.get("subtype") not in (None, "success"):
+        return _ai_error(
+            "ai_error", f"claude CLI reported an error: {str(text)[:500]}")
+    # The requested model may be an alias (haiku/sonnet/opus); modelUsage is
+    # keyed by the full id the CLI actually ran, so prefer that for the echo.
+    model_usage = data.get("modelUsage")
+    used_model = model
+    if isinstance(model_usage, dict) and len(model_usage) == 1:
+        used_model = next(iter(model_usage))
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        usage = {k: usage[k] for k in ("input_tokens", "output_tokens")
+                 if k in usage}
     return JSONResponse({"ok": True, "result": {
         "text": text,
-        "model": data.get("model", model),
-        "usage": data.get("usage"),
+        "model": used_model,
+        "usage": usage,
     }})
 
 
@@ -4102,8 +4166,8 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.post("/api/ai")
     async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        # fused.ai() relay — validation and the proxy hop live in _ai_relay
-        # (module-level so tests can drive it with the HTTP call mocked).
+        # fused.ai() — validation and the claude CLI hop live in _ai_relay
+        # (module-level so tests can drive it with the subprocess mocked).
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard

@@ -1,23 +1,22 @@
-"""Tests for fused.ai (SPEC RH-11): the /api/ai relay to a local
-OpenAI-compatible proxy, the runtime surface that calls it, and the
-`ai_base_url` preference resolution (shell/prefs.py).
+"""Tests for fused.ai (SPEC RH-11): the /api/ai endpoint backed by the claude
+(Claude Code) CLI, the runtime surface that calls it, and the binary
+resolution (FUSED_RENDER_CLAUDE_BIN / PATH).
 
-The relay is driven through module-level `_ai_relay` with the httpx hop mocked
-(the "avoid starlette TestClient" discipline of test_server_fs_write.py) — no
-test ever talks to a real proxy. The runtime checks are string-contract checks
-over the shipped static/runtime.js, like test_runtime_cancellation.py.
+The endpoint is driven through module-level `_ai_relay` with the subprocess
+hop (`_run_claude_cli`) mocked (the "avoid starlette TestClient" discipline of
+test_server_fs_write.py) — no test ever runs a real CLI. The runtime checks
+are string-contract checks over the shipped static/runtime.js, like
+test_runtime_cancellation.py.
 """
 import asyncio
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
 import fused_render
 from fused_render import server
 from fused_render.export import plan_export
-from fused_render.shell import prefs
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
@@ -31,83 +30,105 @@ def _data(resp) -> dict:
     return json.loads(bytes(resp.body))
 
 
-class _FakeClient:
-    """Stands in for httpx.AsyncClient: returns a canned response, or raises."""
+# The real output shape of `claude -p ... --output-format json` (2.1.220),
+# trimmed to the fields the server reads plus a few it must ignore.
+_CLI_RESULT = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "duration_ms": 1234,
+    "result": "hi there",
+    "total_cost_usd": 0.0011,
+    "usage": {"input_tokens": 3, "output_tokens": 2,
+              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+    "modelUsage": {"claude-haiku-4-5-20251001": {"inputTokens": 3}},
+}
 
-    def __init__(self, response=None, exc=None):
-        self._response = response
+
+class _FakeCLI:
+    """Stands in for server._run_claude_cli: canned (rc, stdout, stderr), or raises."""
+
+    def __init__(self, stdout="", returncode=0, stderr="", exc=None):
+        self._result = (returncode, stdout, stderr)
         self._exc = exc
-        self.requests = []  # (url, json_payload) of every post
+        self.calls = []  # (argv, env, timeout) of every run
 
-    def __call__(self, *args, **kwargs):  # the AsyncClient(...) constructor call
-        return self
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc_info):
-        return False
-
-    async def post(self, url, json=None):
-        self.requests.append((url, json))
+    async def __call__(self, argv, env, timeout):
+        self.calls.append((argv, env, timeout))
         if self._exc is not None:
             raise self._exc
-        return self._response
+        return self._result
 
 
-def _proxy_ok(monkeypatch, payload, status=200):
-    fake = _FakeClient(response=httpx.Response(
-        status, json=payload) if isinstance(payload, dict) else httpx.Response(
-        status, text=payload))
-    monkeypatch.setattr(server.httpx, "AsyncClient", fake)
+def _cli_ok(monkeypatch, payload=None, **kwargs):
+    if payload is not None:
+        kwargs["stdout"] = json.dumps(payload)
+    fake = _FakeCLI(**kwargs)
+    monkeypatch.setattr(server, "_run_claude_cli", fake)
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/local/bin/claude")
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     return fake
 
 
-_COMPLETION = {
-    "choices": [{"message": {"role": "assistant", "content": "hi there"},
-                 "finish_reason": "stop"}],
-    "usage": {"prompt_tokens": 3, "completion_tokens": 2},
-    "model": "claude-haiku-4-5-20251001",
-}
+def _flag(argv, name):
+    return argv[argv.index(name) + 1]
 
 
 # -- happy path -----------------------------------------------------------------
 
 
 def test_relay_happy_path(monkeypatch):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 200
     data = _data(resp)
     assert data["ok"] is True
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
-    assert data["result"]["usage"]["completion_tokens"] == 2
-    # One POST to the proxy's chat/completions with the default model and the
-    # medium effort default (4096 tokens), user message only (no system prompt).
-    (url, payload), = fake.requests
-    assert url.endswith("/v1/chat/completions")
-    assert payload["model"] == server._AI_DEFAULT_MODEL
-    assert payload["max_tokens"] == 4096
-    assert payload["messages"] == [{"role": "user", "content": "hello"}]
+    assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    # One CLI invocation: the prompt as argv, the default model, the default
+    # system prompt, a bare one-shot (no tools, no settings, no session), and
+    # the medium effort default carried as the max-output-tokens env var.
+    (argv, env, timeout), = fake.calls
+    assert argv[0] == "/usr/local/bin/claude"
+    assert _flag(argv, "-p") == "hello"
+    assert _flag(argv, "--output-format") == "json"
+    assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
+    assert _flag(argv, "--system-prompt") == server._AI_DEFAULT_SYSTEM_PROMPT
+    assert _flag(argv, "--tools") == ""
+    assert _flag(argv, "--setting-sources") == ""
+    assert "--no-session-persistence" in argv
+    assert _flag(argv, "--max-turns") == "1"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
+    assert timeout == server._AI_TIMEOUT_S
 
 
-def test_relay_options_reach_the_proxy(monkeypatch):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
+def test_relay_options_reach_the_cli(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
-    (_, payload), = fake.requests
-    assert payload["model"] == "claude-sonnet-5"
-    assert payload["max_tokens"] == 16384  # effort: high
-    assert payload["messages"][0] == {"role": "system", "content": "be terse"}
-    assert payload["messages"][1] == {"role": "user", "content": "hello"}
+    (argv, env, _), = fake.calls
+    assert _flag(argv, "--model") == "claude-sonnet-5"
+    assert _flag(argv, "--system-prompt") == "be terse"
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"  # effort: high
 
 
 def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
-    (_, payload), = fake.requests
-    assert payload["max_tokens"] == 99
+    (_, env, _), = fake.calls
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "99"
+
+
+def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
+    # A model alias goes to the CLI as-is, but the response echoes the full id
+    # the CLI actually ran (the modelUsage key).
+    fake = _cli_ok(monkeypatch, dict(
+        _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
+    resp = _relay({"prompt": "hello", "model": "sonnet"})
+    (argv, _, _), = fake.calls
+    assert _flag(argv, "--model") == "sonnet"
+    assert _data(resp)["result"]["model"] == "claude-sonnet-5-20250929"
 
 
 # -- bad requests ---------------------------------------------------------------
@@ -120,17 +141,17 @@ def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
     {"prompt": 42},           # wrong type
 ])
 def test_relay_rejects_bad_prompt(monkeypatch, body):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     resp = _relay(body)
     assert resp.status_code == 400
     data = _data(resp)
     assert data["ok"] is False
     assert data["error"]["type"] == "bad_request"
-    assert fake.requests == []  # never reached the proxy
+    assert fake.calls == []  # never reached the CLI
 
 
 def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     for body in ({"prompt": "x", "effort": "extreme"},
                  {"prompt": "x", "max_tokens": 0},
                  {"prompt": "x", "max_tokens": True},
@@ -138,62 +159,84 @@ def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
         resp = _relay(body)
         assert resp.status_code == 400
         assert _data(resp)["error"]["type"] == "bad_request"
-    assert fake.requests == []
+    assert fake.calls == []
 
 
-# -- proxy failures -------------------------------------------------------------
+# -- CLI failures ---------------------------------------------------------------
 
 
-def test_relay_proxy_down_is_ai_unavailable(monkeypatch):
-    fake = _FakeClient(exc=httpx.ConnectError("refused"))
-    monkeypatch.setattr(server.httpx, "AsyncClient", fake)
+def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
+    fake = _FakeCLI(stdout=json.dumps(_CLI_RESULT))
+    monkeypatch.setattr(server, "_run_claude_cli", fake)
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     data = _data(resp)
     assert data["error"]["type"] == "ai_unavailable"
-    # The message names the base URL so the user knows what to start.
-    assert prefs.ai_base_url() in data["error"]["message"]
+    # The message says how to fix it.
+    assert "claude" in data["error"]["message"]
+    assert "FUSED_RENDER_CLAUDE_BIN" in data["error"]["message"]
+    assert fake.calls == []
 
 
-def test_relay_proxy_non_200_is_ai_error(monkeypatch):
-    _proxy_ok(monkeypatch, {"error": "no such model"}, status=404)
+def test_relay_nonzero_exit_is_ai_error(monkeypatch):
+    _cli_ok(monkeypatch, returncode=1, stderr="Invalid model name: nope")
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     data = _data(resp)
     assert data["error"]["type"] == "ai_error"
-    assert "404" in data["error"]["message"]
-    assert "no such model" in data["error"]["message"]
+    assert "Invalid model name" in data["error"]["message"]
 
 
-def test_relay_unexpected_shape_is_ai_error(monkeypatch):
-    _proxy_ok(monkeypatch, {"choices": []})
+def test_relay_timeout_is_timeout(monkeypatch):
+    _cli_ok(monkeypatch, exc=asyncio.TimeoutError())
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 502
+    assert _data(resp)["error"]["type"] == "timeout"
+
+
+def test_relay_unparseable_stdout_is_ai_error(monkeypatch):
+    _cli_ok(monkeypatch, stdout="not json at all")
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["error"]["type"] == "ai_error"
 
 
-# -- base URL resolution ----------------------------------------------------------
+def test_relay_is_error_result_is_ai_error(monkeypatch):
+    _cli_ok(monkeypatch, dict(
+        _CLI_RESULT, is_error=True, subtype="error_during_execution",
+        result="something broke"))
+    resp = _relay({"prompt": "hello"})
+    data = _data(resp)
+    assert data["error"]["type"] == "ai_error"
+    assert "something broke" in data["error"]["message"]
 
 
-def test_ai_base_url_default_env_and_pref(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("FUSED_RENDER_AI_BASE_URL", raising=False)
-    assert prefs.ai_base_url() == prefs.DEFAULT_AI_BASE_URL
-    # Persisted pref beats the default.
-    (tmp_path / "home").mkdir()
-    (tmp_path / "home" / "prefs.json").write_text(
-        json.dumps({"ai_base_url": "http://127.0.0.1:9999"}), encoding="utf-8")
-    assert prefs.ai_base_url() == "http://127.0.0.1:9999"
-    # The env var beats the pref (same precedence as FUSED_RENDER_ENGINE).
-    monkeypatch.setenv("FUSED_RENDER_AI_BASE_URL", "http://127.0.0.1:1234")
-    assert prefs.ai_base_url() == "http://127.0.0.1:1234"
+def test_relay_stderr_warnings_are_ignored_on_success(monkeypatch):
+    # A zero exit with noise on stderr (connector notices etc.) is a success.
+    _cli_ok(monkeypatch, stdout=json.dumps(_CLI_RESULT),
+            stderr="Warning: some connector notice")
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
 
 
-def test_relay_uses_configured_base_url(monkeypatch):
-    fake = _proxy_ok(monkeypatch, _COMPLETION)
-    monkeypatch.setenv("FUSED_RENDER_AI_BASE_URL", "http://127.0.0.1:4242/")
+# -- binary resolution ------------------------------------------------------------
+
+
+def test_claude_bin_env_override_beats_path(monkeypatch):
+    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
+    assert server._claude_bin() == "/opt/custom/claude"
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN")
+    assert server._claude_bin() == "/usr/bin/claude"
+
+
+def test_relay_uses_the_overridden_binary(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
     _relay({"prompt": "hello"})
-    (url, _), = fake.requests
-    assert url == "http://127.0.0.1:4242/v1/chat/completions"
+    (argv, _, _), = fake.calls
+    assert argv[0] == "/opt/custom/claude"
 
 
 # -- runtime surface --------------------------------------------------------------
