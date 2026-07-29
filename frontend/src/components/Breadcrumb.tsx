@@ -385,13 +385,18 @@ export function Breadcrumb({
           autoFocus
           onFocus={(e) => e.target.select()}
           onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              submitEdit(e.currentTarget.value);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              setEditing(false); // discard, no navigation
-            }
+            if (e.key !== "Enter" && e.key !== "Escape") return;
+            e.preventDefault();
+            // Both keys are ours alone. Without this the document-level
+            // listing handler still sees them: committing unmounts this input
+            // synchronously (React flushes a discrete update before the
+            // keydown finishes bubbling), focus falls back to <body>, and the
+            // listing reads that as "Enter with nothing focused" — opening the
+            // lead row on top of wherever the typed path went. Escape would
+            // likewise clear the selection behind us.
+            e.stopPropagation();
+            if (e.key === "Enter") submitEdit(e.currentTarget.value);
+            else setEditing(false); // discard, no navigation
           }}
           onBlur={() => setEditing(false)} // a stray click cancels rather than commits
         />

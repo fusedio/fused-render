@@ -630,6 +630,11 @@ export default function Listing({
         return;
       }
       if (e.key === "Enter") {
+        // Already consumed by a chrome control that unmounted itself on the
+        // way (the breadcrumb's path input commits and closes on Enter, which
+        // hands focus back to <body> before this listener runs — navActive
+        // alone can't see that the key was spoken for).
+        if (e.defaultPrevented) return;
         if (!navActive) return;
         if (!rows.length) return;
         e.preventDefault();
