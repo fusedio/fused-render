@@ -153,7 +153,7 @@
   .modal h3 { margin: 0 0 12px; font-size: 16px; }
   .modal p { margin: 0 0 10px; color: var(--ink-2); line-height: 1.45; }
   .modal label { display: block; font-size: 12px; color: var(--ink-2); font-weight: 600; margin: 10px 0 4px; }
-  .modal input[type=text], .modal select { width: 100%; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
+  .modal input[type=text], .modal input[type=password], .modal select { width: 100%; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
   .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
   .modal .radio { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--hair);
     border-radius: var(--radius); margin-top: 6px; cursor: pointer; }
@@ -224,6 +224,39 @@
   .thumb.skel-thumb { border-radius: 4px; cursor: default; }
   #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
     font-size: 12.5px; flex: 0 0 auto; }
+
+  /* ---- tools home (ihatepdf-style card grid over the viewer) ---- */
+  #main { position: relative; }
+  #toolsHome { position: absolute; inset: 0; overflow-y: auto; background: var(--canvas); z-index: 20;
+    padding: 26px 34px 40px; }
+  #toolsHome .th-head { display: flex; align-items: baseline; gap: 12px; max-width: 1060px; margin: 0 auto 4px; }
+  #toolsHome h2 { margin: 0; font-size: 19px; }
+  #toolsHome .th-head p { margin: 0; color: var(--ink-3); font-size: 12.5px; }
+  #toolsHome h5 { max-width: 1060px; margin: 22px auto 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--ink-3); }
+  .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px;
+    max-width: 1060px; margin: 0 auto; }
+  .tool-card { display: flex; align-items: flex-start; gap: 11px; text-align: left; background: var(--chrome);
+    border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 13px 14px; cursor: pointer; }
+  .tool-card:hover { border-color: var(--blue); box-shadow: var(--shadow-1); }
+  .tool-card .ic { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--blue-soft); color: var(--blue-ink); }
+  .tool-card .ic svg { width: 17px; height: 17px; }
+  .tool-card[data-tone=green] .ic { background: #e5f6ee; color: var(--ok); }
+  .tool-card[data-tone=red] .ic { background: var(--danger-soft); color: var(--danger); }
+  .tool-card[data-tone=amber] .ic { background: #fdf3e2; color: var(--amber); }
+  .tool-card b { display: block; font-size: 13px; margin-bottom: 2px; }
+  .tool-card small { color: var(--ink-3); line-height: 1.4; display: block; }
+  #toolsClose { margin-left: auto; }
+
+  /* ---- scanner ---- */
+  .scan-wrap { position: relative; background: #111; border-radius: var(--radius); overflow: hidden; margin-top: 6px; }
+  .scan-wrap video { display: block; width: 100%; max-height: 320px; object-fit: contain; }
+  .scan-strip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 2px; min-height: 20px; }
+  .scan-strip .cap { position: relative; flex: 0 0 auto; }
+  .scan-strip img { height: 74px; border: 1px solid var(--hair); border-radius: 4px; display: block; }
+  .scan-strip .rm { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+    border: none; background: var(--danger); color: #fff; font-size: 11px; line-height: 1; padding: 0; }
 </style>
 <script src="/template-shared/ro-badge.js"></script>
 </head>
@@ -255,6 +288,10 @@
   <span id="docPages"></span>
   <div class="spacer"></div>
   <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
+  <button class="btn" id="toolsBtn" title="All tools">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    Tools
+  </button>
   <div class="seg" id="modeSeg">
     <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
     <button data-mode="view" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
@@ -298,6 +335,20 @@
     <div class="mi" data-act="merge">Merge PDFs…</div>
     <div class="mi" data-act="split">Split…</div>
     <div class="mi" data-act="compress">Compress…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="protect">Protect with password…</div>
+    <div class="mi" data-act="removePassword">Remove password…</div>
+    <div class="mi" data-act="ocr">Make searchable (OCR)…</div>
+  </div></div>
+  <div class="menu" data-menu>Convert<div class="dropdown">
+    <div class="mi" data-act="toWord">PDF to Word…</div>
+    <div class="mi" data-act="toPng">PDF to PNG…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="fromWord">Word to PDF…</div>
+    <div class="mi" data-act="fromExcel">Excel to PDF…</div>
+    <div class="mi" data-act="imagesToPdf">Images to PDF…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="scan">Scan document…</div>
   </div></div>
   <div class="menu" data-menu>View<div class="dropdown">
     <div class="mi" data-act="togglePanel">Toggle side panel <span class="kbd">Ctrl+\</span></div>
@@ -322,6 +373,35 @@
     </div>
   </div>
   <div id="canvasWrap"><div id="pages"></div><div id="pagesNote" class="hidden"></div></div>
+  <div id="toolsHome" class="hidden">
+    <div class="th-head"><h2>Tools</h2><p>Everything runs locally — files never leave this machine.</p>
+      <button class="btn" id="toolsClose">Back to document</button></div>
+    <h5>Organize</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="merge"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 7 4 12l4 5"/><path d="m16 7 4 5-4 5"/><path d="M4 12h16"/></svg></span><span><b>Merge PDFs</b><small>Combine documents into one file, in the order you pick.</small></span></button>
+      <button class="tool-card" data-tool="split"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h4M5 16h4M15 8h4M15 16h4"/></svg></span><span><b>Split PDF</b><small>One file per page, or by page ranges.</small></span></button>
+      <button class="tool-card" data-tool="extractPages"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg></span><span><b>Extract pages</b><small>Copy chosen pages into a new PDF.</small></span></button>
+      <button class="tool-card" data-tool="compress" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v7m0 0 3-3m-3 3L9 7"/><path d="M12 21v-7m0 0 3 3m-3-3-3 3"/><path d="M4 12h16"/></svg></span><span><b>Compress PDF</b><small>Lossless repack, or aggressive image downsampling.</small></span></button>
+    </div>
+    <h5>Convert</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="toWord"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="m8.5 13 1.2 5 1.8-4 1.8 4 1.2-5"/></svg></span><span><b>PDF to Word</b><small>Editable .docx from the document text.</small></span></button>
+      <button class="tool-card" data-tool="toPng"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4-8 8"/></svg></span><span><b>PDF to PNG</b><small>One image per page, also JPG or plain text.</small></span></button>
+      <button class="tool-card" data-tool="fromWord" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 15h8M8 18h5"/></svg></span><span><b>Word to PDF</b><small>Convert a .docx into a PDF.</small></span></button>
+      <button class="tool-card" data-tool="fromExcel" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg></span><span><b>Excel to PDF</b><small>Render workbook sheets as PDF tables.</small></span></button>
+      <button class="tool-card" data-tool="imagesToPdf"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/></svg></span><span><b>Images to PDF</b><small>Bundle JPG/PNG images into one PDF.</small></span></button>
+    </div>
+    <h5>Secure</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="protect" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span><b>Protect PDF</b><small>AES-256 password-encrypt a copy of this document.</small></span></button>
+      <button class="tool-card" data-tool="removePassword" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.2-2.4"/></svg></span><span><b>Remove password</b><small>Save an unlocked copy of a protected PDF.</small></span></button>
+    </div>
+    <h5>Scan &amp; OCR</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="scan" data-tone="amber"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span><span><b>Scan document</b><small>Capture pages with the camera and save them as a PDF.</small></span></button>
+      <button class="tool-card" data-tool="ocr" data-tone="amber"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M8 12h8M8 9h5M8 15h6"/></svg></span><span><b>Searchable PDF (OCR)</b><small>Add a text layer to scanned pages so they can be searched and copied.</small></span></button>
+    </div>
+  </div>
 </div>
 
 <div id="modalHost"></div>
@@ -385,10 +465,10 @@ function modal(html) {
   return { el: bg.firstElementChild, done, close };
 }
 
-function dialog({ title, message = "", label = "", value = "", okText = "OK", danger = false, input = true }) {
+function dialog({ title, message = "", label = "", value = "", okText = "OK", danger = false, input = true, password = false }) {
   const m = modal(`
     <h3></h3>${message ? "<p></p>" : ""}
-    ${input ? `<input type="text" id="dlgInput" placeholder="${label.replace(/"/g, "&quot;")}">` : ""}
+    ${input ? `<input type="${password ? "password" : "text"}" id="dlgInput" placeholder="${label.replace(/"/g, "&quot;")}">` : ""}
     <div class="row">
       <button class="btn" data-x="cancel">Cancel</button>
       <button class="btn primary" data-x="ok" ${danger ? 'style="background:var(--danger);border-color:var(--danger)"' : ""}></button>
@@ -413,7 +493,8 @@ function dialog({ title, message = "", label = "", value = "", okText = "OK", da
 const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
 const docDir = () => state.doc.split("/").slice(0, -1).join("/");
 
-function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "" }) {
+function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "", exts = ".pdf" }) {
+  const extRe = new RegExp(`(${exts.split(",").map((e) => e.trim().replace(".", "\\.")).join("|")})$`, "i");
   const m = modal(`
     <h3></h3>
     <input type="text" id="fbPath" class="fb-path" placeholder="Paste a full path and press Enter" spellcheck="false" autocomplete="off">
@@ -450,7 +531,7 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
     if (/^[A-Za-z]:$/.test(path)) path += "/";
     // src (origin only) lets the worker route a mount-backed dir via
     // /api/fs/list instead of a kernel scan that could drop the mount.
-    const res = await py({ action: "listdir", path,
+    const res = await py({ action: "listdir", path, exts,
       src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
     if (res.error) { toast(res.error, true); return; }
     cur = res.path;
@@ -495,13 +576,13 @@ function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false,
       list.appendChild(b);
     }
     if (!res.dirs.length && !res.files.length)
-      list.innerHTML = `<div class="fb-empty">No folders or PDFs here.</div>`;
+      list.innerHTML = `<div class="fb-empty">No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.</div>`;
   }
   pathInp.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     let p = cleanPath(pathInp.value);
     if (!p) return;
-    if (/\.pdf$/i.test(p)) {
+    if (extRe.test(p)) {
       if (!pickDir && !dirOnly) return m.close(p);
       if (nameInp) nameInp.value = p.split("/").pop();
       p = p.split("/").slice(0, -1).join("/") || "/";
@@ -725,7 +806,10 @@ async function renderAll() {
       if (gen !== renderGen) return;
       await renderThumb(pdf, n, gen);
     }
-  })().catch((err) => { if (gen === renderGen) toast(err?.message || String(err), true); });
+  })().catch((err) => {
+    if (err?.name === "RenderingCancelledException") return;
+    if (gen === renderGen) toast(err?.message || String(err), true);
+  });
 }
 
 let pageWatcher = null;
@@ -887,7 +971,17 @@ function renderDocList() {
 async function openDoc(path) {
   cancelEdit();
   const info = await py({ action: "open_doc", doc: path });
-  if (info.encrypted) throw new Error("this PDF is password-protected — decrypt it first");
+  if (info.encrypted) {
+    const pw = await dialog({ title: "Password-protected PDF", password: true,
+      message: `${info.name} is encrypted. Enter its password to save an unlocked copy next to it and open that.`,
+      label: "Password", okText: "Unlock" });
+    if (!pw) throw new Error("this PDF is password-protected");
+    setStatus("unlocking…", "busy");
+    const res = await py({ action: "unlock", doc: path, password: pw });
+    await refreshLib();
+    toast(`Unlocked copy saved as ${res.name}`);
+    return openDoc(res.path);
+  }
   state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
   state.dirty = !!info.dirty;
   state.curPage = 1; state.spans = {};
@@ -1102,7 +1196,18 @@ const acts = {
     const level = await compressModal();
     if (!level) return;
     setStatus("compressing…", "busy");
-    const res = await mutate("compress", { level });
+    let res;
+    try {
+      res = await mutate("compress", { level });
+    } catch (err) {
+      // Not a failure — the file was simply already smaller than a recompress.
+      if (/already optimized/.test(err?.message || "")) {
+        setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+        toast(err.message);
+        return;
+      }
+      throw err;
+    }
     if (!res) return;
     const pct = Math.round((1 - res.after / res.before) * 100);
     await resultModal({ title: "Compression complete",
@@ -1111,9 +1216,9 @@ const acts = {
         + " The change is not saved yet: press Ctrl+S to keep it, or Ctrl+Z to undo." });
   },
 
-  export: async () => {
+  export: async (kind) => {
     needDoc();
-    const opt = await exportModal();
+    const opt = await exportModal(typeof kind === "string" ? kind : "");
     if (!opt) return;
     setStatus("exporting…", "busy");
     const res = await py({ action: "export", doc: state.doc, kind: opt.kind,
@@ -1123,6 +1228,98 @@ const acts = {
       note: `${res.files.length} file${res.files.length === 1 ? "" : "s"} saved to ${res.dir}.`,
       files: res.files, dir: res.dir });
   },
+  toPng: () => acts.export("png"),
+
+  protect: async () => {
+    needDoc();
+    const pw = await dialog({ title: "Protect with password", password: true,
+      message: "An AES-256 encrypted copy is saved next to the document — the original stays as it is.",
+      label: "Password", okText: "Protect" });
+    if (!pw) return;
+    setStatus("encrypting…", "busy");
+    const res = await py({ action: "protect", doc: state.doc, password: pw });
+    setStatus("protected", "ok");
+    await resultModal({ title: "Protected copy created",
+      note: `${res.name} needs the password to open. Keep the password safe — there is no way to recover it.`,
+      files: [res], dir: res.dir });
+  },
+  removePassword: async () => {
+    const src = await browseModal({ title: "Choose the password-protected PDF" });
+    if (!src) return;
+    // openDoc prompts for the password and saves the unlocked copy.
+    await openDoc(src);
+  },
+  ocr: async () => {
+    needDoc();
+    const firstRun = !(state.health?.ocr_langs || []).length;
+    const ok = await dialog({ title: "Make searchable (OCR)", input: false, okText: "Run OCR",
+      message: "Pages without a text layer are OCR'd (English) into a searchable copy saved next to the document."
+        + (firstRun ? " First run downloads the language model (~4 MB) once." : "") });
+    if (!ok) return;
+    setStatus("running OCR…", "busy");
+    const res = await py({ action: "ocr", doc: state.doc });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("OCR done", "ok");
+    toast(`${res.name}: ${res.ocr_pages} page${res.ocr_pages === 1 ? "" : "s"} OCR'd, ${res.copied_pages} already had text`);
+  },
+  toWord: async () => {
+    needDoc();
+    const pages = await dialog({ title: "PDF to Word", value: "all", okText: "Convert",
+      label: "all or 1,3-5",
+      message: "The document text becomes an editable .docx next to the PDF. Word reflows the paragraphs — exact layout is not preserved." });
+    if (!pages) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "pdf_to_word", doc: state.doc, pages });
+    setStatus("converted", "ok");
+    await resultModal({ title: "Word document created", files: [res], dir: res.dir });
+  },
+  fromWord: async () => {
+    const src = await browseModal({ title: "Choose a Word document", exts: ".docx" });
+    if (!src) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "word_to_pdf", src });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("converted", "ok");
+    toast(`Created ${res.name}${res.via === "libreoffice" ? "" : " (text-level conversion — install LibreOffice for full fidelity)"}`);
+  },
+  fromExcel: async () => {
+    const src = await browseModal({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
+    if (!src) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "excel_to_pdf", src });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("converted", "ok");
+    toast(`Created ${res.name}`);
+  },
+  imagesToPdf: async () => {
+    const picked = await imagesModal();
+    if (!picked) return;
+    setStatus("building…", "busy");
+    const res = await py({ action: "images_to_pdf", sources: JSON.stringify(picked.sources),
+      name: picked.name, directory: picked.dir });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("created", "ok");
+    toast(`Created ${res.name}`);
+  },
+  scan: async () => {
+    const caps = await scanModal();
+    if (!caps || !caps.length) return;
+    const picked = await browseModal({ title: "Save the scan", okText: "Save",
+      pickDir: true, filename: "scan.pdf", start: "~" });
+    if (!picked) return;
+    setStatus("saving scan…", "busy");
+    const res = await py({ action: "save_scan", images_b64: JSON.stringify(caps),
+      name: picked.name, directory: picked.dir });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("saved", "ok");
+    toast(`Saved ${res.name} (${caps.length} page${caps.length === 1 ? "" : "s"})`);
+  },
+  tools: () => showTools($("toolsHome").classList.contains("hidden")),
 
   togglePanel: () => {
     document.body.classList.toggle("panel-off");
@@ -1137,6 +1334,9 @@ async function act(name, arg) {
   try {
     await acts[name]?.(arg);
   } catch (err) {
+    // A superseded pdf.js render (fast rotate/zoom, hidden pane) is not a
+    // user-facing failure — the newer render already owns the canvas.
+    if (err?.name === "RenderingCancelledException") return;
     console.error(err);
     setStatus("error", "err");
     toast(err?.message || String(err), true);
@@ -1260,7 +1460,7 @@ async function compressModal() {
   return m.done;
 }
 
-async function exportModal() {
+async function exportModal(presetKind = "") {
   const m = modal(`<h3>Export</h3>
     <label>Format</label>
     <select id="exKind">
@@ -1276,6 +1476,7 @@ async function exportModal() {
     <div class="row"><button class="btn" data-x="cancel">Cancel</button>
     <button class="btn primary" data-x="ok">Export</button></div>`);
   const nameInp = m.el.querySelector("#exName");
+  if (presetKind) m.el.querySelector("#exKind").value = presetKind;
   const getDir = destRow(m, "exDir", docDir(),
     (f) => { nameInp.value = f.replace(/\.[a-z0-9]+$/i, ""); });
   m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
@@ -1289,6 +1490,101 @@ async function exportModal() {
     });
   };
   return m.done;
+}
+
+async function imagesModal() {
+  const m = modal(`<h3>Images to PDF</h3>
+    <p>Pick images in the order they should appear — one page per image.</p>
+    <div class="checklist" id="imList"><div class="fb-empty">No images yet.</div></div>
+    <button class="btn ghost" id="imBrowse" style="margin-top:8px">＋ Add an image…</button>
+    <label>Output name</label><input type="text" id="imName" value="images">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="imDir" spellcheck="false"><button class="btn" id="imDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Create PDF</button></div>`);
+  const getDir = destRow(m, "imDir", state.doc ? docDir() : "~");
+  const list = m.el.querySelector("#imList");
+  const sources = [];
+  function render() {
+    list.innerHTML = sources.length ? "" : `<div class="fb-empty">No images yet.</div>`;
+    sources.forEach((p, i) => {
+      const lab = document.createElement("label");
+      const span = document.createElement("span");
+      span.textContent = `${i + 1}. ${p.split("/").pop()}`;
+      const rm = document.createElement("button");
+      rm.className = "btn ghost"; rm.textContent = "✕"; rm.style.marginLeft = "auto";
+      rm.onclick = (e) => { e.preventDefault(); sources.splice(i, 1); render(); };
+      lab.append(span, rm);
+      list.appendChild(lab);
+    });
+  }
+  m.el.querySelector("#imBrowse").onclick = async () => {
+    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
+    if (src) { sources.push(src); render(); }
+  };
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    if (!sources.length) { toast("Add at least one image"); return; }
+    m.close({ sources, name: m.el.querySelector("#imName").value.trim() || "images", dir: getDir() });
+  };
+  return m.done;
+}
+
+async function scanModal() {
+  const m = modal(`<h3>Scan document</h3>
+    <div class="scan-wrap"><video id="scVideo" autoplay playsinline muted></video></div>
+    <div class="scan-strip" id="scStrip"></div>
+    <div class="row">
+      <button class="btn" data-x="cancel">Cancel</button>
+      <button class="btn" id="scCap">Capture page</button>
+      <button class="btn primary" data-x="ok">Save as PDF…</button></div>`);
+  m.el.classList.add("wide");
+  const video = m.el.querySelector("#scVideo");
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 2560 }, height: { ideal: 1440 }, facingMode: "environment" },
+      audio: false,
+    });
+  } catch (err) {
+    m.close(null);
+    throw new Error(`camera unavailable: ${err?.message || err}`);
+  }
+  video.srcObject = stream;
+  const caps = [];
+  const strip = m.el.querySelector("#scStrip");
+  function render() {
+    strip.innerHTML = "";
+    caps.forEach((c, i) => {
+      const d = document.createElement("div");
+      d.className = "cap";
+      d.innerHTML = `<img alt="page ${i + 1}"><button class="rm" title="Remove">✕</button>`;
+      d.querySelector("img").src = c;
+      d.querySelector(".rm").onclick = () => { caps.splice(i, 1); render(); };
+      strip.appendChild(d);
+    });
+  }
+  m.el.querySelector("#scCap").onclick = () => {
+    if (!video.videoWidth) return toast("Camera is still starting…");
+    const cv = document.createElement("canvas");
+    cv.width = video.videoWidth; cv.height = video.videoHeight;
+    cv.getContext("2d").drawImage(video, 0, 0);
+    caps.push(cv.toDataURL("image/jpeg", 0.87));
+    render();
+  };
+  const stop = () => stream.getTracks().forEach((t) => t.stop());
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    if (!caps.length) { toast("Capture at least one page"); return; }
+    m.close(caps);
+  };
+  m.done.then(stop, stop);
+  return m.done;
+}
+
+// ---------- tools home ----------
+function showTools(on) {
+  $("toolsHome").classList.toggle("hidden", !on);
 }
 
 // ---------- icons ----------
@@ -1326,9 +1622,8 @@ $("modeSeg").addEventListener("click", (e) => {
   setMode(b.dataset.mode);
 });
 function setMode(mode) {
-  const panelOff = document.body.classList.contains("panel-off");
-  document.body.className = mode === "view" ? "mode-view" : "mode-edit";
-  if (panelOff) document.body.classList.add("panel-off");
+  document.body.classList.toggle("mode-view", mode === "view");
+  document.body.classList.toggle("mode-edit", mode !== "view");
   document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
   fused.params.set("mode", mode);
   if (mode === "edit" && state.pdf) primeOverlays();
@@ -1336,6 +1631,14 @@ function setMode(mode) {
 
 $("exportBtn").addEventListener("click", () => act("export"));
 $("importBtn").addEventListener("click", () => act("addPdf"));
+$("toolsBtn").addEventListener("click", () => act("tools"));
+$("toolsClose").addEventListener("click", () => showTools(false));
+$("toolsHome").addEventListener("click", (e) => {
+  const card = e.target.closest("[data-tool]");
+  if (!card) return;
+  showTools(false);
+  act(card.dataset.tool);
+});
 
 $("pages").addEventListener("click", (e) => {
   const wrap = e.target.closest(".pdf-page");
@@ -1393,6 +1696,7 @@ async function boot() {
     let health;
     try { health = await py({ action: "health" }); }
     catch { health = await py({ action: "health" }); }   // one retry: engine warm-up
+    state.health = health;
     if (!health.ok) {
       libP.catch(() => {});
       $("boot").innerHTML = "";
@@ -1420,9 +1724,10 @@ async function boot() {
     catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
   }
   if (state.docs.length) {
-    try { await openDoc(state.docs[0].path); }
+    try { await openDoc(state.docs[0].path); return; }
     catch (err) { console.error(err); }
   }
+  showTools(true);  // nothing to show — land on the tools grid
 }
 boot();
 </script>
