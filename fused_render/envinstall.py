@@ -381,8 +381,18 @@ def uv_bin() -> str | None:
 
       1. FUSED_RENDER_UV_BIN, if it points at a real file (the Linux/Windows
          supervisors already set an equivalent for rclone);
-      2. `Contents/Resources/bin/uv` beside this interpreter (build_dmg.sh);
-      3. whatever is on PATH (dev checkout).
+      2. the interpreter's OWN directory — where the Linux AppImage
+         (`usr/python/bin/uv`, build_linux_appimage.sh:88) and the Windows
+         installer (`<PythonRoot>/uv.exe`, .ps1:185) put it;
+      3. `Contents/Resources/bin/uv`, the macOS bundle's separate `bin` dir
+         (build_dmg.sh), which is not beside the interpreter;
+      4. whatever is on PATH (dev checkout).
+
+    Steps 2 and 3 are both needed because the three packaged builds disagree on
+    the layout. Probing only the macOS one meant the uv that Linux and Windows
+    already ship went unused unless its directory happened to be on PATH — not a
+    crash there (those builds carry a real CPython with `venv` and `pip`, so the
+    fallback works) but a silently-unused bundled tool.
 
     This matters more than a convenience wrapper: `fused`'s venv builder calls
     `shutil.which("uv")` and falls back to `<python> -m venv`, and the macOS
@@ -401,10 +411,15 @@ def uv_bin() -> str | None:
     override = os.environ.get("FUSED_RENDER_UV_BIN")
     if override and os.path.isfile(override):
         return override
-    contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
-    bundled = os.path.join(contents, "Resources", "bin", "uv")
-    if os.path.isfile(bundled):
-        return bundled
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    name = "uv.exe" if os.name == "nt" else "uv"
+    candidates = (
+        os.path.join(exe_dir, name),                                    # Linux, Windows
+        os.path.join(os.path.dirname(exe_dir), "Resources", "bin", name),  # macOS .app
+    )
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
     return shutil.which("uv")
 
 

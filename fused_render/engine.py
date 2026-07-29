@@ -517,11 +517,29 @@ def script_requirements(text: str, *, apply_markers: bool = True) -> list[str]:
     for match in _PEP723_BLOCK.finditer(text):
         if match.group("type") != "script":
             continue
-        # Imported here, not at function top: tomllib is 3.11+, but this
-        # function must still return [] on 3.10 for the (overwhelmingly
-        # common) case of a script with no PEP 723 block at all — run_python
-        # calls this unconditionally, regardless of which engine is active.
-        import tomllib
+        # Imported here, not at function top: the parser is only needed when a
+        # block actually exists, and `run_python` calls this on every script.
+        #
+        # tomllib is 3.11+ stdlib and `requires-python` is >=3.10, so on 3.10 the
+        # dependency `tomli` supplies it. The deferred import used to be justified
+        # as making 3.10 safe, which it only was for scripts with NO header — one
+        # WITH a header raised ModuleNotFoundError, and headers are now how a
+        # template declares what the app doesn't ship. Both names, then a clear
+        # ValueError (which every caller already handles) rather than an
+        # ImportError escaping into a 500.
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib
+            except ImportError:
+                raise ValueError(
+                    "this script has a '# /// script' block (PEP 723 inline "
+                    "metadata), which needs `tomllib` (Python 3.11+) or the `tomli` "
+                    f"package; this is Python {sys.version_info[0]}."
+                    f"{sys.version_info[1]} and neither is available. Reinstall "
+                    "fused-render so its dependencies are present, or remove the block."
+                ) from None
 
         content = "".join(
             line[2:] if line.startswith("# ") else line[1:]

@@ -105,6 +105,10 @@ _IMPORT_TO_DIST = {
     "websockets": "websockets",
     "multipart": "python-multipart",
     "httpx": "httpx",
+    # Only installed on <3.11 (it backports 3.11's stdlib tomllib), so on 3.11+
+    # it maps a name nothing provides — harmless, and listing it is what keeps
+    # `test_the_import_map_covers_everything_the_app_ships` honest either way.
+    "tomli": "tomli",
 }
 
 # NOTE: there is deliberately no hand-maintained "this file inherits that

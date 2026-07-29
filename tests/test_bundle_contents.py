@@ -24,7 +24,19 @@ import sys
 
 import pytest
 
-tomllib = pytest.importorskip("tomllib", reason="needs Python 3.11+")
+def _import_toml():
+    """tomllib (3.11+) or the tomli dependency that covers 3.10."""
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            pytest.skip("needs tomllib (3.11+) or the tomli package")
+    return tomllib
+
+
+tomllib = _import_toml()
 
 from fused_render import engine  # noqa: E402
 
@@ -293,6 +305,39 @@ def test_a_header_is_needed_for_what_the_MACOS_BUNDLE_lacks(relpath):
         "bundle already ships — so it only costs a venv build and a download. "
         "Delete the block."
     )
+
+
+# A distribution whose IMPORT NAME is satisfied by a lighter sibling that omits
+# the thing the template actually needs. `pypandoc` and `pypandoc-binary` are the
+# same version and the same `import pypandoc`, but the plain wheel is 0.0 MB with
+# no pandoc executable and the binary one is ~41 MB with one — so declaring the
+# wrong sibling builds a venv that imports fine and fails at runtime.
+#
+# This is the general gap: "is it importable" cannot decide whether a dependency
+# is the RIGHT one. There is no metadata that says "this wheel omits the binary",
+# so the check is a named pairing rather than a derivation — an honest small
+# whitelist beats a general rule that cannot exist.
+_MUST_USE_HEAVIER_SIBLING = {"pypandoc": "pypandoc-binary"}
+
+
+@pytest.mark.parametrize("relpath", _template_files())
+def test_a_header_declares_the_sibling_that_actually_works(relpath):
+    """Catch "importable but non-functional" for the pairs where it can happen.
+
+    `latex/engine.py` declared `pypandoc` while calling
+    `pypandoc.convert_file` — which needs the pandoc binary the plain
+    distribution does not ship. `docs/docs.py` had it right, and the two sat side
+    by side for a while, because every other invariant here is satisfied by a
+    module that imports.
+    """
+    for raw in _raw_header(relpath):
+        dist = _norm(raw)
+        better = _MUST_USE_HEAVIER_SIBLING.get(dist)
+        assert better is None, (
+            f"{relpath} declares {dist!r}, which installs the import name but not "
+            f"the payload behind it — use {better!r} instead. The venv would build "
+            "cleanly and fail at runtime."
+        )
 
 
 @pytest.mark.parametrize("relpath", _template_files())

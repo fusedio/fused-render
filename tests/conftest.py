@@ -125,19 +125,48 @@ def warm_fused_backend_venv(tmp_path_factory):
 
     try:
         os.write(fd, f"{os.getpid()}\n".encode())
-        # One trivial run through our own API (not fused internals) is what
-        # creates the venv; after this every worker's run hits the ready marker.
-        probe_dir = tmp_path_factory.mktemp("warm-venv")
-        probe = probe_dir / "warm.py"
-        probe.write_text(WARM_HEADER + "def main():\n    return 1\n")
-        out = asyncio.run(engine.run_python(str(probe), {}))
-        if not out.get("ok"):
-            error = out.get("error") or {}
+        # Drive the INSTALL LOADER, not /api/run. `run_python` deliberately no
+        # longer builds a venv inline — a script whose header names something
+        # uninstalled comes back as `needs_install` so the download happens off
+        # the request path (SPEC PY-18). This fixture predates that and used to
+        # rely on the inline build; when the contract changed it started failing
+        # with `EnvNotInstalled`, which is the new behaviour working exactly as
+        # designed. So it now does what a page does: ask for the install and wait.
+        #
+        # The point of the fixture is unchanged — serialize venv CREATION so N
+        # xdist workers don't race on a half-built `<venv>/bin/python` — and it is
+        # still done through our own API rather than fused internals.
+        from fused_render import envinstall
+
+        requirements = sorted(set(engine.script_requirements(WARM_HEADER)))
+        if not requirements:  # no toml parser here; the tests that need it skip
+            return
+        if not envinstall.is_installed(requirements):
+            envinstall.start(requirements)
+            key = envinstall.venv_key_for(requirements)
+            deadline = time.monotonic() + 900
+            progress = None
+            while time.monotonic() < deadline:
+                progress = envinstall.progress(key)
+                if progress and progress.get("done"):
+                    break
+                time.sleep(0.2)
+            if not (progress and progress.get("done")):
+                pytest.fail(
+                    "timed out installing the warm script venv "
+                    f"({requirements}); last progress: {progress}"
+                )
+            if progress.get("error"):
+                pytest.fail(
+                    "could not build the fused backend's script venv, so the "
+                    "real-backend tests would race on a half-built one: "
+                    f"{progress['error']}"
+                )
+        if not envinstall.is_installed(requirements):
             pytest.fail(
-                "could not build the fused backend's script venv, so the "
-                "real-backend tests would race on a half-built one: "
-                f"{error.get('type')}: {error.get('message')}\n"
-                f"{error.get('traceback', '')}"
+                "the installer reported success but the venv for "
+                f"{requirements} is not marked ready — loader and backend "
+                "disagree about where it lives"
             )
     finally:
         # Released as soon as the venv exists — the lock serializes *creation*,

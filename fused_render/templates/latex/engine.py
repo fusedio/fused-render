@@ -1,6 +1,13 @@
 # /// script
-# dependencies = ["pypandoc"]
+# dependencies = ["pypandoc-binary"]
 # ///
+# `pypandoc-binary`, NOT `pypandoc`: the two are the same import name and the
+# same version, but the plain wheel is 0.0 MB of pure Python with NO pandoc
+# executable, while pypandoc-binary is ~41 MB and ships one. This file calls
+# `pypandoc.convert_file`, which needs the binary — so with the plain
+# distribution the venv builds cleanly and then fails at RUNTIME on any
+# machine without a system pandoc. docs/docs.py already declared the right one.
+# This is why the header invariants cannot rest on "is it importable".
 """Backend for the latex template — a local, live-preview LaTeX viewer/editor.
 
 One bare `main(action=...)` dispatcher (the fused-render contract; see the note

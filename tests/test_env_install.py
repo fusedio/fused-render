@@ -187,6 +187,29 @@ def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     assert env["PATH"].split(os.pathsep)[0] == str(uv.parent)
 
 
+def test_the_bundled_uv_is_found_beside_the_interpreter_on_linux_and_windows(
+    tmp_path, monkeypatch
+):
+    """The other two packagings put uv in the interpreter's OWN directory.
+
+    Linux AppImage: `usr/python/bin/uv` next to `usr/python/bin/python3`
+    (build_linux_appimage.sh:88). Windows: `<PythonRoot>/uv.exe` next to
+    `pythonw.exe` (.ps1:185). Probing only the macOS `Contents/Resources/bin`
+    layout left both of those bundled binaries unused unless their directory
+    happened to be on PATH — no crash there, since those builds ship a real
+    CPython with `venv`, but a shipped tool silently ignored.
+    """
+    bindir = tmp_path / "python" / "bin"
+    bindir.mkdir(parents=True)
+    interp = bindir / "python3"
+    interp.write_text("")
+    uv = bindir / ("uv.exe" if os.name == "nt" else "uv")
+    uv.write_text("")
+    monkeypatch.setattr(sys, "executable", str(interp))
+    monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
+    assert envinstall.uv_bin() == str(uv)
+
+
 def test_an_explicit_uv_override_wins(tmp_path, monkeypatch):
     real = tmp_path / "myuv"
     real.write_text("")

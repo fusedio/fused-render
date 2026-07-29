@@ -156,7 +156,14 @@ def _bundled_distributions():
     them). Reading only the extra is how an earlier version of this change
     silently dropped them from the bundle.
     """
-    import tomllib
+    # tomllib is 3.11+ stdlib; `tomli` is the same parser and is a dependency on
+    # 3.10 (see pyproject). This module is imported by
+    # tests/test_bundle_contents.py, which runs on the whole 3.10-3.13 matrix, so
+    # it cannot assume the newer name.
+    try:
+        import tomllib
+    except ImportError:
+        import tomli as tomllib
 
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
         pyproject = tomllib.load(fh)

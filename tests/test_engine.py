@@ -21,6 +21,18 @@ import conftest
 from fused_render import engine
 
 
+def _toml_available() -> bool:
+    """Can a PEP 723 block be parsed in this environment?"""
+    try:
+        import tomllib  # noqa: F401
+    except ImportError:
+        try:
+            import tomli  # noqa: F401
+        except ImportError:
+            return False
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _fresh_interpreter_probe():
     """The resolved app interpreter is cached per process; clear it per test.
@@ -35,11 +47,13 @@ def _fresh_interpreter_probe():
 
 # --- script_requirements (PEP 723) ------------------------------------------
 
-# tomllib is 3.11+; the engine itself is unreachable on 3.10 (the fused package
-# needs 3.11, so available() is False), but requires-python is >=3.10 — keep a
-# 3.10 dev `pytest` green by skipping the parser tests there.
+# The PEP 723 parser needs `tomllib` (3.11+ stdlib) or the `tomli` dependency
+# that covers 3.10. Gated on AVAILABILITY rather than on the version: with tomli
+# installed these tests run on 3.10 too, and they should — that is the whole point
+# of shipping the fallback. A version check would have kept them silently skipped
+# on the one interpreter where the bug lived.
 requires_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="tomllib (PEP 723 parsing) needs Python 3.11+"
+    not _toml_available(), reason="needs tomllib (3.11+) or the tomli package"
 )
 
 
@@ -580,6 +594,7 @@ def test_a_declared_header_still_gets_its_own_venv(
     assert "venvs" in out["result"]["prefix"]
 
 
+@requires_tomllib
 def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
     """A header goes to the venv path, and its venv gets EXACTLY the header.
 

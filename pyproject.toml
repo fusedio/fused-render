@@ -39,6 +39,14 @@ dependencies = [
     # (TASK F) — and fastapi.testclient needs it too — so a plain
     # `pip install fused-render` is broken without it. Core, not an extra.
     "httpx",
+    # PEP 723 header parsing (engine.script_requirements). tomllib is 3.11+
+    # stdlib, requires-python is >=3.10, and the deferred `import tomllib` only
+    # avoided the crash for scripts with NO header — any script that HAD one
+    # raised ModuleNotFoundError on 3.10. Since headers are now the mechanism by
+    # which a template declares deps the app doesn't ship (PY-16), that was the
+    # main path, not a corner. Core rather than an extra: the parser runs on
+    # every /api/run under either engine.
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

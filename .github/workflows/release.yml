@@ -98,6 +98,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
+      # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
+      # no other way to build a script venv there (D176). The Linux and Windows
+      # build scripts already require uv on the host the same way; macOS runners
+      # do not have it preinstalled, so the build fails loudly without this.
+      - uses: astral-sh/setup-uv@v5
+
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:
           CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
