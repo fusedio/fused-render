@@ -897,6 +897,24 @@ def _claude_argv_prefix(bin_path: str) -> list[str]:
     return [bin_path]
 
 
+def _kill_process_tree(proc) -> None:
+    """Kill `proc` and, on Windows, its whole descendant tree.
+
+    A .cmd shim runs through cmd.exe, so proc.kill() there terminates only
+    cmd.exe and orphans the node/claude child — which keeps running (and
+    billing) after we've answered timeout. taskkill /T walks the tree;
+    proc.kill() stays as the POSIX path and the Windows fallback."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
 async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
                           stdin_text: str = ""):
     """Run the claude CLI once; return (returncode, stdout, stderr) as text.
@@ -923,7 +941,7 @@ async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(stdin_text.encode("utf-8")), timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill_process_tree(proc)
         await proc.wait()
         raise
     return (proc.returncode,

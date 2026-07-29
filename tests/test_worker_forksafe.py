@@ -216,3 +216,55 @@ def test_ai_claude_spawn_disables_fork(monkeypatch):
         "via posix_spawn (no atfork handlers), not fork()+exec")
     assert captured.get("stdin") is asyncio.subprocess.PIPE
     assert captured.get("input") == b"hello"
+
+
+def test_ai_timeout_kills_the_windows_process_tree(monkeypatch):
+    """On win32 a .cmd shim runs through cmd.exe, so kill() alone orphans the
+    node/claude child (it keeps running and billing after we answer timeout).
+    The timeout path must taskkill /T the tree; POSIX keeps plain kill()."""
+    killed = {}
+
+    class _Proc:
+        pid = 4242
+
+        async def communicate(self, input=None):
+            raise asyncio.TimeoutError
+
+        async def wait(self):
+            return 1
+
+        def kill(self):
+            killed["kill"] = True
+
+    async def fake_exec(*argv, **kw):
+        return _Proc()
+
+    def fake_taskkill(argv, **kw):
+        killed["taskkill"] = argv
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(server.subprocess, "run", fake_taskkill)
+    monkeypatch.setattr(server.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+
+    def run(coro):
+        # the loop must exist before sys.platform reads "win32", or asyncio
+        # tries to build the real Windows proactor loop on this box
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    with pytest.raises(asyncio.TimeoutError):
+        run(server._run_claude_cli(["claude", "-p"], dict(os.environ), 5))
+    assert killed.get("taskkill") == ["taskkill", "/T", "/F", "/PID", "4242"]
+    assert killed.get("kill") is True  # fallback still fires
+
+    killed.clear()
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    with pytest.raises(asyncio.TimeoutError):
+        run(server._run_claude_cli(["claude", "-p"], dict(os.environ), 5))
+    assert "taskkill" not in killed
+    assert killed.get("kill") is True

@@ -262,7 +262,11 @@ def _start(file: str, message: str, session_id: str, model: str,
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
                                 stdin=subprocess.DEVNULL,
-                                start_new_session=True)
+                                start_new_session=True,
+                                # a .cmd shim runs through cmd.exe — don't
+                                # flash a console window per chat turn
+                                creationflags=(subprocess.CREATE_NO_WINDOW
+                                               if os.name == "nt" else 0))
     with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}

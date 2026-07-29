@@ -331,8 +331,14 @@ def test_claude_argv_prefix_wraps_windows_shims(monkeypatch):
 def test_relay_runs_windows_shims_through_cmd(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", r"C:\npm\claude.cmd")
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    _relay({"prompt": "hello"})
+    # The event loop must exist before sys.platform reads "win32", or
+    # asyncio.run tries to build the real Windows proactor loop on this box.
+    loop = asyncio.new_event_loop()
+    try:
+        monkeypatch.setattr(server.sys, "platform", "win32")
+        loop.run_until_complete(server._ai_relay({"prompt": "hello"}))
+    finally:
+        loop.close()
     (argv, _, _, _), = fake.calls
     assert argv[:3] == ["cmd.exe", "/c", r"C:\npm\claude.cmd"]
 
