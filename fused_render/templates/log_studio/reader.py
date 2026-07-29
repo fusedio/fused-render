@@ -1,12 +1,21 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["drain3>=0.9.11"]
 # ///
-# drain3 is deliberately NOT a hard dependency: it powers only pattern mining,
-# which _patterns() degrades gracefully without (an install-hint fallback).
-# Declaring it here would let a failed/blocked install of that one extra break
-# every op the reader serves, so it stays optional (shipped via the bundled
-# extra / present in the app venv).
+# drain3 powers only pattern mining, and _patterns() still degrades gracefully
+# without it (a guarded import with an install hint) — a plain
+# `pip install fused-render` has no drain3, and that path must keep working.
+#
+# It is nonetheless declared here. This header is read only by the fused engine
+# (the built-in executor ignores PEP 723 entirely and just uses whichever
+# interpreter it runs on), where the alternative is worse: the script venv
+# contains DEFAULT_REQUIREMENTS plus this list and nothing else, so leaving
+# drain3 out means pattern mining silently disappears for every user of that
+# engine. The earlier worry — "declaring it lets one failed install break every
+# op" — does not survive contact with that venv: it already has to resolve
+# numpy/pandas/geopandas/scipy/matplotlib before this file runs at all, so
+# drain3 (pure Python, two small deps) adds no real failure surface. Kept out of
+# engine.DEFAULT_REQUIREMENTS because this is the only template that uses it.
 
 import math
 import os

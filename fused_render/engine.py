@@ -44,10 +44,21 @@ _FRAME_LINE = re.compile(
 
 _backend = None
 
-# Installed into every script's venv on top of its PEP 723 dependencies.
-# Mirrors the `bundled` extra in pyproject.toml (SPEC DM-2) so the built-in
-# template readers (pyarrow, openpyxl) work under this engine without inline
-# headers. Keep the two lists in sync.
+# Installed into every script's venv on top of its PEP 723 dependencies, so the
+# built-in template readers (pyarrow, openpyxl…) work under this engine without
+# an inline header.
+#
+# NOT a mirror of the `bundled` extra (SPEC DM-2) — it used to claim to be, and
+# was not, in ten places. The relationship is: this is the data stack common to
+# many templates; a dependency only one template needs stays in that template's
+# `# /// script` header (the header mechanism exists for exactly that, and it
+# keeps this venv small), and the server-only credential libs
+# (botocore/google-auth) never belong in a user-script venv at all. pyarrow and
+# duckdb are here but not in `[bundled]` because they are *core* dependencies —
+# the packaged interpreter gets them from the install, a fresh venv would not.
+# tests/test_engine_requirements.py enforces every clause of that, including the
+# part a comment cannot: that no template imports a bundled distribution its
+# venv would lack.
 DEFAULT_REQUIREMENTS = [
     "numpy",
     "pandas",
