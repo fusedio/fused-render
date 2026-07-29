@@ -318,11 +318,11 @@ def test_relay_happy_path(monkeypatch):
     proc, = fake.procs
     assert not proc.killed
     assert server._AI_SESSION._proc is proc
-    # ...and the request was preceded by /clear (context isolation) with no
-    # reconfiguration: spawn argv already carried the default config, and no
-    # effort was requested.
+    # ...and the request was preceded by /clear (context isolation) and an
+    # unconditional set_model (every request specifies its own config); no
+    # effort was requested, so no apply_flag_settings.
     assert len(proc.clears) == 1
-    assert proc.controls == []
+    assert [c["subtype"] for c in proc.controls] == ["set_model"]
 
 
 def test_relay_writes_the_stream_json_user_message(monkeypatch):
@@ -335,12 +335,12 @@ def test_relay_writes_the_stream_json_user_message(monkeypatch):
 
 
 def test_relay_options_become_reconfiguration_requests(monkeypatch):
-    # A non-default model/system_prompt is applied to the RUNNING instance
+    # The request's model/system_prompt is applied to the RUNNING instance
     # via set_model (both fields, one request) instead of a respawn; effort
     # via apply_flag_settings. Order: /clear, set_model, effort, user turn.
     fake = _cli_ok(monkeypatch)
     proc = _FakeProc(turns=[_result_lines(), _result_lines()])
-    _seed_session(proc)  # live instance at the default config
+    _seed_session(proc)  # live instance
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
     assert fake.calls == []  # reconfigured, not respawned
@@ -359,15 +359,26 @@ def test_relay_options_become_reconfiguration_requests(monkeypatch):
                          "system_prompt": "be terse"}
     assert effort == {"subtype": "apply_flag_settings",
                       "settings": {"effortLevel": "high"}}
-    # tracked state updated: a repeat call with the same config skips
-    # set_model (the pair survives /clear)
-    _relay({"prompt": "again", "system_prompt": "be terse",
-            "model": "claude-sonnet-5"})
-    assert len(proc.controls) == 2  # no new set_model
-    assert len(proc.clears) == 2    # but /clear is never skipped
 
 
-def test_relay_effort_is_resent_after_clear_only_when_given(monkeypatch):
+def test_relay_set_model_is_sent_on_every_request(monkeypatch):
+    # No config tracking: every request fully specifies its own config, so
+    # set_model rides EVERY call — a repeat with identical options included.
+    # (~0ms per probe; simpler invariant than skip-when-unchanged state.)
+    fake = _cli_ok(monkeypatch, turns=[_result_lines(), _result_lines()])
+    _relay({"prompt": "one"})
+    _relay({"prompt": "two"})
+    proc, = fake.procs
+    assert len(proc.clears) == 2
+    assert [c["subtype"] for c in proc.controls] == [
+        "set_model", "set_model"]
+    assert all(c == {"subtype": "set_model",
+                     "model": server._AI_DEFAULT_MODEL,
+                     "system_prompt": server._AI_DEFAULT_SYSTEM_PROMPT}
+               for c in proc.controls)
+
+
+def test_relay_effort_rides_only_requests_that_gave_one(monkeypatch):
     # /clear resets effortLevel — so effort is applied per request when the
     # caller gave one, and correctly NOT touched when omitted (the /clear
     # default stands; no stale effort leaks from the previous caller).
@@ -375,24 +386,16 @@ def test_relay_effort_is_resent_after_clear_only_when_given(monkeypatch):
                                        _result_lines()])
     _relay({"prompt": "a", "effort": "low"})
     proc, = fake.procs
-    assert proc.controls[-1] == {"subtype": "apply_flag_settings",
-                                 "settings": {"effortLevel": "low"}}
+
+    def efforts():
+        return [c for c in proc.controls
+                if c["subtype"] == "apply_flag_settings"]
+
+    assert efforts()[-1]["settings"] == {"effortLevel": "low"}
     _relay({"prompt": "b"})  # no effort: no flag request rides this call
-    assert len(proc.controls) == 1
+    assert len(efforts()) == 1
     _relay({"prompt": "c", "effort": "xhigh"})  # xhigh is a valid level now
-    assert proc.controls[-1]["settings"] == {"effortLevel": "xhigh"}
-
-
-def test_relay_max_tokens_is_accepted_but_unenforced(monkeypatch):
-    # Deprecated no-op: still validated (bad values 400 below), but no env
-    # var or control request carries it — the CLI has no per-call cap.
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
-    resp = _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
-    assert _data(resp)["ok"] is True
-    (_, env), = fake.calls
-    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
-    proc, = fake.procs
-    assert all("99" not in json.dumps(c) for c in proc.controls)
+    assert efforts()[-1]["settings"] == {"effortLevel": "xhigh"}
 
 
 def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
@@ -566,14 +569,13 @@ def test_relay_wedged_clear_kills_and_respawns(monkeypatch):
 
 
 def test_relay_control_error_respawns_with_argv_config(monkeypatch):
-    # The set_model system_prompt field is undocumented (probed on 2.1.220).
-    # If a future CLI rejects it, the control error must degrade to a
-    # respawn whose ARGV carries the requested config — per-call spawn for
-    # non-default prompts, not breakage.
+    # A control error (e.g. a CLI that rejects the probed set_model
+    # system_prompt field) discards the instance and retries once on a
+    # fresh spawn whose ARGV carries the requested config.
     fake = _cli_ok(monkeypatch)
     live = _FakeProc(control_error={
         "set_model": "unexpected field: system_prompt"})
-    _seed_session(live)  # live instance at the default config
+    _seed_session(live)
     resp = _relay({"prompt": "hello", "system_prompt": "be terse",
                    "model": "claude-sonnet-5"})
     assert _data(resp)["ok"] is True
@@ -582,11 +584,25 @@ def test_relay_control_error_respawns_with_argv_config(monkeypatch):
     (argv2, _), = fake.calls
     assert _flag(argv2, "--model") == "claude-sonnet-5"
     assert fake.system_prompts == ["be terse"]
-    # The respawned instance needs no set_model (argv already matches) —
-    # its only writes are /clear and the turn.
+    # set_model still rides the retry (unconditional per request); here the
+    # fresh instance accepts it and the turn proceeds.
     retry, = fake.procs
-    assert retry.controls == []
+    assert [c["subtype"] for c in retry.controls] == ["set_model"]
     assert retry.prompt == "hello"
+
+
+def test_relay_persistent_control_rejection_is_an_ai_error(monkeypatch):
+    # If EVERY instance rejects set_model (a future CLI dropping the field
+    # for good), the one retry also fails and the caller gets a clean
+    # ai_error naming the rejection — not a hang, not a crashloop.
+    fake = _cli_ok(monkeypatch, control_error={
+        "set_model": "unexpected field: system_prompt"})
+    resp = _relay({"prompt": "hello"})
+    assert resp.status_code == 502
+    data = _data(resp)
+    assert data["error"]["type"] == "ai_error"
+    assert "set_model" in data["error"]["message"]
+    assert len(fake.calls) == 2  # initial spawn + the single retry, no loop
 
 
 def test_relay_nonstream_failure_after_deltas_still_retries(monkeypatch):
@@ -727,12 +743,9 @@ def test_relay_large_prompt_travels_over_stdin(monkeypatch):
     assert proc.message["message"]["content"][0]["text"] == big
 
 
-def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
+def test_relay_rejects_unknown_effort_and_bad_model(monkeypatch):
     fake = _cli_ok(monkeypatch, _CLI_RESULT)
     for body in ({"prompt": "x", "effort": "extreme"},
-                 {"prompt": "x", "max_tokens": 0},
-                 {"prompt": "x", "max_tokens": True},
-                 {"prompt": "x", "max_tokens": "many"},
                  {"prompt": "x", "model": 42},
                  {"prompt": "x", "model": ""},
                  {"prompt": "x", "model": "   "},

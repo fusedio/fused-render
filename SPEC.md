@@ -134,7 +134,6 @@ const { text, model, usage } = await fused.ai(prompt, {
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" | "xhigh" — Claude Code effort
-  maxTokens,                  // deprecated no-op (validated, not enforced)
   onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
 ```
@@ -171,9 +170,7 @@ const { text, model, usage } = await fused.ai(prompt, {
   (`"low" | "medium" | "high" | "xhigh"`) passes through to **Claude Code's own
   effort semantics** (the same setting as the interactive `/effort` command);
   effort-capable models (sonnet/opus class) honor it, haiku silently ignores it.
-  `opts.maxTokens` is **deprecated and currently a no-op**: still validated
-  (a bad value is a 400) but not enforced — the CLI has no per-call output cap;
-  it may regain meaning if one appears. Calls are accepted concurrently but
+  Calls are accepted concurrently but
   **serialized** through one shared CLI process — a second simultaneous call
   waits for the first (a local single-user app; calls complete in seconds). No
   latest-wins channel (an AI call is never a slider scrub).

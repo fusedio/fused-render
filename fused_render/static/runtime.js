@@ -12,8 +12,8 @@
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
  *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
- *     systemPrompt, model, effort ("low"|"medium"|"high"),
- *     maxTokens. Local-only — not available on hosted/exported pages.
+ *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
+ *     onChunk. Local-only — not available on hosted/exported pages.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -719,8 +719,7 @@
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
   // "timeout"), mirroring runPython's rejection style. opts:
-  //   { systemPrompt, model, effort: "low"|"medium"|"high", maxTokens,
-  //     onChunk }
+  //   { systemPrompt, model, effort: "low"|"medium"|"high"|"xhigh", onChunk }
   // onChunk(text) opts the call into streaming: it fires per text delta as
   // the model produces it, and the promise still resolves with the same
   // {text, model, usage} at the end. Without it the request/response is the
@@ -738,7 +737,6 @@
     if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
-    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const req = fetch("/api/ai", {

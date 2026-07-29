@@ -1146,10 +1146,13 @@ class _AiSession:
     call) and then RESET between requests over its stdin protocol instead of
     being killed: /clear wipes the conversation context (~0.7s — what keeps
     one page's prompt out of another's completion), a set_model
-    control_request swaps model and system prompt (~0ms, only when they
-    differ from the tracked state — the pair survives /clear), and an
-    apply_flag_settings control_request applies effortLevel (~10ms, re-sent
-    per request because /clear resets it). All probed on claude 2.1.220.
+    control_request applies the request's model and system prompt (~0ms,
+    sent unconditionally — every request fully specifies its own config, so
+    the instance carries NO config state between requests, only the process
+    handle), and an apply_flag_settings control_request applies effortLevel
+    (~10ms, only when the caller gave effort — /clear resets it, so an
+    omitted effort correctly falls back to the default). All probed on
+    claude 2.1.220.
 
     Requests are SERIALIZED by `lock`: a second concurrent fused.ai call
     waits for the first. Accepted tradeoff — this is a local single-user app,
@@ -1166,8 +1169,6 @@ class _AiSession:
     def __init__(self):
         self.lock = asyncio.Lock()
         self._proc = None
-        self._model = None          # what the live process is configured as
-        self._system_prompt = None
         self._ctrl_seq = 0
         self._spawn_task = None  # startup prewarm; ref so it isn't GC'd
 
@@ -1180,12 +1181,10 @@ class _AiSession:
                 "claude binary not found on PATH; install Claude Code or "
                 f"set {_AI_BIN_ENV} to its location")
         self._proc = await _ai_spawn(bin_path, model, system_prompt)
-        self._model, self._system_prompt = model, system_prompt
         return self._proc
 
     async def _discard(self) -> None:
         proc, self._proc = self._proc, None
-        self._model = self._system_prompt = None
         if proc is not None:
             await _ai_reap(proc)
 
@@ -1308,23 +1307,21 @@ class _AiSession:
 
         Spawns (or respawns a dead instance) if needed, then: /clear always —
         context isolation between fused.ai calls is not optional; set_model
-        with model AND system_prompt only when they differ from the tracked
-        state (both survive /clear); apply_flag_settings per request when
-        effort was given (/clear resets it, so an omitted effort correctly
-        falls back to the default rather than inheriting the last caller's).
-        Raises _AiProcFailure/OSError — the caller discards and retries once
-        on a fresh spawn."""
+        with model AND system_prompt unconditionally (~0ms — every request
+        fully specifies its own config, no state carried between requests);
+        apply_flag_settings when effort was given (/clear resets it, so an
+        omitted effort correctly falls back to the default rather than
+        inheriting the last caller's). Raises _AiProcFailure/OSError — the
+        caller discards and retries once on a fresh spawn."""
         if self._proc is None or self._proc.returncode is not None:
             await self._discard()
             await self._spawn(model, system_prompt)
         await self._clear()
-        if (model, system_prompt) != (self._model, self._system_prompt):
-            # system_prompt is always non-empty here (the relay defaults it):
-            # the CLI rejects an empty string, and there is no revert-to-
-            # default form — the full prompt is resent every time it changes.
-            await self._control({"subtype": "set_model", "model": model,
-                                 "system_prompt": system_prompt})
-            self._model, self._system_prompt = model, system_prompt
+        # system_prompt is always non-empty here (the relay defaults it):
+        # the CLI rejects an empty string, and there is no revert-to-default
+        # form — the full prompt travels on every request.
+        await self._control({"subtype": "set_model", "model": model,
+                             "system_prompt": system_prompt})
         if effort is not None:
             await self._control({"subtype": "apply_flag_settings",
                                  "settings": {"effortLevel": effort}})
@@ -1440,17 +1437,6 @@ async def _ai_relay(body: dict):
             "bad_request",
             "'effort' must be one of: %s" % ", ".join(_AI_EFFORTS),
             status=400)
-    # max_tokens is validated but no longer enforced: the effort→env-var
-    # mapping is gone (Claude Code owns effort/thinking semantics now) and
-    # the CLI has no per-call output cap. Kept as accepted input so existing
-    # pages don't start 400ing; deprecated no-op pending CLI support.
-    max_tokens = body.get("max_tokens")
-    if max_tokens is not None and (
-            not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
-            or max_tokens <= 0):
-        return _ai_error(
-            "bad_request", "'max_tokens' must be a positive integer", status=400)
-
     system_prompt = body.get("system_prompt")
     if not (isinstance(system_prompt, str) and system_prompt):
         system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
