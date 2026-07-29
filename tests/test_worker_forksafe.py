@@ -22,6 +22,7 @@ The fix makes every worker spawn use `posix_spawn` instead of `fork()+exec`
 job). posix_spawn runs NO atfork handlers, so the crash path is gone. These
 tests lock that in: the spawns must not take the fork path.
 """
+import asyncio
 import json
 import os
 import subprocess
@@ -29,7 +30,7 @@ import sys
 
 import pytest
 
-from fused_render import executor
+from fused_render import executor, server
 from fused_render.templates.pyramid import overview_pyramid as op
 
 _POSIX = os.name == "posix"
@@ -183,3 +184,87 @@ def test_pyramid_build_worker_uses_posix_spawn(tmp_path, monkeypatch):
     assert res.get("status_key")
     assert captured["kw"].get("setsid") is True
     assert captured["path"] == "/fake/python"
+
+
+# --------------------------------------------------------------------------
+# /api/ai claude CLI spawn (server._run_claude_cli, async)
+# --------------------------------------------------------------------------
+
+def test_ai_claude_spawn_disables_fork(monkeypatch):
+    """_run_claude_cli must pass close_fds=False -> posix_spawn, not
+    fork()+exec, and a PIPE stdin fed through communicate() (the prompt
+    travels over stdin — argv has an OS size cap — and communicate closes
+    the pipe so the call can't stall)."""
+    captured = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            captured["input"] = input
+            return b"{}", b""
+
+    async def fake_exec(*argv, **kw):
+        captured.update(kw)
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    asyncio.run(server._run_claude_cli(
+        ["claude", "-p"], dict(os.environ), 5, stdin_text="hello"))
+    assert captured.get("close_fds") is False, (
+        "the ai spawn must pass close_fds=False so the claude CLI is spawned "
+        "via posix_spawn (no atfork handlers), not fork()+exec")
+    assert captured.get("stdin") is asyncio.subprocess.PIPE
+    assert captured.get("input") == b"hello"
+
+
+def test_ai_timeout_kills_the_windows_process_tree(monkeypatch):
+    """On win32 a .cmd shim runs through cmd.exe, so kill() alone orphans the
+    node/claude child (it keeps running and billing after we answer timeout).
+    The timeout path must taskkill /T the tree; POSIX keeps plain kill()."""
+    killed = {}
+
+    class _Proc:
+        pid = 4242
+
+        async def communicate(self, input=None):
+            raise asyncio.TimeoutError
+
+        async def wait(self):
+            return 1
+
+        def kill(self):
+            killed["kill"] = True
+
+    async def fake_exec(*argv, **kw):
+        return _Proc()
+
+    def fake_taskkill(argv, **kw):
+        killed["taskkill"] = argv
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(server.subprocess, "run", fake_taskkill)
+    monkeypatch.setattr(server.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+                        raising=False)
+
+    def run(coro):
+        # the loop must exist before sys.platform reads "win32", or asyncio
+        # tries to build the real Windows proactor loop on this box
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    with pytest.raises(asyncio.TimeoutError):
+        run(server._run_claude_cli(["claude", "-p"], dict(os.environ), 5))
+    assert killed.get("taskkill") == ["taskkill", "/T", "/F", "/PID", "4242"]
+    assert killed.get("kill") is True  # fallback still fires
+
+    killed.clear()
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    with pytest.raises(asyncio.TimeoutError):
+        run(server._run_claude_cli(["claude", "-p"], dict(os.environ), 5))
+    assert "taskkill" not in killed
+    assert killed.get("kill") is True

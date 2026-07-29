@@ -21,6 +21,7 @@ import logging
 from collections import deque
 import mimetypes
 import os
+import re
 import shutil
 import stat as stat_mod
 import subprocess
@@ -826,6 +827,350 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     if x_fused != "1":
         return _error("missing or invalid X-Fused header", status=403)
     return None
+
+
+# --- /api/ai — inference through the Claude Code CLI --------------------------
+#
+# fused.ai(prompt, opts) lands here. The shell invokes the `claude` binary the
+# user already has (Claude Code — its login is the credential) rather than
+# pages fetching a model directly: the page stays origin-clean (no API key or
+# endpoint baked into authored HTML), and the server is one place to grow
+# config/limits later. Wire shape is the house {ok, result,
+# error:{type,message}} contract /api/run set. MVP: no streaming.
+#
+# The CLI is driven as a pure one-shot completion: --tools= disables every
+# built-in tool, --setting-sources= skips user/project settings and
+# CLAUDE.md, --system-prompt REPLACES the shipped agent prompt, --max-turns 1
+# and --no-session-persistence keep it a single stateless call.
+
+# `effort` is author-facing shorthand; MVP maps it to max output tokens only
+# (via CLAUDE_CODE_MAX_OUTPUT_TOKENS — the CLI has no per-call flag for it).
+_AI_EFFORT_TOKENS = {"low": 1024, "medium": 4096, "high": 16384}
+_AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+_AI_TIMEOUT_S = 120.0
+_AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
+# Model ids/aliases are a closed charset. This is a SECURITY boundary, not
+# just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
+# (whose quoting cannot be escaped reliably), so every argv element must be a
+# static literal, a tempdir path, or a value this regex admitted.
+_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
+    return JSONResponse(
+        {"ok": False, "error": {"type": type_, "message": message}},
+        status_code=status,
+    )
+
+
+# Where Claude Code installs `claude`, for when it isn't on the PATH this
+# process inherited — the packaged app's PATH is the supervisor's, not a
+# shell's, and a Finder/Dock-launched .app misses ~/.local/bin and Homebrew.
+# On Windows it is worse: a GUI launch inherits the PATH of its login session,
+# so an install that appended to the *user* PATH afterwards stays invisible
+# until the next sign-in.
+#
+# The claude chat template (templates/claude/agent.py) resolves the CLI the
+# same way and this list looks much like its own. That is deliberate
+# duplication, not a missing import: a template is standalone user-forkable
+# code, and the only thing the server and a template share is the fused api.
+# Neither side is authoritative for the other, so neither is held to the
+# other's list.
+#
+# Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to
+# be run through cmd.exe, which re-parses the command line (see _popen_argv).
+_CLAUDE_WINDOWS_CANDIDATES = (
+    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
+    r"%USERPROFILE%\.local\bin\claude.exe",
+    # winget install Anthropic.ClaudeCode, via winget's own shim dir
+    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
+    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
+    r"%APPDATA%\npm\claude.exe",
+    r"%APPDATA%\npm\claude.cmd",
+    # legacy local npm install, written by older Claude Code versions
+    r"%USERPROFILE%\.claude\local\claude.exe",
+)
+_CLAUDE_POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                            "/usr/local/bin/claude")
+
+
+def _claude_bin() -> str | None:
+    """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH,
+    else the platform's known install locations. None when nothing is found —
+    the caller turns that into an `ai_unavailable` error."""
+    forced = os.environ.get(_AI_BIN_ENV)
+    if forced:
+        return forced
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = (_CLAUDE_WINDOWS_CANDIDATES if os.name == "nt"
+                  else _CLAUDE_POSIX_CANDIDATES)
+    for candidate in candidates:
+        # expandvars for the %VAR% Windows entries, expanduser for the ~ POSIX
+        # ones; each is a no-op on the other platform's shape.
+        path = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _needs_cmd_shim(bin_path: str) -> bool:
+    """Whether `bin_path` can only be started through cmd.exe.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess (and so
+    create_subprocess_exec) cannot run directly — only cmd.exe can."""
+    return sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat"))
+
+
+def _cmd_quote(arg: str) -> str:
+    """Quote one argument for the verbatim payload of `cmd /d /s /c "..."`.
+
+    EVERY element is quoted, not just the ones with spaces: /s stops cmd from
+    re-parsing the payload's quotes, but it does NOT stop cmd from acting on
+    metacharacters (& | > < ^), and a quoted run is where those are literal.
+    Windows paths cannot contain `"` and every other element here is a static
+    literal or charset-validated, so there is no inner quote to escape —
+    assert rather than silently produce a line that means something else."""
+    if '"' in arg:
+        raise ValueError(f"argument may not contain a double quote: {arg!r}")
+    return f'"{arg}"'
+
+
+def _popen_cmd(bin_path: str, args: list[str]) -> list[str] | str:
+    """How to spawn the CLI: an argv list, or — behind a Windows .cmd/.bat
+    shim — one command STRING for the cmd.exe hop.
+
+    A shim can only be started through cmd.exe, and the naive form of that is
+    the argv list ["cmd.exe", "/c", bin_path, *args]. It does not work.
+    Windows has no argv: CreateProcess takes a command line, which asyncio
+    builds with subprocess.list2cmdline, quoting each element that needs it.
+    cmd.exe preserves that inner quoting only when the rest of its line holds
+    exactly TWO quote characters; a shim path with spaces plus any quoted
+    argument makes four, cmd falls through to its strip-the-outermost-pair
+    rule and re-splits at the spaces — so a `C:\\Users\\John Doe\\...` install
+    never runs:
+
+        >>> subprocess.list2cmdline(["cmd.exe", "/c", r"C:\\p ath\\claude.cmd",
+        ...                          "-p", r"C:\\Users\\John Doe\\t.txt"])
+        'cmd.exe /c "C:\\\\p ath\\\\claude.cmd" -p "C:\\\\Users\\\\John Doe\\\\t.txt"'
+
+    Nor can the fixed line be smuggled through as one argv ELEMENT, because
+    list2cmdline would escape the quotes we just added. So the shim path
+    returns a string and is spawned as a command line instead (see
+    _run_claude_cli), which CPython wraps as `comspec /c "<payload>"` — one
+    outer quote pair around a payload in which every element is quoted. cmd
+    then strips exactly that outer pair and reads the rest as written.
+
+    Every element is quoted, not only the ones with spaces: the outer pair
+    stops cmd re-parsing QUOTES, not metacharacters (& | > < ^), and a quoted
+    run is where those stay literal. Nothing here can contain a `"` — Windows
+    paths cannot, and the rest is static or charset-validated — and
+    _cmd_quote raises rather than emit a line that means something else."""
+    if not _needs_cmd_shim(bin_path):
+        return [bin_path] + args
+    return " ".join(_cmd_quote(a) for a in [bin_path] + args)
+
+
+def _kill_process_tree(proc) -> None:
+    """Kill `proc` and, on Windows, its whole descendant tree.
+
+    A .cmd shim runs through cmd.exe, so proc.kill() there terminates only
+    cmd.exe and orphans the node/claude child — which keeps running (and
+    billing) after we've answered timeout. taskkill /T walks the tree;
+    proc.kill() stays as the POSIX path and the Windows fallback."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+async def _run_claude_cli(cmd: list[str] | str, env: dict, timeout: float,
+                          stdin_text: str = ""):
+    """Run the claude CLI once; return (returncode, stdout, stderr) as text.
+
+    The single subprocess hop, module-level so tests can patch it — the same
+    discipline as _fs_stat/_fs_write. `stdin_text` is written to the process
+    and the pipe closed (communicate) — the prompt travels this way because
+    argv has an OS size cap (~32K on Windows, ARG_MAX elsewhere) that a
+    data-heavy prompt can blow. Raises asyncio.TimeoutError after `timeout`
+    seconds (the process is killed first).
+
+    A list `cmd` is exec'd directly. A string is the Windows .cmd-shim case
+    (_popen_cmd): it must go through create_subprocess_shell, whose comspec
+    wrapping is what gives cmd.exe the single outer quote pair it can parse
+    deterministically. That is NOT a shell-injection surface — the payload is
+    ours, fully quoted, and holds no user text (the prompt is on stdin, the
+    system prompt in a file, the model charset-validated)."""
+    kwargs = dict(
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        # close_fds=False forces the posix_spawn path instead of fork()+exec:
+        # fork() runs PROJ's pthread_atfork child handler against the server's
+        # live proj.db SQLite handle and SIGSEGVs the child (exit -11). Same
+        # fix as executor.py's worker spawn — see the full story there and in
+        # tests/test_worker_forksafe.py.
+        close_fds=False,
+        # a windowless server must not flash a console window per call
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    if isinstance(cmd, str):
+        proc = await asyncio.create_subprocess_shell(cmd, **kwargs)
+    else:
+        proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(stdin_text.encode("utf-8")), timeout)
+    except asyncio.TimeoutError:
+        _kill_process_tree(proc)
+        await proc.wait()
+        raise
+    return (proc.returncode,
+            stdout.decode("utf-8", "replace"),
+            stderr.decode("utf-8", "replace"))
+
+
+async def _ai_relay(body: dict) -> JSONResponse:
+    """Validate an /api/ai body and run one claude CLI completion.
+
+    Module-level (not a closure) so tests can drive it directly and mock the
+    subprocess hop (_run_claude_cli)."""
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _ai_error(
+            "bad_request", "request body must include 'prompt': a non-empty string",
+            status=400)
+
+    model = body.get("model")
+    if model is not None and (
+            not isinstance(model, str) or not _AI_MODEL_RE.fullmatch(model)):
+        return _ai_error(
+            "bad_request",
+            "'model' must be a model id or alias (letters, digits, . _ -)",
+            status=400)
+    model = model or _AI_DEFAULT_MODEL
+    effort = body.get("effort")
+    if effort is not None and effort not in _AI_EFFORT_TOKENS:
+        return _ai_error(
+            "bad_request",
+            "'effort' must be one of: %s" % ", ".join(_AI_EFFORT_TOKENS),
+            status=400)
+    max_tokens = body.get("max_tokens")
+    if max_tokens is not None and (
+            not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
+            or max_tokens <= 0):
+        return _ai_error(
+            "bad_request", "'max_tokens' must be a positive integer", status=400)
+    if max_tokens is None:
+        max_tokens = _AI_EFFORT_TOKENS[effort or "medium"]
+
+    system_prompt = body.get("system_prompt")
+    if not (isinstance(system_prompt, str) and system_prompt):
+        system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
+
+    bin_path = _claude_bin()
+    if not bin_path:
+        return _ai_error(
+            "ai_unavailable",
+            "claude binary not found on PATH; install Claude Code or set "
+            f"{_AI_BIN_ENV} to its location")
+
+    # No user-controlled STRING may enter argv: on the Windows .cmd-shim path
+    # cmd.exe re-parses the whole line, and cmd-escaping arbitrary text is not
+    # reliably possible. The prompt goes over stdin (-p with no positional
+    # prompt reads the pipe — also dodges the OS argv size cap for the
+    # documented embed-JSON-aggregates pattern) and the system prompt goes via
+    # --system-prompt-file (verified against claude 2.1.220: identical parse
+    # and input tokens). What remains in argv: static literals, the
+    # charset-validated model, and our own tempdir path.
+    sp_file = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt",
+        prefix="fused_render_ai_sp_", delete=False)
+    try:
+        sp_file.write(system_prompt)
+        sp_file.close()
+        cmd = _popen_cmd(bin_path, [
+            "-p",
+            "--output-format", "json",
+            "--model", model,
+            "--system-prompt-file", sp_file.name,
+            # Single-token equals form, never a separate "" argv element: the
+            # cmd.exe %* expansion behind a .cmd shim drops empty args — the
+            # flags would then swallow the next token and leave tools/settings
+            # enabled. (Verified against claude 2.1.220: parses identically,
+            # same 544 input tokens.)
+            "--tools=",
+            "--setting-sources=",
+            "--no-session-persistence",
+            "--max-turns", "1",
+        ])
+        env = dict(os.environ)
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
+        try:
+            returncode, stdout, stderr = await _run_claude_cli(
+                cmd, env, _AI_TIMEOUT_S, stdin_text=prompt)
+        except asyncio.TimeoutError:
+            return _ai_error(
+                "timeout",
+                f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+        except OSError as exc:
+            return _ai_error(
+                "ai_unavailable",
+                f"could not run the claude CLI at {bin_path}: {exc}")
+    finally:
+        try:
+            os.unlink(sp_file.name)
+        except OSError:
+            pass
+    if returncode != 0:
+        tail = (stderr or stdout).strip()[-500:]
+        return _ai_error(
+            "ai_error", f"claude CLI exited with code {returncode}: {tail}")
+    # Stderr may carry warnings (connector notices etc.) — only the exit code
+    # and stdout decide the outcome.
+    try:
+        data = json.loads(stdout)
+        text = data["result"]
+    except (ValueError, LookupError, TypeError):
+        return _ai_error(
+            "ai_error", "claude CLI returned an unexpected response shape")
+    if data.get("is_error") or data.get("subtype") not in (None, "success"):
+        return _ai_error(
+            "ai_error", f"claude CLI reported an error: {str(text)[:500]}")
+    # The requested model may be an alias (haiku/sonnet/opus); modelUsage is
+    # keyed by the full id the CLI actually ran, so prefer that for the echo.
+    model_usage = data.get("modelUsage")
+    used_model = model
+    if isinstance(model_usage, dict) and len(model_usage) == 1:
+        used_model = next(iter(model_usage))
+    return JSONResponse({"ok": True, "result": {
+        "text": text,
+        "model": used_model,
+        "usage": _ai_usage(data.get("usage")),
+    }})
+
+
+def _ai_usage(raw) -> dict | None:
+    """Normalize CLI usage to exactly {input_tokens, output_tokens} or None.
+
+    The response schema GUARANTEES this shape (Anthropic-style names, NOT
+    OpenAI's prompt_tokens/completion_tokens — see RH-11): pages read
+    usage.output_tokens without guarding, so a CLI whose usage block gains,
+    loses or retypes fields must degrade to null rather than leak an unknown
+    shape through."""
+    if not isinstance(raw, dict):
+        return None
+    tokens = {k: raw.get(k) for k in ("input_tokens", "output_tokens")}
+    if any(not isinstance(v, int) or isinstance(v, bool)
+           for v in tokens.values()):
+        return None
+    return tokens
 
 
 # Per-file sidecar <file>.json (shared with the claude chat template, which
@@ -4014,6 +4359,15 @@ def create_app(start_dir: str) -> FastAPI:
         # that string instead of encoding a multi-MB result a second time. The
         # bytes are identical to JSONResponse's for every other result.
         return Response(content=dumps_result(result), media_type="application/json")
+
+    @app.post("/api/ai")
+    async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+        # fused.ai() — validation and the claude CLI hop live in _ai_relay
+        # (module-level so tests can drive it with the subprocess mocked).
+        guard = _require_fused(x_fused)
+        if guard is not None:
+            return guard
+        return await _ai_relay(body)
 
     @app.post("/api/export")
     def api_export(body: dict = Body(...), x_fused: str | None = Header(default=None)):

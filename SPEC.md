@@ -128,6 +128,14 @@ fused.params.onChange(callback)   // fires whenever params change; author re-run
 
 // Runtime identity — "local" here, "hosted" on a deployed artifact (§18, RH-10)
 fused.env
+
+// Ask an AI model via the local claude (Claude Code) CLI (RH-11). Local-only.
+const { text, model, usage } = await fused.ai(prompt, {
+  systemPrompt,               // optional system message
+  model,                      // optional model id (default claude-haiku-4-5-20251001)
+  effort,                     // optional "low" | "medium" | "high" — max_tokens shorthand
+  maxTokens,                  // optional explicit max_tokens override
+});
 ```
 
 - **RH-10** `fused.env` is the **runtime identity**: `"local"` in the fused-render app,
@@ -135,6 +143,35 @@ fused.env
   §18). It lets a page branch on where it runs — gating any local-only behaviour when
   `fused.env === "local"` and degrading gracefully when `"hosted"`. Both runtimes expose
   it, so the check is a positive signal, not the absence of an API.
+- **RH-11** `fused.ai(prompt, opts?)` asks an AI model through the shell: the server's
+  `/api/ai` runs one completion through the **`claude` (Claude Code) CLI** — the user's
+  existing Claude Code login is the credential; no API key or proxy to configure
+  (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on PATH). The
+  CLI runs as a pure one-shot completion (no tools, no settings/CLAUDE.md, no session
+  persistence, one turn). Resolves with exactly this shape — the server normalizes it,
+  so a page may read the fields without guarding:
+
+  ```json
+  {
+    "text": "the completion",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": { "input_tokens": 544, "output_tokens": 73 }
+  }
+  ```
+
+  `text` string; `model` the **full model id that ran** (an alias request like
+  `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
+  `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
+  `prompt_tokens`/`completion_tokens`). Rejects with
+  a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
+  `"ai_unavailable"` (claude binary not found or not runnable — the message names what
+  to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
+  an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
+  (`"low" | "medium" | "high"`) is a max-output-tokens shorthand (1024/4096/16384,
+  default medium); `opts.maxTokens` overrides it. Calls run fully concurrent — no
+  latest-wins channel (an AI call is never a slider scrub). No streaming (MVP).
+  **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
+  page that calls it (§18.2) — gate with `fused.env === "local"` instead.
 
 ### 4.2 `runPython(path, params)`
 
@@ -633,7 +670,8 @@ nothing. Full detail: `docs/EXPORT.md`.
   `opts.key`/`opts.signal` cancellation), `rawUrl`/`readFile` (→ read-only bundled
   assets), and `params` (pure client-side URL state, unchanged). `writeFile`, `stat`,
   and SSE live-reload are **unsupported** — a hosted artifact is immutable and has no
-  filesystem behind it.
+  filesystem behind it. `fused.ai` (RH-11) is also **unsupported**: it runs the claude
+  CLI on the author's own machine, which a hosted page cannot reach.
 
 ### 18.3 Static resolution & fail-loud
 

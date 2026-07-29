@@ -80,6 +80,30 @@ the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
 persistent instead. (Not to be confused with the **call log** below, which is
 durable, has settings, and lives in `~/.fused-render/logs/`.)
 
+## AI calls (`fused.ai`)
+
+Pages can ask an AI model with `fused.ai(prompt, opts?)`. It resolves with
+exactly `{text, model, usage}` — `model` is the full model id that ran, and
+`usage` is either `null` or exactly `{input_tokens, output_tokens}`
+(Anthropic-style names, not OpenAI's `prompt_tokens`/`completion_tokens`):
+
+```json
+{
+  "text": "the completion",
+  "model": "claude-haiku-4-5-20251001",
+  "usage": { "input_tokens": 544, "output_tokens": 73 }
+}
+```
+
+The server runs the
+call through the **`claude` (Claude Code) CLI** on your machine — your existing
+Claude Code login is the credential; there is no proxy or API key to configure.
+The binary is found on `PATH`; set `FUSED_RENDER_CLAUDE_BIN` to point at a
+specific binary per process. If the CLI isn't installed, calls reject with an
+`ai_unavailable` error saying what to install or set.
+`fused.ai` is local-only: exported/hosted pages can't use it (see
+[EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
+
 ## Export for hosted serving
 
 The **Deploy** button (see [Deploy to a hosted URL](../README.md#deploy-to-a-hosted-url)
@@ -91,7 +115,7 @@ can serve — see [EXPORT.md](EXPORT.md) for the bundle format and rules.
 ## Call log
 
 The app records every API call your pages make — each `fused.runPython`,
-`readFile`, `stat` and `writeFile` — with its duration, result size, the
+`readFile`, `stat`, `writeFile` and `ai` — with its duration, result size, the
 `print()` output, and any traceback. It answers the questions a page can't
 otherwise: which of your `.py` files is slow, whether a run errored while you
 weren't looking, and whether the page is quietly re-running Python far more
