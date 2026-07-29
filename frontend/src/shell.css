@@ -1020,8 +1020,6 @@ a.bookmark-name::after {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  /* Positioning context for the error toast pinned to the listing's bottom. */
-  position: relative;
 }
 
 .listing-scroll {
@@ -2103,19 +2101,39 @@ body.embed .open-as-app-chip:hover {
   align-self: auto;
 }
 
-/* ---- Transient toast (bottom of the listing) ----------------------------- */
-/* Default is the error variant (red border); .listing-toast-info is the
-   neutral confirmation variant (e.g. "Path copied"). */
-.listing-toast {
-  position: absolute;
-  left: 50%;
+/* ---- Notification stack (fixed, bottom-right) ---------------------------- */
+/* The one surface every notification shares: transient toasts with the
+   server-health card at its foot (NotificationHost). Nothing inside positions
+   itself — the column owns placement and stacking, which is the whole point of
+   folding the old bottom-centre toast host and the separately-pinned server
+   card into it. pointer-events: none on the column so its empty region never
+   swallows clicks on the view beneath; each entry takes them back. */
+.notif-host {
+  position: fixed;
+  right: 16px;
   bottom: 16px;
-  transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.notif-host > * {
+  pointer-events: auto;
+}
+
+/* ---- Transient toast ----------------------------------------------------- */
+/* Default is the error variant (red border); .toast-info is the neutral
+   confirmation variant (e.g. "Path copied"). Capped at the column's width so
+   the stack reads as one system rather than a ragged pile. */
+.toast {
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: min(520px, calc(100% - 32px));
+  max-width: 100%;
   padding: 8px 10px 8px 12px;
   font-size: 12px;
   color: var(--fg);
@@ -2125,17 +2143,24 @@ body.embed .open-as-app-chip:hover {
   box-shadow: 0 6px 20px var(--shadow-lg);
 }
 
-.listing-toast-info {
+.toast-info {
   border-color: var(--border);
 }
 
-.listing-toast-msg {
+/* Wraps instead of ellipsising to one line. These messages are sentences —
+   "no mount covers s3://<bucket> — add one from the Mounts page in the
+   sidebar" — and a single-line clip cuts exactly the half that says what to
+   do, which was already true at the old 520px and is worse in a 360px column.
+   Clamped so a pathological message still can't own the screen. */
+.toast-msg {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-height: 1.45;
 }
 
-.listing-toast-close {
+.toast-close {
   flex: 0 0 auto;
   background: none;
   border: none;
@@ -2145,12 +2170,12 @@ body.embed .open-as-app-chip:hover {
   padding: 0 2px;
 }
 
-.listing-toast-close:hover {
+.toast-close:hover {
   color: var(--fg);
 }
 
 /* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
-.listing-toast-action {
+.toast-action {
   flex: 0 0 auto;
   background: none;
   border: 1px solid var(--border);
@@ -2161,43 +2186,16 @@ body.embed .open-as-app-chip:hover {
   padding: 3px 8px;
 }
 
-.listing-toast-action:hover {
+.toast-action:hover {
   border-color: var(--fg-muted);
 }
 
-/* Global toast host (ToastHost): a fixed, bottom-centre stack over any view.
-   Neutralises .listing-toast's own absolute positioning so entries stack —
-   newest at the bottom (column-reverse), nearest the user's eye. */
-.toast-host {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  z-index: 2000;
-  display: flex;
-  flex-direction: column-reverse;
-  align-items: center;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.toast-host .listing-toast {
-  position: static;
-  left: auto;
-  bottom: auto;
-  transform: none;
-  pointer-events: auto;
-}
-
-/* ---- Server-status banner (bottom-right, backend health) ----------------- */
+/* ---- Server-status card (foot of the notification stack) ----------------- */
 /* Shown by ServerStatusBanner after two failed /api/config probes; the green
-   -reconnected variant auto-dismisses. Sits above the listing toast (1000). */
+   -reconnected variant auto-dismisses. Placement and stacking belong to
+   .notif-host — this only describes the card. */
 .server-status {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 1100;
-  max-width: 360px;
+  max-width: 100%;
   padding: 10px 12px;
   font-size: 12px;
   color: var(--fg);

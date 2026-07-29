@@ -1,8 +1,8 @@
-// The explorer's transient toast (an error, or a non-red "info" confirmation).
-// Purely presentational — the hosting view (or the global ToastHost) owns the
-// toast state and its auto-dismiss timer, so this component just renders the
-// pinned banner + optional action + dismiss button. Styling is .listing-toast*
-// in shell.css.
+// One transient notification (an error, or a non-red "info" confirmation).
+// Purely presentational: the global store (lib/toast) owns the queue and the
+// auto-dismiss timer, and NotificationHost owns where it sits, so this renders
+// only the banner + optional action + dismiss button. Styling is .toast* in
+// shell.css.
 export type ToastTone = "error" | "info";
 
 // An optional call-to-action rendered before the dismiss button (e.g. the
@@ -25,14 +25,14 @@ export default function Toast({
 }) {
   return (
     <div
-      className={"listing-toast" + (tone === "info" ? " listing-toast-info" : "")}
+      className={"toast" + (tone === "info" ? " toast-info" : "")}
       role={tone === "info" ? "status" : "alert"}
     >
-      <span className="listing-toast-msg">{msg}</span>
+      <span className="toast-msg">{msg}</span>
       {action && (
         <button
           type="button"
-          className="listing-toast-action"
+          className="toast-action"
           onClick={action.onClick}
         >
           {action.label}
@@ -40,7 +40,7 @@ export default function Toast({
       )}
       <button
         type="button"
-        className="listing-toast-close"
+        className="toast-close"
         onClick={onClose}
         aria-label="Dismiss"
       >

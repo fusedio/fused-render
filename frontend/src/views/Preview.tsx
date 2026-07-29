@@ -31,11 +31,11 @@ import {
 } from "../lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "../lib/ui-overlay";
 import { setClipboard } from "../lib/fs-clipboard";
+import { pushToast } from "../lib/toast";
 import ModeSwitcher, { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "../components/ModeSwitcher";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
-import Toast, { type ToastTone } from "../components/Toast";
 import DeployModal from "../components/DeployModal";
 import Listing from "./Listing";
 
@@ -87,14 +87,6 @@ function usePreviewFileMenu(
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
-  const [toast, setToast] = useState<{ msg: string; tone: ToastTone } | null>(null);
-
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(t);
-  }, [toast]);
-
   // Publish this header menu's overlay state to the shared registry (lib/
   // ui-overlay). A directory opened in Preview embeds a Listing whose own
   // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
@@ -123,9 +115,9 @@ function usePreviewFileMenu(
       try {
         const dst = await freeDuplicatePath(parent, stat.name, stat.is_dir);
         await copyEntry(fsPath, dst);
-        setToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
+        pushToast({ msg: `Duplicated as ${basename(dst)}`, tone: "info" });
       } catch (e) {
-        setToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
+        pushToast({ msg: friendlyFsError(e, { verb: "duplicate", name: stat.name }), tone: "error" });
       } finally {
         duplicateInFlight.current = false;
       }
@@ -148,7 +140,7 @@ function usePreviewFileMenu(
             clearClipboardIfDeleted(fsPath);
             navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
-          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
+          (e: Error) => pushToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
         );
       },
     });
@@ -161,7 +153,7 @@ function usePreviewFileMenu(
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        setToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
+        pushToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
       }
     });
   };
@@ -177,7 +169,7 @@ function usePreviewFileMenu(
         if (name === stat.name) return;
         const err = nameError(name);
         if (err) {
-          setToast({ msg: err, tone: "error" });
+          pushToast({ msg: err, tone: "error" });
           return;
         }
         const dst = join(parent, name);
@@ -191,20 +183,20 @@ function usePreviewFileMenu(
             // (`_mode`/params) so the same view stays open on the new path.
             navigateUrl(urlForFsPath(dst, location.search));
           },
-          (e: Error) => setToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
+          (e: Error) => pushToast({ msg: friendlyFsError(e, { verb: "rename", name: stat.name }), tone: "error" })
         );
       },
     });
 
   const doCopyPath = () => {
     copyToClipboard(fsPath).then((ok) => {
-      if (ok) setToast({ msg: "Path copied", tone: "info" });
+      if (ok) pushToast({ msg: "Path copied", tone: "info" });
     });
   };
 
   const doReveal = () => {
     revealPath(fsPath).catch((e) =>
-      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
+      pushToast({ msg: friendlyFsError(e, { verb: "reveal", name: stat.name }), tone: "error" })
     );
   };
 
@@ -261,7 +253,6 @@ function usePreviewFileMenu(
           onCancel={() => setDialog(null)}
         />
       )}
-      {toast && <Toast msg={toast.msg} tone={toast.tone} onClose={() => setToast(null)} />}
     </>
   );
 

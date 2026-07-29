@@ -46,10 +46,10 @@ import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
+import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
-import Toast from "../components/Toast";
 
 // A right-clicked row, normalized so both listing rows (name relative to the
 // listed folder) and search-result rows (a `rel` path into a subtree) drive the
@@ -416,21 +416,16 @@ export default function Listing({
   const [loadingMore, setLoadingMore] = useState(false);
 
   // --- Context-menu / file-operation state ----------------------------------
-  // The open context menu (position + items), the open modal, and a transient
-  // toast (error, or a non-red "info" confirmation). All local to this folder
-  // view. The cut/copy clipboard is a module-level store (lib/fs-clipboard) so
-  // it survives this component's per-folder remount (see there).
+  // The open context menu (position + items) and the open modal, both local to
+  // this folder view. Toasts are NOT local: they go to the global store
+  // (lib/toast), which owns the queue, the auto-dismiss timer and the single
+  // bottom-right stack every notification shares. In panel/tab mode each pane
+  // is its own document, so a pane's toast still lands in that pane's corner.
+  // The cut/copy clipboard is likewise a module-level store (lib/fs-clipboard)
+  // so it survives this component's per-folder remount (see there).
   const clipboard = useClipboard();
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
-  const [toast, setToast] = useState<{ msg: string; tone: "error" | "info" } | null>(null);
-
-  // Auto-dismiss the toast so it doesn't linger; a new toast resets it.
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(t);
-  }, [toast]);
 
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -630,6 +625,11 @@ export default function Listing({
         return;
       }
       if (e.key === "Enter") {
+        // Already consumed by a chrome control that unmounted itself on the
+        // way (the breadcrumb's path input commits and closes on Enter, which
+        // hands focus back to <body> before this listener runs — navActive
+        // alone can't see that the key was spoken for).
+        if (e.defaultPrevented) return;
         if (!navActive) return;
         if (!rows.length) return;
         e.preventDefault();
@@ -717,7 +717,7 @@ export default function Listing({
       (err: Error) => {
         if (refreshRef.current !== gen) return; // stale: the fetch effect reset state
         setLoadingMore(false);
-        setToast({ msg: err.message, tone: "error" });
+        pushToast({ msg: err.message, tone: "error" });
       }
     );
   };
@@ -1192,7 +1192,7 @@ export default function Listing({
       await fn();
       refetch();
     } catch (e) {
-      setToast({ msg: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
+      pushToast({ msg: ctx ? friendlyFsError(e, ctx) : (e as Error).message, tone: "error" });
     }
   };
 
@@ -1202,7 +1202,7 @@ export default function Listing({
   // Returns true when the name is rejected (caller should bail).
   const rejectName = (name: string): boolean => {
     const err = nameError(name);
-    if (err) setToast({ msg: err, tone: "error" });
+    if (err) pushToast({ msg: err, tone: "error" });
     return err !== null;
   };
 
@@ -1325,7 +1325,7 @@ export default function Listing({
 
   const doReveal = (path: string) => {
     revealPath(path).catch((e) =>
-      setToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
+      pushToast({ msg: friendlyFsError(e, { verb: "reveal", name: basename(path) }), tone: "error" })
     );
   };
 
@@ -1334,7 +1334,7 @@ export default function Listing({
     // or permission denied) stays silent — the path is still reachable via
     // Reveal in Finder.
     copyToClipboard(path).then((ok) => {
-      if (ok) setToast({ msg: "Path copied", tone: "info" });
+      if (ok) pushToast({ msg: "Path copied", tone: "info" });
     });
   };
 
@@ -1342,7 +1342,7 @@ export default function Listing({
   // manager writes for a multi-selection paste into a terminal or editor).
   const doCopyPaths = (paths: string[]) => {
     copyToClipboard(paths.join("\n")).then((ok) => {
-      if (ok) setToast({ msg: `${paths.length} paths copied`, tone: "info" });
+      if (ok) pushToast({ msg: `${paths.length} paths copied`, tone: "info" });
     });
   };
 
@@ -1473,16 +1473,19 @@ export default function Listing({
         }
       }
       if (trashed.length) {
-        setToast({
+        pushToast({
           msg: trashed.length === 1 ? "Moved to Bin" : `Moved ${trashed.length} items to Bin`,
           tone: "info",
         });
         refetch();
       }
-      // A real failure wins the toast (it replaces the info one above); the
-      // unsupported fallback only runs when nothing errored.
+      // A real failure raises its own toast. It used to REPLACE the info one
+      // above (one local slot, last write wins), which hid the fact that the
+      // other rows did move; the shared stack shows both, which is what a
+      // partial success actually is. The unsupported fallback only runs when
+      // nothing errored.
       if (failed !== null) {
-        setToast({
+        pushToast({
           msg: friendlyFsError(failed.message, { verb: "move to Bin", name: failed.row.name }),
           tone: "error",
         });
@@ -2071,7 +2074,6 @@ export default function Listing({
         />
       )}
 
-      {toast && <Toast msg={toast.msg} tone={toast.tone} onClose={() => setToast(null)} />}
     </div>
   );
 }

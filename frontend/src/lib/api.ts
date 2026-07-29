@@ -999,6 +999,14 @@ export function getMountsHealth(): Promise<MountsHealthResult> {
   return getJson<MountsHealthResult>("/api/mounts/health");
 }
 
+// Path-bar support: the local path a bucket URL (s3://, gs://, gcs://) maps to
+// through the mount that covers it. Rejects with the server's message — "no
+// mount covers s3://<bucket> …" — when nothing does; the caller shows it
+// verbatim, since only the server knows the mount records and rclone config.
+export function resolveCloudUrl(url: string): Promise<{ path: string }> {
+  return getJson<{ path: string }>("/api/mounts/resolve?url=" + encodeURIComponent(url));
+}
+
 export function createMount(name: string, remote: string): Promise<Mount> {
   return postJson<Mount>("/api/mounts", { name, remote });
 }
