@@ -105,6 +105,23 @@
     margin: 8px 0;
   }
   a { color: inherit; }
+  .hero {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .hero-text { flex: 1; min-width: 0; }
+  .hero-gif {
+    display: block;
+    width: 140px;
+    flex: none;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  @media (max-width: 520px) {
+    .hero { flex-direction: column-reverse; }
+    .hero-gif { width: 100%; max-width: 220px; }
+  }
   footer {
     text-align: center;
     color: var(--muted);
@@ -127,10 +144,16 @@
   </header>
 
   <section class="hero">
-    <p class="muted">Right-click a file in Explorer → <strong>Open with</strong> →
-    fused-render, and it opens in your browser, ready to preview.</p>
-    <p><a href="https://github.com/fusedio/fused-render-examples">Browse example views →</a>
-    <span class="muted">copy any of them into your own install and run them as-is.</span></p>
+    <div class="hero-text">
+      <p class="muted">Right-click a file in Explorer → <strong>Open with</strong> →
+      fused-render, and it opens in your browser, ready to preview.</p>
+      <p><a href="https://github.com/fusedio/fused-render-examples">Browse example views →</a>
+      <span class="muted">copy any of them into your own install and run them as-is.</span></p>
+    </div>
+    <!-- Same demo GIF as the README's hero. Served straight from the main
+         branch so this page never drifts from the README's copy and
+         doesn't need a release-pipeline upload. -->
+    <img class="hero-gif" alt="fused-render: right-click a file in Explorer, pick &quot;Open with&quot; → fused-render, and it opens in the browser" src="https://raw.githubusercontent.com/fusedio/fused-render/main/learn/assets/open_with_right_click.gif">
   </section>
 
   <section>
