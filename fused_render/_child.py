@@ -22,19 +22,23 @@ import traceback
 # before run() mutates sys.path, so a user module dir can't shadow it.
 from _binding import bind_params
 
-# The flip side of that same script invocation: sys.path[0] is the PACKAGE
-# directory, not its parent, so `import fused_render` does NOT resolve here
-# unless the package happens to be pip-installed into this interpreter. A helper
-# that delegates to the package therefore died in the child with "No module
-# named 'fused_render'" — which is how the call-log reader (it reads the store
-# through `fused_render.calls`) failed while log_studio's stdlib-only reader
-# worked, making a child-bootstrap bug look like a call-log bug.
+# NOTE: this worker deliberately does NOT put the package's parent on sys.path.
+# It used to (appended), so that a helper could `import fused_render` from the
+# child even when the package is not pip-installed into this interpreter — the
+# flip side of the script invocation above, where sys.path[0] is the PACKAGE
+# directory rather than its parent. It existed for one consumer, the call-log
+# reader reading the store through `fused_render.calls`; nothing under
+# `templates/` imports `fused_render` any more (SPEC PY-14: a template learns
+# about its environment from `templates/shared/appenv.py`, env vars only).
 #
-# Appended rather than inserted: a real installation keeps precedence, and so
-# does the user's own module directory that run() puts at sys.path[0].
-_PACKAGE_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PACKAGE_PARENT not in sys.path:
-    sys.path.append(_PACKAGE_PARENT)
+# It was also never dependable. The fused local execution backend strips
+# PYTHONPATH/PYTHONHOME/VIRTUAL_ENV from its children for venv hermeticity, so a
+# template that leaned on the package being importable worked under this executor
+# and silently took its fallback branch under the other engine. `executor
+# ._child_env()`, the parent half of the same fix, went in the same change — the
+# two halves must not disagree. The ImportError diagnostic in run() below stays:
+# a USER .py that imports `fused_render` now fails here, and that message is what
+# tells them which interpreter looked and where.
 
 
 def run():

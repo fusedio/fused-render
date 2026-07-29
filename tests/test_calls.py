@@ -644,29 +644,30 @@ def test_a_user_fork_of_the_reader_is_never_allowlisted(tmp_path, monkeypatch):
     assert executor._is_builtin_helper(str(fork)) is False
 
 
-def test_the_child_can_import_the_package_without_it_being_installed(tmp_path):
-    """The bug behind "Could not read the call log: No module named
-    'fused_render'".
+def test_the_child_does_not_put_the_package_on_the_path(tmp_path):
+    """The worker is hermetic: it does not make `fused_render` importable.
 
-    `_child.py` is spawned as a standalone SCRIPT, so sys.path[0] is the package
-    directory — not its parent — and `import fused_render` resolves only when
-    the package happens to be pip-installed into that interpreter. Any helper
-    that delegates to the package therefore failed in the child, which is why
-    the call-log reader broke while log_studio's stdlib-only reader was fine:
-    the symptom pointed at the call log, the cause was the child's bootstrap.
+    It used to. `_child.py` appended the package's parent to sys.path and
+    `executor._child_env()` appended the same value to PYTHONPATH, so a helper
+    could `import fused_render` from the child even with the package not
+    installed into that interpreter. Both halves are gone (PY-14): the one
+    consumer was the call-log reader reading the store through
+    `fused_render.calls`, nothing under `templates/` imports the package any more,
+    and the fused local execution backend STRIPS PYTHONPATH from its children for
+    venv hermeticity — so any template leaning on it worked under this executor
+    and silently took its fallback branch under the other engine. Pinning the
+    ABSENCE is what keeps a template from quietly acquiring that dependency again.
 
     Driven through the REAL child with the package's parent stripped from
     sys.path, so the assertion is about the bootstrap and not about however this
     checkout happens to be installed.
     """
-    node_free_helper = tmp_path / "probe.py"
+    probe = tmp_path / "probe.py"
     parent = os.path.dirname(os.path.dirname(os.path.abspath(calls.__file__)))
-    node_free_helper.write_text(
+    probe.write_text(
         "import sys\n"
         "def main(**kw):\n"
-        "    import fused_render.calls as c\n"
-        f"    return {{'parent_on_path': {parent!r} in sys.path,\n"
-        "            'store': bool(c.store_dir())}\n",
+        f"    return {{'parent_on_path': {parent!r} in sys.path}}\n",
         encoding="utf-8")
 
     shim = tmp_path / "shim"
@@ -682,57 +683,37 @@ def test_the_child_can_import_the_package_without_it_being_installed(tmp_path):
     child = os.path.join(os.path.dirname(os.path.abspath(calls.__file__)), "_child.py")
     out = subprocess.run(
         [sys.executable, child],
-        input=json.dumps({"path": str(node_free_helper), "params": {}}),
+        input=json.dumps({"path": str(probe), "params": {}}),
         capture_output=True, text=True, timeout=60,
         cwd=str(tmp_path),  # nothing importable next to the helper
         env={**os.environ, "PYTHONPATH": str(shim)})
     assert out.returncode == 0, out.stderr
     body = json.loads(out.stdout)
     assert body["ok"] is True, body.get("error")
-    assert body["result"]["parent_on_path"] is True, \
-        "the child must put the package's parent on sys.path itself"
-    assert body["result"]["store"] is True
+    assert body["result"]["parent_on_path"] is False, \
+        "the child must not put the package's parent on sys.path"
 
 
-def test_the_worker_env_appends_the_package_path_and_never_shadows_the_caller(
-        tmp_path, monkeypatch):
-    """The parent half of the same fix must not outrank the caller's PYTHONPATH.
+def test_neither_half_of_the_old_pythonpath_injection_survives(tmp_path, monkeypatch):
+    """The two halves were one fix and must stay removed together.
 
-    It originally PREPENDED, on the reasoning that the user's own module folder
-    still wins from `sys.path[0]`. True, but the wrong axis: what it displaced
-    was PYTHONPATH, and on an installed layout the value being prepended IS
-    site-packages — in front of PYTHONPATH that reverses the one override
-    PYTHONPATH exists to provide, for every module, not just this package.
-    Appending fixes the missing import just as well: the entry has to be
-    reachable, not first.
-
-    Also pinned: `_child.py` appends too, so the two halves cannot drift into
-    disagreeing about precedence, and a value already present is not re-added
-    (a nested run would otherwise grow the variable one copy per level).
+    A half-removal is the dangerous state: the parent still exporting PYTHONPATH
+    while the child no longer appends (or vice versa) leaves `import fused_render`
+    working on the built-in engine and failing on the fused one — precisely the
+    engine-dependent divergence PY-14 exists to end.
     """
     from fused_render import executor
 
-    parent = os.path.dirname(os.path.dirname(os.path.abspath(calls.__file__)))
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
-    entries = executor._child_env()["PYTHONPATH"].split(os.pathsep)
-
-    assert parent in entries, "the package must still be reachable in the child"
-    assert entries.index(str(tmp_path)) < entries.index(parent), \
-        "the caller's PYTHONPATH must keep its precedence"
-
-    # Idempotent: already-present is left alone rather than duplicated.
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(tmp_path), parent]))
-    again = executor._child_env()["PYTHONPATH"].split(os.pathsep)
-    assert again.count(parent) == 1, "a nested run must not grow the variable"
-
-    # Empty to start with: no stray separator, and still just the one entry.
-    monkeypatch.delenv("PYTHONPATH", raising=False)
-    assert executor._child_env()["PYTHONPATH"] == parent
+    assert not hasattr(executor, "_child_env"), \
+        "the parent half is gone; a template must not depend on PYTHONPATH"
+    executor_src = open(os.path.abspath(executor.__file__), encoding="utf-8").read()
+    assert "PYTHONPATH\"]" not in executor_src and "'PYTHONPATH'" not in executor_src, \
+        "the worker env must not set PYTHONPATH"
 
     child_src = open(os.path.join(os.path.dirname(calls.__file__), "_child.py"),
                      encoding="utf-8").read()
-    assert "sys.path.append(_PACKAGE_PARENT)" in child_src, \
-        "the child's own half appends; the two must agree"
+    assert "sys.path.append(_PACKAGE_PARENT)" not in child_src, \
+        "the child half is gone; the two must agree"
 
 
 # ------------------------------------------------- superseded reporting (CL-5)
