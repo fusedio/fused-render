@@ -5,7 +5,7 @@ resolution (FUSED_RENDER_CLAUDE_BIN / PATH).
 The endpoint is driven through module-level `_ai_relay` with the subprocess
 hop (`_spawn_claude_stream`) mocked (the "avoid starlette TestClient"
 discipline of test_server_fs_write.py) — no test ever runs a real CLI. The
-mock is a fake process with scripted stdout lines, since D160 drives the CLI
+mock is a fake process with scripted stdout lines, since D166 drives the CLI
 in stream-json mode (spawn first, prompt later over stdin) to make the warm
 pool possible. The runtime checks are string-contract checks over the shipped
 static/runtime.js, like test_runtime_cancellation.py.
@@ -211,7 +211,7 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
     assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
-    # One CLI spawn: stream-json in and out (the D160 warm-pool spawn shape;
+    # One CLI spawn: stream-json in and out (the D166 warm-pool spawn shape;
     # --verbose is mandatory with stream-json output), the prompt over stdin
     # as a JSON user message (argv has an OS size cap), the default model,
     # the default system prompt, a bare one-shot (no tools, no settings, no

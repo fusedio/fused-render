@@ -844,7 +844,7 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # CLAUDE.md, --system-prompt-file REPLACES the shipped agent prompt,
 # --max-turns 1 and --no-session-persistence keep it a single stateless call.
 #
-# LATENCY (D160): the CLI is a Node program whose startup alone costs ~1.5-2.5s
+# LATENCY (D166): the CLI is a Node program whose startup alone costs ~1.5-2.5s
 # — it dominated every call at haiku/low-effort sizes. The process is therefore
 # driven in --input-format stream-json mode (spawn first, prompt arrives later
 # over stdin as a JSON user message) so a warm process can be PRE-SPAWNED
@@ -3569,7 +3569,7 @@ def create_app(start_dir: str) -> FastAPI:
         if client is not None:
             await client.aclose()
 
-    # Warm claude process for fused.ai (D160): pay the ~2s Node/CLI startup
+    # Warm claude process for fused.ai (D166): pay the ~2s Node/CLI startup
     # before the first request instead of inside it. Fire-and-forget — server
     # readiness never waits on it, and a missing binary just skips it.
     @app.on_event("startup")

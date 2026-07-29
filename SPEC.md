@@ -135,6 +135,7 @@ const { text, model, usage } = await fused.ai(prompt, {
   model,                      // optional model id (default claude-haiku-4-5-20251001)
   effort,                     // optional "low" | "medium" | "high" — max_tokens shorthand
   maxTokens,                  // optional explicit max_tokens override
+  onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
 ```
 
@@ -169,7 +170,15 @@ const { text, model, usage } = await fused.ai(prompt, {
   an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
   (`"low" | "medium" | "high"`) is a max-output-tokens shorthand (1024/4096/16384,
   default medium); `opts.maxTokens` overrides it. Calls run fully concurrent — no
-  latest-wins channel (an AI call is never a slider scrub). No streaming (MVP).
+  latest-wins channel (an AI call is never a slider scrub).
+  **Streaming**: `opts.onChunk(text)` fires per text delta as the model produces it
+  (the server relays `{"stream": true}` NDJSON chunks); the promise still resolves
+  with the same `{text, model, usage}` at the end, so streaming only changes when
+  the text arrives, not what the call returns. Errors after the first chunk reject
+  the promise with the same `.type` values. **Warm process** (D166): the server
+  pre-spawns the claude CLI so its ~2s Node startup is paid before the request —
+  the first call after startup and every call repeating the previous call's config
+  skip the spawn wait entirely; each call still runs in its own fresh process.
   **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
   page that calls it (§18.2) — gate with `fused.env === "local"` instead.
 
