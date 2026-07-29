@@ -3,10 +3,18 @@
 Re-introduction of the D55-era engine (rolled back in D67) with a different
 posture (D69): the fused engine is **optional**. When the `fused` package is
 importable, /api/run executes code through `LocalPythonComputeBackend` —
-fresh subprocess per call in a temp exec dir, PEP 723 inline requirements
-resolved into a cached venv, params delivered via `_params.json`. When it is
-not installed, the built-in executor (`executor.py`/`_child.py`) runs
-unchanged. `available()` is the probe; `server.py` picks per process.
+fresh subprocess per call in a temp exec dir, params delivered via
+`_params.json`. When it is not installed, the built-in executor
+(`executor.py`/`_child.py`) runs unchanged. `available()` is the probe;
+`server.py` picks per process.
+
+Which interpreter a script gets is decided by its PEP 723 header (D172):
+
+  * **no header** -> the app's own python, no venv (`app_interpreter()`), so
+    `[bundled]` + the core `dependencies` are there with nothing to install;
+  * **a header** -> a cached venv containing exactly what it declares. If that
+    venv doesn't exist yet, /api/run answers `needs_install` instead of blocking
+    on the download — see `envinstall.py` (PY-18).
 
 Code contract under this engine (the fused contract, plus a compat bridge):
 
@@ -48,7 +56,7 @@ _FRAME_LINE = re.compile(
 _backend = None
 
 # --------------------------------------------------------------------------
-# The app's own interpreter (PY-17 / D170)
+# The app's own interpreter (PY-17 / D172)
 # --------------------------------------------------------------------------
 #
 # A script with NO PEP 723 header runs with `interpreter=<this app's python>`
@@ -545,7 +553,7 @@ async def run_python(path: str, params: dict) -> dict:
 
     # Sorted+deduped so the venv cache key is stable regardless of how a script
     # orders its PEP 723 block. A header is the script's COMPLETE dependency
-    # list: no baseline is unioned in (D170), so what it declares is what its
+    # list: no baseline is unioned in (D172), so what it declares is what its
     # venv contains.
     requirements = sorted(set(reqs))
 

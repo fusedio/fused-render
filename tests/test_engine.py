@@ -383,7 +383,7 @@ def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
     assert "_fused_run_main" not in out["error"]["traceback"]
 
 
-# --- the app's own interpreter (PY-17 / D170) ---------------------------------
+# --- the app's own interpreter (PY-17 / D172) ---------------------------------
 #
 # A header-less script runs with `interpreter=<the app's real python>` and gets
 # no venv. Everything here is about the one way that ships broken: `interpreter=`

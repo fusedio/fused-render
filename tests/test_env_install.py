@@ -68,6 +68,38 @@ def test_the_key_ignores_requirement_order():
 
 
 @requires_fused
+def test_the_loader_and_the_backend_agree_on_the_venv_DIRECTORY():
+    """Matching keys are not enough — the parent directory has to match too.
+
+    `venv_dir_for` must be `<the backend's own venvs_path>/<key>`. A correct key
+    under a different root is the same silent failure as a wrong key: the loader
+    reports success, the run finds nothing there and asks to install again, and
+    the user installs forever. (Seen for real while driving this end to end with
+    `venvs_path` patched on only one side — the keys agreed perfectly and the two
+    directories were still different.) Read off the live backend, not restated.
+    """
+    backend = engine.get_backend()
+    reqs = ["pip"]
+    expected = os.path.join(
+        os.path.expanduser(backend._venvs_path), envinstall.venv_key_for(reqs)
+    )
+    assert envinstall.venv_dir_for(reqs) == expected
+
+
+@requires_fused
+def test_the_key_folds_in_the_backend_s_base_interpreter(monkeypatch):
+    """`python_identity` keys on the interpreter, so the loader must use the
+    backend's `python_executable` — not just its own `sys.executable`."""
+    from fused.agent_core.backends.local.venvs import requirements_venv_id, venv_key
+
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: sys.executable)
+    reqs = ["pip"]
+    assert envinstall.venv_key_for(reqs) == venv_key(
+        requirements_venv_id(reqs, sys.executable)
+    )
+
+
+@requires_fused
 def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypatch):
     """A half-built venv (no marker) must read as NOT ready.
 
