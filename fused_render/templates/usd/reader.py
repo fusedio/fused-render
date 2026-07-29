@@ -1,9 +1,14 @@
-# No `# /// script` header: numpy and msgpack — needed here and by
-# convert_worker.py, which this module spawns detached with sys.executable and
-# which therefore inherits this interpreter — are in
-# engine.DEFAULT_REQUIREMENTS, so the fused engine's shared script venv already
-# has them (SPEC PY-16, D168). usd-core stays out of every list on purpose:
-# convert_worker.py fetches it on demand (D119).
+# /// script
+# dependencies = ["numpy>=1.26", "msgpack>=1.0"]
+# ///
+# The block's body is TOML, so a prose line inside it is a parse error, not a
+# comment — this note used to sit between `# /// script` and `dependencies`,
+# which made script_requirements() raise and every call under the fused engine
+# fail with "invalid TOML in '# /// script' block". Notes go below the block.
+#
+# usd-core deliberately absent: convert_worker.py fetches it on demand (D119).
+# numpy + msgpack cover the worker too — reader.py spawns it detached with
+# sys.executable, i.e. into this venv.
 """Data/dispatch side of the usd preview template.
 
 Actions (all return JSON-native dicts):

@@ -14,7 +14,7 @@ Presentation (grid/stats/histogram/RGB) is shared via _raster_common so both
 engines return an identical JSON schema.
 """
 # /// script
-# dependencies = ["pyproj", "imagecodecs"]
+# dependencies = ["numpy", "pyproj", "imagecodecs"]
 # ///
 
 import struct

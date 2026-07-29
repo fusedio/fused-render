@@ -10,7 +10,7 @@ with overview-pyramid reads; rasterio system-python fallback for LZW/JPEG/
 BigTIFF).
 """
 # /// script
-# dependencies = ["pyproj", "imagecodecs"]
+# dependencies = ["numpy", "pyproj", "imagecodecs"]
 # ///
 
 import os

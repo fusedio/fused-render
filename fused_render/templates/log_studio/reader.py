@@ -1,13 +1,21 @@
-# Stdlib-only at import time (3.10+). drain3 powers only pattern mining and
-# _patterns() degrades gracefully without it — a guarded import with an install
-# hint, which a plain `pip install fused-render` still needs, since drain3 is in
-# the `[bundled]` extra rather than the core dependencies.
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["drain3>=0.9.11"]
+# ///
+# drain3 powers only pattern mining, and _patterns() still degrades gracefully
+# without it (a guarded import with an install hint) — a plain
+# `pip install fused-render` has no drain3, and that path must keep working.
 #
-# No `# /// script` header declaring it: drain3 lives in
-# engine.DEFAULT_REQUIREMENTS instead, so the fused engine's script venv has it
-# without this template getting a venv of its own (SPEC PY-16, D168). Leaving it
-# undeclared in both places is what silently deleted pattern mining under that
-# engine.
+# It is nonetheless declared here. This header is read only by the fused engine
+# (the built-in executor ignores PEP 723 entirely and just uses whichever
+# interpreter it runs on), where the alternative is worse: the script venv
+# contains DEFAULT_REQUIREMENTS plus this list and nothing else, so leaving
+# drain3 out means pattern mining silently disappears for every user of that
+# engine. The earlier worry — "declaring it lets one failed install break every
+# op" — does not survive contact with that venv: it already has to resolve
+# numpy/pandas/geopandas/scipy/matplotlib before this file runs at all, so
+# drain3 (pure Python, two small deps) adds no real failure surface. Kept out of
+# engine.DEFAULT_REQUIREMENTS because this is the only template that uses it.
 
 import math
 import os

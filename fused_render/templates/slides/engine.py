@@ -1,3 +1,6 @@
+# /// script
+# dependencies = ["python-pptx", "Pillow", "fpdf2"]
+# ///
 """DOM-free slide engine for the slides template.
 
 This module owns the two hard directions and the canonical edit semantics, with

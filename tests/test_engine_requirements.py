@@ -1,4 +1,4 @@
-"""What the fused engine's script venvs must contain (SPEC DM-2 / PY-12/PY-16).
+"""What the fused engine's script venvs must contain (SPEC DM-2 / PY-12).
 
 Under the fused engine a script's interpreter is a venv built from
 `engine.DEFAULT_REQUIREMENTS` plus that script's own PEP 723 header — nothing
@@ -6,29 +6,13 @@ else. The `[bundled]` extra (what the packaged app's interpreter ships) is a
 *different* set, and the two were connected only by a comment saying "keep the
 two lists in sync", which was false in ten places and could not fail.
 
-These tests replace that comment.
-
-1. `test_default_requirements_relationship_to_pyproject` pins the intended
-   relationship between DEFAULT_REQUIREMENTS, `[bundled]` and the core
-   `dependencies`, with every deliberate delta listed and reasoned.
-2. `test_bundled_imports_are_in_default_requirements` is the one that catches
-   real breakage: a core template importing something the app ships but a
-   script venv would not contain — a silent loss of function under this engine
-   (a guarded import degrades, an unguarded one 500s a tile request), never a
-   startup error anyone would notice. Note *in* DEFAULT_REQUIREMENTS, not
-   "declared somewhere": D168 says core templates carry no headers for anything
-   in `[bundled]`, because venvs are keyed on the requirement set and every
-   distinct header builds another multi-minute venv.
-3. `test_header_declarations_reach_an_interpreter_that_runs_them` guards the
-   handful of headers that remain (dependencies in neither `[bundled]` nor
-   core): a header is only ever read on the file `run_python` is *handed*, so
-   declaring something on a helper module or a spawned daemon is inert. That
-   mistake shipped once already — `rasterio` on `map/vector_tile_server.py`,
-   which `map_render.py` imports.
-
-Collecting these also parses every template's PEP 723 block, so a malformed one
-(a prose line inside the TOML body, say) fails here rather than at runtime as
-"invalid TOML in '# /// script' block" on every call.
+These tests replace that comment. The first pins the intended relationship
+between DEFAULT_REQUIREMENTS, `[bundled]` and the core `dependencies`, with
+every deliberate delta listed and reasoned. The second is the one that catches
+real breakage: a template importing a `[bundled]` distribution that its venv
+would not contain — which is a silent loss of function under this engine (a
+guarded import degrades, an unguarded one 500s a tile request), never a
+startup error anyone would notice.
 """
 import ast
 import functools
@@ -55,13 +39,24 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 
 # Distributions in `[bundled]` that DEFAULT_REQUIREMENTS deliberately omits.
-# Everything else in `[bundled]` is a default: a script venv is keyed on its
-# sorted requirement set, so one shared set means ONE venv for every core
-# template, where per-template headers would mean up to fifteen — each a
-# multi-minute `uv` install re-resolving the same base (D168). The app's bundled
-# interpreter already ships all of `[bundled]`, so matching it here is parity,
-# not bloat.
+# The rule: a dependency used by exactly one template belongs in that
+# template's PEP 723 header, not in the set installed into *every* script's
+# venv — the header mechanism exists for this, and it keeps the shared venv
+# (built on first run, per requirement set) small.
 BUNDLED_NOT_DEFAULT = {
+    # Declared by the *entrypoint* of the template that needs them (see their
+    # `# /// script` headers): slides/{engine,slides}.py, excel/reader.py,
+    # usd/reader.py, geotiff/tile_server.py, map/map_render.py,
+    # {netcdf/grid_tile_server,zarr_aoi/tile_server}.py, pdf_studio/pdf.py,
+    # log_studio/reader.py.
+    "python-pptx",
+    "fpdf2",
+    "msgpack",
+    "rasterio",
+    "zarr",
+    "pymupdf",
+    "pikepdf",
+    "drain3",
     # Server-side only: the s3sign/gcssign credential chains run in the
     # fused-render process, never in a user script's venv. Installing botocore
     # (~80 MB) into every script venv would buy nothing.
@@ -159,12 +154,6 @@ def _template_files() -> list[str]:
             if f.endswith(".py")
         ]
     return sorted(out)
-
-
-def _files_with_headers() -> list[str]:
-    """Template files that declare a PEP 723 `dependencies` list."""
-    graph = _template_graph()
-    return [r for r in graph["files"] if graph["header"][r]]
 
 
 def _module_refs(text: str) -> tuple[set[str], list[str]]:
@@ -286,50 +275,26 @@ def test_default_requirements_relationship_to_pyproject():
 
 
 @pytest.mark.parametrize("relpath", _template_files())
-def test_bundled_imports_are_in_default_requirements(relpath):
-    """Every `[bundled]`/core distribution a core template imports is a default.
+def test_bundled_imports_are_reachable_under_the_fused_engine(relpath):
+    """Every `[bundled]` distribution a template imports must be in the venv.
 
-    A header would also put it in the venv, and that is deliberately not
-    accepted here (D168): headers fragment the venv cache, and — the reason
-    this assertion is a single line instead of a search over declarations —
-    they let a dependency be declared on a file the engine never hands to
-    run_python (a helper module, a spawned daemon) and still look covered.
-    Whatever is missing here works on the packaged app's interpreter, which
-    ships all of `[bundled]`, and silently stops working under this engine.
+    Checked against *every* entry point that can execute this file (see
+    _venv_roots), not against the file's own header: the engine reads the
+    header of the file it is handed and nothing else, so declaring a dependency
+    on a helper module or a spawned daemon has no effect at all — the classic
+    way this gap hides. What isn't covered works on the packaged app's
+    interpreter (which has all of `[bundled]`) and silently stops working here.
     """
     graph = _template_graph()
+    needed = graph["imports"][relpath]
     defaults = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS}
-
-    missing = sorted(graph["imports"][relpath] - defaults)
-    assert not missing, (
-        f"{relpath} imports {missing}, which a script venv would not contain. "
-        "Add them to engine.DEFAULT_REQUIREMENTS — core templates do not carry "
-        "PEP 723 headers for anything the app already bundles (D168)."
-    )
-
-
-@pytest.mark.parametrize("relpath", _files_with_headers())
-def test_header_declarations_reach_an_interpreter_that_runs_them(relpath):
-    """A PEP 723 header is only read on the file `run_python` is handed.
-
-    So a header on a helper module or a spawned daemon declares nothing: the
-    interpreter that actually imports it was built from the *entrypoint's*
-    header. This is the shape of the bug that shipped once (`rasterio` declared
-    on map/vector_tile_server.py, imported by map_render.py) and it is the only
-    thing the remaining headers — dependencies in neither `[bundled]` nor core,
-    so out of scope for the test above — still need guarding against.
-    """
-    graph = _template_graph()
-    defaults = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS}
-    declared = graph["header"][relpath] - defaults
 
     for root in sorted(_venv_roots(relpath, graph)):
-        if root == relpath:
-            continue  # run directly: its own header is the one that gets read
-        inert = sorted(declared - graph["header"][root])
-        assert not inert, (
-            f"{relpath} declares {inert} in its `# /// script` header, but it "
-            f"runs inside the venv {root} defines (it imports or spawns this "
-            f"file), and {root} does not declare them. Move the declaration to "
-            f"{root} — a header on a file the engine never runs is inert."
+        missing = sorted(needed - (defaults | graph["header"][root]))
+        assert not missing, (
+            f"{relpath} imports {missing}, which its script venv would not "
+            f"contain when it runs via {root}. Declare them in {root}'s "
+            "`# /// script` header (preferred, if that template is the only "
+            "user) — a header on a non-entrypoint file is never read — or add "
+            "them to engine.DEFAULT_REQUIREMENTS."
         )

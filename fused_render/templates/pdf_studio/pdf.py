@@ -1,3 +1,6 @@
+# /// script
+# dependencies = ["pymupdf>=1.25", "pikepdf>=9"]
+# ///
 """Backend for pdf_studio — a local PDF viewer/editor (merge, split, rotate,
 compress, in-place text editing).
 
