@@ -10,6 +10,7 @@ test_runtime_cancellation.py.
 """
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -299,95 +300,102 @@ def test_claude_bin_env_override_beats_path(monkeypatch):
 
 def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     # A Finder/Dock-launched .app inherits a stripped PATH; the resolver must
-    # then try the usual install dirs (executable files only).
+    # then try the usual install dirs.
     home = tmp_path / "home"
     (home / ".local" / "bin").mkdir(parents=True)
     bin_path = home / ".local" / "bin" / "claude"
-    bin_path.write_text("#!/bin/sh\n")
 
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
+    monkeypatch.setattr(server.os, "name", "posix")
 
-    assert server._claude_bin() is None  # exists but not executable
-    bin_path.chmod(0o755)
+    assert server._claude_bin() is None  # nothing installed anywhere
+    bin_path.write_text("#!/bin/sh\n")
     assert server._claude_bin() == str(bin_path)
 
 
-def test_claude_bin_fallback_probes_windows_launchers(monkeypatch, tmp_path):
-    # On win32 the launcher is claude.exe or an npm claude.cmd shim; the dir
-    # probe must try those suffixes (which() already does via PATHEXT).
-    home = tmp_path / "home"
-    (home / ".local" / "bin").mkdir(parents=True)
-    shim = home / ".local" / "bin" / "claude.cmd"
-    shim.write_text("@echo off\n")
-    shim.chmod(0o755)
+def test_posix_candidates_are_the_documented_install_locations():
+    assert server._CLAUDE_POSIX_CANDIDATES == (
+        "~/.local/bin/claude", "/opt/homebrew/bin/claude",
+        "/usr/local/bin/claude")
 
+
+def test_windows_candidates_cover_the_windows_install_locations():
+    """The bug this list fixes: it used to be the POSIX paths with Windows
+    suffixes bolted on, which matches nothing a Windows install produces."""
+    joined = "\n".join(server._CLAUDE_WINDOWS_CANDIDATES).lower()
+    # native installer (irm https://claude.ai/install.ps1 | iex)
+    assert r"%userprofile%\.local\bin\claude.exe" in joined
+    assert "winget" in joined            # winget install Anthropic.ClaudeCode
+    assert r"%appdata%\npm" in joined   # npm install -g @anthropic-ai/claude-code
+    assert r"%userprofile%\.claude\local" in joined   # legacy local npm install
+    # every entry is rooted in an environment variable, never a bare relative
+    # path that would resolve against the server's cwd
+    assert all(c.startswith("%") for c in server._CLAUDE_WINDOWS_CANDIDATES)
+    # .exe ahead of any .cmd shim: a shim needs the cmd.exe hop
+    exts = [c.lower().rsplit(".", 1)[1]
+            for c in server._CLAUDE_WINDOWS_CANDIDATES]
+    assert exts.index("exe") < exts.index("cmd")
+
+
+def test_claude_bin_probes_the_windows_candidates_on_windows(monkeypatch,
+                                                             tmp_path):
+    """A Windows GUI launch inherits its login session's PATH, so an install
+    that appended to the user PATH afterwards is invisible until sign-out."""
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(server.os.path, "expanduser",
-                        lambda p: p.replace("~", str(home), 1))
-
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    assert server._claude_bin() == str(shim)
-    # Not probed off-win32: bare `claude` is the only POSIX candidate.
-    monkeypatch.setattr(server.sys, "platform", "darwin")
+    monkeypatch.setattr(server.os, "name", "nt")
+    installed = tmp_path / "npm" / "claude.cmd"
+    installed.parent.mkdir()
+    installed.write_text("@echo off\n")
+    monkeypatch.setattr(server, "_CLAUDE_WINDOWS_CANDIDATES",
+                        (str(tmp_path / "missing.exe"), str(installed)))
+    assert server._claude_bin() == str(installed)
+    # POSIX-only candidates are not consulted on nt, and vice versa
+    monkeypatch.setattr(server.os, "name", "posix")
+    monkeypatch.setattr(server, "_CLAUDE_POSIX_CANDIDATES", ())
     assert server._claude_bin() is None
 
 
-def test_claude_argv_prefix_wraps_windows_shims(monkeypatch):
-    # CreateProcess can't run a .cmd/.bat shim directly — only cmd.exe can.
-    # A real .exe (and everything off-win32) execs as itself.
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    assert server._claude_argv_prefix(r"C:\u\claude.CMD") == [
-        "cmd.exe", "/c", r"C:\u\claude.CMD"]
-    assert server._claude_argv_prefix(r"C:\u\claude.bat") == [
-        "cmd.exe", "/c", r"C:\u\claude.bat"]
-    assert server._claude_argv_prefix(r"C:\u\claude.exe") == [r"C:\u\claude.exe"]
-    monkeypatch.setattr(server.sys, "platform", "darwin")
-    assert server._claude_argv_prefix("/usr/local/bin/claude.cmd") == [
-        "/usr/local/bin/claude.cmd"]
+def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
+    """The %VAR% entries are literal until expanded — an unexpanded candidate
+    would silently never match anything.
+
+    os.path.expandvars only understands %VAR% on Windows (it is ntpath there),
+    which is fine in production because the %VAR% list is only consulted when
+    os.name == "nt" — but it means this host cannot expand them, so ntpath's
+    version is substituted to stand in for the Windows interpreter."""
+    import ntpath
+
+    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(server.os, "name", "nt")
+    monkeypatch.setattr(server.os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    (tmp_path / "npm").mkdir()
+    (tmp_path / "npm" / "claude.exe").write_text("")
+    # a forward-slash candidate so the joined path is valid on this host too;
+    # only the %VAR% expansion is under test
+    monkeypatch.setattr(server, "_CLAUDE_WINDOWS_CANDIDATES",
+                        ("%APPDATA%/npm/claude.exe",))
+    assert server._claude_bin() == str(tmp_path / "npm" / "claude.exe")
 
 
-def test_relay_runs_windows_shims_through_cmd(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT)
-    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", r"C:\npm\claude.cmd")
-    # The event loop must exist before sys.platform reads "win32", or
-    # asyncio.run tries to build the real Windows proactor loop on this box.
-    loop = asyncio.new_event_loop()
-    try:
-        monkeypatch.setattr(server.sys, "platform", "win32")
-        loop.run_until_complete(server._ai_relay({"prompt": "hello"}))
-    finally:
-        loop.close()
-    (argv, _, _, _), = fake.calls
-    assert argv[:3] == ["cmd.exe", "/c", r"C:\npm\claude.cmd"]
-
-
-def test_claude_bin_fallback_dirs_match_the_chat_template(monkeypatch):
-    # server._claude_bin deliberately duplicates the chat template's resolver
-    # (templates are standalone user-forkable code the server never imports).
-    # Pin the two candidate lists together so they can't drift (the D146
-    # discipline: a duplicate is held by a test, not a comment).
+def test_the_resolver_never_imports_the_chat_template():
+    """The claude chat template resolves the CLI too, and this list looks much
+    like its own. That duplication is the POINT: a template is standalone
+    user-forkable code, and the only thing the server and a template share is
+    the fused api. A test that pinned the two lists together (or an import)
+    would recreate exactly the coupling that is not wanted."""
     import inspect
-
-    from fused_render.templates.claude import agent
-
-    def candidates(fn):
-        src = inspect.getsource(fn)
-        return [c for c in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
-                            "/usr/local/bin/claude") if c in src]
-
-    # The template keeps its list in a module constant; the server inlines it.
-    assert candidates(server._claude_bin) == list(agent._POSIX_CANDIDATES)
-    assert len(candidates(server._claude_bin)) == 3
-
-    # The Windows shim wrapping is duplicated the same way — pin behaviour.
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    monkeypatch.setattr(agent.sys, "platform", "win32")
-    for p in (r"C:\u\claude.cmd", r"C:\u\claude.exe", r"C:\u\claude.bat"):
-        assert server._claude_argv_prefix(p) == agent._claude_argv_prefix(p)
+    src = inspect.getsource(server)
+    # templates_api (the registry/listing router) is a normal server module and
+    # is imported; a TEMPLATE's own backend must never be.
+    assert "templates.claude" not in src
+    assert "from fused_render.templates." not in src
+    assert "import agent" not in src
 
 
 def test_relay_uses_the_overridden_binary(monkeypatch):
@@ -396,6 +404,111 @@ def test_relay_uses_the_overridden_binary(monkeypatch):
     _relay({"prompt": "hello"})
     (argv, _, _, _), = fake.calls
     assert argv[0] == "/opt/custom/claude"
+
+
+# -- the windows .cmd shim hop ----------------------------------------------------
+
+def test_a_plain_binary_is_execed_as_an_argv_list(monkeypatch):
+    # Only a .cmd/.bat shim needs the cmd.exe hop. A real .exe — and anything
+    # at all off win32 — is exec'd directly, where argv needs no quoting rules.
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    assert server._popen_cmd(r"C:\u\claude.exe", ["-p"]) == [
+        r"C:\u\claude.exe", "-p"]
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    # a .cmd off win32 is not a shim, it is just a file with a funny name
+    assert server._popen_cmd("/usr/local/bin/claude.cmd", ["-p"]) == [
+        "/usr/local/bin/claude.cmd", "-p"]
+
+
+def test_a_shim_becomes_one_fully_quoted_command_string(monkeypatch):
+    """The paths-with-spaces bug. Handing the exec path the argv list
+    ["cmd.exe", "/c", shim, ...] lets list2cmdline quote each element that
+    needs it, and cmd.exe only preserves inner quoting when the rest of its
+    line holds exactly two quote characters — a shim path with spaces plus any
+    quoted argument makes four, cmd strips the outermost pair instead and
+    re-splits at the spaces.
+
+    So a shim becomes a STRING, spawned through the shell so CPython's comspec
+    wrapping supplies the single outer quote pair cmd can parse."""
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    shim = r"C:\Users\John Doe\AppData\Roaming\npm\claude.cmd"
+    sp = r"C:\Users\John Doe\AppData\Local\Temp\ai_sp_x.txt"
+    cmd = server._popen_cmd(shim, ["-p", "--system-prompt-file", sp])
+
+    assert isinstance(cmd, str), (
+        "a shim invocation must be a command string — an argv list would be "
+        "re-joined by list2cmdline and mis-parsed by cmd.exe")
+    # every element quoted, not just the ones with spaces: the outer pair stops
+    # cmd re-parsing quotes, not metacharacters, and a quoted run is where
+    # & | > < ^ stay literal
+    assert cmd == f'"{shim}" "-p" "--system-prompt-file" "{sp}"'
+    # what cmd.exe receives once CPython wraps it, and what it makes of that:
+    # strip exactly the first and last quote, take the rest as written
+    line = f'cmd.exe /c "{cmd}"'
+    assert line[len("cmd.exe /c "):][1:-1] == cmd
+
+
+def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
+    """Nothing we send can contain a `"` — Windows paths cannot hold one and
+    the rest is static or charset-validated. If that ever changes, fail loudly
+    rather than emit a line that means something else."""
+    monkeypatch.setattr(server.sys, "platform", "win32")
+    with pytest.raises(ValueError):
+        server._popen_cmd(r"C:\npm\claude.cmd", ["--model", 'a"b'])
+
+
+def test_relay_runs_windows_shims_through_cmd(monkeypatch):
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    shim = r"C:\Users\John Doe\npm\claude.cmd"
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", shim)
+    # The event loop must exist before sys.platform reads "win32", or
+    # asyncio.run tries to build the real Windows proactor loop on this box.
+    loop = asyncio.new_event_loop()
+    try:
+        monkeypatch.setattr(server.sys, "platform", "win32")
+        loop.run_until_complete(server._ai_relay({"prompt": "hello"}))
+    finally:
+        loop.close()
+    (cmd, _, _, _), = fake.calls
+    assert isinstance(cmd, str)
+    assert cmd.startswith(f'"{shim}" ')
+    # the temp system-prompt path is quoted too — it lives under a Windows
+    # profile dir, which is exactly where the spaces come from
+    sp = [t for t in cmd.split('"') if t.endswith(".txt")]
+    assert sp and f'"{sp[0]}"' in cmd
+
+
+def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
+    """The string form only parses correctly because CPython wraps it as
+    `comspec /c "<payload>"` — so it must go to create_subprocess_shell, and a
+    list must NOT."""
+    seen = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self, input=None):
+            return b"{}", b""
+
+    async def fake_shell(cmd, **kw):
+        seen["shell"] = cmd
+        return _Proc()
+
+    async def fake_exec(*argv, **kw):
+        seen["exec"] = list(argv)
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", fake_shell)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    payload = '"C:\\p ath\\claude.cmd" "-p"'
+    asyncio.run(server._run_claude_cli(payload, dict(os.environ), 5))
+    assert seen == {"shell": payload}
+
+    seen.clear()
+    asyncio.run(server._run_claude_cli(["/usr/local/bin/claude", "-p"],
+                                       dict(os.environ), 5))
+    assert seen == {"exec": ["/usr/local/bin/claude", "-p"]}
 
 
 # -- runtime surface --------------------------------------------------------------

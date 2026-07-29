@@ -212,17 +212,6 @@ def _claude_bin() -> str:
     )
 
 
-def _claude_argv_prefix(bin_path: str) -> list[str]:
-    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
-
-    npm installs claude as a .cmd/.bat shim, which CreateProcess cannot run
-    directly — only cmd.exe can. Still an argv list, never a shell string.
-    Lockstep with server._claude_argv_prefix."""
-    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
-        return ["cmd.exe", "/c", bin_path]
-    return [bin_path]
-
-
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -723,13 +712,6 @@ def _deny_pending(run_dir: str, reason: str) -> None:
 
 # ----------------------------------------------------------------- start/poll
 
-# Ids and model names that may enter argv are a closed charset. A SECURITY
-# boundary, not just validation: on the Windows .cmd-shim path cmd.exe
-# re-parses the whole line and cannot be escaped reliably, so argv must hold
-# only static literals, run_dir file paths, and values this regex admitted.
-# Lockstep with server._AI_MODEL_RE.
-_SAFE_TOKEN = re.compile(r"[A-Za-z0-9._-]+")
-
 # Detach the run so it outlives this 30 s executor subprocess. start_new_session
 # (setsid) is POSIX-only — Windows ignores it silently, where DETACHED_PROCESS +
 # CREATE_NEW_PROCESS_GROUP is the equivalent (mirrors templates/docs, latex and
@@ -746,10 +728,6 @@ def _start(file: str, message: str, session_id: str, model: str,
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
-    for name, value in (("session_id", session_id), ("model", model),
-                        ("effort", effort)):
-        if value and not _SAFE_TOKEN.fullmatch(value):
-            return {"error": f"invalid {name!r} (letters, digits, . _ -)"}
     if session_id:
         _migrate_session(file, session_id)
 
@@ -765,21 +743,10 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    # No user-controlled STRING enters argv (the cmd.exe re-parse above): the
-    # message goes over stdin (-p with no positional prompt reads the pipe)
-    # and the system prompt — it embeds the user's file path — rides a file in
-    # run_dir, cleaned up with the run.
-    sp_path = os.path.join(run_dir, "system_prompt.txt")
-    with open(sp_path, "w", encoding="utf-8") as f:
-        f.write(_system_prompt(file))
-    msg_path = os.path.join(run_dir, "message.txt")
-    with open(msg_path, "w", encoding="utf-8") as f:
-        f.write(message)
-
-    cmd = _claude_argv_prefix(_claude_bin()) + ["-p",
+    cmd = [_claude_bin(), "-p", message,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
-           "--append-system-prompt-file", sp_path,
+           "--append-system-prompt", _system_prompt(file),
            "--mcp-config", _write_mcp_config(run_dir),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -807,15 +774,11 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id, "mode": mode}, f)
 
-    # stdin carries the message (HEAD's argv-safety: no user text on the
-    # command line); _DETACH covers both the detach and, on Windows, the
-    # no-console-window concern (DETACHED_PROCESS creates no console at all).
     with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-         _private_open(os.path.join(run_dir, "err.log")) as err, \
-         open(msg_path, encoding="utf-8") as msg_in:
+         _private_open(os.path.join(run_dir, "err.log")) as err:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
-                                stdin=msg_in,
+                                stdin=subprocess.DEVNULL,
                                 **_DETACH)
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))

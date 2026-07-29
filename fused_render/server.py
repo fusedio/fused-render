@@ -864,43 +864,113 @@ def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
     )
 
 
+# Where Claude Code installs `claude`, for when it isn't on the PATH this
+# process inherited — the packaged app's PATH is the supervisor's, not a
+# shell's, and a Finder/Dock-launched .app misses ~/.local/bin and Homebrew.
+# On Windows it is worse: a GUI launch inherits the PATH of its login session,
+# so an install that appended to the *user* PATH afterwards stays invisible
+# until the next sign-in.
+#
+# The claude chat template (templates/claude/agent.py) resolves the CLI the
+# same way and this list looks much like its own. That is deliberate
+# duplication, not a missing import: a template is standalone user-forkable
+# code, and the only thing the server and a template share is the fused api.
+# Neither side is authoritative for the other, so neither is held to the
+# other's list.
+#
+# Ordered most-canonical first, `.exe` ahead of any `.cmd` shim: a shim has to
+# be run through cmd.exe, which re-parses the command line (see _popen_argv).
+_CLAUDE_WINDOWS_CANDIDATES = (
+    # native installer (irm https://claude.ai/install.ps1 | iex) — recommended
+    r"%USERPROFILE%\.local\bin\claude.exe",
+    # winget install Anthropic.ClaudeCode, via winget's own shim dir
+    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe",
+    # npm install -g @anthropic-ai/claude-code, in npm's global prefix
+    r"%APPDATA%\npm\claude.exe",
+    r"%APPDATA%\npm\claude.cmd",
+    # legacy local npm install, written by older Claude Code versions
+    r"%USERPROFILE%\.claude\local\claude.exe",
+)
+_CLAUDE_POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                            "/usr/local/bin/claude")
+
+
 def _claude_bin() -> str | None:
     """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH,
-    else the usual install dirs.
-
-    The fallback dirs matter for the packaged app: a Finder/Dock-launched
-    .app inherits a stripped PATH that misses ~/.local/bin and Homebrew.
-    Mirrors templates/claude/agent.py's _claude_bin (kept as a duplicate on
-    purpose — templates are standalone user-forkable code the server never
-    imports); keep the candidate list in lockstep."""
+    else the platform's known install locations. None when nothing is found —
+    the caller turns that into an `ai_unavailable` error."""
     forced = os.environ.get(_AI_BIN_ENV)
     if forced:
         return forced
     found = shutil.which("claude")
     if found:
         return found
-    # On Windows the launcher is claude.exe or an npm claude.cmd shim
-    # (shutil.which covers this on PATH via PATHEXT; the dir probe must too).
-    suffixes = ("", ".exe", ".cmd", ".bat") if sys.platform == "win32" else ("",)
-    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
-                      "/usr/local/bin/claude"):
-        for suffix in suffixes:
-            path = os.path.expanduser(candidate) + suffix
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
+    candidates = (_CLAUDE_WINDOWS_CANDIDATES if os.name == "nt"
+                  else _CLAUDE_POSIX_CANDIDATES)
+    for candidate in candidates:
+        # expandvars for the %VAR% Windows entries, expanduser for the ~ POSIX
+        # ones; each is a no-op on the other platform's shape.
+        path = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(path):
+            return path
     return None
 
 
-def _claude_argv_prefix(bin_path: str) -> list[str]:
-    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
+def _needs_cmd_shim(bin_path: str) -> bool:
+    """Whether `bin_path` can only be started through cmd.exe.
 
     npm installs claude as a .cmd/.bat shim, which CreateProcess (and so
-    create_subprocess_exec) cannot run directly — only cmd.exe can. Still an
-    argv list, never a shell string: the prompt is on stdin and every other
-    arg is ours, but the discipline stands."""
-    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
-        return ["cmd.exe", "/c", bin_path]
-    return [bin_path]
+    create_subprocess_exec) cannot run directly — only cmd.exe can."""
+    return sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat"))
+
+
+def _cmd_quote(arg: str) -> str:
+    """Quote one argument for the verbatim payload of `cmd /d /s /c "..."`.
+
+    EVERY element is quoted, not just the ones with spaces: /s stops cmd from
+    re-parsing the payload's quotes, but it does NOT stop cmd from acting on
+    metacharacters (& | > < ^), and a quoted run is where those are literal.
+    Windows paths cannot contain `"` and every other element here is a static
+    literal or charset-validated, so there is no inner quote to escape —
+    assert rather than silently produce a line that means something else."""
+    if '"' in arg:
+        raise ValueError(f"argument may not contain a double quote: {arg!r}")
+    return f'"{arg}"'
+
+
+def _popen_cmd(bin_path: str, args: list[str]) -> list[str] | str:
+    """How to spawn the CLI: an argv list, or — behind a Windows .cmd/.bat
+    shim — one command STRING for the cmd.exe hop.
+
+    A shim can only be started through cmd.exe, and the naive form of that is
+    the argv list ["cmd.exe", "/c", bin_path, *args]. It does not work.
+    Windows has no argv: CreateProcess takes a command line, which asyncio
+    builds with subprocess.list2cmdline, quoting each element that needs it.
+    cmd.exe preserves that inner quoting only when the rest of its line holds
+    exactly TWO quote characters; a shim path with spaces plus any quoted
+    argument makes four, cmd falls through to its strip-the-outermost-pair
+    rule and re-splits at the spaces — so a `C:\\Users\\John Doe\\...` install
+    never runs:
+
+        >>> subprocess.list2cmdline(["cmd.exe", "/c", r"C:\\p ath\\claude.cmd",
+        ...                          "-p", r"C:\\Users\\John Doe\\t.txt"])
+        'cmd.exe /c "C:\\\\p ath\\\\claude.cmd" -p "C:\\\\Users\\\\John Doe\\\\t.txt"'
+
+    Nor can the fixed line be smuggled through as one argv ELEMENT, because
+    list2cmdline would escape the quotes we just added. So the shim path
+    returns a string and is spawned as a command line instead (see
+    _run_claude_cli), which CPython wraps as `comspec /c "<payload>"` — one
+    outer quote pair around a payload in which every element is quoted. cmd
+    then strips exactly that outer pair and reads the rest as written.
+
+    Every element is quoted, not only the ones with spaces: the outer pair
+    stops cmd re-parsing QUOTES, not metacharacters (& | > < ^), and a quoted
+    run is where those stay literal. Nothing here can contain a `"` — Windows
+    paths cannot, and the rest is static or charset-validated — and
+    _cmd_quote raises rather than emit a line that means something else."""
+    if not _needs_cmd_shim(bin_path):
+        return [bin_path] + args
+    return " ".join(_cmd_quote(a) for a in [bin_path] + args)
 
 
 def _kill_process_tree(proc) -> None:
@@ -921,7 +991,7 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
-async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
+async def _run_claude_cli(cmd: list[str] | str, env: dict, timeout: float,
                           stdin_text: str = ""):
     """Run the claude CLI once; return (returncode, stdout, stderr) as text.
 
@@ -930,9 +1000,16 @@ async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
     and the pipe closed (communicate) — the prompt travels this way because
     argv has an OS size cap (~32K on Windows, ARG_MAX elsewhere) that a
     data-heavy prompt can blow. Raises asyncio.TimeoutError after `timeout`
-    seconds (the process is killed first)."""
-    proc = await asyncio.create_subprocess_exec(
-        *argv, env=env,
+    seconds (the process is killed first).
+
+    A list `cmd` is exec'd directly. A string is the Windows .cmd-shim case
+    (_popen_cmd): it must go through create_subprocess_shell, whose comspec
+    wrapping is what gives cmd.exe the single outer quote pair it can parse
+    deterministically. That is NOT a shell-injection surface — the payload is
+    ours, fully quoted, and holds no user text (the prompt is on stdin, the
+    system prompt in a file, the model charset-validated)."""
+    kwargs = dict(
+        env=env,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         # close_fds=False forces the posix_spawn path instead of fork()+exec:
@@ -943,6 +1020,10 @@ async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
         close_fds=False,
         # a windowless server must not flash a console window per call
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    if isinstance(cmd, str):
+        proc = await asyncio.create_subprocess_shell(cmd, **kwargs)
+    else:
+        proc = await asyncio.create_subprocess_exec(*cmd, **kwargs)
     try:
         stdout, stderr = await asyncio.wait_for(
             proc.communicate(stdin_text.encode("utf-8")), timeout)
@@ -1014,7 +1095,7 @@ async def _ai_relay(body: dict) -> JSONResponse:
     try:
         sp_file.write(system_prompt)
         sp_file.close()
-        argv = _claude_argv_prefix(bin_path) + [
+        cmd = _popen_cmd(bin_path, [
             "-p",
             "--output-format", "json",
             "--model", model,
@@ -1028,12 +1109,12 @@ async def _ai_relay(body: dict) -> JSONResponse:
             "--setting-sources=",
             "--no-session-persistence",
             "--max-turns", "1",
-        ]
+        ])
         env = dict(os.environ)
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
         try:
             returncode, stdout, stderr = await _run_claude_cli(
-                argv, env, _AI_TIMEOUT_S, stdin_text=prompt)
+                cmd, env, _AI_TIMEOUT_S, stdin_text=prompt)
         except asyncio.TimeoutError:
             return _ai_error(
                 "timeout",
