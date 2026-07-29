@@ -30,7 +30,7 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
 
-# The template<->app env contract (SPEC PY-14): the server exports these before
+# The template<->app env contract (SPEC PY-15): the server exports these before
 # it serves, and `templates/shared/appenv.py` is the only reader. They are set
 # with a plain os.environ assignment by design — every child process has to
 # inherit them — which means a test that starts a server (or calls

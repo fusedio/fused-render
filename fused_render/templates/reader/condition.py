@@ -29,7 +29,7 @@ def _reader_enabled_fallback() -> bool:
     # Stdlib-only read of the persisted pref, used only if importing the app's
     # own prefs helper fails. The home dir comes from `shared/appenv`, which reads
     # the ALREADY branch-resolved FUSED_RENDER_HOME_DIR the server exports (SPEC
-    # PY-14) — so a branch-isolated dev server reads its own prefs.json, not the
+    # PY-15) — so a branch-isolated dev server reads its own prefs.json, not the
     # baseline's, without this file carrying a second copy of the nesting rule.
     # If appenv itself is unreachable, the baseline home is the honest guess.
     try:

@@ -650,7 +650,7 @@ def test_the_child_does_not_put_the_package_on_the_path(tmp_path):
     It used to. `_child.py` appended the package's parent to sys.path and
     `executor._child_env()` appended the same value to PYTHONPATH, so a helper
     could `import fused_render` from the child even with the package not
-    installed into that interpreter. Both halves are gone (PY-14): the one
+    installed into that interpreter. Both halves are gone (PY-15): the one
     consumer was the call-log reader reading the store through
     `fused_render.calls`, nothing under `templates/` imports the package any more,
     and the fused local execution backend STRIPS PYTHONPATH from its children for
@@ -700,7 +700,7 @@ def test_neither_half_of_the_old_pythonpath_injection_survives(tmp_path, monkeyp
     A half-removal is the dangerous state: the parent still exporting PYTHONPATH
     while the child no longer appends (or vice versa) leaves `import fused_render`
     working on the built-in engine and failing on the fused one — precisely the
-    engine-dependent divergence PY-14 exists to end.
+    engine-dependent divergence PY-15 exists to end.
     """
     from fused_render import executor
 

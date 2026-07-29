@@ -1,4 +1,4 @@
-"""Templates must not import `fused_render` (SPEC PY-14).
+"""Templates must not import `fused_render` (SPEC PY-15).
 
 A template's `.py` files run as a CHILD PROCESS of the app, and the app is not
 the only thing that spawns them: the fused local execution backend strips
@@ -81,7 +81,7 @@ def test_no_template_imports_fused_render():
             offenders[rel] = hits
     assert not offenders, (
         "templates must reach the app through templates/shared/appenv.py "
-        "(env vars, stdlib only) — see SPEC PY-14:\n"
+        "(env vars, stdlib only) — see SPEC PY-15:\n"
         + "\n".join(f"  {rel}:{ln}: {src}"
                     for rel, hits in sorted(offenders.items())
                     for ln, src in hits))
@@ -156,7 +156,7 @@ def test_a_migrated_site_answers_with_fused_render_unimportable(
 
     The no-import guard above is necessary but not sufficient — a site could pass
     it and still fail at runtime by forgetting to put `../shared` on sys.path,
-    which is exactly the silent wrong-answer failure PY-14 exists to end. So each
+    which is exactly the silent wrong-answer failure PY-15 exists to end. So each
     site is asked a real question about a real read-only mount path and must get
     it right with the package unreachable.
     """

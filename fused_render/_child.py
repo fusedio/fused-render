@@ -28,7 +28,7 @@ from _binding import bind_params
 # flip side of the script invocation above, where sys.path[0] is the PACKAGE
 # directory rather than its parent. It existed for one consumer, the call-log
 # reader reading the store through `fused_render.calls`; nothing under
-# `templates/` imports `fused_render` any more (SPEC PY-14: a template learns
+# `templates/` imports `fused_render` any more (SPEC PY-15: a template learns
 # about its environment from `templates/shared/appenv.py`, env vars only).
 #
 # It was also never dependable. The fused local execution backend strips

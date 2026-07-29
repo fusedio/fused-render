@@ -39,7 +39,7 @@ if "__file__" not in globals():
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 # `../shared/appenv.py` is how this template asks the app about its environment
-# (SPEC PY-14): env vars only, stdlib only, no `fused_render` import. The import
+# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
 # stays LAZY at each use site below so an unreachable appenv is still the
 # "cannot tell" case MD-11 turns into a refusal, rather than a module that
 # fails to load at all.

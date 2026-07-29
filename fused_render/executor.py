@@ -262,7 +262,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # `fused_render.calls`. Nothing under `templates/` imports
             # `fused_render` any more — a template asks the app about its
             # environment through `templates/shared/appenv.py`, env vars only
-            # (SPEC PY-14) — so the injection has no consumer left, and it was
+            # (SPEC PY-15) — so the injection has no consumer left, and it was
             # never dependable anyway: the fused local execution backend STRIPS
             # PYTHONPATH/PYTHONHOME/VIRTUAL_ENV from its children for venv
             # hermeticity, so a template leaning on it worked under this executor

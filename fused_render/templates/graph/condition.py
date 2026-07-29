@@ -68,7 +68,7 @@ def main(path: str) -> bool:
         # template — this gate happens to be exec'd in-process by
         # server._run_condition, where the package IS importable, but that is an
         # implementation detail of the gate's host and not something a template
-        # may rely on (SPEC PY-14).
+        # may rely on (SPEC PY-15).
         shared = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
         # Guarded insert: _run_condition re-execs this module on EVERY stat, so an

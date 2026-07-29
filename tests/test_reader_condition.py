@@ -112,7 +112,7 @@ def test_reader_template_ships_condition():
     assert "template.html" in files
 
 
-# ------------------------------------------------- the stdlib fallback (PY-14)
+# ------------------------------------------------- the stdlib fallback (PY-15)
 # The gate prefers `shell.prefs` (it runs in-server, and the pref is not a mount
 # fact). Its fallback used to re-derive the per-branch home via
 # `fused_render._branch.branch_dir`; it now asks `shared/appenv`, which reads the
