@@ -209,7 +209,7 @@ def main(city: str = "oslo", limit: int = 100):
 ### 5.2 Parameter binding
 
 - **PY-3** The JS `params` object maps to keyword arguments by name.
-- **PY-4** Values arrive as JSON types. If the function has type annotations, the executor coerces (`"100"` → `int 100`, `"true"` → `bool`) since URL-derived params are strings. Unannotated args receive the raw JSON value.
+- **PY-4** Values arrive as JSON types. If the function has type annotations, the executor coerces (`"100"` → `int 100`, `"true"` → `bool`) since URL-derived params are strings. Unannotated args receive the raw JSON value. String annotations count as annotations: they are resolved first (`from __future__ import annotations` / PEP 563 must not turn coercion off), and an annotation that cannot be resolved degrades to "no coercion" rather than failing the run. **One implementation** serves both engines — `fused_render/_binding.py`; the fused engine embeds that file's source into its generated wrapper (its child cannot import the package) rather than restating the rules, so the two can't disagree on the bound values or on the `error.type` a bad param surfaces.
 - **PY-5** Extra params not in the signature: ignored unless the function has `**kwargs`. Missing required args → structured error naming the missing arg.
 
 ### 5.3 Execution environment

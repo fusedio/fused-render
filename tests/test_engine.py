@@ -105,6 +105,21 @@ def test_bare_main_bridge_handles_future_annotations(tmp_path):
     assert g["result"] == "int"
 
 
+def test_binding_logic_comes_from_binding_py_not_a_copy(tmp_path, monkeypatch):
+    """The wrapper must *obtain* the binder from `_binding.py`, not restate it.
+
+    The behavioural comparison lives in tests/test_engine_parity.py; this is the
+    structural half — patch the source the wrapper reads and the patch must show
+    up in what the child runs. If someone re-inlines a hand-copy, this fails.
+    """
+    patched = engine._binding_source().replace(
+        "missing required param:", "sentinel straight from _binding.py:"
+    )
+    monkeypatch.setattr(engine, "_binding_source", lambda: patched)
+    with pytest.raises(TypeError, match="sentinel straight from _binding.py"):
+        _run_wrapped(tmp_path, "def main(x: int):\n    return x\n", {})
+
+
 def test_result_script_untouched(tmp_path):
     g = _run_wrapped(tmp_path, "result = {'x': 1}\n", {"ignored": "1"})
     assert g["result"] == {"x": 1}

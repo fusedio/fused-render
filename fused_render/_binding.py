@@ -5,6 +5,14 @@ identically: the isolated worker subprocess (`_child.py`, user code) and the
 in-process runner for first-party helpers (`executor.py`, D72). Keeping the
 coercion in one module means both paths agree on how string params from the URL
 map onto annotated signatures.
+
+There is a third consumer that does not import this module: the fused engine's
+child cannot see the package at all (the local backend strips PYTHONPATH), so
+`engine.build_code` reads **this file's source** and `exec`s it inside the code
+it generates (D166). Consequences for anything edited here: keep it stdlib-only
+and self-contained (no `fused_render.*` imports, no reliance on module state),
+and remember that a change to the coercion rules changes both engines at once —
+which is the point. `tests/test_engine_parity.py` holds them to it.
 """
 import inspect
 
@@ -32,7 +40,18 @@ def coerce(value, annotation):
 
 
 def bind_params(fn, params):
-    sig = inspect.signature(fn)
+    # eval_str resolves *string* annotations to the real objects. Without it, a
+    # module with `from __future__ import annotations` (PEP 563) — or any
+    # hand-quoted annotation — hands us the string "int" instead of `int`, and
+    # every coercion rule below silently misses: the URL's "7" reaches main()
+    # as the string "7". Names that don't resolve (a TYPE_CHECKING-only import,
+    # a typo) raise NameError/TypeError here; that is not worth failing a run
+    # over, so fall back to the unevaluated signature — which means "no
+    # coercion for that param", the same as an un-annotated one.
+    try:
+        sig = inspect.signature(fn, eval_str=True)
+    except (NameError, TypeError):
+        sig = inspect.signature(fn)
     has_var_kwargs = any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
     )
