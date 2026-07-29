@@ -30,6 +30,35 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
 
+# The template<->app env contract (SPEC PY-14): the server exports these before
+# it serves, and `templates/shared/appenv.py` is the only reader. They are set
+# with a plain os.environ assignment by design — every child process has to
+# inherit them — which means a test that starts a server (or calls
+# export_app_env / export_ro_mounts_env directly) leaves them behind for every
+# later test in the same worker. That leak is invisible and one-directional: the
+# next test's mount detection quietly answers against the previous test's home.
+_APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_MOUNTS_DIR",
+                "FUSED_RENDER_RO_MOUNTS", "FUSED_RENDER_ORIGIN")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_appenv_contract_vars():
+    """Every test starts with the contract vars UNSET and cannot leak them.
+
+    Unset is the honest default for a test: it is the state before any server
+    has started, so a template under test either sets what it needs or exercises
+    the documented no-server fallback."""
+    saved = {v: os.environ.pop(v, None) for v in _APPENV_VARS}
+    try:
+        yield
+    finally:
+        for var, value in saved.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reap_test_rcd_daemons():
     """Kill any REAL rclone rcd daemon a test spawned, on session teardown.
