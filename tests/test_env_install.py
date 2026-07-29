@@ -158,6 +158,48 @@ def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
     assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
 
 
+def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
+    """The macOS bundle has no `venv`/`ensurepip`/`pip`, so uv is not optional.
+
+    `fused`'s venv builder calls `shutil.which("uv")` and otherwise falls back to
+    `<python> -m venv`, which on a DMG fails with "No module named venv"
+    (measured). So the uv shipped at `Contents/Resources/bin/uv` has to be found
+    AND put on the worker's PATH.
+
+    Deliberately not gated on `sys.frozen`: py2app's boot script sets that, so
+    anything reaching this code without the app launcher would miss the bundled uv
+    and fall back to a module that isn't there. A stat cannot be wrong about it.
+    """
+    fake_app = tmp_path / "App.app" / "Contents"
+    (fake_app / "MacOS").mkdir(parents=True)
+    (fake_app / "Resources" / "bin").mkdir(parents=True)
+    interp = fake_app / "MacOS" / "python"
+    interp.write_text("")
+    uv = fake_app / "Resources" / "bin" / "uv"
+    uv.write_text("")
+    monkeypatch.setattr(sys, "executable", str(interp))
+    monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
+    monkeypatch.setattr(sys, "frozen", "", raising=False)
+    assert envinstall.uv_bin() == str(uv)
+
+    # And it reaches the worker, which is the only thing that matters.
+    env = envinstall._worker_env()
+    assert env["PATH"].split(os.pathsep)[0] == str(uv.parent)
+
+
+def test_an_explicit_uv_override_wins(tmp_path, monkeypatch):
+    real = tmp_path / "myuv"
+    real.write_text("")
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(real))
+    assert envinstall.uv_bin() == str(real)
+
+
+def test_a_stale_uv_override_is_ignored(tmp_path, monkeypatch):
+    """Same rule as rclone_bin: a wrong override must not shadow a real uv."""
+    monkeypatch.setenv("FUSED_RENDER_UV_BIN", str(tmp_path / "gone"))
+    assert envinstall.uv_bin() != str(tmp_path / "gone")
+
+
 @requires_fused
 def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypatch):
     """A half-built venv (no marker) must read as NOT ready.

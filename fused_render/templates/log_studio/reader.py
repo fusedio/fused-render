@@ -1,3 +1,20 @@
+# /// script
+# dependencies = ["drain3>=0.9.11; sys_platform == 'darwin'"]
+# ///
+# drain3 is the ONE dependency deliberately left out of the macOS bundle, so
+# that the install loader (PY-18) stays exercised on a real packaged app rather
+# than being untested code (D176). On macOS this header makes the fused engine
+# build a small script venv through the visible loader on first use; the
+# `sys_platform` marker makes it evaporate on Linux and Windows, which install
+# `[bundled]` wholesale and already have drain3 on the app's interpreter.
+#
+# The header is the COMPLETE list because a script venv is isolated from the
+# app's site-packages — and drain3 was chosen for exclusion precisely because
+# this file imports nothing else third-party, so nothing already bundled gets
+# re-downloaded alongside it.
+#
+# The guarded import and its install hint stay: a plain `pip install
+# fused-render` has no drain3, and pattern mining still degrades gracefully.
 # drain3 powers only pattern mining, and _patterns() still degrades gracefully
 # without it (a guarded import with an install hint) — a plain
 # `pip install fused-render` has no drain3, and that path must keep working.

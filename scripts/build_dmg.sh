@@ -453,6 +453,50 @@ echo "    fused --help / share --help / env list OK"
 #     needed there. shell/mounts.py's rclone_bin() looks here first.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)
+#     builds a per-script venv for the few templates whose deps are too heavy to
+#     bundle, and on macOS it has no other way to do it. `fused`'s venv builder
+#     prefers `uv venv` and falls back to `<python> -m venv` — and this bundle
+#     ships NO `venv`, `ensurepip` or `pip` module at all (py2app copies only what
+#     setup_py2app.py names). Measured on an installed DMG without uv on PATH:
+#     `RuntimeError: Failed to create venv ...: No module named venv`. So without
+#     this, opening a .pptx trades one dead end ("pip install python-pptx", which
+#     a DMG user cannot do) for another.
+#
+#     uv is also the RIGHT mechanism rather than merely the available one:
+#     upstream's venvs.py prefers it precisely because it needs no ensurepip
+#     bootstrap, "which matters when `exe` is an embedded/packaged interpreter (a
+#     py2app .app's python)". Verified against the mounted bundle: `uv venv
+#     --python <Contents/MacOS/python>` succeeds and `uv pip install` into it
+#     works, because uv constructs venvs itself instead of importing `venv`.
+#
+#     The Linux AppImage (build_linux_appimage.sh) and the Windows installer
+#     (build_windows_installer.ps1) already ship uv next to their python; this
+#     brings macOS in line. Copied from the build host's uv, like those two do.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling uv"
+UV_SRC="$(command -v uv || true)"
+if [[ -z "$UV_SRC" ]]; then
+  echo "FATAL: uv not found on PATH, but the bundle needs it: the install loader" >&2
+  echo "       cannot build a script venv without it (no venv/ensurepip/pip in" >&2
+  echo "       this bundle), so heavy-dependency templates would dead-end." >&2
+  echo "       Install uv (https://docs.astral.sh/uv/) and re-run." >&2
+  exit 1
+fi
+UV_DEST="$APP_DIR/Contents/Resources/bin/uv"
+mkdir -p "$(dirname "$UV_DEST")"
+cp "$UV_SRC" "$UV_DEST"
+chmod +x "$UV_DEST"
+UV_SMOKE_OUT="$("$UV_DEST" --version)"
+if ! echo "$UV_SMOKE_OUT" | grep -q "^uv "; then
+  echo "FATAL: bundled uv failed to report its version:" >&2
+  echo "$UV_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    $UV_SMOKE_OUT"
+
 echo "==> bundling rclone ${RCLONE_VERSION}"
 RCLONE_DEST="$APP_DIR/Contents/Resources/bin/rclone"
 mkdir -p "$(dirname "$RCLONE_DEST")"

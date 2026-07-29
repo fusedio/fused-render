@@ -1,3 +1,6 @@
+# No `# /// script` header: run_python is never handed this file — slides.py
+# imports it — so a header here would be inert (D174). slides.py's header is
+# what provisions the venv this module runs in.
 """DOM-free slide engine for the slides template.
 
 This module owns the two hard directions and the canonical edit semantics, with

@@ -458,8 +458,57 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
     )
 
 
-def script_requirements(text: str) -> list[str]:
+def _marker_applies(requirement: str) -> bool:
+    """Does this PEP 508 requirement's environment marker hold here?
+
+    A requirement with no marker always applies. This is what lets one template
+    declare a dependency **only where the app doesn't already ship it**:
+
+        dependencies = ["python-pptx; sys_platform == 'darwin'"]
+
+    which is not a micro-optimisation but the difference between correct and
+    wrong per platform. `[bundled]` is installed wholesale into the Linux
+    AppImage and the Windows installer, while macOS's py2app build copies only
+    what `setup_py2app.py` names and deliberately omits the heavy ones — so
+    "does the app have python-pptx?" genuinely has different answers, and a
+    header that ignored that would make Linux and Windows build a venv (and
+    re-download 24 MB) for something already on their interpreter.
+
+    An unparseable or unevaluatable marker is treated as APPLYING: the dependency
+    then gets installed where it might not have been needed, which is wasteful.
+    Guessing the other way would drop a dependency the script really needs and
+    fail at import — the worse of the two.
+    """
+    if ";" not in requirement:
+        return True
+    marker = requirement.split(";", 1)[1].strip()
+    if not marker:
+        return True
+    try:
+        from packaging.markers import InvalidMarker, Marker
+    except ImportError:
+        return True
+    try:
+        return bool(Marker(marker).evaluate())
+    except (InvalidMarker, KeyError, ValueError):
+        logger.warning(
+            "could not evaluate the environment marker %r in a `# /// script` "
+            "dependency; treating it as applying", marker,
+        )
+        return True
+
+
+def script_requirements(text: str, *, apply_markers: bool = True) -> list[str]:
     """Extract PEP 723 `dependencies` from a script's inline metadata block.
+
+    Requirements whose PEP 508 environment marker does not hold on this platform
+    are dropped (see `_marker_applies`), so a script that declares something only
+    macOS is missing reads as header-LESS on Linux and Windows and runs straight
+    on their interpreters.
+
+    `apply_markers=False` returns the block verbatim, markers included — for
+    tooling that must reason about ALL platforms rather than this one (the
+    packaging invariant in tests/test_bundle_contents.py).
 
     Returns [] when there is no `# /// script` block. Malformed TOML raises
     ValueError with the parse error so the caller can surface it to the page
@@ -490,7 +539,9 @@ def script_requirements(text: str) -> list[str]:
             raise ValueError(
                 "'dependencies' in the '# /// script' block must be a list of strings"
             )
-        return deps
+        if not apply_markers:
+            return deps
+        return [d for d in deps if _marker_applies(d)]
     return []
 
 

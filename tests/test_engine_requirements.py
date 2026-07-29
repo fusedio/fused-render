@@ -20,8 +20,9 @@ places.
      `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying a
      complete, accurate, never-read list of its own (D174).
   2. **A header must be necessary** — it has to declare something the app's
-     interpreter does not already have. Otherwise deleting it is free and
-     keeping it makes a first run wait on PyPI for packages already installed.
+     interpreter does not already have. Enforced in
+     tests/test_bundle_contents.py, because on macOS that means the BUNDLE's
+     contents rather than `[bundled]`'s promises (D176).
   3. **A header must be complete** — every `[bundled]`/core distribution the
      file imports, at any nesting depth, is declared in the header of *each*
      entry point that can execute it. This is the half with teeth: it is what
@@ -314,30 +315,10 @@ def test_the_import_map_covers_everything_the_app_ships():
     )
 
 
-@pytest.mark.parametrize("relpath", _template_files())
-def test_a_core_template_header_declares_something_the_app_lacks(relpath):
-    """Part 1: a header must be NECESSARY (PY-17).
-
-    A header-less script runs on the app's own interpreter, which has all of
-    `[bundled]` + core `dependencies`. So a header naming only things the app
-    already ships changes nothing except forcing a first run to build a venv and
-    download them from PyPI — slow, and it needs network the app otherwise
-    doesn't. This is what makes "which templates keep a header" self-policing
-    instead of a comment someone has to remember to update.
-    """
-    graph = _template_graph()
-    header = graph["header"][relpath]
-    if not header:
-        return
-    justification = sorted(header - _app_dists())
-    assert justification, (
-        f"{relpath}'s `# /// script` header declares {sorted(header)}, all of "
-        "which the app's interpreter already provides — so the header only costs "
-        "a venv build and a PyPI download on first run. Delete the whole block "
-        "and the file runs on the app's own python (PY-17). Keep a header only "
-        "for a dependency that is genuinely absent from `[bundled]` + the core "
-        "`dependencies`."
-    )
+# Part 2 — a header must be NECESSARY — lives in tests/test_bundle_contents.py,
+# not here. Necessity has to be judged against what the macOS BUNDLE ships
+# (setup_py2app.py), and judging it against `[bundled]` is the bug that shipped
+# a DMG telling the user to `pip install python-pptx` (D176). One home for it.
 
 
 @pytest.mark.parametrize("relpath", _template_files())

@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -372,6 +373,55 @@ def _claim_is_stale(key: str, claim: str) -> bool:
     return age > _CLAIM_GRACE_S
 
 
+def uv_bin() -> str | None:
+    """Path to the uv binary the venv builder should use, or None.
+
+    Same resolution order as `shell.mounts.rclone_bin`, and for the same reason —
+    a packaged build must not depend on the user's PATH:
+
+      1. FUSED_RENDER_UV_BIN, if it points at a real file (the Linux/Windows
+         supervisors already set an equivalent for rclone);
+      2. `Contents/Resources/bin/uv` beside this interpreter (build_dmg.sh);
+      3. whatever is on PATH (dev checkout).
+
+    This matters more than a convenience wrapper: `fused`'s venv builder calls
+    `shutil.which("uv")` and falls back to `<python> -m venv`, and the macOS
+    bundle contains **no `venv`, `ensurepip` or `pip` module at all** — measured
+    on an installed DMG, the fallback fails with "No module named venv". Without
+    uv on the worker's PATH the install loader cannot build anything on macOS.
+
+    Step 2 is a plain path probe and deliberately does NOT gate on
+    `sys.frozen == "macosx_app"` the way `shell.mounts.rclone_bin` does. py2app's
+    boot script is what sets `sys.frozen`, so anything that reaches this code
+    without going through the app launcher — a subprocess, a smoke test, a future
+    entry point — would silently miss the bundled uv and fall back to a `venv`
+    module the bundle does not contain. A stat costs nothing and cannot be wrong
+    about whether the file is there; this exact failure cost a debugging cycle.
+    """
+    override = os.environ.get("FUSED_RENDER_UV_BIN")
+    if override and os.path.isfile(override):
+        return override
+    contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    bundled = os.path.join(contents, "Resources", "bin", "uv")
+    if os.path.isfile(bundled):
+        return bundled
+    return shutil.which("uv")
+
+
+def _worker_env() -> dict:
+    """Environment for the installer worker, with the bundled uv reachable.
+
+    `fused` finds uv via `shutil.which`, i.e. PATH — so a uv that ships inside
+    the .app has to be put ON the PATH rather than merely located. Prepended, so
+    the bundled one wins over an older system uv.
+    """
+    env = dict(os.environ)
+    uv = uv_bin()
+    if uv:
+        env["PATH"] = os.path.dirname(os.path.abspath(uv)) + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def _spawn(key: str, requirements: list[str]) -> int:
     """Launch the detached worker; returns its pid.
 
@@ -390,7 +440,8 @@ def _spawn(key: str, requirements: list[str]) -> int:
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(
             [sys.executable, worker, key, d, venvs_path(), *requirements],
-            stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, **detach,
+            stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+            env=_worker_env(), **detach,
         )
     return child.pid
 
