@@ -98,8 +98,11 @@ def test_relay_happy_path(monkeypatch):
     assert _flag(argv, "--output-format") == "json"
     assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
     assert _flag(argv, "--system-prompt") == server._AI_DEFAULT_SYSTEM_PROMPT
-    assert _flag(argv, "--tools") == ""
-    assert _flag(argv, "--setting-sources") == ""
+    # Equals form as ONE token — a separate "" element is dropped by cmd.exe's
+    # %* expansion behind a Windows .cmd shim, re-enabling tools/settings.
+    assert "--tools=" in argv
+    assert "--setting-sources=" in argv
+    assert "" not in argv
     assert "--no-session-persistence" in argv
     assert _flag(argv, "--max-turns") == "1"
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"

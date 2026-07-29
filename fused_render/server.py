@@ -837,8 +837,8 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # config/limits later. Wire shape is the house {ok, result,
 # error:{type,message}} contract /api/run set. MVP: no streaming.
 #
-# The CLI is driven as a pure one-shot completion: --tools "" disables every
-# built-in tool, --setting-sources "" skips user/project settings and
+# The CLI is driven as a pure one-shot completion: --tools= disables every
+# built-in tool, --setting-sources= skips user/project settings and
 # CLAUDE.md, --system-prompt REPLACES the shipped agent prompt, --max-turns 1
 # and --no-session-persistence keep it a single stateless call.
 
@@ -981,8 +981,13 @@ async def _ai_relay(body: dict) -> JSONResponse:
         "--output-format", "json",
         "--model", model,
         "--system-prompt", system_prompt,
-        "--tools", "",
-        "--setting-sources", "",
+        # Single-token equals form, never a separate "" argv element: the
+        # Windows .cmd shim re-execs through cmd.exe, whose %* expansion drops
+        # empty args — the flags would then swallow the next token and leave
+        # tools/settings enabled. (Verified against claude 2.1.220: parses
+        # identically, same 544 input tokens.)
+        "--tools=",
+        "--setting-sources=",
         "--no-session-persistence",
         "--max-turns", "1",
     ]
