@@ -25,10 +25,11 @@ CANVAS = os.path.join(os.path.dirname(os.path.abspath(fused_render.__file__)),
 
 # Enough of a browser for the module to run: a canvas whose listeners we can
 # fire by hand, a 2D context that RECORDS the two calls that reveal a layout,
-# and an rAF queue that is not flushed unless a test asks. Left unflushed, the
-# sim never steps and every position under test is the one setData chose — which
-# is what most of these tests are about. `pump()` opts into the animation for
-# the ones that need a settled layout.
+# and an rAF queue that is not flushed unless a test asks. Positions are
+# ASSIGNED by setData, not simulated, so a snapshot straight after setData
+# already shows the final layout; `pump()` exists for the glide — the frames a
+# CARRIED-OVER node spends easing from where it was to where the new payload
+# put it.
 #
 # Positions are read back through `arc()` and `fillText()` rather than by
 # exposing the node array: those are how the browser learns where a node is, so
@@ -293,9 +294,6 @@ def test_a_ghost_and_a_tag_are_banded_below_every_real_folder():
           { id: "tag:t", kind: "tag", label: "#t", dir: null, degree: 1 }]),
         edges: TREE.edges,
       });
-      // Five bands are taller than the canvas, so this needs the fit — a band
-      // scrolled off the surface is deliberately not labelled.
-      pump(400);
       probe.push(snapshot());
     """)
     shot = got["probe"][0]
@@ -307,9 +305,10 @@ def test_a_ghost_and_a_tag_are_banded_below_every_real_folder():
     assert names[-5:] == ["root", "docs/", "docs/deep/", "unresolved", "tags"]
 
 
-def test_the_sim_never_moves_a_node_off_its_band():
-    # y belongs to the layout, not the sim: settling may slide nodes sideways to
-    # make label room, and must not drift them vertically out of their folder.
+def test_the_first_layout_is_already_settled():
+    # Positions are assigned, not simulated: nothing may drift after the first
+    # draw. This is what makes MD-9's 2-second re-sends invisible — there is no
+    # cooling period for a re-send to restart.
     got = _run("""
       g.setData(TREE);
       probe.push(snapshot().arcs);
@@ -317,29 +316,49 @@ def test_the_sim_never_moves_a_node_off_its_band():
       probe.push(snapshot().arcs);
     """)
     before, after = got["probe"]
-    assert [y for _x, y in after] == [y for _x, y in before]
-    # And it did settle — the row did not simply freeze.
-    assert [x for x, _y in after] != [x for x, _y in before]
+    assert after == before
 
 
-def test_a_link_across_folders_pulls_its_ends_into_a_column():
+def test_a_link_across_folders_lands_its_ends_in_a_column():
     # The payoff of banding: `top.md` → `docs/a.md` → `docs/deep/c.md` is a chain
     # descending the tree, and it should read as a column rather than a
-    # staircase. Cross-band edges pull toward horizontal alignment for this.
-    got = _run("g.setData(TREE); pump(600); probe.push(snapshot().arcs);")
+    # staircase. The barycenter ordering is what provides it: each band sorts
+    # its notes toward where their neighbours sit.
+    got = _run("g.setData(TREE); probe.push(snapshot().arcs);")
     xs = [x for x, _y in got["probe"][0]]
     top, _peer, a, _b, c = xs
     assert abs(top - a) < 40
     assert abs(a - c) < 40
 
 
-def test_two_notes_in_the_same_folder_are_pushed_apart_for_their_labels():
-    # In-band repulsion survives: same-folder notes share a row, so the only room
-    # for a label is horizontal.
-    got = _run("g.setData(TREE); pump(600); probe.push(snapshot().arcs);")
+def test_two_notes_in_the_same_folder_are_spaced_for_their_labels():
+    # Same-folder notes share a row, so the only room for a label is horizontal:
+    # each note owns a slot at least SLOT_MIN wide (its measured label width in
+    # a real browser; the harness has no measureText).
+    got = _run("g.setData(TREE); probe.push(snapshot().arcs);")
     xs = [x for x, _y in got["probe"][0]]
-    assert abs(xs[0] - xs[1]) > 60      # top.md vs peer.md
-    assert abs(xs[2] - xs[3]) > 60      # docs/a.md vs docs/b.md
+    assert abs(xs[0] - xs[1]) >= 60     # top.md vs peer.md
+    assert abs(xs[2] - xs[3]) >= 60     # docs/a.md vs docs/b.md
+
+
+def test_a_label_that_would_print_over_another_is_dropped_for_the_frame():
+    """The slots guarantee settled labels cannot touch; a user drag can still
+    park one node on top of another, and the collision must not be DRAWN.
+    The lower-priority label is dropped for the frame — a dot at least says
+    "hover me", where a half-read label says something false."""
+    got = _run("""
+      g.setData(TREE);
+      const spots = snapshot().arcs;
+      // Drag top.md squarely onto peer.md.
+      fire("mousedown", spots[0][0], spots[0][1]);
+      fire("mousemove", spots[1][0], spots[1][1]);
+      fire("mouseup", spots[1][0], spots[1][1]);
+      probe.push(snapshot().texts);
+    """)
+    labels = [t for t, _x, _y in got["probe"][0]]
+    assert ("top" in labels) != ("peer" in labels)   # exactly one survives
+    # Everything that was not collided still prints.
+    assert {"a", "b", "c"} <= set(labels)
 
 
 def test_a_note_that_changed_folder_moves_to_its_new_band():
@@ -401,15 +420,12 @@ def test_a_busy_folder_is_dealt_into_lanes_so_labels_do_not_collide():
     assert len({round(b - a, 6) for a, b in zip(ordered, ordered[1:])}) == 1
 
 
-def test_a_big_folder_graph_settles_inside_its_bands():
-    """A folder of hundreds must not fly apart — the behavioural half of
-    test_markdown_template.py::test_a_big_folder_graph_cannot_fly_apart.
+def test_a_big_folder_graph_stays_banded_and_bounded():
+    """A folder of hundreds is the scale case: the grid must still hold.
 
-    Velocity accumulates across steps and the repulsion sum grows with node
-    count, so a bad seed plus no ceiling threw nodes thousands of pixels out and
-    the sim cooled before it could come back. 300 notes over 10 folders, settled,
-    then checked for staying finite, staying banded, and staying within a sane
-    spread.
+    300 notes over 10 folders, checked for staying finite, staying grouped into
+    exactly ten bands, and staying within the width the slot grid implies — a
+    layout bug that scattered assignments would fail all three.
     """
     got = _run("""
       const many = [];
@@ -419,7 +435,6 @@ def test_a_big_folder_graph_settles_inside_its_bands():
                     dir: d, path: "/v/" + d + "/n" + i + ".md", degree: 1 });
       }
       g.setData({ focus: null, nodes: many, edges: [] });
-      pump(600);
       probe.push(snapshot().arcs);
     """)
     arcs = got["probe"][0]
@@ -435,10 +450,10 @@ def test_a_big_folder_graph_settles_inside_its_bands():
     assert sum(1 for g in gaps if g > lane_gap) == 9   # 9 boundaries → 10 bands
     # Every band is many lanes deep, so this really did wrap rather than pile up.
     assert len(heights) > 10
-    # And the rows did not fly apart: 30 notes at REST=135 is ~4000px of row, so
-    # anything past an order of magnitude beyond that is the runaway this guards.
+    # And the rows stayed inside their slot grid: 30 unmeasured notes wrap to a
+    # handful of SLOT_MIN columns, nowhere near this.
     spread = max(x for x, _y in arcs) - min(x for x, _y in arcs)
-    assert spread < 40000, spread
+    assert spread < 2000, spread
 
 
 def test_a_dragged_node_keeps_the_height_you_put_it_at():

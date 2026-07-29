@@ -432,6 +432,10 @@
   .bl-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bl-title { flex: 0 1 auto; font-weight: 600; }
   .bl-path { flex: 0 1 auto; max-width: 100%; color: var(--fg-muted); font-size: 11px; }
+  /* "×3" when one note links here three times: the list shows each linking
+     note once, so the multiplicity has to survive somewhere. Muted like the
+     path — it qualifies the row, it is not the row. */
+  .bl-count { flex: none; color: var(--fg-muted); font-size: 11px; }
   .bl-empty { color: var(--fg-muted); font-size: 12px; }
   #tags { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
@@ -1727,7 +1731,19 @@
       tagsEl.innerHTML = notes.tags
         .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
 
-      const rows = notes.backlinks || [];
+      // One row per LINKING NOTE, not per link: a note that references this one
+      // three times rendered as three identical rows, which read as three
+      // different notes until the paths were compared. The multiplicity is
+      // real information — it just belongs in a count on the one row, and the
+      // header keeps counting notes, since "how many notes point here" is the
+      // question a backlinks panel answers.
+      const byPath = new Map();
+      for (const row of notes.backlinks || []) {
+        const seen = byPath.get(row.path);
+        if (seen) seen.count += 1;
+        else byPath.set(row.path, { ...row, count: 1 });
+      }
+      const rows = [...byPath.values()];
       document.getElementById("links-head").textContent =
         rows.length ? `Backlinks (${rows.length})` : "Backlinks";
       listEl.innerHTML = rows.length
@@ -1735,6 +1751,7 @@
             <button class="bl" data-path="${escapeHtml(row.path)}">
               <span class="bl-title">${escapeHtml(row.title)}</span>
               <span class="bl-path">${escapeHtml(row.rel)}</span>
+              ${row.count > 1 ? `<span class="bl-count">×${row.count}</span>` : ""}
             </button>`).join("")
         : `<div class="bl-empty">No other note under ${escapeHtml(notes.root)}
              links here.</div>`;

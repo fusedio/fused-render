@@ -589,6 +589,21 @@ def test_a_backlink_row_keeps_its_path_visible_without_overflowing(source):
     assert '<span class="bl-path">${escapeHtml(row.rel)}</span>' in source
 
 
+def test_a_note_linking_here_three_times_is_one_row_with_a_count(source):
+    # graph.py reports one backlink per LINK, and rendering that verbatim showed
+    # "rendering" three times in a row — three rows that read as three different
+    # notes until the paths were compared. The list groups by the linking note's
+    # path (first-seen order — not adjacency, which would depend on how graph.py
+    # happens to sort) and the multiplicity survives as a muted ×N on the row.
+    body = source[source.index("const byPath = new Map()"):]
+    body = body[:body.index("bl-empty")]
+    assert "seen.count += 1" in body
+    assert "byPath.set(row.path, { ...row, count: 1 })" in body
+    assert 'row.count > 1 ? `<span class="bl-count">' in body
+    # The header counts the grouped rows — notes, not links.
+    assert "`Backlinks (${rows.length})`" in body
+
+
 def test_backlink_rows_read_as_a_list_and_still_answer_the_keyboard(source):
     # Borderless rows, so the two affordances that replace the border have to
     # stay distinguishable: a fill on hover, an outline on keyboard focus. A
@@ -644,22 +659,24 @@ def test_graph_colours_are_read_at_draw_time_not_baked(canvas_source):
 def test_the_graph_behaviours_obsidian_has_are_present(canvas_source):
     assert "function radius(node)" in canvas_source          # radius from degree
     assert "var labels = zoom > 0.7" in canvas_source        # labels fade
-    assert "drag.pinned = true" in canvas_source             # drag-to-pin
+    assert "drag.userPinned = true" in canvas_source         # drag-to-pin
     assert "neighbours(hover)" in canvas_source              # hover highlighting
     assert "[3, 3]" in canvas_source                         # dashed ghost edges
 
 
-def test_the_layout_leaves_room_for_labels_and_then_frames_itself(canvas_source):
+def test_the_layout_gives_every_label_its_measured_width_then_frames_itself(canvas_source):
     """The two halves of "the graph is too dense to read", which only work
-    together: spacing wide enough for an 11px label, and a fit-to-canvas so the
-    wider layout does not simply fall off the edge of a narrow sidebar.
+    together: each label owning a slot as wide as it measures (so two labels
+    cannot be assigned overlapping ground), and a fit-to-canvas so the sized
+    layout does not simply fall off the edge of a narrow sidebar.
 
-    One sim serves both surfaces (D157), and the spacing is deliberately NOT
+    One layout serves both surfaces (D157), and the spacing is deliberately NOT
     scaled per surface — uniformly scaling a layout that gets fitted to the
     canvas changes nothing on screen. The zoom is what varies.
     """
-    assert "var REST = 135;" in canvas_source
-    assert "var REPULSION = 4600;" in canvas_source
+    assert "var SLOT_PAD = 18;" in canvas_source
+    assert "var SLOT_MIN = 60;" in canvas_source
+    assert "function measureLabels(list)" in canvas_source
     assert "function frameAll()" in canvas_source
     # Only ever zooms out, and never past a floor.
     assert "zoom = Math.min(1.5, Math.max(0.15," in canvas_source
@@ -668,18 +685,17 @@ def test_the_layout_leaves_room_for_labels_and_then_frames_itself(canvas_source)
     assert canvas_source.count("userFramed = true") == 2      # pan/drag, and wheel
 
 
-def test_a_big_folder_graph_cannot_fly_apart(canvas_source):
-    # The same sim serves a folder of hundreds. Velocity accumulates across steps
-    # and the repulsion sum grows with node count, so without a ceiling the first
-    # few frames threw nodes thousands of pixels out and the sim cooled before it
-    # could recover.
-    assert "var MAX_SPEED = 22;" in canvas_source
-    assert "if (speed > MAX_SPEED)" in canvas_source
-    # The seeding half of it is asserted by RUNNING the sim, in
-    # test_graph_canvas.py::test_a_big_folder_graph_settles_inside_its_bands —
-    # this used to look for the disc-seeding expression, which stopped existing
-    # when y became the layout's (D163) and only x needed seeding. A source
-    # assertion could not tell those two apart; the behavioural one can.
+def test_positions_are_assigned_not_simulated(canvas_source):
+    # The spring sim is gone, and must stay gone: its two forces (label spacing
+    # and column alignment) pull opposite ways in a hub-shaped graph, and the
+    # alignment side winning is what printed "configuratiobservability" across
+    # the panel. The barycenter ordering plus measured slots answer both wants
+    # without a fight; nothing here may reintroduce a force term.
+    assert "REPULSION" not in canvas_source
+    assert "_bary" in canvas_source                      # the ordering sweeps
+    assert "bezierCurveTo" in canvas_source              # edges curve, not rope
+    # The scale half is asserted by RUNNING the layout, in
+    # test_graph_canvas.py::test_a_big_folder_graph_stays_banded_and_bounded.
 
 
 def test_the_panel_width_is_a_preference_not_view_state(source):
