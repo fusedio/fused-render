@@ -133,8 +133,8 @@ fused.env
 const { text, model, usage } = await fused.ai(prompt, {
   systemPrompt,               // optional system message
   model,                      // optional model id (default claude-haiku-4-5-20251001)
-  effort,                     // optional "low" | "medium" | "high" — max_tokens shorthand
-  maxTokens,                  // optional explicit max_tokens override
+  effort,                     // optional "low" | "medium" | "high" | "xhigh" — Claude Code effort
+  maxTokens,                  // deprecated no-op (validated, not enforced)
   onChunk,                    // optional (text) => {} — streams deltas as they arrive
 });
 ```
@@ -168,17 +168,25 @@ const { text, model, usage } = await fused.ai(prompt, {
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned
   an unexpected shape), or `"timeout"` (no answer within 120 s). `opts.effort`
-  (`"low" | "medium" | "high"`) is a max-output-tokens shorthand (1024/4096/16384,
-  default medium); `opts.maxTokens` overrides it. Calls run fully concurrent — no
+  (`"low" | "medium" | "high" | "xhigh"`) passes through to **Claude Code's own
+  effort semantics** (the same setting as the interactive `/effort` command);
+  effort-capable models (sonnet/opus class) honor it, haiku silently ignores it.
+  `opts.maxTokens` is **deprecated and currently a no-op**: still validated
+  (a bad value is a 400) but not enforced — the CLI has no per-call output cap;
+  it may regain meaning if one appears. Calls are accepted concurrently but
+  **serialized** through one shared CLI process — a second simultaneous call
+  waits for the first (a local single-user app; calls complete in seconds). No
   latest-wins channel (an AI call is never a slider scrub).
   **Streaming**: `opts.onChunk(text)` fires per text delta as the model produces it
   (the server relays `{"stream": true}` NDJSON chunks); the promise still resolves
   with the same `{text, model, usage}` at the end, so streaming only changes when
   the text arrives, not what the call returns. Errors after the first chunk reject
-  the promise with the same `.type` values. **Warm process** (D166): the server
-  pre-spawns the claude CLI so its ~2s Node startup is paid before the request —
-  the first call after startup and every call repeating the previous call's config
-  skip the spawn wait entirely; each call still runs in its own fresh process.
+  the promise with the same `.type` values. **Warm process** (D166/D167): the
+  server keeps ONE persistent claude CLI process and resets it between calls
+  (`/clear` wipes the conversation; model/system-prompt swaps ride a control
+  request) — its ~2s Node startup is paid once, so every call is warm, and each
+  call still sees an empty context: the reset is what carries the isolation the
+  old process-per-call design bought.
   **Local-only**: the CLI lives on the author's machine, so the exporter rejects a
   page that calls it (§18.2) — gate with `fused.env === "local"` instead.
 
