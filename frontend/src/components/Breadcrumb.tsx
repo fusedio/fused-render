@@ -16,6 +16,9 @@ import {
   splitBookmarkUrl,
 } from "../lib/bookmarks";
 import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "../lib/hooks";
+import { urlScheme, isCloudScheme, fileUrlToPath } from "../lib/path-url";
+import { resolveCloudUrl } from "../lib/api";
+import { pushToast } from "../lib/toast";
 import { useClipboard } from "../lib/fs-clipboard";
 import { encodePaneSegment, splitShellSearch } from "../lib/layout-codec";
 import { panelUrl } from "../views/Panel";
@@ -205,6 +208,34 @@ function navigatePreservingMode(target: string): void {
   else navigate(target, { isDir: true }); // breadcrumb targets are always dirs
 }
 
+// Open a URL typed/pasted into the path bar. Every failure is an error toast
+// carrying the reason — the path bar has already closed by now, so a silent
+// no-op would read as "Enter did nothing". A cloud URL keeps its trailing
+// slash (that is a prefix the mount may cover, not path noise); the server
+// strips it when it resolves.
+async function openUrl(url: string, scheme: string): Promise<void> {
+  if (scheme === "file") {
+    try {
+      navigate(fileUrlToPath(url));
+    } catch (e) {
+      pushToast({ msg: (e as Error).message, tone: "error" });
+    }
+    return;
+  }
+  if (isCloudScheme(scheme)) {
+    try {
+      const { path } = await resolveCloudUrl(url);
+      navigate(path);
+    } catch (e) {
+      // The server's message names what's missing ("no mount covers
+      // s3://<bucket> — add one from the Mounts page in the sidebar").
+      pushToast({ msg: (e as Error).message, tone: "error" });
+    }
+    return;
+  }
+  pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
+}
+
 export function Breadcrumb({
   fsPath,
   home,
@@ -266,6 +297,15 @@ export function Breadcrumb({
   const displayPath = underHome ? "~" + rest : fsPath;
   const submitEdit = (raw: string) => {
     let path = raw.trim();
+    // A pasted URL, not a path. Handled before any path munging — "~"
+    // expansion and trailing-slash trimming are path grammar, and a URL's
+    // trailing slash is part of the key (see openUrl).
+    const scheme = urlScheme(path);
+    if (scheme) {
+      setEditing(false);
+      void openUrl(path, scheme);
+      return;
+    }
     if (home !== undefined) {
       if (path === "~") path = home;
       else if (path.startsWith("~/")) path = home + path.slice(1);
