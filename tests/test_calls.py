@@ -1196,8 +1196,9 @@ def test_the_published_store_path_is_canonical():
     Asserted against the CODEC rather than against a hardcoded expectation, so
     this says "canonicalized" on every platform instead of "unchanged" on POSIX.
     """
-    server_py = os.path.join(os.path.dirname(calls.__file__), "server.py")
-    src = open(server_py, encoding="utf-8").read()
+    from fused_render import server as server_mod
+
+    src = open(server_mod.__file__, encoding="utf-8").read()
     line = next(ln for ln in src.splitlines() if '"calls_dir"' in ln)
     assert "canonical_fs_path(" in line, (
         "the published path must go through the codec — os.path.abspath alone "
