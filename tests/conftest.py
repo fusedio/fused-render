@@ -30,12 +30,21 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
 
+# The PEP 723 header the warm fixture (and the tests that ask for it) declare.
+# `pip` because the dev-env recipe seeds it into this venv already, so uv resolves
+# it from cache and the real-backend venv tests stay offline-safe — the assertions
+# are about WHICH interpreter ran, never about the package.
+WARM_HEADER = '# /// script\n# dependencies = ["pip"]\n# ///\n'
+
+
 @pytest.fixture(scope="session")
 def warm_fused_backend_venv(tmp_path_factory):
-    """Build the fused backend's bare venv once, serialized across xdist workers.
+    """Build the fused backend's script venv once, serialized across xdist workers.
 
-    Every real-backend test runs with `DEFAULT_REQUIREMENTS = []`, so they all
-    want the same *bare* venv under ~/.openfused/venvs. Creating it is guarded
+    Every real-backend test that needs a venv at all declares `WARM_HEADER`, so
+    they all want the same venv under ~/.openfused/venvs (a script with NO header
+    runs on the app's own interpreter now — PY-17 — and builds nothing, which is
+    why the header is what makes this fixture necessary). Creating it is guarded
     only by an in-process lock inside `fused`, which is no guard at all against
     `-n auto`: on a cold cache (a CI runner, always) N worker processes each
     find no ready-marker, each start building the same directory, and the losers
@@ -120,17 +129,12 @@ def warm_fused_backend_venv(tmp_path_factory):
         # creates the venv; after this every worker's run hits the ready marker.
         probe_dir = tmp_path_factory.mktemp("warm-venv")
         probe = probe_dir / "warm.py"
-        probe.write_text("def main():\n    return 1\n")
-        original = engine.DEFAULT_REQUIREMENTS
-        engine.DEFAULT_REQUIREMENTS = []
-        try:
-            out = asyncio.run(engine.run_python(str(probe), {}))
-        finally:
-            engine.DEFAULT_REQUIREMENTS = original
+        probe.write_text(WARM_HEADER + "def main():\n    return 1\n")
+        out = asyncio.run(engine.run_python(str(probe), {}))
         if not out.get("ok"):
             error = out.get("error") or {}
             pytest.fail(
-                "could not build the fused backend's bare venv, so the "
+                "could not build the fused backend's script venv, so the "
                 "real-backend tests would race on a half-built one: "
                 f"{error.get('type')}: {error.get('message')}\n"
                 f"{error.get('traceback', '')}"

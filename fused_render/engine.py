@@ -23,10 +23,13 @@ The wire shape returned here is the built-in executor's
 ``stderr``/``duration_ms`` keys), so runtime.js and every template consume one
 shape regardless of which engine ran the code.
 """
+import asyncio
 import json
 import logging
 import os
 import re
+import subprocess
+import sys
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -44,35 +47,165 @@ _FRAME_LINE = re.compile(
 
 _backend = None
 
-# Installed into every script's venv on top of its PEP 723 dependencies, so the
-# built-in template readers (pyarrow, openpyxl…) work under this engine without
-# an inline header.
+# --------------------------------------------------------------------------
+# The app's own interpreter (PY-17 / D170)
+# --------------------------------------------------------------------------
 #
-# NOT a mirror of the `bundled` extra (SPEC DM-2) — it used to claim to be, and
-# was not, in ten places. The relationship is: this is the data stack common to
-# many templates; a dependency only one template needs stays in that template's
-# `# /// script` header (the header mechanism exists for exactly that, and it
-# keeps this venv small), and the server-only credential libs
-# (botocore/google-auth) never belong in a user-script venv at all. pyarrow and
-# duckdb are here but not in `[bundled]` because they are *core* dependencies —
-# the packaged interpreter gets them from the install, a fresh venv would not.
-# tests/test_engine_requirements.py enforces every clause of that, including the
-# part a comment cannot: that no template imports a bundled distribution its
-# venv would lack.
-DEFAULT_REQUIREMENTS = [
-    "numpy",
-    "pandas",
-    "pyarrow",
-    "requests",
-    "duckdb",
-    "polars",
-    "matplotlib",
-    "scipy",
-    "pillow",
-    "openpyxl",
-    "shapely",
-    "geopandas",
-]
+# A script with NO PEP 723 header runs with `interpreter=<this app's python>`
+# and gets no venv at all: the app already ships `[bundled]` + its core
+# `dependencies`, so numpy/pandas/duckdb/rasterio/… are there for free, with no
+# download and no first-run wait. A script WITH a header keeps the venv path,
+# and that venv contains exactly what the header declares — a header means what
+# PEP 723 says it means (the script's complete dependency list), not a delta
+# against an invisible baseline.
+#
+# The dangerous half is picking the interpreter. `LocalPythonComputeBackend`
+# spawns `interpreter` verbatim as argv[0], and on that branch it silently
+# ignores `requirements` — so handing it anything that is not a genuine,
+# usable python has no fallback and no error that names the cause:
+#
+#   * a py2app bundle's launcher stub (`Contents/MacOS/FusedRender`) would
+#     spawn the whole app as a subprocess per run. `sys.executable` inside the
+#     bundle is NOT that stub — py2app ships a real interpreter at
+#     `Contents/MacOS/python` and points `sys.executable` at it, which is why
+#     `executor.py`'s `[sys.executable, _child.py]` works there (D33, and
+#     build_dmg.sh smoke-tests exactly that spawn) — but the guarantee is
+#     py2app's, not ours, so it is verified rather than assumed.
+#   * that bundled python may only self-locate its stdlib because the app
+#     process exports PYTHONHOME — and `python_compute` STRIPS PYTHONHOME from
+#     the child. So the probe runs under the child's env, not ours.
+#   * on Windows the launcher execs `pythonw.exe` (windows/launcher/launcher.c);
+#     `python.exe` beside it is the same install with usable std streams.
+#   * the Linux AppImage's `usr/python/bin/python3` (scripts/linux/AppRun) is an
+#     ordinary relocatable python and needs none of this.
+#
+# So: resolve a candidate, then PROVE it by running it. The probe is the
+# assertion — one subprocess per server process — and a candidate that fails it
+# falls back to the venv path rather than spawning a non-interpreter.
+_UNPROBED = object()
+_app_interpreter = _UNPROBED
+
+# Escape hatch and test seam: an explicit interpreter to use for header-less
+# scripts. Still probed — an override that is not a usable python is a
+# misconfiguration to fall back from, not a reason to spawn it.
+_APP_PYTHON_ENV = "FUSED_RENDER_APP_PYTHON"
+
+# Mirrors python_compute._STRIPPED_ENV_VARS. Read off the module when it is
+# importable so the probe cannot drift from the env the child actually gets;
+# the literal is the fallback for a fused too old (or too new) to expose it.
+_FALLBACK_STRIPPED = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONSTARTUP")
+
+_PROBE = (
+    "import json,sys;"
+    "print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable}))"
+)
+
+# The probe is a one-line `-c` on the local filesystem: a real python answers in
+# well under a second, and nothing this budget protects is legitimately slower.
+# Deliberately SMALL, because it is paid on the request path in exactly the case
+# it exists to catch — a candidate that never answers (a GUI launcher stub that
+# ignores `-c`) would otherwise spend the whole timeout on the first header-less
+# /api/run, which is indistinguishable from a hung page. Cold-start slowness
+# (first-launch Gatekeeper validation on macOS, an interpreter on a network
+# share) is why this is 5s rather than 1s, not why it would be 60.
+_PROBE_TIMEOUT_S = 5
+
+# Basenames we are willing to SPAWN when the candidate was autodetected. The
+# concern is not correctness (the probe settles that) but the cost of being
+# wrong: if `sys.executable` were ever a py2app launcher stub, spawning it could
+# start a second copy of the whole app rather than fail. So an autodetected
+# candidate must at least be named like an interpreter before any process is
+# created. (What py2app's stub actually does with `-c` is unverified here — this
+# guard means we never have to find out.) An explicit FUSED_RENDER_APP_PYTHON is
+# exempt: it is deliberate configuration, and a user pointing at a wrapper
+# script with some other name is a case worth allowing.
+_PYTHON_BASENAMES_PREFIX = "python"
+
+
+def reset_app_interpreter_cache() -> None:
+    """Forget the probed interpreter so the next call re-resolves it."""
+    global _app_interpreter
+    _app_interpreter = _UNPROBED
+
+
+def _stripped_env_vars() -> tuple[str, ...]:
+    try:
+        from fused.agent_core.backends.local import python_compute
+    except ImportError:
+        return _FALLBACK_STRIPPED
+    return tuple(getattr(python_compute, "_STRIPPED_ENV_VARS", _FALLBACK_STRIPPED))
+
+
+def _interpreter_candidate() -> tuple[str, bool]:
+    """(the interpreter we would like to use, whether it was autodetected)."""
+    override = os.environ.get(_APP_PYTHON_ENV)
+    if override:
+        return override, False
+    exe = sys.executable
+    name = os.path.basename(exe)
+    if name.lower().startswith("pythonw"):
+        sibling = os.path.join(os.path.dirname(exe), name[:6] + name[7:])
+        if os.path.isfile(sibling):
+            return sibling, True
+    return exe, True
+
+
+def app_interpreter() -> str | None:
+    """A verified path to this app's own python, or None when there isn't one.
+
+    Verified means: it runs, and it reports OUR `sys.prefix` — which is what
+    makes the app's site-packages (`[bundled]` + core `dependencies`) the ones a
+    header-less script imports. A different prefix is a different installation:
+    it would run the script and then fail every bundled import for reasons no
+    traceback explains, so it is rejected like an outright failure.
+
+    Cached per process (the probe is a subprocess); `reset_app_interpreter_cache`
+    clears it.
+    """
+    global _app_interpreter
+    if _app_interpreter is not _UNPROBED:
+        return _app_interpreter
+
+    candidate, autodetected = _interpreter_candidate()
+    env = {k: v for k, v in os.environ.items() if k not in _stripped_env_vars()}
+    detail = ""
+    name = os.path.basename(candidate).lower().removesuffix(".exe")
+    if autodetected and not name.startswith(_PYTHON_BASENAMES_PREFIX):
+        # Rejected WITHOUT spawning it — see _PYTHON_BASENAMES_PREFIX.
+        detail = f"its name {name!r} is not an interpreter's, so it was not run"
+    else:
+        try:
+            proc = subprocess.run(
+                [candidate, "-c", _PROBE],
+                capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=env,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+            else:
+                info = json.loads(proc.stdout.strip().splitlines()[-1])
+                if info["prefix"] != sys.prefix:
+                    detail = (
+                        f"it reports sys.prefix {info['prefix']!r}, not this app's "
+                        f"{sys.prefix!r} — a different Python installation"
+                    )
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError) as e:
+            detail = f"{type(e).__name__}: {e}"
+
+    if detail:
+        # Warning, not an error: the venv path still runs everything. But say it
+        # once and say why — silently building venvs forever is the failure mode
+        # this whole probe exists to make visible.
+        logger.warning(
+            "%r is not usable as this app's interpreter (%s); header-less scripts "
+            "will fall back to a bare script venv and will NOT see the app's own "
+            "packages. Set %s to a real python to fix this.",
+            candidate, detail, _APP_PYTHON_ENV,
+        )
+        _app_interpreter = None
+    else:
+        logger.info("header-less scripts will run on %s", candidate)
+        _app_interpreter = candidate
+    return _app_interpreter
 
 
 def available() -> bool:
@@ -108,6 +241,45 @@ def get_backend():
             timeout_seconds=int(DEFAULT_TIMEOUT), cache_storage=None
         )
     return _backend
+
+
+async def _execute(code: str, requirements: list[str], interpreter: str | None, input_files: dict):
+    """Run `code` on the backend, on `interpreter` when one was resolved.
+
+    The venv path (a script with a PEP 723 header) goes through the public
+    `execute()`, unchanged. The interpreter path cannot: `execute()` derives an
+    `interpreter` ONLY by resolving a uv workflow venv from a `project` /
+    `project_dir`, and a standalone .py has neither. So it calls the documented
+    subclass contract (`_execute_sync`, whose docstring defines exactly this
+    parameter) directly, off the event loop — which, with `cache_storage=None`,
+    is what `execute()` would have done for these arguments anyway, minus the
+    caching it has already disabled.
+
+    If a future `fused` drops `_execute_sync`, that is a fallback to the venv
+    path — never a spawn of something unverified.
+    """
+    backend = get_backend()
+    if interpreter is not None:
+        if not hasattr(backend, "_execute_sync"):
+            logger.warning(
+                "this fused build has no LocalPythonComputeBackend._execute_sync, so "
+                "header-less scripts cannot run on the app's interpreter; falling "
+                "back to a bare script venv"
+            )
+        else:
+            # Keywords, not positionals: `_execute_sync` takes ten parameters and
+            # a reordering upstream would silently pass `interpreter` as something
+            # else. `requirements` is deliberately omitted — the interpreter wins
+            # over it upstream, and passing both would imply otherwise.
+            return await asyncio.to_thread(
+                backend._execute_sync,
+                code=code,
+                input_files=input_files,
+                interpreter=interpreter,
+            )
+    return await backend.execute(
+        code=code, requirements=requirements, input_files=input_files
+    )
 
 
 def script_requirements(text: str) -> list[str]:
@@ -341,9 +513,16 @@ async def run_python(path: str, params: dict) -> dict:
     except ValueError as e:
         return _error_dict("ValueError", str(e))
 
-    # Sorted union so the venv cache key is stable regardless of how a script
-    # orders its PEP 723 block; scripts with no block all share one defaults venv.
-    requirements = sorted(set(DEFAULT_REQUIREMENTS) | set(reqs))
+    # Sorted+deduped so the venv cache key is stable regardless of how a script
+    # orders its PEP 723 block. A header is the script's COMPLETE dependency
+    # list: no baseline is unioned in (D170), so what it declares is what its
+    # venv contains.
+    requirements = sorted(set(reqs))
+
+    # No header -> the app's own interpreter, no venv (PY-17). `interpreter` and
+    # `requirements` are mutually exclusive upstream (the interpreter branch
+    # ignores requirements silently), so they are never both set here.
+    interpreter = app_interpreter() if not requirements else None
 
     abs_path = os.path.abspath(path)
     try:
@@ -352,10 +531,9 @@ async def run_python(path: str, params: dict) -> dict:
         # fails here — and every other failure in this function returns the house
         # wire shape rather than raising into the request handler as a 500.
         code = build_code(user_code, os.path.dirname(abs_path), abs_path)
-        r = await get_backend().execute(
-            code=code,
-            requirements=requirements,
-            input_files={"_params.json": json.dumps(params or {}).encode()},
+        r = await _execute(
+            code, requirements, interpreter,
+            {"_params.json": json.dumps(params or {}).encode()},
         )
     except Exception:
         # The engine itself blew up (wrapper construction, backend import,

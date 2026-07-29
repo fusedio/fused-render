@@ -9,12 +9,27 @@ it skips them; the engine itself falls back the same way).
 import asyncio
 import json
 import os
+import stat
+import subprocess
 import sys
 import types
 
 import pytest
 
+import conftest
 from fused_render import engine
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interpreter_probe():
+    """The resolved app interpreter is cached per process; clear it per test.
+
+    Every test that monkeypatches `sys.executable` or FUSED_RENDER_APP_PYTHON
+    would otherwise be answered from (or poison) another test's cache.
+    """
+    engine.reset_app_interpreter_cache()
+    yield
+    engine.reset_app_interpreter_cache()
 
 
 # --- script_requirements (PEP 723) ------------------------------------------
@@ -227,12 +242,23 @@ class _FakeResult:
 
 
 class _FakeBackend:
+    """Both halves of the real backend's contract, so `calls` shows WHICH ran.
+
+    A fake with only `execute()` would make every header-less run look like the
+    venv path (engine.py falls back when `_execute_sync` is absent), which is
+    exactly the distinction these tests are about.
+    """
+
     def __init__(self, result):
         self._result = result
         self.calls = []
 
     async def execute(self, **kw):
-        self.calls.append(kw)
+        self.calls.append({"via": "execute", **kw})
+        return self._result
+
+    def _execute_sync(self, **kw):
+        self.calls.append({"via": "_execute_sync", **kw})
         return self._result
 
 
@@ -253,10 +279,14 @@ def test_success_maps_to_legacy_shape(monkeypatch, tmp_path):
     assert out["result"] == {"x": 1}
     assert out["stdout"] == "hi\n"
     assert out["duration_ms"] == 5
-    # Params travel as _params.json; requirements include the defaults set.
+    # Params travel as _params.json. The script declares no header, so it runs
+    # on the app's interpreter with no venv and no requirements at all (D172):
+    # a baseline set is exactly what this engine stopped installing.
     call = backend.calls[0]
     assert "_params.json" in call["input_files"]
-    assert "pyarrow" in call["requirements"]
+    assert call["via"] == "_execute_sync"
+    assert call["interpreter"] == engine.app_interpreter()
+    assert "requirements" not in call
 
 
 def test_error_maps_to_legacy_error_object(monkeypatch, tmp_path):
@@ -328,9 +358,7 @@ def test_ci_claiming_to_cover_this_engine_actually_runs_it():
 
 
 @requires_fused
-def test_real_backend_runs_bare_main(monkeypatch, tmp_path, warm_fused_backend_venv):
-    # Bare venv (no default data stack) so the test is fast and offline-safe.
-    monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
+def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "sine.py"
     target.write_text(
@@ -344,8 +372,7 @@ def test_real_backend_runs_bare_main(monkeypatch, tmp_path, warm_fused_backend_v
 
 
 @requires_fused
-def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path, warm_fused_backend_venv):
-    monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
+def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "boom.py"
     target.write_text("def main():\n    raise ValueError('nope')\n")
@@ -354,3 +381,242 @@ def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path, warm_fuse
     assert out["error"]["type"] == "ValueError"
     assert str(target) in out["error"]["traceback"]
     assert "_fused_run_main" not in out["error"]["traceback"]
+
+
+# --- the app's own interpreter (PY-17 / D170) ---------------------------------
+#
+# A header-less script runs with `interpreter=<the app's real python>` and gets
+# no venv. Everything here is about the one way that ships broken: `interpreter=`
+# is spawned verbatim as argv[0], so handing it something that is not a genuine
+# python (a py2app launcher stub, a `pythonw` with no console, an interpreter
+# that cannot self-locate its stdlib once the backend strips PYTHONHOME) would
+# spawn the wrong process instead of running the script — and `requirements` is
+# silently ignored on that branch, so there is no fallback to notice.
+
+
+def test_app_interpreter_is_this_installation_s_python():
+    """The resolved interpreter really runs, and is the SAME install as ours.
+
+    Same `sys.prefix` is the whole point: that is what makes the app's own
+    site-packages (`[bundled]` + core `dependencies`) visible to a header-less
+    script without installing anything.
+    """
+    exe = engine.app_interpreter()
+    assert exe is not None, "a dev checkout's sys.executable is a real python"
+    proc = subprocess.run(
+        [exe, "-c", "import sys; print(sys.prefix)"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == sys.prefix
+
+
+def test_app_interpreter_probe_rejects_a_launcher_stub(monkeypatch, tmp_path):
+    """A py2app-style launcher stub must never be returned as an interpreter.
+
+    The stub is executable and exits 0 — the exact shape that would pass a
+    naive `os.path.isfile` / `os.access(X_OK)` check and then spawn the whole
+    app as a subprocess on every run.
+    """
+    stub = tmp_path / "FusedRender"
+    stub.write_text("#!/bin/sh\necho 'launching the app'\nexit 0\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(stub))
+    assert engine.app_interpreter() is None
+
+
+def test_app_interpreter_probe_rejects_a_foreign_python(monkeypatch, tmp_path):
+    """A real python that is a DIFFERENT installation is rejected too.
+
+    It would run the script — with someone else's site-packages, so every
+    `[bundled]` import a header-less template makes would fail for reasons the
+    traceback cannot explain. Simulated by a stub that reports a prefix which
+    is not ours.
+    """
+    fake = tmp_path / "python3"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '{\"prefix\": \"/somewhere/else\", \"executable\": \"%s\"}\\n' \"$0\"\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(fake))
+    assert engine.app_interpreter() is None
+
+
+def test_app_interpreter_probe_survives_the_stripped_child_env(monkeypatch):
+    """The probe must run under the env the BACKEND will use, not ours.
+
+    `python_compute` strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP
+    from the child. A packaged interpreter that only self-locates its stdlib
+    *because* the app process exports PYTHONHOME would pass a probe run with
+    our env and then die in the real child — so the probe drops the same vars.
+    """
+    seen = {}
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        seen["_had_env"] = kw.get("env") is not None
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(engine.subprocess, "run", spy)
+    engine.app_interpreter()
+    assert seen["_had_env"], "the probe must pass an explicit env, not inherit"
+    for var in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSTARTUP"):
+        assert var not in seen, f"{var} must be stripped from the probe env"
+
+
+def test_windows_launcher_pythonw_resolves_to_the_console_python(monkeypatch, tmp_path):
+    """On Windows the app runs under `pythonw.exe`; prefer `python.exe`.
+
+    Same install (so same site-packages and the same `sys.prefix`), but with a
+    usable standard-stream setup — `pythonw` is the windowless build the
+    launcher stub and the AppRun analog exec, and the backend captures the
+    child's stdout/stderr.
+    """
+    (tmp_path / "pythonw.exe").write_text("")
+    (tmp_path / "python.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
+    assert engine._interpreter_candidate() == (str(tmp_path / "python.exe"), True)
+
+
+def test_pythonw_without_a_console_sibling_keeps_itself(monkeypatch, tmp_path):
+    (tmp_path / "pythonw.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
+    assert engine._interpreter_candidate() == (str(tmp_path / "pythonw.exe"), True)
+
+
+def test_an_autodetected_non_python_name_is_never_spawned(monkeypatch, tmp_path):
+    """A launcher-stub `sys.executable` is rejected WITHOUT creating a process.
+
+    Being wrong here is not merely a failed probe: spawning a py2app launcher
+    could start a second copy of the whole app. The name check is what means we
+    never have to know what that stub does with `-c`.
+    """
+    stub = tmp_path / "FusedRender"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(sys, "executable", str(stub))
+    spawned = []
+    monkeypatch.setattr(
+        engine.subprocess, "run",
+        lambda cmd, **kw: spawned.append(cmd) or pytest.fail("must not spawn"),
+    )
+    assert engine.app_interpreter() is None
+    assert spawned == []
+
+
+def test_an_explicit_override_is_probed_even_with_an_odd_name(monkeypatch, tmp_path):
+    """FUSED_RENDER_APP_PYTHON is deliberate config: a wrapper name is allowed.
+
+    It still has to pass the probe — the escape hatch relaxes the name guard,
+    not the verification.
+    """
+    wrapper = tmp_path / "app-python-wrapper"
+    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(wrapper))
+    assert engine.app_interpreter() == str(wrapper)
+
+
+def test_the_probe_timeout_is_short_enough_to_not_read_as_a_hang():
+    """It is paid on the request path in the case it exists to catch."""
+    assert engine._PROBE_TIMEOUT_S <= 10
+
+
+@requires_fused
+def test_a_headerless_script_runs_on_the_app_interpreter(monkeypatch, tmp_path):
+    """The end-to-end assertion: no venv, and the child IS the app's python.
+
+    Checked from inside the child (its own `sys.executable`/`sys.prefix`)
+    rather than from the requirements we passed — `interpreter=` silently
+    ignores `requirements`, so only the child can say which python ran.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "who.py"
+    target.write_text(
+        "import sys\n"
+        "def main():\n"
+        "    return {'exe': sys.executable, 'prefix': sys.prefix}\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"]["prefix"] == sys.prefix
+    assert out["result"]["exe"] == engine.app_interpreter()
+
+
+@requires_fused
+def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
+    """The point of the switch: `[bundled]` works with no header and no install."""
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "reads.py"
+    target.write_text(
+        "def main():\n"
+        "    import pandas, pyarrow\n"
+        "    return sorted(pandas.DataFrame({'a': [1, 2]}).a.tolist())\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"] == [1, 2]
+
+
+@requires_fused
+def test_a_declared_header_still_gets_its_own_venv(
+    monkeypatch, tmp_path, warm_fused_backend_venv
+):
+    """A header keeps today's venv path — it must NOT land on the app python."""
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "declared.py"
+    target.write_text(
+        conftest.WARM_HEADER
+        + "import sys\n"
+        "def main():\n"
+        "    return {'prefix': sys.prefix}\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"]["prefix"] != sys.prefix
+    assert "venvs" in out["result"]["prefix"]
+
+
+def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
+    """A header goes to the venv path, and its venv gets EXACTLY the header.
+
+    No baseline is unioned in (D172), so a header means what PEP 723 says it
+    means. This is the assertion that stops a baseline being reintroduced.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        "# /// script\n"
+        '# dependencies = ["imagecodecs", "pyproj"]\n'
+        "# ///\n"
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    asyncio.run(engine.run_python(str(target), {}))
+    call = backend.calls[0]
+    assert call["via"] == "execute"
+    assert call["requirements"] == ["imagecodecs", "pyproj"]
+
+
+def test_no_resolvable_interpreter_falls_back_to_a_venv(monkeypatch, tmp_path):
+    """When the probe fails we use the venv path — never a non-interpreter.
+
+    The fallback loses the app's packages, which is a real degradation; the
+    alternative is spawning something that is not python at all, which fails
+    every run with a message about neither the script nor the cause.
+    """
+    stub = tmp_path / "not-python"
+    stub.write_text("#!/bin/sh\nexit 3\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(stub))
+
+    backend = _FakeBackend(_FakeResult(return_value="null"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    target = tmp_path / "plain.py"
+    target.write_text("def main():\n    return None\n")
+    asyncio.run(engine.run_python(str(target), {}))
+    call = backend.calls[0]
+    assert call["via"] == "execute"
+    assert call["requirements"] == []
