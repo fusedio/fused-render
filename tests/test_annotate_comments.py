@@ -273,3 +273,63 @@ def test_record_refuses_under_read_only_mount(ro_mount):
         ], [])
     # Nothing written next to the mounted file.
     assert not os.path.exists(ro_mount + ".json")
+
+
+def test_read_only_is_answered_from_the_env_not_a_package_import(ro_mount):
+    """The mount fact travels as an env var, so it survives a child process that
+    cannot import fused_render — which is EVERY child under the fused engine
+    (its local backend strips PYTHONPATH for venv hermeticity). Asserted by
+    proving os.access disagrees: without the env answer the doomed write would
+    be waved through."""
+    assert os.environ["FUSED_RENDER_RO_MOUNTS"] == os.path.dirname(ro_mount)
+    assert os.access(os.path.dirname(ro_mount), os.W_OK)  # the lie
+    assert _load_annotate()._sidecar_writable(ro_mount) is False
+
+
+def test_writable_falls_back_to_os_access_when_the_ro_env_is_absent(
+        ro_mount, monkeypatch):
+    """The degrade path, which is now the ONLY path when no server exported the
+    list: no FUSED_RENDER_RO_MOUNTS means "nothing known to be read-only", and
+    _sidecar_writable is back to the pure os.access rule. It must not fail
+    closed here — a local file with no server around is writable."""
+    monkeypatch.delenv("FUSED_RENDER_RO_MOUNTS", raising=False)
+    assert _load_annotate()._sidecar_writable(ro_mount) is True
+
+
+@skip_root
+def test_the_os_access_rule_still_applies_with_the_ro_env_absent(
+        tmp_path, monkeypatch):
+    """...and "falls back to os.access" means the real rule, not a blanket True:
+    an unwritable directory is still not writable."""
+    monkeypatch.delenv("FUSED_RENDER_RO_MOUNTS", raising=False)
+    target = _target(tmp_path)
+    os.chmod(tmp_path, 0o555)
+    try:
+        assert _load_annotate()._sidecar_writable(str(target)) is False
+    finally:
+        os.chmod(tmp_path, 0o755)
+
+
+def test_read_only_degrades_to_writable_without_appenv(ro_mount):
+    """A copy of this folder taken without its `shared/` sibling has no appenv at
+    all. The guard keeps the pre-appenv behavior (pure os.access) rather than
+    raising — the template still works, it just cannot see mount read-only-ness."""
+    import builtins
+    import sys
+
+    ann = _load_annotate()
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "appenv":
+            raise ImportError("blocked")
+        return real_import(name, *args, **kwargs)
+
+    saved = sys.modules.pop("appenv", None)
+    builtins.__import__ = blocked
+    try:
+        assert ann._sidecar_writable(ro_mount) is True
+    finally:
+        builtins.__import__ = real_import
+        if saved is not None:
+            sys.modules["appenv"] = saved

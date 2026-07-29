@@ -141,8 +141,11 @@ def _run_serve(args: argparse.Namespace) -> None:
     _check_port_free(port)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
-    from fused_render.server import set_server_origin_env
+    from fused_render.server import export_app_env, set_server_origin_env
     set_server_origin_env(port, host=_HOST)
+    # Same lifecycle point, same reason: templates read the shell dirs + the
+    # read-only mount list from the env (they can't import fused_render).
+    export_app_env()
 
     url = f"http://{_HOST}:{port}/"
     branch_note = f" (branch {branch_ref()})" if branch_ref() else ""
