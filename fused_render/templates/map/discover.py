@@ -10,7 +10,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from geo_paths import is_remote_path, normalize_remote_path
+if __package__:
+    from .geo_paths import is_remote_path, normalize_remote_path
+else:
+    from geo_paths import is_remote_path, normalize_remote_path
 
 
 RASTER = (
