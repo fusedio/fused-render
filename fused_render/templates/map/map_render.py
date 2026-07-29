@@ -1,28 +1,3 @@
-# /// script
-# dependencies = ["rasterio"]
-# ///
-# Declared here, on the runPython entrypoint, even though nothing in this file
-# imports rasterio: the engine reads the PEP 723 header of the file it is handed
-# and of no other. The importers are geo_classify.py, vector_engine.py and
-# raster_engine.py — reached from here directly and through daemon.py/worker.py,
-# which are spawned with `sys.executable`, i.e. into this script's venv. A header
-# on any of those files would be inert; that mistake shipped once already, and
-# tests/test_engine_requirements.py now derives the distinction.
-#
-# rasterio specifically because it is the only member of vector_engine's
-# VECTOR_RUNTIME missing from engine.DEFAULT_REQUIREMENTS (geopandas brings
-# pyogrio/pyproj/shapely, pyarrow is core), so without it streamed vector layers
-# degrade to optional_runtime's install hint under the fused engine while working
-# on the packaged app, whose interpreter ships the [bundled] extra (SPEC DM-2).
-# rio-tiler / rioxarray / xarray are deliberately NOT declared: they are in
-# neither [bundled] nor the core deps, so raster layers are an
-# install-it-yourself feature on every install today and optional_runtime
-# already reports them actionably — declaring them here would make this engine
-# quietly more capable than the built-in one.
-#
-# This header becomes redundant once core templates run on the packaged app's
-# interpreter instead of a script venv (no venv, no requirements — [bundled]
-# serves them directly), and should be deleted with the rest of them then.
 """FusedRender entry point for the built-in Map Viewer template.
 
 The shell invokes this module in a short-lived worker. Heavy geospatial work
