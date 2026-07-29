@@ -32,6 +32,7 @@ TIER_ONE_TEMPLATES = (
     "claude",
     "code",
     "duckdb",
+    "graph",
     "history",
     "log_studio",
     "markdown",

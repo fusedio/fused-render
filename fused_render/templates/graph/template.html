@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Link graph</title>
+<script src="/template-shared/graph-canvas.js"></script>
+<style>
+  /* Appearance (SPEC §30, D134). `data-theme` is written onto <html> by the
+     injected runtime, which acts only because this document opted in via
+     `data-fused-theme` on <html> (see fused_render/static/runtime.js). Every
+     colour is a token: the canvas reads the same tokens at draw time, so a
+     literal anywhere here would be one the other mode cannot repaint. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --warn: #ffb454;
+    --ghost: #6b7076;
+    --on-accent: #131417;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --warn: #a35b00;
+    --ghost: #a3a7ad;
+    --on-accent: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+  #bar .spacer { flex: 1; }
+  #folder { color: var(--fg); font-weight: 600; }
+  #filter {
+    width: 12rem;
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+  }
+  .toggle {
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .toggle[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+  #canvas { flex: 1; width: 100%; display: block; cursor: grab; min-height: 0; }
+  #status {
+    flex: none;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: var(--fg-muted);
+    border-top: 1px solid var(--border);
+  }
+  #status[hidden] { display: none; }
+  #status.error { color: var(--error); }
+  #status.warn { color: var(--warn); }
+  #legend {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .dot-note { background: var(--fg-muted); }
+  .dot-tag { background: var(--accent); }
+  .dot-ghost { background: var(--ghost); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="folder"></span>
+    <span id="count"></span>
+    <span class="spacer"></span>
+    <span id="legend">
+      <span><span class="dot dot-note"></span>note</span>
+      <span><span class="dot dot-tag"></span>tag</span>
+      <span><span class="dot dot-ghost"></span>missing</span>
+    </span>
+    <input id="filter" type="search" placeholder="Filter by name" />
+    <button id="toggle-tags" class="toggle" aria-pressed="true" title="Show tag nodes">Tags</button>
+  </div>
+  <canvas id="canvas"></canvas>
+  <div id="status" hidden></div>
+  <script>
+    // The folder-level graph: every note under the folder you are standing in.
+    // Same data (graph.py's `graph` action) and same canvas
+    // (/template-shared/graph-canvas.js) as the markdown template's local
+    // panel — this view differs only in having no focus note and no depth.
+    const folderEl = document.getElementById("folder");
+    const countEl = document.getElementById("count");
+    const statusEl = document.getElementById("status");
+    const filterEl = document.getElementById("filter");
+    const tagsEl = document.getElementById("toggle-tags");
+
+    let root = null;
+    let payload = null;
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // ---- shell navigation ---------------------------------------------------
+    // Mirrors frontend/src/lib/router.ts urlForFsPath + navigate, the same way
+    // markdown/history/canvas/preview each do.
+    function shellPrefix() {
+      try {
+        const p = window.top.location.pathname;
+        if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+      } catch (e) { /* cross-origin — assume the normal shell */ }
+      return "/view/";
+    }
+    function navigateShell(fsPath) {
+      const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+      const url = shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
+        .map(encodeURIComponent).join("/");
+      try {
+        const top = window.top;
+        void top.location.href; // throws when cross-origin
+        top.history.pushState(null, "", url);
+        top.dispatchEvent(new Event("fused:navigate"));
+        return;
+      } catch (e) { /* fall through */ }
+      try { window.top.location.href = url; } catch (e) { location.href = url; }
+    }
+
+    // Join an absolute POSIX dir with a relative path and collapse "." / ".."
+    // segments — pure string work, the same helper the note view uses.
+    // No leading "/" on a Windows drive path (`C:/Users/…` is the shell's
+    // canonical form) — `/C:/…` would fail createGhost's root boundary check and
+    // refuse every create there. Mirrors the note view's copy deliberately:
+    // both surfaces must agree about where a target lands.
+    function resolvePath(dir, rel) {
+      const out = [];
+      for (const p of dir.split("/").concat(rel.split("/"))) {
+        if (p === "" || p === ".") continue;
+        if (p === "..") out.pop();
+        else out.push(p);
+      }
+      const joined = out.join("/");
+      return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;
+    }
+
+    // Creating a missing note from the graph is the same affordance the note
+    // view has; the file lands in the folder this graph is scoped to. The
+    // argument is the ghost's authored TARGET, never its display label.
+    async function createGhost(target) {
+      const clean = String(target).replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+      const name = /\.(md|markdown)$/i.test(clean) ? clean : clean + ".md";
+      if (!name.replace(/\.(md|markdown)$/i, "").split("/").pop()) return;
+      const base = root.replace(/\/+$/, "");
+      // Collapsed rather than concatenated, and then checked: a target carrying
+      // `..` would otherwise write above the folder this graph is scoped to,
+      // where the graph itself would never see the note it just made.
+      const path = resolvePath(base, name);
+      if (path !== base && !path.startsWith(base + "/")) {
+        setStatus("Won't create " + name + ": that is outside " + base + ".", "error");
+        return;
+      }
+      // CREATE-ONLY, and the server decides (`create: true` → 409 on an
+      // existing path). Load-bearing, and deliberately identical to the note
+      // view's copy in markdown/template.html — the two must agree, and they
+      // have drifted apart once already (the Windows `resolvePath` fix). A
+      // ghost is not proof the target is missing: this payload is one scan old,
+      // and an ambiguous target is a ghost BY DESIGN (graph.py's `_only`),
+      // which is exactly when a real note sits at this path. A plain write
+      // there replaced it with a one-line stub.
+      //
+      // Absent → created; already there → navigate to it; anything else (a
+      // directory at the path, an unwritable file or parent) is reported rather
+      // than swallowed as "absent".
+      try {
+        await fused.writeFile(path, "# " + name.replace(/\.(md|markdown)$/i, "") + "\n",
+          { create: true });
+      } catch (err) {
+        if (err.type !== "exists") {
+          setStatus("Could not create " + name + ": " + (err.message || ""), "error");
+          return;
+        }
+      }
+      navigateShell(path);
+    }
+
+    const canvas = fusedGraph.create({
+      canvas: document.getElementById("canvas"),
+      onOpenNote: (path) => navigateShell(path),
+      onCreateGhost: (target) => void createGhost(target),
+    });
+
+    function setStatus(message, kind) {
+      statusEl.hidden = !message;
+      statusEl.className = kind || "";
+      statusEl.innerHTML = message ? escapeHtml(message) : "";
+    }
+
+    // ---- view state is params (so a graph view is URL-shareable) ------------
+    function showTags() { return fused.params.get("tags") !== "0"; }
+    function query() { return (fused.params.get("q") || "").trim().toLowerCase(); }
+
+    function visible() {
+      if (!payload) return { nodes: [], edges: [] };
+      const q = query();
+      const keep = new Set();
+      for (const node of payload.nodes) {
+        if (!showTags() && node.kind === "tag") continue;
+        if (q && node.label.toLowerCase().indexOf(q) === -1) continue;
+        keep.add(node.id);
+      }
+      return {
+        focus: payload.focus,
+        nodes: payload.nodes.filter((n) => keep.has(n.id)),
+        edges: payload.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+      };
+    }
+
+    function render() {
+      const shown = visible();
+      filterEl.value = fused.params.get("q") || "";
+      tagsEl.setAttribute("aria-pressed", String(showTags()));
+      countEl.textContent = payload
+        ? `${shown.nodes.length} of ${payload.nodes.length} nodes · ${payload.total_notes} notes`
+        : "";
+      canvas.setData(shown);
+    }
+
+    async function load() {
+      root = fused.params.get("_file");
+      if (!root) {
+        setStatus("No folder selected (missing _file param).", "error");
+        return;
+      }
+      folderEl.textContent = root.split("/").filter(Boolean).pop() || root;
+      let data;
+      try {
+        // `../markdown/graph.py`: one module owns parsing, resolution and
+        // assembly for every surface, so this view cannot disagree with the
+        // note view about what links to what.
+        data = await fused.runPython("../markdown/graph.py",
+          { action: "graph", root, depth: "0" });
+      } catch (err) {
+        setStatus("Could not build the graph: " + (err.message || String(err)), "error");
+        return;
+      }
+      if (data.error) {
+        // A mount-backed root is refused outright rather than partially walked
+        // (MD-11). The gate normally means this view is never even offered
+        // there; this is the guarantee behind it.
+        setStatus(data.message || data.error, "error");
+        return;
+      }
+      payload = data;
+      const notices = [];
+      if (data.truncated) {
+        notices.push("Partial graph: the walk stopped at a cap.");
+      }
+      if ((data.skipped_large || []).length) {
+        notices.push(`${data.skipped_large.length} file(s) were too large to parse
+          as notes and were skipped.`);
+      }
+      setStatus(notices.join(" "), notices.length ? "warn" : "");
+      render();
+    }
+
+    let debounce = null;
+    filterEl.addEventListener("input", () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(() => fused.params.set("q", filterEl.value), 150);
+    });
+    tagsEl.addEventListener("click", () => {
+      fused.params.set("tags", showTags() ? "0" : "1");
+    });
+
+    // Params are the state and onChange is the single re-render path; filtering
+    // is client-side over the payload we already hold, so it costs no run.
+    fused.params.onChange(() => { if (payload) render(); });
+
+    load();
+  </script>
+</body>
+</html>

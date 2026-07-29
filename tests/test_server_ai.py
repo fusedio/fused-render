@@ -379,7 +379,8 @@ def test_claude_bin_fallback_dirs_match_the_chat_template(monkeypatch):
         return [c for c in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                             "/usr/local/bin/claude") if c in src]
 
-    assert candidates(server._claude_bin) == candidates(agent._claude_bin)
+    # The template keeps its list in a module constant; the server inlines it.
+    assert candidates(server._claude_bin) == list(agent._POSIX_CANDIDATES)
     assert len(candidates(server._claude_bin)) == 3
 
     # The Windows shim wrapping is duplicated the same way — pin behaviour.

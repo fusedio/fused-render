@@ -23,6 +23,7 @@
     --scrollbar: #33363d;
     --dot: #c8c6bd;            /* the assistant's ● gutter marker */
     --error: #f14c4c;
+    --ok: #6cc07a;             /* "✓ Allowed" on a resolved permission card */
     --faint: #5f6570;          /* placeholders, hint row, "model:" labels */
     --fg-strong: #ffffff;      /* **bold** and headings inside a reply */
     --code-bg: #22252b;
@@ -57,6 +58,7 @@
     --scrollbar: #c4c8ce;
     --dot: #6b6a62;
     --error: #c62828;
+    --ok: #2e7d32;
     --faint: #8a8f98;
     --fg-strong: #000000;
     --code-bg: #f0f1f3;
@@ -145,6 +147,56 @@
   .working .meta { color: var(--dim); }
   .error { color: var(--error); }
   .error::before { content: "✗ "; }
+
+  /* ── permission cards (the approval bridge) ─────────────────── */
+  /* Claude runs headless here, so a tool the session's rules don't already
+     allow becomes one of these instead of a terminal prompt. Bordered in the
+     brand orange while it is the thing blocking the reply; dropped back to the
+     ordinary border once answered. */
+  .perm {
+    border: 1px solid var(--orange);
+    border-radius: 6px;
+    background: var(--card);
+    padding: 8px 10px;
+  }
+  .perm.resolved { border-color: var(--border); }
+  .perm .perm-head .tool { color: var(--orange); font-weight: bold; }
+  .perm .perm-sub { color: var(--dim); word-break: break-word; }
+  .perm pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    margin: 6px 0 0;
+    padding: 6px 8px;
+    max-height: 190px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .perm .perm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .perm button {
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .perm button:hover:not(:disabled) { border-color: var(--border-focus); }
+  .perm button.primary {
+    background: var(--orange);
+    border-color: var(--orange);
+    color: var(--on-orange);
+  }
+  .perm button.primary:hover:not(:disabled) { filter: brightness(1.12); }
+  .perm button:disabled { opacity: .55; cursor: default; }
+  .perm .perm-status { margin-top: 8px; }
+  .perm .perm-status.allow { color: var(--ok); }
+  .perm .perm-status.deny { color: var(--error); }
+  .perm .perm-status.expired { color: var(--dim); }
   #inputbox {
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -422,6 +474,8 @@
     <span class="right">
       <span><span class="sel-label">model: </span><select id="model" class="model-sel"></select></span>
       <span><span class="sel-label">effort: </span><select id="effort" class="effort-sel"></select></span>
+      <span><span class="sel-label">approvals: </span><select id="perm" class="perm-sel"
+            title="How much Claude may do without asking"></select></span>
       <span id="session"></span>
     </span>
   </div>
@@ -440,6 +494,8 @@
           <span class="spacer"></span>
           <select id="hmodel" class="model-sel"></select>
           <select id="heffort" class="effort-sel"></select>
+          <select id="hperm" class="perm-sel"
+                  title="How much Claude may do without asking"></select>
           <button class="go" type="submit" aria-label="Send">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -485,13 +541,27 @@ document.title = "Claude — " + BASENAME;
 
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
-// ── model/effort selectors (home + footer stay in sync via params) ──
+// ── model/effort/approvals selectors (home + footer sync via params) ──
 const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
 const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+// How much Claude may do without stopping for a card. Values are agent.py's
+// PERMISSION_MODES keys; the labels say what the user gets, not what the CLI
+// calls it. `auto` is a broader opt-in, NOT a blanket one — Claude Code's own
+// classifier judges each request and still escalates what it won't vouch for,
+// so cards can still appear. Nothing here can turn approvals off entirely.
+const PERMISSION_MODES = ["prompt", "acceptEdits", "auto"];
+const PERMISSION_LABELS = {
+  prompt: "ask every time",
+  acceptEdits: "auto-accept edits",
+  auto: "Claude decides",
+};
 // Baseline when no param is set. Selecting the "default" option (empty
 // string) falls back to these too — the initial experience is sonnet/medium.
 const DEFAULT_MODEL = "sonnet";
 const DEFAULT_EFFORT = "medium";
+// The strictest of the three is the default: more auto-approval is something
+// the user opts into, never something a missing param hands them.
+const DEFAULT_PERMISSION = "prompt";
 function fillSelect(el, values, label) {
   for (const v of values) {
     const o = document.createElement("option");
@@ -502,6 +572,14 @@ function fillSelect(el, values, label) {
 }
 document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "default"));
 document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "default"));
+document.querySelectorAll(".perm-sel").forEach((el) => {
+  for (const v of PERMISSION_MODES) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = PERMISSION_LABELS[v];
+    el.appendChild(o);
+  }
+});
 // the home card shows friendlier default labels
 document.querySelector("#hmodel option[value='']").textContent = "model";
 document.querySelector("#heffort option[value='']").textContent = "effort";
@@ -509,11 +587,17 @@ document.querySelector("#heffort option[value='']").textContent = "effort";
 function syncSelects() {
   document.querySelectorAll(".model-sel").forEach((el) => { el.value = fused.params.get("model") || DEFAULT_MODEL; });
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = fused.params.get("effort") || DEFAULT_EFFORT; });
+  const perm = fused.params.get("permission");
+  document.querySelectorAll(".perm-sel").forEach((el) => {
+    el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
+  });
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("effort", el.value); syncSelects(); }));
+document.querySelectorAll(".perm-sel").forEach((el) =>
+  el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
 syncSelects();
 
 function showSession() {
@@ -530,6 +614,7 @@ document.getElementById("back").onclick = () => {
   fused.params.set("run", "");  // a failed re-attach must not chase us home
   showSession();
   log.innerHTML = "";
+  permCards.clear();  // the cards went with the log; don't keep handles to them
   document.body.classList.add("home");
   const recentlist = document.getElementById("recentlist");
   recentlist.innerHTML = "";
@@ -713,6 +798,288 @@ function addError(text) {
   log.scrollTop = log.scrollHeight;
 }
 
+// ── permission cards ──────────────────────────────────────────
+// Headless claude cannot open a terminal prompt, so agent.py points its
+// --permission-prompt-tool at an MCP server that parks each request on disk;
+// poll hands them here and these buttons write the answer back. Until one is
+// clicked the subprocess is genuinely blocked — the card IS the prompt.
+const permCards = new Map();  // request id -> card handle, cleared with the log
+
+// Tools where "allow all of these for the rest of the reply" is a
+// proportionate offer: the file read/edit ones this template exists to drive,
+// which a single reply calls over and over against the same target, and where
+// the grant is the difference between one click and eight.
+//
+// Everything else — Bash, the web tools, Task, and every unrecognised or MCP
+// tool — gets Allow/Deny only. Each of those calls is its own distinct action
+// with its own blast radius, so one `gh pr diff` is no reason to hand over
+// every command for the rest of the turn; a blanket Bash grant is close to
+// switching approvals off. Narrowing the rule to that ONE command instead is
+// what the CLI's own prompt does, but it computes those suggestions on its
+// side and the --permission-prompt-tool wire never sends them (see the POC
+// notes) — so the honest options here are all-or-nothing, and unknown tools
+// default to nothing.
+const WHOLE_TOOL_GRANTABLE = new Set([
+  "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
+]);
+
+// What the user is actually being asked to allow. Every field goes in through
+// textContent — tool input is model-authored text and must never be parsed as
+// markup (the same rule the rest of this view follows).
+// NOTHING here truncates, and that is a security property rather than a style
+// choice. An Allow hands the tool its input **verbatim** — permission_server
+// returns `updatedInput` unchanged — so a card that rendered only a prefix
+// would be asking the user to approve bytes they never saw. The input is
+// model-authored, so a prompt-injected model that knows where the cut falls
+// can put something benign in front of it and anything at all behind it. The
+// <pre> is already `max-height` + `overflow: auto`, which makes length a
+// scrolling problem instead of a disclosure one.
+//
+// `covered` names the input keys each case renders; buildPermCard shows
+// whatever is left over, so no key can be invisible either.
+function summarizePermission(tool, input) {
+  const inp = input && typeof input === "object" ? input : {};
+  const str = (v) => (typeof v === "string" ? v : v === undefined || v === null ? "" : JSON.stringify(v));
+  const mark = (v, ch) => str(v).split("\n").map((line) => ch + " " + line).join("\n");
+
+  // `covered` is derived from what was actually RENDERED, never hand-listed
+  // and never merely "read". Naming both sides of an `a || b` as covered hid
+  // whichever one lost: the leftover dump skipped it, the card never showed
+  // it, and updatedInput authorised it anyway — the same "approve what you
+  // cannot see" hole as the truncation, arriving through the mechanism built
+  // to close that one.
+  //
+  // "Rendered" has to mean non-empty, for the same reason. buildPermCard only
+  // emits a <pre> for a truthy body, so claiming an empty value as covered hid
+  // it from BOTH surfaces: an empty `Write` content — which truncates the file
+  // — showed as a path and nothing else, reading exactly like an ordinary
+  // path-only approve. Empty values fall through to the leftover dump, where
+  // JSON.stringify prints them as the `""` they are.
+  const used = [];
+  const show = (k) => {
+    const v = str(inp[k]);
+    if (v) used.push(k);
+    return v;
+  };
+  const pick = (...keys) => {           // an alternation: record only the winner
+    for (const k of keys) if (inp[k]) { used.push(k); return str(inp[k]); }
+    return "";
+  };
+  const out = (sub, body) => ({ sub, body, covered: used });
+
+  switch (tool) {
+    case "Bash":
+      return out(show("description"), show("command"));
+    case "Edit": {
+      const path = show("file_path");
+      show("replace_all");  // rendered as the annotation below, so it is covered
+      return out(path + (inp.replace_all ? "  (every occurrence)" : ""),
+                 mark(show("old_string"), "-") + "\n" + mark(show("new_string"), "+"));
+    }
+    case "Write":
+      return out(show("file_path"), show("content"));
+    case "NotebookEdit":
+      return out(show("notebook_path"), show("new_source"));
+    case "Read":
+      return out(pick("file_path", "path"), "");
+    // The pattern IS the request for these two — where it searches is scope,
+    // what it searches for is the thing being authorised. Falling back through
+    // `path || pattern` meant any request that named a path hid its query
+    // entirely, so the card asked you to approve a search you could not see.
+    case "Glob":
+    case "Grep": {
+      const where = show("path");
+      const glob = show("glob");
+      return out([where, glob ? "in " + glob : ""].filter(Boolean).join("  "),
+                 show("pattern"));
+    }
+    case "WebFetch":
+    case "WebSearch":
+      return out(pick("url", "query"), show("prompt"));
+  }
+  // Unknown tool: the whole object is the body, so every key is covered.
+  const keys = Object.keys(inp);
+  used.push(...keys);
+  return out("", keys.length ? JSON.stringify(inp, null, 2) : "");
+}
+
+// Whatever summarizePermission did not render. Allow authorises the WHOLE
+// input, so a key the curated view has no case for must not be silently
+// dropped — it gets shown verbatim rather than trusted to be unimportant.
+// Returns null when the summary already covered everything.
+//
+// Object.fromEntries, not `{}` + assignment. The input is model-authored JSON
+// and arrives through res.json(), which — like JSON.parse — DEFINES an own
+// `__proto__` key. Assigning that key instead reaches Object.prototype's
+// legacy setter, which creates no own property, so the field would vanish
+// from this dump while updatedInput still authorises it. fromEntries defines,
+// so `__proto__` reaches the card like any other leftover key.
+function leftoverInput(input, covered) {
+  const seen = covered || [];
+  const rest = Object.keys(input || {}).filter((k) => seen.indexOf(k) < 0);
+  return rest.length ? Object.fromEntries(rest.map((k) => [k, input[k]])) : null;
+}
+
+// The buttons a card offers, as [text, decision, scope, mode, class].
+//
+// `liveMode` is the mode the run is ACTUALLY in, as reported by poll — never
+// the picker's `permission` param. The picker applies to the next spawn, so
+// switching it to "Claude decides" mid-turn used to hide the mode-switch
+// button while the live session stayed strict and kept carding, removing the
+// one control that could grant what the user had just asked for (Bugbot,
+// PR #308). An absent mode still shows it: offering the button needlessly
+// costs a no-op click, hiding it needlessly is the bug.
+function permChoices(tool, label, liveMode) {
+  // "this reply", not "this session": each turn is a fresh `claude -p
+  // --resume`, and the rule the allow installs lives in that process (see the
+  // POC notes) — so it covers the rest of this reply and no further.
+  const choices = [["Allow", "allow", "once", "", "primary"]];
+  if (WHOLE_TOOL_GRANTABLE.has(tool)) {
+    choices.push(["Allow all " + label + " in this reply", "allow", "session", "", ""]);
+  }
+  // Escalate the MODE from the card, not just this one request: the same
+  // updatedPermissions channel carries a `setMode` beside the `addRules` the
+  // button above sends. Pointless once you are already there, so it is only
+  // offered while a stricter mode is in force — and it switches to "Claude
+  // decides", never to a blanket bypass, so every later request is still
+  // judged, just not by you.
+  if ((liveMode || DEFAULT_PERMISSION) !== "auto") {
+    choices.push(["Allow, and let Claude decide from here", "allow", "once", "auto", ""]);
+  }
+  choices.push(["Deny", "deny", "once", "", ""]);
+  return choices;
+}
+
+function buildPermCard(p, run_id, liveMode) {
+  const toolName = p.tool || "a tool";
+  const label = toolName.length > 28 ? toolName.slice(0, 27) + "…" : toolName;
+
+  const el = document.createElement("div");
+  el.className = "turn perm";
+  const head = document.createElement("div");
+  head.className = "perm-head";
+  const tool = document.createElement("span");
+  tool.className = "tool";
+  tool.textContent = toolName;
+  head.append("Claude wants to use ", tool);
+  el.appendChild(head);
+
+  const { sub, body, covered } = summarizePermission(p.tool, p.input);
+  if (sub) {
+    const d = document.createElement("div");
+    d.className = "perm-sub";
+    d.textContent = sub;
+    el.appendChild(d);
+  }
+  if (body) {
+    const pre = document.createElement("pre");
+    pre.textContent = body;
+    el.appendChild(pre);
+  }
+  const extra = leftoverInput(p.input, covered);
+  if (extra) {
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(extra, null, 2);
+    el.appendChild(pre);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "perm-actions";
+  const status = document.createElement("div");
+  status.className = "perm-status";
+  el.append(actions, status);
+
+  // Re-render whenever the verdict CHANGES, rather than latching on the first
+  // one seen. The click renders optimistically; the polls that follow report
+  // what agent.py read back off disk, and on a lost race those differ — the
+  // file is the truth claude acts on, so it has to be able to correct the
+  // label. Same-verdict repeats (a poll replaying a decision already shown)
+  // are the common case and still no-op.
+  let shown = "";
+  function resolve(decision, scope, mode) {
+    const key = decision + "/" + (scope || "") + "/" + (mode || "");
+    if (key === shown) return;
+    shown = key;
+    actions.remove();
+    el.classList.add("resolved");
+    if (decision === "allow") {
+      status.className = "perm-status allow";
+      status.textContent = mode
+        ? "✓ Allowed — approvals set to \u201c" + (PERMISSION_LABELS[mode] || mode) + "\u201d"
+        : scope === "session"
+          ? "✓ Allowed — not asking again for " + label + " in this reply"
+          : "✓ Allowed";
+    } else if (decision === "expired") {
+      status.className = "perm-status expired";
+      status.textContent = "◦ Unanswered — the reply ended before you decided";
+    } else {
+      status.className = "perm-status deny";
+      status.textContent = "✗ Denied";
+    }
+  }
+
+  async function send(decision, scope, mode) {
+    actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    status.className = "perm-status";
+    status.textContent = "sending…";
+    try {
+      const res = await fused.runPython("./agent.py", {
+        action: "decide", run_id, request_id: p.id, decision, scope,
+        mode: mode || "",
+      }, { key: null });
+      if (res && res.error) throw new Error(res.error);
+      // A mode switch is for the rest of the CONVERSATION, not just this run:
+      // the setMode update dies with the process like any session rule, so the
+      // picker has to carry it into the next turn's spawn too.
+      if (res && res.mode) { fused.params.set("permission", res.mode); syncSelects(); }
+      // agent.py answers with what landed on disk, which is not necessarily
+      // what this button asked for (first writer wins on a double-click).
+      resolve((res && res.decision) || decision, (res && res.scope) || scope,
+              (res && res.mode) || "");
+    } catch (err) {
+      // The subprocess is still blocked, so the buttons have to come back.
+      actions.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      status.className = "perm-status deny";
+      status.textContent = "Could not send that: " + err.message;
+    }
+  }
+
+  permChoices(p.tool, label, liveMode).forEach(([text, decision, scope, mode, cls]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = text;
+    if (mode) b.title = "Stops asking for what Claude judges safe; it still "
+                      + "escalates anything it will not vouch for.";
+    b.onclick = () => send(decision, scope, mode);
+    actions.appendChild(b);
+  });
+
+  return { el, resolve };
+}
+
+// Reconcile the poll's request list with what is on screen: new requests get a
+// card, answered ones get their verdict. Idempotent — poll replays the whole
+// list every 400 ms.
+function syncPermissions(list, run_id, working, liveMode) {
+  for (const p of list || []) {
+    if (!p || !p.id) continue;
+    let card = permCards.get(p.id);
+    if (!card) {
+      card = buildPermCard(p, run_id, liveMode);
+      permCards.set(p.id, card);
+    }
+    if (!card.el.isConnected) {
+      // Below the streamed text, above the status line — same slot the reply
+      // bubble takes, so the card reads in the order it happened.
+      if (working && working.el && working.el.isConnected) log.insertBefore(card.el, working.el);
+      else log.appendChild(card.el);
+      log.scrollTop = log.scrollHeight;
+    }
+    if (p.decision) card.resolve(p.decision, p.scope, p.mode);
+  }
+}
+
 function addWorking() {
   const d = document.createElement("div");
   d.className = "turn working";
@@ -724,7 +1091,8 @@ function addWorking() {
   const meta = d.querySelector(".meta");
   const draw = () => {
     const secs = Math.round((Date.now() - start) / 1000);
-    verbEl.textContent = (stats.phase === "composing" ? "Composing" :
+    verbEl.textContent = (stats.phase === "awaiting" ? "Waiting for your approval" :
+                          stats.phase === "composing" ? "Composing" :
                           stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
     const effort = fused.params.get("effort") || DEFAULT_EFFORT;
     const parts = [secs + "s"];
@@ -851,6 +1219,7 @@ async function pollLoop(run_id) {
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking");
+      syncPermissions(data.permissions, run_id, w, data.mode);
       if (data.text) {
         if (!reply) {
           reply = addAssistant("");
@@ -900,6 +1269,7 @@ async function sendMessage(message) {
       session_id: fused.params.get("session_id") || "",
       model: fused.params.get("model") || DEFAULT_MODEL,
       effort: fused.params.get("effort") || DEFAULT_EFFORT,
+      permission_mode: fused.params.get("permission") || DEFAULT_PERMISSION,
       // key:null — all agent.py calls opt out of default per-file cancellation
       // (D114): start/poll/history/sessions share this file, and superseding an
       // awaited poll would leave it pending and hang the streaming loop.
@@ -1040,6 +1410,7 @@ async function loadHistory(session_id) {
   // transcript order. Blocking sends for the load keeps turns in order.
   if (sending) return;
   sending = true;
+  permCards.clear();
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython("./agent.py", { action: "history", file: FILE, session_id }, { key: null });

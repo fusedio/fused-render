@@ -168,28 +168,34 @@ def test_writer_survives_a_write_failure(store, monkeypatch):
     The two records are queued in separate waits on purpose: the loop coalesces
     everything already queued into ONE _append call, so recording both at once
     would put them in the same failing batch and prove nothing about recovery.
+
+    Both waits are on Events the stub sets at a chosen moment, NOT on the length
+    of `batches`: the stub appends BEFORE it writes, so waiting for a second
+    element unblocked while that write was still in flight and the query below
+    could read an empty store (a real ~1-in-a-few-hundred-runs flake, caught on
+    3.13 as `assert [] == ['second']`). `entered` marks the failing batch
+    reaching _append, `written` marks a batch reaching disk — and only the
+    latter makes the store safe to read.
     """
     batches = []
     real_append = calls._append  # bind BEFORE patching, or flaky recurses into itself
+    entered = threading.Event()  # the writer reached _append with the doomed batch
+    written = threading.Event()  # a batch got all the way to disk
 
     def flaky(records):
         batches.append(records)
         if len(batches) == 1:
+            entered.set()
             raise OSError("disk full")
         real_append(records)
+        written.set()  # AFTER the write, so a waiter that sees this can query
 
     monkeypatch.setattr(calls, "_append", flaky)
     calls.record(rec(call_id="first"))
-    deadline = time.monotonic() + 6
-    while time.monotonic() < deadline and not batches:
-        time.sleep(0.05)
-    assert batches, "the first record was never handed to the writer"
+    assert entered.wait(6), "the first record was never handed to the writer"
 
     calls.record(rec(call_id="second"))
-    deadline = time.monotonic() + 6
-    while time.monotonic() < deadline and len(batches) < 2:
-        time.sleep(0.05)
-    assert len(batches) >= 2, "writer thread died on the first failure"
+    assert written.wait(6), "writer thread died on the first failure"
     assert [r["call_id"] for r in calls.query(limit=10)["records"]] == ["second"]
 
 
@@ -369,15 +375,23 @@ def test_first_party_flags_a_template_page_not_the_users_own(store):
 
 
 def test_a_write_records_size_and_conflict_outcome_but_never_content(app_client):
+    # The needle is UPPERCASE on purpose, so it cannot occur anywhere else in
+    # the record: the only free-form fields are the random call_id (lowercase
+    # hex) and the tmp paths (lowercase). The old needle "abcd" is legal hex and
+    # duly turned up INSIDE a call_id in CI ("...888abcd3c4..."), failing a real
+    # invariant for a coincidence — 29 windows in 32 hex chars is ~0.04% per
+    # record, which a four-job matrix hits sooner or later. Keep any replacement
+    # outside the alphabet of the other fields.
+    content = "NEVER-LOG-THIS-PAYLOAD"
     client, d = app_client
     target = d / "out.txt"
-    client.post("/api/fs/write", json={"path": str(target), "content": "abcd"},
+    client.post("/api/fs/write", json={"path": str(target), "content": content},
                 headers=app_headers(d / "p.html"))
     assert drain()
     got = calls.query(limit=10)["records"][0]
     assert got["route"] == "/api/fs/write"
-    assert got["bytes_written"] == 4
-    assert "abcd" not in json.dumps(got), "file content must never be stored"
+    assert got["bytes_written"] == len(content)
+    assert content not in json.dumps(got), "file content must never be stored"
 
 
 def test_a_rejected_write_is_not_blamed_on_a_readonly_file(app_client):
