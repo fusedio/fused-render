@@ -2712,6 +2712,17 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
   `![[embed]]` in an `Image` node, so including them silently renders no
   wikilinks at all (found by executing it — see MD-18a).
+- **MD-3a** **What a note is called: its file, always.** Every `title` in every
+  payload — the note view's own, a link row's, a backlink row's, a graph node's
+  label, a `[[` candidate's — is the filename with directory and extension
+  stripped, and nothing else. `parse_note` emits **no** `title` at all, so a
+  frontmatter `title:` and a leading `# H1` are both inert (the H1 survives as a
+  heading). Previously either could rename a note, which meant the name on a
+  graph node was not the name you would search for, rename, or type inside
+  `[[…]]` — and an H1 that merely repeated the filename made the two agree often
+  enough to hide the cases where they did not. Obsidian names a note by its file
+  for the same reason. This also makes the name available for a note the scan
+  never parsed, since deriving it needs only the path.
 - **MD-4** **Resolution: the shortest path that is unambiguous.** Tried in
   order — relative to the linking note's own folder, then from the vault root,
   then as a path suffix, then as a bare basename — case-insensitively, with the
@@ -2797,11 +2808,19 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   exactly that note, updates one row, and re-assembles in memory — no rebuild.
   The open graph and the `[[` candidate cache are both invalidated by the same
   save.
-- **MD-10** **Bounded, and honest about it.** A file over 256 KB is not a note
-  and is skipped; a walk stops at 5000 notes. Both are **reported** (`truncated`,
-  `skipped_large`) and surfaced in the footer and the graph panel, never silently
-  applied. The walk is deterministic — sorted directories and files — so a cap
-  that fires drops the same tail every time.
+- **MD-10** **Bounded by count, never by size, and honest about it.** A walk
+  stops at 5000 notes, 5000 assets, or 20000 enumerated entries; any cap that
+  fires is **reported** (`truncated`) and surfaced in the footer and the graph
+  panel, never silently applied. The walk is deterministic — sorted directories
+  and files — so a cap that fires drops the same tail every time. There is
+  **no per-note size cap**: a 256 KB ceiling (and its `skipped_large` report)
+  was removed, because a skipped file landed in neither the note index nor the
+  asset index, so every `[[…]]` aimed at it resolved to nothing and drew a
+  **ghost** — asserting the note did not exist when it plainly did. A long
+  decision log is precisely a note people want backlinks into. The read cost is
+  bounded by MD-8's cache instead: a big note is read on the open after it
+  changes and stat-only on every open after that. The editor's own 2 MB
+  inline-edit ceiling is a separate guard and always was.
 - **MD-11** **Mounts are out of scope for the graph, structurally.** The
   recursive walk is exactly the shape that wedges an rclone-NFS mount (a kernel
   listing on a flat million-key prefix), so it simply never happens there.

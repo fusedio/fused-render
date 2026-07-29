@@ -115,12 +115,31 @@ def test_headings_are_extracted_with_levels(graph):
     ]
 
 
-def test_title_prefers_frontmatter_then_first_h1(graph):
-    fm = graph.parse_note("---\ntitle: From Frontmatter\n---\n# Ignored\n")
-    assert fm["title"] == "From Frontmatter"
-    h1 = graph.parse_note("intro\n# The Heading\n")
-    assert h1["title"] == "The Heading"
-    assert graph.parse_note("just text\n")["title"] is None
+def test_parse_note_emits_no_title_at_all(graph):
+    # A note is named by its FILE, which parse_note cannot see — so it does not
+    # guess. Frontmatter `title:` and a leading `# H1` are both inert here; the
+    # H1 survives only as a heading.
+    parsed = graph.parse_note("---\ntitle: From Frontmatter\n---\n# The Heading\n")
+    assert "title" not in parsed
+    assert [h["text"] for h in parsed["headings"]] == ["The Heading"]
+
+
+def test_display_name_is_the_filename_not_the_frontmatter_title_or_h1(graph, tmp_path):
+    root = _vault(tmp_path, {
+        "Real Name.md": "---\ntitle: Frontmatter Name\n---\n# H1 Name\n",
+        "Other.md": "see [[Real Name]]\n",
+    })
+    note = graph.main(action="note", file=os.path.join(root, "Real Name.md"), root=root)
+    assert note["title"] == "Real Name"
+    # And every surface that names the note agrees — the link row pointing at it,
+    # its backlink row, the graph node label, and the `[[` popup.
+    assert graph.main(action="note", file=os.path.join(root, "Other.md"),
+                      root=root)["links"][0]["title"] == "Real Name"
+    assert note["backlinks"][0]["title"] == "Other"
+    graph_out = graph.main(action="graph", root=root, depth=0)
+    assert sorted(n["label"] for n in graph_out["nodes"]) == ["Other", "Real Name"]
+    candidates = graph.main(action="candidates", root=root)
+    assert sorted(n["title"] for n in candidates["notes"]) == ["Other", "Real Name"]
 
 
 def test_frontmatter_tags_join_body_tags_and_frontmatter_is_not_scanned(graph):
@@ -234,11 +253,27 @@ def test_scan_collects_notes_and_assets_and_skips_noise(graph, tmp_path):
     assert scan["assets"] == ["sub/pic.png"]
 
 
-def test_scan_skips_a_file_too_large_to_be_a_note_and_reports_it(graph, tmp_path):
-    root = _vault(tmp_path, {"small.md": "hi\n", "huge.md": "x" * 16})
-    scan = graph.scan_root(root, max_bytes=8)
-    assert list(scan["notes"]) == ["small.md"]
-    assert scan["skipped_large"] == ["huge.md"]
+def test_a_large_note_is_scanned_and_fully_linkable(graph, tmp_path):
+    # There is no size cap. A big note used to be dropped from the scan into a
+    # `skipped_large` list, which put it in NEITHER index — so a link aimed at
+    # it drew a ghost, indistinguishable from a link to a note that does not
+    # exist. It is an ordinary note now, whatever its size.
+    big = "# Big\n" + ("filler paragraph text\n" * 20_000)  # ~440 KB
+    root = _vault(tmp_path, {"Big.md": big, "Other.md": "see [[Big]]\n"})
+    scan = graph.scan_root(root)
+    assert sorted(scan["notes"]) == ["Big.md", "Other.md"]
+    assert scan["truncated"] is False
+    assert "skipped_large" not in scan
+
+    # The link resolves to the real file rather than a ghost, and the big note
+    # has working backlinks of its own.
+    other = graph.main(action="note", file=os.path.join(root, "Other.md"), root=root)
+    assert other["links"][0]["path"] == os.path.join(root, "Big.md")
+    big_note = graph.main(action="note", file=os.path.join(root, "Big.md"), root=root)
+    assert [b["rel"] for b in big_note["backlinks"]] == ["Other.md"]
+    # It is a real node in the graph, not a ghost.
+    nodes = {n["id"]: n for n in graph.main(action="graph", root=root, depth=0)["nodes"]}
+    assert nodes["Big.md"]["kind"] == "note"
 
 
 def test_scan_stops_at_the_file_cap_and_says_so(graph, tmp_path):

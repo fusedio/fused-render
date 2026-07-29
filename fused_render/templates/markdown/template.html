@@ -1055,8 +1055,11 @@
 
     // Takes a STATE, not a view, and walks the whole document — see the
     // StateField below for why it cannot be a view plugin, and therefore has no
-    // viewport to narrow the walk to. Notes are small (MD-10 caps a note at
-    // 256 KB), so whole-document is well inside budget, and it also removes the
+    // viewport to narrow the walk to. The bound on that walk is `MAX_BYTES`
+    // above: this surface never opens a file it did not agree to load, so 2 MB
+    // is the worst case. (This comment used to cite the graph's 256 KB per-note
+    // cap, which never bounded THIS walk — the editor's ceiling has always been
+    // its own — and that cap is now gone.) Whole-document also removes the
     // viewport/height feedback loop that made scrolling jitter.
     function buildDecorations(state) {
       const lines = selectedLines(state);
@@ -1744,10 +1747,6 @@
         notices.push(`Partial scan: ${notes.notes} note(s) under
           ${escapeHtml(notes.root)} were indexed before the walk hit a cap, so some
           backlinks or embeds may be missing.`);
-      }
-      if ((notes.skipped_large || []).length) {
-        notices.push(`${notes.skipped_large.length} file(s) were too large to parse
-          as notes and were skipped.`);
       }
       noticeEl.innerHTML = notices.join("<br />");
       noticeEl.hidden = !notices.length;
