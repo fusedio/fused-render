@@ -28,6 +28,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -41,6 +42,18 @@ requires_fused = pytest.mark.skipif(
 )
 
 HEADER = '# /// script\n# dependencies = ["pip"]\n# ///\n'
+
+
+@pytest.fixture(autouse=True)
+def _isolated_install_state(tmp_path, monkeypatch):
+    """Give every test its own progress dir.
+
+    `progress_dir` is keyed by the venv key alone and lives under the shell home,
+    which conftest sets ONCE for the whole session — so two tests using the same
+    requirement set (several here use `["pip"]`) would otherwise share one
+    progress record and one claim file, and pass or fail depending on order.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
 # --- the venv key must be the backend's own -----------------------------------
@@ -322,6 +335,74 @@ def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     envinstall.start(reqs)
     envinstall.start(reqs)
     assert len(spawned) == 1
+
+
+@requires_fused
+def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
+    """The race the sequential test cannot see.
+
+    `progress()` then `_spawn()` is a check-then-act, and the endpoints are sync
+    `def` — FastAPI runs those in a threadpool, so two POSTs really are
+    concurrent. Two workers building one venv dir is precisely what `fused`'s
+    in-process lock does not cover: the loser dies on a half-built
+    `<venv>/bin/python`. A barrier makes every thread arrive inside the window at
+    once, which is what the unsynchronised version could not survive.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    workers = 16
+    barrier = threading.Barrier(workers)
+    spawned = []
+    lock = threading.Lock()
+
+    def fake_spawn(key, reqs):
+        with lock:
+            spawned.append(key)
+        return os.getpid()  # provably alive, so `_in_flight` stays true
+
+    monkeypatch.setattr(envinstall, "_spawn", fake_spawn)
+    reqs = ["pip"]
+    errors = []
+
+    def go():
+        try:
+            barrier.wait(timeout=30)
+            envinstall.start(reqs)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=go) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert errors == [], errors
+    assert len(spawned) == 1, f"{len(spawned)} workers spawned for one venv"
+
+
+@requires_fused
+def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch):
+    """A crashed installer must not wedge the key forever.
+
+    The claim file outlives the process that made it, so "claim exists" cannot
+    mean "give up" — otherwise one crash makes a template permanently
+    un-installable with no way back short of deleting a cache directory by hand.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    reqs = ["pip"]
+    key = envinstall.venv_key_for(reqs)
+    spawned = []
+    monkeypatch.setattr(
+        envinstall, "_spawn", lambda k, r: spawned.append(k) or (2 ** 31 - 1)
+    )
+    envinstall.start(reqs)
+    assert len(spawned) == 1
+    assert os.path.exists(os.path.join(envinstall.progress_dir(key), "claim"))
+
+    # The recorded pid cannot be running, so this install reads as crashed.
+    assert envinstall.progress(key)["done"] is True
+    envinstall.start(reqs)
+    assert len(spawned) == 2, "a dead installer's claim should be taken over"
 
 
 @requires_fused

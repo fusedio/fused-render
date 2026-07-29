@@ -41,8 +41,11 @@ _INSTALL_PCT = 25
 
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None):
+    # Unique temp name, not a shared `progress.json.tmp`: the server writes this
+    # same file (envinstall._write) and two writers racing on one temp means the
+    # first os.replace consumes the second's file, whose replace then fails.
     path = os.path.join(progress_dir, "progress.json")
-    tmp = path + ".tmp"
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": pct, "detail": detail, "done": done,
                    "error": error, "pid": os.getpid(), "ts": time.time()}, f)

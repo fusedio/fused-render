@@ -52,6 +52,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,12 @@ STAGES = ("spawn", "create", "install", "done")
 # running, and the gap between `install` and `done` is honestly unmeasurable
 # here — a download whose length we cannot see.
 STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
+
+# How long a claim with no progress record yet is assumed to belong to a caller
+# still inside `Popen` (see _claim_is_stale). Normally microseconds; this only has
+# to exceed a slow spawn. Short, because the window it also covers — the server
+# dying between claiming and writing — should self-heal rather than wedge the key.
+_CLAIM_GRACE_S = 30
 
 
 def venvs_path() -> str:
@@ -163,10 +170,19 @@ def _progress_path(key: str) -> str:
 
 
 def _write(key: str, record: dict) -> None:
-    """Atomically replace `progress.json` — a poll must never read a half-write."""
+    """Atomically replace `progress.json` — a poll must never read a half-write.
+
+    The temp name carries pid+thread id. A single shared `progress.json.tmp` is
+    not merely untidy: two concurrent writers race, the first `os.replace`
+    consumes the tmp file the second had just created, and the second dies with
+    `FileNotFoundError` — a 500 out of /api/env/install. That is reachable, since
+    the endpoints run in FastAPI's threadpool and the worker writes to the same
+    file from another process. Unique temp + `os.replace` keeps the swap atomic
+    without the shared name.
+    """
     os.makedirs(progress_dir(key), exist_ok=True)
     path = _progress_path(key)
-    tmp = path + ".tmp"
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(record, f)
     os.replace(tmp, path)
@@ -264,6 +280,73 @@ def _in_flight(key: str) -> bool:
     return bool(prog) and not prog.get("done")
 
 
+def _claim(key: str) -> bool:
+    """Win the exclusive right to spawn the installer for `key`.
+
+    `progress()` then `_spawn()` is a check-then-act: two callers can both see
+    "not running" and both spawn. That is not theoretical here — the endpoints
+    are sync `def`, so FastAPI runs them in a threadpool, genuinely
+    concurrently — and two workers building one venv directory is exactly the
+    race `fused`'s in-process lock cannot cover: the loser dies on a half-built
+    `<venv>/bin/python`.
+
+    So the claim is an `O_CREAT|O_EXCL` create, which the OS makes atomic (the
+    same primitive `warm_fused_backend_venv` uses in the test suite). A claim
+    left behind by a finished or dead installer is taken over (`_claim_is_stale`),
+    and if someone else wins that takeover we join them rather than spawn a
+    second worker.
+    """
+    d = progress_dir(key)
+    os.makedirs(d, exist_ok=True)
+    claim = os.path.join(d, "claim")
+    for attempt in (1, 2):
+        try:
+            fd = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if attempt == 2:
+                return False  # another caller took it over first — join them
+            if not _claim_is_stale(key, claim):
+                return False
+            try:
+                os.unlink(claim)
+            except OSError:
+                return False
+            continue
+        except OSError:
+            return False
+        try:
+            os.write(fd, f"{os.getpid()} {time.time()}\n".encode())
+        finally:
+            os.close(fd)
+        return True
+    return False
+
+
+def _claim_is_stale(key: str, claim: str) -> bool:
+    """May we take over an existing claim?
+
+    Deliberately NOT just `not _in_flight(key)`. The claim is created *before*
+    the installer's first progress record exists, so "claim present, no record"
+    is the normal state for the microseconds a competing caller spends inside
+    `Popen` — reading that as stale is what let sixteen concurrent callers spawn
+    six workers while the O_EXCL create was working perfectly. (Measured; that is
+    how this function came to exist.)
+
+    So: with a record, `progress()` decides — it has already reaped a dead worker
+    into `done`. Without one, only age can distinguish "mid-spawn" from "the
+    server died between claiming and writing", and the grace window is short
+    enough that a genuine crash self-heals rather than wedging the key.
+    """
+    prog = progress(key)
+    if prog is not None:
+        return bool(prog.get("done"))
+    try:
+        age = time.time() - os.path.getmtime(claim)
+    except OSError:
+        return False
+    return age > _CLAIM_GRACE_S
+
+
 def _spawn(key: str, requirements: list[str]) -> int:
     """Launch the detached worker; returns its pid.
 
@@ -301,8 +384,15 @@ def start(requirements: list[str]) -> dict:
                   "done": True, "error": None, "pid": os.getpid(), "ts": time.time()}
         _write(key, record)
         return record
-    if _in_flight(key):
-        return progress(key)
+    if not _claim(key):
+        # Someone else owns this install — join it. `progress()` can still be
+        # None for the instant between their claim and their first write, so
+        # report a starting record rather than nothing.
+        return progress(key) or {
+            "stage": "spawn", "pct": STAGE_PCT["spawn"],
+            "detail": "an installer for these packages is already starting",
+            "done": False, "error": None, "pid": None, "ts": time.time(),
+        }
     pid = _spawn(key, list(requirements))
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
