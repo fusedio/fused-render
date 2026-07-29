@@ -24,6 +24,7 @@ def _load(name: str):
     spec = importlib.util.spec_from_file_location(name, MAP / f"{name}.py")
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -190,12 +191,12 @@ def test_legacy_excel_reports_xlrd_install_command(monkeypatch):
         "require",
         lambda _feature, _requirements: (
             "Optional support for legacy Excel layers requires Python "
-            "packages that are not installed: xlrd.\n"
-            "uv pip install xlrd"
+            "packages that are not installed: pandas, xlrd.\n"
+            "uv pip install pandas xlrd"
         ),
     )
 
-    with pytest.raises(RuntimeError, match="uv pip install xlrd"):
+    with pytest.raises(RuntimeError, match="uv pip install pandas xlrd"):
         classify._from_table("legacy.xls", "", "excel-1", {})
 
 

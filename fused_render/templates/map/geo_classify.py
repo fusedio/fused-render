@@ -262,13 +262,21 @@ def _from_parquet(path, artifact_dir, artifact_id, opts):
 
 
 def _from_table(path, artifact_dir, artifact_id, opts):
+    suffix = os.path.splitext(path.split("?", 1)[0])[1].lower()
+    requirements = {"pandas": "pandas"}
+    feature = "tabular layers"
+    if suffix == ".xls":
+        requirements["xlrd"] = "xlrd"
+        feature = "legacy Excel layers"
+    elif suffix in {".xlsx", ".xlsm"}:
+        requirements["openpyxl"] = "openpyxl"
+        feature = "Excel layers"
+    dependency_error = require(feature, requirements)
+    if dependency_error:
+        raise RuntimeError(dependency_error)
+
     import pandas as pd
 
-    suffix = os.path.splitext(path.split("?", 1)[0])[1].lower()
-    if suffix == ".xls":
-        dependency_error = require("Legacy Excel layers", {"xlrd": "xlrd"})
-        if dependency_error:
-            raise RuntimeError(dependency_error)
     if suffix == ".csv":
         frame = pd.read_csv(path)
         detected = "CSV(table)"

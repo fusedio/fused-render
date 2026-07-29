@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from collections.abc import Iterable, Mapping
 
 
 def _is_available(module: str) -> bool:
+    if sys.modules.get(module) is not None:
+        return True
     try:
         return importlib.util.find_spec(module) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
