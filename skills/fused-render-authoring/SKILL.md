@@ -132,7 +132,21 @@ try {
 
 ## AI calls (`fused.ai`)
 
-`fused.ai(prompt, opts?)` asks an AI model and resolves with `{text, model, usage}`. The page never talks to a model directly: the server runs the call through the **`claude` (Claude Code) CLI** on the author's machine — the user's Claude Code login is the credential; the binary comes from `PATH`, overridable with the `FUSED_RENDER_CLAUDE_BIN` env var. That makes it **local-only**: an exported/hosted page has no local CLI to run, so the exporter rejects any page that calls `fused.ai` (SPEC RH-11). If a view must survive export, gate the AI UI on `fused.env === "local"` and keep the string `fused.ai(` out of the code path entirely (the exporter matches the call textually).
+`fused.ai(prompt, opts?)` asks an AI model. It resolves with **exactly** this shape (the server normalizes — no guarding needed):
+
+```json
+{
+  "text": "the completion text",
+  "model": "claude-haiku-4-5-20251001",
+  "usage": { "input_tokens": 544, "output_tokens": 73 }
+}
+```
+
+- `text` — the completion (string).
+- `model` — the **full model id that actually ran**; an alias request (`"sonnet"`) echoes the resolved id.
+- `usage` — either `null` or exactly `{input_tokens, output_tokens}` (both integers). These are **Anthropic-style names** — there is NO `prompt_tokens`/`completion_tokens` (OpenAI names); reading those yields `undefined`.
+
+The page never talks to a model directly: the server runs the call through the **`claude` (Claude Code) CLI** on the author's machine — the user's Claude Code login is the credential; the binary comes from `PATH`, overridable with the `FUSED_RENDER_CLAUDE_BIN` env var. That makes it **local-only**: an exported/hosted page has no local CLI to run, so the exporter rejects any page that calls `fused.ai` (SPEC RH-11). If a view must survive export, gate the AI UI on `fused.env === "local"` and keep the string `fused.ai(` out of the code path entirely (the exporter matches the call textually).
 
 Options:
 

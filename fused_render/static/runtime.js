@@ -9,7 +9,10 @@
  *     AbortSignal that composes.
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
- *     (Claude Code) CLI. opts: systemPrompt, model, effort ("low"|"medium"|"high"),
+ *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
+ *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
+ *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
+ *     systemPrompt, model, effort ("low"|"medium"|"high"),
  *     maxTokens. Local-only — not available on hosted/exported pages.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;

@@ -205,7 +205,7 @@
         );
         answer.textContent = res.text;
         meta.textContent = res.model +
-          (res.usage ? " · " + res.usage.completion_tokens + " tokens out" : "");
+          (res.usage ? " · " + res.usage.output_tokens + " tokens out" : "");
       } catch (err) {
         answer.classList.add("error");
         if (err.type === "ai_unavailable") {

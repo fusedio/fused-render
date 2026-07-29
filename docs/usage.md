@@ -82,7 +82,20 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 
 ## AI calls (`fused.ai`)
 
-Pages can ask an AI model with `fused.ai(prompt, opts?)`. The server runs the
+Pages can ask an AI model with `fused.ai(prompt, opts?)`. It resolves with
+exactly `{text, model, usage}` — `model` is the full model id that ran, and
+`usage` is either `null` or exactly `{input_tokens, output_tokens}`
+(Anthropic-style names, not OpenAI's `prompt_tokens`/`completion_tokens`):
+
+```json
+{
+  "text": "the completion",
+  "model": "claude-haiku-4-5-20251001",
+  "usage": { "input_tokens": 544, "output_tokens": 73 }
+}
+```
+
+The server runs the
 call through the **`claude` (Claude Code) CLI** on your machine — your existing
 Claude Code login is the credential; there is no proxy or API key to configure.
 The binary is found on `PATH`; set `FUSED_RENDER_CLAUDE_BIN` to point at a

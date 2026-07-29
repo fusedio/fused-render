@@ -120,6 +120,25 @@ def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
     assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "99"
 
 
+def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
+    # The schema guarantee (RH-11): usage is null or EXACTLY
+    # {input_tokens, output_tokens} — extra CLI keys stripped, and a missing
+    # or malformed block degrades to null rather than leaking through.
+    _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
+    usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
+    assert usage == {"input_tokens": 3, "output_tokens": 2}
+
+    for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
+                {"input_tokens": "3", "output_tokens": 2},        # wrong type
+                {"input_tokens": True, "output_tokens": 2}):      # bool
+        _cli_ok(monkeypatch, {**_CLI_RESULT, "usage": bad})
+        assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
+    payload = dict(_CLI_RESULT)
+    del payload["usage"]
+    _cli_ok(monkeypatch, payload)
+    assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
+
+
 def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     # A model alias goes to the CLI as-is, but the response echoes the full id
     # the CLI actually ran (the modelUsage key).

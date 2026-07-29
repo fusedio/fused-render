@@ -148,7 +148,21 @@ const { text, model, usage } = await fused.ai(prompt, {
   existing Claude Code login is the credential; no API key or proxy to configure
   (`FUSED_RENDER_CLAUDE_BIN` overrides the binary; default is `claude` on PATH). The
   CLI runs as a pure one-shot completion (no tools, no settings/CLAUDE.md, no session
-  persistence, one turn). Resolves with `{ text, model, usage }`; rejects with
+  persistence, one turn). Resolves with exactly this shape — the server normalizes it,
+  so a page may read the fields without guarding:
+
+  ```json
+  {
+    "text": "the completion",
+    "model": "claude-haiku-4-5-20251001",
+    "usage": { "input_tokens": 544, "output_tokens": 73 }
+  }
+  ```
+
+  `text` string; `model` the **full model id that ran** (an alias request like
+  `"sonnet"` echoes the resolved id); `usage` either `null` or exactly
+  `{input_tokens, output_tokens}` (integers, **Anthropic-style names** — NOT OpenAI's
+  `prompt_tokens`/`completion_tokens`). Rejects with
   a structured error carrying `.type` — `"bad_request"` (empty prompt / bad options),
   `"ai_unavailable"` (claude binary not found or not runnable — the message names what
   to install/set), `"ai_error"` (the CLI exited nonzero, reported an error, or returned

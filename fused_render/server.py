@@ -966,15 +966,28 @@ async def _ai_relay(body: dict) -> JSONResponse:
     used_model = model
     if isinstance(model_usage, dict) and len(model_usage) == 1:
         used_model = next(iter(model_usage))
-    usage = data.get("usage")
-    if isinstance(usage, dict):
-        usage = {k: usage[k] for k in ("input_tokens", "output_tokens")
-                 if k in usage}
     return JSONResponse({"ok": True, "result": {
         "text": text,
         "model": used_model,
-        "usage": usage,
+        "usage": _ai_usage(data.get("usage")),
     }})
+
+
+def _ai_usage(raw) -> dict | None:
+    """Normalize CLI usage to exactly {input_tokens, output_tokens} or None.
+
+    The response schema GUARANTEES this shape (Anthropic-style names, NOT
+    OpenAI's prompt_tokens/completion_tokens — see RH-11): pages read
+    usage.output_tokens without guarding, so a CLI whose usage block gains,
+    loses or retypes fields must degrade to null rather than leak an unknown
+    shape through."""
+    if not isinstance(raw, dict):
+        return None
+    tokens = {k: raw.get(k) for k in ("input_tokens", "output_tokens")}
+    if any(not isinstance(v, int) or isinstance(v, bool)
+           for v in tokens.values()):
+        return None
+    return tokens
 
 
 # Per-file sidecar <file>.json (shared with the claude chat template, which
