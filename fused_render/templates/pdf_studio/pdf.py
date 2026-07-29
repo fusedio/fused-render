@@ -838,9 +838,9 @@ def _word_to_pdf(src):
         elif el.tag == f"{W}tbl":
             rows = []
             for tr in el.iter(f"{W}tr"):
-                cells = ["<td>" + " ".join(
+                cells = ["<td>" + _xesc(" ".join(
                     "".join(t.text or "" for t in p.iter(f"{W}t"))
-                    for p in tc.iter(f"{W}p")).strip() + "</td>"
+                    for p in tc.iter(f"{W}p")).strip()) + "</td>"
                     for tc in tr.findall(f"{W}tc")]
                 rows.append(f"<tr>{''.join(cells)}</tr>")
             chunks.append(f"<table>{''.join(rows)}</table>")

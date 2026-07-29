@@ -1319,7 +1319,7 @@ const acts = {
     setStatus("saved", "ok");
     toast(`Saved ${res.name} (${caps.length} page${caps.length === 1 ? "" : "s"})`);
   },
-  tools: () => showTools(!document.body.classList.contains("tools-open")),
+  tools: () => showTools($("toolsHome").classList.contains("hidden")),
 
   togglePanel: () => {
     document.body.classList.toggle("panel-off");
@@ -1584,7 +1584,6 @@ async function scanModal() {
 
 // ---------- tools home ----------
 function showTools(on) {
-  document.body.classList.toggle("tools-open", on);
   $("toolsHome").classList.toggle("hidden", !on);
 }
 
@@ -1623,9 +1622,8 @@ $("modeSeg").addEventListener("click", (e) => {
   setMode(b.dataset.mode);
 });
 function setMode(mode) {
-  const panelOff = document.body.classList.contains("panel-off");
-  document.body.className = mode === "view" ? "mode-view" : "mode-edit";
-  if (panelOff) document.body.classList.add("panel-off");
+  document.body.classList.toggle("mode-view", mode === "view");
+  document.body.classList.toggle("mode-edit", mode !== "view");
   document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
   fused.params.set("mode", mode);
   if (mode === "edit" && state.pdf) primeOverlays();
