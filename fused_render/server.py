@@ -839,27 +839,34 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 # error:{type,message}} contract /api/run set; {"stream": true} switches the
 # response to NDJSON chunks (see _ai_relay).
 #
-# The CLI is driven as a pure one-shot completion: --tools= disables every
+# The CLI is driven as a bare completion engine: --tools= disables every
 # built-in tool, --setting-sources= skips user/project settings and
-# CLAUDE.md, --system-prompt-file REPLACES the shipped agent prompt,
-# --max-turns 1 and --no-session-persistence keep it a single stateless call.
+# CLAUDE.md, --system-prompt-file REPLACES the shipped agent prompt, and
+# --no-session-persistence keeps everything off disk.
 #
-# LATENCY (D166): the CLI is a Node program whose startup alone costs ~1.5-2.5s
-# — it dominated every call at haiku/low-effort sizes. The process is therefore
-# driven in --input-format stream-json mode (spawn first, prompt arrives later
-# over stdin as a JSON user message) so a warm process can be PRE-SPAWNED
-# before any request exists. Context accumulates across user messages inside
-# one process (probed on 2.1.220), so a warm process serves exactly ONE call
-# and is then killed — prewarm-use-once-respawn, never multi-turn reuse. Each
-# call still gets a process that has seen no prior prompt; only the spawn
-# timing moved earlier.
+# LATENCY (D166/D167): the CLI is a Node program whose startup alone costs
+# ~1.5-2.5s — it dominated every call at haiku sizes. ONE persistent process
+# is therefore kept alive in --input-format stream-json mode and RECONFIGURED
+# per request over its stdin protocol (all probed on 2.1.220):
+#   /clear (a plain user message)      -> wipes conversation context, ~0.7s
+#   set_model control_request          -> swaps model AND system_prompt, ~0ms
+#   apply_flag_settings control_request-> sets effortLevel, ~10ms
+# Every call therefore sees an empty context (the /clear is what preserves
+# D159's isolation property), and only the first call after a crash or server
+# start pays a spawn. Requests are SERIALIZED through the one process (a
+# local single-user app; calls are seconds) rather than pooled.
 
-# `effort` is author-facing shorthand; MVP maps it to max output tokens only
-# (via CLAUDE_CODE_MAX_OUTPUT_TOKENS — the CLI has no per-call flag for it).
-_AI_EFFORT_TOKENS = {"low": 1024, "medium": 4096, "high": 16384}
+# `effort` passes straight through to Claude Code's own effort semantics
+# (the same code path as the interactive /effort command). Effort-capable
+# models (sonnet/opus class) honor it; haiku silently ignores it. /clear
+# resets it to the default, so it is re-applied per request when given.
+_AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 _AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 120.0
+# A reconfiguration step (/clear, set_model, effort) is local work; one that
+# takes longer than this means a wedged process — kill and respawn.
+_AI_CTRL_TIMEOUT_S = 10.0
 _AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # Model ids/aliases are a closed charset. This is a SECURITY boundary, not
 # just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
@@ -1003,22 +1010,25 @@ def _kill_process_tree(proc) -> None:
 
 
 def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str] | str:
-    """The stream-json spawn command for one completion process.
+    """The stream-json spawn command for the persistent completion process.
 
-    --input-format stream-json is what makes prewarming possible: the process
-    starts, loads Node + the CLI, and then WAITS for a user message on stdin —
-    so the expensive part can run before the prompt exists. --verbose is
-    required by the CLI whenever --output-format stream-json is used (it
-    exits 1 without it). --include-partial-messages is always on: the extra
-    stream_event lines cost nothing to skip in non-streaming mode, and one
-    spawn shape means one warm process serves both modes.
+    --input-format stream-json is what makes the warm instance possible: the
+    process starts, loads Node + the CLI, and then WAITS for messages on
+    stdin — so the expensive startup happens once, before any prompt exists.
+    --verbose is required by the CLI whenever --output-format stream-json is
+    used (it exits 1 without it). --include-partial-messages is always on:
+    the extra stream_event lines cost nothing to skip in non-streaming mode,
+    and one spawn shape serves both modes. No --max-turns: the instance is
+    multi-turn by design (per-request isolation comes from /clear, not from
+    process death).
 
     No user-controlled STRING may enter argv: on the Windows .cmd-shim path
     cmd.exe re-parses the whole line, and cmd-escaping arbitrary text is not
     reliably possible. The user prompt travels over stdin as a stream-json
     message (which also dodges the OS argv size cap for the documented
     embed-JSON-aggregates pattern), the system prompt goes via
-    --system-prompt-file (`sp_file`, our own tempdir path), and the model is
+    --system-prompt-file (`sp_file`, our own tempdir path) at spawn and via
+    the set_model control_request afterwards, and the model is
     charset-validated (_AI_MODEL_RE). _popen_cmd turns the result into an
     argv list, or one fully-quoted command string behind a .cmd/.bat shim."""
     return _popen_cmd(bin_path, [
@@ -1037,7 +1047,6 @@ def _ai_cmd(bin_path: str, model: str, sp_file: str) -> list[str] | str:
         "--tools=",
         "--setting-sources=",
         "--no-session-persistence",
-        "--max-turns", "1",
     ])
 
 
@@ -1075,26 +1084,22 @@ async def _spawn_claude_stream(cmd: list[str] | str, env: dict):
     return await asyncio.create_subprocess_exec(*cmd, **kwargs)
 
 
-async def _ai_spawn(bin_path: str, model: str, system_prompt: str,
-                    max_tokens: int):
-    """Write the system-prompt file, build the command and spawn one
+async def _ai_spawn(bin_path: str, model: str, system_prompt: str):
+    """Write the system-prompt file, build the command and spawn the
     stream-json process; the sp file's path rides on the process object so
-    _ai_reap can delete it when the process is reaped (a prewarmed process
-    outlives this call by an arbitrary idle stretch, so the file must too)."""
+    _ai_reap can delete it when the process is reaped (the instance outlives
+    any single request, so the file must too).
+
+    The env is os.environ untouched: effort/thinking are Claude Code's own
+    semantics now (the effortLevel flag setting), not env-var overrides."""
     sp_file = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", suffix=".txt",
         prefix="fused_render_ai_sp_", delete=False)
     try:
         sp_file.write(system_prompt)
         sp_file.close()
-        env = dict(os.environ)
-        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
-        # stream-json mode defaults extended thinking ON; a fused.ai() call is
-        # single-turn Q&A where thinking multiplies latency ~6x for no benefit
-        # (measured 33s -> 5.6s on a 2.5k-token prompt).
-        env["MAX_THINKING_TOKENS"] = "0"
         proc = await _spawn_claude_stream(
-            _ai_cmd(bin_path, model, sp_file.name), env)
+            _ai_cmd(bin_path, model, sp_file.name), dict(os.environ))
     except BaseException:
         try:
             os.unlink(sp_file.name)
@@ -1107,119 +1112,226 @@ async def _ai_spawn(bin_path: str, model: str, system_prompt: str,
 
 async def _ai_reap(proc) -> None:
     """Kill a claude process, wait for it, and remove its system-prompt file.
-    Used processes are always reaped (context accumulates in-process, so none
-    is ever reused)."""
-    try:
-        if proc.returncode is None:
-            _kill_process_tree(proc)
-        await proc.wait()
-    except (OSError, ProcessLookupError):
-        pass
-    sp_file = getattr(proc, "_fused_ai_sp_file", None)
-    if sp_file:
+
+    Shielded: a reap is cleanup that must complete even when the caller is
+    being cancelled (client disconnect, server shutdown) — an interrupted
+    wait() leaves a zombie and an interrupted unlink leaks the temp file."""
+
+    async def reap():
         try:
-            os.unlink(sp_file)
-        except OSError:
+            if proc.returncode is None:
+                _kill_process_tree(proc)
+            await proc.wait()
+        except (OSError, ProcessLookupError):
             pass
+        sp_file = getattr(proc, "_fused_ai_sp_file", None)
+        if sp_file:
+            try:
+                os.unlink(sp_file)
+            except OSError:
+                pass
+
+    await asyncio.shield(reap())
 
 
 class _AiProcFailure(Exception):
-    """The claude process died or misbehaved mid-call (stdin write failed,
-    stdout hit EOF before a result event, nonzero exit)."""
+    """The claude process died or misbehaved (stdin write failed, stdout hit
+    EOF before an expected event, a control request errored or timed out)."""
 
 
-class _AiWarmPool:
-    """At most one pre-spawned claude process, keyed by its spawn config.
+class _AiSession:
+    """ONE persistent claude process, reconfigured per request.
 
-    A warm process is only usable when its spawn config — (bin_path, model,
-    system_prompt, max_tokens) — matches the request exactly; anything else
-    would answer with the wrong model or prompt. Policy: the pool holds the
-    LAST-USED config (seeded with the defaults at startup), so the common
-    case — a page hammering fused.ai with one config — always finds a warm
-    process, including repeated custom-model calls. take() is guarded by a
-    lock so two simultaneous requests cannot grab the same process; the loser
-    spawns fresh."""
+    The process is spawned once (at server startup, or lazily on the first
+    call) and then RESET between requests over its stdin protocol instead of
+    being killed: /clear wipes the conversation context (~0.7s — what keeps
+    one page's prompt out of another's completion), a set_model
+    control_request swaps model and system prompt (~0ms, only when they
+    differ from the tracked state — the pair survives /clear), and an
+    apply_flag_settings control_request applies effortLevel (~10ms, re-sent
+    per request because /clear resets it). All probed on claude 2.1.220.
+
+    Requests are SERIALIZED by `lock`: a second concurrent fused.ai call
+    waits for the first. Accepted tradeoff — this is a local single-user app,
+    calls complete in seconds, and one flat ~350MB Node process beats a
+    spawn-per-call churn where every config change paid a 2s cold start.
+
+    Health: a dead instance (crash, auth expiry) is respawned on the next
+    request; a request that finds the instance wedged (control timeout,
+    write failure) kills it and retries once on a fresh spawn. If a future
+    CLI drops the set_model system_prompt field, that same path degrades
+    gracefully: the control error triggers a respawn whose argv carries the
+    requested config."""
 
     def __init__(self):
-        self._lock = asyncio.Lock()
+        self.lock = asyncio.Lock()
         self._proc = None
-        self._config = None
-        # Every in-flight prewarm task: refs so they aren't GC'd mid-flight,
-        # and the set shutdown() must cancel AND await — an abandoned spawn
-        # that already forked a claude process would otherwise leak it.
-        self._spawn_tasks = set()
+        self._model = None          # what the live process is configured as
+        self._system_prompt = None
+        self._ctrl_seq = 0
+        self._spawn_task = None  # startup prewarm; ref so it isn't GC'd
 
-    async def take(self, config):
-        """The warm process if it matches `config` and is still alive, else
-        None. The slot is emptied either way — a stale process (config
-        mismatch, or died idle: auth expiry, crash) is reaped, not kept."""
-        async with self._lock:
-            proc, held = self._proc, self._config
-            self._proc = self._config = None
-        if proc is None:
-            return None
-        if held != config or proc.returncode is not None:
-            await _ai_reap(proc)
-            return None
-        return proc
+    # -- lifecycle ---------------------------------------------------------
 
-    def prewarm(self, config) -> None:
-        """Fire-and-forget: spawn the next warm process for `config`.
-
-        Called after every take() (win or lose) so the pool converges on the
-        config actually in use. Never raises — a failed spawn just means the
-        next request pays the cold start, as before the pool existed.
-        Concurrent prewarms are fine: whoever fills the slot first wins and
-        every loser reaps its own process (see _spawn)."""
-        task = asyncio.ensure_future(self._spawn(config))
-        self._spawn_tasks.add(task)
-        task.add_done_callback(self._spawn_tasks.discard)
-
-    async def _spawn(self, config) -> None:
-        try:
-            proc = await _ai_spawn(*config)
-        except OSError:
-            return
-        # From here a live process exists: it must end up either in the slot
-        # or reaped, even if this task is cancelled at the lock await.
-        try:
-            async with self._lock:
-                if self._proc is None:
-                    self._proc, self._config = proc, config
-                    return
-        except asyncio.CancelledError:
-            await asyncio.shield(_ai_reap(proc))
-            raise
-        # someone else filled the slot first — one warm process is the cap
-        await _ai_reap(proc)
-
-    def prewarm_default(self) -> None:
-        """Prewarm the default config (what a bare fused.ai(prompt) uses).
-        Startup hook: if the binary is missing, skip silently — _ai_relay's
-        ai_unavailable path still answers requests."""
+    async def _spawn(self, model: str, system_prompt: str):
         bin_path = _claude_bin()
         if not bin_path:
-            return
-        self.prewarm((bin_path, _AI_DEFAULT_MODEL, _AI_DEFAULT_SYSTEM_PROMPT,
-                      _AI_EFFORT_TOKENS["medium"]))
+            raise _AiProcFailure(
+                "claude binary not found on PATH; install Claude Code or "
+                f"set {_AI_BIN_ENV} to its location")
+        self._proc = await _ai_spawn(bin_path, model, system_prompt)
+        self._model, self._system_prompt = model, system_prompt
+        return self._proc
 
-    async def shutdown(self) -> None:
-        # Cancel AND await every in-flight prewarm: a cancelled _spawn reaps
-        # the process it already created (or is still inside _ai_spawn, where
-        # no process exists yet). Awaiting is what makes that reap actually
-        # run before the loop closes.
-        tasks = [t for t in self._spawn_tasks if not t.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        async with self._lock:
-            proc, self._proc, self._config = self._proc, None, None
+    async def _discard(self) -> None:
+        proc, self._proc = self._proc, None
+        self._model = self._system_prompt = None
         if proc is not None:
             await _ai_reap(proc)
 
+    def prewarm_default(self) -> None:
+        """Spawn the instance ahead of the first request (startup hook).
+        Fire-and-forget; a missing binary or failed spawn just means the
+        first call pays the cold start."""
 
-_AI_POOL = _AiWarmPool()
+        async def go():
+            async with self.lock:
+                if self._proc is None:
+                    try:
+                        await self._spawn(_AI_DEFAULT_MODEL,
+                                          _AI_DEFAULT_SYSTEM_PROMPT)
+                    except (_AiProcFailure, OSError):
+                        pass
+
+        self._spawn_task = asyncio.ensure_future(go())
+
+    async def shutdown(self) -> None:
+        task = self._spawn_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        async with self.lock:
+            await self._discard()
+
+    # -- the stdin reconfiguration protocol ---------------------------------
+
+    def _write(self, obj: dict) -> None:
+        try:
+            self._proc.stdin.write(
+                (json.dumps(obj) + "\n").encode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _AiProcFailure(f"could not write to the claude CLI: {exc}")
+
+    async def _read_event(self, timeout: float) -> dict:
+        """The next JSON event line off stdout (non-JSON noise skipped)."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            try:
+                line = await asyncio.wait_for(
+                    self._proc.stdout.readline(), remaining)
+            except asyncio.TimeoutError:
+                raise
+            except (OSError, ValueError) as exc:
+                raise _AiProcFailure(
+                    f"could not read from the claude CLI: {exc}")
+            if not line:
+                raise _AiProcFailure(
+                    f"claude CLI exited with code {self._proc.returncode}")
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict):
+                return event
+
+    async def _control(self, request: dict) -> None:
+        """Send one control_request and await its control_response.
+
+        A wedged reconfiguration (no response within _AI_CTRL_TIMEOUT_S) or
+        an error response is an _AiProcFailure — the caller kills and
+        respawns. stdin is processed sequentially by the CLI, but each
+        response is awaited anyway: determinism, and the error branch."""
+        self._ctrl_seq += 1
+        request_id = f"fused-{self._ctrl_seq}"
+        self._write({"type": "control_request", "request_id": request_id,
+                     "request": request})
+        deadline = asyncio.get_running_loop().time() + _AI_CTRL_TIMEOUT_S
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            try:
+                event = await self._read_event(max(remaining, 0.001))
+            except asyncio.TimeoutError:
+                raise _AiProcFailure(
+                    f"claude CLI control request ({request.get('subtype')}) "
+                    f"did not answer within {_AI_CTRL_TIMEOUT_S:.0f}s")
+            if event.get("type") != "control_response":
+                continue  # unrelated events (system/*) may interleave
+            response = event.get("response") or {}
+            if response.get("request_id") not in (None, request_id):
+                continue
+            if response.get("subtype") == "error" or event.get("error"):
+                detail = response.get("error") or event.get("error")
+                raise _AiProcFailure(
+                    f"claude CLI rejected {request.get('subtype')}: "
+                    f"{str(detail)[:300]}")
+            return
+
+    async def _clear(self) -> None:
+        """Wipe the conversation context: /clear as a plain user message.
+        The CLI answers with a conversation_reset event and a zero-cost
+        local result (num_turns:0); await the result so the next write
+        starts from a settled process. Resets effortLevel, NOT the system
+        prompt (probed)."""
+        self._write({"type": "user", "message": {
+            "role": "user", "content": "/clear"}})
+        deadline = asyncio.get_running_loop().time() + _AI_CTRL_TIMEOUT_S
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            try:
+                event = await self._read_event(max(remaining, 0.001))
+            except asyncio.TimeoutError:
+                raise _AiProcFailure(
+                    "claude CLI /clear did not settle within "
+                    f"{_AI_CTRL_TIMEOUT_S:.0f}s")
+            if event.get("type") == "result":
+                return
+
+    async def configure(self, model: str, system_prompt: str,
+                        effort: str | None):
+        """Make the instance ready for one request; return its process.
+
+        Spawns (or respawns a dead instance) if needed, then: /clear always —
+        context isolation between fused.ai calls is not optional; set_model
+        with model AND system_prompt only when they differ from the tracked
+        state (both survive /clear); apply_flag_settings per request when
+        effort was given (/clear resets it, so an omitted effort correctly
+        falls back to the default rather than inheriting the last caller's).
+        Raises _AiProcFailure/OSError — the caller discards and retries once
+        on a fresh spawn."""
+        if self._proc is None or self._proc.returncode is not None:
+            await self._discard()
+            await self._spawn(model, system_prompt)
+        await self._clear()
+        if (model, system_prompt) != (self._model, self._system_prompt):
+            # system_prompt is always non-empty here (the relay defaults it):
+            # the CLI rejects an empty string, and there is no revert-to-
+            # default form — the full prompt is resent every time it changes.
+            await self._control({"subtype": "set_model", "model": model,
+                                 "system_prompt": system_prompt})
+            self._model, self._system_prompt = model, system_prompt
+        if effort is not None:
+            await self._control({"subtype": "apply_flag_settings",
+                                 "settings": {"effortLevel": effort}})
+        return self._proc
+
+
+_AI_SESSION = _AiSession()
 
 
 async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
@@ -1228,8 +1340,9 @@ async def _ai_drive(proc, prompt: str, timeout: float, on_delta=None) -> dict:
 
     `on_delta(text)` is called per text_delta when streaming (thinking_delta
     and every other event type are skipped). The timeout covers message-write
-    to result. Raises asyncio.TimeoutError (process killed first) or
-    _AiProcFailure (died/EOF/garbage before a result)."""
+    to result. Raises asyncio.TimeoutError or _AiProcFailure (died/EOF/
+    garbage before a result — the process is reaped on EOF; the session
+    notices its death via returncode on the next request)."""
     message = json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": prompt}]}})
     deadline = asyncio.get_running_loop().time() + timeout
@@ -1322,19 +1435,21 @@ async def _ai_relay(body: dict):
             status=400)
     model = model or _AI_DEFAULT_MODEL
     effort = body.get("effort")
-    if effort is not None and effort not in _AI_EFFORT_TOKENS:
+    if effort is not None and effort not in _AI_EFFORTS:
         return _ai_error(
             "bad_request",
-            "'effort' must be one of: %s" % ", ".join(_AI_EFFORT_TOKENS),
+            "'effort' must be one of: %s" % ", ".join(_AI_EFFORTS),
             status=400)
+    # max_tokens is validated but no longer enforced: the effort→env-var
+    # mapping is gone (Claude Code owns effort/thinking semantics now) and
+    # the CLI has no per-call output cap. Kept as accepted input so existing
+    # pages don't start 400ing; deprecated no-op pending CLI support.
     max_tokens = body.get("max_tokens")
     if max_tokens is not None and (
             not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
             or max_tokens <= 0):
         return _ai_error(
             "bad_request", "'max_tokens' must be a positive integer", status=400)
-    if max_tokens is None:
-        max_tokens = _AI_EFFORT_TOKENS[effort or "medium"]
 
     system_prompt = body.get("system_prompt")
     if not (isinstance(system_prompt, str) and system_prompt):
@@ -1345,43 +1460,24 @@ async def _ai_relay(body: dict):
         return _ai_error(
             "bad_request", "'stream' must be a boolean", status=400)
 
-    bin_path = _claude_bin()
-    if not bin_path:
+    if not _claude_bin():
         return _ai_error(
             "ai_unavailable",
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
 
-    config = (bin_path, model, system_prompt, max_tokens)
-    proc = await _AI_POOL.take(config)
-    was_warm = proc is not None
-    # Respawn immediately, win or lose: the pool converges on the config in
-    # use, and the NEXT call's spawn overlaps THIS call's completion.
-    _AI_POOL.prewarm(config)
-
-    async def spawn_fresh():
-        return await _ai_spawn(bin_path, model, system_prompt, max_tokens)
-
-    if proc is None:
-        try:
-            proc = await spawn_fresh()
-        except OSError as exc:
-            return _ai_error(
-                "ai_unavailable",
-                f"could not run the claude CLI at {bin_path}: {exc}")
-
     async def run_once(on_delta=None):
-        """Drive the process to its result event; always reap it after.
+        """One completion through the shared instance, start to finish.
 
-        A warm process may have gone bad while idle in ways take()'s
-        returncode check can't see (auth expired, wedged) — if it fails
-        before DELIVERING anything, retry ONCE on a fresh spawn, then fail
-        as a cold call would. `delivered` guards the retry: once a delta
-        reached the caller, replaying the prompt could emit text twice.
-        Deltas that arrive with no on_delta (non-streaming: the events flow
-        regardless, --include-partial-messages is always on) reach nobody,
-        so they never block the retry — only text the CLIENT saw does."""
-        nonlocal proc
+        Holds the session lock for the whole call: reconfigure (/clear,
+        set_model, effort), send the user message, read to the result.
+        Serialized on purpose — see _AiSession. A failure before anything
+        was DELIVERED (instance died idle, wedged reconfig, write error)
+        gets ONE retry on a fresh spawn; once a delta reached the client,
+        replaying the prompt could emit text twice, so no retry. Deltas
+        that arrive with no on_delta reader (non-streaming — the events
+        flow regardless) never block the retry. On failure or timeout the
+        instance is discarded so the next request starts clean."""
         delivered = False
 
         def deliver(text):
@@ -1390,22 +1486,32 @@ async def _ai_relay(body: dict):
                 delivered = True
                 on_delta(text)
 
-        try:
-            return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                   on_delta=deliver)
-        except _AiProcFailure:
-            if not was_warm or delivered:
-                raise
-            await _ai_reap(proc)
+        async with _AI_SESSION.lock:
             try:
-                proc = await spawn_fresh()
-            except OSError as exc:
-                raise _AiProcFailure(
-                    f"could not run the claude CLI at {bin_path}: {exc}")
-            return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
-                                   on_delta=deliver)
-        finally:
-            await _ai_reap(proc)
+                proc = await _AI_SESSION.configure(model, system_prompt,
+                                                   effort)
+                return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
+                                       on_delta=deliver)
+            except asyncio.CancelledError:
+                # Client went away mid-turn: the process is still emitting
+                # this turn's events, and a later request's /clear loop would
+                # misread them. Discard — the next call spawns fresh.
+                await _AI_SESSION._discard()
+                raise
+            except (_AiProcFailure, OSError, asyncio.TimeoutError) as exc:
+                await _AI_SESSION._discard()
+                if delivered or isinstance(exc, asyncio.TimeoutError):
+                    raise
+                # one fresh-spawn retry: covers an instance that died idle
+                # or wedged in ways the returncode check can't see
+                try:
+                    proc = await _AI_SESSION.configure(
+                        model, system_prompt, effort)
+                    return await _ai_drive(proc, prompt, _AI_TIMEOUT_S,
+                                           on_delta=deliver)
+                except (_AiProcFailure, OSError, asyncio.TimeoutError):
+                    await _AI_SESSION._discard()
+                    raise
 
     if not stream:
         try:
@@ -1414,6 +1520,9 @@ async def _ai_relay(body: dict):
             return _ai_error(
                 "timeout",
                 f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+        except OSError as exc:
+            return _ai_error(
+                "ai_unavailable", f"could not run the claude CLI: {exc}")
         except _AiProcFailure as exc:
             return _ai_error("ai_error", str(exc))
         payload, err = _ai_result_payload(data, model)
@@ -1451,6 +1560,11 @@ async def _ai_relay(body: dict):
                     "message": "claude CLI did not answer within "
                                f"{_AI_TIMEOUT_S:.0f}s"}}) + "\n"
                 return
+            except OSError as exc:
+                yield json.dumps({"type": "done", "ok": False, "error": {
+                    "type": "ai_unavailable",
+                    "message": f"could not run the claude CLI: {exc}"}}) + "\n"
+                return
             except _AiProcFailure as exc:
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": str(exc)}}) + "\n"
@@ -1464,7 +1578,14 @@ async def _ai_relay(body: dict):
                 {"type": "done", "ok": True, "result": payload}) + "\n"
         finally:
             if not task.done():
-                task.cancel()  # client went away mid-stream: reap via run_once
+                # Client went away mid-stream: cancel AND await, so
+                # run_once's cancel branch (discard the now-mid-turn
+                # instance) actually runs before the generator is dropped.
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     return StreamingResponse(ndjson(), media_type="text/x-ndjson")
 
@@ -3591,16 +3712,16 @@ def create_app(start_dir: str) -> FastAPI:
         if client is not None:
             await client.aclose()
 
-    # Warm claude process for fused.ai (D166): pay the ~2s Node/CLI startup
-    # before the first request instead of inside it. Fire-and-forget — server
-    # readiness never waits on it, and a missing binary just skips it.
+    # Warm claude instance for fused.ai (D166/D167): pay the ~2s Node/CLI
+    # startup before the first request instead of inside it. Fire-and-forget —
+    # server readiness never waits on it, and a missing binary just skips it.
     @app.on_event("startup")
     async def _prewarm_ai():
-        _AI_POOL.prewarm_default()
+        _AI_SESSION.prewarm_default()
 
     @app.on_event("shutdown")
-    async def _shutdown_ai_pool():
-        await _AI_POOL.shutdown()
+    async def _shutdown_ai_session():
+        await _AI_SESSION.shutdown()
 
     @app.exception_handler(Exception)
     async def unhandled_exception(request, exc):

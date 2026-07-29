@@ -5,10 +5,12 @@ resolution (FUSED_RENDER_CLAUDE_BIN / PATH).
 The endpoint is driven through module-level `_ai_relay` with the subprocess
 hop (`_spawn_claude_stream`) mocked (the "avoid starlette TestClient"
 discipline of test_server_fs_write.py) — no test ever runs a real CLI. The
-mock is a fake process with scripted stdout lines, since D166 drives the CLI
-in stream-json mode (spawn first, prompt later over stdin) to make the warm
-pool possible. The runtime checks are string-contract checks over the shipped
-static/runtime.js, like test_runtime_cancellation.py.
+mock is a fake process that SPEAKS the stdin reconfiguration protocol D167
+drives the persistent instance with: it answers /clear with a
+conversation_reset + local result, control_requests with control_responses,
+and a user turn with its scripted delta/result lines. The runtime checks are
+string-contract checks over the shipped static/runtime.js, like
+test_runtime_cancellation.py.
 """
 import asyncio
 import json
@@ -71,6 +73,7 @@ class _FakeStdin:
         if self._proc.stdin_broken:
             raise OSError("broken pipe")
         self.written += data
+        self._proc._on_stdin(data)
 
     async def drain(self):
         pass
@@ -81,10 +84,10 @@ class _FakeStdout:
         self._proc = proc
 
     async def readline(self):
-        if self._proc.hang:
+        if self._proc._out:
+            return self._proc._out.pop(0).encode("utf-8") + b"\n"
+        if self._proc.hang:  # alive but silent (reconfig answered; turn not)
             await asyncio.sleep(3600)
-        if self._proc._lines:
-            return self._proc._lines.pop(0).encode("utf-8") + b"\n"
         self._proc.returncode = self._proc.exit_code  # EOF: process is done
         return b""
 
@@ -98,22 +101,73 @@ class _FakeStderr:
 
 
 class _FakeProc:
-    """Stands in for the process _spawn_claude_stream returns: scripted
-    stdout lines, captured stdin, and alive/dead simulation."""
+    """Stands in for the persistent process _spawn_claude_stream returns,
+    speaking the D167 stdin protocol: /clear -> conversation_reset + local
+    result; control_request -> control_response; a user turn -> the next
+    scripted `lines` batch (deltas + result). Also simulates dead/hung/
+    broken-pipe states and records everything written for assertions."""
 
     def __init__(self, lines=None, exit_code=0, stderr=b"", hang=False,
-                 stdin_broken=False, returncode=None):
-        self._lines = list(lines if lines is not None else _result_lines())
+                 stdin_broken=False, returncode=None, control_error=None,
+                 clear_silent=False, turns=None):
+        # `turns`: list of line-batches, one per user turn (a persistent
+        # process answers many). `lines` is the single-turn shorthand.
+        if turns is None:
+            turns = [list(lines) if lines is not None else _result_lines()]
+        self._turns = [list(t) for t in turns]
+        self._out = []               # lines queued for stdout
         self.exit_code = exit_code
         self.stderr_bytes = stderr
         self.hang = hang
         self.stdin_broken = stdin_broken
         self.returncode = returncode  # None = alive
+        self.control_error = control_error  # subtype -> error message
+        self.clear_silent = clear_silent    # /clear never answers (wedged)
         self.pid = 4242
         self.killed = False
+        self.writes = []             # every parsed stdin JSON, in order
         self.stdin = _FakeStdin(self)
         self.stdout = _FakeStdout(self)
         self.stderr = _FakeStderr(self)
+
+    def _on_stdin(self, data):
+        for raw in data.decode("utf-8").splitlines():
+            if not raw.strip():
+                continue
+            msg = json.loads(raw)
+            self.writes.append(msg)
+            self._respond(msg)
+
+    def _respond(self, msg):
+        if msg.get("type") == "user":
+            content = msg.get("message", {}).get("content")
+            if content == "/clear":
+                if self.clear_silent:
+                    return
+                self._out.append(json.dumps(
+                    {"type": "conversation_reset"}))
+                self._out.append(json.dumps({
+                    "type": "result", "subtype": "success",
+                    "is_error": False, "num_turns": 0, "result": ""}))
+                return
+            # a real user turn: play the next scripted batch (a hung process
+            # answers reconfiguration but never the turn)
+            if self._turns and not self.hang:
+                self._out.extend(self._turns.pop(0))
+            return
+        if msg.get("type") == "control_request":
+            subtype = msg.get("request", {}).get("subtype")
+            rid = msg.get("request_id")
+            err = (self.control_error or {}).get(subtype)
+            if err:
+                self._out.append(json.dumps({
+                    "type": "control_response", "response": {
+                        "subtype": "error", "request_id": rid,
+                        "error": err}}))
+            else:
+                self._out.append(json.dumps({
+                    "type": "control_response", "response": {
+                        "subtype": "success", "request_id": rid}}))
 
     def kill(self):
         self.killed = True
@@ -125,10 +179,36 @@ class _FakeProc:
             self.returncode = self.exit_code
         return self.returncode
 
+    # -- assertion helpers ---------------------------------------------------
+
+    @property
+    def user_turns(self):
+        """Real user messages (excluding /clear), in write order."""
+        return [w for w in self.writes
+                if w.get("type") == "user"
+                and w.get("message", {}).get("content") != "/clear"]
+
+    @property
+    def clears(self):
+        return [w for w in self.writes
+                if w.get("type") == "user"
+                and w.get("message", {}).get("content") == "/clear"]
+
+    @property
+    def controls(self):
+        """control_request payloads, in write order."""
+        return [w["request"] for w in self.writes
+                if w.get("type") == "control_request"]
+
     @property
     def message(self):
-        """The stream-json user message written to stdin, parsed."""
-        return json.loads(self.stdin.written)
+        """The single real user message written, parsed."""
+        turn, = self.user_turns
+        return turn
+
+    @property
+    def prompt(self):
+        return self.message["message"]["content"][0]["text"]
 
 
 class _FakeSpawn:
@@ -157,31 +237,25 @@ class _FakeSpawn:
         return proc
 
 
-def _cli_ok(monkeypatch, payload=None, prewarm=True, **kwargs):
+def _cli_ok(monkeypatch, payload=None, **kwargs):
     if payload is not None:
         kwargs["lines"] = _result_lines(payload)
     fake = _FakeSpawn(factory=lambda: _FakeProc(**kwargs)) \
         if "exc" not in kwargs else _FakeSpawn(exc=kwargs["exc"])
     monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    monkeypatch.setattr(server, "_AI_POOL", server._AiWarmPool())
-    if not prewarm:
-        monkeypatch.setattr(server._AI_POOL, "prewarm", lambda config: None)
+    monkeypatch.setattr(server, "_AI_SESSION", server._AiSession())
     monkeypatch.setattr(server.shutil, "which",
                         lambda name: "/usr/local/bin/claude")
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     return fake
 
 
-def _default_config(bin_path="/usr/local/bin/claude"):
-    return (bin_path, server._AI_DEFAULT_MODEL,
-            server._AI_DEFAULT_SYSTEM_PROMPT,
-            server._AI_EFFORT_TOKENS["medium"])
-
-
-def _seed_warm(proc, config):
-    """Put a warm process in the pool as take() would find it."""
-    server._AI_POOL._proc = proc
-    server._AI_POOL._config = config
+def _seed_session(proc, model=None, system_prompt=None):
+    """Put a live process in the session as a previous request left it."""
+    server._AI_SESSION._proc = proc
+    server._AI_SESSION._model = model or server._AI_DEFAULT_MODEL
+    server._AI_SESSION._system_prompt = (
+        system_prompt or server._AI_DEFAULT_SYSTEM_PROMPT)
 
 
 def _flag(argv, name):
@@ -203,7 +277,7 @@ def _stream(body):
 
 
 def test_relay_happy_path(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 200
     data = _data(resp)
@@ -211,12 +285,12 @@ def test_relay_happy_path(monkeypatch):
     assert data["result"]["text"] == "hi there"
     assert data["result"]["model"] == "claude-haiku-4-5-20251001"
     assert data["result"]["usage"] == {"input_tokens": 3, "output_tokens": 2}
-    # One CLI spawn: stream-json in and out (the D166 warm-pool spawn shape;
-    # --verbose is mandatory with stream-json output), the prompt over stdin
-    # as a JSON user message (argv has an OS size cap), the default model,
-    # the default system prompt, a bare one-shot (no tools, no settings, no
-    # session), and the medium effort default carried as the
-    # max-output-tokens env var.
+    # One CLI spawn: stream-json in and out (the D167 persistent-instance
+    # spawn shape; --verbose is mandatory with stream-json output), the
+    # prompt over stdin as a JSON user message (argv has an OS size cap),
+    # the default model, the default system prompt, a bare completion engine
+    # (no tools, no settings, no session persistence) — and NO --max-turns:
+    # the instance is multi-turn, isolation comes from /clear.
     (argv, env), = fake.calls
     assert argv[0] == "/usr/local/bin/claude"
     assert "-p" in argv
@@ -234,17 +308,25 @@ def test_relay_happy_path(monkeypatch):
     assert "--setting-sources=" in argv
     assert "" not in argv
     assert "--no-session-persistence" in argv
-    assert _flag(argv, "--max-turns") == "1"
+    assert "--max-turns" not in argv
     assert "hello" not in argv  # prompt travels over stdin, never argv
-    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
-    assert env["MAX_THINKING_TOKENS"] == "0"  # stream-json defaults it ON
-    # The used process is never reused (context accumulates in-process).
+    # Effort/thinking are Claude Code's own semantics now — the env-var
+    # overrides are gone (their values fought the effortLevel flag).
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
+    assert "MAX_THINKING_TOKENS" not in env
+    # The instance survives the call (persistent, not use-once)...
     proc, = fake.procs
-    assert proc.killed
+    assert not proc.killed
+    assert server._AI_SESSION._proc is proc
+    # ...and the request was preceded by /clear (context isolation) with no
+    # reconfiguration: spawn argv already carried the default config, and no
+    # effort was requested.
+    assert len(proc.clears) == 1
+    assert proc.controls == []
 
 
 def test_relay_writes_the_stream_json_user_message(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     _relay({"prompt": "hello"})
     proc, = fake.procs
     assert proc.stdin.written.endswith(b"\n")
@@ -252,41 +334,83 @@ def test_relay_writes_the_stream_json_user_message(monkeypatch):
         "role": "user", "content": [{"type": "text", "text": "hello"}]}}
 
 
-def test_relay_options_reach_the_cli(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+def test_relay_options_become_reconfiguration_requests(monkeypatch):
+    # A non-default model/system_prompt is applied to the RUNNING instance
+    # via set_model (both fields, one request) instead of a respawn; effort
+    # via apply_flag_settings. Order: /clear, set_model, effort, user turn.
+    fake = _cli_ok(monkeypatch)
+    proc = _FakeProc(turns=[_result_lines(), _result_lines()])
+    _seed_session(proc)  # live instance at the default config
     _relay({"prompt": "hello", "system_prompt": "be terse",
             "model": "claude-sonnet-5", "effort": "high"})
-    (argv, env), = fake.calls
-    assert _flag(argv, "--model") == "claude-sonnet-5"
-    assert fake.system_prompts == ["be terse"]
-    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16384"  # effort: high
-    assert env["MAX_THINKING_TOKENS"] == "0"
+    assert fake.calls == []  # reconfigured, not respawned
+
+    def kind(w):
+        if w.get("type") == "control_request":
+            return w["request"]["subtype"]
+        if w.get("message", {}).get("content") == "/clear":
+            return "clear"
+        return "turn"
+
+    assert [kind(w) for w in proc.writes] == [
+        "clear", "set_model", "apply_flag_settings", "turn"]
+    set_model, effort = proc.controls
+    assert set_model == {"subtype": "set_model", "model": "claude-sonnet-5",
+                         "system_prompt": "be terse"}
+    assert effort == {"subtype": "apply_flag_settings",
+                      "settings": {"effortLevel": "high"}}
+    # tracked state updated: a repeat call with the same config skips
+    # set_model (the pair survives /clear)
+    _relay({"prompt": "again", "system_prompt": "be terse",
+            "model": "claude-sonnet-5"})
+    assert len(proc.controls) == 2  # no new set_model
+    assert len(proc.clears) == 2    # but /clear is never skipped
 
 
-def test_relay_explicit_max_tokens_beats_effort(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
-    _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
+def test_relay_effort_is_resent_after_clear_only_when_given(monkeypatch):
+    # /clear resets effortLevel — so effort is applied per request when the
+    # caller gave one, and correctly NOT touched when omitted (the /clear
+    # default stands; no stale effort leaks from the previous caller).
+    fake = _cli_ok(monkeypatch, turns=[_result_lines(), _result_lines(),
+                                       _result_lines()])
+    _relay({"prompt": "a", "effort": "low"})
+    proc, = fake.procs
+    assert proc.controls[-1] == {"subtype": "apply_flag_settings",
+                                 "settings": {"effortLevel": "low"}}
+    _relay({"prompt": "b"})  # no effort: no flag request rides this call
+    assert len(proc.controls) == 1
+    _relay({"prompt": "c", "effort": "xhigh"})  # xhigh is a valid level now
+    assert proc.controls[-1]["settings"] == {"effortLevel": "xhigh"}
+
+
+def test_relay_max_tokens_is_accepted_but_unenforced(monkeypatch):
+    # Deprecated no-op: still validated (bad values 400 below), but no env
+    # var or control request carries it — the CLI has no per-call cap.
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
+    resp = _relay({"prompt": "hello", "effort": "low", "max_tokens": 99})
+    assert _data(resp)["ok"] is True
     (_, env), = fake.calls
-    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "99"
-    assert env["MAX_THINKING_TOKENS"] == "0"
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
+    proc, = fake.procs
+    assert all("99" not in json.dumps(c) for c in proc.controls)
 
 
 def test_relay_usage_is_normalized_to_the_two_token_keys(monkeypatch):
     # The schema guarantee (RH-11): usage is null or EXACTLY
     # {input_tokens, output_tokens} — extra CLI keys stripped, and a missing
     # or malformed block degrades to null rather than leaking through.
-    _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)  # has cache_* extras
+    _cli_ok(monkeypatch, _CLI_RESULT)  # has cache_* extras
     usage = _data(_relay({"prompt": "x"}))["result"]["usage"]
     assert usage == {"input_tokens": 3, "output_tokens": 2}
 
     for bad in (None, "lots", [], {"input_tokens": 3},           # missing key
                 {"input_tokens": "3", "output_tokens": 2},        # wrong type
                 {"input_tokens": True, "output_tokens": 2}):      # bool
-        _cli_ok(monkeypatch, {**_CLI_RESULT, "usage": bad}, prewarm=False)
+        _cli_ok(monkeypatch, {**_CLI_RESULT, "usage": bad})
         assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
     payload = dict(_CLI_RESULT)
     del payload["usage"]
-    _cli_ok(monkeypatch, payload, prewarm=False)
+    _cli_ok(monkeypatch, payload)
     assert _data(_relay({"prompt": "x"}))["result"]["usage"] is None
 
 
@@ -294,8 +418,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
     # A model alias goes to the CLI as-is, but the response echoes the full id
     # the CLI actually ran (the modelUsage key).
     fake = _cli_ok(monkeypatch, dict(
-        _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}),
-        prewarm=False)
+        _CLI_RESULT, modelUsage={"claude-sonnet-5-20250929": {}}))
     resp = _relay({"prompt": "hello", "model": "sonnet"})
     (argv, _), = fake.calls
     assert _flag(argv, "--model") == "sonnet"
@@ -305,7 +428,7 @@ def test_relay_model_echo_prefers_the_resolved_id(monkeypatch):
 def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
     # Warm processes always run --include-partial-messages (one spawn shape
     # serves both modes); the extra stream_event lines are just skipped.
-    _cli_ok(monkeypatch, prewarm=False,
+    _cli_ok(monkeypatch,
             lines=_result_lines(deltas=["hi ", "there"]))
     data = _data(_relay({"prompt": "hello"}))
     assert data["ok"] is True
@@ -316,7 +439,7 @@ def test_relay_skips_stream_events_when_not_streaming(monkeypatch):
 
 
 def test_relay_streams_ndjson_chunks_and_done(monkeypatch):
-    _cli_ok(monkeypatch, prewarm=False,
+    _cli_ok(monkeypatch,
             lines=_result_lines(deltas=["hi ", "there"]))
     resp, frames = _stream({"prompt": "hello", "stream": True})
     assert resp.status_code == 200
@@ -335,7 +458,7 @@ def test_relay_stream_skips_thinking_deltas(monkeypatch):
     thinking = json.dumps({"type": "stream_event", "event": {
         "type": "content_block_delta",
         "delta": {"type": "thinking_delta", "thinking": "hmm"}}})
-    _cli_ok(monkeypatch, prewarm=False,
+    _cli_ok(monkeypatch,
             lines=[thinking, _delta_line("hi"), json.dumps(_CLI_RESULT)])
     _, frames = _stream({"prompt": "x", "stream": True})
     assert [f for f in frames if f["type"] == "chunk"] == [
@@ -345,7 +468,7 @@ def test_relay_stream_skips_thinking_deltas(monkeypatch):
 def test_relay_stream_error_is_a_done_frame(monkeypatch):
     # The process dies mid-stream: HTTP status is already 200, so the error
     # travels as the terminal ok:false done frame.
-    _cli_ok(monkeypatch, prewarm=False,
+    _cli_ok(monkeypatch,
             lines=[_delta_line("hi")],  # then EOF, no result event
             exit_code=1, stderr=b"something broke")
     resp, frames = _stream({"prompt": "x", "stream": True})
@@ -360,7 +483,7 @@ def test_relay_stream_error_is_a_done_frame(monkeypatch):
 def test_relay_stream_validation_errors_are_plain_json(monkeypatch):
     # Validation happens before any streaming starts, so a bad body is the
     # ordinary 400 JSON even with stream requested.
-    fake = _cli_ok(monkeypatch, prewarm=False)
+    fake = _cli_ok(monkeypatch)
     resp = _relay({"prompt": "", "stream": True})
     assert resp.status_code == 400
     assert _data(resp)["error"]["type"] == "bad_request"
@@ -369,90 +492,138 @@ def test_relay_stream_validation_errors_are_plain_json(monkeypatch):
     assert fake.calls == []
 
 
-# -- warm pool ------------------------------------------------------------------
+# -- the persistent instance ------------------------------------------------------
 
 
-def test_relay_uses_the_prewarmed_process(monkeypatch):
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc()
-    _seed_warm(warm, _default_config())
-    prewarms = []
-    monkeypatch.setattr(server._AI_POOL, "prewarm", prewarms.append)
-    resp = _relay({"prompt": "hello"})
-    assert _data(resp)["ok"] is True
-    assert fake.calls == []  # no fresh spawn: the warm process served it
-    assert warm.message["message"]["content"][0]["text"] == "hello"
-    assert warm.killed  # used once, then reaped
-    # A replacement prewarm was triggered for the config just used.
-    assert prewarms == [_default_config()]
+def test_relay_reuses_the_live_instance(monkeypatch):
+    # A second request rides the SAME process: no new spawn, one more /clear.
+    fake = _cli_ok(monkeypatch, turns=[_result_lines(), _result_lines()])
+    _relay({"prompt": "one"})
+    _relay({"prompt": "two"})
+    assert len(fake.calls) == 1  # one spawn served both
+    proc, = fake.procs
+    assert [t["message"]["content"][0]["text"] for t in proc.user_turns] \
+        == ["one", "two"]
+    assert len(proc.clears) == 2  # /clear before EVERY turn, no exceptions
+    assert not proc.killed
 
 
-def test_relay_config_mismatch_spawns_fresh(monkeypatch):
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc()
-    _seed_warm(warm, _default_config())
-    resp = _relay({"prompt": "hello", "model": "claude-sonnet-5"})
-    assert _data(resp)["ok"] is True
-    assert len(fake.calls) == 1  # fresh spawn, warm process not usable
-    assert warm.stdin.written == b""  # the mismatched process saw no prompt
-    assert warm.killed  # ...and was reaped, not kept
+def test_relay_uses_the_startup_prewarmed_instance(monkeypatch):
+    # prewarm_default() spawns ahead of the first request; that request
+    # then pays no spawn.
+    fake = _cli_ok(monkeypatch)
+    asyncio.run(_prewarmed_relay(fake, {"prompt": "hello"}))
 
 
-def test_relay_dead_warm_process_spawns_fresh(monkeypatch):
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc(returncode=1)  # died while idle (auth expiry, crash)
-    _seed_warm(warm, _default_config())
-    resp = _relay({"prompt": "hello"})
-    assert _data(resp)["ok"] is True
+async def _prewarmed_relay(fake, body):
+    server._AI_SESSION.prewarm_default()
+    await server._AI_SESSION._spawn_task
     assert len(fake.calls) == 1
-    assert warm.stdin.written == b""
+    resp = await server._ai_relay(body)
+    assert json.loads(bytes(resp.body))["ok"] is True
+    assert len(fake.calls) == 1  # served by the prewarmed instance
+    proc, = fake.procs
+    assert proc.prompt == "hello"
 
 
-def test_relay_warm_process_failing_midcall_retries_fresh_once(monkeypatch):
-    # take()'s returncode check can't see every way an idle process went bad;
-    # a warm process that fails before producing anything gets one fresh
-    # retry, invisible to the caller.
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc(stdin_broken=True)
-    _seed_warm(warm, _default_config())
+def test_relay_dead_instance_respawns(monkeypatch):
+    fake = _cli_ok(monkeypatch)
+    dead = _FakeProc(returncode=1)  # died while idle (auth expiry, crash)
+    _seed_session(dead)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert len(fake.calls) == 1  # the respawn
+    assert dead.writes == []     # the corpse saw no prompt
+    assert fake.procs[0].prompt == "hello"
+
+
+def test_relay_instance_failing_midcall_retries_fresh_once(monkeypatch):
+    # returncode can't see every way an idle instance went bad; a write
+    # failure before anything was delivered gets one fresh-spawn retry,
+    # invisible to the caller.
+    fake = _cli_ok(monkeypatch)
+    wedged = _FakeProc(stdin_broken=True)
+    _seed_session(wedged)
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["ok"] is True
     assert len(fake.calls) == 1  # the retry spawn
-    assert fake.procs[0].message["message"]["content"][0]["text"] == "hello"
+    assert fake.procs[0].prompt == "hello"
+    assert wedged.killed  # the wedged instance was discarded, not kept
 
 
-def test_relay_nonstream_warm_failure_after_deltas_still_retries(monkeypatch):
+def test_relay_wedged_clear_kills_and_respawns(monkeypatch):
+    # A /clear that never settles within the control timeout means a wedged
+    # process: kill, respawn, retry the request.
+    fake = _cli_ok(monkeypatch)
+    wedged = _FakeProc(clear_silent=True, hang=True)
+    _seed_session(wedged)
+    monkeypatch.setattr(server, "_AI_CTRL_TIMEOUT_S", 0.05)
+    resp = _relay({"prompt": "hello"})
+    assert _data(resp)["ok"] is True
+    assert wedged.killed
+    assert len(fake.calls) == 1
+    assert fake.procs[0].prompt == "hello"
+
+
+def test_relay_control_error_respawns_with_argv_config(monkeypatch):
+    # The set_model system_prompt field is undocumented (probed on 2.1.220).
+    # If a future CLI rejects it, the control error must degrade to a
+    # respawn whose ARGV carries the requested config — per-call spawn for
+    # non-default prompts, not breakage.
+    fake = _cli_ok(monkeypatch)
+    live = _FakeProc(control_error={
+        "set_model": "unexpected field: system_prompt"})
+    _seed_session(live)  # live instance at the default config
+    resp = _relay({"prompt": "hello", "system_prompt": "be terse",
+                   "model": "claude-sonnet-5"})
+    assert _data(resp)["ok"] is True
+    assert live.killed  # the control error discarded the instance
+    assert len(fake.calls) == 1  # the config-carrying respawn
+    (argv2, _), = fake.calls
+    assert _flag(argv2, "--model") == "claude-sonnet-5"
+    assert fake.system_prompts == ["be terse"]
+    # The respawned instance needs no set_model (argv already matches) —
+    # its only writes are /clear and the turn.
+    retry, = fake.procs
+    assert retry.controls == []
+    assert retry.prompt == "hello"
+
+
+def test_relay_nonstream_failure_after_deltas_still_retries(monkeypatch):
     # --include-partial-messages means deltas flow even when nobody streams
-    # them. A non-streaming call has no client that saw any text, so a warm
-    # process dying AFTER emitting deltas must still get the fresh retry —
+    # them. A non-streaming call has no client that saw any text, so an
+    # instance dying AFTER emitting deltas must still get the fresh retry —
     # only text delivered to an actual onChunk reader blocks it.
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc(lines=[_delta_line("partial ")])  # deltas, then EOF
-    _seed_warm(warm, _default_config())
+    fake = _cli_ok(monkeypatch)
+    dying = _FakeProc(lines=[_delta_line("partial ")])  # deltas, then EOF
+    _seed_session(dying)
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["ok"] is True
     assert _data(resp)["result"]["text"] == "hi there"
     assert len(fake.calls) == 1  # the retry spawn ran
 
 
-def test_relay_stream_warm_failure_after_delivery_does_not_retry(monkeypatch):
+def test_relay_stream_failure_after_delivery_does_not_retry(monkeypatch):
     # Streaming is the case the retry guard exists for: the client already
     # rendered "partial ", so replaying the prompt would emit text twice.
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc(lines=[_delta_line("partial ")], exit_code=1,
-                     stderr=b"died mid-answer")
-    _seed_warm(warm, _default_config())
+    fake = _cli_ok(monkeypatch)
+    dying = _FakeProc(lines=[_delta_line("partial ")], exit_code=1,
+                      stderr=b"died mid-answer")
+    _seed_session(dying)
     _, frames = _stream({"prompt": "hello", "stream": True})
     assert frames[0] == {"type": "chunk", "text": "partial "}
     done = frames[-1]
     assert done["type"] == "done" and done["ok"] is False
     assert fake.calls == []  # no retry once text reached the client
+    # the dead instance was discarded: the session holds nothing
+    assert server._AI_SESSION._proc is None
 
 
-def test_relay_concurrent_requests_do_not_share_the_warm_process(monkeypatch):
-    fake = _cli_ok(monkeypatch, prewarm=False)
-    warm = _FakeProc()
-    _seed_warm(warm, _default_config())
+def test_relay_concurrent_requests_serialize_through_the_instance(monkeypatch):
+    # ONE process, requests queued behind the session lock: no interleaved
+    # writes, both answered, still no second spawn. Accepted tradeoff of the
+    # single-instance design (local single-user app).
+    fake = _cli_ok(monkeypatch, turns=[_result_lines(), _result_lines()])
 
     async def go():
         return await asyncio.gather(
@@ -461,101 +632,66 @@ def test_relay_concurrent_requests_do_not_share_the_warm_process(monkeypatch):
 
     r1, r2 = asyncio.run(go())
     assert _data(r1)["ok"] is True and _data(r2)["ok"] is True
-    # Exactly one of them got the warm process; the other spawned fresh.
     assert len(fake.calls) == 1
-    prompts = {warm.message["message"]["content"][0]["text"],
-               fake.procs[0].message["message"]["content"][0]["text"]}
-    assert prompts == {"a", "b"}
+    proc, = fake.procs
+    # strict per-request ordering: clear, turn, clear, turn — a second
+    # request never writes before the first one's result was read
+    seq = [("clear" if w.get("message", {}).get("content") == "/clear"
+            else "turn") for w in proc.writes if w.get("type") == "user"]
+    assert seq == ["clear", "turn", "clear", "turn"]
+    assert {t["message"]["content"][0]["text"]
+            for t in proc.user_turns} == {"a", "b"}
 
 
-def test_pool_prewarm_spawns_and_take_consumes(monkeypatch):
-    fake = _FakeSpawn()
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    pool = server._AiWarmPool()
-    config = _default_config()
-
-    async def go():
-        pool.prewarm(config)
-        await asyncio.gather(*pool._spawn_tasks)
-        assert pool._proc is fake.procs[0]
-        # matching take() hands it out and empties the slot
-        assert await pool.take(config) is fake.procs[0]
-        assert await pool.take(config) is None
-        await pool.shutdown()
-
-    asyncio.run(go())
-    (argv, env), = fake.calls
-    assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
-    assert fake.system_prompts == [server._AI_DEFAULT_SYSTEM_PROMPT]
-    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
-    assert env["MAX_THINKING_TOKENS"] == "0"
-
-
-def test_pool_prewarm_default_skips_when_binary_missing(monkeypatch):
+def test_session_prewarm_default_skips_when_binary_missing(monkeypatch):
     # Startup must not error on a machine without Claude Code installed.
     fake = _FakeSpawn()
     monkeypatch.setattr(server, "_spawn_claude_stream", fake)
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
-    pool = server._AiWarmPool()
-    pool.prewarm_default()
-    assert pool._spawn_tasks == set()
+    session = server._AiSession()
+
+    async def go():
+        session.prewarm_default()
+        await session._spawn_task
+
+    asyncio.run(go())
+    assert session._proc is None
     assert fake.calls == []
 
 
-def test_pool_shutdown_reaps_the_warm_process(monkeypatch):
-    pool = server._AiWarmPool()
-    warm = _FakeProc()
-    pool._proc, pool._config = warm, _default_config()
-    asyncio.run(pool.shutdown())
-    assert warm.killed
-    assert pool._proc is None
-
-
-def test_pool_shutdown_reaps_an_inflight_prewarm(monkeypatch):
-    # shutdown() while a prewarm holds a LIVE process but hasn't filed it in
-    # the slot yet (cancelled at the lock await): cancelling the task is not
-    # enough — that process must be reaped, not orphaned.
+def test_session_shutdown_reaps_the_instance(monkeypatch):
+    session = server._AiSession()
     proc = _FakeProc()
-    fake = _FakeSpawn(factory=lambda: proc)
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    pool = server._AiWarmPool()
+    session._proc = proc
+    asyncio.run(session.shutdown())
+    assert proc.killed
+    assert session._proc is None
+
+
+def test_session_shutdown_awaits_an_inflight_prewarm(monkeypatch):
+    # shutdown() during the startup prewarm: the spawn task is cancelled AND
+    # awaited, and whatever process it filed is reaped — nothing orphaned.
+    proc = _FakeProc()
+
+    async def slow_spawn(cmd, env):
+        await asyncio.sleep(0)
+        return proc
+
+    monkeypatch.setattr(server, "_spawn_claude_stream", slow_spawn)
+    monkeypatch.setattr(server.shutil, "which",
+                        lambda name: "/usr/local/bin/claude")
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    session = server._AiSession()
 
     async def go():
-        # hold the pool lock so _spawn completes its spawn and then parks at
-        # `async with self._lock` — the exact window the leak lived in
-        async with pool._lock:
-            pool.prewarm(_default_config())
-            while not fake.procs:  # spawn ran, task now blocked on the lock
-                await asyncio.sleep(0)
-            await asyncio.sleep(0)
-            for task in pool._spawn_tasks:
-                task.cancel()
-        await pool.shutdown()
+        session.prewarm_default()
+        await session.shutdown()
 
     asyncio.run(go())
-    assert proc.killed  # the in-flight prewarm's process did not leak
-    assert pool._spawn_tasks == set()
-    assert pool._proc is None
-
-
-def test_pool_repeated_prewarms_leak_no_process(monkeypatch):
-    # Back-to-back prewarms (every request fires one): the slot holds ONE
-    # process and every displaced spawn reaps its own — nothing orphaned.
-    fake = _FakeSpawn()
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    pool = server._AiWarmPool()
-
-    async def go():
-        for _ in range(3):
-            pool.prewarm(_default_config())
-        await asyncio.gather(*pool._spawn_tasks)
-        await pool.shutdown()
-
-    asyncio.run(go())
-    assert len(fake.procs) == 3
-    assert all(p.killed for p in fake.procs)  # slot winner reaped by shutdown
+    assert session._proc is None
+    assert session._spawn_task.done()
 
 
 # -- bad requests ---------------------------------------------------------------
@@ -568,7 +704,7 @@ def test_pool_repeated_prewarms_leak_no_process(monkeypatch):
     {"prompt": 42},           # wrong type
 ])
 def test_relay_rejects_bad_prompt(monkeypatch, body):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     resp = _relay(body)
     assert resp.status_code == 400
     data = _data(resp)
@@ -581,7 +717,7 @@ def test_relay_large_prompt_travels_over_stdin(monkeypatch):
     # The documented fused.ai pattern embeds JSON aggregates in the prompt; a
     # ~200KB one would blow the OS argv cap (~32K Windows), so it must never
     # appear in argv.
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     big = "x" * 200_000
     resp = _relay({"prompt": big})
     assert resp.status_code == 200
@@ -592,7 +728,7 @@ def test_relay_large_prompt_travels_over_stdin(monkeypatch):
 
 
 def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     for body in ({"prompt": "x", "effort": "extreme"},
                  {"prompt": "x", "max_tokens": 0},
                  {"prompt": "x", "max_tokens": True},
@@ -613,7 +749,7 @@ def test_relay_rejects_unknown_effort_and_bad_max_tokens(monkeypatch):
 def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
     fake = _FakeSpawn()
     monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    monkeypatch.setattr(server, "_AI_POOL", server._AiWarmPool())
+    monkeypatch.setattr(server, "_AI_SESSION", server._AiSession())
     monkeypatch.setattr(server.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     # neutralize the install-dir fallbacks (the dev machine may really have one)
@@ -629,14 +765,14 @@ def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
 
 
 def test_relay_spawn_oserror_is_ai_unavailable(monkeypatch):
-    _cli_ok(monkeypatch, prewarm=False, exc=OSError("exec format error"))
+    _cli_ok(monkeypatch, exc=OSError("exec format error"))
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     assert _data(resp)["error"]["type"] == "ai_unavailable"
 
 
 def test_relay_nonzero_exit_is_ai_error(monkeypatch):
-    _cli_ok(monkeypatch, prewarm=False, lines=[], exit_code=1,
+    _cli_ok(monkeypatch, lines=[], exit_code=1,
             stderr=b"Invalid model name: nope")
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
@@ -646,7 +782,7 @@ def test_relay_nonzero_exit_is_ai_error(monkeypatch):
 
 
 def test_relay_timeout_is_timeout(monkeypatch):
-    _cli_ok(monkeypatch, prewarm=False, hang=True)
+    _cli_ok(monkeypatch, hang=True)
     monkeypatch.setattr(server, "_AI_TIMEOUT_S", 0.05)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
@@ -656,7 +792,7 @@ def test_relay_timeout_is_timeout(monkeypatch):
 def test_relay_unparseable_stdout_is_ai_error(monkeypatch):
     # Non-JSON noise between events is tolerated; a stream that ENDS without
     # ever producing a result event is an error.
-    _cli_ok(monkeypatch, prewarm=False, lines=["not json at all"])
+    _cli_ok(monkeypatch, lines=["not json at all"])
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["error"]["type"] == "ai_error"
 
@@ -664,7 +800,7 @@ def test_relay_unparseable_stdout_is_ai_error(monkeypatch):
 def test_relay_is_error_result_is_ai_error(monkeypatch):
     _cli_ok(monkeypatch, dict(
         _CLI_RESULT, is_error=True, subtype="error_during_execution",
-        result="something broke"), prewarm=False)
+        result="something broke"))
     resp = _relay({"prompt": "hello"})
     data = _data(resp)
     assert data["error"]["type"] == "ai_error"
@@ -674,7 +810,7 @@ def test_relay_is_error_result_is_ai_error(monkeypatch):
 def test_relay_stderr_warnings_are_ignored_on_success(monkeypatch):
     # A clean result with noise on stderr (connector notices etc.) is a
     # success — stderr is only consulted when the process dies.
-    _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False,
+    _cli_ok(monkeypatch, _CLI_RESULT,
             stderr=b"Warning: some connector notice")
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["ok"] is True
@@ -792,7 +928,7 @@ def test_the_resolver_never_imports_the_chat_template():
 
 
 def test_relay_uses_the_overridden_binary(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
     _relay({"prompt": "hello"})
     (argv, _), = fake.calls
@@ -852,7 +988,7 @@ def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
 
 
 def test_relay_runs_windows_shims_through_cmd(monkeypatch):
-    fake = _cli_ok(monkeypatch, _CLI_RESULT, prewarm=False)
+    fake = _cli_ok(monkeypatch, _CLI_RESULT)
     shim = r"C:\Users\John Doe\npm\claude.cmd"
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", shim)
     # the reap path goes through taskkill on "win32" — neutralize it here
