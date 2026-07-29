@@ -603,23 +603,220 @@ def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
     assert call["requirements"] == ["imagecodecs", "pyproj"]
 
 
-def test_no_resolvable_interpreter_falls_back_to_a_venv(monkeypatch, tmp_path):
-    """When the probe fails we use the venv path — never a non-interpreter.
+def test_no_resolvable_interpreter_is_a_loud_error_not_a_venv(monkeypatch, tmp_path):
+    """A header-less script must NEVER silently fall back to a venv.
 
-    The fallback loses the app's packages, which is a real degradation; the
-    alternative is spawning something that is not python at all, which fails
-    every run with a message about neither the script nor the cause.
+    With no baseline requirements (D172) that venv is stdlib-only, so a template
+    that works today would die on `import numpy` — an error about the wrong thing
+    entirely, on a path the user can't see. It would also mean a header-less core
+    template hitting PyPI, which must never happen. So: run nothing, and return a
+    configuration error that names its own fix.
     """
     stub = tmp_path / "not-python"
     stub.write_text("#!/bin/sh\nexit 3\n")
     stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(stub))
+    # No bootstrap rescue either: the stub can't create a venv.
+    monkeypatch.setattr(engine, "_bootstrap_interpreter", lambda c: (None, "stub"))
 
     backend = _FakeBackend(_FakeResult(return_value="null"))
     monkeypatch.setattr(engine, "get_backend", lambda: backend)
     target = tmp_path / "plain.py"
     target.write_text("def main():\n    return None\n")
-    asyncio.run(engine.run_python(str(target), {}))
-    call = backend.calls[0]
-    assert call["via"] == "execute"
-    assert call["requirements"] == []
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "InterpreterUnavailable"
+    assert "FUSED_RENDER_APP_PYTHON" in out["error"]["message"]
+    assert backend.calls == [], "nothing may be executed"
+
+
+def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
+    """Same rule for the other way the interpreter path can be unavailable."""
+
+    class NoSyncBackend:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, **kw):
+            self.calls.append(kw)
+            raise AssertionError("must not run in a venv")
+
+    backend = NoSyncBackend()
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    target = tmp_path / "plain.py"
+    target.write_text("def main():\n    return None\n")
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "EngineError"
+    assert "_execute_sync" in out["error"]["traceback"]
+    assert backend.calls == []
+
+
+# --- the bootstrap venv: making the packaged macOS app work -------------------
+#
+# Inside the .app the bundled interpreter finds its runtime only because the app
+# exports PYTHONHOME=…/Contents/Resources (build_dmg.sh does this on every launch
+# of that python and says why), and the backend strips PYTHONHOME from the child.
+# So the direct candidate reports the *framework's* prefix, not the app's, and is
+# correctly rejected — on the DMG's default path, not in an edge case. The rescue
+# is a venv we build off it: its python self-locates via pyvenv.cfg, and a .pth
+# carrying this server's real sys.path makes the app's packages importable
+# (--system-site-packages alone would inherit the framework's site-packages,
+# which has no numpy, because py2app puts the app's packages elsewhere).
+
+
+def _foreign_but_real_python(tmp_path):
+    """A genuine python whose `sys.prefix` is NOT ours — the DMG's shape.
+
+    Built as a venv so it really runs and really has a different prefix, which is
+    exactly the condition that fails the direct probe and must be rescued.
+    """
+    import venv
+
+    d = tmp_path / "foreign"
+    # symlinks=True, not the default copy: a python-build-standalone interpreter
+    # (what uv installs, and what the AppImage ships) links against a shared
+    # libpython via @rpath, and a *copied* venv binary cannot resolve it — the
+    # copy dies with a dyld error before it can report any prefix at all. That is
+    # a different failure from the one being modelled here.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(d)
+    exe = d / ("Scripts" if os.name == "nt" else "bin") / (
+        "python.exe" if os.name == "nt" else "python")
+    assert exe.exists()
+    probe = subprocess.run(
+        [str(exe), "-c", "import sys; print(sys.prefix)"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if probe.returncode != 0:
+        pytest.skip(f"could not build a runnable foreign venv here: {probe.stderr}")
+    assert probe.stdout.strip() != sys.prefix
+    return str(exe)
+
+
+def test_a_candidate_with_a_foreign_prefix_is_rescued_by_a_bootstrap_venv(
+    monkeypatch, tmp_path
+):
+    """The DMG path, end to end: rejected directly, then made to work."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    foreign = _foreign_but_real_python(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", foreign)
+
+    resolved = engine.app_interpreter()
+    assert resolved is not None, "the bootstrap venv should have rescued this"
+    assert resolved != foreign, "it must be the venv, not the rejected candidate"
+    assert str(tmp_path / "home") in resolved, "and it lives under the app's cache"
+
+    # The point of the whole exercise: the app's own packages are importable.
+    proc = subprocess.run(
+        [resolved, "-c", "import pandas, numpy; print(numpy.__file__)"],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().startswith(str(sys.prefix)) or os.path.exists(
+        proc.stdout.strip()
+    )
+
+
+def test_the_bootstrap_venv_never_touches_the_network(monkeypatch, tmp_path):
+    """`--without-pip` is load-bearing, not an optimisation.
+
+    A header-less core template must never reach PyPI. Creating the bootstrap
+    venv without pip means that holds by construction: there is no index access
+    in `python -m venv --without-pip`, and no pip inside the result to make one.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    foreign = _foreign_but_real_python(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", foreign)
+
+    seen = []
+    real_run = subprocess.run
+    monkeypatch.setattr(
+        engine.subprocess, "run",
+        lambda cmd, **kw: (seen.append(list(cmd)), real_run(cmd, **kw))[1],
+    )
+    resolved = engine.app_interpreter()
+    assert resolved is not None
+
+    creation = [c for c in seen if "venv" in c]
+    assert creation, "a bootstrap venv should have been created"
+    assert "--without-pip" in creation[0]
+    assert "--system-site-packages" in creation[0]
+    # Nothing anywhere in the resolution may install, resolve or download.
+    flat = " ".join(" ".join(c) for c in seen)
+    for banned in ("pip install", "uv pip", "--index-url", "download"):
+        assert banned not in flat, f"{banned!r} appeared in {flat!r}"
+
+
+def test_the_bootstrap_venv_is_reused_not_rebuilt(monkeypatch, tmp_path):
+    """It is created once per app version, not per call."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    foreign = _foreign_but_real_python(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", foreign)
+    first = engine.app_interpreter()
+    assert first is not None
+
+    engine.reset_app_interpreter_cache()
+    creations = []
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        if "venv" in cmd:
+            creations.append(cmd)
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(engine.subprocess, "run", spy)
+    assert engine.app_interpreter() == first
+    assert creations == [], "the ready marker should have short-circuited creation"
+
+
+def test_system_site_packages_alone_would_not_have_worked(monkeypatch, tmp_path):
+    """Why the `.pth` exists — so nobody deletes it as redundant.
+
+    `--system-site-packages` inherits the BASE interpreter's site-packages. When
+    the base is not where the app's packages live — a foreign-prefix python here,
+    and py2app's `Resources/lib/python3.12` on the DMG — that is the wrong
+    directory and `import pandas` fails. Asserted as a *negative* against a venv
+    built the obvious way, next to the positive assertion above, because the two
+    differ by exactly one file.
+    """
+    import venv as venvmod
+
+    foreign = _foreign_but_real_python(tmp_path)
+    plain = tmp_path / "plain-boot"
+    subprocess.run(
+        [foreign, "-m", "venv", "--system-site-packages", "--without-pip", str(plain)],
+        check=True, capture_output=True, timeout=120,
+    )
+    plain_py = plain / ("Scripts" if os.name == "nt" else "bin") / (
+        "python.exe" if os.name == "nt" else "python")
+    bare = subprocess.run(
+        [str(plain_py), "-c", "import pandas"], capture_output=True, text=True, timeout=60
+    )
+    assert bare.returncode != 0, (
+        "if --system-site-packages alone can already see the app's packages here, "
+        "this test is no longer modelling the bundle and the .pth rationale needs "
+        "revisiting"
+    )
+
+    # Same base, same flags, plus the .pth: now it works.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", foreign)
+    resolved = engine.app_interpreter()
+    assert resolved is not None
+    ok = subprocess.run(
+        [resolved, "-c", "import pandas"], capture_output=True, text=True, timeout=120
+    )
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_the_bootstrap_venv_lives_outside_the_script_venv_path(monkeypatch, tmp_path):
+    """It must not be mistakable for a requirements venv.
+
+    `fused`'s venvs_path is keyed by requirement set; a directory of ours sitting
+    in there could collide with a real key, and `ensure_requirements_venv` deletes
+    directories it finds without a ready marker of its own.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    d = engine._bootstrap_dir("/some/python")
+    assert "_app_interpreter" in d
+    assert "openfused" not in d
