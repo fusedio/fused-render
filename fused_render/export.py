@@ -91,13 +91,13 @@ _ANY_CALL = {method: re.compile(r"fused\.%s\s*\(" % method) for method in _LITER
 
 # Unsupported API surface: present in an exported page => hard error. Each
 # entry maps to the reason a hosted page can't have it (writeFile/stat: no
-# filesystem behind a served artifact; ai: the relay targets a proxy on the
+# filesystem behind a served artifact; ai: it runs the claude CLI on the
 # author's own machine, which a hosted page can't reach).
 _UNSUPPORTED = re.compile(r"fused\.(writeFile|stat|ai)\s*\(")
 _UNSUPPORTED_REASON = {
     "writeFile": "a served artifact is immutable and has no filesystem",
     "stat": "a served artifact is immutable and has no filesystem",
-    "ai": "it relays to a proxy on the local machine, which a hosted page cannot reach",
+    "ai": "it runs the claude CLI on the local machine, which a hosted page cannot reach",
 }
 
 # Bundle v2 payload directory. Every bundled file lives at ``<PAYLOAD>/<page-relative

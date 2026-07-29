@@ -21,6 +21,7 @@ import logging
 from collections import deque
 import mimetypes
 import os
+import re
 import shutil
 import stat as stat_mod
 import subprocess
@@ -828,21 +829,32 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
     return None
 
 
-# --- /api/ai — relay to a local OpenAI-compatible proxy ----------------------
+# --- /api/ai — inference through the Claude Code CLI --------------------------
 #
-# fused.ai(prompt, opts) lands here. The shell relays to a proxy the user runs
-# on their own machine (base URL from shell/prefs.ai_base_url, default the CLI
-# proxy at 127.0.0.1:8317) rather than pages fetching it directly: the page
-# stays origin-clean (no cross-origin call, no proxy URL baked into authored
-# HTML), and the relay is one place to grow config/limits later. Wire shape is
-# the house {ok, result, error:{type,message}} contract /api/run set. MVP: no
-# streaming.
+# fused.ai(prompt, opts) lands here. The shell invokes the `claude` binary the
+# user already has (Claude Code — its login is the credential) rather than
+# pages fetching a model directly: the page stays origin-clean (no API key or
+# endpoint baked into authored HTML), and the server is one place to grow
+# config/limits later. Wire shape is the house {ok, result,
+# error:{type,message}} contract /api/run set. MVP: no streaming.
+#
+# The CLI is driven as a pure one-shot completion: --tools= disables every
+# built-in tool, --setting-sources= skips user/project settings and
+# CLAUDE.md, --system-prompt REPLACES the shipped agent prompt, --max-turns 1
+# and --no-session-persistence keep it a single stateless call.
 
-# `effort` is author-facing shorthand; MVP maps it to max_tokens only (the
-# proxy's chat/completions shape has no portable reasoning-effort field).
+# `effort` is author-facing shorthand; MVP maps it to max output tokens only
+# (via CLAUDE_CODE_MAX_OUTPUT_TOKENS — the CLI has no per-call flag for it).
 _AI_EFFORT_TOKENS = {"low": 1024, "medium": 4096, "high": 16384}
 _AI_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_AI_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _AI_TIMEOUT_S = 120.0
+_AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
+# Model ids/aliases are a closed charset. This is a SECURITY boundary, not
+# just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
+# (whose quoting cannot be escaped reliably), so every argv element must be a
+# static literal, a tempdir path, or a value this regex admitted.
+_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -852,18 +864,116 @@ def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
     )
 
 
+def _claude_bin() -> str | None:
+    """Path to the claude CLI: FUSED_RENDER_CLAUDE_BIN overrides, else PATH,
+    else the usual install dirs.
+
+    The fallback dirs matter for the packaged app: a Finder/Dock-launched
+    .app inherits a stripped PATH that misses ~/.local/bin and Homebrew.
+    Mirrors templates/claude/agent.py's _claude_bin (kept as a duplicate on
+    purpose — templates are standalone user-forkable code the server never
+    imports); keep the candidate list in lockstep."""
+    forced = os.environ.get(_AI_BIN_ENV)
+    if forced:
+        return forced
+    found = shutil.which("claude")
+    if found:
+        return found
+    # On Windows the launcher is claude.exe or an npm claude.cmd shim
+    # (shutil.which covers this on PATH via PATHEXT; the dir probe must too).
+    suffixes = ("", ".exe", ".cmd", ".bat") if sys.platform == "win32" else ("",)
+    for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
+                      "/usr/local/bin/claude"):
+        for suffix in suffixes:
+            path = os.path.expanduser(candidate) + suffix
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
+def _claude_argv_prefix(bin_path: str) -> list[str]:
+    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess (and so
+    create_subprocess_exec) cannot run directly — only cmd.exe can. Still an
+    argv list, never a shell string: the prompt is on stdin and every other
+    arg is ours, but the discipline stands."""
+    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", bin_path]
+    return [bin_path]
+
+
+def _kill_process_tree(proc) -> None:
+    """Kill `proc` and, on Windows, its whole descendant tree.
+
+    A .cmd shim runs through cmd.exe, so proc.kill() there terminates only
+    cmd.exe and orphans the node/claude child — which keeps running (and
+    billing) after we've answered timeout. taskkill /T walks the tree;
+    proc.kill() stays as the POSIX path and the Windows fallback."""
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+async def _run_claude_cli(argv: list[str], env: dict, timeout: float,
+                          stdin_text: str = ""):
+    """Run the claude CLI once; return (returncode, stdout, stderr) as text.
+
+    The single subprocess hop, module-level so tests can patch it — the same
+    discipline as _fs_stat/_fs_write. `stdin_text` is written to the process
+    and the pipe closed (communicate) — the prompt travels this way because
+    argv has an OS size cap (~32K on Windows, ARG_MAX elsewhere) that a
+    data-heavy prompt can blow. Raises asyncio.TimeoutError after `timeout`
+    seconds (the process is killed first)."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        # close_fds=False forces the posix_spawn path instead of fork()+exec:
+        # fork() runs PROJ's pthread_atfork child handler against the server's
+        # live proj.db SQLite handle and SIGSEGVs the child (exit -11). Same
+        # fix as executor.py's worker spawn — see the full story there and in
+        # tests/test_worker_forksafe.py.
+        close_fds=False,
+        # a windowless server must not flash a console window per call
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(stdin_text.encode("utf-8")), timeout)
+    except asyncio.TimeoutError:
+        _kill_process_tree(proc)
+        await proc.wait()
+        raise
+    return (proc.returncode,
+            stdout.decode("utf-8", "replace"),
+            stderr.decode("utf-8", "replace"))
+
+
 async def _ai_relay(body: dict) -> JSONResponse:
-    """Validate an /api/ai body and relay it to the proxy's /v1/chat/completions.
+    """Validate an /api/ai body and run one claude CLI completion.
 
     Module-level (not a closure) so tests can drive it directly and mock the
-    HTTP hop — the same discipline as _fs_stat/_fs_write."""
+    subprocess hop (_run_claude_cli)."""
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _ai_error(
             "bad_request", "request body must include 'prompt': a non-empty string",
             status=400)
 
-    model = body.get("model") or _AI_DEFAULT_MODEL
+    model = body.get("model")
+    if model is not None and (
+            not isinstance(model, str) or not _AI_MODEL_RE.fullmatch(model)):
+        return _ai_error(
+            "bad_request",
+            "'model' must be a model id or alias (letters, digits, . _ -)",
+            status=400)
+    model = model or _AI_DEFAULT_MODEL
     effort = body.get("effort")
     if effort is not None and effort not in _AI_EFFORT_TOKENS:
         return _ai_error(
@@ -879,38 +989,107 @@ async def _ai_relay(body: dict) -> JSONResponse:
     if max_tokens is None:
         max_tokens = _AI_EFFORT_TOKENS[effort or "medium"]
 
-    messages = []
     system_prompt = body.get("system_prompt")
-    if isinstance(system_prompt, str) and system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    if not (isinstance(system_prompt, str) and system_prompt):
+        system_prompt = _AI_DEFAULT_SYSTEM_PROMPT
 
-    base = shell_prefs.ai_base_url().rstrip("/")
-    url = base + "/v1/chat/completions"
-    payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(_AI_TIMEOUT_S)) as client:
-            r = await client.post(url, json=payload)
-    except httpx.HTTPError as exc:
+    bin_path = _claude_bin()
+    if not bin_path:
         return _ai_error(
             "ai_unavailable",
-            f"could not reach the AI proxy at {base} ({exc.__class__.__name__}); "
-            "is it running?")
-    if r.status_code != 200:
-        snippet = r.text[:500]
-        return _ai_error(
-            "ai_error", f"AI proxy returned HTTP {r.status_code}: {snippet}")
+            "claude binary not found on PATH; install Claude Code or set "
+            f"{_AI_BIN_ENV} to its location")
+
+    # No user-controlled STRING may enter argv: on the Windows .cmd-shim path
+    # cmd.exe re-parses the whole line, and cmd-escaping arbitrary text is not
+    # reliably possible. The prompt goes over stdin (-p with no positional
+    # prompt reads the pipe — also dodges the OS argv size cap for the
+    # documented embed-JSON-aggregates pattern) and the system prompt goes via
+    # --system-prompt-file (verified against claude 2.1.220: identical parse
+    # and input tokens). What remains in argv: static literals, the
+    # charset-validated model, and our own tempdir path.
+    sp_file = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt",
+        prefix="fused_render_ai_sp_", delete=False)
     try:
-        data = r.json()
-        text = data["choices"][0]["message"]["content"]
+        sp_file.write(system_prompt)
+        sp_file.close()
+        argv = _claude_argv_prefix(bin_path) + [
+            "-p",
+            "--output-format", "json",
+            "--model", model,
+            "--system-prompt-file", sp_file.name,
+            # Single-token equals form, never a separate "" argv element: the
+            # cmd.exe %* expansion behind a .cmd shim drops empty args — the
+            # flags would then swallow the next token and leave tools/settings
+            # enabled. (Verified against claude 2.1.220: parses identically,
+            # same 544 input tokens.)
+            "--tools=",
+            "--setting-sources=",
+            "--no-session-persistence",
+            "--max-turns", "1",
+        ]
+        env = dict(os.environ)
+        env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
+        try:
+            returncode, stdout, stderr = await _run_claude_cli(
+                argv, env, _AI_TIMEOUT_S, stdin_text=prompt)
+        except asyncio.TimeoutError:
+            return _ai_error(
+                "timeout",
+                f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+        except OSError as exc:
+            return _ai_error(
+                "ai_unavailable",
+                f"could not run the claude CLI at {bin_path}: {exc}")
+    finally:
+        try:
+            os.unlink(sp_file.name)
+        except OSError:
+            pass
+    if returncode != 0:
+        tail = (stderr or stdout).strip()[-500:]
+        return _ai_error(
+            "ai_error", f"claude CLI exited with code {returncode}: {tail}")
+    # Stderr may carry warnings (connector notices etc.) — only the exit code
+    # and stdout decide the outcome.
+    try:
+        data = json.loads(stdout)
+        text = data["result"]
     except (ValueError, LookupError, TypeError):
         return _ai_error(
-            "ai_error", "AI proxy returned an unexpected response shape")
+            "ai_error", "claude CLI returned an unexpected response shape")
+    if data.get("is_error") or data.get("subtype") not in (None, "success"):
+        return _ai_error(
+            "ai_error", f"claude CLI reported an error: {str(text)[:500]}")
+    # The requested model may be an alias (haiku/sonnet/opus); modelUsage is
+    # keyed by the full id the CLI actually ran, so prefer that for the echo.
+    model_usage = data.get("modelUsage")
+    used_model = model
+    if isinstance(model_usage, dict) and len(model_usage) == 1:
+        used_model = next(iter(model_usage))
     return JSONResponse({"ok": True, "result": {
         "text": text,
-        "model": data.get("model", model),
-        "usage": data.get("usage"),
+        "model": used_model,
+        "usage": _ai_usage(data.get("usage")),
     }})
+
+
+def _ai_usage(raw) -> dict | None:
+    """Normalize CLI usage to exactly {input_tokens, output_tokens} or None.
+
+    The response schema GUARANTEES this shape (Anthropic-style names, NOT
+    OpenAI's prompt_tokens/completion_tokens — see RH-11): pages read
+    usage.output_tokens without guarding, so a CLI whose usage block gains,
+    loses or retypes fields must degrade to null rather than leak an unknown
+    shape through."""
+    if not isinstance(raw, dict):
+        return None
+    tokens = {k: raw.get(k) for k in ("input_tokens", "output_tokens")}
+    if any(not isinstance(v, int) or isinstance(v, bool)
+           for v in tokens.values()):
+        return None
+    return tokens
 
 
 # Per-file sidecar <file>.json (shared with the claude chat template, which
@@ -4102,8 +4281,8 @@ def create_app(start_dir: str) -> FastAPI:
 
     @app.post("/api/ai")
     async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-        # fused.ai() relay — validation and the proxy hop live in _ai_relay
-        # (module-level so tests can drive it with the HTTP call mocked).
+        # fused.ai() — validation and the claude CLI hop live in _ai_relay
+        # (module-level so tests can drive it with the subprocess mocked).
         guard = _require_fused(x_fused)
         if guard is not None:
             return guard

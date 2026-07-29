@@ -29,6 +29,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -40,15 +41,32 @@ def _claude_bin() -> str:
     found = shutil.which("claude")
     if found:
         return found
+    # On Windows the launcher is claude.exe or an npm claude.cmd shim
+    # (shutil.which covers this on PATH via PATHEXT; the dir probe must too).
+    # Keep the candidate list in lockstep with server._claude_bin (pinned by
+    # test_server_ai.py).
+    suffixes = ("", ".exe", ".cmd", ".bat") if sys.platform == "win32" else ("",)
     for candidate in ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                       "/usr/local/bin/claude"):
-        candidate = os.path.expanduser(candidate)
-        if os.path.exists(candidate):
-            return candidate
+        for suffix in suffixes:
+            path = os.path.expanduser(candidate) + suffix
+            if os.path.exists(path):
+                return path
     raise FileNotFoundError(
         "claude CLI not found — install Claude Code or put `claude` on the "
         "PATH of the environment that launched fused-render"
     )
+
+
+def _claude_argv_prefix(bin_path: str) -> list[str]:
+    """How to exec `bin_path`: itself, or through cmd.exe for Windows shims.
+
+    npm installs claude as a .cmd/.bat shim, which CreateProcess cannot run
+    directly — only cmd.exe can. Still an argv list, never a shell string.
+    Lockstep with server._claude_argv_prefix."""
+    if sys.platform == "win32" and bin_path.lower().endswith((".cmd", ".bat")):
+        return ["cmd.exe", "/c", bin_path]
+    return [bin_path]
 
 
 def _system_prompt(file: str) -> str:
@@ -209,11 +227,23 @@ def _migrate_session(file: str, session_id: str) -> None:
 
 # ----------------------------------------------------------------- start/poll
 
+# Ids and model names that may enter argv are a closed charset. A SECURITY
+# boundary, not just validation: on the Windows .cmd-shim path cmd.exe
+# re-parses the whole line and cannot be escaped reliably, so argv must hold
+# only static literals, run_dir file paths, and values this regex admitted.
+# Lockstep with server._AI_MODEL_RE.
+_SAFE_TOKEN = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str) -> dict:
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
+    for name, value in (("session_id", session_id), ("model", model),
+                        ("effort", effort)):
+        if value and not _SAFE_TOKEN.fullmatch(value):
+            return {"error": f"invalid {name!r} (letters, digits, . _ -)"}
     if session_id:
         _migrate_session(file, session_id)
 
@@ -221,10 +251,21 @@ def _start(file: str, message: str, session_id: str, model: str,
     run_dir = os.path.join(RUNS, run_id)
     os.makedirs(run_dir)
 
-    cmd = [_claude_bin(), "-p", message,
+    # No user-controlled STRING enters argv (the cmd.exe re-parse above): the
+    # message goes over stdin (-p with no positional prompt reads the pipe)
+    # and the system prompt — it embeds the user's file path — rides a file in
+    # run_dir, cleaned up with the run.
+    sp_path = os.path.join(run_dir, "system_prompt.txt")
+    with open(sp_path, "w", encoding="utf-8") as f:
+        f.write(_system_prompt(file))
+    msg_path = os.path.join(run_dir, "message.txt")
+    with open(msg_path, "w", encoding="utf-8") as f:
+        f.write(message)
+
+    cmd = _claude_argv_prefix(_claude_bin()) + ["-p",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
-           "--append-system-prompt", _system_prompt(file),
+           "--append-system-prompt-file", sp_path,
            "--permission-mode", "acceptEdits"]
     if session_id:
         cmd += ["--resume", session_id]
@@ -240,11 +281,16 @@ def _start(file: str, message: str, session_id: str, model: str,
                    "resumed_from": session_id}, f)
 
     with open(os.path.join(run_dir, "out.jsonl"), "w", encoding="utf-8") as out, \
-         open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err:
+         open(os.path.join(run_dir, "err.log"), "w", encoding="utf-8") as err, \
+         open(msg_path, encoding="utf-8") as msg_in:
         proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                 cwd=os.path.dirname(file),
-                                stdin=subprocess.DEVNULL,
-                                start_new_session=True)
+                                stdin=msg_in,
+                                start_new_session=True,
+                                # a .cmd shim runs through cmd.exe — don't
+                                # flash a console window per chat turn
+                                creationflags=(subprocess.CREATE_NO_WINDOW
+                                               if os.name == "nt" else 0))
     with open(os.path.join(run_dir, "pid"), "w", encoding="utf-8") as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
