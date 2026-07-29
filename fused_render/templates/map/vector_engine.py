@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import math
 import os
 import sqlite3
@@ -22,6 +21,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
 from geo_paths import is_managed_mount
+from optional_runtime import require
 
 
 VECTOR_SUFFIXES = {
@@ -54,20 +54,20 @@ WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
 
 
-def _encoder_dependency_error() -> str | None:
-    missing = [
-        module
-        for module in ("mapbox_vector_tile", "google.protobuf", "pyclipper")
-        if importlib.util.find_spec(module) is None
-    ]
-    if not missing:
-        return None
-    return (
-        "This Fused Render runtime is too old for streamed vector tiles "
-        f"(missing {', '.join(missing)}). Install a build that includes the "
-        "Map Viewer vector runtime; the template will not download packages "
-        "while opening a map."
-    )
+VECTOR_RUNTIME = {
+    "geopandas": "geopandas",
+    "mapbox_vector_tile": "mapbox-vector-tile",
+    "google.protobuf": "protobuf",
+    "pyclipper": "pyclipper",
+    "pyogrio": "pyogrio",
+    "pyproj": "pyproj",
+    "rasterio": "rasterio",
+    "shapely": "shapely",
+}
+
+
+def _vector_dependency_error() -> str | None:
+    return require("Streamed vector layers", VECTOR_RUNTIME)
 
 
 def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
@@ -281,7 +281,7 @@ class VectorEngine:
         source_size = _source_size(source)
         artifact_id = str(request.get("artifact_id") or "")
         if source_size is None or source_size >= VECTOR_TILE_MIN_BYTES:
-            dependency_error = _encoder_dependency_error()
+            dependency_error = _vector_dependency_error()
             if dependency_error:
                 return _dependency_descriptor(artifact_id, dependency_error)
         try:
@@ -349,7 +349,7 @@ class VectorEngine:
             and feature_count < VECTOR_TILE_MIN_FEATURES
         ):
             return None
-        dependency_error = _encoder_dependency_error()
+        dependency_error = _vector_dependency_error()
         if dependency_error:
             return _dependency_descriptor(artifact_id, dependency_error)
 

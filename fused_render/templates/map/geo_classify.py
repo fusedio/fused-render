@@ -31,6 +31,8 @@ import json
 import math
 import os
 
+from optional_runtime import require
+
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
 MAX_RASTER_DIM = 1400        # longest edge of the reprojected raster PNG
 MAX_VECTOR_FEATURES = 400_000    # cap for the GeoJSON (polygon/line) path
@@ -263,6 +265,10 @@ def _from_table(path, artifact_dir, artifact_id, opts):
     import pandas as pd
 
     suffix = os.path.splitext(path.split("?", 1)[0])[1].lower()
+    if suffix == ".xls":
+        dependency_error = require("Legacy Excel layers", {"xlrd": "xlrd"})
+        if dependency_error:
+            raise RuntimeError(dependency_error)
     if suffix == ".csv":
         frame = pd.read_csv(path)
         detected = "CSV(table)"

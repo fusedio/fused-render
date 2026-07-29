@@ -81,13 +81,6 @@ bundled = [
     "fpdf2>=2.8.7",
     "msgpack>=1.0",
     "rasterio",
-    # Map Viewer range-first raster tiles and native .xls ingestion. These are
-    # bundled on Windows, macOS, and Linux so opening a map never installs a
-    # second runtime or downloads dependencies on first use.
-    'rio-tiler==6.2.10 ; python_version == "3.10"',
-    'rio-tiler==9.4.2 ; python_version >= "3.11"',
-    "mapbox-vector-tile==2.2.0",
-    "xlrd>=2,<3",
     "zarr",
     "pymupdf>=1.25",
     "pikepdf>=9",

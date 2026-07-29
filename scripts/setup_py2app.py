@@ -119,16 +119,6 @@ OPTIONS = {
         "openpyxl", "et_xmlfile",
         "shapely",
         "geopandas", "pyogrio", "pyproj",
-        # Map Viewer's range-first raster and bounded vector-tile engines.
-        # Force the packages into the app because templates import them
-        # dynamically in a child process.
-        "rasterio", "rio_tiler", "morecantile", "color_operations", "pystac",
-        # protobuf lives below the PEP 420 `google` namespace and cannot be
-        # forced through py2app's legacy package-bootstrap lookup. The
-        # generated vector_tile_pb2 module imports it statically, so
-        # modulegraph follows and bundles the required protobuf modules.
-        "mapbox_vector_tile",
-        "cachetools", "attrs", "httpx2", "httpcore2", "numexpr", "xlrd",
         "requests", "urllib3", "certifi", "charset_normalizer", "idna",
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
@@ -172,7 +162,7 @@ OPTIONS = {
     # (extension -> lib-dynload/*.so, never a bogus .py copy).
     # _cffi_backend: cryptography's cffi backend, the same bare-top-level-
     # C-extension shape as _duckdb.
-    "includes": ["_duckdb", "_cffi_backend", "pyclipper"],
+    "includes": ["_duckdb", "_cffi_backend"],
     "plist": {
         "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
         "CFBundleName": f"FusedRender{branch_suffix()}",

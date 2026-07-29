@@ -75,13 +75,13 @@ def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
     assert daemon.VectorEngine.__module__ == "vector_engine"
 
 
-def test_map_uses_the_bundled_runtime_without_first_open_installation():
+def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
 
-    assert any(item.startswith("rio-tiler==") for item in bundled)
-    assert "mapbox-vector-tile==2.2.0" in bundled
-    assert any(item.startswith("xlrd") for item in bundled)
+    assert not any(item.startswith("rio-tiler") for item in bundled)
+    assert not any(item.startswith("mapbox-vector-tile") for item in bundled)
+    assert not any(item.startswith("xlrd") for item in bundled)
 
     launcher = (MAP / "map_render.py").read_text(encoding="utf-8")
     assert "[sys.executable," in launcher
@@ -90,15 +90,46 @@ def test_map_uses_the_bundled_runtime_without_first_open_installation():
     assert "FUSED_RENDER_UV" not in launcher
     assert not (MAP / "pyproject.toml").exists()
 
+    setup = (ROOT / "scripts" / "setup_py2app.py").read_text(encoding="utf-8")
+    for package in ("rio_tiler", "mapbox_vector_tile", "xlrd", "pyclipper"):
+        assert f'"{package}"' not in setup
 
-def test_large_vector_reports_an_old_runtime_before_registering_tiles(
+
+def test_optional_runtime_lists_only_missing_distributions(monkeypatch):
+    optional_runtime = _load("optional_runtime")
+    available = {"rasterio"}
+    monkeypatch.setattr(
+        optional_runtime,
+        "_is_available",
+        lambda module: module in available,
+    )
+
+    message = optional_runtime.require(
+        "Raster layers",
+        {
+            "rasterio": "rasterio",
+            "rio_tiler": "rio-tiler",
+            "some_rio_tiler_submodule": "rio-tiler",
+        },
+    )
+
+    assert "not installed: rio-tiler" in message
+    assert message.endswith("uv pip install rio-tiler")
+    assert message.count("rio-tiler") == 2
+
+
+def test_large_vector_reports_install_command_before_registering_tiles(
     monkeypatch,
 ):
     vector_engine = _load("vector_engine")
     monkeypatch.setattr(
         vector_engine,
-        "_encoder_dependency_error",
-        lambda: "This Fused Render runtime is too old for streamed vector tiles.",
+        "_vector_dependency_error",
+        lambda: (
+            "Optional support for streamed vector layers requires Python "
+            "packages that are not installed: mapbox-vector-tile.\n"
+            "uv pip install mapbox-vector-tile"
+        ),
     )
     engine = vector_engine.VectorEngine(
         base_url="http://127.0.0.1:1234",
@@ -114,8 +145,58 @@ def test_large_vector_reports_an_old_runtime_before_registering_tiles(
     )
 
     assert descriptor["status"] == "error"
-    assert "runtime is too old" in descriptor["message"]
+    assert "uv pip install mapbox-vector-tile" in descriptor["message"]
     assert engine.sources == {}
+
+
+def test_raster_reports_install_command_before_opening_source(
+    monkeypatch,
+    tmp_path,
+):
+    raster_engine = _load("raster_engine")
+    source = tmp_path / "large.tif"
+    source.write_bytes(b"not opened")
+    monkeypatch.setattr(
+        raster_engine,
+        "_raster_dependency_error",
+        lambda: (
+            "Optional support for raster layers requires Python packages "
+            "that are not installed: rio-tiler.\n"
+            "uv pip install rio-tiler"
+        ),
+    )
+    engine = raster_engine.RasterEngine(
+        cache_dir=str(tmp_path / "cache"),
+        base_url="http://127.0.0.1:1234",
+        token="test-token",
+    )
+
+    descriptor = engine.try_describe(
+        {
+            "target": str(source),
+            "artifact_id": "raster-1",
+        }
+    )
+
+    assert descriptor["status"] == "error"
+    assert "uv pip install rio-tiler" in descriptor["message"]
+    assert engine.sources == {}
+
+
+def test_legacy_excel_reports_xlrd_install_command(monkeypatch):
+    classify = _load("geo_classify")
+    monkeypatch.setattr(
+        classify,
+        "require",
+        lambda _feature, _requirements: (
+            "Optional support for legacy Excel layers requires Python "
+            "packages that are not installed: xlrd.\n"
+            "uv pip install xlrd"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="uv pip install xlrd"):
+        classify._from_table("legacy.xls", "", "excel-1", {})
 
 
 def test_small_vector_can_use_geojson_fallback_on_an_old_runtime(
@@ -127,7 +208,7 @@ def test_small_vector_can_use_geojson_fallback_on_an_old_runtime(
     source.write_bytes(b"small")
     monkeypatch.setattr(
         vector_engine,
-        "_encoder_dependency_error",
+        "_vector_dependency_error",
         lambda: pytest.fail("small vector should not require the MVT encoder"),
     )
     engine = vector_engine.VectorEngine(
@@ -182,22 +263,6 @@ def test_map_daemon_follower_never_steals_a_fresh_start_lock(
         map_render.START_LOCK_STALE_AFTER
         > map_render.FOLLOWER_WAIT_TIMEOUT
     )
-
-
-def test_macos_bundle_forces_dynamic_map_runtime_packages():
-    setup = (ROOT / "scripts" / "setup_py2app.py").read_text(encoding="utf-8")
-    for package in (
-        "rasterio",
-        "rio_tiler",
-        "morecantile",
-        "color_operations",
-        "pystac",
-        "mapbox_vector_tile",
-        "httpx2",
-        "httpcore2",
-        "xlrd",
-    ):
-        assert f'"{package}"' in setup
 
 
 def test_remote_table_urls_are_not_converted_to_local_paths(monkeypatch):

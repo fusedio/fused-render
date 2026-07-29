@@ -25,6 +25,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from geo_paths import is_managed_mount
+from optional_runtime import require
 
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
@@ -53,6 +54,30 @@ RASTER_SUFFIXES = {
     ".hdf",
     ".h5",
 }
+RASTER_RUNTIME = {
+    "numpy": "numpy",
+    "rasterio": "rasterio",
+    "rio_tiler": "rio-tiler",
+}
+
+
+def _raster_dependency_error() -> str | None:
+    return require("Raster layers", RASTER_RUNTIME)
+
+
+def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
+    return {
+        "id": artifact_id,
+        "status": "error",
+        "kind": None,
+        "bounds": None,
+        "data": {},
+        "stats": {},
+        "style": {},
+        "warnings": [],
+        "message": message,
+        "detected_type": "raster",
+    }
 
 
 def _jsonable(value: Any) -> Any:
@@ -322,6 +347,20 @@ class RasterEngine:
         if not target or target.lower().split("?")[0].endswith(".py"):
             return None
 
+        suffix_target = (
+            urlsplit(target).path
+            if target.startswith(("http://", "https://"))
+            else target
+        )
+        suffix = Path(suffix_target.replace("\\", "/")).suffix.lower()
+        if suffix in RASTER_SUFFIXES:
+            dependency_error = _raster_dependency_error()
+            if dependency_error:
+                return _dependency_descriptor(
+                    str(req.get("artifact_id") or ""),
+                    dependency_error,
+                )
+
         direct_target = str(req.get("target") or "")
         supplied_url = str(req.get("source_url") or "")
         is_local_file = (
@@ -349,12 +388,6 @@ class RasterEngine:
                 opts=req.get("opts") or {},
             )
         except Exception as error:
-            suffix_target = (
-                urlsplit(target).path
-                if target.startswith(("http://", "https://"))
-                else target
-            )
-            suffix = Path(suffix_target.replace("\\", "/")).suffix.lower()
             if suffix in RASTER_SUFFIXES:
                 return {
                     "id": str(req.get("artifact_id") or ""),
