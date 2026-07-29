@@ -32,12 +32,11 @@ The wire shape returned here is the built-in executor's
 shape regardless of which engine ran the code.
 """
 import asyncio
-import hashlib
 import json
 import logging
 import os
 import re
-import shutil
+import shlex
 import subprocess
 import sys
 import traceback
@@ -79,19 +78,22 @@ _backend = None
 #     bundle is NOT that stub — py2app ships a real interpreter at
 #     `Contents/MacOS/python` and points `sys.executable` at it, which is why
 #     `executor.py`'s `[sys.executable, _child.py]` works there (D33, and
-#     build_dmg.sh smoke-tests exactly that spawn) — but the guarantee is
-#     py2app's, not ours, so it is verified rather than assumed.
-#   * that bundled python may only self-locate its stdlib because the app
-#     process exports PYTHONHOME — and `python_compute` STRIPS PYTHONHOME from
-#     the child. So the probe runs under the child's env, not ours.
+#     build_dmg.sh smoke-tests exactly that spawn).
+#   * but that bundled python needs PYTHONHOME to find its runtime, and
+#     `python_compute` STRIPS PYTHONHOME from the child. Measured on a real DMG:
+#     stripped, it reports the BUILD MACHINE's Homebrew framework as its prefix.
+#     So the probe runs under the child's env, not ours, and the macOS bundle
+#     needs the wrapper (`_wrapper_interpreter`) rather than the raw path.
 #   * on Windows the launcher execs `pythonw.exe` (windows/launcher/launcher.c);
 #     `python.exe` beside it is the same install with usable std streams.
 #   * the Linux AppImage's `usr/python/bin/python3` (scripts/linux/AppRun) is an
 #     ordinary relocatable python and needs none of this.
 #
-# So: resolve a candidate, then PROVE it by running it. The probe is the
-# assertion — one subprocess per server process — and a candidate that fails it
-# falls back to the venv path rather than spawning a non-interpreter.
+# So: resolve a candidate, then PROVE it by running it — and if the raw candidate
+# cannot work, prove a wrapper for it instead. The probe is the assertion (one
+# subprocess per rung per server process). When nothing verifies, a header-less
+# script FAILS with a configuration error (D175): it is never quietly run in an
+# environment without the app's packages.
 _UNPROBED = object()
 _app_interpreter = _UNPROBED
 
@@ -106,21 +108,16 @@ _APP_PYTHON_ENV = "FUSED_RENDER_APP_PYTHON"
 _FALLBACK_STRIPPED = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONSTARTUP")
 
 _PROBE = (
-    "import json,os,sys;"
-    "print(json.dumps({'prefix': sys.prefix, 'base_prefix': sys.base_prefix,"
-    " 'executable': sys.executable,"
-    " 'path': [os.path.abspath(p) for p in sys.path if p]}))"
+    "import json,sys;"
+    "print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable}))"
 )
 
-# Where the bootstrap venv (see _bootstrap_interpreter) lives: under the app's
-# OWN cache, never `fused`'s venvs_path. It is not a script venv and must not
-# collide with a requirements key — nothing may ever mistake it for one.
-_BOOTSTRAP_CACHE = ("cache", "_app_interpreter")
-
-# Creating the bootstrap venv is `python -m venv`, purely local; a cold one on a
-# slow disk can still take a few seconds, so it gets its own budget rather than
-# borrowing the probe's deliberately-tight one. Paid once per app version.
-_BOOTSTRAP_TIMEOUT_S = 120
+# Where the generated wrapper (see _wrapper_interpreter) lives: under the app's
+# OWN cache, never `fused`'s venvs_path, where it could collide with a
+# requirements key or be deleted by `ensure_requirements_venv`. Named `python` so
+# every log line and `ps` entry reads as an interpreter.
+_WRAPPER_CACHE = ("cache", "_app_interpreter", "bin")
+_WRAPPER_NAME = "python"
 
 # The probe is a one-line `-c` on the local filesystem: a real python answers in
 # well under a second, and nothing this budget protects is legitimately slower.
@@ -182,26 +179,6 @@ def _child_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in _stripped_env_vars()}
 
 
-def _app_path_dirs() -> list[str]:
-    """The directories this server imports its own packages from.
-
-    `sys.path`, filtered to real directories — not `sysconfig` and not a guess at
-    the bundle layout. py2app flattens everything into
-    `Contents/Resources/lib/python3.12`, which is neither the framework's
-    site-packages nor where `sysconfig.get_paths()['purelib']` points, so any
-    computed answer is wrong there. What we actually need is "wherever THIS
-    process found numpy", and that is exactly `sys.path`.
-    """
-    out = []
-    for entry in sys.path:
-        if not entry:
-            continue
-        p = os.path.abspath(entry)
-        if os.path.isdir(p) and p not in out:
-            out.append(p)
-    return out
-
-
 def _probe(exe: str) -> tuple[dict | None, str]:
     """Run `exe` and report what it says about itself. (info, failure detail)."""
     try:
@@ -219,106 +196,127 @@ def _probe(exe: str) -> tuple[dict | None, str]:
         return None, f"unparseable probe output ({type(e).__name__}: {e})"
 
 
-def _bootstrap_dir(candidate: str) -> str:
+def _wrapper_path() -> str:
     from fused_render.shell.storage import home_dir
 
-    ident = "|".join((candidate, sys.prefix, sys.version))
-    key = hashlib.sha256(ident.encode()).hexdigest()[:16]
-    return os.path.join(home_dir(), *_BOOTSTRAP_CACHE, key)
+    return os.path.join(home_dir(), *_WRAPPER_CACHE, _WRAPPER_NAME)
 
 
-def _bootstrap_interpreter(candidate: str) -> tuple[str | None, str]:
-    """A venv WE create off `candidate`, so a packaged python becomes usable.
+def _interpreter_home() -> str | None:
+    """The PYTHONHOME this process needs, when it needs one.
 
-    Why this exists: inside the macOS .app the bundled interpreter finds its
-    runtime only because the app exports `PYTHONHOME=…/Contents/Resources`
-    (`scripts/build_dmg.sh` sets it on every launch of that python and says so),
-    and the backend strips PYTHONHOME from the child. So the direct candidate
-    reports the *framework's* prefix instead of the app's and is correctly
-    rejected — on the DMG's default path, not in some edge case.
+    Inside the py2app bundle the launcher exports
+    `PYTHONHOME=…/Contents/Resources` (`scripts/build_dmg.sh` does this for every
+    invocation of that python and says why), and that is the ONLY thing making
+    `Contents/Resources/lib/python3.12` — where py2app flattens both the stdlib
+    and site-packages — findable. Prefer the value we were launched with; fall
+    back to `sys.prefix`, which equals it whenever PYTHONHOME is in effect.
 
-    A venv fixes the self-location half for free: its python reads `pyvenv.cfg`
-    and needs no PYTHONHOME. `--system-site-packages` is not enough on its own,
-    though — it would inherit the FRAMEWORK's site-packages, which has no numpy,
-    because py2app puts the app's packages in `Resources/lib/python3.12` instead.
-    So we also drop a `.pth` naming this server's real `sys.path`, which is the
-    only layout-agnostic way to say "the packages this process is using".
-
-    `--without-pip` matters beyond speed: it means creation is a purely local
-    operation with **no PyPI access at all**. A header-less core template must
-    never touch the network, and that holds here by construction rather than by
-    luck. Built once per app version, under our own cache.
+    None means this process does not depend on PYTHONHOME, so there is nothing
+    for a wrapper to hand on and no reason to build one.
     """
-    venv_dir = _bootstrap_dir(candidate)
-    venv_python = os.path.join(
-        venv_dir, "Scripts" if os.name == "nt" else "bin",
-        "python.exe" if os.name == "nt" else "python",
-    )
-    ready = os.path.join(venv_dir, ".ready")
-    if os.path.exists(ready) and os.path.exists(venv_python):
-        return venv_python, ""
+    home = os.environ.get("PYTHONHOME") or ""
+    if not home:
+        return None
+    return home if os.path.isdir(home) else None
 
-    shutil.rmtree(venv_dir, ignore_errors=True)
-    try:
-        os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
-        # OUR full environment, PYTHONHOME included: the candidate may be unable
-        # to run at all without it, and that is precisely the case being fixed.
-        proc = subprocess.run(
-            [candidate, "-m", "venv", "--system-site-packages", "--without-pip", venv_dir],
-            capture_output=True, text=True, timeout=_BOOTSTRAP_TIMEOUT_S,
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return None, f"could not create a bootstrap venv: {type(e).__name__}: {e}"
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
-        return None, f"could not create a bootstrap venv: {detail}"
 
-    # Ask the venv where its site-packages is rather than reconstructing the
-    # path — one subprocess, and it cannot be wrong about its own layout.
-    try:
-        site_proc = subprocess.run(
-            [venv_python, "-c", "import sysconfig;print(sysconfig.get_paths()['purelib'])"],
-            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return None, f"bootstrap venv is not runnable: {type(e).__name__}: {e}"
-    if site_proc.returncode != 0:
+def _wrapper_interpreter(candidate: str) -> tuple[str | None, str]:
+    """A tiny script that restores PYTHONHOME and execs `candidate`.
+
+    This is the packaged-macOS answer, and it replaced a venv-based one because
+    **the bundle ships no `venv` module at all** — not in
+    `Contents/Resources/lib/python3.12`, not in `lib/python312.zip`, and the
+    embedded `Python.framework` contains only the `Python` dylib with no second
+    interpreter binary. `-m venv` fails there regardless of environment, so no
+    amount of `--system-site-packages` could have worked. Measured against a real
+    DMG, which is also how we know the direct candidate fails: without PYTHONHOME
+    that python reports the BUILD MACHINE's Homebrew framework as its prefix — a
+    path that does not exist on a user's machine.
+
+    `interpreter=` is just an executable path, so a script is a legal answer.
+
+    Two details that are not stylistic:
+
+    **`exec -a <wrapper>`** (hence bash, not sh) makes the child's
+    `sys.executable` the WRAPPER rather than the raw python. That is deliberate:
+    `geotiff/tile_server.py` and `zarr_aoi/tile_server.py` spawn their daemons as
+    `[sys.executable, …]` with PYTHONHOME **scrubbed from the child env** (their
+    own comment explains why — a bundle-scoped PYTHONHOME would poison a uv
+    venv). Measured on the DMG: with the raw python as `sys.executable` that
+    spawn dies with `ModuleNotFoundError: No module named 'pandas'`; with the
+    wrapper it succeeds, because the wrapper re-establishes PYTHONHOME itself and
+    is therefore immune to the scrub. Same for `usd/convert_worker.py`.
+
+    **Not `PYTHONEXECUTABLE`**, which would achieve the same `sys.executable`
+    with less machinery and was rejected on measurement: it is inherited by every
+    descendant and applies to *any* python they run, so an unrelated interpreter
+    (exactly geotiff's uv-venv daemon, when uv IS present) reports OUR wrapper as
+    its `sys.executable` and re-spawns into the wrong interpreter. `exec -a`
+    affects only this one process.
+
+    Regenerated whenever the content would differ (the app can move), 0700 since
+    it is derived state naming absolute paths. Returns (path, "") or (None, why).
+    """
+    home = _interpreter_home()
+    if home is None:
         return None, (
-            "bootstrap venv is not runnable: "
-            + ((site_proc.stderr or "").strip() or f"exit {site_proc.returncode}")
+            "this process does not use PYTHONHOME, so a wrapper has nothing to "
+            "restore"
         )
-    purelib = site_proc.stdout.strip()
+    if os.name == "nt":
+        # Windows interpreters self-locate; there is no PYTHONHOME to restore and
+        # no POSIX shell to do it with. Gated rather than attempted.
+        return None, "not applicable on Windows"
+
+    body = (
+        "#!/bin/bash\n"
+        "# Generated by fused_render (engine.app_interpreter) - derived state, not\n"
+        "# config. Restores the PYTHONHOME the packaged interpreter needs, which the\n"
+        "# compute backend strips from its children. Regenerated when it changes.\n"
+        f"PYTHONHOME={shlex.quote(home)}\n"
+        "export PYTHONHOME\n"
+        "unset PYTHONPATH\n"
+        # -a so the child's sys.executable is THIS script: see the docstring.
+        f"exec -a {shlex.quote(_wrapper_path())} {shlex.quote(candidate)} \"$@\"\n"
+    )
+    path = _wrapper_path()
     try:
-        os.makedirs(purelib, exist_ok=True)
-        with open(os.path.join(purelib, "_fused_render_app_path.pth"), "w",
-                  encoding="utf-8") as f:
-            f.write("\n".join(_app_path_dirs()) + "\n")
-        with open(ready, "w", encoding="utf-8") as f:
-            json.dump({"base": candidate, "created_from": sys.prefix}, f)
+        existing = None
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                existing = f.read()
+        if existing != body:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Write-then-rename so a concurrent reader never sees a partial script.
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.chmod(tmp, 0o700)
+            os.replace(tmp, path)
     except OSError as e:
-        return None, f"could not finish the bootstrap venv: {e}"
-    return venv_python, ""
+        return None, f"could not write the interpreter wrapper: {e}"
+    return path, ""
 
 
 def app_interpreter() -> str | None:
     """A verified path to an interpreter with this app's packages, or None.
 
-    Two candidates, in order, and **both are proven by running them** — never
-    assumed:
+    Two rungs, each **proven by running it** under the environment the backend
+    will actually give the child — never accepted for existing:
 
       1. the app's own `sys.executable` (or `python.exe` beside a `pythonw.exe`).
-         Accepted when it reports OUR `sys.prefix`, which is what makes the app's
-         site-packages the ones a header-less script imports.
-      2. failing that, a venv we build off it (`_bootstrap_interpreter`).
-         Accepted when the app's every `sys.path` directory is on the CHILD's
-         `sys.path`.
+         Serves a dev checkout, the Linux AppImage (python-build-standalone,
+         self-locating) and the Windows installer.
+      2. failing that, a generated wrapper that restores PYTHONHOME
+         (`_wrapper_interpreter`). Serves the packaged macOS .app, where rung 1
+         cannot work: strip PYTHONHOME and that interpreter reports the build
+         machine's Homebrew framework as its prefix.
 
-    The second acceptance test is deliberately not a prefix comparison: a venv's
-    `sys.prefix` is the venv by definition, and `sys.base_prefix` would match on
-    the macOS bundle even when the base resolves to a framework that contains no
-    numpy — which is the exact failure being worked around. "Are the app's own
-    package directories importable?" is the thing we need, so it is the thing
-    that gets asserted.
+    ONE acceptance rule for both, which is why there are no per-rung caveats to
+    keep straight: the child must report our own `sys.prefix`. Same prefix means
+    the same installation, hence the same site-packages, which is the entire point
+    — `[bundled]` and the core dependencies importable with nothing installed.
 
     Cached per process (each probe is a subprocess); `reset_app_interpreter_cache`
     clears it.
@@ -349,31 +347,34 @@ def app_interpreter() -> str | None:
         f"it reports sys.prefix {info['prefix']!r}, not this app's {sys.prefix!r}"
     )
     logger.info(
-        "%r cannot be used directly (%s) — building a bootstrap venv from it so "
+        "%r cannot be used directly (%s) — trying a PYTHONHOME wrapper so "
         "header-less scripts still see this app's packages", candidate, why,
     )
 
-    boot, boot_detail = _bootstrap_interpreter(candidate)
-    if boot is not None:
-        boot_info, boot_probe_detail = _probe(boot)
-        if boot_info is not None:
-            missing = [d for d in _app_path_dirs() if d not in set(boot_info["path"])]
-            if not missing:
-                logger.info("header-less scripts will run on %s (bootstrap venv)", boot)
-                _app_interpreter = boot
-                return _app_interpreter
-            boot_detail = (
-                "the bootstrap venv cannot see this app's packages (missing from "
-                f"its sys.path: {missing})"
+    wrapper, wrap_detail = _wrapper_interpreter(candidate)
+    if wrapper is not None:
+        # Probed exactly like rung 1, under the same stripped env and against the
+        # same rule: it has to earn its place by running, not by existing.
+        wrap_info, wrap_probe_detail = _probe(wrapper)
+        if wrap_info is not None and wrap_info["prefix"] == sys.prefix:
+            logger.info(
+                "header-less scripts will run on %s (PYTHONHOME wrapper for %s)",
+                wrapper, candidate,
             )
-        else:
-            boot_detail = boot_probe_detail
+            _app_interpreter = wrapper
+            return _app_interpreter
+        wrap_detail = wrap_probe_detail or (
+            f"the wrapper reports sys.prefix {wrap_info['prefix']!r}, not this "
+            f"app's {sys.prefix!r}"
+        )
 
     logger.error(
-        "No usable interpreter for header-less scripts. %r could not be used "
-        "directly (%s), and the bootstrap venv failed too (%s). Set %s to a real "
-        "python that has this app's packages.",
-        candidate, why, boot_detail, _APP_PYTHON_ENV,
+        "No usable interpreter for scripts that declare no dependencies. %r could "
+        "not be used directly (%s), and the PYTHONHOME wrapper did not work either "
+        "(%s). Such scripts will now fail with a clear error rather than run in an "
+        "environment without this app's packages. Set %s to a Python executable "
+        "that has them.",
+        candidate, why, wrap_detail, _APP_PYTHON_ENV,
     )
     _app_interpreter = None
     return None
