@@ -134,7 +134,7 @@ runtime API is portable:
 | `fused.env` | ✅ | runtime identity — `"local"` in the fused-render app, `"hosted"` here. Branch on it to gate local-only paths when deployed. |
 | `fused.writeFile(...)` | ❌ | a hosted artifact is immutable. |
 | `fused.stat(...)` | ❌ | no filesystem to stat. |
-| `fused.ai(...)` | ❌ | relays to a proxy on the author's local machine — unreachable from a hosted page. |
+| `fused.ai(...)` | ❌ | runs the claude CLI on the author's local machine — unreachable from a hosted page. |
 | SSE live-reload | ❌ | the artifact does not change under the page. |
 
 `fused.env` is the recommended way to tell the two environments apart: it is a

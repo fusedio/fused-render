@@ -130,8 +130,8 @@ Any `.html` file can call it and bind the result to the URL:
 - `fused.params` — a string-only key/value store synced into the browser
   URL (`get`, `getAll`, `set`, `onChange`). Refreshing or bookmarking a view
   reproduces its exact state.
-- `fused.ai(prompt, opts?)` — ask an AI model through a local OpenAI-compatible
-  proxy (default `http://127.0.0.1:8317`); resolves with `{text, model, usage}`.
+- `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
+  Code) CLI on your machine; resolves with `{text, model, usage}`.
   See `examples_seed/ai_demo/` for a working AI-analyst view.
 
 Built-in preview templates (parquet tables, images, text/code files) are

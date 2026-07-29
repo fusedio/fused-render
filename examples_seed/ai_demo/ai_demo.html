@@ -209,7 +209,7 @@
       } catch (err) {
         answer.classList.add("error");
         if (err.type === "ai_unavailable") {
-          answer.textContent = "AI proxy not running — " + err.message;
+          answer.textContent = "AI unavailable — " + err.message;
         } else if (err.type === "bad_request") {
           answer.textContent = "Bad request: " + err.message;
         } else {

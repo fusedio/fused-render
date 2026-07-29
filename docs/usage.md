@@ -82,13 +82,12 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 
 ## AI calls (`fused.ai`)
 
-Pages can ask an AI model with `fused.ai(prompt, opts?)`. The server relays the
-call to a **local OpenAI-compatible proxy** — nothing leaves your machine unless
-the proxy you run sends it somewhere. The proxy's base URL defaults to
-`http://127.0.0.1:8317`; set the `ai_base_url` key in
-`~/.fused-render/prefs.json` to change it persistently, or set
-`FUSED_RENDER_AI_BASE_URL` to override per process. If the proxy isn't running,
-calls reject with an `ai_unavailable` error naming the URL that was tried.
+Pages can ask an AI model with `fused.ai(prompt, opts?)`. The server runs the
+call through the **`claude` (Claude Code) CLI** on your machine — your existing
+Claude Code login is the credential; there is no proxy or API key to configure.
+The binary is found on `PATH`; set `FUSED_RENDER_CLAUDE_BIN` to point at a
+specific binary per process. If the CLI isn't installed, calls reject with an
+`ai_unavailable` error saying what to install or set.
 `fused.ai` is local-only: exported/hosted pages can't use it (see
 [EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
 

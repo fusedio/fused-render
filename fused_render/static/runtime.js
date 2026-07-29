@@ -8,8 +8,8 @@
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
- *     Ask an AI model via the shell's /api/ai relay to a local OpenAI-compatible
- *     proxy. opts: systemPrompt, model, effort ("low"|"medium"|"high"),
+ *     Ask an AI model via the shell's /api/ai, which runs the local claude
+ *     (Claude Code) CLI. opts: systemPrompt, model, effort ("low"|"medium"|"high"),
  *     maxTokens. Local-only — not available on hosted/exported pages.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
@@ -697,10 +697,10 @@
       });
   }
 
-  // Ask an AI model: the shell relays to a local OpenAI-compatible proxy
+  // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
-  // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error"),
-  // mirroring runPython's rejection style. opts:
+  // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
+  // "timeout"), mirroring runPython's rejection style. opts:
   //   { systemPrompt, model, effort: "low"|"medium"|"high", maxTokens }
   // No latest-wins channel: an AI call is never a scrub, and cancelling a
   // half-billed completion buys nothing — calls run fully concurrent.
