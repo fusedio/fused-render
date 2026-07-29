@@ -7,17 +7,22 @@ such a script buys nothing and costs a download. A script **with** a header gets
 a venv containing exactly what the header declares and nothing else, so a
 dependency it forgot to declare is simply absent.
 
-That makes the header decision a two-part invariant, and both halves are
+That makes the header decision a three-part invariant, and every part is
 derived from the source here rather than written down, because a written-down
 version is what failed before: the predecessor of this file pinned
 `DEFAULT_REQUIREMENTS` against `[bundled]` with a hand-kept list of deltas, and
 before that a *comment* claimed the two were in sync while being wrong in ten
 places.
 
-  1. **A header must be necessary** — it has to declare something the app's
+  1. **A header must be read** — the file has to be something `run_python` is
+     actually handed. A header on a helper module or a spawned daemon is inert
+     *and looks correct*, which is why it survives review: D170 shipped one on
+     `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying a
+     complete, accurate, never-read list of its own (D174).
+  2. **A header must be necessary** — it has to declare something the app's
      interpreter does not already have. Otherwise deleting it is free and
      keeping it makes a first run wait on PyPI for packages already installed.
-  2. **A header must be complete** — every `[bundled]`/core distribution the
+  3. **A header must be complete** — every `[bundled]`/core distribution the
      file imports, at any nesting depth, is declared in the header of *each*
      entry point that can execute it. This is the half with teeth: it is what
      caught `pano/pano.py` importing numpy and pillow while declaring only
@@ -25,6 +30,10 @@ places.
      installed alongside every header. With that baseline gone, an incomplete
      header is a broken template — and a silent one (a guarded import degrades,
      an unguarded one 500s a tile request), never a startup error anyone sees.
+
+Under PY-18 a header also *triggers a download*, so each of these now costs a
+user-visible wait rather than only disk: an inert or unnecessary header means a
+progress bar for an environment nothing will ever import from.
 """
 import ast
 import functools
@@ -248,6 +257,35 @@ def _venv_roots(relpath: str, graph: dict, _seen: frozenset = frozenset()) -> se
 
 
 @functools.lru_cache(maxsize=1)
+def _runpython_targets() -> frozenset[str]:
+    """Template .py files that something can actually hand to `run_python`.
+
+    Derived, not listed: a `.py` is an entry point when a NON-.py file in its own
+    template folder names it — which is what a `fused.runPython('./x.py')` call
+    site in the template's .html is, and equally a registry/manifest reference.
+    Sibling .py files are excluded on purpose: one module importing another is
+    exactly the relationship that does NOT make the importee an entry point.
+    """
+    targets = set()
+    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+            continue
+        prose = ""
+        for name in filenames:
+            if name.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                    prose += f.read()
+            except OSError:
+                continue
+        for name in filenames:
+            if name.endswith(".py") and name in prose:
+                targets.add(os.path.relpath(os.path.join(dirpath, name), _TEMPLATES))
+    return frozenset(targets)
+
+
+@functools.lru_cache(maxsize=1)
 def _app_dists() -> frozenset[str]:
     """What the app's own interpreter provides: `[bundled]` + core `dependencies`.
 
@@ -299,6 +337,33 @@ def test_a_core_template_header_declares_something_the_app_lacks(relpath):
         "and the file runs on the app's own python (PY-17). Keep a header only "
         "for a dependency that is genuinely absent from `[bundled]` + the core "
         "`dependencies`."
+    )
+
+
+@pytest.mark.parametrize("relpath", _template_files())
+def test_a_header_only_sits_on_a_runpython_entrypoint(relpath):
+    """Part 3: a header must be READ (PY-16).
+
+    `run_python` reads the header of the file it is *handed* and of no other, so
+    a header on a helper module or a daemon is inert — and inert while looking
+    entirely correct, which is why it survives review. D170 shipped exactly this
+    on `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying the
+    same thing: a full, accurate, never-read dependency list.
+
+    The cost is not only cosmetic now. Under PY-18 a header is what triggers the
+    install loader, so an inert one can also mean a download for an environment
+    nothing ever runs in.
+    """
+    graph = _template_graph()
+    if not graph["header"][relpath]:
+        return
+    assert relpath in _runpython_targets(), (
+        f"{relpath} carries a `# /// script` header but nothing in its template "
+        "folder names it as a runPython target, so the header is never read. "
+        "Either the file is an entry point and its call site should reference it, "
+        "or the header belongs on the file that IS handed to run_python (its "
+        "importer / spawner) — or, if a self-managed venv already covers it, "
+        "delete the header."
     )
 
 

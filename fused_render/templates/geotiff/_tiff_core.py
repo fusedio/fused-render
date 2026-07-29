@@ -13,9 +13,12 @@ Python that has rasterio, which handles everything.
 Presentation (grid/stats/histogram/RGB) is shared via _raster_common so both
 engines return an identical JSON schema.
 """
-# /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs"]
-# ///
+# No `# /// script` header, deliberately: run_python is never handed this
+# file. It is imported by tiff_reader.py (whose header covers it) and by
+# tile_server.py's daemon (whose own uv venv covers it), and a header on a
+# file that is never an entrypoint is never read — it just looks correct.
+# That mistake shipped once already (D170, on map/vector_tile_server.py);
+# tests/test_engine_requirements.py now derives entrypoint-ness and fails it.
 
 import struct
 import sys

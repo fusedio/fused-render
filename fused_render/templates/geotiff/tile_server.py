@@ -26,9 +26,22 @@ fall back to a rasterio WarpedVRT render instead of the runPython image path.
 Idle shutdown after 30 min. The state file embeds this file's mtime, so
 editing the module auto-respawns a fresh daemon on the next ensure().
 """
-# /// script
-# dependencies = ["numpy", "pyproj", "imagecodecs", "rasterio"]
-# ///
+# No `# /// script` header, deliberately — this is the fix for a DOUBLE
+# download. `main("ensure")` is the only thing run_python ever executes here
+# and it is stdlib-only (json/os/subprocess/sys/time/urllib): it starts or
+# reuses the daemon and returns its port. Every heavy import lives in the
+# `--serve` half, which runs under `_daemon_python()` — the self-managed uv
+# venv below, whose DAEMON_DEPS are the real declaration.
+#
+# With a header, a first run downloaded those same packages TWICE: once into
+# a fused script venv that only ever ran the stdlib ensure() call, and again
+# into DAEMON_VENV where they are actually imported. Without one, ensure()
+# runs on the app's own interpreter (PY-17) and the daemon venv is the single
+# place these deps are installed.
+#
+# DAEMON_VENV is also the mechanism that works under BOTH engines: the
+# built-in executor ignores PEP 723 entirely, so a header could never have
+# served the default engine anyway (D174).
 
 import io
 import json
