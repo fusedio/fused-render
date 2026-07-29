@@ -277,6 +277,24 @@ def test_error_maps_to_legacy_error_object(monkeypatch, tmp_path):
     assert "<lambda_exec>" not in out["error"]["traceback"]
 
 
+def test_unbuildable_wrapper_is_an_engine_error_not_a_500(monkeypatch, tmp_path):
+    # build_code reads _binding.py's source off the package, so it can fail on a
+    # broken/partial install. Every other failure in run_python returns the house
+    # wire shape; this one used to be raised outside the guard and would have
+    # reached the request handler as a 500 with no error overlay (D17).
+    target = tmp_path / "t.py"
+    target.write_text("def main():\n    return 1\n")
+
+    def _boom():
+        raise OSError("no such resource: _binding.py")
+
+    monkeypatch.setattr(engine, "_binding_source", _boom)
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "EngineError"
+    assert "no such resource" in out["error"]["traceback"]
+
+
 def test_missing_file_is_legacy_error(monkeypatch, tmp_path):
     out = asyncio.run(engine.run_python(str(tmp_path / "nope.py"), {}))
     assert out["ok"] is False and out["error"]["type"] == "FileNotFoundError"

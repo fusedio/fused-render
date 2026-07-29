@@ -367,16 +367,21 @@ async def run_python(path: str, params: dict) -> dict:
     requirements = sorted(set(DEFAULT_REQUIREMENTS) | set(reqs))
 
     abs_path = os.path.abspath(path)
-    code = build_code(user_code, os.path.dirname(abs_path), abs_path)
     try:
+        # Inside the guard, not before it: build_code reads _binding.py's source
+        # off the package (importlib.resources), so a broken/partial install
+        # fails here — and every other failure in this function returns the house
+        # wire shape rather than raising into the request handler as a 500.
+        code = build_code(user_code, os.path.dirname(abs_path), abs_path)
         r = await get_backend().execute(
             code=code,
             requirements=requirements,
             input_files={"_params.json": json.dumps(params or {}).encode()},
         )
     except Exception:
-        # The backend itself blew up (import failure, venv/dep resolution,
-        # subprocess spawn…) — not the user's script. Return the same wire
+        # The engine itself blew up (wrapper construction, backend import,
+        # venv/dep resolution, subprocess spawn…) — not the user's script,
+        # whose own failures come back in `r.error`. Return the same wire
         # shape as every other failure so the page's error overlay (D17)
         # shows the full traceback, and log it so the log file has it too.
         logger.exception("fused engine execute failed for %s", path)

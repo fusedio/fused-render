@@ -47,6 +47,23 @@ def warm_fused_backend_venv(tmp_path_factory):
     in xdist's shared base temp dir (its `.parent` is common to all workers).
     O_CREAT|O_EXCL rather than `filelock`: no dependency, and the only thing
     needed is "exactly one process in here at a time".
+
+    Two ways this fixture could look like it worked without working, both of
+    which defeat its entire purpose by handing the race back:
+
+      * breaking a lock a LIVE worker still holds. It writes its pid, and a
+        waiter only steals the lock when that pid is gone (or the file is
+        unreadable) AND it has not been touched for a while — a timeout alone is
+        not evidence of a crash, since a cold `uv` build legitimately takes
+        minutes. Two holders at once would be worse than no lock: whichever
+        finished first would unlink the *other's* lock file, and every
+        subsequent waiter would see a free lock.
+      * ignoring the warm's outcome. `run_python` reports a venv-build failure
+        as an `{ok: false}` dict rather than raising, so a discarded result
+        means a failed warm releases the lock and lets every worker proceed into
+        exactly the FileNotFoundError this exists to prevent — with a confusing
+        downstream failure instead of the real error. The result is checked and
+        the session fails loudly with the engine's own message.
     """
     import asyncio
     import time
@@ -57,22 +74,48 @@ def warm_fused_backend_venv(tmp_path_factory):
         return  # the tests that ask for this are skipped anyway
 
     lock = tmp_path_factory.getbasetemp().parent / "fused-bare-venv.lock"
-    deadline = time.monotonic() + 300
+    stale_after = 600  # a cold `uv venv` + install can legitimately take minutes
+    give_up_at = time.monotonic() + 1800
+
+    def _holder_gone() -> bool:
+        """True when the lock's owner is provably not running any more."""
+        try:
+            pid = int(lock.read_text().strip() or 0)
+        except (OSError, ValueError):
+            return True  # unreadable/garbage: no owner to protect
+        if pid <= 0:
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            pass  # EPERM: someone else's live process — do not touch it
+        return False
+
     fd = None
     while fd is None:
         try:
             fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if time.monotonic() > deadline:
-                # Don't hang the session on a lock a crashed worker left behind:
-                # break in and let the backend's own marker logic sort it out.
+            if time.monotonic() > give_up_at:
+                pytest.fail(
+                    f"timed out waiting for another worker to build the fused "
+                    f"backend venv (lock: {lock})"
+                )
+            try:
+                idle = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue  # holder released it between the open and the stat
+            if idle > stale_after and _holder_gone():
                 try:
                     os.unlink(str(lock))
                 except OSError:
                     pass
-                continue
             time.sleep(0.2)
+
     try:
+        os.write(fd, f"{os.getpid()}\n".encode())
         # One trivial run through our own API (not fused internals) is what
         # creates the venv; after this every worker's run hits the ready marker.
         probe_dir = tmp_path_factory.mktemp("warm-venv")
@@ -81,9 +124,17 @@ def warm_fused_backend_venv(tmp_path_factory):
         original = engine.DEFAULT_REQUIREMENTS
         engine.DEFAULT_REQUIREMENTS = []
         try:
-            asyncio.run(engine.run_python(str(probe), {}))
+            out = asyncio.run(engine.run_python(str(probe), {}))
         finally:
             engine.DEFAULT_REQUIREMENTS = original
+        if not out.get("ok"):
+            error = out.get("error") or {}
+            pytest.fail(
+                "could not build the fused backend's bare venv, so the "
+                "real-backend tests would race on a half-built one: "
+                f"{error.get('type')}: {error.get('message')}\n"
+                f"{error.get('traceback', '')}"
+            )
     finally:
         # Released as soon as the venv exists — the lock serializes *creation*,
         # not the tests that use it.

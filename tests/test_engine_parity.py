@@ -21,6 +21,7 @@ never be able to tell which engine ran the code.
 import asyncio
 import json
 import os
+import sys
 import traceback
 
 import pytest
@@ -133,6 +134,12 @@ def _fused_wrapper(tmp_path, src: str, params: dict) -> dict:
     code = engine.build_code(src, str(script_dir), str(target))
     g = {}
     cwd = os.getcwd()
+    # The wrapper's preamble puts the script's dir on sys.path (that is its job
+    # in the real child, which is a fresh process). Here it runs in the test
+    # process, so without restoring it each case would leave a tmp dir holding a
+    # `target.py` on sys.path for the rest of this xdist worker's session —
+    # shadowing entries that outlive the test that made them.
+    path_before = sys.path[:]
     try:
         os.chdir(exec_dir)
         exec(compile(code, "<lambda_exec>", "exec"), g)
@@ -142,6 +149,7 @@ def _fused_wrapper(tmp_path, src: str, params: dict) -> dict:
         return _wire({"ok": False, "error": {"type": err_type, "message": message}})
     finally:
         os.chdir(cwd)
+        sys.path[:] = path_before
     return _wire({"ok": True, "result": g["result"]})
 
 
