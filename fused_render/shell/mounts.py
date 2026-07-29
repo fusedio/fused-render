@@ -1313,7 +1313,8 @@ def _read_only_mountpoints() -> list:
 
 
 def export_ro_mounts_env() -> None:
-    """Publish the read-only mountpoints to the environment for template children.
+    """Publish the read-only mountpoints to the environment for template children
+    (SPEC PY-15 / D166).
 
     Templates can't import this module (the fused local execution backend strips
     PYTHONPATH from child processes), so they answer "is this path read-only?"

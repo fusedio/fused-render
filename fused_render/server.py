@@ -2899,7 +2899,7 @@ def set_server_origin_env(port: int, host: str = "127.0.0.1") -> str:
 
 def export_app_env() -> None:
     """Publish the resolved shell dirs so template children can find them
-    WITHOUT importing ``fused_render``.
+    WITHOUT importing ``fused_render`` (SPEC PY-15 / D166).
 
     Templates learn their environment through ``templates/shared/appenv.py``,
     which reads only env vars. That indirection exists because the fused local

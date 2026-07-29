@@ -1,5 +1,7 @@
 """How a template learns about the app it is running inside — via the ENV.
 
+SPEC PY-15 / DECISIONS D166.
+
 This module is the supported contract between the server and a template: the
 server exports a handful of `FUSED_RENDER_*` variables before it starts serving
 (`server.export_app_env`, plus `shell.mounts.export_ro_mounts_env` for the
