@@ -84,6 +84,35 @@ STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
 _CLAIM_GRACE_S = 30
 
 
+# Backend attributes the loader reads to stay in step with it. Named here so
+# `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
+BACKEND_ATTRS = ("_venvs_path", "_python_executable")
+
+
+def _backend_attr(name: str):
+    """Read `name` off the live backend, or fail saying what broke.
+
+    Deliberately NOT `getattr(backend, name, <default>)`. A default here is the
+    worst kind of fallback in this module: an upstream rename would silently
+    yield `~/.openfused/venvs` / `None`, the loader would fill a directory no run
+    ever reads, and the user would install the same packages forever — the exact
+    "permanent double download with no error anywhere" this module's docstring
+    warns about for the venv key. There is no safe guess, so there is no guess.
+    """
+    from fused_render.engine import get_backend
+
+    backend = get_backend()
+    try:
+        return getattr(backend, name)
+    except AttributeError:
+        raise RuntimeError(
+            f"this fused build's {type(backend).__name__} has no {name!r}, so the "
+            "install loader cannot tell where its script venvs live or which "
+            "interpreter they are keyed on. Guessing would build a venv no run "
+            "ever reads. Pin a fused version that provides it."
+        ) from None
+
+
 def venvs_path() -> str:
     """Where the backend keeps its script venvs.
 
@@ -91,9 +120,7 @@ def venvs_path() -> str:
     server constructed with a different `venvs_path` cannot drift from the
     loader. Monkeypatched by tests to a tmp dir.
     """
-    from fused_render.engine import get_backend
-
-    return getattr(get_backend(), "_venvs_path", "~/.openfused/venvs")
+    return _backend_attr("_venvs_path")
 
 
 def _python_executable() -> str | None:
@@ -102,9 +129,7 @@ def _python_executable() -> str | None:
     Folded into the venv key by `python_identity`, so the loader has to use the
     same value the backend will.
     """
-    from fused_render.engine import get_backend
-
-    return getattr(get_backend(), "_python_executable", None)
+    return _backend_attr("_python_executable")
 
 
 def venv_key_for(requirements: list[str]) -> str:

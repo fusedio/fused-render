@@ -113,6 +113,52 @@ def test_the_key_folds_in_the_backend_s_base_interpreter(monkeypatch):
 
 
 @requires_fused
+def test_the_backend_attributes_this_module_reads_still_exist():
+    """Pin the private attributes the loader depends on.
+
+    `_venvs_path` and `_python_executable` decide which directory the loader
+    fills and which interpreter the key folds in. If upstream renames either, we
+    want a red test naming it — not a loader that quietly fills a directory no
+    run ever reads, which is the same silent failure as a wrong key.
+    """
+    backend = engine.get_backend()
+    missing = [a for a in envinstall.BACKEND_ATTRS if not hasattr(backend, a)]
+    assert not missing, (
+        f"{type(backend).__name__} no longer has {missing}; envinstall reads them "
+        "to stay in step with where script venvs live"
+    )
+
+
+@requires_fused
+def test_a_renamed_backend_attribute_fails_loudly(monkeypatch):
+    """And when it IS missing, the failure says so instead of guessing."""
+
+    class Renamed:
+        pass
+
+    monkeypatch.setattr(engine, "get_backend", lambda: Renamed())
+    with pytest.raises(RuntimeError, match="_venvs_path"):
+        envinstall.venvs_path()
+    with pytest.raises(RuntimeError, match="_python_executable"):
+        envinstall._python_executable()
+
+
+@requires_fused
+def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
+    """engine's probe env must match what the backend really strips.
+
+    A probe run under a different environment than the child gets is a probe that
+    proves nothing — the PYTHONHOME case is exactly that. So the list is read off
+    `python_compute`; this asserts the real attribute is still there, since the
+    literal fallback would otherwise go stale invisibly.
+    """
+    from fused.agent_core.backends.local import python_compute
+
+    assert hasattr(python_compute, "_STRIPPED_ENV_VARS")
+    assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
+
+
+@requires_fused
 def test_readiness_follows_the_ready_marker_not_the_directory(tmp_path, monkeypatch):
     """A half-built venv (no marker) must read as NOT ready.
 
