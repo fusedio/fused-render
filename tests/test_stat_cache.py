@@ -14,14 +14,18 @@ from fastapi.testclient import TestClient
 import pytest
 
 from fused_render import server
+from fused_render import _server_common
+from fused_render import _server_fs_mutate
+from fused_render import _server_fs_read
+from fused_render import _server_mount
 from fused_render.shell import mounts
 
 
 @pytest.fixture(autouse=True)
 def _clear_stat_cache():
-    server._STAT_CACHE.clear()
+    _server_fs_read._STAT_CACHE.clear()
     yield
-    server._STAT_CACHE.clear()
+    _server_fs_read._STAT_CACHE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +48,7 @@ def test_cache_hit_within_ttl(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "is_dir": True, "mtime": 1.0}
 
-    monkeypatch.setattr(server, "_fs_stat", stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
 
     r1 = client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})
     r2 = client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})
@@ -62,7 +66,7 @@ def test_distinct_paths_cached_separately(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "is_dir": True, "mtime": 1.0}
 
-    monkeypatch.setattr(server, "_fs_stat", stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
 
     client.get("/api/fs/stat", params={"path": "/mnt/dir/a"})
     client.get("/api/fs/stat", params={"path": "/mnt/dir/b"})
@@ -77,8 +81,8 @@ def test_stale_ttl_recomputes(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "is_dir": True, "mtime": 1.0}
 
-    monkeypatch.setattr(server, "_fs_stat", stub)
-    monkeypatch.setattr(server, "_STAT_TTL_S", 0.0)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
+    monkeypatch.setattr(_server_fs_read, "_STAT_TTL_S", 0.0)
 
     client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})
     client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})
@@ -91,9 +95,9 @@ def test_errors_are_not_cached(client, monkeypatch):
 
     def stub(path):
         calls["n"] += 1
-        return server._error("no such file", status=404)
+        return _server_common._error("no such file", status=404)
 
-    monkeypatch.setattr(server, "_fs_stat", stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
 
     r1 = client.get("/api/fs/stat", params={"path": "/mnt/missing"})
     r2 = client.get("/api/fs/stat", params={"path": "/mnt/missing"})
@@ -112,7 +116,7 @@ def test_non_mount_paths_not_cached(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "is_dir": True, "mtime": 1.0}
 
-    monkeypatch.setattr(server, "_fs_stat", stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
     monkeypatch.setattr(mounts, "is_mount_backed", lambda path: False)
 
     client.get("/api/fs/stat", params={"path": "/local/dir"})
@@ -129,22 +133,22 @@ def test_write_invalidates_cache(client, monkeypatch):
         calls["n"] += 1
         return {"path": p, "is_dir": False, "mtime": float(calls["n"])}
 
-    monkeypatch.setattr(server, "_fs_stat", stat_stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stat_stub)
 
     # Prime the cache.
     client.get("/api/fs/stat", params={"path": path})
     assert calls["n"] == 1
-    assert path in server._STAT_CACHE
+    assert path in _server_fs_read._STAT_CACHE
 
     # A write must drop the entry so the editor's post-write stat re-reads the
     # fresh mtime instead of the stale cached one. Monkeypatching _fs_write
     # bypasses the auth guard and the actual filesystem mutation.
     monkeypatch.setattr(
-        server, "_fs_write", lambda body, x_fused: {"path": body["path"], "mtime": 99.0}
+        _server_fs_mutate, "_fs_write", lambda body, x_fused: {"path": body["path"], "mtime": 99.0}
     )
     r = client.post("/api/fs/write", json={"path": path, "content": "x"})
     assert r.status_code == 200
-    assert path not in server._STAT_CACHE
+    assert path not in _server_fs_read._STAT_CACHE
 
     # Subsequent stat recomputes.
     client.get("/api/fs/stat", params={"path": path})
@@ -166,15 +170,15 @@ def test_midflight_invalidation_is_not_refilled(client, monkeypatch):
     def racing_stub(p):
         calls["n"] += 1
         # A mutation lands and invalidates while this stat is "in flight".
-        server._invalidate_stat_cache(p)
+        _server_mount._invalidate_stat_cache(p)
         return {"path": p, "is_dir": False, "mtime": float(calls["n"])}
 
-    monkeypatch.setattr(server, "_fs_stat", racing_stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", racing_stub)
 
     r = client.get("/api/fs/stat", params={"path": path})
     assert r.status_code == 200
     # The raced result must NOT be cached — the invalidation wins.
-    assert path not in server._STAT_CACHE
+    assert path not in _server_fs_read._STAT_CACHE
     # And a subsequent stat recomputes rather than serving a stale hit.
     client.get("/api/fs/stat", params={"path": path})
     assert calls["n"] == 2
@@ -187,18 +191,18 @@ def test_rename_invalidates_src_and_dst(client, monkeypatch):
     def stat_stub(p):
         return {"path": p, "is_dir": False, "mtime": 1.0}
 
-    monkeypatch.setattr(server, "_fs_stat", stat_stub)
+    monkeypatch.setattr(_server_fs_read, "_fs_stat", stat_stub)
 
     # Prime both.
     client.get("/api/fs/stat", params={"path": src})
     client.get("/api/fs/stat", params={"path": dst})
-    assert src in server._STAT_CACHE
-    assert dst in server._STAT_CACHE
+    assert src in _server_fs_read._STAT_CACHE
+    assert dst in _server_fs_read._STAT_CACHE
 
     monkeypatch.setattr(
-        server, "_fs_rename", lambda body, x_fused: {"path": body["dst"], "mtime": 5.0}
+        _server_fs_mutate, "_fs_rename", lambda body, x_fused: {"path": body["dst"], "mtime": 5.0}
     )
     r = client.post("/api/fs/rename", json={"src": src, "dst": dst})
     assert r.status_code == 200
-    assert src not in server._STAT_CACHE
-    assert dst not in server._STAT_CACHE
+    assert src not in _server_fs_read._STAT_CACHE
+    assert dst not in _server_fs_read._STAT_CACHE

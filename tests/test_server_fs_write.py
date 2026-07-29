@@ -18,8 +18,8 @@ import stat
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render.server import _fs_stat as STAT
-from fused_render.server import _fs_write as WRITE
+from fused_render._server_mount import _fs_stat as STAT
+from fused_render._server_fs_mutate import _fs_write as WRITE
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(

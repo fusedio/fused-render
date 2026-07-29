@@ -3,9 +3,10 @@ TEMPLATE_MGMT_SPEC §2): inventory, extended registry view, binding upsert/reset
 export zip, and the two-step import (stage -> commit) with its security guards.
 
 FUSED_RENDER_HOME is redirected to a tmp home so staging lands there, and
-server.USER_TEMPLATES_DIR / server.USER_REGISTRY are pointed under it (the same
-module-constant seam test_templates.py / test_shell_prefs.py patch). Core
-templates keep resolving from the conftest-staged .core-templates dir.
+_server_templates.USER_TEMPLATES_DIR / _server_templates.USER_REGISTRY are
+pointed under it (the same module-constant seam test_templates.py /
+test_shell_prefs.py patch). Core templates keep resolving from the
+conftest-staged .core-templates dir.
 """
 import io
 import json
@@ -16,7 +17,7 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import server, templates_api
+from fused_render import _server_templates, templates_api
 from fused_render.server import create_app
 
 
@@ -31,8 +32,8 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_ENGINE", raising=False)
     udir = home / "templates"
     udir.mkdir()
-    monkeypatch.setattr(server, "USER_TEMPLATES_DIR", str(udir))
-    monkeypatch.setattr(server, "USER_REGISTRY", str(udir / "registry.json"))
+    monkeypatch.setattr(_server_templates, "USER_TEMPLATES_DIR", str(udir))
+    monkeypatch.setattr(_server_templates, "USER_REGISTRY", str(udir / "registry.json"))
     client = TestClient(create_app(start_dir=str(tmp_path)))
 
     class Ctx:
@@ -90,8 +91,8 @@ def test_inventory_sources_and_core_templates(ctx):
     body = ctx.client.get("/api/templates/inventory").json()
     assert [s["id"] for s in body["sources"]] == ["core", "user"]
     sources_by_id = {s["id"]: s for s in body["sources"]}
-    assert sources_by_id["core"]["dir"] == os.path.abspath(server.TEMPLATES_DIR)
-    assert sources_by_id["user"]["dir"] == os.path.abspath(server.USER_TEMPLATES_DIR)
+    assert sources_by_id["core"]["dir"] == os.path.abspath(_server_templates.TEMPLATES_DIR)
+    assert sources_by_id["user"]["dir"] == os.path.abspath(_server_templates.USER_TEMPLATES_DIR)
     by_name = {t["name"]: t for t in body["templates"]}
     # Core templates are present, locked, and carry usedBy from the registry.
     structure = by_name["structure"]
@@ -99,7 +100,7 @@ def test_inventory_sources_and_core_templates(ctx):
     assert structure["editable"] is False
     assert structure["shadowsCore"] is False
     assert ".parquet" in structure["usedBy"]
-    assert structure["path"] == os.path.join(os.path.abspath(server.TEMPLATES_DIR), "structure")
+    assert structure["path"] == os.path.join(os.path.abspath(_server_templates.TEMPLATES_DIR), "structure")
     # vendor/ and shared/ have no template.html -> never listed as templates.
     assert "vendor" not in by_name and "shared" not in by_name
 
@@ -114,7 +115,7 @@ def test_inventory_user_template_and_used_by(ctx):
     assert bc["hasIcon"] is True
     assert bc["usedBy"] == [".brand"]
     assert bc["shadowsCore"] is False
-    assert bc["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "brandcard")
+    assert bc["path"] == os.path.join(os.path.abspath(_server_templates.USER_TEMPLATES_DIR), "brandcard")
 
 
 def test_inventory_reports_condition(ctx):
@@ -136,7 +137,7 @@ def test_inventory_user_shadows_core_single_entry(ctx):
     assert code_rows[0]["source"] == "user"
     assert code_rows[0]["shadowsCore"] is True
     # shadowed -> the USER folder's path, not the hidden core one.
-    assert code_rows[0]["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "code")
+    assert code_rows[0]["path"] == os.path.join(os.path.abspath(_server_templates.USER_TEMPLATES_DIR), "code")
 
 
 # -------------------------------------------------------- registry read (2.2)
@@ -146,10 +147,10 @@ def test_registry_rich_shape(ctx):
     body = ctx.client.get("/api/templates/registry").json()
     assert {s["id"] for s in body["sources"]} == {"core", "user"}
     sources_by_id = {s["id"]: s for s in body["sources"]}
-    assert sources_by_id["core"]["dir"] == os.path.abspath(server.TEMPLATES_DIR)
-    assert sources_by_id["user"]["dir"] == os.path.abspath(server.USER_TEMPLATES_DIR)
-    assert body["builtin_registry"] == server.BUILTIN_REGISTRY
-    assert body["user_registry"] == server.USER_REGISTRY
+    assert sources_by_id["core"]["dir"] == os.path.abspath(_server_templates.TEMPLATES_DIR)
+    assert sources_by_id["user"]["dir"] == os.path.abspath(_server_templates.USER_TEMPLATES_DIR)
+    assert body["builtin_registry"] == _server_templates.BUILTIN_REGISTRY
+    assert body["user_registry"] == _server_templates.USER_REGISTRY
     by_key = {e["key"]: e for e in body["entries"]}
     csv = by_key[".csv"]
     assert csv["keyKind"] == "simple"
@@ -1148,7 +1149,7 @@ def test_new_template_scaffolds_and_binds(ctx):
     body = resp.json()
     assert body["ok"] is True
     assert body["name"] == "myview"
-    assert body["path"] == os.path.join(os.path.abspath(server.USER_TEMPLATES_DIR), "myview")
+    assert body["path"] == os.path.join(os.path.abspath(_server_templates.USER_TEMPLATES_DIR), "myview")
     assert body["bindings"] == [".myext", ".foo.bar"]
     # Starter kit was copied in — the required file plus the optional reader,
     # authoring guide, and the two canonical skills (resolved from the repo

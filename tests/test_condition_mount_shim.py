@@ -21,10 +21,11 @@ from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
 from fused_render import server
+from fused_render import _server_mount, _server_templates
 
 MOUNT_PREFIX = "/fake-mounts/"
 STORE = "/fake-mounts/s3demo/store"
-ZARR_CONDITION = os.path.join(server.TEMPLATES_DIR, "zarr_aoi", "condition.py")
+ZARR_CONDITION = os.path.join(_server_templates.TEMPLATES_DIR, "zarr_aoi", "condition.py")
 
 
 @pytest.fixture(autouse=True)
@@ -34,11 +35,11 @@ def _clear_conditions_cache():
     # states and expect each call to recompute, so drop both caches between
     # tests (a success stat cached under one mount state would otherwise mask the
     # 503/404 a later state expects).
-    server._CONDITIONS_CACHE.clear()
-    server._STAT_CACHE.clear()
+    _server_templates._CONDITIONS_CACHE.clear()
+    _server_mount._STAT_CACHE.clear()
     yield
-    server._CONDITIONS_CACHE.clear()
-    server._STAT_CACHE.clear()
+    _server_templates._CONDITIONS_CACHE.clear()
+    _server_mount._STAT_CACHE.clear()
 
 
 @pytest.fixture()
@@ -100,7 +101,7 @@ def test_shimmed_gate_group_true_with_zero_kernel_os_calls(monkeypatch, guard_ke
         {STORE: "dir", STORE + "/zarr.json": "file"},
         read_bytes=b'{"node_type": "group"}',
     )
-    allowed, err = server._run_condition(ZARR_CONDITION, STORE)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
     assert allowed is True and err is None
 
 
@@ -112,7 +113,7 @@ def test_shimmed_gate_bare_array_is_false(monkeypatch, guard_kernel):
         {STORE: "dir", STORE + "/zarr.json": "file"},
         read_bytes=b'{"node_type": "array"}',
     )
-    allowed, err = server._run_condition(ZARR_CONDITION, STORE)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
     assert allowed is False and err is None
 
 
@@ -120,7 +121,7 @@ def test_shimmed_gate_plain_dir_is_false(monkeypatch, guard_kernel):
     # A directory with no store markers: isdir hits, all three isfile probes miss
     # -> False, all off the kernel.
     _mount(monkeypatch, {STORE: "dir", "*": "missing"})
-    allowed, err = server._run_condition(ZARR_CONDITION, STORE)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
     assert allowed is False and err is None
 
 
@@ -128,7 +129,7 @@ def test_shimmed_gate_named_zarr_fast_path_true(monkeypatch, guard_kernel):
     # The zero-I/O `.zarr` name fast path returns True without any rc call at all.
     named = "/fake-mounts/s3demo/world.zarr"
     _mount(monkeypatch, {})  # every rc_kind_for would be "missing" if consulted
-    allowed, err = server._run_condition(ZARR_CONDITION, named)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, named)
     assert allowed is True and err is None
 
 
@@ -137,7 +138,7 @@ def test_shimmed_gate_fail_closed_on_indeterminate(monkeypatch, guard_kernel):
     # which the shim maps to False (isdir False) so the gate fails closed exactly
     # like a kernel exception. NEVER a fall back to kernel os.* (the guard proves).
     _mount(monkeypatch, {"*": "indeterminate"})
-    allowed, err = server._run_condition(ZARR_CONDITION, STORE)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
     assert allowed is False and err is None
 
 
@@ -149,7 +150,7 @@ def test_shimmed_gate_fail_closed_when_read_unavailable(monkeypatch, guard_kerne
         {STORE: "dir", STORE + "/zarr.json": "file"},
         read_bytes=None,  # rc_read_bounded raises OSError
     )
-    allowed, err = server._run_condition(ZARR_CONDITION, STORE)
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, STORE)
     assert allowed is False and err is None
 
 
@@ -159,9 +160,9 @@ def test_local_path_gate_uses_kernel_unaffected(tmp_path, guard_kernel):
     store = tmp_path / "m"
     store.mkdir()
     (store / ".zgroup").write_text("{}")
-    allowed, err = server._run_condition(ZARR_CONDITION, str(store))
+    allowed, err = _server_templates._run_condition(ZARR_CONDITION, str(store))
     assert allowed is True and err is None
-    assert server._run_condition(ZARR_CONDITION, str(tmp_path))[0] is False
+    assert _server_templates._run_condition(ZARR_CONDITION, str(tmp_path))[0] is False
 
 
 # --------------------------------------------------- import-form coverage
@@ -185,7 +186,7 @@ def test_import_os_path_dotted_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
     cf = _gate(tmp_path, "import os.path\n"
                          "def main(path):\n    return os.path.isfile(path)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_path_import_isfile_routed(monkeypatch, guard_kernel, tmp_path):
@@ -194,14 +195,14 @@ def test_from_os_path_import_isfile_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
     cf = _gate(tmp_path, "from os.path import isfile\n"
                          "def main(path):\n    return isfile(path)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_path_import_isdir_exists_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "dir"})
     cf = _gate(tmp_path, "from os.path import isdir, exists\n"
                          "def main(path):\n    return isdir(path) and exists(path)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_import_stat_routed(monkeypatch, guard_kernel, tmp_path):
@@ -214,21 +215,21 @@ def test_from_os_import_stat_routed(monkeypatch, guard_kernel, tmp_path):
                          "def main(path):\n"
                          "    import stat as s\n"
                          "    return s.S_ISDIR(stat(path).st_mode)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 def test_import_os_aliased_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
     cf = _gate(tmp_path, "import os as o\n"
                          "def main(path):\n    return o.path.isfile(path)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 def test_from_os_import_path_aliased_routed(monkeypatch, guard_kernel, tmp_path):
     _mount(monkeypatch, {STORE: "file"})
     cf = _gate(tmp_path, "from os import path as p\n"
                          "def main(path):\n    return p.isfile(path)\n")
-    assert server._run_condition(cf, STORE) == (True, None)
+    assert _server_templates._run_condition(cf, STORE) == (True, None)
 
 
 # ------------------------------------------------- /api/fs/conditions + /api/fs/stat

@@ -21,8 +21,8 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-import fused_render.server as server
 import fused_render.shell.mounts as mounts_mod
+from fused_render import _server_watch
 from fused_render.server import create_app
 
 
@@ -125,7 +125,7 @@ def test_duplicate_watchers_share_one_stat_stream(home, tmp_path, monkeypatch):
     with client.websocket_connect(url), client.websocket_connect(url):
         time.sleep(0.5)
         # Registry coalesced to a single refcounted entry with two subscribers.
-        entry = server._WATCH_REGISTRY._entries.get(watched)
+        entry = _server_watch._WATCH_REGISTRY._entries.get(watched)
         assert entry is not None
         assert len(entry.subscribers) == 2
 
@@ -140,17 +140,17 @@ def test_mount_paths_tick_slowly_local_paths_tick_fast(home, tmp_path, monkeypat
     # (change detection needs a full rc_list_dir) polls far more rarely to cut
     # standing remote pressure (P1 #4); local paths every 200ms.
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
-    direct_entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    direct_entry = _server_watch._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
-    slow_entry = server._WatchEntry(str(home / "mounts" / "m" / "f.parquet"))
-    local_entry = server._WatchEntry(str(tmp_path / "local.html"))
+    slow_entry = _server_watch._WatchEntry(str(home / "mounts" / "m" / "f.parquet"))
+    local_entry = _server_watch._WatchEntry(str(tmp_path / "local.html"))
 
     assert direct_entry.is_mount is True
-    assert direct_entry.interval == server._MOUNT_POLL_S == 5.0
+    assert direct_entry.interval == _server_watch._MOUNT_POLL_S == 5.0
     assert slow_entry.is_mount is True
-    assert slow_entry.interval == server._MOUNT_SLOW_POLL_S == 60.0
+    assert slow_entry.interval == _server_watch._MOUNT_SLOW_POLL_S == 60.0
     assert local_entry.is_mount is False
-    assert local_entry.interval == server._LOCAL_POLL_S == 0.2
+    assert local_entry.interval == _server_watch._LOCAL_POLL_S == 0.2
 
 
 def test_non_direct_mount_root_never_lists(home, monkeypatch):
@@ -162,7 +162,7 @@ def test_non_direct_mount_root_never_lists(home, monkeypatch):
     # never touches rc_list_dir / direct_list_page.
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: False)
     monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
-    entry = server._WatchEntry(str(home / "mounts" / "sourcecoop"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "sourcecoop"))
     assert entry.is_mount is True
     assert entry._is_mount_root is True
     assert entry._direct_capable is False
@@ -173,7 +173,7 @@ def test_non_direct_mount_root_never_lists(home, monkeypatch):
     monkeypatch.setattr(mounts_mod, "direct_list_page",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("direct_list_page called on a mount root")))
-    assert entry._mount_signal() is server._UNCHANGED
+    assert entry._mount_signal() is _server_watch._UNCHANGED
 
 
 def test_direct_mount_root_still_lists_one_bounded_page(home, monkeypatch):
@@ -182,7 +182,7 @@ def test_direct_mount_root_still_lists_one_bounded_page(home, monkeypatch):
     # expensive rc_list_dir enumeration, never the cheap direct page.
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
-    entry = server._WatchEntry(str(home / "mounts" / "openbucket"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "openbucket"))
     assert entry._is_mount_root is True and entry._direct_capable is True
 
     calls = []
@@ -201,7 +201,7 @@ def test_mount_dir_signal_hashes_listing_and_detects_change(home, monkeypatch):
     # (3.2) A mount-backed DIRECTORY watch can't use the dir's ModTime (a
     # constant S3 sentinel), so its change signal is a hash of a bounded shallow
     # listing — which moves when a child is created/deleted/resized.
-    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
     assert entry.is_mount is True
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
     listing = [{"Name": "a", "Size": 1, "ModTime": "t1"}]
@@ -216,7 +216,7 @@ def test_mount_dir_signal_hashes_listing_and_detects_change(home, monkeypatch):
 
 def test_mount_dir_signal_uses_s3_page_when_capable(home, monkeypatch):
     # (3.2) An anonymous-S3 mount dir hashes ONE ListObjectsV2 page, not rc.
-    entry = server._WatchEntry(str(home / "mounts" / "open" / "dir"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "open" / "dir"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
     calls = []
 
@@ -234,7 +234,7 @@ def test_mount_dir_signal_uses_s3_page_when_capable(home, monkeypatch):
 def test_mount_file_signal_falls_back_to_modtime(home, monkeypatch):
     # (3.2) A FILE (rc rejects the listing as not-a-directory) keeps using
     # operations/stat ModTime.
-    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "f.parquet"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "s3demo" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
     monkeypatch.setattr(mounts_mod, "rc_list_dir",
                         lambda p, timeout=None: (_ for _ in ()).throw(
@@ -250,7 +250,7 @@ def test_mount_file_signal_direct_capable_empty_page_uses_modtime(home, monkeypa
     # so a hash of that empty listing is CONSTANT and content changes go
     # undetected. The empty page must fall back to the file's rc ModTime, which
     # moves when the file content changes.
-    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "s3_list_page",
                         lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
@@ -266,22 +266,22 @@ def test_mount_file_signal_direct_capable_empty_page_uses_modtime(home, monkeypa
 def test_mount_file_signal_direct_capable_empty_page_none_modtime_unchanged(home, monkeypatch):
     # (3.2) When the empty-page ModTime fallback returns None, report _UNCHANGED
     # (matching the RcListError file arm) rather than a constant empty-hash.
-    entry = server._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "open" / "f.parquet"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "s3_list_page",
                         lambda path, *, max_keys, continuation=None, timeout=None: ([], None))
     monkeypatch.setattr(mounts_mod, "rc_mtime_for", lambda p: None)
-    assert entry._mount_signal() is server._UNCHANGED
+    assert entry._mount_signal() is _server_watch._UNCHANGED
 
 
 def test_mount_dir_signal_unchanged_on_failure(home, monkeypatch):
     # (3.2) A down/timed-out listing returns _UNCHANGED — never an error storm.
-    entry = server._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "s3demo" / "dir"))
     monkeypatch.setattr(mounts_mod, "s3_direct_capable", lambda p: False)
     monkeypatch.setattr(mounts_mod, "rc_list_dir",
                         lambda p, timeout=None: (_ for _ in ()).throw(
                             mounts_mod.RcListUnavailable("rcd down")))
-    assert entry._mount_signal() is server._UNCHANGED
+    assert entry._mount_signal() is _server_watch._UNCHANGED
 
 
 def test_mount_dir_signal_credentialed_direct_error_falls_back_to_rc(home, monkeypatch):
@@ -292,7 +292,7 @@ def test_mount_dir_signal_credentialed_direct_error_falls_back_to_rc(home, monke
     # A non-root dir must fall back to rc_list_dir — the same recovery the
     # fs/list handler and the s3/gcs_direct_capable docstrings promise — rather
     # than landing in the blanket except and going permanently _UNCHANGED.
-    entry = server._WatchEntry(str(home / "mounts" / "priv" / "dir"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "priv" / "dir"))
     assert entry.is_mount is True and entry._is_mount_root is False
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: False)
@@ -320,7 +320,7 @@ def test_mount_root_credentialed_direct_error_unchanged_no_rc(home, monkeypatch)
     # (P1 #4). It stays best-effort _UNCHANGED.
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "is_mount_root", lambda p: True)
-    entry = server._WatchEntry(str(home / "mounts" / "privbucket"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "privbucket"))
     assert entry._is_mount_root is True and entry._direct_capable is True
     monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: False)
     monkeypatch.setattr(
@@ -330,14 +330,14 @@ def test_mount_root_credentialed_direct_error_unchanged_no_rc(home, monkeypatch)
     monkeypatch.setattr(mounts_mod, "rc_list_dir",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("rc_list_dir called on a mount root")))
-    assert entry._mount_signal() is server._UNCHANGED
+    assert entry._mount_signal() is _server_watch._UNCHANGED
 
 
 def test_mount_dir_signal_anonymous_direct_error_unchanged_no_rc(home, monkeypatch):
     # HARD INVARIANT: an anonymous S3/GCS remote carries no creds to fail on and
     # historically returned _UNCHANGED on DirectListError. That behavior stays
     # byte-identical — NO rc fallback for anonymous, even on a non-root dir.
-    entry = server._WatchEntry(str(home / "mounts" / "open" / "dir"))
+    entry = _server_watch._WatchEntry(str(home / "mounts" / "open" / "dir"))
     assert entry._is_mount_root is False
     monkeypatch.setattr(mounts_mod, "direct_list_capable", lambda p: True)
     monkeypatch.setattr(mounts_mod, "direct_list_anonymous", lambda p: True)
@@ -348,15 +348,15 @@ def test_mount_dir_signal_anonymous_direct_error_unchanged_no_rc(home, monkeypat
     monkeypatch.setattr(mounts_mod, "rc_list_dir",
                         lambda *a, **k: (_ for _ in ()).throw(
                             AssertionError("rc_list_dir called for anonymous remote")))
-    assert entry._mount_signal() is server._UNCHANGED
+    assert entry._mount_signal() is _server_watch._UNCHANGED
 
 
 def test_read_consumes_a_completed_slow_stat(tmp_path, monkeypatch):
     # (3.3) A stat that outlives its wait_for keeps running; the NEXT tick must
     # CONSUME its finished result rather than discard the done future and start
     # over — else a path whose stat always exceeds the timeout never primes.
-    entry = server._WatchEntry(str(tmp_path / "f.html"))
-    monkeypatch.setattr(server, "_STAT_TIMEOUT_S", 0.02)
+    entry = _server_watch._WatchEntry(str(tmp_path / "f.html"))
+    monkeypatch.setattr(_server_watch, "_STAT_TIMEOUT_S", 0.02)
 
     async def slow():
         await asyncio.sleep(0.1)
@@ -366,7 +366,7 @@ def test_read_consumes_a_completed_slow_stat(tmp_path, monkeypatch):
 
     async def scenario():
         first = await entry._read()
-        assert first is server._UNCHANGED         # timed out; future left running
+        assert first is _server_watch._UNCHANGED         # timed out; future left running
         assert entry._inflight is not None
         await asyncio.sleep(0.15)                  # let the slow stat finish
         second = await entry._read()

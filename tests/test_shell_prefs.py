@@ -222,12 +222,12 @@ def test_forced_env_var_beats_the_pref(tmp_path, monkeypatch):
 def _point_user_registry_at(tmp_path, monkeypatch):
     # USER_REGISTRY/USER_TEMPLATES_DIR are module constants resolved at import
     # (same seam test_templates.py patches).
-    from fused_render import server
+    from fused_render import _server_templates
 
     udir = tmp_path / "user-templates"
     udir.mkdir()
-    monkeypatch.setattr(server, "USER_TEMPLATES_DIR", str(udir))
-    monkeypatch.setattr(server, "USER_REGISTRY", str(udir / "registry.json"))
+    monkeypatch.setattr(_server_templates, "USER_TEMPLATES_DIR", str(udir))
+    monkeypatch.setattr(_server_templates, "USER_REGISTRY", str(udir / "registry.json"))
     return udir
 
 

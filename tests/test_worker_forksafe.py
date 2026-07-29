@@ -31,6 +31,7 @@ import sys
 import pytest
 
 from fused_render import executor, server
+from fused_render import _server_ai
 from fused_render.templates.pyramid import overview_pyramid as op
 
 _POSIX = os.name == "posix"
@@ -204,7 +205,7 @@ def test_ai_claude_spawn_disables_fork(monkeypatch):
         return _Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-    asyncio.run(server._spawn_claude_stream(
+    asyncio.run(_server_ai._spawn_claude_stream(
         ["claude", "-p"], dict(os.environ)))
     assert captured.get("close_fds") is False, (
         "the ai spawn must pass close_fds=False so the claude CLI is spawned "
@@ -234,8 +235,8 @@ def test_ai_reap_kills_the_windows_process_tree(monkeypatch):
     def fake_taskkill(argv, **kw):
         killed["taskkill"] = argv
 
-    monkeypatch.setattr(server.subprocess, "run", fake_taskkill)
-    monkeypatch.setattr(server.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+    monkeypatch.setattr(subprocess, "run", fake_taskkill)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000,
                         raising=False)
 
     def run(coro):
@@ -247,14 +248,14 @@ def test_ai_reap_kills_the_windows_process_tree(monkeypatch):
         finally:
             loop.close()
 
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    run(server._ai_reap(_Proc()))
+    monkeypatch.setattr(sys, "platform","win32")
+    run(_server_ai._ai_reap(_Proc()))
     assert killed.get("taskkill") == ["taskkill", "/T", "/F", "/PID", "4242"]
     assert killed.get("kill") is True  # fallback still fires
 
     killed.clear()
-    monkeypatch.setattr(server.sys, "platform", "darwin")
-    run(server._ai_reap(_Proc()))
+    monkeypatch.setattr(sys, "platform","darwin")
+    run(_server_ai._ai_reap(_Proc()))
     assert "taskkill" not in killed
     assert killed.get("kill") is True
 
@@ -262,5 +263,5 @@ def test_ai_reap_kills_the_windows_process_tree(monkeypatch):
     # an already-exited process is only waited on, never re-killed
     dead = _Proc()
     dead.returncode = 0
-    run(server._ai_reap(dead))
+    run(_server_ai._ai_reap(dead))
     assert killed == {}

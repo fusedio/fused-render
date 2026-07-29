@@ -16,8 +16,8 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-import fused_render.server as server
 import fused_render.shell.mounts as mounts_mod
+from fused_render import _server_fs_read, _server_walk
 from fused_render.server import create_app
 from test_shell_mounts import StubRcd
 
@@ -223,7 +223,7 @@ def test_walk_mount_clamped_to_remote_cap(home, tmp_path, monkeypatch):
     mp = mounts_mod.mountpoint(c)
     entries = [_entry(f"f{i}.txt", size=1) for i in range(10)]
     monkeypatch.setattr(mounts_mod, "rc_list_dir", lambda p, timeout=None: entries)
-    monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES_REMOTE", 3)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": mp}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 3
@@ -268,7 +268,7 @@ def test_list_local_over_cap_truncated(tmp_path, monkeypatch):
     d.mkdir()
     for i in range(7):
         (d / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 3)
+    monkeypatch.setattr(_server_fs_read, "LIST_MAX_ENTRIES", 3)
     data = _client(tmp_path).get("/api/fs/list", params={"path": str(d)}).json()
     assert data["truncated"] is True
     assert data["cursor"] is None
@@ -281,7 +281,7 @@ def test_list_rc_route_over_cap_truncated(home, rcd, tmp_path, monkeypatch):
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     rcd.responses["operations/list"] = {
         "list": [_entry(f"f{i:03d}.txt", size=1) for i in range(10)]}
-    monkeypatch.setattr(server, "LIST_MAX_ENTRIES", 4)
+    monkeypatch.setattr(_server_fs_read, "LIST_MAX_ENTRIES", 4)
     data = _client(tmp_path).get(
         "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert data["truncated"] is True
@@ -306,7 +306,7 @@ def test_list_non_s3_mount_never_hits_s3(home, rcd, tmp_path, monkeypatch, fresh
 def test_list_s3_direct_multipage_and_cursor(home, rcd, tmp_path, monkeypatch, fresh_cfg_cache):
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 2000)
+    monkeypatch.setattr(_server_walk, "S3_LIST_MAX_ENTRIES", 2000)
     seen = []
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
@@ -455,7 +455,7 @@ def test_list_s3_cap_never_overshoots(home, rcd, tmp_path, monkeypatch, fresh_cf
     # a 1500 cap to 2000). cap=1500 -> page1 asks 1000, page2 asks 500.
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 1500)
+    monkeypatch.setattr(_server_walk, "S3_LIST_MAX_ENTRIES", 1500)
     asked = []
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
@@ -479,8 +479,8 @@ def test_list_s3_overall_budget_returns_resumable_page(home, rcd, tmp_path, monk
     # page (truncated True + cursor), NOT an error.
     rcd.responses["config/get"] = ANON_S3
     c = mounts_mod.add_mount("open", "aws-open:mur-sst/zarr-v1")
-    monkeypatch.setattr(server, "S3_LIST_MAX_ENTRIES", 100_000)  # cap won't bite
-    monkeypatch.setattr(server, "S3_LIST_OVERALL_TIMEOUT_S", 0.0)  # budget bites after page 1
+    monkeypatch.setattr(_server_walk, "S3_LIST_MAX_ENTRIES", 100_000)  # cap won't bite
+    monkeypatch.setattr(_server_walk, "S3_LIST_OVERALL_TIMEOUT_S", 0.0)  # budget bites after page 1
     calls = []
 
     def fake(path, *, max_keys, continuation=None, timeout=None):
@@ -539,7 +539,7 @@ def test_list_s3_budget_never_passes_nonpositive_timeout(home, rcd, tmp_path, mo
                  for i in range(10)], "NEXT")
 
     monkeypatch.setattr(mounts_mod, "s3_list_page", fake)
-    monkeypatch.setattr(server, "S3_LIST_OVERALL_TIMEOUT_S", 1e-9)
+    monkeypatch.setattr(_server_walk, "S3_LIST_OVERALL_TIMEOUT_S", 1e-9)
     resp = _client(tmp_path).get(
         "/api/fs/list", params={"path": mounts_mod.mountpoint(c)})
     assert resp.status_code == 200
@@ -601,7 +601,7 @@ def test_walk_dir_cut_marks_truncated_even_when_few_entries_yielded(home, rcd, t
     # alone would report False while thousands of keys went unlisted).
     c = mounts_mod.add_mount("s3demo", "remote:bucket")
     mp = mounts_mod.mountpoint(c)
-    monkeypatch.setattr(server, "WALK_MAX_ENTRIES_REMOTE", 3)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES_REMOTE", 3)
     # 5 entries > cap 3 -> cut; the first 3 include two dotfiles -> 1 yielded.
     listed = [_entry(".h1"), _entry(".h2"), _entry("v.txt", size=1),
               _entry("x.txt", size=1), _entry("y.txt", size=1)]

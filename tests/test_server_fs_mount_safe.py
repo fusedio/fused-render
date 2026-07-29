@@ -32,12 +32,12 @@ import pytest
 from fastapi.responses import JSONResponse
 
 import fused_render.shell.mounts as mounts_mod
-from fused_render.server import _fs_copy as COPY
-from fused_render.server import _fs_delete as DELETE
-from fused_render.server import _fs_mkdir as MKDIR
-from fused_render.server import _fs_rename as RENAME
-from fused_render.server import _fs_stat as STAT
-from fused_render.server import _fs_write as WRITE
+from fused_render._server_fs_mutate import _fs_copy as COPY
+from fused_render._server_fs_mutate import _fs_delete as DELETE
+from fused_render._server_fs_mutate import _fs_mkdir as MKDIR
+from fused_render._server_fs_mutate import _fs_rename as RENAME
+from fused_render._server_fs_read import _fs_stat as STAT
+from fused_render._server_fs_mutate import _fs_write as WRITE
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
     _entry,
     _list_raises,

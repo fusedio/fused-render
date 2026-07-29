@@ -136,7 +136,7 @@ def upgraded_install(tmp_path, monkeypatch):
     has had its say; `server.TEMPLATES_DIR` is repointed at it (the same
     module-constant seam test_templates_api.py uses for USER_TEMPLATES_DIR).
     """
-    from fused_render import __version__, server
+    from fused_render import __version__, _server_templates
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.delenv(core_templates._OVERRIDE_ENV, raising=False)
@@ -155,9 +155,9 @@ def upgraded_install(tmp_path, monkeypatch):
     with open(os.path.join(core, ".version"), "w", encoding="utf-8") as f:
         f.write(__version__)
 
-    monkeypatch.setattr(server, "USER_TEMPLATES_DIR", str(tmp_path / "no-overrides"))
-    monkeypatch.setattr(server, "TEMPLATES_DIR", ensure_core_templates())
-    return server.TEMPLATES_DIR
+    monkeypatch.setattr(_server_templates, "USER_TEMPLATES_DIR", str(tmp_path / "no-overrides"))
+    monkeypatch.setattr(_server_templates, "TEMPLATES_DIR", ensure_core_templates())
+    return _server_templates.TEMPLATES_DIR
 
 
 @pytest.mark.parametrize("template", ["text", "code"])
@@ -169,9 +169,9 @@ def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_instal
     unnoticed. This goes through the real _resolve_name path and then /render,
     so it fails whenever the staged copy is stale.
     """
-    from fused_render import server
+    from fused_render import _server_templates
 
-    path, error = server._resolve_name(template)
+    path, error = _server_templates._resolve_name(template)
     assert error is None, error
     assert path.startswith(upgraded_install), (
         f"{template} must resolve to the staged core copy, not a user override"

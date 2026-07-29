@@ -9,6 +9,8 @@ call-counting stub so cache hits vs recomputes can be asserted directly.
 from fastapi.testclient import TestClient
 
 from fused_render import server
+from fused_render import _server_fs_read
+from fused_render._server_common import _error
 
 
 import pytest
@@ -16,9 +18,9 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_conditions_cache():
-    server._CONDITIONS_CACHE.clear()
+    _server_fs_read._CONDITIONS_CACHE.clear()
     yield
-    server._CONDITIONS_CACHE.clear()
+    _server_fs_read._CONDITIONS_CACHE.clear()
 
 
 @pytest.fixture
@@ -33,7 +35,7 @@ def test_cache_hit_within_ttl(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "conditions": {}}
 
-    monkeypatch.setattr(server, "_conditions_payload", stub)
+    monkeypatch.setattr(_server_fs_read, "_conditions_payload", stub)
 
     r1 = client.get("/api/fs/conditions", params={"path": "/some/dir"})
     r2 = client.get("/api/fs/conditions", params={"path": "/some/dir"})
@@ -51,7 +53,7 @@ def test_distinct_paths_cached_separately(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "conditions": {}}
 
-    monkeypatch.setattr(server, "_conditions_payload", stub)
+    monkeypatch.setattr(_server_fs_read, "_conditions_payload", stub)
 
     client.get("/api/fs/conditions", params={"path": "/dir/a"})
     client.get("/api/fs/conditions", params={"path": "/dir/b"})
@@ -66,8 +68,8 @@ def test_stale_ttl_recomputes(client, monkeypatch):
         calls["n"] += 1
         return {"path": path, "conditions": {}}
 
-    monkeypatch.setattr(server, "_conditions_payload", stub)
-    monkeypatch.setattr(server, "_CONDITIONS_TTL_S", 0.0)
+    monkeypatch.setattr(_server_fs_read, "_conditions_payload", stub)
+    monkeypatch.setattr(_server_fs_read, "_CONDITIONS_TTL_S", 0.0)
 
     client.get("/api/fs/conditions", params={"path": "/some/dir"})
     client.get("/api/fs/conditions", params={"path": "/some/dir"})
@@ -80,9 +82,9 @@ def test_errors_are_not_cached(client, monkeypatch):
 
     def stub(path):
         calls["n"] += 1
-        return server._error("no such file", status=404)
+        return _error("no such file", status=404)
 
-    monkeypatch.setattr(server, "_conditions_payload", stub)
+    monkeypatch.setattr(_server_fs_read, "_conditions_payload", stub)
 
     r1 = client.get("/api/fs/conditions", params={"path": "/missing"})
     r2 = client.get("/api/fs/conditions", params={"path": "/missing"})

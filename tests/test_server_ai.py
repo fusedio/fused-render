@@ -15,12 +15,15 @@ test_runtime_cancellation.py.
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import fused_render
 from fused_render import server
+from fused_render import _server_ai
 from fused_render.export import plan_export
 
 _STATIC = Path(fused_render.__file__).parent / "static"
@@ -28,7 +31,7 @@ RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
 
 
 def _relay(body):
-    return asyncio.run(server._ai_relay(body))
+    return asyncio.run(_server_ai._ai_relay(body))
 
 
 def _data(resp) -> dict:
@@ -212,7 +215,7 @@ class _FakeProc:
 
 
 class _FakeSpawn:
-    """Stands in for server._spawn_claude_stream: hands out _FakeProcs (one
+    """Stands in for _server_ai._spawn_claude_stream: hands out _FakeProcs (one
     per spawn, from `factory`), or raises. `cmd` is an argv list, or one
     command string on the Windows .cmd-shim path (matching _popen_cmd)."""
 
@@ -242,9 +245,9 @@ def _cli_ok(monkeypatch, payload=None, **kwargs):
         kwargs["lines"] = _result_lines(payload)
     fake = _FakeSpawn(factory=lambda: _FakeProc(**kwargs)) \
         if "exc" not in kwargs else _FakeSpawn(exc=kwargs["exc"])
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    monkeypatch.setattr(server, "_AI_SESSION", server._AiSession())
-    monkeypatch.setattr(server.shutil, "which",
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which",
                         lambda name: "/usr/local/bin/claude")
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     return fake
@@ -252,10 +255,10 @@ def _cli_ok(monkeypatch, payload=None, **kwargs):
 
 def _seed_session(proc, model=None, system_prompt=None):
     """Put a live process in the session as a previous request left it."""
-    server._AI_SESSION._proc = proc
-    server._AI_SESSION._model = model or server._AI_DEFAULT_MODEL
-    server._AI_SESSION._system_prompt = (
-        system_prompt or server._AI_DEFAULT_SYSTEM_PROMPT)
+    _server_ai._AI_SESSION._proc = proc
+    _server_ai._AI_SESSION._model = model or _server_ai._AI_DEFAULT_MODEL
+    _server_ai._AI_SESSION._system_prompt = (
+        system_prompt or _server_ai._AI_DEFAULT_SYSTEM_PROMPT)
 
 
 def _flag(argv, name):
@@ -265,7 +268,7 @@ def _flag(argv, name):
 def _stream(body):
     """Drive a streaming _relay to completion; return (resp, ndjson frames)."""
     async def go():
-        resp = await server._ai_relay(body)
+        resp = await _server_ai._ai_relay(body)
         frames = []
         async for chunk in resp.body_iterator:
             frames.extend(json.loads(l) for l in chunk.splitlines() if l)
@@ -298,10 +301,10 @@ def test_relay_happy_path(monkeypatch):
     assert _flag(argv, "--output-format") == "stream-json"
     assert "--include-partial-messages" in argv
     assert "--verbose" in argv
-    assert _flag(argv, "--model") == server._AI_DEFAULT_MODEL
+    assert _flag(argv, "--model") == _server_ai._AI_DEFAULT_MODEL
     # No user text in argv: the system prompt travels via a temp file
     # (cmd.exe on the shim path re-parses argv; see _ai_cmd).
-    assert fake.system_prompts == [server._AI_DEFAULT_SYSTEM_PROMPT]
+    assert fake.system_prompts == [_server_ai._AI_DEFAULT_SYSTEM_PROMPT]
     # Equals form as ONE token — a separate "" element is dropped by cmd.exe's
     # %* expansion behind a Windows .cmd shim, re-enabling tools/settings.
     assert "--tools=" in argv
@@ -317,7 +320,7 @@ def test_relay_happy_path(monkeypatch):
     # The instance survives the call (persistent, not use-once)...
     proc, = fake.procs
     assert not proc.killed
-    assert server._AI_SESSION._proc is proc
+    assert _server_ai._AI_SESSION._proc is proc
     # ...and the request was preceded by /clear (context isolation), an
     # unconditional set_model (every request specifies its own config), and
     # the thinking clamp: absent effort means low/no-thinking, enforced with
@@ -383,8 +386,8 @@ def test_relay_set_model_is_sent_on_every_request(monkeypatch):
     set_models = [c for c in proc.controls if c["subtype"] == "set_model"]
     assert len(set_models) == 2
     assert all(c == {"subtype": "set_model",
-                     "model": server._AI_DEFAULT_MODEL,
-                     "system_prompt": server._AI_DEFAULT_SYSTEM_PROMPT}
+                     "model": _server_ai._AI_DEFAULT_MODEL,
+                     "system_prompt": _server_ai._AI_DEFAULT_SYSTEM_PROMPT}
                for c in set_models)
 
 
@@ -543,10 +546,10 @@ def test_relay_uses_the_startup_prewarmed_instance(monkeypatch):
 
 
 async def _prewarmed_relay(fake, body):
-    server._AI_SESSION.prewarm_default()
-    await server._AI_SESSION._spawn_task
+    _server_ai._AI_SESSION.prewarm_default()
+    await _server_ai._AI_SESSION._spawn_task
     assert len(fake.calls) == 1
-    resp = await server._ai_relay(body)
+    resp = await _server_ai._ai_relay(body)
     assert json.loads(bytes(resp.body))["ok"] is True
     assert len(fake.calls) == 1  # served by the prewarmed instance
     proc, = fake.procs
@@ -584,7 +587,7 @@ def test_relay_wedged_clear_kills_and_respawns(monkeypatch):
     fake = _cli_ok(monkeypatch)
     wedged = _FakeProc(clear_silent=True, hang=True)
     _seed_session(wedged)
-    monkeypatch.setattr(server, "_AI_CTRL_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(_server_ai, "_AI_CTRL_TIMEOUT_S", 0.05)
     resp = _relay({"prompt": "hello"})
     assert _data(resp)["ok"] is True
     assert wedged.killed
@@ -645,19 +648,19 @@ def test_relay_cancel_during_retry_discards_the_respawned_instance(monkeypatch):
     async def fake_configure(model, system_prompt, effort):
         calls.append(1)
         if len(calls) == 1:
-            raise server._AiProcFailure("first attempt died")
+            raise _server_ai._AiProcFailure("first attempt died")
         # retry: configure() would have already assigned self._proc to the
         # freshly spawned process before a cancel could land mid-reconfig
-        server._AI_SESSION._proc = respawned
+        _server_ai._AI_SESSION._proc = respawned
         raise asyncio.CancelledError()
 
-    monkeypatch.setattr(server._AI_SESSION, "configure", fake_configure)
+    monkeypatch.setattr(_server_ai._AI_SESSION, "configure", fake_configure)
 
     with pytest.raises(asyncio.CancelledError):
         _relay({"prompt": "hello"})
 
     assert len(calls) == 2  # first attempt, then the cancelled retry
-    assert server._AI_SESSION._proc is None  # discarded, not left live
+    assert _server_ai._AI_SESSION._proc is None  # discarded, not left live
     assert respawned.killed
 
 
@@ -702,7 +705,7 @@ def test_relay_stream_failure_after_delivery_does_not_retry(monkeypatch):
     assert done["type"] == "done" and done["ok"] is False
     assert fake.calls == []  # no retry once text reached the client
     # the dead instance was discarded: the session holds nothing
-    assert server._AI_SESSION._proc is None
+    assert _server_ai._AI_SESSION._proc is None
 
 
 def test_relay_concurrent_requests_serialize_through_the_instance(monkeypatch):
@@ -713,8 +716,8 @@ def test_relay_concurrent_requests_serialize_through_the_instance(monkeypatch):
 
     async def go():
         return await asyncio.gather(
-            server._ai_relay({"prompt": "a"}),
-            server._ai_relay({"prompt": "b"}))
+            _server_ai._ai_relay({"prompt": "a"}),
+            _server_ai._ai_relay({"prompt": "b"}))
 
     r1, r2 = asyncio.run(go())
     assert _data(r1)["ok"] is True and _data(r2)["ok"] is True
@@ -732,11 +735,11 @@ def test_relay_concurrent_requests_serialize_through_the_instance(monkeypatch):
 def test_session_prewarm_default_skips_when_binary_missing(monkeypatch):
     # Startup must not error on a machine without Claude Code installed.
     fake = _FakeSpawn()
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
-    session = server._AiSession()
+    session = _server_ai._AiSession()
 
     async def go():
         session.prewarm_default()
@@ -748,7 +751,7 @@ def test_session_prewarm_default_skips_when_binary_missing(monkeypatch):
 
 
 def test_session_shutdown_reaps_the_instance(monkeypatch):
-    session = server._AiSession()
+    session = _server_ai._AiSession()
     proc = _FakeProc()
     session._proc = proc
     asyncio.run(session.shutdown())
@@ -765,11 +768,11 @@ def test_session_shutdown_awaits_an_inflight_prewarm(monkeypatch):
         await asyncio.sleep(0)
         return proc
 
-    monkeypatch.setattr(server, "_spawn_claude_stream", slow_spawn)
-    monkeypatch.setattr(server.shutil, "which",
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", slow_spawn)
+    monkeypatch.setattr(_server_ai.shutil, "which",
                         lambda name: "/usr/local/bin/claude")
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    session = server._AiSession()
+    session = _server_ai._AiSession()
 
     async def go():
         session.prewarm_default()
@@ -831,9 +834,9 @@ def test_relay_rejects_unknown_effort_and_bad_model(monkeypatch):
 
 def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
     fake = _FakeSpawn()
-    monkeypatch.setattr(server, "_spawn_claude_stream", fake)
-    monkeypatch.setattr(server, "_AI_SESSION", server._AiSession())
-    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     # neutralize the install-dir fallbacks (the dev machine may really have one)
     monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
@@ -866,7 +869,7 @@ def test_relay_nonzero_exit_is_ai_error(monkeypatch):
 
 def test_relay_timeout_is_timeout(monkeypatch):
     _cli_ok(monkeypatch, hang=True)
-    monkeypatch.setattr(server, "_AI_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", 0.05)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     assert _data(resp)["error"]["type"] == "timeout"
@@ -903,11 +906,11 @@ def test_relay_stderr_warnings_are_ignored_on_success(monkeypatch):
 
 
 def test_claude_bin_env_override_beats_path(monkeypatch):
-    monkeypatch.setattr(server.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: "/usr/bin/claude")
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", "/opt/custom/claude")
-    assert server._claude_bin() == "/opt/custom/claude"
+    assert _server_ai._claude_bin() == "/opt/custom/claude"
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN")
-    assert server._claude_bin() == "/usr/bin/claude"
+    assert _server_ai._claude_bin() == "/usr/bin/claude"
 
 
 def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
@@ -917,19 +920,19 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     (home / ".local" / "bin").mkdir(parents=True)
     bin_path = home / ".local" / "bin" / "claude"
 
-    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
     monkeypatch.setattr(server.os, "name", "posix")
 
-    assert server._claude_bin() is None  # nothing installed anywhere
+    assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
-    assert server._claude_bin() == str(bin_path)
+    assert _server_ai._claude_bin() == str(bin_path)
 
 
 def test_posix_candidates_are_the_documented_install_locations():
-    assert server._CLAUDE_POSIX_CANDIDATES == (
+    assert _server_ai._CLAUDE_POSIX_CANDIDATES == (
         "~/.local/bin/claude", "/opt/homebrew/bin/claude",
         "/usr/local/bin/claude")
 
@@ -937,7 +940,7 @@ def test_posix_candidates_are_the_documented_install_locations():
 def test_windows_candidates_cover_the_windows_install_locations():
     """The bug this list fixes: it used to be the POSIX paths with Windows
     suffixes bolted on, which matches nothing a Windows install produces."""
-    joined = "\n".join(server._CLAUDE_WINDOWS_CANDIDATES).lower()
+    joined = "\n".join(_server_ai._CLAUDE_WINDOWS_CANDIDATES).lower()
     # native installer (irm https://claude.ai/install.ps1 | iex)
     assert r"%userprofile%\.local\bin\claude.exe" in joined
     assert "winget" in joined            # winget install Anthropic.ClaudeCode
@@ -945,10 +948,10 @@ def test_windows_candidates_cover_the_windows_install_locations():
     assert r"%userprofile%\.claude\local" in joined   # legacy local npm install
     # every entry is rooted in an environment variable, never a bare relative
     # path that would resolve against the server's cwd
-    assert all(c.startswith("%") for c in server._CLAUDE_WINDOWS_CANDIDATES)
+    assert all(c.startswith("%") for c in _server_ai._CLAUDE_WINDOWS_CANDIDATES)
     # .exe ahead of any .cmd shim: a shim needs the cmd.exe hop
     exts = [c.lower().rsplit(".", 1)[1]
-            for c in server._CLAUDE_WINDOWS_CANDIDATES]
+            for c in _server_ai._CLAUDE_WINDOWS_CANDIDATES]
     assert exts.index("exe") < exts.index("cmd")
 
 
@@ -956,19 +959,19 @@ def test_claude_bin_probes_the_windows_candidates_on_windows(monkeypatch,
                                                              tmp_path):
     """A Windows GUI launch inherits its login session's PATH, so an install
     that appended to the user PATH afterwards is invisible until sign-out."""
-    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os, "name", "nt")
     installed = tmp_path / "npm" / "claude.cmd"
     installed.parent.mkdir()
     installed.write_text("@echo off\n")
-    monkeypatch.setattr(server, "_CLAUDE_WINDOWS_CANDIDATES",
+    monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
                         (str(tmp_path / "missing.exe"), str(installed)))
-    assert server._claude_bin() == str(installed)
+    assert _server_ai._claude_bin() == str(installed)
     # POSIX-only candidates are not consulted on nt, and vice versa
     monkeypatch.setattr(server.os, "name", "posix")
-    monkeypatch.setattr(server, "_CLAUDE_POSIX_CANDIDATES", ())
-    assert server._claude_bin() is None
+    monkeypatch.setattr(_server_ai, "_CLAUDE_POSIX_CANDIDATES", ())
+    assert _server_ai._claude_bin() is None
 
 
 def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
@@ -981,7 +984,7 @@ def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
     version is substituted to stand in for the Windows interpreter."""
     import ntpath
 
-    monkeypatch.setattr(server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(server.os, "name", "nt")
     monkeypatch.setattr(server.os.path, "expandvars", ntpath.expandvars)
@@ -990,9 +993,9 @@ def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
     (tmp_path / "npm" / "claude.exe").write_text("")
     # a forward-slash candidate so the joined path is valid on this host too;
     # only the %VAR% expansion is under test
-    monkeypatch.setattr(server, "_CLAUDE_WINDOWS_CANDIDATES",
+    monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
                         ("%APPDATA%/npm/claude.exe",))
-    assert server._claude_bin() == str(tmp_path / "npm" / "claude.exe")
+    assert _server_ai._claude_bin() == str(tmp_path / "npm" / "claude.exe")
 
 
 def test_the_resolver_never_imports_the_chat_template():
@@ -1024,12 +1027,12 @@ def test_relay_uses_the_overridden_binary(monkeypatch):
 def test_a_plain_binary_is_execed_as_an_argv_list(monkeypatch):
     # Only a .cmd/.bat shim needs the cmd.exe hop. A real .exe — and anything
     # at all off win32 — is exec'd directly, where argv needs no quoting rules.
-    monkeypatch.setattr(server.sys, "platform", "win32")
-    assert server._popen_cmd(r"C:\u\claude.exe", ["-p"]) == [
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _server_ai._popen_cmd(r"C:\u\claude.exe", ["-p"]) == [
         r"C:\u\claude.exe", "-p"]
-    monkeypatch.setattr(server.sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "platform", "darwin")
     # a .cmd off win32 is not a shim, it is just a file with a funny name
-    assert server._popen_cmd("/usr/local/bin/claude.cmd", ["-p"]) == [
+    assert _server_ai._popen_cmd("/usr/local/bin/claude.cmd", ["-p"]) == [
         "/usr/local/bin/claude.cmd", "-p"]
 
 
@@ -1043,10 +1046,10 @@ def test_a_shim_becomes_one_fully_quoted_command_string(monkeypatch):
 
     So a shim becomes a STRING, spawned through the shell so CPython's comspec
     wrapping supplies the single outer quote pair cmd can parse."""
-    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     shim = r"C:\Users\John Doe\AppData\Roaming\npm\claude.cmd"
     sp = r"C:\Users\John Doe\AppData\Local\Temp\ai_sp_x.txt"
-    cmd = server._popen_cmd(shim, ["-p", "--system-prompt-file", sp])
+    cmd = _server_ai._popen_cmd(shim, ["-p", "--system-prompt-file", sp])
 
     assert isinstance(cmd, str), (
         "a shim invocation must be a command string — an argv list would be "
@@ -1065,9 +1068,9 @@ def test_a_double_quote_in_an_argument_is_refused_not_smuggled(monkeypatch):
     """Nothing we send can contain a `"` — Windows paths cannot hold one and
     the rest is static or charset-validated. If that ever changes, fail loudly
     rather than emit a line that means something else."""
-    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(ValueError):
-        server._popen_cmd(r"C:\npm\claude.cmd", ["--model", 'a"b'])
+        _server_ai._popen_cmd(r"C:\npm\claude.cmd", ["--model", 'a"b'])
 
 
 def test_relay_runs_windows_shims_through_cmd(monkeypatch):
@@ -1075,15 +1078,15 @@ def test_relay_runs_windows_shims_through_cmd(monkeypatch):
     shim = r"C:\Users\John Doe\npm\claude.cmd"
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", shim)
     # the reap path goes through taskkill on "win32" — neutralize it here
-    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: None)
-    monkeypatch.setattr(server.subprocess, "CREATE_NO_WINDOW", 0x08000000,
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000,
                         raising=False)
     # The event loop must exist before sys.platform reads "win32", or
     # asyncio.run tries to build the real Windows proactor loop on this box.
     loop = asyncio.new_event_loop()
-    monkeypatch.setattr(server.sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "win32")
     try:
-        loop.run_until_complete(server._ai_relay({"prompt": "hello"}))
+        loop.run_until_complete(_server_ai._ai_relay({"prompt": "hello"}))
     finally:
         loop.close()
     (cmd, _), = fake.calls
@@ -1116,11 +1119,11 @@ def test_a_shim_is_spawned_through_the_shell_and_a_binary_is_not(monkeypatch):
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
     payload = '"C:\\p ath\\claude.cmd" "-p"'
-    asyncio.run(server._spawn_claude_stream(payload, dict(os.environ)))
+    asyncio.run(_server_ai._spawn_claude_stream(payload, dict(os.environ)))
     assert seen == {"shell": payload}
 
     seen.clear()
-    asyncio.run(server._spawn_claude_stream(["/usr/local/bin/claude", "-p"],
+    asyncio.run(_server_ai._spawn_claude_stream(["/usr/local/bin/claude", "-p"],
                                             dict(os.environ)))
     assert seen == {"exec": ["/usr/local/bin/claude", "-p"]}
 

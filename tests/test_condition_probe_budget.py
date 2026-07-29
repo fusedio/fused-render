@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.server as server
 import fused_render.shell.mounts as mounts_mod
+from fused_render import _server_templates
 from fused_render.server import create_app
 from test_shell_mounts import StubRcd
 
@@ -57,7 +58,7 @@ def fresh_cfg():
 def _hanging_noncapable_mount(rcd, monkeypatch, budget=1.0):
     """A mount whose stat backend HANGS: credentialed S3 (not direct-capable, so
     the rc route is taken) with operations/stat delayed far past the budget."""
-    monkeypatch.setattr(server, "GATE_PROBE_BUDGET_S", budget)
+    monkeypatch.setattr(_server_templates, "GATE_PROBE_BUDGET_S", budget)
     rcd.responses["config/get"] = {"type": "s3", "env_auth": "true"}
     rcd.delay["operations/stat"] = 10.0  # every rc probe would burn 10s
     c = mounts_mod.add_mount("corp", "corp:bucket")
@@ -76,7 +77,7 @@ def test_gate_probe_budget_caps_serialized_hanging_probes(home, rcd, tmp_path, m
         "    return a or b or c\n")
 
     start = time.monotonic()
-    allowed, err = server._run_condition(str(gate), store)
+    allowed, err = _server_templates._run_condition(str(gate), store)
     elapsed = time.monotonic() - start
 
     # Fail closed, and within roughly one budget — NOT 3 * 10s of stacked probes.

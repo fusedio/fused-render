@@ -22,10 +22,11 @@ from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
 from fused_render import server
+from fused_render import _server_templates
 
 MOUNT_PREFIX = "/fake-mounts/"
 STORE = "/fake-mounts/s3demo/store"
-ZARR_CONDITION = os.path.join(server.TEMPLATES_DIR, "zarr_aoi", "condition.py")
+ZARR_CONDITION = os.path.join(_server_templates.TEMPLATES_DIR, "zarr_aoi", "condition.py")
 
 
 @pytest.fixture(autouse=True)
@@ -33,9 +34,9 @@ def _clear_conditions_cache():
     # /api/fs/conditions caches success payloads by path for a short TTL. These
     # tests reuse a single STORE path across differing listing/mount states and
     # expect each call to recompute, so drop the cache between tests.
-    server._CONDITIONS_CACHE.clear()
+    _server_templates._CONDITIONS_CACHE.clear()
     yield
-    server._CONDITIONS_CACHE.clear()
+    _server_templates._CONDITIONS_CACHE.clear()
 
 
 @pytest.fixture()
@@ -121,8 +122,8 @@ def test_seed_skips_target_reprobe(monkeypatch, guard_kernel):
     monkeypatch.setattr(mounts_mod, "rc_read_bounded",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no serve")))
 
-    allowed, err = server._run_condition(
-        ZARR_CONDITION, STORE, seed=server._GateSeed(kinds={STORE: "dir"}))
+    allowed, err = _server_templates._run_condition(
+        ZARR_CONDITION, STORE, seed=_server_templates._GateSeed(kinds={STORE: "dir"}))
     assert allowed is False and err is None
 
 
@@ -326,7 +327,7 @@ def test_no_gated_templates_skips_listing(monkeypatch, guard_kernel):
     monkeypatch.setattr(mounts_mod, "is_mount_backed",
                         lambda p: isinstance(p, str) and p.startswith(MOUNT_PREFIX))
     monkeypatch.setattr(mounts_mod, "rc_kind_for", lambda p, **k: "dir")
-    monkeypatch.setattr(server, "_templates_for", lambda path, is_dir: ([], None))
+    monkeypatch.setattr(_server_templates, "_templates_for", lambda path, is_dir: ([], None))
 
     # Count calls rather than raise: a raised AssertionError would be swallowed
     # by the listing's fail-open except and mask the wasted call.
