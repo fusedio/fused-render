@@ -254,7 +254,7 @@ function setupLayers() {
   if (layersReady) return;
   layersReady = true;
   clearInterval(setupPoll);
-  for (const id of ["data", "sel", "handles", "mids", "draft"])
+  for (const id of ["data", "sel", "hov", "handles", "mids", "draft"])
     map.addSource(id, { type: "geojson", data: EMPTY });
 
   map.addLayer({ id: "data-fill", source: "data", type: "fill",
@@ -278,6 +278,19 @@ function setupLayers() {
     filter: ["==", ["geometry-type"], "Point"],
     paint: { "circle-color": "#ffb347", "circle-radius": 6.5,
              "circle-stroke-color": "#1a1a1a", "circle-stroke-width": 1.5 } });
+
+  // hover echo for the attribute table: white outline pinpointing the row
+  // under the cursor, distinct from the amber selection styling
+  map.addLayer({ id: "hov-fill", source: "hov", type: "fill",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: { "fill-color": "#ffffff", "fill-opacity": 0.15 } });
+  map.addLayer({ id: "hov-line", source: "hov", type: "line",
+    filter: ["!=", ["geometry-type"], "Point"],
+    paint: { "line-color": "#ffffff", "line-width": 3 } });
+  map.addLayer({ id: "hov-pt", source: "hov", type: "circle",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: { "circle-color": "#ffffff", "circle-radius": 8.5,
+             "circle-stroke-color": "#0c141a", "circle-stroke-width": 2 } });
 
   map.addLayer({ id: "mids", source: "mids", type: "circle",
     paint: { "circle-color": "#e8ecf2", "circle-opacity": 0.55, "circle-radius": 3.5 } });
@@ -618,12 +631,14 @@ function toggleTable(show) {
   $("tablePanel").style.display = tableOn ? "flex" : "none";
   $("tableBtn").classList.toggle("on", tableOn);
   if (tableOn) renderTablePanel();
+  else setTableHover(-1);
 }
 // Full rebuild — called only when table-visible data changes (load, prop
 // edit, add/delete feature, undo/redo). Selection moves go through
 // updateTableSelection() instead: two class toggles, not a 2000-row rebuild.
 function renderTablePanel() {
   if (!tableOn) return;
+  setTableHover(-1); // indices may shift on rebuild (delete/undo) — drop stale hover
   if (!FC || !FC.features.length) {
     tableNoteBase = "";
     $("tableNote").textContent = "";
@@ -658,6 +673,21 @@ function updateTableSelection() {
   const offTable = sel >= TABLE_MAX_ROWS && FC && FC.features[sel];
   $("tableNote").textContent = tableNoteBase + (offTable ? ` · #${sel} selected (beyond rows shown)` : "");
 }
+// hovering a row echoes the feature on the map (no camera move — dblclick zooms)
+let hovI = -1;
+function setTableHover(i) {
+  if (i === hovI) return;
+  hovI = i;
+  const src = map.getSource("hov");
+  if (!src) return;
+  const f = (i >= 0 && FC) ? FC.features[i] : null;
+  src.setData(f ? { type: "FeatureCollection", features: [f] } : EMPTY);
+}
+$("tableScroll").addEventListener("mouseover", e => {
+  const tr = e.target.closest("tr[data-i]");
+  setTableHover(tr ? +tr.dataset.i : -1);
+});
+$("tableScroll").addEventListener("mouseleave", () => setTableHover(-1));
 $("tableScroll").addEventListener("click", e => {
   const tr = e.target.closest("tr[data-i]");
   if (!tr) return;
