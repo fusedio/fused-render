@@ -17,9 +17,9 @@ from fastapi.responses import (
 )
 
 from fused_render import calls as shell_calls
-from fused_render._server_common import _error, _require_fused
-from fused_render._server_mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
-from fused_render._server_walk import _mount_list_error_response
+from fused_render.server.common import _error, _require_fused
+from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
+from fused_render.server.walk import _mount_list_error_response
 
 router = APIRouter()
 

@@ -18,29 +18,29 @@ from fastapi.responses import (
 )
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
-from fused_render._server_common import _error, _require_fused, logger
-from fused_render._server_gitignore import _git_ignored
-from fused_render import _server_mount
-from fused_render._server_mount import (
+from fused_render.server.common import _error, _require_fused, logger
+from fused_render.server.gitignore import _git_ignored
+from fused_render.server import mount as _server_mount
+from fused_render.server.mount import (
     _STAT_CACHE,
     _STAT_TTL_S,
     _fs_stat,
     _mount_probe,
     _stat_or_none,
 )
-from fused_render._server_proxy import (
+from fused_render.server.proxy import (
     _harden_raw,
     _proxy_raw,
     _proxy_raw_bearer,
     _proxy_raw_pooled,
 )
-from fused_render._server_templates import (
+from fused_render.server.templates import (
     _CONDITIONS_CACHE,
     _CONDITIONS_TTL_S,
     _conditions_payload,
     _prefs_mtime,
 )
-from fused_render._server_walk import (
+from fused_render.server.walk import (
     LIST_MAX_ENTRIES,
     WALK_BATCH_SIZE,
     WALK_FLUSH_INTERVAL_S,
@@ -57,7 +57,7 @@ from fused_render._server_walk import (
     _walk_bfs,
     _win_protected,
 )
-from fused_render._server_watch import _WATCH_REGISTRY
+from fused_render.server.watch import _WATCH_REGISTRY
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefetch as shell_prefetch
 

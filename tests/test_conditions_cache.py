@@ -9,8 +9,8 @@ call-counting stub so cache hits vs recomputes can be asserted directly.
 from fastapi.testclient import TestClient
 
 from fused_render import server
-from fused_render import _server_fs_read
-from fused_render._server_common import _error
+from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server.common import _error
 
 
 import pytest

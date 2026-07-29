@@ -7,7 +7,7 @@ from fused_render.core_templates import ensure_core_templates
 from fused_render.shell import storage
 from fused_render.shell.storage import home_dir
 
-from fused_render._server_common import _error, logger
+from fused_render.server.common import _error, logger
 
 
 # Core templates ship in the package but are staged into

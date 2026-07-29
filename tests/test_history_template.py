@@ -7,7 +7,7 @@ Behavioral checks (per-key validation, navigation) are exercised in the app.
 """
 import os
 
-from fused_render import _server_templates
+from fused_render.server import templates as _server_templates
 
 
 def modes(path, is_dir=False):

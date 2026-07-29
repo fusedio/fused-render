@@ -1,8 +1,8 @@
 import os
 import stat as stat_mod
 
-from fused_render._server_common import _error
-from fused_render._server_templates import _templates_for
+from fused_render.server.common import _error
+from fused_render.server.templates import _templates_for
 
 
 

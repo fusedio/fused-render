@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render import _server_fs_mutate
-from fused_render._server_fs_mutate import _fs_copy as COPY
-from fused_render._server_fs_mutate import _fs_delete as DELETE
-from fused_render._server_fs_mutate import _fs_mkdir as MKDIR
-from fused_render._server_fs_mutate import _fs_rename as RENAME
+from fused_render.server import fs_mutate as _server_fs_mutate
+from fused_render.server.fs_mutate import _fs_copy as COPY
+from fused_render.server.fs_mutate import _fs_delete as DELETE
+from fused_render.server.fs_mutate import _fs_mkdir as MKDIR
+from fused_render.server.fs_mutate import _fs_rename as RENAME
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(

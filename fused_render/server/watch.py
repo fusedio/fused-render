@@ -3,7 +3,7 @@ import hashlib
 import json
 import os
 
-from fused_render._server_mount import _STAT_TIMEOUT_S
+from fused_render.server.mount import _STAT_TIMEOUT_S
 
 
 

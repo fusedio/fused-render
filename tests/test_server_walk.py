@@ -3,7 +3,7 @@ backing the explorer search."""
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import _server_fs_read
+from fused_render.server.routers import fs_read as _server_fs_read
 from fused_render import server
 from fused_render.server import create_app
 

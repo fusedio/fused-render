@@ -66,7 +66,11 @@ def _forced_engine() -> str | None:
     logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=auto, `fused` not installed)")
     return "builtin"
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import fused_render
+
+# The fused_render package dir (NOT this file's own dir — this module lives
+# a level deeper, at fused_render/server/common.py).
+HERE = os.path.dirname(os.path.abspath(fused_render.__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 
 

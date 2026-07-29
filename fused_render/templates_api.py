@@ -3,17 +3,18 @@ Templates view: edit registry bindings, inspect the template inventory across
 sources, and import/export user templates as zip.
 
 The template *resolution* engine (the suffix-pattern matcher, name resolution,
-splice grammar) lives in ``fused_render._server_templates`` (D73). This module is
+splice grammar) lives in ``fused_render.server.templates`` (D73). This module is
 a thin management layer on top of it: it REUSES ``_server_templates._key_segments`` /
 ``_server_templates._match_registry`` / ``_server_templates._names_from_value`` / ``_server_templates._resolve_name``
 / ``_server_templates._icon_for`` / ``_server_templates._load_registry`` and the dir constants
 ``_server_templates.TEMPLATES_DIR`` / ``_server_templates.USER_TEMPLATES_DIR`` / ``_server_templates.BUILTIN_REGISTRY``
-/ ``_server_templates.USER_REGISTRY`` — imported as ``_server_templates.<name>`` and read at REQUEST
-time so tests can monkeypatch the dirs (test_templates.py's seam).
+/ ``_server_templates.USER_REGISTRY`` (imported here as ``_server_templates``, its old
+flat-module name, purely as a local alias) — read at REQUEST time so tests can
+monkeypatch the dirs (test_templates.py's seam).
 
 ``server`` includes this router lazily inside ``create_app`` (no server->module
-import at module top), so importing ``_server_templates`` here at module level is
-acyclic: ``_server_templates`` never imports ``server`` or ``templates_api``.
+import at module top), so importing ``fused_render.server.templates`` here at
+module level is acyclic: it never imports ``server`` or ``templates_api``.
 
 Sources (SPEC §1): the builtin/user pair is modelled as an ordered list so a
 third (org/project) can be appended later with zero UI rework — TODAY exactly
@@ -36,7 +37,7 @@ import zipfile
 from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from fused_render import _server_templates
+from fused_render.server import templates as _server_templates
 from fused_render.shell import storage
 
 router = APIRouter()

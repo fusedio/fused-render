@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from fused_render import __version__
 from fused_render import calls as shell_calls
-from fused_render._server_common import get_start_dir
+from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs

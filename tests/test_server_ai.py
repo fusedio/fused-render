@@ -23,7 +23,7 @@ import pytest
 
 import fused_render
 from fused_render import server
-from fused_render import _server_ai
+from fused_render.server import ai as _server_ai
 from fused_render.export import plan_export
 
 _STATIC = Path(fused_render.__file__).parent / "static"
@@ -738,7 +738,7 @@ def test_session_prewarm_default_skips_when_binary_missing(monkeypatch):
     monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
     monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
+    monkeypatch.setattr(_server_ai.os.path, "isfile", lambda p: False)
     session = _server_ai._AiSession()
 
     async def go():
@@ -839,7 +839,7 @@ def test_relay_missing_binary_is_ai_unavailable(monkeypatch):
     monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
     # neutralize the install-dir fallbacks (the dev machine may really have one)
-    monkeypatch.setattr(server.os.path, "isfile", lambda p: False)
+    monkeypatch.setattr(_server_ai.os.path, "isfile", lambda p: False)
     resp = _relay({"prompt": "hello"})
     assert resp.status_code == 502
     data = _data(resp)
@@ -922,9 +922,9 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(server.os.path, "expanduser",
+    monkeypatch.setattr(_server_ai.os.path, "expanduser",
                         lambda p: p.replace("~", str(home), 1))
-    monkeypatch.setattr(server.os, "name", "posix")
+    monkeypatch.setattr(_server_ai.os, "name", "posix")
 
     assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
@@ -961,7 +961,7 @@ def test_claude_bin_probes_the_windows_candidates_on_windows(monkeypatch,
     that appended to the user PATH afterwards is invisible until sign-out."""
     monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(server.os, "name", "nt")
+    monkeypatch.setattr(_server_ai.os, "name", "nt")
     installed = tmp_path / "npm" / "claude.cmd"
     installed.parent.mkdir()
     installed.write_text("@echo off\n")
@@ -969,7 +969,7 @@ def test_claude_bin_probes_the_windows_candidates_on_windows(monkeypatch,
                         (str(tmp_path / "missing.exe"), str(installed)))
     assert _server_ai._claude_bin() == str(installed)
     # POSIX-only candidates are not consulted on nt, and vice versa
-    monkeypatch.setattr(server.os, "name", "posix")
+    monkeypatch.setattr(_server_ai.os, "name", "posix")
     monkeypatch.setattr(_server_ai, "_CLAUDE_POSIX_CANDIDATES", ())
     assert _server_ai._claude_bin() is None
 
@@ -986,8 +986,8 @@ def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
 
     monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
     monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
-    monkeypatch.setattr(server.os, "name", "nt")
-    monkeypatch.setattr(server.os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setattr(_server_ai.os, "name", "nt")
+    monkeypatch.setattr(_server_ai.os.path, "expandvars", ntpath.expandvars)
     monkeypatch.setenv("APPDATA", str(tmp_path))
     (tmp_path / "npm").mkdir()
     (tmp_path / "npm" / "claude.exe").write_text("")

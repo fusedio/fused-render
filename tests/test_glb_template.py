@@ -5,7 +5,7 @@ backend, so the only server-side behavior to assert is that .glb/.gltf route to
 it. (The editor tier — glbmodel + .glbproj/ — was removed; this also guards that
 .glbproj no longer resolves to an editor.)
 """
-from fused_render import _server_templates
+from fused_render.server import templates as _server_templates
 
 
 def test_glb_template_resolves_for_glb_and_gltf():

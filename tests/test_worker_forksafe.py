@@ -31,7 +31,7 @@ import sys
 import pytest
 
 from fused_render import executor, server
-from fused_render import _server_ai
+from fused_render.server import ai as _server_ai
 from fused_render.templates.pyramid import overview_pyramid as op
 
 _POSIX = os.name == "posix"

@@ -17,7 +17,8 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import _server_templates, templates_api
+from fused_render.server import templates as _server_templates
+from fused_render import templates_api
 from fused_render.server import create_app
 
 

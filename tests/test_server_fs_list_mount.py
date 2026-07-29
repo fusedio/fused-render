@@ -17,7 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
-from fused_render import _server_fs_read, _server_walk
+from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server import walk as _server_walk
 from fused_render.server import create_app
 from test_shell_mounts import StubRcd
 

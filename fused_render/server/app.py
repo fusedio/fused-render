@@ -24,8 +24,8 @@ from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
 
-from fused_render._server_ai import prewarm_ai, router as ai_router, shutdown_ai_session
-from fused_render._server_common import (
+from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
+from fused_render.server.common import (
     STATIC_DIR,
     close_pooled_client,
     no_cache_and_log,
@@ -33,15 +33,15 @@ from fused_render._server_common import (
     unhandled_exception,
     _forced_engine,
 )
-from fused_render._server_config import router as config_router
-from fused_render._server_export import router as export_router
-from fused_render._server_fs_mutate import router as fs_mutate_router
-from fused_render._server_fs_read import router as fs_read_router
-from fused_render._server_render import router as render_router
-from fused_render._server_run import router as run_router
-from fused_render._server_session import router as session_router
-from fused_render._server_shell import router as shell_router
-from fused_render._server_templates import TEMPLATES_DIR
+from fused_render.server.routers.config import router as config_router
+from fused_render.server.routers.export import router as export_router
+from fused_render.server.fs_mutate import router as fs_mutate_router
+from fused_render.server.routers.fs_read import router as fs_read_router
+from fused_render.server.routers.render import router as render_router
+from fused_render.server.routers.run import router as run_router
+from fused_render.server.session import router as session_router
+from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.templates import TEMPLATES_DIR
 
 
 

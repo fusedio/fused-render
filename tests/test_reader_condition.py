@@ -17,7 +17,7 @@ import os
 
 import pytest
 
-from fused_render import _server_templates
+from fused_render.server import templates as _server_templates
 
 
 TEMPLATES_DIR = _server_templates.TEMPLATES_DIR

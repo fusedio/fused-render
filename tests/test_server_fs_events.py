@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
-from fused_render import _server_watch
+from fused_render.server import watch as _server_watch
 from fused_render.server import create_app
 
 

@@ -15,7 +15,7 @@ def _reload_with_ref(ref: str):
     importlib.reload(_branch)
 
     import fused_render.server as server
-    import fused_render._server_templates as _server_templates
+    import fused_render.server.templates as _server_templates
     import fused_render.app as app
     import fused_render.cli as cli
 
@@ -42,11 +42,11 @@ def _restore_baseline():
     _branch._CACHED_REF = None
     importlib.reload(_branch)
     import fused_render.server
-    import fused_render._server_templates
+    import fused_render.server.templates
     import fused_render.app
     import fused_render.cli
 
-    importlib.reload(fused_render._server_templates)
+    importlib.reload(fused_render.server.templates)
     importlib.reload(fused_render.server)
     importlib.reload(fused_render.app)
     importlib.reload(fused_render.cli)

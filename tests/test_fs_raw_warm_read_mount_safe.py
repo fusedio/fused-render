@@ -27,7 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.server as server_mod
-import fused_render._server_fs_read as fs_read_mod
+import fused_render.server.routers.fs_read as fs_read_mod
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture

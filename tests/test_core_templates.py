@@ -136,7 +136,8 @@ def upgraded_install(tmp_path, monkeypatch):
     has had its say; `server.TEMPLATES_DIR` is repointed at it (the same
     module-constant seam test_templates_api.py uses for USER_TEMPLATES_DIR).
     """
-    from fused_render import __version__, _server_templates
+    from fused_render import __version__
+    from fused_render.server import templates as _server_templates
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.delenv(core_templates._OVERRIDE_ENV, raising=False)
@@ -169,7 +170,7 @@ def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_instal
     unnoticed. This goes through the real _resolve_name path and then /render,
     so it fails whenever the staged copy is stale.
     """
-    from fused_render import _server_templates
+    from fused_render.server import templates as _server_templates
 
     path, error = _server_templates._resolve_name(template)
     assert error is None, error

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 
-from fused_render._server_common import get_shell_path
+from fused_render.server.common import get_shell_path
 
 router = APIRouter()
 

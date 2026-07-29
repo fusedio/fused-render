@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from fused_render import server
+from fused_render.server import templates as server
 
 
 requires_tomllib = pytest.mark.skipif(

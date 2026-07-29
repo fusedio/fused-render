@@ -62,7 +62,7 @@ def test_win_protected_short_circuits_off_windows(monkeypatch):
     # Off Windows the hidden+system filter must not even stat the entry.
     import sys
 
-    from fused_render._server_fs_read import _win_protected
+    from fused_render.server.routers.fs_read import _win_protected
 
     monkeypatch.setattr(sys, "platform", "linux")
 

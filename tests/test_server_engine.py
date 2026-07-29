@@ -3,7 +3,7 @@ the whole process; unset returns None and the engine follows the persisted
 preference (shell/prefs.py — covered in test_shell_prefs.py)."""
 import pytest
 
-from fused_render import server
+from fused_render.server import common as server
 
 
 def test_unset_returns_none_even_when_fused_available(monkeypatch):

@@ -14,10 +14,10 @@ from fastapi.testclient import TestClient
 import pytest
 
 from fused_render import server
-from fused_render import _server_common
-from fused_render import _server_fs_mutate
-from fused_render import _server_fs_read
-from fused_render import _server_mount
+from fused_render.server import common as _server_common
+from fused_render.server import fs_mutate as _server_fs_mutate
+from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server import mount as _server_mount
 from fused_render.shell import mounts
 
 

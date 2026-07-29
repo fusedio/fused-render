@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
 from fused_render import server
-from fused_render import _server_mount, _server_templates
+from fused_render.server import mount as _server_mount
+from fused_render.server import templates as _server_templates
 
 MOUNT_PREFIX = "/fake-mounts/"
 STORE = "/fake-mounts/s3demo/store"

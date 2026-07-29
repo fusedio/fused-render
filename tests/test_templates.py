@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from fused_render import _server_templates as server
+from fused_render.server import templates as server
 
 
 # ---------------------------------------------------------------- fixtures

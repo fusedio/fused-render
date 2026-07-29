@@ -4,8 +4,8 @@ import stat as stat_mod
 import sys
 from types import SimpleNamespace
 
-from fused_render._server_common import _error
-from fused_render._server_gitignore import _IgnoreOracle, _repo_toplevel
+from fused_render.server.common import _error
+from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
 
 
 

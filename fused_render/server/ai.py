@@ -16,7 +16,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from fused_render._server_common import _require_fused
+from fused_render.server.common import _require_fused
 
 router = APIRouter()
 

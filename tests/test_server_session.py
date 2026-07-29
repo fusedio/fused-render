@@ -14,8 +14,8 @@ import os
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render._server_session import _session_get as GET
-from fused_render._server_session import _session_put as PUT
+from fused_render.server.session import _session_get as GET
+from fused_render.server.session import _session_put as PUT
 from fused_render.templates.claude import agent
 
 

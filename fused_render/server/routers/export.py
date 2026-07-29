@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render._server_common import _error, _require_fused
+from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
 

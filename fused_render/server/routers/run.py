@@ -5,7 +5,7 @@ from urllib.parse import parse_qsl, urlsplit
 from fastapi import APIRouter, Body, Header, Request, Response
 
 from fused_render import calls as shell_calls
-from fused_render._server_common import _error, _require_fused
+from fused_render.server.common import _error, _require_fused
 from fused_render.executor import dumps_result, run_python
 from fused_render.shell import prefetch as shell_prefetch
 from fused_render.shell import prefs as shell_prefs
