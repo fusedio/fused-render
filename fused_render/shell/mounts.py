@@ -347,6 +347,10 @@ def _write(mounts: list) -> None:
     global _mounts_generation
     storage.write_json(_path(), mounts)
     _mounts_generation += 1
+    # Every store mutation funnels through here, so this is the one hook that
+    # cannot miss a change to the read-only set (a create, a delete, or an
+    # attach-time read_only re-detection via _update_mount).
+    export_ro_mounts_env()
 
 
 # mounts.json writers are all read-modify-write of the whole list, and they
@@ -1306,6 +1310,30 @@ def _read_only_mountpoints() -> list:
             _ro_cache = (gen, [os.path.abspath(mountpoint(c))
                                for c in list_mounts() if c.get("read_only")])
         return _ro_cache[1]
+
+
+def export_ro_mounts_env() -> None:
+    """Publish the read-only mountpoints to the environment for template children.
+
+    Templates can't import this module (the fused local execution backend strips
+    PYTHONPATH from child processes), so they answer "is this path read-only?"
+    from `FUSED_RENDER_RO_MOUNTS` via `templates/shared/appenv.py`. We export the
+    derived MOUNTPOINT LIST, not the store: mounts.json's schema stays private to
+    this module, so `read_only_user`, legacy records and future flags can change
+    without touching a single template.
+
+    `os.pathsep`-joined because that is the platform's own list-in-one-var
+    convention (`:` posix, `;` win32) and a mountpoint can contain the other
+    separator. Called from `_write` on every store mutation and once at startup
+    (`server.export_app_env`) so a server that never writes a mount still leaves a
+    correct — possibly empty — value behind rather than an unset var that a child
+    couldn't distinguish from "no mounts".
+
+    Reuses `_read_only_mountpoints()` so there is exactly one computation of the
+    list, cached on `_mounts_generation`; recomputing here would be a second copy
+    of the rule, free to drift.
+    """
+    os.environ["FUSED_RENDER_RO_MOUNTS"] = os.pathsep.join(_read_only_mountpoints())
 
 
 def mount_read_only(path: str) -> bool:

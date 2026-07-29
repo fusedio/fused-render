@@ -1,0 +1,130 @@
+"""How a template learns about the app it is running inside — via the ENV.
+
+This module is the supported contract between the server and a template: the
+server exports a handful of `FUSED_RENDER_*` variables before it starts serving
+(`server.export_app_env`, plus `shell.mounts.export_ro_mounts_env` for the
+read-only list), every child process inherits them, and the helpers here are the
+one place that knows how to read them.
+
+Templates must NOT import `fused_render`. They used to reach into the app for
+exactly these facts (`from fused_render.shell.mounts import mounts_dir, ...`,
+behind a try/except), which works only when the template happens to run as a
+child of a Python that can see the package. Under the fused local execution
+backend it cannot: `PYTHONPATH` is stripped from child processes, the guarded
+import silently takes its fallback branch, and a mount-backed path is quietly
+treated as local. Environment variables survive that boundary, so the facts
+travel as data instead of as an import.
+
+Stdlib only, for the same reason — a template must stay runnable as a standalone
+copy of its folder, with nothing but `../shared/` beside it.
+
+Everything is resolved PER CALL from `os.environ`, never cached at import time:
+some templates are long-lived daemons (`zarr_aoi/tile_server.py`) and the
+read-only mount list changes underneath them as mounts attach and detach.
+
+The store schema stays behind in `shell/mounts.py` — nothing here reads
+`mounts.json`. A template gets the *derived answers* (which dirs, which
+mountpoints are read-only), so the on-disk format can change freely without
+breaking any template.
+"""
+import os
+
+# The mounts dir's basename under the home dir, and the separator for the
+# read-only mountpoint list. Kept as names so the env-var contract is greppable.
+_MOUNTS_SUBDIR = "mounts"
+_RO_MOUNTS_VAR = "FUSED_RENDER_RO_MOUNTS"
+
+
+def home_dir() -> str:
+    """The app's shell home dir (`~/.fused-render`, or its per-branch nesting).
+
+    `FUSED_RENDER_HOME_DIR` is exported by the server ALREADY BRANCH-RESOLVED —
+    it is the output of `shell.storage.home_dir()`, not its input. So this
+    function deliberately re-derives nothing: no branch nesting, no ref
+    sanitizing. Duplicating those rules here is how the two copies drift.
+
+    The fallback is the un-branched baseline, for a template running as a
+    standalone script with no server around: `FUSED_RENDER_HOME` if set (the
+    same override the app honors), else `~/.fused-render`.
+    """
+    home = os.environ.get("FUSED_RENDER_HOME_DIR")
+    if home:
+        return home
+    return os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+
+
+def mounts_dir() -> str:
+    """The dir holding one subdir per mounted remote.
+
+    `normpath` on the fallback for the reason recorded at `shell/mounts.py`'s
+    `mounts_dir()`: `expanduser("~/...")` on Windows keeps its forward slash,
+    and a mixed-separator mountpoint never string-matches a normalized path —
+    which would defeat every prefix check below.
+    """
+    d = os.environ.get("FUSED_RENDER_MOUNTS_DIR")
+    if d:
+        return d
+    return os.path.normpath(os.path.join(home_dir(), _MOUNTS_SUBDIR))
+
+
+def is_mount_backed(path: str) -> bool:
+    """True when `path` sits under the mounts dir — i.e. its bytes come from a
+    remote. Mirrors `shell/mounts.py:is_mount_backed`; keep the two in step.
+
+    The abspath prefix check goes first because it settles the common case with
+    no I/O at all. The `realpath` retry is not redundant: a symlink whose TARGET
+    is inside the mounts dir slips past a pure string check and gets classified
+    LOCAL, which is the one wrong answer that matters (a template would then
+    hammer the mount with kernel stats instead of routing through the server).
+    A genuine mount path matches on abspath and never reaches `realpath`, so the
+    hot path pays no extra syscall — only local-looking paths pay one.
+    """
+    root = os.path.abspath(mounts_dir())
+    ap = os.path.abspath(path)
+    if ap == root or ap.startswith(root + os.sep):
+        return True
+    real_root = os.path.realpath(mounts_dir())
+    rp = os.path.realpath(path)
+    return rp == real_root or rp.startswith(real_root + os.sep)
+
+
+def read_only_mountpoints() -> list:
+    """The absolute mountpoints of mounts whose remote rejects writes.
+
+    Read from `FUSED_RENDER_RO_MOUNTS`, an `os.pathsep`-joined list the shell
+    re-exports whenever the mount store changes; absent or empty means "none
+    known". Empty segments are dropped so a trailing separator (or an
+    accidental `":"`) can never produce a `""` entry that prefix-matches
+    everything.
+    """
+    raw = os.environ.get(_RO_MOUNTS_VAR) or ""
+    return [p for p in raw.split(os.pathsep) if p]
+
+
+def mount_read_only(path: str) -> bool:
+    """True when `path` sits under a read-only mount. Mirrors
+    `shell/mounts.py:mount_read_only`; keep the two in step.
+
+    Local paths are never read-only *for this reason*, hence the
+    `is_mount_backed` gate first (it is also the cheap check). Beyond that this
+    is a plain abspath prefix match — exact mountpoint or anything below it.
+    Like the app's version it ignores whether the mount is currently attached:
+    bytes written into a detached read-only mountpoint would be shadowed by the
+    next attach, so refusing is right either way.
+    """
+    if not is_mount_backed(path):
+        return False
+    p = os.path.abspath(path)
+    return any(p == mp or p.startswith(mp + os.sep)
+               for mp in read_only_mountpoints())
+
+
+def origin() -> str | None:
+    """The origin (`http://host:port`) the server is ACTUALLY serving on, or None
+    when nothing published it. The server sets `FUSED_RENDER_ORIGIN`
+    unconditionally before it starts serving, so None means "no server around" —
+    the caller decides what to do (a daemon that must fetch bytes back through
+    `/api/fs/raw` has nowhere to go and should say so, rather than guessing a
+    default port that is wrong under any `--port` override).
+    """
+    return os.environ.get("FUSED_RENDER_ORIGIN") or None
