@@ -3242,6 +3242,33 @@ def set_server_origin_env(port: int, host: str = "127.0.0.1") -> str:
     return origin
 
 
+def export_app_env() -> None:
+    """Publish the resolved shell dirs so template children can find them
+    WITHOUT importing ``fused_render`` (SPEC PY-15 / D166).
+
+    Templates learn their environment through ``templates/shared/appenv.py``,
+    which reads only env vars. That indirection exists because the fused local
+    execution backend strips ``PYTHONPATH`` from child processes: a template's
+    guarded ``from fused_render.shell.mounts import ...`` then silently takes its
+    fallback branch and a mount-backed path gets treated as local. Env vars cross
+    that boundary intact.
+
+    Both values are exported ALREADY RESOLVED — ``home_dir()`` includes the
+    per-branch nesting (``FUSED_RENDER_BRANCH``) and ``mounts_dir()`` is
+    normpath'd — so no consumer re-implements those rules. Called from the same
+    place as ``set_server_origin_env``, i.e. before the server starts serving, so
+    every child process inherits them; the read-only mount list is exported
+    separately by ``shell.mounts.export_ro_mounts_env`` because it has to be
+    refreshed on every store write, not just at startup.
+    """
+    from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import storage as shell_storage
+
+    os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
+    os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
+    shell_mounts.export_ro_mounts_env()
+
+
 def create_app(start_dir: str) -> FastAPI:
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
     # ONCE at startup — this raises on a bad value and fails loudly for

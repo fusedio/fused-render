@@ -26,7 +26,7 @@ import uvicorn
 from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
-from fused_render.server import create_app, set_server_origin_env
+from fused_render.server import create_app, export_app_env, set_server_origin_env
 from fused_render.shell.seed import ensure_fused_dir_and_landing
 
 logger = logging.getLogger("fused_render")
@@ -184,6 +184,9 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, str | None]:
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
     set_server_origin_env(port, host="127.0.0.1")
+    # Same lifecycle point, same reason: templates read the shell dirs + the
+    # read-only mount list from the env (they can't import fused_render).
+    export_app_env()
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)

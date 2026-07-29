@@ -215,25 +215,56 @@ def main(city: str = "oslo", limit: int = 100):
 ### 5.3 Execution environment
 
 - **PY-6** **DECIDED (v1):** **user** code executes in a **fresh subprocess per call** — always-fresh code, zero stale state, trivial timeout/kill; a crash or `sys.exit` cannot take down the server. Cost: interpreter + import time on every call. A warm worker pool is the designated v2 upgrade if interactivity demands it (API unchanged). **Exception (D72):** an explicit allowlist of first-party helpers (`executor.INPROCESS_HELPERS` — the `duckdb`/`structure`/`xlsx`/`sqlite` readers and the `api` inspector) run **in the server process**, not a subprocess — they are trusted, fast, bounded, and never import/exec user code, and running them in-process means the protected-folder file access they perform reuses the app's macOS TCC grant instead of re-prompting on every call. Everything else stays subprocess-isolated: user code (the `api` Run button, user-authored template readers) **and every other shipped `templates/` helper** (e.g. the `claude/` chat agent, the geo tile servers/browsers), which can be slow/long-running and so must keep the subprocess timeout.
-- **PY-6a** The subprocess worker (`_child.py`) **bootstraps the package onto
-  its own `sys.path`**. It is spawned as a standalone script, so `sys.path[0]`
-  is the package directory rather than its parent and `import fused_render`
-  resolves only when the package is pip-installed into that interpreter — so a
-  first-party helper that delegates to the package (the call-log reader reads
-  the store through `fused_render.calls`) failed there with *No module named
-  'fused_render'*, while a stdlib-only helper worked. The allowlist (D72) hid
-  this for the built-in copies; a user FORK of such a helper under
-  `~/.fused-render/templates/` is user code, correctly stays on the subprocess
-  path, and must still work. The parent is APPENDED, so a real installation and
-  the user's own module directory both keep precedence.
+- **PY-6a** **RETIRED (D166).** The subprocess worker used to bootstrap the
+  package onto its own `sys.path` (`_child.py` appending the package's parent,
+  `executor._child_env()` appending the same value to `PYTHONPATH`). It is
+  spawned as a standalone script, so `sys.path[0]` is the package directory
+  rather than its parent and `import fused_render` resolves only when the package
+  is pip-installed into that interpreter — which is why a first-party helper that
+  delegated to the package (the call-log reader read the store through
+  `fused_render.calls`) failed there with *No module named 'fused_render'* while a
+  stdlib-only helper worked. **Both halves are gone.** No `templates/` file
+  imports the package any more (PY-15), and the injection could not be relied on
+  regardless: the fused engine's local backend strips
+  `PYTHONPATH`/`PYTHONHOME`/`VIRTUAL_ENV` from its children for venv hermeticity,
+  so a template leaning on it worked under the built-in executor and silently took
+  its fallback branch under the other engine. The worker now inherits `os.environ`
+  untouched; a user `.py` that imports the package is reported with the
+  interpreter, `PYTHONPATH` and `sys.path[:3]` named, rather than a bare
+  ImportError.
 - **PY-6b** The allowlist covers **both** the staged core-templates copy and the
   bundled original of each helper. They are the same first-party file; listing
   only one made a run served from the other fall to the subprocess path
-  silently — a per-poll spawn for the readers, and (before PY-6a) an outright
-  failure for one that imports the package.
+  silently — a per-poll spawn for the readers, and (while PY-6a's bootstrap was
+  the only way a child could see the package) an outright failure for one that
+  imports the package.
 - **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
 - **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.
+- **PY-15** **A template learns about its environment from the ENV, never by
+  importing `fused_render` (D166).** The server exports, **before it starts
+  serving** so every child inherits them:
+  `FUSED_RENDER_HOME_DIR` (the shell home, **already branch-resolved**),
+  `FUSED_RENDER_MOUNTS_DIR` (the mounts root, normalized),
+  `FUSED_RENDER_RO_MOUNTS` (`os.pathsep`-joined absolute mountpoints of mounts
+  whose remote rejects writes, **re-exported on every mount-store write** so it
+  tracks attach/detach/create/delete) and `FUSED_RENDER_ORIGIN` (the origin the
+  server is ACTUALLY bound to — see the `--port` hazard in §26).
+  `templates/shared/appenv.py` is the **only** sanctioned reader: stdlib-only, no
+  `fused_render` import, every value resolved **per call** (a long-lived template
+  daemon must see the read-only set change under it). Templates reach it the
+  established way, `sys.path.insert(0, <template dir>/../shared)`.
+  Only DERIVED ANSWERS cross the boundary — never `mounts.json`, whose schema and
+  whose mount POLICY stay in `shell/mounts.py`, so this does not weaken the
+  mount-agnostic rule (§26/MD-11): a template may ASK a fact, never branch on how
+  mounts work. A site that cannot reach `appenv` keeps whatever fail-closed or
+  degrade rule it documents (`_refuse_mounts` refuses; `_sidecar_writable` falls
+  back to `os.access`) — and because that is now the primary path when no server
+  exported the vars, each one is tested directly. Pinned by
+  `tests/test_templates_decoupled.py`, which asserts **zero** `fused_render`
+  imports under `fused_render/templates/` (AST, not grep — the word appears
+  throughout the prose) with one documented, in-server-only exception
+  (`reader/condition.py`'s prefs read).
 
 ### 5.4 Return value serialization
 
@@ -2473,7 +2504,8 @@ reload. Design + rationale: `docs/CALL_LOG_DESIGN.md`.
   logged.
 - **CL-11** **The in-app view is DEFERRED to its own change; this spec section
   covers the store and the CLI.** A `calls` view template was written and then
-  pulled: it failed in practice (a worker could not import the package — PY-6a),
+  pulled: it failed in practice (a worker could not import the package — the
+  bootstrap since retired, PY-6a/PY-15),
   and rather than keep debugging a surface inside a change that is really about
   the record and the store, it comes back on its own. Nothing is unread in the
   meantime: `fused-render calls` (CL-13) is the agent's read surface and runs

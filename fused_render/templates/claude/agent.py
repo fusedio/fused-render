@@ -246,14 +246,16 @@ def _mount_read_only(file: str) -> bool:
     write can never be accepted — with CacheMode=full the doomed upload lands
     in the VFS cache and 403-loops forever (the sidecar-write incident).
 
-    Guarded lazy import: in the app this reads the mount store; a standalone
-    copy of this template (no fused_render on the path) degrades to False, the
-    pre-guard behavior. Deliberately not the stdlib-only rule the rest of this
-    file follows (cf. templates/zarr_aoi/tile_server.py, which also reaches for
-    a fused_render internal) — os.access(W_OK) can't see a remote's read-only
-    -ness, so only the shell's flag can answer this."""
+    Answered through `shared/appenv` (FUSED_RENDER_RO_MOUNTS, which the shell
+    re-exports on every mount-store write) and NOT by importing fused_render:
+    this file runs as a child process, and under the fused engine a child has no
+    PYTHONPATH, so the old `from fused_render.shell.mounts import ...` failed on
+    every run there and a read-only mount looked writable. os.access(W_OK) is no
+    substitute — it cannot see a remote's read-only-ness — so only the shell's
+    flag can answer this. Still guarded: a copy of this folder taken without its
+    `shared/` sibling degrades to False, the pre-guard behavior."""
     try:
-        from fused_render.shell.mounts import mount_read_only
+        from appenv import mount_read_only
         return mount_read_only(file)
     except Exception:
         return False
