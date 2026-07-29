@@ -32,15 +32,31 @@ import re
 
 # Bumped whenever parse_note's output shape or semantics change, so a stored
 # index row from an older parser is invalidated wholesale (MD-8).
-PARSER_VERSION = 1
+#
+# 2: `title` is gone from the row — a note's display name is its filename now,
+# so a frontmatter `title:` or a leading `# H1` no longer renames it.
+# 3: `tags` is gone from the row — the tag concept was removed (D165), so a
+# cached row still carrying it would feed tag nodes to a graph that has none.
+PARSER_VERSION = 3
 
 # What counts as a note. Both are bound to this template in registry.json.
 NOTE_SUFFIXES = (".md", ".markdown")
 
-# A file bigger than this is not a note (a generated changelog, a dumped
-# dataset with an .md name); reading it would dominate the walk. Reported, not
-# silently dropped.
-MAX_NOTE_BYTES = 256 * 1024
+# There is deliberately NO per-note size cap. One used to skip any `.md` over
+# 256 KB, on the theory that such a file is a generated changelog rather than a
+# note and that reading it would dominate the walk. Both halves were wrong in
+# practice: a long-lived decision log or design doc is exactly a note someone
+# wants backlinks into, and a skipped file landed in NEITHER `notes` nor
+# `assets`, so every `[[…]]` aimed at it resolved to nothing and drew a ghost —
+# indistinguishable from a link to a note that does not exist. The cost the cap
+# was avoiding is also already paid once and cached: the index keys parses on
+# `(mtime_ns, size)`, so a big note is read when it changes and stat-only on
+# every open after that. The walk's real budget is MAX_ENTRIES below, which
+# bounds the number of files rather than the size of any one of them.
+#
+# The editor's own inline-edit ceiling (`MAX_BYTES` in template.html) is a
+# separate 2 MB guard and was never this cap — a 500 KB note has always loaded
+# and edited fine, it just had no place in the graph.
 
 # Hard caps on what a single walk RECORDS. Exceeding either is reported so the
 # UI can say the graph is partial rather than quietly showing a subset (MD-10).
@@ -115,11 +131,11 @@ def _refuse_mounts(root: str) -> None:
 
 # ----------------------------------------------------------------- vault root
 
-# What marks the top of a vault. `.obsidian/` is Obsidian's own marker; the
-# other two are ours — the (still unbuilt) `.fused-graph.json` tuning file, and
-# `.git`, which is a DIRECTORY in a clone and a FILE in a worktree, so both
-# shapes are probed.
-VAULT_MARKERS = (".obsidian", ".fused-graph.json", ".git")
+# What marks the top of a vault. `.obsidian/` is Obsidian's own marker; `.git`
+# is a DIRECTORY in a clone and a FILE in a worktree, so both shapes are probed.
+# A third marker, `.fused-graph.json`, was dropped as never adopted (D165) —
+# these two cover every vault anyone actually keeps.
+VAULT_MARKERS = (".obsidian", ".git")
 
 # How far up the ascent may look. Deep enough for any real vault layout, and
 # shallow enough that a note in a deep temp path cannot drag the scan up to
@@ -230,10 +246,6 @@ _WIKILINK = re.compile(r"(?P<bang>!?)\[\[(?P<inner>[^\[\]\n]+?)\]\]")
 # `[label](target)` / `![alt](target)` with an optional "title".
 _MDLINK = re.compile(
     r"(?P<bang>!?)\[(?P<label>[^\]\n]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"\n]*\")?\)")
-# A hashtag: not preceded by a word char, `/` or another `#` (so `a#b` and the
-# second `#` of `## Heading` are out), and starting with a letter/underscore (so
-# `#1234` and a `# ` heading are out).
-_TAG = re.compile(r"(?<![\w/#])#(?P<tag>[A-Za-z_][\w/-]*)")
 _HEADING = re.compile(r"^(?P<hashes>#{1,6})[ \t]+(?P<text>.+?)[ \t]*#*[ \t]*$")
 
 # A markdown-link target that is not a path into this vault.
@@ -296,39 +308,6 @@ def _mask_code(text: str, frontmatter):
     return "\n".join(lines)
 
 
-def _parse_frontmatter(block: str) -> dict:
-    """The handful of frontmatter keys this template reads: `title` and `tags`.
-
-    A deliberately tiny YAML subset (scalar, `[a, b]` flow list, `- a` block
-    list) rather than a parser: the two keys are all we act on, and PyYAML is
-    not in the bundled set.
-    """
-    out = {}
-    key = None
-    for raw in block.split("\n"):
-        line = raw.rstrip()
-        if not line or line.strip() in ("---", "..."):
-            continue
-        item = re.match(r"^[ \t]*-[ \t]+(?P<value>.+)$", line)
-        if item is not None and key is not None:
-            out.setdefault(key, []).append(item.group("value").strip().strip("'\""))
-            continue
-        field = re.match(r"^(?P<key>[A-Za-z_][\w-]*)[ \t]*:[ \t]*(?P<value>.*)$", line)
-        if field is None:
-            continue
-        key = field.group("key").lower()
-        value = field.group("value").strip()
-        if not value:
-            out.setdefault(key, [])
-            continue
-        if value.startswith("[") and value.endswith("]"):
-            out[key] = [v.strip().strip("'\"") for v in value[1:-1].split(",") if v.strip()]
-        else:
-            out[key] = value.strip("'\"")
-        key = key if isinstance(out.get(key), list) else None
-    return out
-
-
 def _wikilink(match) -> dict:
     inner = match.group("inner")
     target, _, label = inner.partition("|")
@@ -363,14 +342,20 @@ def _mdlink(match):
 def parse_note(text: str) -> dict:
     """Everything one note contributes to the graph, from its source alone.
 
-    Returns `{"title", "headings", "tags", "links"}`. `links` carries the RAW
-    authored target (MD-6) in document order; `title` is None when the note
-    states none (the caller falls back to the filename, which parse_note does
-    not know).
+    Returns `{"headings", "links"}`. `links` carries the RAW authored target
+    (MD-6) in document order.
+
+    No `title`: a note is named by its FILE, which parse_note cannot see and
+    deliberately does not try to override. A frontmatter `title:` and a leading
+    `# H1` used to win over the filename, which meant the name on a graph node
+    and in a backlink row was not the name you would search for, rename, or type
+    inside `[[…]]` — and an `# H1` that merely repeated the filename made the
+    two agree often enough to hide the cases where they did not. Obsidian names
+    a note by its file for the same reason. Headings are still parsed in full;
+    they are just headings now.
     """
     frontmatter = _frontmatter_span(text)
     body = _mask_code(text, frontmatter)
-    meta = _parse_frontmatter(text[frontmatter[0]:frontmatter[1]]) if frontmatter else {}
 
     links = [_wikilink(m) for m in _WIKILINK.finditer(body)]
     # A wikilink is not an md-link, but `![[x]]`'s trailing `]]` cannot be
@@ -387,19 +372,6 @@ def parse_note(text: str) -> dict:
     for link in links:
         link.pop("offset")
 
-    tags = []
-    for match in _TAG.finditer(body):
-        tag = match.group("tag").rstrip("/")
-        if tag and tag not in tags:
-            tags.append(tag)
-    front_tags = meta.get("tags") or meta.get("tag") or []
-    if isinstance(front_tags, str):
-        front_tags = [t.strip() for t in front_tags.split(",")]
-    for tag in front_tags:
-        tag = str(tag).lstrip("#").rstrip("/").strip()
-        if tag and tag not in tags:
-            tags.append(tag)
-
     headings = []
     for line in body.split("\n"):
         match = _HEADING.match(line)
@@ -407,15 +379,8 @@ def parse_note(text: str) -> dict:
             headings.append({"level": len(match.group("hashes")),
                              "text": match.group("text").strip()})
 
-    title = meta.get("title")
-    if isinstance(title, list):
-        title = title[0] if title else None
-    if not title:
-        title = next((h["text"] for h in headings if h["level"] == 1), None)
     return {
-        "title": title or None,
         "headings": headings,
-        "tags": tags,
         "links": links,
     }
 
@@ -585,7 +550,7 @@ def _read_text(path: str) -> str:
         return handle.read()
 
 
-def _walk(root: str, max_bytes: int, max_files: int, max_assets: int,
+def _walk(root: str, max_files: int, max_assets: int,
           max_entries: int = MAX_ENTRIES) -> dict:
     """The walk's facts, with nothing parsed: which notes exist and how big/old
     each one is. Split from parsing so the index can decide, per file, whether a
@@ -607,7 +572,6 @@ def _walk(root: str, max_bytes: int, max_files: int, max_assets: int,
     """
     found = {}      # rel -> (abs path, mtime_ns, size)
     assets = []
-    skipped_large = []
     truncated = False
     stop = False    # a cap that makes the rest of the tree pointless to visit
     entries = 0     # every directory entry visited, note or not
@@ -644,18 +608,16 @@ def _walk(root: str, max_bytes: int, max_files: int, max_assets: int,
                 truncated = stop = True
                 break
             try:
+                # Still stat'd, but only for the index's cache key — nothing
+                # here judges a note by its size any more.
                 stat = os.stat(full)
             except OSError:
-                continue
-            if stat.st_size > max_bytes:
-                skipped_large.append(rel)
                 continue
             found[rel] = (full, stat.st_mtime_ns, stat.st_size)
         if stop:
             break
 
-    return {"found": found, "assets": assets, "truncated": truncated,
-            "skipped_large": skipped_large}
+    return {"found": found, "assets": assets, "truncated": truncated}
 
 
 def _row(full: str, mtime_ns: int, size: int):
@@ -676,20 +638,19 @@ def _assemble(root: str, walk: dict, notes: dict) -> dict:
         "notes": notes,
         "assets": walk["assets"],
         "truncated": walk["truncated"],
-        "skipped_large": walk["skipped_large"],
     }
 
 
-def scan_root(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
+def scan_root(root: str, max_files: int = MAX_FILES,
               max_assets: int = MAX_ASSETS, max_entries: int = MAX_ENTRIES) -> dict:
     """Walk `root` and parse every note under it, with no cache involved.
 
-    Returns `{"root", "notes": {relpath: row}, "assets": [relpath], "truncated",
-    "skipped_large"}`. Refuses a mount-backed root before walking (MD-11).
+    Returns `{"root", "notes": {relpath: row}, "assets": [relpath],
+    "truncated"}`. Refuses a mount-backed root before walking (MD-11).
     """
     root = os.path.abspath(root)
     _refuse_mounts(root)
-    walk = _walk(root, max_bytes, max_files, max_assets, max_entries)
+    walk = _walk(root, max_files, max_assets, max_entries)
     notes = {}
     for rel, (full, mtime_ns, size) in walk["found"].items():
         row = _row(full, mtime_ns, size)
@@ -817,7 +778,7 @@ def index_rows(root: str) -> dict:
         conn.close()
 
 
-def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MAX_FILES,
+def scan_indexed(root: str, max_files: int = MAX_FILES,
                  max_assets: int = MAX_ASSETS, max_entries: int = MAX_ENTRIES) -> dict:
     """`scan_root`, but reading unchanged notes out of the on-disk index.
 
@@ -825,6 +786,10 @@ def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MA
     files, typically zero. Deletions are free — the assembly only uses rows the
     current walk found — and the rows for vanished files are dropped so the db
     cannot grow without bound.
+
+    This is also what makes a large note affordable now that nothing is skipped
+    for its size: a 300 KB decision log is read on the open after it changes and
+    never again until it changes next.
     """
     import json
 
@@ -832,7 +797,7 @@ def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MA
     # Before anything, including creating the index dir: the walk below is the
     # operation that must never happen on a mount (MD-11).
     _refuse_mounts(root)
-    walk = _walk(root, max_bytes, max_files, max_assets, max_entries)
+    walk = _walk(root, max_files, max_assets, max_entries)
     found = walk["found"]
 
     conn = _connect(root)
@@ -890,8 +855,13 @@ def scan_indexed(root: str, max_bytes: int = MAX_NOTE_BYTES, max_files: int = MA
 # --------------------------------------------------------------------- the API
 
 
-def _display_title(rel: str, row) -> str:
-    return (row or {}).get("title") or os.path.basename(_stem(rel))
+def _display_title(rel: str) -> str:
+    """A note's display name: its filename, without directory or extension.
+
+    Takes only the path, so it needs no row and works for a note the scan never
+    parsed — which is the whole point of naming by file (see `parse_note`).
+    """
+    return os.path.basename(_stem(rel))
 
 
 def _resolved_links(rel: str, row, note_index, asset_index):
@@ -912,8 +882,9 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
     asset_index = _candidate_index(list(notes) + scan["assets"])
     row = notes.get(rel)
     if row is None:
-        # Present on disk but not in the scan (over the size cap, or excluded);
-        # parse it directly so the note view still works.
+        # Present on disk but not in the scan — under a skipped directory, or
+        # past a cap the walk hit. No longer reachable by being large, but the
+        # fallback stays: parse it directly so the note view still works.
         row = parse_note(_read_text(os.path.join(root, rel)))
 
     def absolute(target_rel):
@@ -928,7 +899,7 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
             "embed": link["embed"],
             "wiki": link["wiki"],
             "path": absolute(link["rel"]),
-            "title": _display_title(link["rel"], notes.get(link["rel"])) if link["rel"] else None,
+            "title": _display_title(link["rel"]) if link["rel"] else None,
         })
 
     backlinks = []
@@ -941,7 +912,7 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
             backlinks.append({
                 "path": absolute(other_rel),
                 "rel": other_rel,
-                "title": _display_title(other_rel, notes[other_rel]),
+                "title": _display_title(other_rel),
                 "label": link["label"],
                 "heading": link["heading"],
                 "embed": link["embed"],
@@ -950,14 +921,12 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
         "error": None,
         "root": _client_path(root),
         "rel": rel,
-        "title": _display_title(rel, row),
+        "title": _display_title(rel),
         "headings": row["headings"],
-        "tags": row["tags"],
         "links": links,
         "backlinks": backlinks,
         "notes": len(notes),
         "truncated": scan["truncated"],
-        "skipped_large": scan["skipped_large"],
         "parser_version": PARSER_VERSION,
     }
 
@@ -980,7 +949,7 @@ def _link_form(rel: str, paths, index) -> str:
 
 
 def _candidates_payload(root: str, scan: dict) -> dict:
-    """Everything the `[[`, `[[note#` and `#tag` popups offer (MD-14).
+    """Everything the `[[` and `[[note#` popups offer (MD-14).
 
     Comes off the same scan the graph reads, so the popup is free once the walk
     has happened and can never suggest a note the graph does not know about.
@@ -988,15 +957,13 @@ def _candidates_payload(root: str, scan: dict) -> dict:
     notes = scan["notes"]
     paths = list(notes)
     index = _candidate_index(paths)
-    tags = set()
     rows = []
     for rel in sorted(notes):
         row = notes[rel]
-        tags.update(row["tags"])
         rows.append({
             "rel": rel,
             "path": _client_join(root, rel),
-            "title": _display_title(rel, row),
+            "title": _display_title(rel),
             "link": _link_form(rel, paths, index),
             "headings": row["headings"],
         })
@@ -1004,7 +971,6 @@ def _candidates_payload(root: str, scan: dict) -> dict:
         "error": None,
         "root": _client_path(root),
         "notes": rows,
-        "tags": sorted(tags),
         "assets": scan["assets"],
         "truncated": scan["truncated"],
         "parser_version": PARSER_VERSION,
@@ -1029,7 +995,14 @@ def _graph_nodes_and_edges(root: str, scan: dict):
         nodes[rel] = {
             "id": rel,
             "kind": "note",
-            "label": _display_title(rel, notes[rel]),
+            "label": _display_title(rel),
+            # The note's folder relative to the scan root, "" at the top. The
+            # canvas lays notes out in one horizontal band per folder, and this
+            # is what it bands on — stated outright rather than left for the
+            # client to recover by splitting an id, so "a node's id happens to
+            # be its relative path" stays an implementation detail of this
+            # module instead of becoming a wire contract.
+            "dir": rel.rsplit("/", 1)[0] if "/" in rel else "",
             "path": _client_join(root, rel),
             "degree": 0,
         }
@@ -1062,18 +1035,16 @@ def _graph_nodes_and_edges(root: str, scan: dict):
                     # the note is a path operation and must not be driven by
                     # whatever happens to be drawn on the canvas.
                     "target": _normalize_target(link["target"]),
+                    # No folder: it does not exist yet, so it is in none. `None`
+                    # rather than `""` — the top folder is a real place and a
+                    # ghost is not in it.
+                    "dir": None,
                     "path": None, "degree": 0})
                 add(rel, ghost, "embed" if link["embed"] else "link")
             elif target in nodes:
                 add(rel, target, "embed" if link["embed"] else "link")
             # else: the target is an asset (a picture), which is not a note and
             # would otherwise dominate a vault full of screenshots.
-        for tag in row["tags"]:
-            node = "tag:" + tag
-            nodes.setdefault(node, {
-                "id": node, "kind": "tag", "label": "#" + tag,
-                "path": None, "degree": 0})
-            add(rel, node, "tag")
 
     return nodes, edges
 
@@ -1130,7 +1101,6 @@ def _graph_payload(root: str, scan: dict, focus, depth: int) -> dict:
         "edges": edges,
         "total_notes": len(scan["notes"]),
         "truncated": scan["truncated"],
-        "skipped_large": scan["skipped_large"],
         "parser_version": PARSER_VERSION,
     }
 

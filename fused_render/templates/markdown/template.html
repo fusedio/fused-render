@@ -180,9 +180,9 @@
      what each range MEANS, so `inherit` hands the colour back to the decoration
      that does. Fenced code is excluded, because there the syntax colouring is
      exactly the point; so are our own widgets and marks, which carry `lp-`,
-     `wl-` or `tag` classes (a highlight span's class is generated, e.g. `ͼ4`). */
+     or `wl-` classes (a highlight span's class is generated, e.g. `ͼ4`). */
   .cm-content .cm-line:not(.lp-fence-line)
-      span:not([class*="lp-"]):not([class*="wl"]):not(.tag) {
+      span:not([class*="lp-"]):not([class*="wl"]) {
     color: inherit;
     text-decoration: inherit;
   }
@@ -265,7 +265,7 @@
   .lp-link { color: var(--accent); text-decoration: none; }
   .lp-link:hover { text-decoration: underline; }
 
-  /* Wikilinks, ghosts and tags — the link layer (SPEC §32, MD-3/MD-4). */
+  /* Wikilinks and ghosts — the link layer (SPEC §32, MD-3/MD-4). */
   .wl {
     color: var(--accent);
     cursor: pointer;
@@ -293,16 +293,6 @@
   }
   .wl-embed-missing { border: 1px dashed var(--ghost); color: var(--ghost); }
   .wl-embed-unknown { border: 1px solid var(--border); color: var(--fg-muted); }
-  .tag {
-    display: inline-block;
-    padding: 0 6px;
-    border-radius: 999px;
-    background: var(--bg-alt);
-    border: 1px solid var(--border);
-    color: var(--fg-muted);
-    font-size: 87%;
-    cursor: text;
-  }
 
   /* ---- the corner cluster: mode + sidebar (MD-1a, MD-19) ------------------
      The only persistent chrome in this view. Two 26px buttons in one corner,
@@ -432,8 +422,11 @@
   .bl-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bl-title { flex: 0 1 auto; font-weight: 600; }
   .bl-path { flex: 0 1 auto; max-width: 100%; color: var(--fg-muted); font-size: 11px; }
+  /* "×3" when one note links here three times: the list shows each linking
+     note once, so the multiplicity has to survive somewhere. Muted like the
+     path — it qualifies the row, it is not the row. */
+  .bl-count { flex: none; color: var(--fg-muted); font-size: 11px; }
   .bl-empty { color: var(--fg-muted); font-size: 12px; }
-  #tags { margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
   #notice {
     margin: 12px 0 0;
     padding: 8px 10px;
@@ -561,7 +554,6 @@
       <button id="side-grip" type="button" aria-label="Resize side panel"></button>
       <div class="side-head" id="links-head">Backlinks</div>
       <div id="links" hidden>
-        <div id="tags"></div>
         <div id="bl-list"></div>
         <div id="notice" hidden></div>
       </div>
@@ -741,10 +733,10 @@
     // (MD-1) — no mode switch, and no caret to hand between two views.
     //
     // What a range IS comes from the vendored markdown grammar via syntaxTree,
-    // so this file holds no block parser. Wikilinks and tags are not part of
-    // that grammar, so they are matched by regex and then checked AGAINST the
-    // tree, which is how MD-3's code-masking rule holds here without a second
-    // copy of it.
+    // so this file holds no block parser. Wikilinks are not part of that
+    // grammar, so they are matched by regex and then checked AGAINST the tree,
+    // which is how MD-3's code-masking rule holds here without a second copy
+    // of it.
 
     const relinkEffect = CM.StateEffect.define();
 
@@ -753,15 +745,10 @@
     const UNRESOLVED_HERE =
       "Link targets are not resolved here — this note's folder was not scanned.";
 
-    // Node names whose text is code, and therefore never a link or a tag.
+    // Node names whose text is code, and therefore never a link.
     const CODE_NODES = new Set([
       "InlineCode", "CodeText", "FencedCode", "CodeBlock", "CodeMark", "CodeInfo",
     ]);
-    // A `#` inside a URL is a fragment, not a tag. This must NOT include Link
-    // or Image: the grammar wraps the inner brackets of `[[Wiki]]` in a Link
-    // node and of `![[embed]]` in an Image node, so treating those as
-    // non-linkable would silently stop every wikilink from rendering.
-    const URL_NODES = new Set(["URL", "Autolink"]);
 
     const HEADINGS = {
       ATXHeading1: 1, ATXHeading2: 2, ATXHeading3: 3,
@@ -1032,19 +1019,9 @@
       }, false);
     }
 
-    function tagWidget(tag) {
-      return new DomWidget("tg:" + tag, () => {
-        const span = document.createElement("span");
-        span.className = "tag";
-        span.textContent = "#" + tag;
-        return span;
-      }, false);
-    }
-
     // ---- the decoration set -------------------------------------------------
 
     const WIKILINK_RE = /!?\[\[([^\[\]\n]+?)\]\]/g;
-    const TAG_RE = /(^|[\s(\[])#([A-Za-z_][\w/-]*)/g;
 
     function within(tree, pos, names) {
       for (let node = tree.resolveInner(pos, 1); node; node = node.parent) {
@@ -1055,8 +1032,11 @@
 
     // Takes a STATE, not a view, and walks the whole document — see the
     // StateField below for why it cannot be a view plugin, and therefore has no
-    // viewport to narrow the walk to. Notes are small (MD-10 caps a note at
-    // 256 KB), so whole-document is well inside budget, and it also removes the
+    // viewport to narrow the walk to. The bound on that walk is `MAX_BYTES`
+    // above: this surface never opens a file it did not agree to load, so 2 MB
+    // is the worst case. (This comment used to cite the graph's 256 KB per-note
+    // cap, which never bounded THIS walk — the editor's ceiling has always been
+    // its own — and that cap is now gone.) Whole-document also removes the
     // viewport/height feedback loop that made scrolling jitter.
     function buildDecorations(state) {
       const lines = selectedLines(state);
@@ -1209,10 +1189,10 @@
         },
       });
 
-      // Wikilinks and tags are not in the grammar, so they are matched by regex
-      // and then checked AGAINST the tree: a `[[x]]` inside a fence or a `#tag`
-      // inside a URL stays literal, which is the same line graph.py draws over
-      // the same text (MD-3). A `[[` inside frontmatter is not a link either.
+      // Wikilinks are not in the grammar, so they are matched by regex and then
+      // checked AGAINST the tree: a `[[x]]` inside a fence stays literal, which
+      // is the same line graph.py draws over the same text (MD-3). A `[[` inside
+      // frontmatter is not a link either.
       const chunk = state.doc.toString();
       WIKILINK_RE.lastIndex = 0;
       let match;
@@ -1223,17 +1203,6 @@
         if (isBlocked(start, end) || within(tree, start + 2, CODE_NODES)) continue;
         if (touched(state, lines, start, end)) continue;
         pushWidget(start, end, wikilinkWidget(match[0]));
-      }
-      TAG_RE.lastIndex = 0;
-      while ((match = TAG_RE.exec(chunk))) {
-        const start = match.index + match[1].length;
-        const end = start + match[2].length + 1;
-        if (start < frontmatterEnd) continue;
-        if (isBlocked(start, end)) continue;
-        if (within(tree, start + 1, CODE_NODES)
-            || within(tree, start + 1, URL_NODES)) continue;
-        if (touched(state, lines, start, end)) continue;
-        pushWidget(start, end, tagWidget(match[2]));
       }
 
       return CM.Decoration.set(out, true);
@@ -1585,18 +1554,6 @@
         return { from, options: headingOptions(headings, notePart) };
       }
 
-      // `#tag` — same guard the decoration uses, so a URL fragment is not a tag.
-      const tag = /(?:^|[\s(\[])#([A-Za-z_][\w/-]*)?$/.exec(before);
-      if (tag) {
-        const typed = tag[1] || "";
-        const data = await ensureCandidates();
-        if (!data) return null;
-        return {
-          from: context.pos - typed.length,
-          options: data.tags.map((t) => ({ label: t, type: "keyword" })),
-          validFor: /^[\w/-]*$/,
-        };
-      }
       return null;
     }
 
@@ -1704,14 +1661,12 @@
     function renderSidebar() {
       const linksEl = document.getElementById("links");
       const listEl = document.getElementById("bl-list");
-      const tagsEl = document.getElementById("tags");
       const noticeEl = document.getElementById("notice");
       if (!notes) {
         // Say WHY rather than hiding the section. An empty backlinks panel reads
         // as "nothing links here", which is an answer we never computed — the
         // same mistake the ghost rendering used to make (MD-11).
         linksEl.hidden = false;
-        tagsEl.innerHTML = "";
         listEl.innerHTML = "";
         document.getElementById("links-head").textContent = "Backlinks";
         // graph.py's own words for why, so a mount refusal, a note outside its
@@ -1721,10 +1676,20 @@
         return;
       }
       linksEl.hidden = false;
-      tagsEl.innerHTML = notes.tags
-        .map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
 
-      const rows = notes.backlinks || [];
+      // One row per LINKING NOTE, not per link: a note that references this one
+      // three times rendered as three identical rows, which read as three
+      // different notes until the paths were compared. The multiplicity is
+      // real information — it just belongs in a count on the one row, and the
+      // header keeps counting notes, since "how many notes point here" is the
+      // question a backlinks panel answers.
+      const byPath = new Map();
+      for (const row of notes.backlinks || []) {
+        const seen = byPath.get(row.path);
+        if (seen) seen.count += 1;
+        else byPath.set(row.path, { ...row, count: 1 });
+      }
+      const rows = [...byPath.values()];
       document.getElementById("links-head").textContent =
         rows.length ? `Backlinks (${rows.length})` : "Backlinks";
       listEl.innerHTML = rows.length
@@ -1732,6 +1697,7 @@
             <button class="bl" data-path="${escapeHtml(row.path)}">
               <span class="bl-title">${escapeHtml(row.title)}</span>
               <span class="bl-path">${escapeHtml(row.rel)}</span>
+              ${row.count > 1 ? `<span class="bl-count">×${row.count}</span>` : ""}
             </button>`).join("")
         : `<div class="bl-empty">No other note under ${escapeHtml(notes.root)}
              links here.</div>`;
@@ -1744,10 +1710,6 @@
         notices.push(`Partial scan: ${notes.notes} note(s) under
           ${escapeHtml(notes.root)} were indexed before the walk hit a cap, so some
           backlinks or embeds may be missing.`);
-      }
-      if ((notes.skipped_large || []).length) {
-        notices.push(`${notes.skipped_large.length} file(s) were too large to parse
-          as notes and were skipped.`);
       }
       noticeEl.innerHTML = notices.join("<br />");
       noticeEl.hidden = !notices.length;
@@ -2016,9 +1978,9 @@
       }
       graphNoteEl.hidden = !data.truncated;
       if (data.truncated) graphNoteEl.textContent = "Partial: the walk hit a cap.";
-      // Notes compared with notes: `nodes` also carries tag and ghost nodes, so
-      // a bare length reads "221 of 205 notes" on the `all` depth — and was
-      // quietly overcounting at every other depth too.
+      // Notes compared with notes: `nodes` also carries ghost nodes, so a bare
+      // length reads "221 of 205 notes" on the `all` depth — and was quietly
+      // overcounting at every other depth too.
       const shownNotes = data.nodes.filter((n) => n.kind === "note").length;
       graphCountEl.textContent = `${shownNotes} of ${data.total_notes} notes`;
       canvas.setData(data);

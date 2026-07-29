@@ -81,7 +81,6 @@ def test_links_inside_code_are_not_edges(graph):
         "~~~\n"
     )
     assert _targets(parsed) == ["Yes"]
-    assert parsed["tags"] == []
 
 
 def test_indented_code_block_links_are_not_edges(graph):
@@ -89,13 +88,12 @@ def test_indented_code_block_links_are_not_edges(graph):
     assert _targets(parsed) == ["Yes"]
 
 
-def test_tags_are_collected_and_headings_are_not_tags(graph):
-    parsed = graph.parse_note(
-        "# Heading Not A Tag\n"
-        "body #alpha and #nested/child and #with-dash_1\n"
-        "not a tag: # spaced, or #1234, or a#b\n"
-    )
-    assert parsed["tags"] == ["alpha", "nested/child", "with-dash_1"]
+def test_a_hashtag_is_not_parsed_at_all(graph):
+    """The tag concept is gone (D165): a `#word` is prose, and nothing about it
+    reaches a payload. A leading `#` is still a heading."""
+    parsed = graph.parse_note("# Heading\nbody #alpha and #nested/child\n")
+    assert "tags" not in parsed
+    assert [h["text"] for h in parsed["headings"]] == ["Heading"]
 
 
 def test_headings_are_extracted_with_levels(graph):
@@ -115,30 +113,45 @@ def test_headings_are_extracted_with_levels(graph):
     ]
 
 
-def test_title_prefers_frontmatter_then_first_h1(graph):
-    fm = graph.parse_note("---\ntitle: From Frontmatter\n---\n# Ignored\n")
-    assert fm["title"] == "From Frontmatter"
-    h1 = graph.parse_note("intro\n# The Heading\n")
-    assert h1["title"] == "The Heading"
-    assert graph.parse_note("just text\n")["title"] is None
+def test_parse_note_emits_no_title_at_all(graph):
+    # A note is named by its FILE, which parse_note cannot see — so it does not
+    # guess. Frontmatter `title:` and a leading `# H1` are both inert here; the
+    # H1 survives only as a heading.
+    parsed = graph.parse_note("---\ntitle: From Frontmatter\n---\n# The Heading\n")
+    assert "title" not in parsed
+    assert [h["text"] for h in parsed["headings"]] == ["The Heading"]
 
 
-def test_frontmatter_tags_join_body_tags_and_frontmatter_is_not_scanned(graph):
+def test_display_name_is_the_filename_not_the_frontmatter_title_or_h1(graph, tmp_path):
+    root = _vault(tmp_path, {
+        "Real Name.md": "---\ntitle: Frontmatter Name\n---\n# H1 Name\n",
+        "Other.md": "see [[Real Name]]\n",
+    })
+    note = graph.main(action="note", file=os.path.join(root, "Real Name.md"), root=root)
+    assert note["title"] == "Real Name"
+    # And every surface that names the note agrees — the link row pointing at it,
+    # its backlink row, the graph node label, and the `[[` popup.
+    assert graph.main(action="note", file=os.path.join(root, "Other.md"),
+                      root=root)["links"][0]["title"] == "Real Name"
+    assert note["backlinks"][0]["title"] == "Other"
+    graph_out = graph.main(action="graph", root=root, depth=0)
+    assert sorted(n["label"] for n in graph_out["nodes"]) == ["Other", "Real Name"]
+    candidates = graph.main(action="candidates", root=root)
+    assert sorted(n["title"] for n in candidates["notes"]) == ["Other", "Real Name"]
+
+
+def test_frontmatter_is_not_scanned_for_links(graph):
+    """No frontmatter *value* is read any more (D165 took `tags` with it), and
+    the block is still masked out, so a `[[…]]` inside it is not an edge."""
     parsed = graph.parse_note(
         "---\n"
         "title: T\n"
         "tags: [one, two/three]\n"
         "aliases: not-a-link [[NotALink]]\n"
         "---\n"
-        "body #four\n"
+        "body [[Real]]\n"
     )
-    assert parsed["tags"] == ["four", "one", "two/three"]
-    assert _targets(parsed) == []
-
-
-def test_frontmatter_tags_accept_a_comma_string_and_a_yaml_list(graph):
-    assert graph.parse_note("---\ntags: a, b\n---\n")["tags"] == ["a", "b"]
-    assert graph.parse_note("---\ntags:\n  - a\n  - b\n---\n")["tags"] == ["a", "b"]
+    assert _targets(parsed) == ["Real"]
 
 
 # --------------------------------------------------------------- resolution
@@ -234,11 +247,27 @@ def test_scan_collects_notes_and_assets_and_skips_noise(graph, tmp_path):
     assert scan["assets"] == ["sub/pic.png"]
 
 
-def test_scan_skips_a_file_too_large_to_be_a_note_and_reports_it(graph, tmp_path):
-    root = _vault(tmp_path, {"small.md": "hi\n", "huge.md": "x" * 16})
-    scan = graph.scan_root(root, max_bytes=8)
-    assert list(scan["notes"]) == ["small.md"]
-    assert scan["skipped_large"] == ["huge.md"]
+def test_a_large_note_is_scanned_and_fully_linkable(graph, tmp_path):
+    # There is no size cap. A big note used to be dropped from the scan into a
+    # `skipped_large` list, which put it in NEITHER index — so a link aimed at
+    # it drew a ghost, indistinguishable from a link to a note that does not
+    # exist. It is an ordinary note now, whatever its size.
+    big = "# Big\n" + ("filler paragraph text\n" * 20_000)  # ~440 KB
+    root = _vault(tmp_path, {"Big.md": big, "Other.md": "see [[Big]]\n"})
+    scan = graph.scan_root(root)
+    assert sorted(scan["notes"]) == ["Big.md", "Other.md"]
+    assert scan["truncated"] is False
+    assert "skipped_large" not in scan
+
+    # The link resolves to the real file rather than a ghost, and the big note
+    # has working backlinks of its own.
+    other = graph.main(action="note", file=os.path.join(root, "Other.md"), root=root)
+    assert other["links"][0]["path"] == os.path.join(root, "Big.md")
+    big_note = graph.main(action="note", file=os.path.join(root, "Big.md"), root=root)
+    assert [b["rel"] for b in big_note["backlinks"]] == ["Other.md"]
+    # It is a real node in the graph, not a ghost.
+    nodes = {n["id"]: n for n in graph.main(action="graph", root=root, depth=0)["nodes"]}
+    assert nodes["Big.md"]["kind"] == "note"
 
 
 def test_scan_stops_at_the_file_cap_and_says_so(graph, tmp_path):
@@ -475,7 +504,7 @@ def _no_enumeration():
         yield
 
 
-@pytest.mark.parametrize("marker", [".obsidian/config", ".fused-graph.json", ".git/HEAD"])
+@pytest.mark.parametrize("marker", [".obsidian/config", ".git/HEAD"])
 def test_the_default_root_climbs_to_the_nearest_vault_marker(graph, tmp_path, marker):
     root = _vault(tmp_path, {
         marker: "x\n",
@@ -683,9 +712,9 @@ def test_a_local_root_is_not_refused_when_a_mounts_dir_merely_exists(
 # ------------------------------------------------------- autocomplete candidates
 
 
-def test_candidates_lists_notes_headings_tags_and_assets(graph, tmp_path):
+def test_candidates_lists_notes_headings_and_assets(graph, tmp_path):
     root = _vault(tmp_path, {
-        "Hub.md": "---\ntags: [proj]\n---\n# Hub\n## Details\n[[Leaf]] #inline\n",
+        "Hub.md": "# Hub\n## Details\n[[Leaf]]\n",
         "sub/Leaf.md": "# Leaf\n",
         "sub/pic.png": "x",
     })
@@ -695,7 +724,7 @@ def test_candidates_lists_notes_headings_tags_and_assets(graph, tmp_path):
     hub = out["notes"][0]
     assert hub["title"] == "Hub"
     assert [h["text"] for h in hub["headings"]] == ["Hub", "Details"]
-    assert out["tags"] == ["inline", "proj"]
+    assert "tags" not in out
     assert out["assets"] == ["sub/pic.png"]
 
 
@@ -852,9 +881,9 @@ def test_the_index_is_never_touched_for_a_mount_backed_root(graph, tmp_path, hom
 
 @pytest.fixture()
 def chain(tmp_path, home):
-    """A.md -> B.md -> C.md, plus a ghost and a tag hanging off A."""
+    """A.md -> B.md -> C.md, plus a ghost hanging off A."""
     return _vault(tmp_path, {
-        "A.md": "# A\n[[B]] and [[Nope]] #alpha\n",
+        "A.md": "# A\n[[B]] and [[Nope]]\n",
         "B.md": "# B\n[[C]]\n",
         "C.md": "# C\n",
     })
@@ -864,20 +893,28 @@ def _ids(payload):
     return sorted(node["id"] for node in payload["nodes"])
 
 
-def test_the_whole_vault_graph_carries_notes_ghosts_and_tags(graph, chain):
+def test_the_whole_vault_graph_carries_notes_and_ghosts(graph, chain):
     out = graph.main(action="graph", root=chain)
     assert out["error"] is None
-    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope"]
     kinds = {node["id"]: node["kind"] for node in out["nodes"]}
     assert kinds["ghost:nope"] == "ghost"
-    assert kinds["tag:alpha"] == "tag"
     assert sorted((e["source"], e["target"]) for e in out["edges"]) == [
-        ("A.md", "B.md"), ("A.md", "ghost:nope"), ("A.md", "tag:alpha"), ("B.md", "C.md")]
+        ("A.md", "B.md"), ("A.md", "ghost:nope"), ("B.md", "C.md")]
+
+
+def test_a_hashtag_makes_no_node(graph, tmp_path, home):
+    """The tag concept is gone (D165). A `#word` in prose — the shape that used
+    to litter a code-adjacent vault with junk nodes — contributes nothing."""
+    root = _vault(tmp_path, {"A.md": "# A\n#backer and #dsamed-environments\n"})
+    out = graph.main(action="graph", root=root)
+    assert _ids(out) == ["A.md"]
+    assert out["edges"] == []
 
 
 def test_node_degree_counts_both_directions(graph, chain):
     degrees = {n["id"]: n["degree"] for n in graph.main(action="graph", root=chain)["nodes"]}
-    assert degrees["A.md"] == 3   # B, the ghost, the tag
+    assert degrees["A.md"] == 2   # B and the ghost
     assert degrees["B.md"] == 2   # A and C
     assert degrees["C.md"] == 1
 
@@ -892,9 +929,9 @@ def test_the_local_graph_is_bounded_by_depth(graph, chain):
     d0 = graph.main(action="graph", root=chain, file=focus, depth=0)
     assert _ids(d0) == ["A.md"]
     d1 = graph.main(action="graph", root=chain, file=focus, depth=1)
-    assert _ids(d1) == ["A.md", "B.md", "ghost:nope", "tag:alpha"]
+    assert _ids(d1) == ["A.md", "B.md", "ghost:nope"]
     d2 = graph.main(action="graph", root=chain, file=focus, depth=2)
-    assert _ids(d2) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+    assert _ids(d2) == ["A.md", "B.md", "C.md", "ghost:nope"]
     assert d1["focus"] == "A.md" and d1["depth"] == 1
 
 
@@ -919,7 +956,7 @@ def test_the_folder_graph_keeps_asking_for_everything_with_depth_zero(graph, cha
     changed what that means."""
     out = graph.main(action="graph", root=chain, depth="0")
     assert out["focus"] is None and out["depth"] == 0
-    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope", "tag:alpha"]
+    assert _ids(out) == ["A.md", "B.md", "C.md", "ghost:nope"]
 
 
 def test_the_local_graph_only_keeps_edges_between_kept_nodes(graph, chain):

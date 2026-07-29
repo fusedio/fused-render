@@ -208,13 +208,12 @@ def test_read_only_comes_from_stat_writable_not_os_access(source):
 
 
 def test_the_link_layer_asks_the_grammar_what_a_range_is(source):
-    # Wikilinks and tags are not in the markdown grammar, so they are matched by
-    # regex — but whether a match COUNTS is answered by the tree, not by a
-    # second block parser. That is what keeps graph.py's code-masking rule
-    # (MD-3) from having a rival implementation in JS.
+    # Wikilinks are not in the markdown grammar, so they are matched by regex —
+    # but whether a match COUNTS is answered by the tree, not by a second block
+    # parser. That is what keeps graph.py's code-masking rule (MD-3) from having
+    # a rival implementation in JS.
     assert "CM.syntaxTree(state)" in source
     assert "within(tree, start + 2, CODE_NODES)" in source
-    assert "within(tree, start + 1, URL_NODES)" in source
     # And the guard must not list Link/Image: the grammar wraps `[[Wiki]]`'s
     # inner brackets in a Link node, so doing so hides every wikilink. The
     # behavioural half of this is in test_markdown_live_preview.py.
@@ -490,12 +489,11 @@ def test_pasting_a_url_over_a_selection_makes_a_link(source):
     assert "`[${selected}](${url})`" in body
 
 
-def test_the_popup_offers_notes_headings_and_tags_from_the_same_scan(source):
+def test_the_popup_offers_notes_and_headings_from_the_same_scan(source):
     body = source[source.index("async function markdownCompletions"):]
     body = body[:body.index("\n    function editorExtensions")]
     assert "/\\[\\[([^\\[\\]\\n]*)$/" in body      # `[[` and `![[`
     assert "headingOptions(headings, notePart)" in body
-    assert "data.tags.map" in body
     assert 'action: "candidates"' in source
 
 
@@ -539,7 +537,7 @@ def test_the_graph_panel_state_lives_in_params_so_it_is_shareable(source):
 
 
 def test_the_graph_count_compares_notes_with_notes(source):
-    """`total_notes` counts notes; `nodes` also holds tag and ghost nodes.
+    """`total_notes` counts notes; `nodes` also holds ghost nodes.
 
     Comparing the two read "221 of 205 notes" once the `all` depth existed, and
     was quietly wrong at every depth before that. The count has to filter by
@@ -587,6 +585,21 @@ def test_a_backlink_row_keeps_its_path_visible_without_overflowing(source):
     assert "text-overflow: ellipsis" in rules and "min-width: 0" in rules
     assert "text-align: right" not in rules
     assert '<span class="bl-path">${escapeHtml(row.rel)}</span>' in source
+
+
+def test_a_note_linking_here_three_times_is_one_row_with_a_count(source):
+    # graph.py reports one backlink per LINK, and rendering that verbatim showed
+    # "rendering" three times in a row — three rows that read as three different
+    # notes until the paths were compared. The list groups by the linking note's
+    # path (first-seen order — not adjacency, which would depend on how graph.py
+    # happens to sort) and the multiplicity survives as a muted ×N on the row.
+    body = source[source.index("const byPath = new Map()"):]
+    body = body[:body.index("bl-empty")]
+    assert "seen.count += 1" in body
+    assert "byPath.set(row.path, { ...row, count: 1 })" in body
+    assert 'row.count > 1 ? `<span class="bl-count">' in body
+    # The header counts the grouped rows — notes, not links.
+    assert "`Backlinks (${rows.length})`" in body
 
 
 def test_backlink_rows_read_as_a_list_and_still_answer_the_keyboard(source):
@@ -644,22 +657,24 @@ def test_graph_colours_are_read_at_draw_time_not_baked(canvas_source):
 def test_the_graph_behaviours_obsidian_has_are_present(canvas_source):
     assert "function radius(node)" in canvas_source          # radius from degree
     assert "var labels = zoom > 0.7" in canvas_source        # labels fade
-    assert "drag.pinned = true" in canvas_source             # drag-to-pin
+    assert "drag.userPinned = true" in canvas_source         # drag-to-pin
     assert "neighbours(hover)" in canvas_source              # hover highlighting
     assert "[3, 3]" in canvas_source                         # dashed ghost edges
 
 
-def test_the_layout_leaves_room_for_labels_and_then_frames_itself(canvas_source):
+def test_the_layout_gives_every_label_its_measured_width_then_frames_itself(canvas_source):
     """The two halves of "the graph is too dense to read", which only work
-    together: spacing wide enough for an 11px label, and a fit-to-canvas so the
-    wider layout does not simply fall off the edge of a narrow sidebar.
+    together: each label owning a slot as wide as it measures (so two labels
+    cannot be assigned overlapping ground), and a fit-to-canvas so the sized
+    layout does not simply fall off the edge of a narrow sidebar.
 
-    One sim serves both surfaces (D157), and the spacing is deliberately NOT
+    One layout serves both surfaces (D157), and the spacing is deliberately NOT
     scaled per surface — uniformly scaling a layout that gets fitted to the
     canvas changes nothing on screen. The zoom is what varies.
     """
-    assert "var REST = 135;" in canvas_source
-    assert "var REPULSION = 4600;" in canvas_source
+    assert "var SLOT_PAD = 18;" in canvas_source
+    assert "var SLOT_MIN = 60;" in canvas_source
+    assert "function measureLabels(list)" in canvas_source
     assert "function frameAll()" in canvas_source
     # Only ever zooms out, and never past a floor.
     assert "zoom = Math.min(1.5, Math.max(0.15," in canvas_source
@@ -668,14 +683,17 @@ def test_the_layout_leaves_room_for_labels_and_then_frames_itself(canvas_source)
     assert canvas_source.count("userFramed = true") == 2      # pan/drag, and wheel
 
 
-def test_a_big_folder_graph_cannot_fly_apart(canvas_source):
-    # The same sim serves a folder of hundreds. Velocity accumulates across steps
-    # and the repulsion sum grows with node count, so without a ceiling the first
-    # few frames threw nodes thousands of pixels out and the sim cooled before it
-    # could recover. Seeding on a disc sized to the node count is the other half.
-    assert "var MAX_SPEED = 22;" in canvas_source
-    assert "if (speed > MAX_SPEED)" in canvas_source
-    assert "Math.sqrt(count / Math.PI)" in canvas_source
+def test_positions_are_assigned_not_simulated(canvas_source):
+    # The spring sim is gone, and must stay gone: its two forces (label spacing
+    # and column alignment) pull opposite ways in a hub-shaped graph, and the
+    # alignment side winning is what printed "configuratiobservability" across
+    # the panel. The barycenter ordering plus measured slots answer both wants
+    # without a fight; nothing here may reintroduce a force term.
+    assert "REPULSION" not in canvas_source
+    assert "_bary" in canvas_source                      # the ordering sweeps
+    assert "bezierCurveTo" in canvas_source              # edges curve, not rope
+    # The scale half is asserted by RUNNING the layout, in
+    # test_graph_canvas.py::test_a_big_folder_graph_stays_banded_and_bounded.
 
 
 def test_the_panel_width_is_a_preference_not_view_state(source):

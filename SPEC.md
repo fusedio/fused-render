@@ -2699,19 +2699,31 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
 - **MD-3** **What a link is.** Parsed from the source with **code elided**:
   `_mask_code` blanks fenced blocks, indented blocks, inline code spans and the
   YAML frontmatter to spaces of the same length, so offsets and line numbers
-  still line up and a `[[Note]]` in a code sample is not an edge. Six forms
-  count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`,
-  `#tag`, and an ordinary relative markdown link `](./rel.md)` — a URL, a
-  `mailto:` and a bare `#anchor` do not. `[[#Heading]]` is an anchor inside the
-  same note, not an edge. The editing surface does **not** re-implement the
-  masking rule: wikilinks and tags are not in the vendored markdown grammar, so
-  they are matched by regex and then checked **against the syntax tree** — a
-  match inside `InlineCode`/`CodeText`/`FencedCode` is not a link, and a `#`
-  inside a `URL` is a fragment. The tree is asked what a range *is*; no second
-  block parser exists in JS. The guard must **not** list `Link`/`Image`: the
-  grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
+  still line up and a `[[Note]]` in a code sample is not an edge. Five forms
+  count: `[[Note]]`, `[[Note|label]]`, `[[Note#Heading]]`, `![[embed]]`, and an
+  ordinary relative markdown link `](./rel.md)` — a URL, a `mailto:` and a bare
+  `#anchor` do not. `[[#Heading]]` is an anchor inside the same note, not an
+  edge. **There is no tag concept** (D165): an inline `#tag` and a frontmatter
+  `tags:` key are ordinary prose, parsed by nothing and drawn by nothing. The
+  editing surface does **not** re-implement the masking rule: wikilinks are not
+  in the vendored markdown grammar, so they are matched by regex and then
+  checked **against the syntax tree** — a match inside
+  `InlineCode`/`CodeText`/`FencedCode` is not a link. The tree is asked what a
+  range *is*; no second block parser exists in JS. The guard must **not** list
+  `Link`/`Image`: the grammar wraps the inner brackets of `[[Wiki]]` in a `Link` node and of
   `![[embed]]` in an `Image` node, so including them silently renders no
   wikilinks at all (found by executing it — see MD-18a).
+- **MD-3a** **What a note is called: its file, always.** Every `title` in every
+  payload — the note view's own, a link row's, a backlink row's, a graph node's
+  label, a `[[` candidate's — is the filename with directory and extension
+  stripped, and nothing else. `parse_note` emits **no** `title` at all, so a
+  frontmatter `title:` and a leading `# H1` are both inert (the H1 survives as a
+  heading). Previously either could rename a note, which meant the name on a
+  graph node was not the name you would search for, rename, or type inside
+  `[[…]]` — and an H1 that merely repeated the filename made the two agree often
+  enough to hide the cases where they did not. Obsidian names a note by its file
+  for the same reason. This also makes the name available for a note the scan
+  never parsed, since deriving it needs only the path.
 - **MD-4** **Resolution: the shortest path that is unambiguous.** Tried in
   order — relative to the linking note's own folder, then from the vault root,
   then as a path suffix, then as a bare basename — case-insensitively, with the
@@ -2797,11 +2809,19 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   exactly that note, updates one row, and re-assembles in memory — no rebuild.
   The open graph and the `[[` candidate cache are both invalidated by the same
   save.
-- **MD-10** **Bounded, and honest about it.** A file over 256 KB is not a note
-  and is skipped; a walk stops at 5000 notes. Both are **reported** (`truncated`,
-  `skipped_large`) and surfaced in the footer and the graph panel, never silently
-  applied. The walk is deterministic — sorted directories and files — so a cap
-  that fires drops the same tail every time.
+- **MD-10** **Bounded by count, never by size, and honest about it.** A walk
+  stops at 5000 notes, 5000 assets, or 20000 enumerated entries; any cap that
+  fires is **reported** (`truncated`) and surfaced in the footer and the graph
+  panel, never silently applied. The walk is deterministic — sorted directories
+  and files — so a cap that fires drops the same tail every time. There is
+  **no per-note size cap**: a 256 KB ceiling (and its `skipped_large` report)
+  was removed, because a skipped file landed in neither the note index nor the
+  asset index, so every `[[…]]` aimed at it resolved to nothing and drew a
+  **ghost** — asserting the note did not exist when it plainly did. A long
+  decision log is precisely a note people want backlinks into. The read cost is
+  bounded by MD-8's cache instead: a big note is read on the open after it
+  changes and stat-only on every open after that. The editor's own 2 MB
+  inline-edit ceiling is a separate guard and always was.
 - **MD-11** **Mounts are out of scope for the graph, structurally.** The
   recursive walk is exactly the shape that wedges an rclone-NFS mount (a kernel
   listing on a flat million-key prefix), so it simply never happens there.
@@ -2838,9 +2858,9 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   note in `v/docs/` linking `../spec/overview.md` got a ghost for every link
   leaving its folder and an empty backlinks panel, because nothing outside
   `v/docs` was ever scanned. The default root is therefore the **nearest
-  ancestor carrying a vault-root marker** — `.obsidian/`, `.fused-graph.json`,
-  or `.git` (a directory in a clone, a *file* in a worktree, so both shapes are
-  probed) — and the note's own directory when none is found. Never `$HOME`,
+  ancestor carrying a vault-root marker** — `.obsidian/` or `.git` (a directory
+  in a clone, a *file* in a worktree, so both shapes are probed) — and the
+  note's own directory when none is found. Never `$HOME`,
   never `/`. An explicit `root` param still wins; the ascent only supplies the
   default. **The ascent must not enumerate**: a fixed set of `isdir`/`isfile`
   probes per level and no `listdir`/`scandir`/`walk`/`glob` anywhere, the same
@@ -2852,10 +2872,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   "cannot tell", which reads as "do not climb". A wider root makes MD-10's
   `truncated` cap matter more, not less, so the "only the first N notes were
   scanned" notice stays surfaced in the sidebar. Dotdirs and the usual vendored
-  trees are still skipped by name inside the walk. *Not built:* the
-  `.fused-graph.json` file's **contents** (it counts as a marker but nothing
-  reads it yet: root override, include/exclude globs, colour groups, default
-  depth) and gitignore-awareness of the walk — both additive.
+  trees are still skipped by name inside the walk. A third marker,
+  `.fused-graph.json`, was specified here and is **gone** (D165): nothing ever
+  read it, so it was a marker only a fused user who had read this SPEC could
+  have placed. *Not built:* per-vault tuning of any kind (root override,
+  include/exclude globs, colour groups, default depth) and gitignore-awareness
+  of the walk — both additive.
 - **MD-13** **Vendoring.** One rebuild of `scripts/vendor-codemirror/` adds
   `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
   `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/
@@ -2863,8 +2885,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   `syntaxTree`, `autocompletion`, `indentMore`/`indentLess` and
   `markdown`/`markdownLanguage`/`markdownKeymap`. Anything not re-exported is
   tree-shaken, so `entry.js` is the whole gate on what the template can reach.
-- **MD-14** **Link authoring.** `[[`, `![[`, `[[#`, `[[note#` and `#tag`
-  complete from a `candidates` action off the **same scan the graph reads**, so
+- **MD-14** **Link authoring.** `[[`, `![[`, `[[#` and `[[note#` complete from a
+  `candidates` action off the **same scan the graph reads**, so
   the popup is free once the index exists and can never offer a note the graph
   disagrees about; cached ~5 s so a fast typist does not spawn a run per
   keystroke. What it inserts is the **shortest form that `resolve_link` itself
@@ -2918,12 +2940,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   than one node. Covered: headings, bold/italic/strikethrough/inline code,
   fenced blocks (markers kept and the embedded language highlighted, as in
   Obsidian), blockquotes, list bullets, horizontal rules, pipe tables,
-  `[label](target)` links, `![alt](src)` images, wikilinks/embeds/ghosts and
-  tags. **What a range is comes from `syntaxTree`**, so this template holds no
-  block parser (MD-3).
+  `[label](target)` links, `![alt](src)` images, and wikilinks/embeds/ghosts.
+  **What a range is comes from `syntaxTree`**, so this template holds no block
+  parser (MD-3).
   Two behaviours are deliberately unlike the rest: a **checkbox stays rendered**
   under the caret, because it is a control and not markup you edit by hand; and
-  widgets whose *content* needs editing (image, table, tag) are **click-to-edit**
+  widgets whose *content* needs editing (image, table) are **click-to-edit**
   — a click lands the caret inside them and the source appears — whereas links
   are opaque so a click navigates.
   **Frontmatter is a special case with a real trap:** the vendored grammar has
@@ -2955,8 +2977,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   runtime change first.
 - **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
-  document, which a full-height editor has no room for. Backlinks and tags
-  scroll in the upper section; the graph canvas and its depth control sit below.
+  document, which a full-height editor has no room for. Backlinks scroll in the
+  upper section; the graph canvas and its depth control sit below.
   One toggle opens both: they answer the same question about the open note. The
   panel is **resizable** by dragging a thin handle on its left edge (15rem to
   45rem, arrow keys on the focused handle too), and the width is persisted in
@@ -2967,34 +2989,70 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
-  appeared, so the sim and the interaction rules cannot drift into two versions.
-  A hand-rolled O(n²) spring layout on Canvas 2D: no force library is vendored,
-  and at the node counts these views reach the naive sim is well inside budget.
-  Behaviours copied from Obsidian: the settling layout is **fitted to the
-  canvas**, node radius scales with degree, labels fade past a zoom threshold,
-  hover lights the neighbourhood, drag pins a node, ghost nodes are dim with
-  dashed edges, a click opens the note (a ghost click creates it). Colours are
-  read from the CSS custom properties **at draw time**, because `var()` cannot
-  resolve inside a canvas `fillStyle`, and a `data-theme` change redraws (§30).
-  **Spacing is set for the label, not the node** — a label is drawn above its
-  node and an 11px one is 60-100px wide, so the original ~80px equilibrium put
-  every label on top of its neighbour. Roughly doubled (rest 135, repulsion
-  4600). The spacing is **not** scaled per surface, because the fit-to-canvas
-  makes a uniform scale invisible: what differs between a 320px panel and a full
-  window is the zoom. Two bounds keep the folder surface honest, where the same
-  sim can be handed hundreds of notes: nodes are **seeded on a disc sized to the
-  node count** rather than all on one small ring, and there is a **per-step speed
-  ceiling** — velocity accumulates across steps and the repulsion sum grows with
-  node count, so without one the first frames threw a large graph thousands of
-  pixels apart and it cooled before it could recover. The fit yields permanently
-  as soon as the user pans, zooms or drags, and is not reset by new data, because
-  every autosave re-sends the graph (MD-9).
-- **MD-20** **Graph state is params.** Panel open, depth, filter and
-  tag-visibility all live in `fused.params`, so a graph view is refresh-proof
-  and **URL-shareable** — which Obsidian's is not. Nodes are notes, per-**name**
-  ghosts (five notes linking `[[Roadmap]]` share the node they are all asking
-  for) and tags; an embedded picture is deliberately **not** a node, or a vault
-  of screenshots would drown the graph. A focused graph BFSes out `depth` hops
+  appeared, so the layout and the interaction rules cannot drift into two
+  versions. Canvas 2D, no library vendored. **Positions are assigned, not
+  simulated** (D164): a spring sim was tried and its two forces — label
+  spacing and column alignment — pull opposite ways in the hub-shaped graphs
+  this panel actually shows, so the alignment side won and printed labels over
+  each other. Nodes **glide** to their assignment (eased, snapped at 0.5px),
+  which keeps re-sends calm; a NEW node is born at its spot rather than
+  animated in from nowhere. Behaviours copied from Obsidian: the layout is
+  **fitted to the canvas**, node radius scales with degree, labels fade past a
+  zoom threshold, hover lights the neighbourhood, drag pins a node, ghost
+  nodes are dim with dashed edges, a click opens the note (a ghost click
+  creates it). Colours are read from the CSS custom properties **at draw
+  time**, because `var()` cannot resolve inside a canvas `fillStyle`, and a
+  `data-theme` change redraws (§30). **Spacing is set for the label, not the
+  node** — a label is drawn above its node, so node radius is the wrong unit.
+  Each label owns a **slot as wide as it measures** (plus padding, with a
+  floor), so two settled labels cannot be assigned overlapping ground; and
+  which labels **print** is still decided per frame — focus first, then the
+  hovered neighbourhood, then bigger nodes, and a label whose box would
+  intersect one already kept is dropped for the frame (hover summons it back),
+  which covers what the layout did not place: a node dragged onto a
+  neighbour, two labels passing mid-glide. **Edges are vertical S-curves**,
+  not straight lines — near-vertical is the honest shape of a cross-band
+  link, and the curve keeps two edges into one hub separable where straight
+  lines fused into a rope; a same-band edge bows downward instead. The fit
+  yields permanently as soon as the user pans, zooms or drags, and is not
+  reset by new data, because every autosave re-sends the graph (MD-9).
+- **MD-19a** **The layout is layered by folder** (D163, D164). This is the one
+  place the graph deliberately stops copying Obsidian: a free layout spends
+  both axes on nothing in particular, and the feedback on it was that the
+  picture said less than the backlinks list. So the vertical axis carries the
+  tree. **One band per distinct folder** (not per depth number — sibling
+  folders are different places), ordered by depth then name, with the
+  folderless ghost nodes in a trailing `unresolved` band rather than lumped
+  into the root's. Band names are drawn in **screen space** at the left edge, so
+  the legend stays readable and on-screen at any zoom or pan; the name is drawn
+  even for a single band, because "these are all in `x/`" is the answer the
+  layout exists to give; alternate bands carry a whisper of foreground fill,
+  because a fill says "this strip is one folder" everywhere the strip is where
+  a lone separator hairline read as a stray edge. `y` belongs to the layout,
+  except for a node the user dragged, which keeps the position they chose.
+  **A band is a block, not a line.** Its nodes wrap across as many lanes as
+  their slots need to fit the surface, and the band grows to hold them: a wide
+  window gives a folder one airy line, a narrow panel the same folder as a
+  compact labelled block. One row per folder was tried first and failed twice —
+  labels ran together (`READMEauthoring`), and nine nodes in a row is ~1080px,
+  which in a 320px panel fits only below the zoom that hides labels.
+  **Within a band, order is by barycenter**: three alternating sweeps sort each
+  band's nodes toward the mean position of their neighbours (a tie between a
+  linked and an unlinked node resolves toward the linked one, whose position
+  carries information), so a chain of links descending the tree reads as a
+  column and crossings go away by ordering rather than by force. The whole
+  layout then shifts to put the focus note on the canvas mid-line.
+  **Edge weight falls away with density** — a near-complete folder carried ~30
+  edges among 9 notes and drew as a hairball with more ink than the nodes — so
+  the resting field washes out in proportion to edges-per-node; the focus
+  note's own edges hold a step above the field, and hover is what makes any
+  individual link fully legible again.
+- **MD-20** **Graph state is params.** Panel open and depth live in
+  `fused.params`, so a graph view is refresh-proof and **URL-shareable** — which
+  Obsidian's is not. Nodes are notes and per-**name** ghosts (five notes linking
+  `[[Roadmap]]` share the node they are all asking for) and nothing else; an
+  embedded picture is deliberately **not** a node, or a vault of screenshots
+  would drown the graph. A focused graph BFSes out `depth` hops
   following edges in **both** directions, because an inbound link is as much a
   neighbour as an outbound one. `depth` also carries an **`all`** option, sent
   as the sentinel **`-1`**: a negative depth skips the neighbourhood filter
