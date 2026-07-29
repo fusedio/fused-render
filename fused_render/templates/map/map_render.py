@@ -26,7 +26,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from geo_paths import is_managed_mount
+from geo_paths import is_managed_mount, is_remote_path, normalize_remote_path
 
 CACHE_DIR = Path(
     os.environ.get(
@@ -50,7 +50,6 @@ BACKEND_FILES = (
     HERE / "geo_classify.py",
     HERE / "geo_paths.py",
 )
-URL_PREFIXES = ("http://", "https://", "s3://", "/vsi")
 RASTER_SUFFIXES = (
     ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",
     ".nitf", ".dem", ".dt0", ".dt1", ".dt2", ".hgt", ".grd", ".nc",
@@ -71,8 +70,8 @@ def _clean_target(value: str) -> str:
         and target[-1] == QUOTE_PAIRS[target[0]]
     ):
         target = target[1:-1].strip()
-    if target.lower().startswith(URL_PREFIXES):
-        return target
+    if is_remote_path(target):
+        return normalize_remote_path(target)
     return os.path.expandvars(os.path.expanduser(target))
 
 
@@ -84,7 +83,7 @@ def _requires_vector_service(target: str, source_url: str = "") -> bool:
     normalized = target.lower().split("?", 1)[0]
     if not normalized.endswith(VECTOR_SUFFIXES):
         return False
-    if target.lower().startswith(URL_PREFIXES) or is_managed_mount(target):
+    if is_remote_path(target) or is_managed_mount(target):
         return True
     if os.path.isfile(target):
         try:
@@ -336,7 +335,7 @@ def main(
             "warnings": [],
         }
 
-    is_url = target.startswith(URL_PREFIXES)
+    is_url = is_remote_path(target)
     if not is_url:
         target = os.path.abspath(os.path.expanduser(target))
         if not source_url and not os.path.exists(target):

@@ -522,14 +522,24 @@ def test_custom_and_branch_mount_roots_use_the_range_proxy(
 
 
 @pytest.mark.parametrize(
-    "target",
+    ("target", "expected"),
     [
-        "s3://example-bucket/scene.tif",
-        "/vsis3/example-bucket/scene.tif",
+        (
+            "s3://example-bucket/scene.tif",
+            "s3://example-bucket/scene.tif",
+        ),
+        (
+            "S3://Example-Bucket/Data/Scene.TIF",
+            "s3://Example-Bucket/Data/Scene.TIF",
+        ),
+        (
+            "/VSIS3/Example-Bucket/Data/Scene.TIF",
+            "/vsis3/Example-Bucket/Data/Scene.TIF",
+        ),
     ],
 )
 def test_native_remote_rasters_bypass_the_shell_raw_proxy(
-    tmp_path, monkeypatch, target
+    tmp_path, monkeypatch, target, expected
 ):
     engine = RasterEngine(
         cache_dir=str(tmp_path / "cache"),
@@ -551,7 +561,7 @@ def test_native_remote_rasters_bypass_the_shell_raw_proxy(
     result = engine.try_describe(request)
 
     assert result["status"] == "captured"
-    assert observed["source"] == target
+    assert observed["source"] == expected
 
 
 def test_concurrent_describes_register_one_source_and_one_preparation(

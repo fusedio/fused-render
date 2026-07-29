@@ -263,3 +263,26 @@ def test_branch_mount_vector_uses_the_range_proxy(tmp_path, monkeypatch):
     )
 
     assert resolved == source_url
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        (
+            "HTTPS://Example.test/Data/Segments.gpkg",
+            "https://Example.test/Data/Segments.gpkg",
+        ),
+        (
+            "S3://Bucket/Data/Segments.gpkg",
+            "s3://Bucket/Data/Segments.gpkg",
+        ),
+        (
+            "/VSIS3/Bucket/Data/Segments.gpkg",
+            "/vsis3/Bucket/Data/Segments.gpkg",
+        ),
+    ],
+)
+def test_uppercase_remote_vectors_are_not_resolved_as_local_paths(
+    target, expected
+):
+    assert vector_engine._resolve_source({"target": target}, target) == expected

@@ -44,13 +44,43 @@ def test_remote_urls_are_never_environment_expanded(monkeypatch):
     map_render = _load("map_render")
     monkeypatch.setenv("MAP_OBJECT", "wrong-object")
 
-    for remote in (
-        "https://example.test/$MAP_OBJECT/%MAP_OBJECT%/scene.tif",
-        "s3://bucket/$MAP_OBJECT/%MAP_OBJECT%/scene.gpkg",
-        "/vsicurl/https://example.test/$MAP_OBJECT/scene.fgb",
+    for remote, expected in (
+        (
+            "https://example.test/$MAP_OBJECT/%MAP_OBJECT%/scene.tif",
+            "https://example.test/$MAP_OBJECT/%MAP_OBJECT%/scene.tif",
+        ),
+        (
+            "S3://Bucket/$MAP_OBJECT/%MAP_OBJECT%/Scene.gpkg",
+            "s3://Bucket/$MAP_OBJECT/%MAP_OBJECT%/Scene.gpkg",
+        ),
+        (
+            "/VSICURL/HTTPS://example.test/$MAP_OBJECT/Scene.fgb",
+            "/vsicurl/https://example.test/$MAP_OBJECT/Scene.fgb",
+        ),
     ):
-        assert discover.clean_path(f'"{remote}"') == remote
-        assert map_render._clean_target(f'"{remote}"') == remote
+        assert discover.clean_path(f'"{remote}"') == expected
+        assert map_render._clean_target(f'"{remote}"') == expected
+
+
+def test_map_render_routes_uppercase_url_without_local_path_conversion(
+    tmp_path, monkeypatch
+):
+    map_render = _load("map_render")
+    observed = {}
+    monkeypatch.setattr(map_render, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(map_render, "ARTIFACT_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(map_render, "_ensure_service", lambda: {"port": 1})
+    monkeypatch.setattr(
+        map_render,
+        "_post",
+        lambda _state, _path, request: observed.update(request)
+        or {"status": "ok"},
+    )
+
+    result = map_render.main(target="HTTP://Example.test/Data/Scene.TIF")
+
+    assert result == {"status": "ok"}
+    assert observed["target"] == "http://Example.test/Data/Scene.TIF"
 
 
 def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
@@ -277,12 +307,15 @@ def test_remote_table_urls_are_not_converted_to_local_paths(monkeypatch):
     monkeypatch.setattr(classify, "_from_table", capture)
     monkeypatch.setattr(classify, "_from_parquet", capture)
 
-    csv_url = "https://example.test/data/points.csv?version=2"
-    parquet_url = "s3://bucket/data/points.parquet"
+    csv_url = "HTTPS://example.test/Data/Points.csv?version=2"
+    parquet_url = "S3://Bucket/Data/Points.parquet"
     classify._from_path(csv_url, "", "csv", {})
     classify._from_path(parquet_url, "", "parquet", {})
 
-    assert observed == [csv_url, parquet_url]
+    assert observed == [
+        "https://example.test/Data/Points.csv?version=2",
+        "s3://Bucket/Data/Points.parquet",
+    ]
 
 
 def test_remote_csv_query_string_still_selects_the_csv_reader(monkeypatch):

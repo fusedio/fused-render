@@ -31,6 +31,7 @@ import json
 import math
 import os
 
+from geo_paths import is_remote_path, normalize_remote_path
 from optional_runtime import require
 
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
@@ -206,7 +207,9 @@ TABLE_EXT = (".csv", ".tsv", ".xlsx", ".xls")
 
 def _from_path(path, artifact_dir, artifact_id, opts):
     path = path.strip()
-    is_url = path.startswith(("http://", "https://", "s3://", "/vsi"))
+    if is_remote_path(path):
+        path = normalize_remote_path(path)
+    is_url = is_remote_path(path)
     reader_path = (
         path
         if is_url

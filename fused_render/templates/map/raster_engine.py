@@ -24,7 +24,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from geo_paths import is_managed_mount
+from geo_paths import (
+    is_http_url,
+    is_managed_mount,
+    is_native_remote_path,
+    is_remote_path,
+    is_vsi_path,
+    normalize_remote_path,
+)
 from optional_runtime import require
 
 
@@ -119,7 +126,7 @@ def _gdal_env():
 
 
 def _source_size(source: str) -> int | None:
-    if source.startswith(("http://", "https://")):
+    if is_http_url(source):
         try:
             request = urllib.request.Request(source, method="HEAD")
             with urllib.request.urlopen(request, timeout=15) as response:
@@ -140,9 +147,9 @@ def _source_fingerprint(
     locator: str,
 ) -> str:
     identity = f"{target}|{source}"
-    if not source.startswith(("http://", "https://", "s3://", "/vsi")):
+    if not is_remote_path(source):
         identity += f"|{source_size}"
-    if not locator.startswith("/vsi") and os.path.isfile(locator):
+    if not is_vsi_path(locator) and os.path.isfile(locator):
         source_stat = os.stat(locator)
         identity += f"|{source_stat.st_size}|{source_stat.st_mtime_ns}"
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
@@ -278,9 +285,10 @@ class RasterEngine:
         self._transparent: bytes | None = None
 
     def locator(self, source: str, target: str) -> str:
-        if source.startswith("/vsi"):
+        source = normalize_remote_path(source)
+        if is_vsi_path(source):
             return source
-        if not source.startswith(("http://", "https://")):
+        if not is_http_url(source):
             return source
 
         # GDAL appends auxiliary-file suffixes to the URL it is given.  With
@@ -344,12 +352,14 @@ class RasterEngine:
         if not isinstance(target, (str, os.PathLike)):
             return None
         target = str(target).strip()
+        if is_remote_path(target):
+            target = normalize_remote_path(target)
         if not target or target.lower().split("?")[0].endswith(".py"):
             return None
 
         suffix_target = (
             urlsplit(target).path
-            if target.startswith(("http://", "https://"))
+            if is_http_url(target)
             else target
         )
         suffix = Path(suffix_target.replace("\\", "/")).suffix.lower()
@@ -362,19 +372,23 @@ class RasterEngine:
                 )
 
         direct_target = str(req.get("target") or "")
+        if is_remote_path(direct_target):
+            direct_target = normalize_remote_path(direct_target)
         supplied_url = str(req.get("source_url") or "")
+        if is_remote_path(supplied_url):
+            supplied_url = normalize_remote_path(supplied_url)
         is_local_file = (
-            not target.startswith(("http://", "https://", "s3://", "/vsi"))
+            not is_remote_path(target)
             and not is_managed_mount(target)
             and os.path.isfile(target)
         )
         if is_local_file:
             source = os.path.abspath(target)
-        elif target.startswith(("s3://", "/vsi")):
+        elif is_native_remote_path(target):
             source = target
         elif target == direct_target and supplied_url:
             source = supplied_url
-        elif target.startswith(("http://", "https://")):
+        elif is_http_url(target):
             source = target
         else:
             origin = str(req.get("source_origin") or "")

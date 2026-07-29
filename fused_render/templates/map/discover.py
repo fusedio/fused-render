@@ -10,6 +10,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from geo_paths import is_remote_path, normalize_remote_path
+
 
 RASTER = (
     ".tif",
@@ -57,8 +59,8 @@ def clean_path(value: str) -> str:
         and cleaned[-1] == QUOTE_PAIRS[cleaned[0]]
     ):
         cleaned = cleaned[1:-1].strip()
-    if cleaned.lower().startswith(("http://", "https://", "s3://", "/vsi")):
-        return cleaned
+    if is_remote_path(cleaned):
+        return normalize_remote_path(cleaned)
     return os.path.expandvars(os.path.expanduser(cleaned))
 
 
