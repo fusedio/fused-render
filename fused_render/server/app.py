@@ -33,6 +33,7 @@ from fused_render.server.common import (
     unhandled_exception,
     _forced_engine,
 )
+from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -248,6 +249,9 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # The Home view's apps backend (routers/apps.py): list workspace app
+    # folders + scaffold new ones from the app starter kit.
+    app.include_router(apps_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

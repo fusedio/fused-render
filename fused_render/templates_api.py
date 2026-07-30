@@ -1044,8 +1044,8 @@ _STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
 _REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skills")
 
 
-def _ensure_starter_skills(dest: str) -> None:
-    """Make sure a freshly-scaffolded template `dest` has the authoring skills
+def _ensure_starter_skills(dest: str, names: tuple = _STARTER_SKILLS) -> None:
+    """Make sure a freshly-scaffolded folder `dest` has the `names` skills
     under .claude/skills/, refreshed from the live repo skills/ dir whenever
     it's resolvable (editable/dev installs — this always wins, since the
     starter kit's own .claude/skills/ is gitignored and may be a stale copy
@@ -1053,10 +1053,11 @@ def _ensure_starter_skills(dest: str) -> None:
     where the repo skills/ dir isn't reachable at all, relies on whatever
     copytree already brought in from the packaged starter kit. If neither
     source exists, proceed without skills — a missing skill must never fail
-    template creation (D106).
+    scaffolding (D106). Also reused by the apps API (routers/apps.py), which
+    scaffolds app folders with the authoring skill only.
     """
     skills_dir = os.path.join(dest, ".claude", "skills")
-    for name in _STARTER_SKILLS:
+    for name in names:
         target = os.path.join(skills_dir, name)
         src = os.path.join(_REPO_SKILLS_DIR, name)
         if os.path.isdir(src):

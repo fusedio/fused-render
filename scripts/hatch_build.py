@@ -88,21 +88,28 @@ class ShellBuildHook(BuildHookInterface):
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
 
     def _copy_starter_skills(self) -> None:
-        """Copy the canonical authoring skills into the starter kit's
-        .claude/skills/ so every scaffolded template carries them. Source is the
-        single repo-level skills/<name>/ (D106); the copies are gitignored and
-        shipped via pyproject's `artifacts` glob. Refresh each time so a
-        packaged build always reflects the current skill.
+        """Copy the canonical authoring skills into the starter kits'
+        .claude/skills/ so every scaffolded template/app carries them. Source
+        is the single repo-level skills/<name>/ (D106); the copies are
+        gitignored and shipped via pyproject's `artifacts` glob. Refresh each
+        time so a packaged build always reflects the current skill. The app
+        starter gets the authoring skill only — registering preview templates
+        is a template concern.
         """
-        dest_root = os.path.join(
-            self.root, "fused_render", "template_starter", ".claude", "skills"
+        kits = (
+            ("template_starter", _STARTER_SKILLS),
+            ("app_starter", ("fused-render-authoring",)),
         )
-        for name in _STARTER_SKILLS:
-            src = os.path.join(self.root, "skills", name)
-            dest = os.path.join(dest_root, name)
-            if os.path.isdir(dest):
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
+        for kit, names in kits:
+            dest_root = os.path.join(
+                self.root, "fused_render", kit, ".claude", "skills"
+            )
+            for name in names:
+                src = os.path.join(self.root, "skills", name)
+                dest = os.path.join(dest_root, name)
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                shutil.copytree(src, dest)
 
     def _bake_branch_ref(self, build_data: dict) -> None:
         """Resolve the ref from ``FUSED_RENDER_BRANCH`` and bake it into the

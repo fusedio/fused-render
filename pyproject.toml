@@ -238,6 +238,7 @@ packages = ["fused_render"]
 artifacts = [
     "fused_render/static/shell-dist/**",
     "fused_render/template_starter/.claude/skills/**",
+    "fused_render/app_starter/.claude/skills/**",
 ]
 
 # Builds frontend/ -> fused_render/static/shell-dist/ at package-build time
