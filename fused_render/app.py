@@ -218,10 +218,13 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _start_server_thread(port: int) -> tuple[uvicorn.Server, str | None]:
+def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread, str | None]:
     """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread.
-    Also returns the first-launch landing path (the seeded showcase page's /view/
-    URL) when THIS run performed the one-time example seed, else None."""
+    Returns the server, its thread (quit drains it — `should_exit` alone is
+    fire-and-forget, and uvicorn never resets `started`, so the thread ending is
+    the only observable "it has stopped serving"), and the first-launch landing
+    path (the seeded showcase page's /view/ URL) when THIS run performed the
+    one-time example seed, else None."""
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
     start_dir, landing = ensure_fused_dir_and_landing()
     app = create_app(start_dir=start_dir)
@@ -235,7 +238,160 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, str | None]:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    return server, landing
+    return server, thread, landing
+
+
+# ---- quit teardown (SPEC DM-7; INCIDENT 2026-07-29) -------------------------
+# Quit used to be four blocking statements inside the menu-item action. It hung
+# for seconds (the reap runs synchronously on the AppKit main thread), orphaned
+# the kernel NFS mounts (rcd killed while they were still attached), and then
+# aborted in exit()'s static destructors. The teardown is a module-level,
+# injectable function so the ORDER is testable (tests/test_app_quit.py) instead
+# of being an accident of statement order in a closure.
+
+QUIT_SERVER_DRAIN_S = 2.0
+
+# Ceiling on the whole teardown, after which the app terminates regardless. It
+# has to exist: a wedged `umount -f` blocks in the kernel and cannot be
+# cancelled, and an app that can never be quit is worse than one that quits with
+# a mount still attached. Sized above the sum of the bounded steps
+# (drain 2s + unmount budget 6s + rcd reap ~5s SIGTERM/SIGKILL polls) so the
+# deadline only ever fires on something genuinely stuck.
+QUIT_HARD_DEADLINE_S = 15.0
+
+
+def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
+                  close_duckdb=None, unmount_mounts=None, stop_rcd=None) -> list[str]:
+    """Run the ordered quit teardown; returns the steps attempted, in order.
+
+    The order is the point, and each rung is a precondition of the next:
+
+      1. "server" — stop accepting requests and drain in-flight ones, bounded by
+         `drain_s`. A live /api/fs/raw read holds files open under a mount, which
+         is a measured cause of a busy-mount unmount failure (see
+         detach_mount/_quit_tile_daemons), so this comes before the unmounts.
+      2. "duckdb" — close the reader's cached DuckDB connection while Python is
+         healthy and the GIL is held. Anything still alive at
+         `NSApplication.terminate:` destructs without the GIL and aborts.
+      3. "unmount" — detach every mount through the rc-unmount -> force-unmount
+         ladder, BEFORE its NFS server is signalled.
+      4. "rcd" — reap the daemon. Only now is it safe: nothing is mounted on it.
+
+    Every step is best-effort and independently guarded — a failure in one must
+    not skip the ones after it (a mount store we cannot read must still let the
+    daemon be reaped, and vice versa). The step callables are injectable for
+    tests; the defaults are the real ladder."""
+    steps: list[str] = []
+    if close_duckdb is None:
+        close_duckdb = _close_duckdb_stash
+    if unmount_mounts is None:
+        def unmount_mounts():
+            from fused_render.shell.mounts import unmount_all_for_quit
+
+            unmount_all_for_quit()
+    if stop_rcd is None:
+        def stop_rcd():
+            from fused_render.shell.mounts import stop_local_rcd
+
+            stop_local_rcd()
+
+    started = time.monotonic()
+    if server is not None:
+        steps.append("server")
+        try:
+            server.should_exit = True
+            if server_thread is not None:
+                # Bounded: uvicorn's graceful shutdown waits on open connections,
+                # and a hung handler must not become a hung quit.
+                server_thread.join(drain_s)
+                if server_thread.is_alive():
+                    logger.warning("server did not drain within %.1fs; "
+                                   "continuing teardown", drain_s)
+        except Exception:
+            logger.warning("stopping the server on quit failed", exc_info=True)
+    for name, step in (("duckdb", close_duckdb), ("unmount", unmount_mounts),
+                       ("rcd", stop_rcd)):
+        steps.append(name)
+        try:
+            step()
+        except Exception:
+            logger.warning("quit teardown step %r failed", name, exc_info=True)
+    logger.info("quit teardown finished in %.1fs (steps: %s)",
+                time.monotonic() - started, ", ".join(steps))
+    return steps
+
+
+def start_quit(server, *, terminate, server_thread=None, teardown=None,
+               deadline_s: float = QUIT_HARD_DEADLINE_S) -> threading.Thread:
+    """Begin quitting WITHOUT blocking the caller, and terminate when done.
+
+    Called from a menu-item action, i.e. on the AppKit main thread with the run
+    loop blocked for as long as we stay in it — so every blocking step (the
+    unmount ladder, rcd's SIGTERM/SIGKILL polls: ~13s worst case) runs on a
+    worker and this returns immediately. `terminate` is then called from the
+    watchdog thread once teardown finishes OR `deadline_s` elapses, whichever
+    comes first: teardown gets a real, bounded chance to complete, and a wedged
+    step still cannot leave an app that refuses to quit. Exactly one call to
+    `terminate` either way — only the watchdog ever calls it.
+
+    Returns the watchdog thread (tests join it; nothing in the app does — the
+    process is gone by then)."""
+    if teardown is None:
+        def teardown():
+            quit_teardown(server, server_thread=server_thread)
+
+    done = threading.Event()
+
+    def _teardown() -> None:
+        try:
+            teardown()
+        except Exception:
+            logger.warning("quit teardown failed", exc_info=True)
+        finally:
+            done.set()
+
+    threading.Thread(target=_teardown, daemon=True, name="quit-teardown").start()
+
+    def _terminate_when_done() -> None:
+        if not done.wait(deadline_s):
+            logger.warning("quit teardown exceeded %.1fs; terminating anyway",
+                           deadline_s)
+        terminate()
+
+    watchdog = threading.Thread(target=_terminate_when_done, daemon=True,
+                                name="quit-terminate")
+    watchdog.start()
+    return watchdog
+
+
+def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
+    """The Quit action shared by BOTH quit surfaces — the rumps menu item and the
+    popover's `quitApp_`, which receives it through the controller's actions dict.
+
+    Module-level (not a `main()` closure) so it is testable without AppKit; it
+    takes `main()`'s `state` dict because the server and its thread only exist
+    once the bootstrap thread has published them.
+
+    Idempotent: the app stays alive and clickable while teardown runs, so a
+    second Quit click must NOT start a second reap racing the first. The pidfile
+    is removed on the calling (main) thread — it costs microseconds, and a
+    relaunch during a slow teardown must not find this dying instance and hand
+    the user a browser tab on a closing server."""
+    if start is None:
+        start = start_quit
+    if remove_pidfile is None:
+        remove_pidfile = _remove_pidfile
+
+    def _do_quit() -> None:
+        if state.get("quitting"):
+            logger.info("quit already in progress; ignoring")
+            return
+        state["quitting"] = True
+        remove_pidfile()
+        start(state.get("server"), terminate=terminate,
+              server_thread=state.get("server_thread"))
+
+    return _do_quit
 
 
 def main() -> None:
@@ -275,6 +431,8 @@ def main() -> None:
         "docs": False,       # at least one document open event arrived
         "pending": [],       # file views requested before the server was ready
         "server": None,      # uvicorn.Server, set by the bootstrap thread
+        "server_thread": None,  # its thread, so quit can drain it (bounded)
+        "quitting": False,   # a quit is in flight; ignore further Quit clicks
         "pin": None,         # menubar_pin.PinController, built after run loop start
     }
 
@@ -370,8 +528,9 @@ def main() -> None:
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
-        server, landing = _start_server_thread(port)
+        server, server_thread, landing = _start_server_thread(port)
         state["server"] = server
+        state["server_thread"] = server_thread
         if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
             logger.error("server did not become ready on port %s", port)
@@ -435,21 +594,22 @@ def main() -> None:
         # more than it helps.
         subprocess.run(["open", "-R", log_path()], check=False)
 
-    def _do_quit():
-        if state["server"] is not None:
-            state["server"].should_exit = True
-        _remove_pidfile()
-        # macOS has no supervisor tree-kill (server runs in-process here), so a
-        # non-persisted rcd would otherwise reparent to launchd and survive
-        # quit. SIGTERM it (rcd unmounts cleanly). Best-effort + gated on NOT
-        # FUSED_RENDER_RCLONE_PERSIST internally; never lets a reap block quit.
+    def _terminate():
+        # rumps.quit_application() -> NSApplication.terminate:, which is AppKit
+        # and therefore main-thread-only; we are called from the quit watchdog
+        # thread, so hop back via the run loop.
         try:
-            from fused_render.shell.mounts import stop_local_rcd
+            from PyObjCTools import AppHelper
 
-            stop_local_rcd()
+            AppHelper.callAfter(rumps.quit_application)
         except Exception:
-            logger.warning("rcd teardown on quit failed", exc_info=True)
-        rumps.quit_application()
+            logger.warning("callAfter unavailable; terminating off the main thread",
+                           exc_info=True)
+            rumps.quit_application()
+
+    # Returns immediately — the AppKit run loop must not block here — and lets
+    # quit_teardown do the blocking work off-thread under a hard deadline.
+    _do_quit = make_quit_action(state, terminate=_terminate)
 
     status_app = FusedRenderStatusApp()
 

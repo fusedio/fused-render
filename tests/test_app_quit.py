@@ -348,3 +348,148 @@ def test_ours_to_reap_agrees_with_the_reap_gate(ladder, monkeypatch):
 
     monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")
     assert mounts_mod._rcd_is_ours_to_reap() is False
+
+
+# ------------------------------------------------- ordering + the quit entry
+# The order is load-bearing, not incidental: the server must stop accepting
+# requests before we pull the mounts out from under any in-flight read; the
+# duckdb stash must be closed while Python is healthy and long before exit();
+# and every mount must be detached before its NFS server (rcd) is signalled.
+
+
+class _FakeServer:
+    def __init__(self):
+        self.should_exit = False
+
+
+@pytest.fixture()
+def quit_ctx(ladder, monkeypatch):
+    """`ladder` plus a recorded duckdb close, so one trace covers all four steps."""
+    monkeypatch.setattr(
+        app_mod, "_close_duckdb_stash",
+        lambda: ladder["calls"].append(("duckdb", None)))
+    return ladder
+
+
+def test_teardown_order_duckdb_then_unmounts_then_the_rcd_reap(quit_ctx):
+    server = _FakeServer()
+
+    steps = app_mod.quit_teardown(server)
+
+    calls = quit_ctx["calls"]
+    kinds = [c[0] for c in calls]
+    assert server.should_exit is True          # step 1: stop serving requests
+    assert kinds[0] == "duckdb"                # step 2: while the GIL is held
+    first_kill = kinds.index("kill")
+    unmounts = [i for i, c in enumerate(calls) if c[0] in ("rc", "force")]
+    assert unmounts, "the mounts must actually be torn down"
+    # step 3 entirely before step 4: no mount may still be attached when its own
+    # NFS server gets a signal.
+    assert max(unmounts) < first_kill
+    assert calls[first_kill] == ("kill", _RCD_PID)
+    assert steps == ["server", "duckdb", "unmount", "rcd"]
+
+
+def test_teardown_drains_the_server_thread_within_a_bounded_wait(quit_ctx):
+    # A hung request handler must not become a hung quit.
+    never = threading.Event()
+    thread = threading.Thread(target=lambda: never.wait(30), daemon=True)
+    thread.start()
+    try:
+        t0 = time.monotonic()
+        app_mod.quit_teardown(_FakeServer(), server_thread=thread, drain_s=0.2)
+        assert time.monotonic() - t0 < 3.0
+    finally:
+        never.set()
+    # ...and the rest of the ladder still ran.
+    assert ("kill", _RCD_PID) in quit_ctx["calls"]
+
+
+def test_teardown_closes_the_duckdb_stash_even_when_rcd_persists(quit_ctx,
+                                                                 monkeypatch):
+    # The stash is this process's, not the daemon's: persistence keeps rcd and
+    # its mounts alive but says nothing about a connection that must not survive
+    # into exit().
+    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")
+
+    app_mod.quit_teardown(_FakeServer())
+
+    assert [c[0] for c in quit_ctx["calls"]] == ["duckdb"]
+
+
+def test_start_quit_returns_promptly_and_terminates_afterwards():
+    entered = threading.Event()
+    terminated = threading.Event()
+
+    def _slow_teardown():
+        entered.set()
+        time.sleep(1.0)
+
+    t0 = time.monotonic()
+    watchdog = app_mod.start_quit(None, terminate=terminated.set,
+                                  teardown=_slow_teardown, deadline_s=5.0)
+    elapsed = time.monotonic() - t0
+
+    # The menu action runs on the AppKit main thread: blocking here IS the
+    # beachball, whatever the teardown costs.
+    assert elapsed < 0.3
+    assert entered.wait(2.0)
+    assert not terminated.is_set()  # teardown gets its chance to finish first
+    watchdog.join(5.0)
+    assert terminated.is_set()
+
+
+def test_start_quit_terminates_anyway_when_teardown_never_finishes():
+    # A wedged umount -f must not leave an app that can never be quit.
+    release = threading.Event()
+    terminated = threading.Event()
+    try:
+        app_mod.start_quit(None, terminate=terminated.set,
+                           teardown=lambda: release.wait(30), deadline_s=0.2)
+        assert terminated.wait(3.0)
+    finally:
+        release.set()
+
+
+def test_start_quit_terminates_once_even_if_teardown_raises():
+    terminated = []
+
+    def _boom():
+        raise RuntimeError("mount store unreadable")
+
+    watchdog = app_mod.start_quit(None, terminate=lambda: terminated.append(True),
+                                 teardown=_boom, deadline_s=5.0)
+    watchdog.join(5.0)
+
+    assert terminated == [True]
+
+
+def test_the_quit_action_is_idempotent_across_both_surfaces():
+    # The app stays alive and clickable while teardown runs, and the menu item
+    # and the popover's quitApp_ are the SAME action object — a second click
+    # (from either surface) must not start a second reap racing the first.
+    state = {"server": "srv", "server_thread": "thr"}
+    starts, pidfiles = [], []
+    do_quit = app_mod.make_quit_action(
+        state, terminate=lambda: None,
+        start=lambda server, **kw: starts.append((server, kw)),
+        remove_pidfile=lambda: pidfiles.append(True))
+
+    do_quit()
+    do_quit()
+
+    assert len(starts) == 1
+    assert pidfiles == [True]
+    assert starts[0][0] == "srv"
+    assert starts[0][1]["server_thread"] == "thr"
+
+
+def test_the_quit_action_works_before_the_server_has_booted():
+    # Quit during startup: the bootstrap thread hasn't published the server yet.
+    state = {}
+    starts = []
+    app_mod.make_quit_action(state, terminate=lambda: None,
+                            start=lambda server, **kw: starts.append(server),
+                            remove_pidfile=lambda: None)()
+
+    assert starts == [None]
