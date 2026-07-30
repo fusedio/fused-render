@@ -252,6 +252,23 @@
       }
       renderNav();
       renderFrame();
+
+      // Follow route changes that arrive via the URL rather than the nav —
+      // an inner page's fused.navigate(), or Back/Forward. Known route →
+      // switch to it; unknown → inline error + entry (same as boot).
+      fused.params.onChange(() => {
+        const next = routeName(fused.params.get("route") || "");
+        if (next === current) return;
+        setNotice(null);
+        if (pages.some((p) => p.route === next)) {
+          current = next;
+        } else {
+          current = "";
+          setNotice(`Unknown route "${next}" — showing ${pages[0].title}.`);
+        }
+        renderNav();
+        renderFrame();
+      });
     }
 
     boot();

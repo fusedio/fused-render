@@ -40,5 +40,21 @@
     Use the mode switcher in the header (or the corner chip in embed) to
     drop back to the plain file listing at any time.
   </p>
+  <p>
+    <button id="nav-merge">Stats, keep params (merge)</button>
+    <button id="nav-overwrite">Stats, fresh params (overwrite)</button>
+  </p>
+  <script>
+    // fused.navigate demo: same route, two param policies. Merge keeps the
+    // shell URL's current params and adds top=5; overwrite replaces them all
+    // with just top=3 (reserved `_` params survive both).
+    const fail = (err) => alert(err.message);
+    document.getElementById("nav-merge").addEventListener("click", () => {
+      fused.navigate("/stats", { top: "5" }).catch(fail);
+    });
+    document.getElementById("nav-overwrite").addEventListener("click", () => {
+      fused.navigate("/stats", { top: "3" }, { params: "overwrite" }).catch(fail);
+    });
+  </script>
 </body>
 </html>

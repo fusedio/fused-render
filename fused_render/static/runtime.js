@@ -14,6 +14,14 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
+ *   fused.navigate(route, params?, config?) -> Promise<{app_dir, url}>
+ *     Navigate the shell to another route of the ENCLOSING fused_app (nearest
+ *     ancestor dir of this page's file with a valid fused_app.json — resolved
+ *     via /api/app/resolve). Route uses the manifest pages[].path spelling
+ *     ("/about"; "/" = entry, clean URL). params (string values) merge onto
+ *     the shell URL's current params; config {params: "overwrite"} replaces
+ *     them instead. Reserved `_` params are preserved either way. Rejects when
+ *     no enclosing app exists.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -899,6 +907,98 @@
     resubscribeTimer = setTimeout(resubscribe, 100);
   }
 
+  // ---- fused.navigate (app-level routing) -----------------------------------
+  // Navigate the SHELL to another route of the enclosing fused_app. Works from
+  // any rendered page — the fused_app template's inner iframe, or a page file
+  // opened standalone: the server resolves the nearest ancestor directory of
+  // THIS page's file that holds a valid fused_app.json, and the shell URL is
+  // rewritten to /view/<app dir>?route=<name>&<params>.
+  //
+  // `route` uses the manifest's pages[].path spelling ("/about" — "/" or ""
+  // means the entry page, which keeps a clean URL with no route param).
+  // `params` (optional, string values) are MERGED onto the shell URL's current
+  // visible params by default; `config.params === "overwrite"` replaces them
+  // entirely. Reserved `_`-prefixed shell params (`_mode`, `_layout`, …) are
+  // never touched in either mode — they are shell state, not app state.
+  //
+  // The write lands on the same target window params.set() uses (topmost
+  // same-origin non-boundary ancestor) via pushState + the "fused:navigate"
+  // event the React shell's useNavEpoch listens for — an in-app re-route, no
+  // page reload. Rejects when no enclosing app exists or the resolve fails.
+  function appRouteName(route) {
+    return String(route == null ? "" : route).replace(/^\/+/, "").replace(/\/+$/, "");
+  }
+
+  function navigate(route, params, config) {
+    params = params || {};
+    config = config || {};
+    for (const key of Object.keys(params)) {
+      if (isReserved(key) || key === "route") {
+        return Promise.reject(new Error(
+          `fused.navigate: '${key}' is a reserved param name and cannot be set`));
+      }
+      if (typeof params[key] !== "string") {
+        return Promise.reject(new Error(
+          `fused.navigate: value for '${key}' must be a string, got ${typeof params[key]}`));
+      }
+    }
+    // This page's own file: a template preview navigates relative to the file
+    // it is previewing (`_file`); a plain rendered page relative to itself.
+    const ownFile = ownQuery("_file") || ownQuery("path");
+    if (!ownFile) {
+      return Promise.reject(new Error(
+        "fused.navigate: cannot determine this page's file path"));
+    }
+    return fetch("/api/app/resolve?path=" + encodeURIComponent(ownFile), {
+      headers: callHeaders(),
+    })
+      .then((res) => res.json().then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        if (!data.app_dir) {
+          throw new Error(
+            `fused.navigate: no enclosing fused_app found for ${ownFile} ` +
+            "(no ancestor directory has a valid fused_app.json)");
+        }
+        // Shell pathname for the app dir — same codec as the shell's
+        // urlForFsPath (router.ts): per-segment encode, leading slash dropped,
+        // and the current shell's own prefix (/view/ or /embed/) preserved.
+        const topPath = target.location.pathname;
+        const prefix =
+          topPath.startsWith("/embed/") || topPath === "/embed" ? "/embed/" : "/view/";
+        const encoded = data.app_dir
+          .replace(/^\/+/, "")
+          .split("/")
+          .filter((s) => s.length > 0)
+          .map(encodeURIComponent)
+          .join("/");
+        // Query: start from the shell URL's current params. Reserved
+        // `_`-prefixed keys always survive; visible keys survive only in
+        // merge mode. The `_layout` span is kept raw (D51) via splitSearch.
+        const { layoutSpan, rest } = splitSearch(target.location.search);
+        const current = new URLSearchParams(rest);
+        const next = new URLSearchParams();
+        for (const [key, value] of current) {
+          if (key.startsWith("_")) next.set(key, value);
+          else if (key !== "route" && config.params !== "overwrite") next.set(key, value);
+        }
+        for (const key of Object.keys(params)) next.set(key, params[key]);
+        const name = appRouteName(route);
+        if (name) next.set("route", name);
+        let search = next.toString();
+        if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
+        const url = prefix + encoded + (search ? "?" + search : "");
+        // A real navigation: its own history entry (Back returns here), then
+        // the nav event so the React shell re-routes without a reload. The
+        // event must fire on the TARGET window — that's where the shell's
+        // useNavEpoch listens.
+        target.history.pushState(null, "", url);
+        target.dispatchEvent(new Event("fused:navigate"));
+        target.dispatchEvent(new Event("fused:urlchange"));
+        return { app_dir: data.app_dir, url };
+      });
+  }
+
   function autoReload(enabled) {
     autoReloadEnabled = !!enabled;
     if (!autoReloadEnabled) {
@@ -950,6 +1050,7 @@
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
     runPython,
+    navigate,
     rawUrl,
     stat,
     readFile,

@@ -36,6 +36,7 @@
     <span id="topval"></span>
   </label>
   <div id="out">Loading…</div>
+  <p><button id="go-about" class="nav-btn">Open About (fused.navigate, merge params)</button></p>
   <script>
     const topEl = document.getElementById("top");
     const out = document.getElementById("out");
@@ -64,6 +65,15 @@
         out.textContent = `${err.type || "error"}: ${err.message}`;
       }
     }
+
+    // App-level routing demo: jump to the About route, merging p=11 onto the
+    // current shell params (the `top` slider value survives the hop).
+    document.getElementById("go-about").addEventListener("click", () => {
+      fused.navigate("/about", { p: "11" }).catch((err) => {
+        out.className = "error";
+        out.textContent = err.message;
+      });
+    });
 
     topEl.addEventListener("input", () => fused.params.set("top", topEl.value));
     fused.params.onChange(draw);
