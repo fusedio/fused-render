@@ -807,7 +807,13 @@ async def run_python(path: str, params: dict) -> dict:
     # ignores requirements silently), so they are never both set here.
     interpreter = None
     if not requirements:
-        interpreter = app_interpreter()
+        # Off the event loop: `app_interpreter` is sync (it is called from sync
+        # contexts and tests) and its first call in a process runs up to two
+        # `subprocess.run(..., timeout=5)` probes plus a wrapper write. /api/run
+        # awaits this coroutine directly, so inline that stalls the entire
+        # server — websockets, watcher, every other request — for the probe's
+        # duration. The per-process cache means only the first call pays the hop.
+        interpreter = await asyncio.to_thread(app_interpreter)
         if interpreter is None:
             # NEVER fall through to a venv here. With no baseline requirements
             # (D172) that venv is stdlib-only, so a template that works today

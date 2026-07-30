@@ -13,6 +13,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import time
 import types
 
 import pytest
@@ -338,6 +339,47 @@ def test_unbuildable_wrapper_is_an_engine_error_not_a_500(monkeypatch, tmp_path)
     assert out["ok"] is False
     assert out["error"]["type"] == "EngineError"
     assert "no such resource" in out["error"]["traceback"]
+
+
+def test_the_interpreter_probe_does_not_block_the_event_loop(monkeypatch, tmp_path):
+    """`app_interpreter` runs up to two 5s subprocess probes, synchronously.
+
+    `/api/run` awaits `run_python` directly (no `to_thread`), so calling the
+    probe inline stalls the WHOLE server for its duration — the /api/fs/events
+    websocket, the file watcher, every other in-flight request — on the first
+    header-less run of a process. Asserted by counting how many times a
+    concurrent 10ms task gets to run while the probe is "in progress": inline,
+    the answer is zero.
+    """
+    target = tmp_path / "t.py"
+    target.write_text("def main():\n    return 1\n")
+
+    def _slow_probe():
+        time.sleep(0.5)
+        return None  # -> InterpreterUnavailable; this test is about the stall
+
+    monkeypatch.setattr(engine, "app_interpreter", _slow_probe)
+
+    async def _drive():
+        ticks = 0
+
+        async def _tick():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beat = asyncio.create_task(_tick())
+        out = await engine.run_python(str(target), {})
+        beat.cancel()
+        return ticks, out
+
+    ticks, out = asyncio.run(_drive())
+    assert out["error"]["type"] == "InterpreterUnavailable"  # probe really ran
+    assert ticks > 5, (
+        f"the event loop only ticked {ticks} times during a 0.5s interpreter "
+        "probe — run_python is calling app_interpreter inline"
+    )
 
 
 def test_missing_file_is_legacy_error(monkeypatch, tmp_path):
