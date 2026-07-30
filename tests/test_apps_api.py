@@ -6,8 +6,10 @@ starts a detached Claude session on its index.html.
 The spawn is stubbed at the module seam (_start_app_session) — no test here
 launches a real claude.
 """
+import json
 import os
 import stat
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -129,7 +131,7 @@ def test_new_app_requires_the_fused_header(client):
 def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     called = []
     monkeypatch.setattr(apps_mod, "_start_app_session",
-                        lambda entry, prompt: called.append((entry, prompt)) or True)
+                        lambda entry, prompt: called.append((entry, prompt)) or ("r-1", None))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 200
     body = r.json()
@@ -146,7 +148,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
 
 
 def test_new_app_carries_the_authoring_skill(client, workspace, monkeypatch):
-    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: False)
+    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     skill = workspace / "demo" / ".claude" / "skills" / "fused-render-authoring"
     assert (skill / "SKILL.md").is_file()
@@ -158,22 +160,27 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     def fake_start(entry_html, prompt):
         seen["entry"] = entry_html
         seen["prompt"] = prompt
-        return True
+        return "run-42", None
 
     monkeypatch.setattr(apps_mod, "_start_app_session", fake_start)
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "build a todo app"},
                     headers=HDRS)
     assert r.json()["session_started"] is True
+    assert r.json()["session_error"] is None
+    assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
     assert seen["entry"] == str(workspace / "demo" / "index.html")
     assert seen["prompt"] == "build a todo app"
 
 
-def test_spawn_failure_does_not_fail_creation(client, workspace, monkeypatch):
-    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: False)
+def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, monkeypatch):
+    monkeypatch.setattr(apps_mod, "_start_app_session",
+                        lambda e, p: (None, "claude CLI not found"))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"}, headers=HDRS)
     assert r.status_code == 200
     assert r.json()["session_started"] is False
+    assert r.json()["run_id"] is None
+    assert r.json()["session_error"] == "claude CLI not found"
     assert (workspace / "demo" / "index.html").is_file()
 
 
@@ -202,6 +209,130 @@ def test_partial_copy_is_cleaned_up(client, workspace, monkeypatch):
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 400
     assert not (workspace / "demo").exists()
+
+
+# ------------------------------------------------------------------ updated_at
+
+def test_updated_at_tracks_direct_children_not_just_the_dir(client, workspace):
+    """Editing a file in place doesn't move the dir's own mtime — updated_at
+    must still reflect it (max over dir + direct children)."""
+    d = _app_dir(workspace, "app")
+    dir_mtime = os.stat(d).st_mtime
+    future = dir_mtime + 1000
+    os.utime(d / "index.html", (future, future))
+    apps = client.get("/api/apps").json()["apps"]
+    # abs=, not the default rel=1e-6: on an epoch value (~1.8e9) the relative
+    # tolerance is nearly half an hour, so `approx(future)` would happily
+    # accept the dir's own untouched mtime and assert nothing at all.
+    assert apps[0]["updated_at"] == pytest.approx(future, abs=0.01)
+
+
+def test_updated_at_is_a_float_and_present_for_entryless_apps(client, workspace):
+    _app_dir(workspace, "empty", htmls=())
+    apps = client.get("/api/apps").json()["apps"]
+    assert isinstance(apps[0]["updated_at"], float)
+
+
+# ---------------------------------------------------- the fork-safe spawn seam
+
+def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
+        tmp_path, workspace, monkeypatch):
+    """The live-bug regression: calling agent._start inside the server process
+    fork()s with libproj resident and SIGSEGVs the child before exec (PROJ's
+    pthread_atfork handler; same crash test_worker_forksafe.py pins for the
+    executor). The spawn must therefore happen via a helper subprocess — and
+    that helper's own Popen must stay on the posix_spawn path (close_fds=False,
+    no cwd, no start_new_session) with the prompt on stdin, not argv."""
+    entry = workspace / "app" / "index.html"
+    entry.parent.mkdir()
+    entry.write_text("<html></html>")
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return type("R", (), {"returncode": 0,
+                              "stdout": '{"run_id": "r-1"}', "stderr": ""})()
+
+    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
+    started_threads = []
+    monkeypatch.setattr(apps_mod.threading, "Thread",
+                        lambda **kw: type("T", (), {"start": lambda s: started_threads.append(kw)})())
+
+    run_id, err = apps_mod._start_app_session(str(entry), "secret prompt $(boom)")
+    assert (run_id, err) == ("r-1", None)
+
+    # a real python -c helper, not claude itself, and prompt over stdin only
+    assert seen["cmd"][0] == apps_mod.sys.executable
+    assert "secret prompt" not in " ".join(seen["cmd"])
+    import json as jsonlib
+    req = jsonlib.loads(seen["kwargs"]["input"])
+    assert req["message"] == "secret prompt $(boom)"
+    assert req["file"] == str(entry)
+    # unattended: nobody polls `decide` for a session started from a POST, so
+    # the strict default mode would park the first tool call until the
+    # permission timeout denied it — boilerplate, silently.
+    assert req["permission_mode"] == "auto"
+    # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
+    assert seen["kwargs"]["close_fds"] is False
+    assert "cwd" not in seen["kwargs"]
+    assert "start_new_session" not in seen["kwargs"]
+    assert started_threads  # the sidecar-recording poll thread was kicked off
+
+
+def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "",
+                              "stderr": "boom\nFileNotFoundError: claude"})()
+
+    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
+    assert run_id is None
+    assert "FileNotFoundError: claude" in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
+def test_spawn_really_delivers_the_prompt_to_the_claude_process(
+        tmp_path, workspace, monkeypatch):
+    """The regression the mocked tests could never catch.
+
+    Everything below _start_app_session is real here — the helper subprocess,
+    agent._start, the detached spawn — with only `claude` itself replaced by a
+    shell stub that records the argv and stdin it was handed. The live bug was
+    precisely that this whole path produced nothing: the helper's absence meant
+    the fork() SIGSEGV'd before exec, so claude never ran at all and the app
+    stayed boilerplate. Asserting the stub RAN and SAW the prompt is what pins
+    that; a stub that is never executed writes no files and fails here."""
+    entry = workspace / "app" / "index.html"
+    entry.parent.mkdir()
+    entry.write_text("<html></html>")
+    argv_log, stdin_log = tmp_path / "argv.txt", tmp_path / "stdin.txt"
+    stub = tmp_path / "claude"
+    stub.write_text(
+        f'#!/bin/sh\nprintf \'%s\\n\' "$@" > "{argv_log}"\ncat > "{stdin_log}"\nexit 0\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
+
+    run_id, err = apps_mod._start_app_session(str(entry), "hello from the test")
+    assert err is None and run_id, err
+
+    # the spawn is detached, so wait for the stub to finish writing
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and not stdin_log.exists():
+        time.sleep(0.1)
+    assert stdin_log.exists(), "claude was never executed (the live bug)"
+
+    argv = argv_log.read_text().splitlines()
+    # the prompt reached the process, over stdin as one stream-json user line
+    assert "hello from the test" not in "\n".join(argv)   # never in argv
+    row = json.loads(stdin_log.read_text())
+    assert row["message"]["content"][0]["text"] == "hello from the test"
+    # ...and it can act on it unattended: prompt-tool wired AND a mode that
+    # doesn't park every tool call on a card nobody is watching for.
+    assert argv[argv.index("--permission-mode") + 1] == "auto"
+    assert argv[argv.index("--permission-prompt-tool") + 1].startswith("mcp__")
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
 
 
 # --------------------------------------------- the stdin path through agent.py

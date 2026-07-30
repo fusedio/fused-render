@@ -1338,7 +1338,15 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
 export interface NewAppResult {
   path: string;
   entry_html: string;
+  // Whether a Claude session was actually kicked off for the prompt.
   session_started: boolean;
+  // The live run, for attaching to the session that was just started; null
+  // when no prompt was given or the spawn failed.
+  run_id: string | null;
+  // Why the session did not start (claude CLI missing, spawn failure). The
+  // app itself was created either way — surface this so a prompt that went
+  // nowhere isn't silent. Null when it started, or when there was no prompt.
+  session_error: string | null;
 }
 
 export function createApp(name: string, prompt: string): Promise<NewAppResult> {

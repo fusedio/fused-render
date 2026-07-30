@@ -69,6 +69,17 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const res = await createApp(trimmedName, prompt.trim());
+      // The folder exists either way, but a prompt that never reached Claude
+      // must not look like success: navigating straight to a boilerplate view
+      // is exactly how "it sent nothing to Claude" reads as working. Stay put
+      // and say why; the app is listed on Home once the modal closes.
+      if (res.session_error) {
+        if (alive.current) {
+          setError(`App created, but Claude didn't start: ${res.session_error}`);
+          setBusy(false);
+        }
+        return;
+      }
       // Land on the new app's entry view. If a Claude session was started it
       // is visible there via the file's claude template — no extra screen.
       navigate(res.entry_html, { isDir: false });

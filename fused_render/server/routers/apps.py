@@ -16,9 +16,12 @@ lands in the sidecar next to ``index.html`` and the existing claude template UI
 lists and resumes it with no new machinery.
 """
 import html
+import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import time
 
@@ -61,6 +64,28 @@ def _entry_title(entry_html: str) -> str | None:
     return " ".join(title.split()) or None
 
 
+def _updated_at(dir_path: str) -> float | None:
+    """When the app was last touched, as an epoch float (st_mtime).
+
+    Max of the dir's own mtime and its DIRECT children's — the dir mtime alone
+    only moves on add/remove/rename, so editing index.html in place wouldn't
+    register; a deep walk is unbounded work per listing for marginal gain
+    (edits in an app land overwhelmingly in top-level files). One extra stat
+    per child, no recursion. None when nothing stats (racing delete)."""
+    latest = None
+    try:
+        latest = os.stat(dir_path).st_mtime
+        with os.scandir(dir_path) as it:
+            for child in it:
+                try:
+                    latest = max(latest, child.stat().st_mtime)
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return latest
+
+
 def _app_entry(dir_path: str) -> str | None:
     """The app's entry file: the single non-hidden direct-child .html, or None
     when the folder has zero or several (ambiguous — the UI opens the folder).
@@ -101,6 +126,7 @@ def api_apps():
             "path": os.path.abspath(path),
             "entry_html": entry_html,
             "title": _entry_title(entry_html) if entry_html else None,
+            "updated_at": _updated_at(path),
         })
     apps.sort(key=lambda a: a["name"].lower())
     return {"apps": apps}
@@ -121,22 +147,24 @@ def _app_name_error(name) -> str | None:
     return None
 
 
-def _claude_agent():
-    """Load the claude template's backend (agent.py) as a module.
-
-    By file path, not import: templates are script folders, not packages, and
-    the staged core copy (server.templates.TEMPLATES_DIR) is the one the
-    claude template page itself executes — loading the same file keeps the
-    runs dir, sidecar shape, and permission_server path in step with what the
-    page will poll. Lazy import of server.templates keeps this module
-    import-safe from app.py's top (server.templates is fine, but the lazy
-    style matches how create_app pulls in templates_api)."""
-    import importlib.util
-
+def _agent_path() -> str:
+    """The claude template backend (agent.py) — the staged core copy
+    (server.templates.TEMPLATES_DIR), the same file the claude template page
+    itself executes, so the runs dir, sidecar shape, and permission_server
+    path stay in step with what the page will poll."""
     from fused_render.server import templates as _server_templates
 
-    path = os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")
-    spec = importlib.util.spec_from_file_location("fused_render_apps_claude_agent", path)
+    return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")
+
+
+def _claude_agent():
+    """Load agent.py as a module, for in-process READ paths only (_poll).
+    The spawn goes through _SESSION_HELPER in a subprocess — see
+    _start_app_session for why calling agent._start in this process crashes."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "fused_render_apps_claude_agent", _agent_path())
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -160,26 +188,88 @@ def _record_session_when_ready(agent, run_id: str) -> None:
         time.sleep(2)
 
 
-def _start_app_session(entry_html: str, prompt: str) -> bool:
+# The helper the spawn runs in. agent._start cannot be called in THIS process:
+# its Popen sets cwd + start_new_session, which forces CPython off posix_spawn
+# onto fork()+exec, and the server has libproj resident with a live proj.db
+# SQLite handle — fork() runs PROJ's pthread_atfork child handler, which
+# sqlite3_close()es that now-invalid handle and SIGSEGVs the child before exec
+# (the exact crash test_worker_forksafe.py locks out of the executor; verified
+# live: empty out.jsonl, dead pid, a Python .ips crash report with the server
+# as parent). So the _start happens one hop away, in a bare python that has no
+# libproj loaded and can fork freely. Args ride over stdin as JSON (never
+# argv — the prompt is user text); the result comes back as one JSON line.
+_SESSION_HELPER = """\
+import importlib.util, json, sys
+req = json.load(sys.stdin)
+spec = importlib.util.spec_from_file_location("claude_agent", req["agent"])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(json.dumps(mod._start(req["file"], req["message"], "", "", "",
+                            permission_mode=req["permission_mode"],
+                            message_via_stdin=True)))
+"""
+
+# The permission mode the scaffolding session runs in, passed EXPLICITLY rather
+# than left to agent.py's default ("prompt", the strictest).
+#
+# A template chat is watched: the page polls, a card appears, the user answers.
+# This session has no page yet — it starts from an HTTP POST and nobody is
+# polling `decide`, so under "prompt" the first tool call parks a request in
+# the run's perm/ dir and blocks there until PERMISSION_WAIT (an hour by
+# default) expires and the server denies it on the user's behalf. From the
+# outside that is indistinguishable from the crash this module's helper fixes:
+# a folder full of untouched boilerplate.
+#
+# "auto" is the broadest mode the template offers (bypassPermissions is
+# deliberately not among PERMISSION_MODES at all): the CLI's own classifier
+# approves what it judges safe and escalates the rest to a card. So the
+# first-pass scaffolding work proceeds unattended, and anything the classifier
+# won't take on itself still parks a request — answerable once the user opens
+# the app's chat, which `run_id` in the response is there to let the UI do.
+_APP_SESSION_PERMISSION_MODE = "auto"
+
+
+def _spawn_session_helper(entry_html: str, prompt: str) -> dict:
+    """Run agent._start in the fork-safe helper; return its result dict.
+
+    close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
+    posix_spawn path (no atfork handlers — same discipline as executor.py's
+    worker spawn). The helper itself detaches claude with setsid; it is a
+    bare python where fork() is safe."""
+    proc = subprocess.run(
+        [sys.executable, "-c", _SESSION_HELPER],
+        input=json.dumps(
+            {"agent": _agent_path(), "file": entry_html, "message": prompt,
+             "permission_mode": _APP_SESSION_PERMISSION_MODE}),
+        capture_output=True, text=True, timeout=60, close_fds=False,
+    )
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()
+        return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
+    return json.loads(proc.stdout)
+
+
+def _start_app_session(entry_html: str, prompt: str) -> tuple[str | None, str | None]:
     """Start a detached Claude Code session on the new app's entry file.
 
-    The seam the tests stub. Reuses agent._start — cwd = the app folder,
-    stream-json log, sidecar keyed to entry_html — with the prompt over stdin
-    (message_via_stdin) so user text never enters argv. Returns whether a
-    session actually started; a missing claude CLI or spawn failure must not
-    fail the creation that already succeeded."""
+    The seam the tests stub. Reuses agent._start (via the fork-safe helper
+    above) — cwd = the app folder, stream-json log, sidecar keyed to
+    entry_html — with the prompt over stdin (message_via_stdin) so user text
+    never enters argv. Returns (run_id, error), exactly one of them set: a
+    missing claude CLI or spawn failure must not fail the creation that
+    already succeeded, but the reason rides back so the UI isn't silent about
+    it, and the run_id lets the caller attach to the live run."""
     try:
-        agent = _claude_agent()
-        res = agent._start(entry_html, prompt, "", "", "", message_via_stdin=True)
-    except Exception:
-        return False
+        res = _spawn_session_helper(entry_html, prompt)
+    except Exception as exc:
+        return None, f"failed to start Claude session: {exc}"
     if res.get("error") or not res.get("run_id"):
-        return False
+        return None, str(res.get("error") or "failed to start Claude session")
     threading.Thread(
-        target=_record_session_when_ready, args=(agent, res["run_id"]),
+        target=_record_session_when_ready, args=(_claude_agent(), res["run_id"]),
         daemon=True, name="fused-app-session-record",
     ).start()
-    return True
+    return str(res["run_id"]), None
 
 
 @router.post("/api/apps/new")
@@ -223,12 +313,21 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     _ensure_starter_skills(dest, _APP_SKILLS)
 
     entry_html = os.path.join(dest, "index.html")
-    session_started = False
+    run_id, session_error = None, None
     if prompt.strip():
-        session_started = _start_app_session(entry_html, prompt)
+        run_id, session_error = _start_app_session(entry_html, prompt)
 
     return {
         "path": os.path.abspath(dest),
         "entry_html": os.path.abspath(entry_html),
-        "session_started": session_started,
+        "session_started": run_id is not None,
+        # The live run, for a caller that wants to attach to the session it
+        # just started (the claude template's own `run` param re-attach path:
+        # poll it and answer any approval the "auto" classifier escalated).
+        # None when no prompt was given or the spawn failed.
+        "run_id": run_id,
+        # Why the session did NOT start (claude CLI missing, spawn failure) —
+        # the app itself was created fine, but the UI shouldn't be silent
+        # about the prompt going nowhere. None when started or no prompt.
+        "session_error": session_error,
     }
