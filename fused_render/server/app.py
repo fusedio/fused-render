@@ -142,7 +142,7 @@ def _export_bundled_uv_path() -> None:
     path = os.environ.get("PATH", "")
     if uv_dir in path.split(os.pathsep):
         return  # already reachable; do not grow PATH on every call
-    os.environ["PATH"] = uv_dir + os.pathsep + path if path else uv_dir
+    os.environ["PATH"] = (uv_dir + os.pathsep + path) if path else uv_dir
 
 
 def create_app(start_dir: str) -> FastAPI:
