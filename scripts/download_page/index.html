@@ -202,6 +202,7 @@
     -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
     mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
   }
+  .ticker-run { display: flex; gap: 12px; }
   .ticker-inner {
     display: flex; gap: 12px; width: max-content;
     animation: scroll 46s linear infinite;
@@ -352,6 +353,8 @@
     .shots img, .url span { animation: none; opacity: 0; }
     .shots img.s1, .url span.s1 { opacity: 1; }
     .ticker-inner { animation: none; flex-wrap: wrap; width: auto; }
+    .ticker-run { flex-wrap: wrap; }
+    .ticker-run + .ticker-run { display: none; }
     .btn, .btn-ghost, .grid figure { transition: none; }
   }
 </style>
@@ -409,8 +412,8 @@
     <p>40+ formats render instantly. No notebooks, no plugins, no converters.</p>
     <div class="ticker">
       <div class="ticker-inner" aria-hidden="true">
-        <span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a>
-        <span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a>
+        <div class="ticker-run"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a></div>
+        <div class="ticker-run" aria-hidden="true"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a></div>
       </div>
     </div>
   </section>
@@ -553,7 +556,8 @@
       t.addEventListener("click", () => activate(t.dataset.os));
     });
     const ua = navigator.userAgent;
-    const os = /Mac/.test(ua) ? "mac" : /Win/.test(ua) ? "win" : /Linux|X11/.test(ua) ? "linux" : null;
+    const mobile = /iPhone|iPad|iPod|Android/.test(ua) || (/Mac/.test(ua) && navigator.maxTouchPoints > 1);
+    const os = mobile ? null : /Mac/.test(ua) ? "mac" : /Win/.test(ua) ? "win" : /Linux|X11/.test(ua) ? "linux" : null;
     if (!os) return;
     activate(os);
     document.querySelector('.tab[data-os="' + os + '"]').classList.add("detected");

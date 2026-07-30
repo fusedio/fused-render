@@ -455,12 +455,15 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
         if (isRelative(src)) img.src = window.fused.rawUrl(src);
       });
       const ownPath = new URLSearchParams(location.search).get("path");
-      if (window.fused.env === "local" && ownPath) {
-        const dir = ownPath.replace(/\/[^/]*$/, "");
-        document.querySelectorAll('a[href^="index.html"]').forEach((a) => {
-          a.href = "/render?path=" + encodeURIComponent(dir + "/index.html") + a.getAttribute("href").slice("index.html".length);
-        });
-      }
+      document.querySelectorAll('a[href^="index.html"]').forEach((a) => {
+        const hash = a.getAttribute("href").slice("index.html".length);
+        if (window.fused.env === "local" && ownPath) {
+          const dir = ownPath.replace(/\/[^/]*$/, "");
+          a.href = "/render?path=" + encodeURIComponent(dir + "/index.html") + hash;
+        } else if (window.fused.env !== "local") {
+          a.href = window.fused.rawUrl("index.html") + hash;
+        }
+      });
     }
   })();
 
