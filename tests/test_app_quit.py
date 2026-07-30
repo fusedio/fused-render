@@ -205,6 +205,18 @@ def test_quit_close_swallows_a_raising_reader_hook(monkeypatch):
 _RCD_PID = 4321
 
 
+@pytest.fixture(autouse=True)
+def _clear_quit_interlock():
+    """The teardown latch is module-global and deliberately sticky within a
+    process, so every test here clears it on both sides — otherwise the attach
+    tests in tests/test_shell_mounts.py would find every mount refused."""
+    mounts_mod._QUIT_TEARDOWN_LATCH.clear()
+    try:
+        yield
+    finally:
+        mounts_mod._QUIT_TEARDOWN_LATCH.clear()
+
+
 @pytest.fixture()
 def ladder(tmp_path, monkeypatch):
     """Records the whole quit teardown ladder without touching a real mount."""
@@ -223,6 +235,7 @@ def ladder(tmp_path, monkeypatch):
         "entry": {"port": 5572, "pid": _RCD_PID, "spawner_pid": os.getpid()},
         "signalled": [],             # pids os.kill was called with
         "kernel": {"alpha", "beta"}, # what the kernel still holds
+        "on_force": None,            # side effect to run inside a force unmount
         "release": threading.Event(),
     }
 
@@ -263,6 +276,9 @@ def ladder(tmp_path, monkeypatch):
     def _force_unmount(mp):
         name = os.path.basename(mp)
         ctx["calls"].append(("force", name))
+        if ctx["on_force"] is not None:
+            # Lets a test land a racing attach mid-teardown.
+            ctx["on_force"](mp)
         if name in ctx["hang"]:
             ctx["release"].wait(30)  # a wedged umount -f, as seen in the field
             return f"force unmount of {mp} failed: still mounted"
@@ -983,3 +999,56 @@ def test_a_hanging_quiesce_is_bounded_by_its_own_budget(ladder, monkeypatch):
 
     assert elapsed < 3.0
     assert ladder["kernel"] == set()  # and the mounts still came down
+
+
+# ------------------------------------------ the automount / quit interlock (A)
+# `health.startup()` runs run_automount on a daemon thread, calling attach_mount
+# per mount, seconds each against S3. Quitting while that is in flight — very much
+# including the readiness-failure abort, whose whole premise is that automount has
+# had time to run — let an attach COMPLETE after that mount's unmount thread had
+# finished, so stop_local_rcd killed rcd with a live kernel nfsmount attached:
+# defect (A) again, on the path most likely to hit it.
+
+
+def test_an_attach_after_quit_began_declines_instead_of_mounting(ladder):
+    mounts_mod.unmount_all_for_quit()
+
+    before = list(ladder["calls"])
+    err = mounts_mod.attach_mount({"id": "n", "name": "newbie", "remote": "s3n:b"})
+
+    assert err and "quit" in err.lower()
+    # Declined, not half-done: no mount/mount, nothing added to the kernel table.
+    assert ladder["calls"] == before
+    assert "newbie" not in ladder["kernel"]
+
+
+def test_a_mount_that_lands_mid_teardown_is_still_detached(ladder):
+    # The narrow window the latch cannot close: an attach already PAST the check
+    # and inside rcd's mount/mount. It must not be left attached for the reap, so
+    # the fan-out is followed by a sweep of what the kernel actually still holds.
+    late = {"id": "l", "name": "late", "remote": "s3l:b"}
+    ladder["mounts"].append(late)
+
+    original = ladder["kernel"]
+
+    def _attach_mid_flight(mp):
+        # Runs while alpha is being force-unmounted: the racing attach completes.
+        original.add("late")
+
+    ladder["on_force"] = _attach_mid_flight
+    ladder["lingers"].add("alpha")
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert ladder["kernel"] == set(), "a mount that landed mid-teardown survived"
+
+
+def test_the_interlock_is_not_armed_when_the_daemon_is_left_running(ladder,
+                                                                   monkeypatch):
+    # Persisted dev daemon: its mounts are meant to stay up, so an attach racing
+    # the quit is harmless and must not be refused.
+    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert not mounts_mod._QUIT_TEARDOWN_LATCH.is_set()

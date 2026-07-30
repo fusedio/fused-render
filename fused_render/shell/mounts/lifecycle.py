@@ -143,6 +143,18 @@ def _is_mounted(mp: str) -> bool:
     return _ismount(mp) or _mount_wedged(mp)
 
 
+# Set by unmount_all_for_quit once it commits to tearing the mounts down; read by
+# attach_mount, which then declines. The interlock exists because automount is
+# CONCURRENT with quit: health.startup() runs run_automount on a daemon thread that
+# calls attach_mount per mount, seconds each against S3, so quitting during startup
+# (the readiness-failure abort especially — its whole premise is that automount has
+# had time to run) could land an attach AFTER that mount's unmount thread finished,
+# and rcd was then reaped with a live kernel nfsmount attached. An Event, and never
+# rebound: a plain bool set through `global` would only update this module's dict
+# and every importer would read a frozen copy (the D178 _STAT_CACHE_GEN bug).
+_QUIT_TEARDOWN_LATCH = threading.Event()
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     from fused_render.shell.mounts import (
@@ -152,6 +164,11 @@ def attach_mount(m: dict) -> str | None:
         ensure_rcd,
         reconnect_mount,
     )
+    # Decline rather than unwind: a mount attached now would either outlive the rcd
+    # reap moments later or have to be torn down again, and the caller (automount,
+    # a reconnect) already treats an error string as "not mounted, logged, move on".
+    if _QUIT_TEARDOWN_LATCH.is_set():
+        return "the app is quitting; not attaching mounts"
     mp = mountpoint(m)
     # Create the mounts root (with its Spotlight-exclusion marker) before the
     # per-mount mountpoint, so the marker is in place the moment the mount goes
@@ -521,7 +538,13 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
         list_mounts,
     )
     if not _rcd_is_ours_to_reap():
+        # Armed only when we actually commit to the teardown: a daemon we are
+        # LEAVING running keeps its mounts, so an attach racing this quit is
+        # harmless there and must not be refused.
         return
+    # Before the snapshot below, so a concurrent run_automount stops adding mounts
+    # we would then have to chase (see _QUIT_TEARDOWN_LATCH).
+    _QUIT_TEARDOWN_LATCH.set()
     try:
         mounts = list_mounts()
     except Exception:
@@ -573,6 +596,38 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
             logger.warning(
                 "quit: unmount of %r did not finish within %.1fs; leaving it to "
                 "the process exit", m.get("name"), budget_s)
+    # The one window the latch cannot close: an attach already PAST the check and
+    # inside rcd's mount/mount when we armed it. Ask the KERNEL what is still
+    # attached (a fresh list_mounts, so a record added during the teardown counts
+    # too) and take those down as well — otherwise that mount alone survives into
+    # the reap, which is the whole failure. Costs nothing on the normal path: by
+    # here nothing is mounted, so this is N cheap _is_mounted checks. Spends only
+    # the leftover budget, so it cannot extend what app.py was promised.
+    _sweep_late_mounts(deadline)
+
+
+def _sweep_late_mounts(deadline: float) -> None:
+    from fused_render.shell.mounts import _is_mounted, _unmount_for_quit, list_mounts
+    if time.monotonic() >= deadline:
+        return
+    try:
+        late = [m for m in list_mounts() if _is_mounted(mountpoint(m))]
+    except Exception:
+        logger.warning("quit: could not re-check the mount table", exc_info=True)
+        return
+    if not late:
+        return
+    logger.warning("quit: %s mount(s) were still attached after the unmount pass "
+                   "(an attach that raced the teardown); detaching",
+                   len(late))
+    threads = []
+    for m in late:
+        t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
+                             name=f"quit-sweep-{m.get('name')}")
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
 
 
 def detach_mount(m: dict, force: bool = False) -> str | None:
