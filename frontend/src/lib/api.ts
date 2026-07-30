@@ -1323,6 +1323,9 @@ export interface AppInfo {
   path: string;
   entry_html: string | null;
   title: string | null;
+  // Last-modified time, epoch seconds. Optional/null for servers that don't
+  // report it (older backends) — those sort last in the Home grid.
+  updated_at?: number | null;
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

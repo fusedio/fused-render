@@ -241,9 +241,11 @@ export default function Home({ config }: { config: Config }) {
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
             <div className="home-apps">
-              {apps.data.apps.map((app) => (
-                <AppCard key={app.path} app={app} />
-              ))}
+              {/* "New app" holds the FIRST slot (owner call — creation is the
+                  page's primary action), then the 9 most recently updated
+                  apps. Sort is computed once per fetch: recency (updated_at
+                  epoch seconds, missing → last; name breaks ties) — stable
+                  under interaction since nothing re-sorts after load. */}
               <button type="button" className="home-app home-app-new" onClick={() => setCreating(true)}>
                 <span className="home-app-monogram" aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -255,7 +257,26 @@ export default function Home({ config }: { config: Config }) {
                   <span className="home-app-sub">describe it, Claude builds it</span>
                 </span>
               </button>
+              {apps.data.apps
+                .slice()
+                .sort(
+                  (a, b) =>
+                    (b.updated_at ?? 0) - (a.updated_at ?? 0) || a.name.localeCompare(b.name),
+                )
+                .slice(0, 9)
+                .map((app) => (
+                  <AppCard key={app.path} app={app} />
+                ))}
             </div>
+          )}
+          {apps.status === "ok" && apps.data.apps.length > 9 && (
+            <button
+              type="button"
+              className="home-rule-action home-apps-all"
+              onClick={() => navigate(config.fused_dir, { isDir: true })}
+            >
+              All apps →
+            </button>
           )}
         </section>
 

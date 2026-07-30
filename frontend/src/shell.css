@@ -5419,6 +5419,13 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg);
 }
 
+/* "All apps →" under the truncated grid, right-aligned to match the rule
+   actions. */
+.home-apps-all {
+  display: block;
+  margin: 10px 0 0 auto;
+}
+
 /* Loading / empty voices. */
 .home-loading {
   color: var(--fg-muted);
