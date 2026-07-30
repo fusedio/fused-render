@@ -231,6 +231,14 @@ def _build_order(sort, columns):
 _HTTP_CON_KEY = "_fused_render_http_con_v3"
 
 
+# One-way latch, set by close_http_connection and never cleared: once quit has
+# closed the stash, nothing may create another one. Lives on the duckdb module
+# for the same reason the stash does — this module object is transient
+# (executor._run_inprocess re-execs it per call and never puts it in
+# sys.modules), so a module-local flag would be forgotten by the next reader run.
+_HTTP_CON_LATCH = "_fused_render_http_con_closed"
+
+
 def _http_connection():
     """A DuckDB connection for reading mounted parquet over HTTP, kept alive
     across reader runs. DuckDB's external file cache holds the byte ranges a
@@ -244,7 +252,15 @@ def _http_connection():
     Because the stash outlives every reader run, something has to close it
     before the process exits: on macOS the server runs in-process inside the
     rumps app and AppKit's `exit()` destructs this connection with NO GIL held
-    (SIGABRT, INCIDENT 2026-07-29). That is close_http_connection's job."""
+    (SIGABRT, INCIDENT 2026-07-29). That is close_http_connection's job.
+
+    Raises once quit has closed the stash, rather than quietly building another
+    one: the caller's remote fast path already treats any failure here as "fall
+    back to reading the plain file path", which is the correct behavior for a
+    process on its way out. See _HTTP_CON_LATCH."""
+    if getattr(duckdb, _HTTP_CON_LATCH, False):
+        raise RuntimeError(
+            "the shared DuckDB HTTP connection is closed (the app is quitting)")
     con = getattr(duckdb, _HTTP_CON_KEY, None)
     if con is None:
         con = duckdb.connect(":memory:")
@@ -295,8 +311,19 @@ def close_http_connection() -> bool:
     2026-07-29: preview one mounted parquet file and every later quit crashed).
     Linux/Windows exit through normal finalization and were unaffected.
 
-    Total no-op when no connection was ever built, and never raises: quit must
-    proceed whatever DuckDB thinks of being closed."""
+    Latches first, and that is what makes closing this EARLY in the teardown
+    safe rather than racy: the server drain ahead of it is a bounded join that can
+    time out, so uvicorn may still be serving while the unmount and rcd steps run
+    for seconds, and any parquet read in that window would otherwise restash a
+    fresh connection and bring the abort back. Deliberately not deferred to
+    "immediately before terminate" instead — the steps in between are the ones
+    that can hang, and the hard deadline would then terminate having never closed
+    anything, which is precisely the crash.
+
+    Total no-op when no connection was ever built (the latch still goes on, so a
+    late read cannot start one), and never raises: quit must proceed whatever
+    DuckDB thinks of being closed."""
+    setattr(duckdb, _HTTP_CON_LATCH, True)
     con = getattr(duckdb, _HTTP_CON_KEY, None)
     if con is None:
         return False

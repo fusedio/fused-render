@@ -74,6 +74,9 @@ def reader(monkeypatch):
     pytest.importorskip("duckdb")
     mod = _load_reader()
     monkeypatch.delattr(mod.duckdb, mod._HTTP_CON_KEY, raising=False)
+    # Same for the quit latch: it is one-way ON PURPOSE, so a test that trips it
+    # must not leave the next test in this worker unable to build a connection.
+    monkeypatch.delattr(mod.duckdb, mod._HTTP_CON_LATCH, raising=False)
     return mod
 
 
@@ -550,3 +553,59 @@ def test_the_rcd_reap_worst_case_counts_the_probe_and_both_kill_polls():
     assert mounts_mod.RCD_REAP_WORST_CASE_S == pytest.approx(
         mounts_mod._CONFIRM_RC_TIMEOUT_S + mounts_mod._PS_TIMEOUT_S
         + 2 * mounts_mod._KILL_TIMEOUT_S)
+
+
+# ------------------------------------------------- the stash cannot come back
+# Closing the stash mid-teardown is only safe if nothing can re-create it: the
+# drain is a BOUNDED join that can time out, so uvicorn may still be serving
+# while unmount + reap run for seconds, and one in-process parquet read in that
+# window would restash a fresh DuckDBPyConnection and bring the SIGABRT back.
+
+
+def _working_connect(monkeypatch, reader):
+    """Make _http_connection's build path SUCCEED, so the only thing that can
+    make it fail is the latch (a real duckdb.connect would raise on `LOAD httpfs`
+    in an env without the extension, which would pass these tests vacuously)."""
+    made = _FakeCon()
+    made.execute = lambda sql: None
+    made.cursor = lambda: "cursor"
+    monkeypatch.setattr(reader.duckdb, "connect", lambda *a, **k: made,
+                        raising=False)
+    return made
+
+
+def test_the_stash_cannot_be_recreated_after_the_close(reader, monkeypatch):
+    con = _FakeCon()
+    setattr(reader.duckdb, reader._HTTP_CON_KEY, con)
+    reader.close_http_connection()
+    _working_connect(monkeypatch, reader)
+
+    with pytest.raises(RuntimeError):
+        reader._http_connection()
+    assert not hasattr(reader.duckdb, reader._HTTP_CON_KEY)
+
+
+def test_the_latch_holds_on_a_process_that_never_read_a_remote_file(reader,
+                                                                   monkeypatch):
+    # Closing with nothing stashed still latches, so a read arriving after quit
+    # began cannot start one.
+    assert reader.close_http_connection() is False
+    _working_connect(monkeypatch, reader)
+
+    with pytest.raises(RuntimeError):
+        reader._http_connection()
+    assert not hasattr(reader.duckdb, reader._HTTP_CON_KEY)
+
+
+def test_the_readers_own_call_site_falls_back_when_the_latch_is_closed(reader,
+                                                                      monkeypatch):
+    """The raise must be one the existing caller already handles — reader.main's
+    remote fast path does `try: cur = _http_connection() except Exception: cur =
+    None` and then reads the plain file path."""
+    reader.close_http_connection()
+    _working_connect(monkeypatch, reader)
+    try:
+        cur = reader._http_connection()
+    except Exception:
+        cur = None
+    assert cur is None
