@@ -246,6 +246,18 @@ jobs:
       # which works but is markedly slower). Same action the desktop jobs use.
       - uses: astral-sh/setup-uv@v5
 
+      # tests/test_server_env_install.py runs the install loader's own JS under
+      # node (the only way to assert which key gets polled and when the overlay
+      # comes down), and skips those four tests when node is missing. The
+      # zero-skip gate below turns any skip into a job failure, so node has to be
+      # DECLARED here: it was passing only because the current `ubuntu-latest`
+      # image happens to ship one, and a runner-image change would have failed
+      # this job for a reason unrelated to the engine. Same version as the
+      # frontend job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install fused-render (dev + fused extras)
         run: pip install -e ".[dev,fused]"
 
@@ -263,8 +275,11 @@ jobs:
         #   * these three files — the real-backend integration tests, the
         #     cross-engine binding parity table, and the install-loader HTTP
         #     surface — must report ZERO skips on 3.11 with the extra
-        #     installed. Nothing in them has another reason to skip, so any
-        #     skip means the extra didn't take effect. test_server_env_install
+        #     installed. Every OTHER reason those files can skip is provisioned
+        #     by the steps above (the extra itself, uv, rclone, and node for the
+        #     loader's JS tests), so any skip means the extra didn't take
+        #     effect. tests/test_ci_engine_gate.py keeps that list honest.
+        #     test_server_env_install
         #     is listed because two of its tests skip without `fused` on the
         #     matrix job, and they are the only coverage of "requirements come
         #     from the .py, never the request body" — exactly the kind of
