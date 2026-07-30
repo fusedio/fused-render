@@ -75,6 +75,29 @@
     color: var(--on-accent);
     font-weight: 600;
   }
+  #api {
+    flex: none;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+  }
+  #api[hidden] { display: none; }
+  #api-head { font-size: 11px; color: var(--fg-muted); margin-bottom: 6px; }
+  .api-link {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 3px 0;
+    border: none;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .api-link:hover { color: var(--fg); }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #notice {
     flex: none;
@@ -105,6 +128,10 @@
       <div id="app-meta"></div>
     </div>
     <nav id="nav"></nav>
+    <div id="api" hidden>
+      <div id="api-head">API</div>
+      <div id="api-list"></div>
+    </div>
   </div>
   <div id="main">
     <div id="notice" hidden></div>
@@ -192,6 +219,39 @@
       mainEl.appendChild(frame);
     }
 
+    // Bottom-of-sidebar list of the app's Python endpoints: each row shows
+    // the route and click-copies its full /call URL (same fs-path segment
+    // encoding as the /view URL this shell is already on).
+    function callUrl(route) {
+      const encoded = dir
+        .replace(/^\/+/, "")
+        .split("/")
+        .filter((s) => s.length > 0)
+        .map(encodeURIComponent)
+        .join("/");
+      return location.origin + "/call/" + encoded + "?route=" + encodeURIComponent(route);
+    }
+
+    function renderApiSection(endpoints) {
+      const apiEl = document.getElementById("api");
+      const listEl = document.getElementById("api-list");
+      apiEl.hidden = endpoints.length === 0;
+      listEl.textContent = "";
+      for (const ep of endpoints) {
+        const btn = document.createElement("button");
+        btn.className = "api-link";
+        const url = callUrl(ep.route);
+        btn.textContent = "GET /" + ep.route;
+        btn.title = url + " — click to copy";
+        btn.addEventListener("click", () => {
+          navigator.clipboard && navigator.clipboard.writeText(url);
+          btn.textContent = "Copied!";
+          setTimeout(() => { btn.textContent = "GET /" + ep.route; }, 1200);
+        });
+        listEl.appendChild(btn);
+      }
+    }
+
     async function boot() {
       dir = fused.params.get("_file");
       if (!dir) {
@@ -237,15 +297,21 @@
       }];
       const seenFiles = new Set([entryDecl.file]);
       const seenRoutes = new Set([""]);
+      const endpoints = []; // .py pages: REST endpoints (/call), not nav routes
       for (const p of declared) {
         if (!p || typeof p.file !== "string" || seenFiles.has(p.file)) continue;
-        const route = routeName(p.path) || routeName(p.file.replace(/\.html?$/i, ""));
+        const route = routeName(p.path) || routeName(p.file.replace(/\.\w+$/i, ""));
         if (!route || seenRoutes.has(route)) continue;
         seenFiles.add(p.file);
         seenRoutes.add(route);
+        if (/\.py$/i.test(p.file)) {
+          endpoints.push({ route, file: p.file });
+          continue;
+        }
         pages.push({ route, file: p.file, title: p.title || p.file });
       }
       sidebarEl.hidden = bare;
+      if (!bare) renderApiSection(endpoints);
 
       // URL `route` param wins over the entry default (refresh/bookmark
       // restores the open page). An unknown route shows an inline error and

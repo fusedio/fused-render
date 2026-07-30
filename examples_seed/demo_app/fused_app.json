@@ -8,6 +8,7 @@
   "pages": [
     { "path": "/", "file": "index.html", "title": "Overview" },
     { "path": "/stats", "file": "stats.html", "title": "Live Stats" },
-    { "path": "/about", "file": "about.html", "title": "About" }
+    { "path": "/about", "file": "about.html", "title": "About" },
+    { "path": "/api/data", "file": "data.py" }
   ]
 }

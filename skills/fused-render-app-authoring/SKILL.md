@@ -96,6 +96,24 @@ Semantics:
 - Reserved `_`-prefixed shell params (`_mode`, `_layout`, …) are **preserved in both modes** — they are shell state, not yours; passing one in `params` rejects.
 - Resolves with `{app_dir, url}`. **Rejects** when: no ancestor directory has a valid manifest ("no enclosing fused_app found"), a param key is reserved or `route`, a value isn't a string, or the page's own file path can't be determined.
 
+## Python endpoints
+
+A `pages[]` entry whose `file` ends in `.py` is a **REST endpoint**, not a page — hidden from the sidebar nav, callable over plain HTTP:
+
+```json
+{ "path": "/api/data", "file": "data.py" }
+```
+
+```
+GET /call/<abs app dir, /view-style encoded>?route=api/data&year=2025
+```
+
+- URL shape is exactly `/view/<path>` with `view` → `call`; `route` matches the manifest `path` with slashes stripped (`"/api/data"` → `route=api/data`).
+- The `.py` follows the ordinary `main(**params)` contract (see `fused-render-authoring`): query params other than `route` and `_`-prefixed keys arrive as **strings** and are coerced by parameter annotations (`year: int = 2024` receives `int("2025")`); return **JSON-native** values — the response body IS the return value, `application/json`, 200.
+- Errors: python exception → 500 with `{"error": {type, message, traceback}}` (+ `stdout` when any); missing `route` → 400; unknown route, route pointing at html, missing/escaping file, or a dir that isn't a valid app → 404.
+- No auth header needed — `/call` is meant for external callers (curl, cron, services). Same 60 s timeout as every run.
+- Endpoint files don't affect app validity (the `"/"` entry page rules are unchanged); the sidebar shows an **API** section listing each endpoint's `/call` URL (click to copy).
+
 ## App view vs file listing (mode switcher)
 
 The app view is one **mode** on the folder, gated by manifest validity; the plain file listing stays available:
