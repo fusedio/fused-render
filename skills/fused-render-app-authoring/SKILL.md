@@ -7,7 +7,7 @@ description: How to turn a folder into a fused-render app — a fused_app.json m
 
 A **fused app** is a folder that renders as an application instead of a file listing: a left sidebar (title, description, pages nav) and a main frame showing the current page. What makes it one is a single file — `fused_app.json` at the folder root. Each page is an **ordinary fused-render html view** (same `window.fused` runtime, `runPython`, params — see the `fused-render-authoring` skill for writing them); the app layer only adds the manifest, the routed shell, and `fused.navigate()`.
 
-Reference apps: `examples_seed/demo_app/` (sidebar, 3 pages, live `runPython` + `fused.navigate` buttons) and `examples_seed/demo_app_bare/` (`nav: "none"`, self-navigating).
+Reference app: `examples_seed/demo_app/` (sidebar, 3 pages, live `runPython` + `fused.navigate` buttons).
 
 **Division of labor between skills (do not duplicate):**
 
