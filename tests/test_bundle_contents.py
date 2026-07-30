@@ -156,6 +156,47 @@ def test_nothing_forced_as_a_package_is_a_namespace_package():
     )
 
 
+def test_native_packages_are_found_when_platlib_is_not_purelib():
+    """The packages/includes split must look in BOTH site directories.
+
+    `bundled_force_lists` decides `packages` vs `includes` by whether the import
+    name is a directory on disk. In this venv `purelib == platlib`, so reading
+    only `purelib` happens to find everything — but extension packages (numpy,
+    pandas, scipy, pyarrow, shapely) install into `platlib`, and on any
+    interpreter whose schemes differ every one of them would miss the directory
+    test and be forced via `includes`. That is exactly the failure the `_duckdb`
+    comment documents: py2app copies a bare `<name>.py` that shadows the real
+    package.
+
+    Simulated by pointing `purelib` at an empty directory and leaving the real
+    site dir as `platlib` — the divergence, without needing such an interpreter.
+    """
+    import sysconfig
+
+    module = _packaging_module()
+    real = sysconfig.get_paths()
+    empty = os.path.join(_REPO, "build", "_no_such_purelib")
+    fake = dict(real, purelib=empty, platlib=real["platlib"])
+    orig = sysconfig.get_paths
+    try:
+        sysconfig.get_paths = lambda *a, **kw: fake
+        packages, includes = module.bundled_force_lists()
+    finally:
+        sysconfig.get_paths = orig
+
+    native = {"numpy", "pandas", "scipy", "pyarrow", "shapely"}
+    installed = {n for n in native if importlib.util.find_spec(n) is not None}
+    misforced = sorted(installed & set(includes))
+    assert not misforced, (
+        f"{misforced} were forced via `includes` because only `purelib` was "
+        "probed; py2app would copy a bare .py shadowing the real package"
+    )
+    assert installed <= set(packages), (
+        f"{sorted(installed - set(packages))} vanished from the force lists "
+        "entirely when purelib and platlib differed"
+    )
+
+
 def test_staged_packages_exist_and_are_actually_staged():
     """The staging list must name real directories, and the build must read it.
 

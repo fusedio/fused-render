@@ -207,7 +207,18 @@ def bundled_force_lists():
     import importlib.metadata as importlib_metadata
     import sysconfig
 
-    site = sysconfig.get_paths()["purelib"]
+    # BOTH site directories, because the two schemes are not always one path:
+    # pure-Python distributions land in `purelib`, extension ones (numpy, pandas,
+    # scipy, pyarrow, shapely) in `platlib`. They coincide in a venv, so probing
+    # only `purelib` works here and silently misfiles every native package on any
+    # interpreter where they differ — sending it to `includes`, i.e. the bare-.py
+    # shadowing failure the `_duckdb` comment below describes.
+    _paths = sysconfig.get_paths()
+    site_dirs = []
+    for scheme in ("purelib", "platlib"):
+        d = _paths.get(scheme)
+        if d and d not in site_dirs:
+            site_dirs.append(d)
     installed = {}
     for dist in importlib_metadata.distributions():
         name = dist.metadata["Name"] if dist.metadata else None
@@ -241,8 +252,12 @@ def bundled_force_lists():
         for import_name in top_level.get(name, ()):
             if import_name in NEVER_FORCE_AS_PACKAGE or import_name in ALREADY_IN_INCLUDES:
                 continue
-            path = os.path.join(site, import_name)
-            if os.path.isdir(path):
+            path = next(
+                (p for p in (os.path.join(s, import_name) for s in site_dirs)
+                 if os.path.isdir(p)),
+                None,
+            )
+            if path is not None:
                 if os.path.exists(os.path.join(path, "__init__.py")):
                     packages.add(import_name)
                 # else: a namespace package we did not whitelist — skip it rather
