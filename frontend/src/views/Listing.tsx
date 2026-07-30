@@ -142,11 +142,25 @@ function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
 // width opens the pane at HALF the split container (width null until the
 // measuring effect resolves it; PANE_FALLBACK_W covers the pre-paint frame
 // and the unmeasurable edge). Default off — a folder never toggled shows the
-// plain listing exactly as before.
+// plain listing exactly as before. `pane` and `panew` are independent: turning
+// the pane off keeps a dragged width, so re-opening the folder restores it.
 const PANE_MIN_W = 220;
+const LIST_MIN_W = 220;
 const PANE_MAX_FRAC = 0.65;
 const PANE_DEFAULT_FRAC = 0.5;
 const PANE_FALLBACK_W = 420;
+
+// The one place the FS-12 clamps live, so the drag and the measured default
+// cannot disagree. Two independent ceilings: the 65 % fraction (the list stays
+// the primary surface) and the LIST_MIN_W floor the list needs in pixels — on
+// a narrow window 65 % of the container leaves the list well under 220 px, so
+// the pixel ceiling is the binding one there. PANE_MIN_W is applied last: in
+// the degenerate case (a container too small to satisfy both minimums) the
+// pane keeps its floor and the list scrolls, which is what the old template's
+// `min-width` did.
+function clampPaneWidth(containerW: number, width: number): number {
+  return Math.max(PANE_MIN_W, Math.min(containerW * PANE_MAX_FRAC, containerW - LIST_MIN_W, width));
+}
 
 function resolvePane(fsPath: string): { on: boolean; width: number | null } {
   const s = new URLSearchParams(getViewState(fsPath));
@@ -161,15 +175,15 @@ function resolvePane(fsPath: string): { on: boolean; width: number | null } {
 // Merge the pane keys into this folder's saved state without touching a saved
 // sort (and vice versa — setSort merges the same way). A null width (still at
 // the measured-default half) isn't persisted — only a dragged width is a
-// choice worth remembering.
+// choice worth remembering. The two keys are INDEPENDENT: `panew` outlives a
+// toggle-off, so closing the pane and coming back to the folder re-opens at
+// the width that was dragged rather than re-measuring the default.
 function savePaneState(fsPath: string, on: boolean, width: number | null): void {
   const s = new URLSearchParams(getViewState(fsPath));
-  s.delete("pane");
-  s.delete("panew");
-  if (on) {
-    s.set("pane", "1");
-    if (width !== null) s.set("panew", String(Math.round(width)));
-  }
+  if (on) s.set("pane", "1");
+  else s.delete("pane");
+  if (width !== null) s.set("panew", String(Math.round(width)));
+  else s.delete("panew");
   const qs = s.toString();
   setViewState(fsPath, qs ? "?" + qs : "");
 }
@@ -518,7 +532,7 @@ export default function Listing({
   useLayoutEffect(() => {
     if (!pane.on || pane.width !== null) return;
     const w = splitRef.current?.getBoundingClientRect().width;
-    const half = w ? Math.max(PANE_MIN_W, Math.min(w * PANE_MAX_FRAC, w * PANE_DEFAULT_FRAC)) : PANE_FALLBACK_W;
+    const half = w ? clampPaneWidth(w, w * PANE_DEFAULT_FRAC) : PANE_FALLBACK_W;
     setPane((prev) => (prev.width === null ? { ...prev, width: half } : prev));
   }, [pane.on, pane.width]);
   const togglePane = () => {
@@ -547,8 +561,8 @@ export default function Listing({
       if (!rect) return;
       moved = true;
       // The pane is the right side: its width is the distance from the cursor
-      // to the container's right edge, clamped to [min, max fraction].
-      width = Math.max(PANE_MIN_W, Math.min(rect.width * PANE_MAX_FRAC, rect.right - ev.clientX));
+      // to the container's right edge, run through the shared FS-12 clamps.
+      width = clampPaneWidth(rect.width, rect.right - ev.clientX);
       setPane((prev) => (prev.width === width ? prev : { ...prev, width }));
     };
     const onUp = () => {

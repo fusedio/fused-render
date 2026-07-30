@@ -1028,6 +1028,16 @@ a.bookmark-name::after {
   overflow: auto;
 }
 
+/* FS-12's floor is on the LIST, not the pane: with the pane on, flexbox must
+   refuse to shrink the table below 220 px however wide the pane is. The drag
+   clamps to the same number (clampPaneWidth), so this only backstops a window
+   resize that narrows the container under an already-sized pane. Scoped to the
+   split-with-pane case — a paneless listing in a narrow panel/tab keeps
+   shrinking as it always did. */
+.listing-split:has(.listing-pane-slot) > .listing-scroll {
+  min-width: 220px;
+}
+
 /* Split body when the preview pane is on: table on the left, a draggable
    divider, the pane on the right. Without the pane the split holds just the
    scroller, so the plain listing is untouched. */
@@ -1060,7 +1070,9 @@ a.bookmark-name::after {
 }
 
 /* Fixed-width slot the pane renders into; width set inline (flex-basis) from
-   the drag, clamped to [220px, 65%] in the handler. */
+   the drag, clamped by clampPaneWidth() to at least 220px and at most
+   min(65%, container - 220px) so the LIST keeps its own 220px floor. The
+   min-width here is the pane's floor, not the list's — see .listing-scroll. */
 .listing-pane-slot {
   flex: 0 0 auto;
   min-width: 220px;
