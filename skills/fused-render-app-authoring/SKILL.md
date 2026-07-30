@@ -61,7 +61,7 @@ Notes: the `"/"` page always sorts first in the nav regardless of position. Dupl
 The open page rides the shell URL as `?route=<name>`:
 
 - Route name = `pages[].path` with slashes stripped: `"/stats"` → `route=stats`.
-- The **entry page (`"/"`) has no route param** — clean URL. Selecting it clears the param.
+- The **entry page (`"/"`) has no route param** — a clean *route*, not a clean URL: selecting it removes only `route`; other visible params stay.
 - Refresh/bookmark restores the open page; Back/Forward work (the template follows URL changes).
 - **Unknown route** → inline error bar ("Unknown route …") above the frame + the entry page renders. Never a blank view.
 - **Missing page file** → inline "Page file not found" state, app shell stays up.
@@ -80,12 +80,17 @@ await fused.navigate("/about", { p: "11" });
 await fused.navigate("/about", { p: "11" }, { params: "overwrite" });
 // → demo_app?route=about&p=11      (overwrite: all other visible params dropped)
 
-await fused.navigate("/");          // entry page, clean URL (no route param)
+await fused.navigate("/");
+// → demo_app?p=10                   (entry clears only the route param — other
+//                                    params still follow the merge default)
+
+await fused.navigate("/", {}, { params: "overwrite" });
+// → demo_app                        (explicit overwrite: no visible params at all)
 ```
 
 Semantics:
 
-- `route` uses the manifest `pages[].path` spelling; `"/"` or `""` = entry (route param removed).
+- `route` uses the manifest `pages[].path` spelling; `"/"` or `""` = entry — only the `route` param is removed, other params follow the merge/overwrite config.
 - `params` values must be **strings** (same rule as `fused.params.set`); merged onto the shell URL's current params by default, replaced entirely with `config: {params: "overwrite"}`.
 - Reserved `_`-prefixed shell params (`_mode`, `_layout`, …) are **preserved in both modes** — they are shell state, not yours; passing one in `params` rejects.
 - Resolves with `{app_dir, url}`. **Rejects** when: no ancestor directory has a valid manifest ("no enclosing fused_app found"), a param key is reserved or `route`, a value isn't a string, or the page's own file path can't be determined.

@@ -18,7 +18,7 @@
  *     Navigate the shell to another route of the ENCLOSING fused_app (nearest
  *     ancestor dir of this page's file with a valid fused_app.json — resolved
  *     via /api/app/resolve). Route uses the manifest pages[].path spelling
- *     ("/about"; "/" = entry, clean URL). params (string values) merge onto
+ *     ("/about"; "/" = entry — removes only the route param). params merge onto
  *     the shell URL's current params; config {params: "overwrite"} replaces
  *     them instead. Reserved `_` params are preserved either way. Rejects when
  *     no enclosing app exists.
@@ -915,7 +915,8 @@
   // rewritten to /view/<app dir>?route=<name>&<params>.
   //
   // `route` uses the manifest's pages[].path spelling ("/about" — "/" or ""
-  // means the entry page, which keeps a clean URL with no route param).
+  // means the entry page — that removes ONLY the route param; every other
+  // visible param still follows the merge/overwrite rule below).
   // `params` (optional, string values) are MERGED onto the shell URL's current
   // visible params by default; `config.params === "overwrite"` replaces them
   // entirely. Reserved `_`-prefixed shell params (`_mode`, `_layout`, …) are

@@ -146,19 +146,20 @@
     }
 
     // Manifest `pages[].path` → route name for the `route` URL param:
-    // "/stats" → "stats", "/" (the entry) → "" (param absent, clean URL).
+    // "/stats" → "stats", "/" (the entry) → "" (route param absent).
     function routeName(path) {
       return String(path || "").replace(/^\/+/, "").replace(/\/+$/, "");
     }
 
     function showPage(route) {
-      current = route;
-      setNotice(null);
-      // `route` param survives refresh/bookmarks; the entry page keeps a
-      // clean URL (params are string-only — "" clears the key).
-      fused.params.set("route", route);
-      renderNav();
-      renderFrame();
+      // Sidebar nav rides fused.navigate — the same merge semantics every
+      // page gets: visible params survive the hop, only `route` changes (and
+      // is REMOVED for the entry page, keeping its URL clean — params.set
+      // can only write "route=", not delete the key). The params.onChange
+      // listener below picks up the URL change and re-renders.
+      fused.navigate(route === "" ? "/" : "/" + route).catch((err) => {
+        setNotice(err.message);
+      });
     }
 
     function renderNav() {
@@ -213,8 +214,8 @@
       if (manifest.author && manifest.author.name) meta.push(manifest.author.name);
       document.getElementById("app-meta").textContent = meta.join(" · ");
 
-      // The entry page is the pages[] item routed at "/" (route "", clean
-      // URL); it always sorts first. Other routes come from pages[].path.
+      // The entry page is the pages[] item routed at "/" (route "", no route
+      // param); it always sorts first. Other routes come from pages[].path.
       const declared = Array.isArray(manifest.pages) ? manifest.pages : [];
       const entryDecl = declared.find(
         (p) => p && p.path === "/" && typeof p.file === "string"
