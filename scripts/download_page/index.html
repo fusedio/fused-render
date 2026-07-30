@@ -535,7 +535,8 @@
     document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
       const hash = a.getAttribute("href").slice("about.html".length);
       if (window.fused.env === "local" && ownPath) {
-        a.href = "/view" + ownPath.replace(/\/[^/]*$/, "") + "/about.html" + hash;
+        const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "");
+        a.href = "/view/" + dir + "/about.html" + hash;
         a.target = "_top";
       } else {
         a.href = window.fused.rawUrl("about.html") + hash;
