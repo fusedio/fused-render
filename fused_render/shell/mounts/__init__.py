@@ -112,6 +112,7 @@ from .rcd import (
     _CONFIRM_RC_TIMEOUT_S,
     _DEAD_PORT_TTL_S,
     _KILL_TIMEOUT_S,
+    _LIVE_PORT_PROBE_TIMEOUT_S,
     _LIVE_PORT_TTL_S,
     _PS_TIMEOUT_S,
     _RCD_RC_USER,

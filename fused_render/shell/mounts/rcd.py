@@ -454,6 +454,12 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
     ) from TimeoutError()
 
 
+# Timeout of the core/pid probe _live_rcd_port makes. Named because it is not
+# only a latency knob: it is a term in RCD_REAP_WORST_CASE_S below, since the kill
+# poll can enter one probe just under its deadline.
+_LIVE_PORT_PROBE_TIMEOUT_S = 3.0
+
+
 _LIVE_PORT_TTL_S = 1.0
 
 
@@ -487,7 +493,7 @@ def _live_rcd_port(*, trust_dead_cache: bool = True) -> int | None:
             if c[1] is not None or trust_dead_cache:
                 return c[1]
     try:
-        _rc(state["port"], "core/pid", timeout=3)
+        _rc(state["port"], "core/pid", timeout=_LIVE_PORT_PROBE_TIMEOUT_S)
     except RuntimeError:
         with _live_port_lock:
             c = _mounts_pkg._live_port_cache
@@ -663,14 +669,21 @@ _KILL_TIMEOUT_S = 5.0
 # Worst-case wall time of one _kill_current_rcd, DERIVED from the bounds it is
 # built out of: the identity proof (an rc core/pid that times out, then a `ps`
 # that times out — _confirmed_our_rcd tries both before it will signal anything)
-# plus the SIGTERM and SIGKILL exit polls. Exported because the caller that has
-# to outlast this — app.py's quit deadline — must not restate the arithmetic:
-# tightening any constant above has to move that deadline with it. Excludes the
-# wait for _rcd_lock, which a concurrent spawn can hold for its own 10s; a quit
-# racing a mount attach is not a case worth padding every deadline for, and the
-# hard deadline terminates anyway.
+# plus each exit poll AND the one _live_rcd_port probe that poll can overrun by.
+# That last term is easy to miss and was: the loops test the clock BEFORE an
+# iteration, so an iteration entered just under the deadline still runs a full
+# probe timeout past it. Counting it per phase is the true upper bound (the
+# probe's dead-answer cache, _DEAD_PORT_TTL_S, is longer than a phase, so a phase
+# cannot pay for more than one).
+#
+# Exported because the caller that has to outlast this — app.py's quit deadline —
+# must not restate the arithmetic: tightening any constant above has to move that
+# deadline with it. Excludes the wait for _rcd_lock, which a concurrent spawn can
+# hold for its own 10s; a quit racing a mount attach is not a case worth padding
+# every deadline for, and the hard deadline terminates anyway.
 RCD_REAP_WORST_CASE_S = (
-    _CONFIRM_RC_TIMEOUT_S + _PS_TIMEOUT_S + 2 * _KILL_TIMEOUT_S)
+    _CONFIRM_RC_TIMEOUT_S + _PS_TIMEOUT_S
+    + 2 * (_KILL_TIMEOUT_S + _LIVE_PORT_PROBE_TIMEOUT_S))
 
 
 def _kill_current_rcd() -> None:
@@ -722,7 +735,15 @@ def _kill_current_rcd() -> None:
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
         deadline = time.time() + _KILL_TIMEOUT_S
         while time.time() < deadline:
-            if _live_rcd_port() is None and not _pid_alive(pid):
+            # _pid_alive FIRST, and the short-circuit is the point: it is a free
+            # syscall and the authoritative "our daemon is gone", while
+            # _live_rcd_port makes a rc probe with its own multi-second timeout.
+            # Probing first ran that probe throughout the wait (dead-cached, but
+            # re-probed every _DEAD_PORT_TTL_S and able to overrun this deadline),
+            # which both slowed every reap and inflated the quit deadline that has
+            # to outlast it. The conjunction is unchanged — the port must also
+            # stop answering before we call the daemon gone.
+            if not _pid_alive(pid) and _live_rcd_port() is None:
                 return  # daemon gone
             time.sleep(0.1)
     raise RuntimeError(f"rcd pid {pid} did not exit after {sigs[-1].name}")
