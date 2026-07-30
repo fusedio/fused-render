@@ -80,6 +80,12 @@ def test_valid_manifest_is_an_app(gate, app_dir):
     assert gate(app_dir(_manifest())) is True
 
 
+def test_unknown_nav_value_still_an_app(gate, app_dir):
+    # `nav` is presentation only — a garbage value must not stop the folder
+    # being an app (the template falls back to the sidebar).
+    assert gate(app_dir(_manifest(nav="garbage"))) is True
+
+
 def test_folder_without_manifest_is_not(gate, tmp_path):
     d = tmp_path / "plain"
     d.mkdir()

@@ -1,0 +1,12 @@
+{
+  "fused_app": 1,
+  "name": "demo-app-bare",
+  "title": "Bare Demo App",
+  "description": "A chrome-less app (nav: none): pages navigate themselves via fused.navigate.",
+  "version": "0.1.0",
+  "nav": "none",
+  "pages": [
+    { "path": "/", "file": "index.html", "title": "Home" },
+    { "path": "/detail", "file": "detail.html", "title": "Detail" }
+  ]
+}

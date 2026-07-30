@@ -7,7 +7,7 @@ description: How to turn a folder into a fused-render app — a fused_app.json m
 
 A **fused app** is a folder that renders as an application instead of a file listing: a left sidebar (title, description, pages nav) and a main frame showing the current page. What makes it one is a single file — `fused_app.json` at the folder root. Each page is an **ordinary fused-render html view** (same `window.fused` runtime, `runPython`, params — see the `fused-render-authoring` skill for writing them); the app layer only adds the manifest, the routed shell, and `fused.navigate()`.
 
-Reference app: `examples_seed/demo_app/` in the fused-render repo (3 pages, one with a live `runPython` call and `fused.navigate` buttons).
+Reference apps: `examples_seed/demo_app/` (sidebar, 3 pages, live `runPython` + `fused.navigate` buttons) and `examples_seed/demo_app_bare/` (`nav: "none"`, self-navigating).
 
 **Division of labor between skills (do not duplicate):**
 
@@ -50,6 +50,7 @@ Anything else — missing manifest, malformed JSON, no `"/"` page, dangling or e
 | `title` | no | App display name (sidebar header + tab title). Falls back to `name`, then `"App"`. |
 | `name` | no | Slug. |
 | `description` | no | Sidebar subtitle. |
+| `nav` | no | `"sidebar"` (default) or `"none"` — no sidebar/chrome, pages render full-bleed and the app **must navigate itself** via `fused.navigate`. Unknown values fall back to `"sidebar"` (lenient, forward-compat); `nav` never affects app validity. The `?_mode=_listing` file-listing switcher remains the escape hatch. |
 | `version` | no | Shown as `v0.1.0` in the sidebar meta line. |
 | `author.name` | no | Shown next to the version. |
 | `fused_app` | no | Schema version marker (`1`); not validated today, include it anyway. |

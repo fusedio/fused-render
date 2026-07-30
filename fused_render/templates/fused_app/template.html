@@ -214,6 +214,12 @@
       if (manifest.author && manifest.author.name) meta.push(manifest.author.name);
       document.getElementById("app-meta").textContent = meta.join(" · ");
 
+      // Chrome opt-out: `nav: "none"` renders pages full-bleed with no
+      // sidebar (the app navigates itself via fused.navigate). Default and
+      // any unknown value → "sidebar" (lenient, forward-compat: a future
+      // enum value must not break the app). Routing/URL sync is unchanged.
+      const bare = manifest.nav === "none";
+
       // The entry page is the pages[] item routed at "/" (route "", no route
       // param); it always sorts first. Other routes come from pages[].path.
       const declared = Array.isArray(manifest.pages) ? manifest.pages : [];
@@ -239,7 +245,7 @@
         seenRoutes.add(route);
         pages.push({ route, file: p.file, title: p.title || p.file });
       }
-      sidebarEl.hidden = false;
+      sidebarEl.hidden = bare;
 
       // URL `route` param wins over the entry default (refresh/bookmark
       // restores the open page). An unknown route shows an inline error and
