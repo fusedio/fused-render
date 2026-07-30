@@ -505,6 +505,12 @@ export default function Listing({
   // fraction is enforced against the split container's current size.
   const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() => resolvePane(fsPath));
   const splitRef = useRef<HTMLDivElement>(null);
+  // Is `pane.width` a width the USER chose (restored from `panew`, or dragged
+  // this session), as opposed to the measured half-container default? Only a
+  // chosen width is persisted — the measuring effect below fills `pane.width`
+  // in, which would otherwise make the default indistinguishable from a drag
+  // and let a later toggle write it to `panew`.
+  const paneSized = useRef(pane.width !== null);
   // No saved width: default to half the split container, measured at first
   // open (layout effect — before paint, so the pane never flashes another
   // width). The clamps still apply; the fallback constant only covers the
@@ -523,7 +529,7 @@ export default function Listing({
       else params.delete("preview");
       const qs = params.toString();
       replaceSearch(location.pathname + (qs ? "?" + qs : ""));
-      savePaneState(fsPath, next.on, next.width);
+      savePaneState(fsPath, next.on, paneSized.current ? next.width : null);
       return next;
     });
   };
@@ -535,9 +541,11 @@ export default function Listing({
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
     let width = pane.width;
+    let moved = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitRef.current?.getBoundingClientRect();
       if (!rect) return;
+      moved = true;
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, clamped to [min, max fraction].
       width = Math.max(PANE_MIN_W, Math.min(rect.width * PANE_MAX_FRAC, rect.right - ev.clientX));
@@ -548,7 +556,10 @@ export default function Listing({
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
-      savePaneState(fsPath, true, width);
+      // Only a drag that actually moved the divider is a chosen width; a bare
+      // click on it leaves the measured default unpersisted.
+      if (moved) paneSized.current = true;
+      savePaneState(fsPath, true, paneSized.current ? width : null);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);

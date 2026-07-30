@@ -8,11 +8,12 @@
 // visibility, width, the divider drag) stays in Listing — this component only
 // owns what the pane shows for a given selection.
 import { useEffect, useState } from "react";
-import { listDir, statPath } from "../lib/api";
-import type { FsEntry } from "../lib/api";
+import { listDir, resolveConditions, statPath } from "../lib/api";
+import type { FsEntry, TemplateEntry } from "../lib/api";
 import { navigate, VIEW_PREFIX } from "../lib/router";
 import { formatSize } from "../lib/format";
 import { iconForEntry, isAppEntry } from "./FileIcons";
+import { KNOWN_SENTINEL_MODES } from "./ModeSwitcher";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -116,19 +117,45 @@ export default function ListingPreviewPane({
       statPath(path).then(
         (st) => {
           if (!alive) return;
-          // Same default-mode rule as Preview: the first entry whose condition
-          // gate isn't pending. None → no bound template → metadata card.
-          const t = st.templates.find((e) => !e.conditional);
-          if (!t) {
+          const show = (t: TemplateEntry) => {
+            const remote = st.remote ? "&_remote=1" : "";
+            const src =
+              t.mode === "_render"
+                ? `/render?path=${encodeURIComponent(path)}`
+                : `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(path)}${remote}`;
+            setState({ status: "frame", src, app: null });
+          };
+          // Same defensive filter as Preview (SPEC PT-12): an entry with
+          // path===null whose mode isn't a recognized sentinel would build a
+          // `path=null` render URL, so drop it before choosing.
+          const templates = st.templates.filter(
+            (e) => e.path !== null || KNOWN_SENTINEL_MODES.has(e.mode)
+          );
+          // Same default-mode rule as Preview (CT-12): the first UNCONDITIONAL
+          // entry, which renders without waiting on any gate.
+          const t = templates.find((e) => !e.conditional);
+          if (t) {
+            show(t);
+            return;
+          }
+          // No unconditional entry. An ALL-conditional list still previews
+          // full-screen (Preview.defaultTemplate falls back to templates[0]
+          // once verdicts land), so the pane must not claim "no preview" —
+          // resolve the gates and show the first allowed one. Fail closed on
+          // an empty list or a broken gate: metadata card.
+          if (templates.length === 0) {
             setState({ status: "meta", size: st.size });
             return;
           }
-          const remote = st.remote ? "&_remote=1" : "";
-          const src =
-            t.mode === "_render"
-              ? `/render?path=${encodeURIComponent(path)}`
-              : `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(path)}${remote}`;
-          setState({ status: "frame", src, app: null });
+          resolveConditions(path).then(
+            (r) => {
+              if (!alive) return;
+              const allowed = templates.find((e) => r.conditions[e.mode] === true);
+              if (allowed) show(allowed);
+              else setState({ status: "meta", size: st.size });
+            },
+            () => alive && setState({ status: "meta", size: st.size })
+          );
         },
         (err: Error) => alive && setState({ status: "error", message: err.message })
       );
