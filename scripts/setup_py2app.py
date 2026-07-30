@@ -386,7 +386,14 @@ OPTIONS = {
     # what a CI run did. The set of "missing" names depends on what is installed,
     # so it differs per machine, which is why a local build passed. We never read
     # this report; the unconditional one (which cannot be disabled, but does skip
-    # `.__main__` names) still prints anything actionable.
+    # `.__main__` names — `build_app.py`'s loop `continue`s on that suffix, which
+    # is why this flag is enough for the `__main__` case) still prints anything
+    # actionable. NOT closed by this flag: the unconditional report probes every
+    # remaining missing name the same way and also catches only `Exception`, so a
+    # module that is not a `__main__` and raises SystemExit at import can still
+    # end the build after the codesign line. Nothing installed does today; if one
+    # ever does, name it in `expected_missing_imports` (the only list
+    # `may_log_missing` consults) rather than widening this flag.
     "no_report_missing_conditional_import": True,
     "plist": {
         "CFBundleIdentifier": "io.fused.render" + (f".{branch_ref()}" if branch_ref() else ""),
