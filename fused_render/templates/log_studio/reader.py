@@ -13,13 +13,9 @@
 # this file imports nothing else third-party, so nothing already bundled gets
 # re-downloaded alongside it.
 #
-# The guarded import and its install hint stay: a plain `pip install
-# fused-render` has no drain3, and pattern mining still degrades gracefully.
-# drain3 powers only pattern mining, and _patterns() still degrades gracefully
-# without it (a guarded import with an install hint) — a plain
-# `pip install fused-render` has no drain3, and that path must keep working.
-# The packaged app ships it in `[bundled]`, so no header is needed: this file
-# runs on the app's own interpreter (PY-17).
+# The guarded import in _patterns() and its install hint stay regardless: a
+# plain `pip install fused-render` installs no extras, so drain3 is absent there
+# and pattern mining has to keep degrading gracefully rather than 500.
 import math
 import os
 import re

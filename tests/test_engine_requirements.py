@@ -131,8 +131,18 @@ def _norm(requirement: str) -> str:
 
 
 def _header_deps(text: str) -> set[str]:
-    """Distributions declared in a file's PEP 723 block ({} when it has none)."""
-    return {_norm(d) for d in engine.script_requirements(text)}
+    """Distributions declared in a file's PEP 723 block ({} when it has none).
+
+    `apply_markers=False`, because these invariants are properties of the SOURCE
+    and must hold on every platform, not of the machine running pytest. With
+    marker filtering on, `log_studio/reader.py`'s `sys_platform == 'darwin'`
+    header reads as empty everywhere but macOS — so on the Linux `fused-engine`
+    job that file would look header-LESS and both the entrypoint and
+    completeness invariants would skip it silently. A platform-scoped header
+    that was inert or incomplete would then pass a green suite, which is the
+    same class of hole as the never-read headers this file exists to catch.
+    """
+    return {_norm(d) for d in engine.script_requirements(text, apply_markers=False)}
 
 
 def _imported_dists(text: str) -> set[str]:
