@@ -609,3 +609,23 @@ def test_the_readers_own_call_site_falls_back_when_the_latch_is_closed(reader,
     except Exception:
         cur = None
     assert cur is None
+
+
+def test_the_tile_daemons_are_quiesced_once_before_the_mounts_fan_out(ladder):
+    # Every per-mount detach_mount would otherwise quit ALL tile daemons on its
+    # own (they hold files open under the mounts — the measured EBUSY cause), so
+    # N busy mounts meant N rounds of /quit requests. Asked once, up front, before
+    # any unmount: the daemons are going away with the app regardless, and a
+    # released file cannot cause an EBUSY in the first place.
+    ladder["rc_fail"].update({"alpha", "beta"})
+
+    mounts_mod.unmount_all_for_quit()
+
+    calls = ladder["calls"]
+    # Before ANY unmount attempt, so no mount has to fail busy first to get it.
+    assert calls[0] == ("quiesce", None)
+    assert calls.index(("quiesce", None)) < min(
+        i for i, c in enumerate(calls) if c[0] == "rc")
+    # detach_mount's own busy-retry may still repeat it per mount — that stays its
+    # contract for its other callers, and after the hoisted call above those
+    # requests hit already-dead ports and fail immediately.

@@ -505,6 +505,25 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_BUDGET_S) -> None:
     except Exception:
         logger.warning("quit: could not read the mount store", exc_info=True)
         return
+    if mounts:
+        # Once, up front, instead of once per mount: detach_mount asks the tile
+        # daemons to quit whenever ITS unmount comes back busy, and each of those
+        # calls quits ALL daemons — so N busy mounts meant N rounds of /quit
+        # requests (each with a 3s timeout) inside the same budget. Hoisting it
+        # here is also strictly better than reacting to EBUSY: the daemons hold
+        # files open under the mounts (the measured cause), they are going away
+        # with the app regardless, and a released file cannot cause a busy
+        # unmount in the first place. detach_mount keeps its own retry for every
+        # other caller; the duplicate calls it may still make now hit already-dead
+        # ports and fail immediately.
+        # Called by bare name, like detach_mount's own call below it: same module,
+        # so there is no cycle to break with a package import — and one name means
+        # one thing for a test to intercept.
+        try:
+            _quit_tile_daemons()
+        except Exception:
+            logger.warning("quit: quiescing the tile daemons failed",
+                           exc_info=True)
     threads = []
     for m in mounts:
         t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
