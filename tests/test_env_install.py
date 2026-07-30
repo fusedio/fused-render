@@ -515,6 +515,109 @@ def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatc
 
 
 @requires_fused
+def test_the_worker_builds_the_venv_the_server_will_look_for(tmp_path, monkeypatch):
+    """The worker's venv and `venv_dir_for`'s must be the SAME directory.
+
+    Both are keyed on the backend's base interpreter — `venv_key_for` through
+    `_backend_attr("_python_executable")`, the worker through whatever it hands
+    `ensure_requirements_venv`. The worker used to hardcode `None` there, which
+    agrees only while the backend's own value is None too. Let that attribute
+    ever be set and `is_installed()` never turns true: the page installs, retries,
+    is told `needs_install` again, and runtime.js turns that into a permanent
+    "declares dependencies that are not installed yet" — with a fully built venv
+    sitting on disk. So the executable travels through argv, and this test drives
+    a non-None one end to end.
+    """
+    import importlib.util
+
+    from fused.agent_core.backends.local.venvs import requirements_venv_id, venv_key
+
+    # A REAL other interpreter, not `sys.executable`: `python_identity` folds
+    # `python_executable or sys.executable` into the key, so None and our own
+    # path produce the identical key and the drift this test is about would be
+    # invisible (which is exactly why the hardcoded None was latent, not broken).
+    other = next(
+        (p for p in ("/usr/bin/python3", "/usr/local/bin/python3", "/bin/python3")
+         if os.access(p, os.X_OK) and os.path.realpath(p) != os.path.realpath(sys.executable)),
+        None,
+    )
+    if other is None:
+        pytest.skip("no second python interpreter to key a venv on")
+
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    monkeypatch.setattr(envinstall, "_python_executable", lambda: other)
+    reqs = ["pip"]
+    key = envinstall.venv_key_for(reqs)
+
+    argv = []
+
+    class _Proc:
+        pid = os.getpid()
+
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: (argv.extend(cmd), _Proc())[1])
+    envinstall._spawn(key, list(reqs))
+
+    # Now run the worker's own entry logic over exactly that argv, with the
+    # upstream builder replaced by its (documented) directory recipe — the real
+    # one would download.
+    spec = importlib.util.spec_from_file_location(
+        "_env_install_worker_under_test",
+        os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py"),
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    built = {}
+
+    def _fake_ensure(venvs_path, requirements, python_executable):
+        d = os.path.join(
+            os.path.expanduser(venvs_path),
+            venv_key(requirements_venv_id(list(requirements), python_executable)),
+        )
+        built["dir"] = d
+        return os.path.join(d, "bin", "python")
+
+    import fused.agent_core.backends.local.venvs as _venvs
+
+    monkeypatch.setattr(_venvs, "ensure_requirements_venv", _fake_ensure)
+    worker.main(argv[2:])
+
+    assert built["dir"] == envinstall.venv_dir_for(reqs), (
+        "the worker built a venv under a different key than the server looks for"
+    )
+
+
+def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkeypatch):
+    """"" is how "the backend's default interpreter" crosses argv.
+
+    argv cannot carry None, so the empty string stands for it — explicitly, and
+    only here, so nothing downstream has to guess.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_env_install_worker_argv",
+        os.path.join(os.path.dirname(envinstall.__file__), "_env_install_worker.py"),
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+
+    seen = []
+    monkeypatch.setattr(
+        worker, "_build",
+        lambda venvs_path, requirements, python_executable: (
+            seen.append(python_executable) or "/x/bin/python"
+        ),
+    )
+    d = str(tmp_path / "prog")
+    worker.main(["k", d, str(tmp_path / "venvs"), "", "pip"])
+    assert seen == [None]
+    worker.main(["k", d, str(tmp_path / "venvs"), "/usr/bin/python3", "pip"])
+    assert seen == [None, "/usr/bin/python3"]
+
+
+@requires_fused
 def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     """Two pages (or a double-click) must share one install, not race it.
 

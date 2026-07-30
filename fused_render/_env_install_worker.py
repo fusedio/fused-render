@@ -1,6 +1,14 @@
 """Detached worker that builds one script venv, spawned by envinstall.start().
 
-Run as:  python _env_install_worker.py <key> <progress_dir> <venvs_path> <req>...
+Run as:  python _env_install_worker.py <key> <progress_dir> <venvs_path>
+                                      <python_executable> <req>...
+
+`<python_executable>` is the base interpreter the venv is built from, and it must
+be the value `envinstall._python_executable()` returned — `python_identity` folds
+it into the venv key, so a different one here builds a venv the server never
+looks for and `is_installed()` never turns true. argv cannot carry None, so the
+EMPTY STRING stands for "the backend's default"; `main` is the one place that
+mapping happens.
 
 Reports through `<progress_dir>/progress.json` — the same
 `{stage, pct, detail, done, error, pid, ts}` record
@@ -52,7 +60,16 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None):
     os.replace(tmp, path)
 
 
-def install(key, progress_dir, venvs_path, requirements):
+def _build(venvs_path, requirements, python_executable):
+    """Upstream's builder, in one place (and imported at call time, not at module
+    import, so a missing `fused` surfaces as a progress error rather than an
+    unexplained non-zero exit)."""
+    from fused.agent_core.backends.local.venvs import ensure_requirements_venv
+
+    return ensure_requirements_venv(venvs_path, list(requirements), python_executable)
+
+
+def install(key, progress_dir, venvs_path, requirements, python_executable=None):
     os.makedirs(progress_dir, exist_ok=True)
     summary = ", ".join(requirements)
     try:
@@ -62,11 +79,12 @@ def install(key, progress_dir, venvs_path, requirements):
         # two stages exist so the UI can say "preparing" before the long wait,
         # not to imply progress inside it.
         _write(progress_dir, "create", _CREATE_PCT, f"preparing an environment for {summary}")
-        from fused.agent_core.backends.local.venvs import ensure_requirements_venv
-
         _write(progress_dir, "install", _INSTALL_PCT,
                f"downloading and installing {len(requirements)} package(s): {summary}")
-        venv_python = ensure_requirements_venv(venvs_path, list(requirements), None)
+        # `python_executable` is the server's own `_python_executable()`, handed
+        # over rather than re-decided: the venv key folds it in, so a value that
+        # differs from the server's builds a directory no run ever reads.
+        venv_python = _build(venvs_path, requirements, python_executable)
         _write(progress_dir, "done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
                done=True)
     except BaseException as e:  # noqa: BLE001
@@ -78,8 +96,18 @@ def install(key, progress_dir, venvs_path, requirements):
         raise
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 5:
+def main(args):
+    """`<key> <progress_dir> <venvs_path> <python_executable> <req>...`
+
+    The empty string in the interpreter slot means None (argv cannot carry it):
+    translated here and nowhere else, so `install` receives the real value.
+    """
+    if len(args) < 5:
         print(__doc__, file=sys.stderr)
         sys.exit(2)
-    install(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:])
+    key, progress_dir, venvs_path, python_executable = args[:4]
+    install(key, progress_dir, venvs_path, args[4:], python_executable or None)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -482,6 +482,13 @@ def _spawn(key: str, requirements: list[str]) -> int:
     request that started it and any page reload — exactly docs.py's spawn.
     `sys.executable`, deliberately: `python_identity` keys the venv on the
     interpreter, so the worker must build from the same one the server would.
+
+    That is also why the backend's `_python_executable()` travels in argv (slot 4,
+    before the requirements) instead of the worker deciding for itself: the venv
+    key folds that value in, so a worker that assumed None while the backend had
+    one set would build a venv `is_installed()` never finds — the page would
+    install, retry, be told to install again, forever. argv cannot carry None, so
+    the empty string stands for it; `_env_install_worker.main` maps it back.
     """
     worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_env_install_worker.py")
     d = progress_dir(key)
@@ -492,7 +499,8 @@ def _spawn(key: str, requirements: list[str]) -> int:
     )
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(
-            [sys.executable, worker, key, d, venvs_path(), *requirements],
+            [sys.executable, worker, key, d, venvs_path(),
+             _python_executable() or "", *requirements],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
