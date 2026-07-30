@@ -1054,7 +1054,7 @@ def test_an_abandoned_run_is_still_recorded(live_server):
 def test_a_500_puts_the_same_err_id_in_the_body_and_the_record(app_client, monkeypatch):
     """`err_id` was a dead field: documented as the join key to the failure, never
     set. A screenshot of the 500 and the record must now name each other."""
-    from fused_render import server as server_mod
+    from fused_render.server.routers import run as server_mod
 
     def boom(*a, **kw):
         raise RuntimeError("kaboom")
@@ -1196,8 +1196,9 @@ def test_the_published_store_path_is_canonical():
     Asserted against the CODEC rather than against a hardcoded expectation, so
     this says "canonicalized" on every platform instead of "unchanged" on POSIX.
     """
-    server_py = os.path.join(os.path.dirname(calls.__file__), "server.py")
-    src = open(server_py, encoding="utf-8").read()
+    from fused_render.server.routers import config as _server_config
+
+    src = open(_server_config.__file__, encoding="utf-8").read()
     line = next(ln for ln in src.splitlines() if '"calls_dir"' in ln)
     assert "canonical_fs_path(" in line, (
         "the published path must go through the codec — os.path.abspath alone "

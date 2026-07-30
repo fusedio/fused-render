@@ -18,10 +18,10 @@ import sys
 
 import pytest
 
-from fused_render import server
+from fused_render.server import templates as _server_templates
 
 
-TEMPLATES_DIR = server.TEMPLATES_DIR
+TEMPLATES_DIR = _server_templates.TEMPLATES_DIR
 
 # tomllib is 3.11+; the condition gate fails closed (returns False) without
 # it, same as for malformed TOML, so only the genuine-canvas assertions
@@ -32,13 +32,13 @@ requires_tomllib = pytest.mark.skipif(
 
 
 def modes(path, is_dir=False):
-    entries, error = server._templates_for(path, is_dir)
+    entries, error = _server_templates._templates_for(path, is_dir)
     return [e["mode"] for e in entries], error
 
 
 def canvas_verdict(path):
     # The deferred half of CT-12: the background /api/fs/conditions payload.
-    payload = server._conditions_payload(path)
+    payload = _server_templates._conditions_payload(path)
     return payload["conditions"].get("canvas"), payload.get("error")
 
 
@@ -110,7 +110,7 @@ def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     m, error = modes(str(p))
     assert m == ["canvas", "code", "reader", "annotate"]
     assert error is None
-    entries, _ = server._templates_for(str(p), False)
+    entries, _ = _server_templates._templates_for(str(p), False)
     assert entries[0]["path"].endswith("canvas/template.html")
     assert entries[0]["icon"] is not None
     # stat only MARKS the gate (deferred CT-12) …

@@ -17,15 +17,15 @@ import os
 
 import pytest
 
-from fused_render import server
+from fused_render.server import templates as _server_templates
 
 
-TEMPLATES_DIR = server.TEMPLATES_DIR
+TEMPLATES_DIR = _server_templates.TEMPLATES_DIR
 
 
 def reader_verdict(path):
     # The deferred half of CT-12: the background /api/fs/conditions payload.
-    payload = server._conditions_payload(path)
+    payload = _server_templates._conditions_payload(path)
     return payload["conditions"].get("reader"), payload.get("error")
 
 
@@ -57,7 +57,7 @@ def test_reader_entry_is_marked_conditional(home, tmp_path):
     # WITHOUT running the gate (deferred CT-12).
     f = tmp_path / "a.csv"
     f.write_text("x\n")
-    entries, error = server._templates_for(str(f), False)
+    entries, error = _server_templates._templates_for(str(f), False)
     assert error is None
     reader = next(e for e in entries if e["mode"] == "reader")
     assert reader.get("conditional") is True

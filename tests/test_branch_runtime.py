@@ -15,13 +15,15 @@ def _reload_with_ref(ref: str):
     importlib.reload(_branch)
 
     import fused_render.server as server
+    import fused_render.server.templates as _server_templates
     import fused_render.app as app
     import fused_render.cli as cli
 
+    _server_templates = importlib.reload(_server_templates)
     server = importlib.reload(server)
     app = importlib.reload(app)
     cli = importlib.reload(cli)
-    return server, app, cli
+    return server, app, cli, _server_templates
 
 
 @pytest.fixture(autouse=True)
@@ -40,23 +42,25 @@ def _restore_baseline():
     _branch._CACHED_REF = None
     importlib.reload(_branch)
     import fused_render.server
+    import fused_render.server.templates
     import fused_render.app
     import fused_render.cli
 
+    importlib.reload(fused_render.server.templates)
     importlib.reload(fused_render.server)
     importlib.reload(fused_render.app)
     importlib.reload(fused_render.cli)
 
 
 def test_baseline_ref_empty(monkeypatch):
-    server, app, cli = _reload_with_ref("")
+    server, app, cli, _server_templates = _reload_with_ref("")
     import fused_render.shell.storage as storage
 
     # Baseline: shell home is un-nested; templates live under it (D76).
     base = os.environ["FUSED_RENDER_HOME"]
     assert storage.home_dir() == base
-    assert server.USER_TEMPLATES_DIR == os.path.join(base, "templates")
-    assert server.USER_REGISTRY == os.path.join(base, "templates", "registry.json")
+    assert _server_templates.USER_TEMPLATES_DIR == os.path.join(base, "templates")
+    assert _server_templates.USER_REGISTRY == os.path.join(base, "templates", "registry.json")
     assert app.APP_SUPPORT_DIR == os.path.expanduser(
         "~/Library/Application Support/fused-render"
     )
@@ -66,14 +70,14 @@ def test_baseline_ref_empty(monkeypatch):
 
 
 def test_branch_ref_foo(monkeypatch):
-    server, app, cli = _reload_with_ref("foo")
+    server, app, cli, _server_templates = _reload_with_ref("foo")
     import fused_render.shell.storage as storage
 
     # Ref "foo": the whole shell home nests under branches/foo/ (templates,
     # bookmarks, prefs all follow home_dir), and App Support + port shift too.
     base = os.environ["FUSED_RENDER_HOME"]
     assert storage.home_dir() == os.path.join(base, "branches", "foo")
-    assert server.USER_TEMPLATES_DIR == os.path.join(base, "branches", "foo", "templates")
+    assert _server_templates.USER_TEMPLATES_DIR == os.path.join(base, "branches", "foo", "templates")
     assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/branches/foo")
     assert app.DEFAULT_PORT == _branch.branch_port("foo")
     assert app.MAX_PORT == app.DEFAULT_PORT + 10

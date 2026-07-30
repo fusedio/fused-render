@@ -60,15 +60,17 @@ def test_order_is_stable_across_repeated_calls(tmp_path):
 
 def test_win_protected_short_circuits_off_windows(monkeypatch):
     # Off Windows the hidden+system filter must not even stat the entry.
-    from fused_render import server
+    import sys
 
-    monkeypatch.setattr(server.sys, "platform", "linux")
+    from fused_render.server.routers.fs_read import _win_protected
+
+    monkeypatch.setattr(sys, "platform", "linux")
 
     class _Entry:
         def stat(self, follow_symlinks=True):
             raise AssertionError("must not stat off win32")
 
-    assert server._win_protected(_Entry()) is False
+    assert _win_protected(_Entry()) is False
 
 
 def test_list_hides_windows_hidden_system_entries(tmp_path):
