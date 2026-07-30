@@ -1688,10 +1688,14 @@ export default function Listing({
   // Mouse selection on a row:
   //   • Shift+click  — select the contiguous range anchor..row (rendered order);
   //   • Mod+click    — toggle this row in/out and re-anchor on it;
-  //   • plain click  — select only this row AND open it, which is what a single
-  //     click has always done in this explorer (it's the primary way to browse,
-  //     so multi-select doesn't take it away; the modified clicks are the ones
-  //     that build a selection instead of navigating).
+  //   • plain click  — depends on the preview pane. Pane OFF (the default):
+  //     select AND open, what a single click has always done in this explorer.
+  //     Pane ON: select only — the click's job is to drive the pane preview
+  //     (files and folders both), and double-click is what opens. Enter still
+  //     opens either way (the keyboard model doesn't change with the pane).
+  // No single/double-click delay timer: with the pane on, the first click of a
+  // double-click selects (harmless — the pane fetch is superseded/unmounted by
+  // the navigation the second click triggers).
   // Native text selection is suppressed in onRowMouseDown, not here — see there.
   const onRowClick = (e: React.MouseEvent, path: string, row: RowCtx) => {
     if (e.shiftKey && !isMod(e)) {
@@ -1705,7 +1709,14 @@ export default function Listing({
       return;
     }
     selectOnly(path);
-    navigate(row.path, { isDir: row.isDir });
+    if (!pane.on) navigate(row.path, { isDir: row.isDir });
+  };
+
+  // Double-click opens when the pane owns the single click. Pane off: the
+  // single click already navigated, so this is a no-op (navigation unmounts
+  // the listing before a second click can land anyway).
+  const onRowDoubleClick = (row: RowCtx) => {
+    if (pane.on) navigate(row.path, { isDir: row.isDir });
   };
 
   // Kill the browser's own text selection for Shift/Mod+click, on MOUSEDOWN —
@@ -1897,6 +1908,14 @@ export default function Listing({
                       parentDir: dirname(childPath),
                     })
                   }
+                  onDoubleClick={() =>
+                    onRowDoubleClick({
+                      path: childPath,
+                      name: entry.rel.split("/").pop() ?? entry.rel,
+                      isDir: entry.is_dir,
+                      parentDir: dirname(childPath),
+                    })
+                  }
                   onMouseDown={onRowMouseDown}
                   onContextMenu={(e) =>
                     openRowMenu(e, {
@@ -1985,6 +2004,14 @@ export default function Listing({
           }
           onClick={(e) =>
             onRowClick(e, childPath, {
+              path: childPath,
+              name: entry.name,
+              isDir: entry.is_dir,
+              parentDir: base,
+            })
+          }
+          onDoubleClick={() =>
+            onRowDoubleClick({
               path: childPath,
               name: entry.name,
               isDir: entry.is_dir,
