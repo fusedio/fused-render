@@ -63,41 +63,143 @@ def agent():
 
 # --------------------------------------------------------------- the MCP wire
 
+class _Pending:
+    """One in-flight JSON-RPC request: the slot its response lands in, or the reason
+    none ever will.
+
+    `result()` is the only way to read it, so a response that is lost, garbled or
+    never sent fails as an explicit assertion naming the request — instead of an
+    `IndexError` on an empty list three lines later, which is what the previous
+    sink-plus-`join()` shape produced and what made a frequent CI failure a
+    twenty-minute log dig."""
+
+    def __init__(self, req_id, method):
+        self.id = req_id
+        self.method = method
+        self.done = threading.Event()
+        self.message = None
+        self.failure = None  # why no response will arrive (EOF, undecodable line)
+
+    def result(self, timeout=10.0):
+        if not self.done.wait(timeout):
+            raise AssertionError(
+                f"no response to {self.method} (id {self.id}) within {timeout}s")
+        if self.failure is not None:
+            raise AssertionError(
+                f"no response to {self.method} (id {self.id}): {self.failure}")
+        return self.message
+
+
 class _Server:
-    """A live permission_server subprocess, spoken to the way the CLI does."""
+    """A live permission_server subprocess, spoken to the way the CLI does.
+
+    ONE thread owns `proc.stdout` for the server's lifetime and routes every response
+    to its request's slot by JSON-RPC id. Both halves fixed a real defect in this
+    harness, and the concurrency test below was failing in CI because of them:
+
+    * **N threads reading one `TextIOWrapper` is not thread-safe.** Two readers can
+      both find the decoded buffer empty and both go to the raw fd; one read returns
+      BOTH lines, that reader hands back the first, and the second line sits in a
+      buffer the other reader has already committed to bypassing — so that reader
+      blocks forever and its response is unrecoverable. Measured ~1% of rounds under
+      load; a bigger `join()` timeout cannot help a wedged thread. The visible symptom
+      was `IndexError: list index out of range` on an empty sink.
+    * **Nothing demultiplexed by id**, so a response could be handed to the wrong
+      waiter: measured ~90% of concurrent rounds were already swapped. The old
+      assertions could not tell, because both waiters expected the same verdict —
+      which means the test would also have passed against a server that answered
+      strictly serially, i.e. against the very bug it exists to catch.
+
+    The server is RIGHT to answer out of order: permission_server spawns a thread per
+    request (permission_server.py:317) precisely so a parked approval does not block
+    later ones. Ordering is therefore the harness's problem to handle, not the
+    server's to avoid.
+    """
 
     def __init__(self, perm_dir, env=None):
         self.proc = subprocess.Popen(
             [sys.executable, os.path.abspath(SERVER), str(perm_dir)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env={**os.environ, **(env or {})})
+        self._lock = threading.Lock()
         self._next_id = 0
+        self._pending = {}      # id -> _Pending, awaiting a response
+        self._unrouted = []     # responses nobody was waiting for (a harness bug)
+        self._failure = None    # set once stdout ends: no further response can come
+        self._pump = threading.Thread(target=self._read_stdout, daemon=True,
+                                      name="mcp-stdout")
+        self._pump.start()
 
-    def call(self, method, params=None):
-        self._next_id += 1
+    # ---- the single reader ---------------------------------------------------
+
+    def _read_stdout(self):
+        """Own `proc.stdout` and route what comes off it. The ONLY place in this file
+        that touches that stream."""
+        try:
+            for line in self.proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    message = json.loads(line)
+                except ValueError as e:
+                    # Surfaced to every waiter rather than raised in here: an
+                    # exception in a daemon thread reaches the test only as a warning
+                    # and an empty sink, which is how this failure mode stayed
+                    # undiagnosed.
+                    self._fail_everything(
+                        f"undecodable line from the server: {line!r} ({e})")
+                    return
+                self._route(message)
+        except Exception as e:  # noqa: BLE001 — must reach the waiters, not the log
+            self._fail_everything(f"the stdout reader died: {e!r}")
+            return
+        self._fail_everything("the server closed stdout without replying")
+
+    def _route(self, message):
+        with self._lock:
+            pending = self._pending.pop(message.get("id"), None)
+            if pending is None:
+                self._unrouted.append(message)
+                return
+        pending.message = message
+        pending.done.set()
+
+    def _fail_everything(self, reason):
+        with self._lock:
+            waiting, self._pending = self._pending, {}
+            self._failure = reason
+        for pending in waiting.values():
+            pending.failure = reason
+            pending.done.set()
+
+    # ---- sending ------------------------------------------------------------
+
+    def send_async(self, method, params=None):
+        """Fire a request; returns the handle its response will land in."""
+        with self._lock:
+            self._next_id += 1
+            pending = _Pending(self._next_id, method)
+            # Registered BEFORE the write, because the reply can be routed before
+            # write() even returns.
+            self._pending[pending.id] = pending
+            failure = self._failure
+        if failure is not None:
+            pending.failure = failure
+            pending.done.set()
+            return pending
         self.proc.stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": self._next_id, "method": method,
+            "jsonrpc": "2.0", "id": pending.id, "method": method,
             "params": params or {}}) + "\n")
         self.proc.stdin.flush()
-        return json.loads(self.proc.stdout.readline())
+        return pending
 
-    def send_async(self, method, params, sink):
-        """Fire a request whose response will not come back for a while."""
-        self._next_id += 1
-        req_id = self._next_id
-        self.proc.stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": req_id, "method": method,
-            "params": params}) + "\n")
-        self.proc.stdin.flush()
-
-        def read():
-            line = self.proc.stdout.readline()
-            if not line:
-                return  # server shut down without replying; the empty sink says so
-            sink.append(json.loads(line))
-        t = threading.Thread(target=read, daemon=True)
-        t.start()
-        return t
+    def call(self, method, params=None, timeout=10.0):
+        """One request/response round trip, through the SAME demultiplexer as
+        send_async — a synchronous call overlapping a pending async request used to
+        race it for the pipe, so fixing only send_async would have left the bug
+        reachable from every other test in this file."""
+        return self.send_async(method, params).result(timeout)
 
     def close(self):
         try:
@@ -144,11 +246,10 @@ def test_initialize_advertises_only_the_approval_tool(server):
 def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, server):
     perm_dir = tmp_path / "perm"
     tool_input = {"command": "ls -la", "description": "list"}
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
         "arguments": {"tool_name": "Bash", "input": tool_input,
-                      "tool_use_id": "toolu_01"}}, sink)
+                      "tool_use_id": "toolu_01"}})
 
     req = _wait_for_request(perm_dir)
     assert req["tool"] == "Bash" and req["input"] == tool_input
@@ -159,8 +260,7 @@ def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, serv
 
     assert agent._write_decision(str(perm_dir), req["id"],
                                  {"decision": "allow", "scope": "once"})
-    reader.join(timeout=10)
-    payload = _result_payload(sink[0])
+    payload = _result_payload(pending.result(10))
     assert payload["behavior"] == "allow"
     assert payload["updatedInput"] == tool_input
     assert "updatedPermissions" not in payload
@@ -168,16 +268,14 @@ def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, serv
 
 def test_session_scope_adds_a_session_rule_for_that_tool(tmp_path, server):
     perm_dir = tmp_path / "perm"
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
-        "arguments": {"tool_name": "Edit", "input": {"file_path": "/x.html"}}}, sink)
+        "arguments": {"tool_name": "Edit", "input": {"file_path": "/x.html"}}})
     req = _wait_for_request(perm_dir)
     (perm_dir / (req["id"] + ".res.json")).write_text(
         json.dumps({"decision": "allow", "scope": "session"}))
-    reader.join(timeout=10)
 
-    payload = _result_payload(sink[0])
+    payload = _result_payload(pending.result(10))
     assert payload["behavior"] == "allow"
     # Bare tool name, no ruleContent: the wire hands us no permission
     # suggestions to narrow with, and matching stays the CLI's job.
@@ -195,16 +293,14 @@ def test_a_mode_switch_rides_back_as_a_setMode_update(tmp_path, server):
     too: starting in the strictest mode, a turn that carded Edit/Write/Write
     carded only the Edit once the first card switched the mode."""
     perm_dir = tmp_path / "perm"
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
-        "arguments": {"tool_name": "Edit", "input": {"file_path": "/x.html"}}}, sink)
+        "arguments": {"tool_name": "Edit", "input": {"file_path": "/x.html"}}})
     req = _wait_for_request(perm_dir)
     (perm_dir / (req["id"] + ".res.json")).write_text(
         json.dumps({"decision": "allow", "scope": "once", "mode": "auto"}))
-    reader.join(timeout=10)
 
-    payload = _result_payload(sink[0])
+    payload = _result_payload(pending.result(10))
     assert payload["behavior"] == "allow"
     assert payload["updatedPermissions"] == [
         {"type": "setMode", "mode": "auto", "destination": "session"}]
@@ -217,16 +313,14 @@ def test_the_server_only_emits_a_mode_it_recognises(tmp_path, server, mode):
     trusting the decision file. `bypassPermissions` is the one that matters:
     it must be unreachable from a card by any route."""
     perm_dir = tmp_path / "perm"
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
-        "arguments": {"tool_name": "Edit", "input": {}}}, sink)
+        "arguments": {"tool_name": "Edit", "input": {}}})
     req = _wait_for_request(perm_dir)
     (perm_dir / (req["id"] + ".res.json")).write_text(
         json.dumps({"decision": "allow", "scope": "once", "mode": mode}))
-    reader.join(timeout=10)
 
-    payload = _result_payload(sink[0])
+    payload = _result_payload(pending.result(10))
     assert payload["behavior"] == "allow"
     assert "updatedPermissions" not in payload, f"{mode!r} reached the CLI"
 
@@ -266,15 +360,13 @@ def test_a_successful_timeout_write_records_the_verdict(tmp_path, monkeypatch):
 
 def test_deny_carries_a_message_because_the_cli_requires_one(tmp_path, server):
     perm_dir = tmp_path / "perm"
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
-        "arguments": {"tool_name": "Bash", "input": {"command": "rm -rf /"}}}, sink)
+        "arguments": {"tool_name": "Bash", "input": {"command": "rm -rf /"}}})
     req = _wait_for_request(perm_dir)
     (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps({"decision": "deny"}))
-    reader.join(timeout=10)
 
-    payload = _result_payload(sink[0])
+    payload = _result_payload(pending.result(10))
     assert payload["behavior"] == "deny"
     assert payload["message"], "deny.message is required by the CLI's schema"
 
@@ -284,13 +376,11 @@ def test_unanswered_request_denies_itself_and_records_the_verdict(tmp_path):
     s = _Server(perm_dir, env={"FUSED_RENDER_PERMISSION_TIMEOUT": "1"})
     try:
         s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
-        sink = []
-        reader = s.send_async("tools/call", {
+        pending = s.send_async("tools/call", {
             "name": "approve",
-            "arguments": {"tool_name": "Bash", "input": {"command": "sleep 1"}}}, sink)
+            "arguments": {"tool_name": "Bash", "input": {"command": "sleep 1"}}})
         req = _wait_for_request(perm_dir)
-        reader.join(timeout=20)
-        payload = _result_payload(sink[0])
+        payload = _result_payload(pending.result(20))
         assert payload["behavior"] == "deny"
         # Written down, not just returned — otherwise the card reads as "still
         # waiting for you" forever on a page that re-attaches.
@@ -301,30 +391,115 @@ def test_unanswered_request_denies_itself_and_records_the_verdict(tmp_path):
 
 
 def test_concurrent_requests_each_get_their_own_card(tmp_path, server):
-    """Parallel tool calls must not queue behind the first unanswered one."""
+    """Parallel tool calls must not queue behind the first unanswered one.
+
+    Asserted by ORDERING, not by a wall clock: both requests are parked, then only
+    the SECOND is answered, and its response must come back while the first is still
+    pending. A server that serialized could not produce that response at all, so this
+    now fails against the bug it is named for — the previous version answered both at
+    once and asserted only that two `allow` verdicts arrived, which a strictly serial
+    server also satisfies.
+
+    It is also the routing test: each response must land in ITS OWN request's slot,
+    which the old sink-per-reader-thread harness got wrong in ~90% of runs (nothing
+    matched JSON-RPC ids, and both waiters expected the same verdict, so nothing
+    noticed) — see _Server."""
     perm_dir = tmp_path / "perm"
-    sinks = [[], []]
-    readers = [
-        server.send_async("tools/call", {
-            "name": "approve",
-            "arguments": {"tool_name": "Read", "input": {"file_path": "/a"}}}, sinks[0]),
-        server.send_async("tools/call", {
-            "name": "approve",
-            "arguments": {"tool_name": "Read", "input": {"file_path": "/b"}}}, sinks[1]),
-    ]
+    first = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Read", "input": {"file_path": "/a"}}})
+    second = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Read", "input": {"file_path": "/b"}}})
+
+    # Both cards exist: the second request was accepted while the first sat unanswered
+    # (this is the poll-a-condition shape _wait_for_request uses — the deadline is a
+    # liveness backstop, never the assertion).
     deadline = time.monotonic() + 10
+    names = []
     while time.monotonic() < deadline:
-        names = [n for n in os.listdir(perm_dir) if n.endswith(".req.json")]
+        names = sorted(n for n in os.listdir(perm_dir) if n.endswith(".req.json"))
         if len(names) == 2:
             break
         time.sleep(0.05)
     assert len(names) == 2, "the second request never surfaced"
+
+    # Which card belongs to which call comes from the card's OWN payload, not from
+    # sorting the server's ids: those are "HHMMSS-NNN-random" (permission_server.py:73)
+    # and only sort by request order within one second, below counter 1000, and not
+    # across midnight.
+    cards = {}
     for name in names:
-        req_id = name[:-len(".req.json")]
-        (perm_dir / (req_id + ".res.json")).write_text(json.dumps({"decision": "allow"}))
-    for reader in readers:
-        reader.join(timeout=10)
-    assert all(_result_payload(s[0])["behavior"] == "allow" for s in sinks)
+        card = json.loads((perm_dir / name).read_text())
+        cards[card["input"]["file_path"]] = card["id"]
+    assert set(cards) == {"/a", "/b"}
+
+    # Answer ONLY the second tool call.
+    (perm_dir / (cards["/b"] + ".res.json")).write_text(json.dumps({"decision": "allow"}))
+
+    assert _result_payload(second.result())["behavior"] == "allow"
+    assert second.message["id"] == second.id  # routed to its own slot, by id
+    # The first tool call is STILL waiting — proof they never shared a queue, and the
+    # property a serial server could not exhibit.
+    assert not first.done.is_set()
+
+    (perm_dir / (cards["/a"] + ".res.json")).write_text(json.dumps({"decision": "allow"}))
+    assert _result_payload(first.result())["behavior"] == "allow"
+    assert first.message["id"] == first.id
+
+
+def test_a_synchronous_call_is_not_stolen_by_a_pending_request(tmp_path, server):
+    """A `call()` overlapping a parked async request must get ITS OWN response.
+
+    This is the same defect from the other side, and the reason `call()` had to move
+    onto the demultiplexer too: with a reader thread per request, the parked request's
+    thread was already blocked in `readline()`, so it necessarily consumed the
+    `tools/list` response — and `call()` then either blocked forever or returned
+    somebody else's message."""
+    perm_dir = tmp_path / "perm"
+    parked = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Read", "input": {"file_path": "/a"}}})
+    card = _wait_for_request(perm_dir)  # it really is parked in the server
+
+    listed = server.call("tools/list")
+
+    assert [t["name"] for t in listed["result"]["tools"]] == ["approve"]
+    assert not parked.done.is_set()
+    (perm_dir / (card["id"] + ".res.json")).write_text(
+        json.dumps({"decision": "allow"}))
+    assert _result_payload(parked.result())["behavior"] == "allow"
+
+
+def test_a_lost_response_fails_as_a_timeout_not_an_index_error(tmp_path):
+    """The diagnosability half. A response that never arrives has to name the request
+    it was waiting for; the old shape raised `IndexError: list index out of range` on
+    an empty sink, three lines away from the actual problem, which is what turned a
+    frequent CI failure into a twenty-minute log dig."""
+    s = _Server(tmp_path / "perm")
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        parked = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Read", "input": {"file_path": "/a"}}})
+        with pytest.raises(AssertionError, match=r"no response to tools/call \(id \d+\)"):
+            parked.result(timeout=0.3)
+    finally:
+        s.close()
+
+
+def test_a_server_that_dies_without_replying_says_so(tmp_path):
+    # EOF used to be `if not line: return` — an empty sink and no explanation.
+    s = _Server(tmp_path / "perm")
+    s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+    parked = s.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Read", "input": {"file_path": "/a"}}})
+    s.proc.kill()
+
+    with pytest.raises(AssertionError, match="closed stdout without replying"):
+        parked.result(timeout=5)
+    s.close()
 
 
 # ------------------------------------------------------------ agent.py side
@@ -444,10 +619,9 @@ def test_server_timeout_yields_to_a_click_landing_in_the_same_instant(tmp_path):
     s = _Server(perm_dir, env={"FUSED_RENDER_PERMISSION_TIMEOUT": "1"})
     try:
         s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
-        sink = []
-        reader = s.send_async("tools/call", {
+        pending = s.send_async("tools/call", {
             "name": "approve",
-            "arguments": {"tool_name": "Bash", "input": {"command": "ls"}}}, sink)
+            "arguments": {"tool_name": "Bash", "input": {"command": "ls"}}})
         req = _wait_for_request(perm_dir)
 
         # Claim the latch just as the server's own wait expires, and let the
@@ -456,10 +630,8 @@ def test_server_timeout_yields_to_a_click_landing_in_the_same_instant(tmp_path):
         time.sleep(0.9)
         t = _lose_the_latch(str(perm_dir), req["id"],
                             {"decision": "allow", "scope": "once"}, delay=0.4)
-        reader.join(timeout=20)
+        payload = _result_payload(pending.result(20))
         t.join(timeout=5)
-
-        payload = _result_payload(sink[0])
         assert payload["behavior"] == "allow", (
             "the server denied a request the user had allowed")
     finally:
@@ -1446,10 +1618,9 @@ def test_a_parked_request_file_is_private(tmp_path, server):
     """The request body is the tool payload itself, so it must land 0600 — set
     by the create, never a chmod after the content is already on disk."""
     perm_dir = tmp_path / "perm"
-    sink = []
-    reader = server.send_async("tools/call", {
+    pending = server.send_async("tools/call", {
         "name": "approve",
-        "arguments": {"tool_name": "Bash", "input": {"command": "echo secret"}}}, sink)
+        "arguments": {"tool_name": "Bash", "input": {"command": "echo secret"}}})
     req = _wait_for_request(perm_dir)
     mode = stat.S_IMODE(os.stat(perm_dir / (req["id"] + ".req.json")).st_mode)
     assert mode == 0o600, f"request file is {oct(mode)}"
@@ -1459,8 +1630,7 @@ def test_a_parked_request_file_is_private(tmp_path, server):
     # means teardown closes the server under a thread still blocked on
     # readline, and the EOF surfaces as PytestUnhandledThreadExceptionWarning.
     (perm_dir / (req["id"] + ".res.json")).write_text(json.dumps({"decision": "deny"}))
-    reader.join(timeout=10)
-    assert _result_payload(sink[0])["behavior"] == "deny"
+    assert _result_payload(pending.result(10))["behavior"] == "deny"
 
 
 def test_template_wires_the_decide_action(agent):
