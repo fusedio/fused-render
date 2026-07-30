@@ -87,6 +87,20 @@ STAGE_PCT = {"spawn": 0, "create": 10, "install": 25, "done": 100}
 _CLAIM_GRACE_S = 30
 
 
+# Worker pids THIS process spawned and has not yet reaped — the only pids
+# `_pid_alive` may `waitpid` on. See `_pid_alive` for why a pid out of
+# `progress.json` is not enough: it can name a recycled pid now belonging to
+# another of the server's children, and reaping that one is how a live child
+# comes to report exit status 0.
+#
+# In-process and deliberately NOT persisted alongside the record. A persisted
+# owner pid would still need a boot identity to survive server-pid reuse, and it
+# would still be answering the wrong question: what makes a reap safe is that the
+# pid is OUR child, and a pid stops being that the moment this process exits (the
+# kernel reparents its orphans to init, which reaps them). So the in-memory set
+# is not an approximation of provenance — it is exactly it.
+_SPAWNED: set[int] = set()
+
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 BACKEND_ATTRS = ("_venvs_path", "_python_executable")
@@ -287,21 +301,33 @@ def _pid_alive(pid: int) -> bool:
             capture_output=True, text=True,
         )
         return str(pid) in (out.stdout or "")
-    # Reap it first if it is OUR child. `start_new_session=True` does not
-    # reparent the worker — it stays our child until someone waits on it — and a
-    # ZOMBIE answers `os.kill(pid, 0)` successfully. So a worker that died before
-    # writing `done` (a bad import, a kill) would read as "still running"
-    # forever, and `progress()` would never reap it into an error: the page polls
-    # a corpse and any bounded waiter waits out its entire timeout. Nothing else
-    # waits on this pid — `_spawn` discards the Popen — so reaping here is safe
-    # and it is what makes "the installer exited unexpectedly" detectable at all.
-    try:
-        if os.waitpid(pid, os.WNOHANG)[0] == pid:
-            return False
-    except ChildProcessError:
-        pass  # not our child: another process spawned it, fall through to kill(0)
-    except OSError:
-        pass
+    # Reap it first if WE spawned it. `start_new_session=True` does not reparent
+    # the worker — it stays our child until someone waits on it — and a ZOMBIE
+    # answers `os.kill(pid, 0)` successfully. So a worker that died before writing
+    # `done` (a bad import, a kill) would read as "still running" forever, and
+    # `progress()` would never reap it into an error: the page polls a corpse and
+    # any bounded waiter waits out its entire timeout. Nothing else waits on a
+    # worker pid — `_spawn` discards the Popen — so reaping ours is safe, and it
+    # is what makes "the installer exited unexpectedly" detectable at all.
+    #
+    # Gated on `_SPAWNED` rather than on `ChildProcessError`, which only tells us
+    # the pid is not a child of ours AFTER the reap has already happened. `pid`
+    # comes out of `progress.json`, a not-`done` record survives a server crash
+    # mid-install, and that pid can since have been recycled onto a child of the
+    # CURRENT server — an rclone rcd, a template tile daemon, a pyramid build
+    # worker. Reaping one of those makes its owner's `poll()`/`wait()` fail with
+    # ECHILD, which subprocess reports as **exit status 0**: a crashed or
+    # still-needed child read as "finished successfully", and every one of those
+    # owners branches on that status.
+    if pid in _SPAWNED:
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                _SPAWNED.discard(pid)  # reaped: the pid is now free to be reused
+                return False
+        except ChildProcessError:
+            _SPAWNED.discard(pid)  # already reaped elsewhere; never reap it again
+        except OSError:
+            pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -617,6 +643,10 @@ def _spawn(key: str, requirements: list[str]) -> int:
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
         )
+    # Recorded before the pid reaches anyone else: `_pid_alive` reaps only pids in
+    # here, so a worker missing from the set would never be reaped and a dead one
+    # would read as alive forever (the zombie trap `_pid_alive` describes).
+    _SPAWNED.add(child.pid)
     return child.pid
 
 

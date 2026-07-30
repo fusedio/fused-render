@@ -400,10 +400,18 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     never reaped it into an error, the page polled a corpse, and any bounded
     waiter burned its whole timeout. Found while investigating a slow CI job —
     which turned out to be legitimately slow, not hung, but the bug is real.
+
+    The pid is registered in `_SPAWNED` because that is what `_spawn` does with a
+    real worker's pid, and only registered pids may be reaped (see
+    `test_a_pid_this_module_did_not_spawn_is_never_reaped` for the other half of
+    that rule). Standing the process up here rather than through `_spawn` is what
+    makes the zombie reachable at all.
     """
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
     dead = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"],
                             start_new_session=True)
+    # A copy, so the pid does not leak into the module's real set past this test.
+    monkeypatch.setattr(envinstall, "_SPAWNED", {dead.pid})
     # A plain sleep, NOT `dead.poll()` / `dead.wait()`: those call waitpid and
     # REAP the child, so polling for its exit destroys the very zombie this test
     # needs. (First version of this test did exactly that and skipped itself even
@@ -425,6 +433,33 @@ def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch
     prog = envinstall.progress(key)
     assert prog["done"] is True, "a dead worker must end the poll"
     assert "unexpectedly" in prog["error"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="waitpid reaping is POSIX-only")
+def test_a_pid_this_module_did_not_spawn_is_never_reaped():
+    """`_pid_alive` must not steal another part of the server's child.
+
+    The pid comes out of `progress.json`, and a not-`done` record survives a
+    server crash mid-install — so it can name a pid that has since been recycled
+    onto a child of the CURRENT server (an rclone rcd, a template tile daemon, a
+    pyramid build worker). Reaping that child makes its owner's later
+    `poll()`/`wait()` fail with `ECHILD`, which subprocess reports as **exit
+    status 0**: a process that crashed, or one that is still needed, read as
+    "finished successfully". Every one of those owners branches on that status.
+
+    So the reap is gated on "we spawned this pid", tracked in-process. Modelled
+    with a child that exits non-zero and is left unreaped, exactly as a recycled
+    pid would appear.
+    """
+    other = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
+    # A plain sleep, NOT `poll()`: polling reaps, which destroys the very
+    # unreaped-child state this test needs.
+    time.sleep(1.5)
+    envinstall._pid_alive(other.pid)
+    assert other.wait(timeout=30) == 3, (
+        "_pid_alive reaped a child it did not spawn, so its owner now reads the "
+        "exit status as 0"
+    )
 
 
 @requires_fused
