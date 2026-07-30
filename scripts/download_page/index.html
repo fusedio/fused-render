@@ -412,8 +412,8 @@
     <p>40+ formats render instantly. No notebooks, no plugins, no converters.</p>
     <div class="ticker">
       <div class="ticker-inner" aria-hidden="true">
-        <div class="ticker-run"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a></div>
-        <div class="ticker-run" aria-hidden="true"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" href="about.html#templates">+ build your own</a></div>
+        <div class="ticker-run"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
+        <div class="ticker-run" aria-hidden="true"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
       </div>
     </div>
   </section>
@@ -535,13 +535,24 @@
     document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
       const hash = a.getAttribute("href").slice("about.html".length);
       if (window.fused.env === "local" && ownPath) {
-        const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "");
+        const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "")
+          .split("/").map(encodeURIComponent).join("/");
         a.href = "/view/" + dir + "/about.html" + hash;
         a.target = "_top";
       } else {
         a.href = window.fused.rawUrl("about.html") + hash;
       }
     });
+  }
+
+  // The shell iframes this page via /render?path=... with no hash; honor a
+  // #section deep link on the parent /view URL (same-origin) by scrolling here.
+  if (window.fused && window.fused.env === "local" && window.parent !== window) {
+    try {
+      const h = window.parent.location.hash;
+      const t = h && document.querySelector(h);
+      if (t) t.scrollIntoView();
+    } catch (e) { /* cross-origin parent: not the shell */ }
   }
 
   // Fill version + direct artifact links from the release manifest.

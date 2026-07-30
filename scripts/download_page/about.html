@@ -458,7 +458,8 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
       document.querySelectorAll('a[href^="index.html"]').forEach((a) => {
         const hash = a.getAttribute("href").slice("index.html".length);
         if (window.fused.env === "local" && ownPath) {
-          const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "");
+          const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "")
+            .split("/").map(encodeURIComponent).join("/");
           a.href = "/view/" + dir + "/index.html" + hash;
           a.target = "_top";
         } else if (window.fused.env !== "local") {
@@ -467,6 +468,16 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
       });
     }
   })();
+
+  // The shell iframes this page via /render?path=... with no hash; honor a
+  // #section deep link on the parent /view URL (same-origin) by scrolling here.
+  if (window.fused && window.fused.env === "local" && window.parent !== window) {
+    try {
+      const h = window.parent.location.hash;
+      const t = h && document.querySelector(h);
+      if (t) t.scrollIntoView();
+    } catch (e) { /* cross-origin parent: not the shell */ }
+  }
 
   // Swap the pinned visual as the matching story section crosses mid-viewport.
   (function () {
