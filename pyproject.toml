@@ -91,7 +91,15 @@ bundled = [
     "rasterio",
     # Matches zarr_aoi/tile_server.py's header (and its DAEMON_DEPS): it reads
     # v3 stores through the 3.x API, so a bare pin could resolve to 2.x here.
-    "zarr>=3.0.8",
+    # Marked 3.11+ like the `fused` pins below: every zarr 3.x requires
+    # Python>=3.11 (3.2+ wants 3.12), so an unmarked floor makes this extra
+    # unresolvable on the 3.10 that `requires-python` still promises — which is
+    # not a hypothetical, it broke v0.3.13's Windows installer build (the
+    # project-level `uv run` in scripts/build_windows_installer.ps1 resolves
+    # every version split, not just the bundle's 3.12). The desktop bundles all
+    # ship 3.12, so they still get zarr; a 3.10 pip install loses the zarr_aoi
+    # template's in-process path and falls back to its own daemon venv.
+    'zarr>=3.0.8 ; python_version >= "3.11"',
     "pymupdf>=1.25",
     "pikepdf>=9",
     "drain3>=0.9.11",
