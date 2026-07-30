@@ -305,6 +305,21 @@ body:has(.sidebar-resize-handle.resizing) {
   border-bottom: 1px solid var(--border);
 }
 
+/* Logo + name as one Home link: inherits the brand row's type, no underline;
+   min-width: 0 so brand-title's ellipsis keeps working inside the link. */
+.sidebar-brand .brand-home-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-brand .brand-home-link:hover .brand-title {
+  color: var(--accent-soft);
+}
+
 .sidebar-brand .logo {
   color: var(--accent);
   display: flex;
@@ -346,7 +361,8 @@ body:has(.sidebar-resize-handle.resizing) {
   font-size: 13.5px;
 }
 
-.sidebar-item:hover {
+.sidebar-item:hover,
+.sidebar-item.active {
   background: rgba(var(--tint), 0.06);
 }
 
@@ -3468,12 +3484,12 @@ select.field-control:has(option[value=""]:checked) {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Home, Templates, Mounts, and Preferences as four equal columns,
-   each a centered icon over a small muted label. Deliberately understated
-   (D80) — the label just disambiguates the icons. Fused account (D125)
-   doesn't get its own column — its signed-in dot rides on Preferences.
-   Four columns still fit one row: the labels are short and each column
-   ellipsizes (min-width: 0 + prefs-label overflow) rather than wrapping. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
