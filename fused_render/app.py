@@ -10,13 +10,16 @@ only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
 pyproject.toml) — it is imported lazily, inside `main()`, so that
 `import fused_render.app` never fails on another platform or in CI.
 """
+import importlib.util
 import json
 import logging
 import os
 import secrets
 import socket
 import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -90,6 +93,47 @@ def openurls_target_path(raw_url: str) -> str:
     from fused_render._view_url_codec import open_target_path
 
     return open_target_path(raw_url)
+
+
+# ---- quit-time close of the duckdb reader's cached connection ---------------
+# The duckdb parquet reader is an in-process helper (executor.INPROCESS_HELPERS),
+# so on macOS — where the server runs inside THIS rumps process — the HTTP
+# connection it stashes on the duckdb module (templates/duckdb/reader.py's
+# _http_connection) lives here and nothing ever closes it. AppKit's exit() then
+# destructs it without the GIL and the process aborts (INCIDENT 2026-07-29; see
+# close_http_connection for the full mechanism). The close logic lives with the
+# stash, in reader.py; this side only has to reach it.
+_DUCKDB_READER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "templates", "duckdb", "reader.py")
+
+
+def _load_duckdb_reader():
+    """The duckdb reader module, loaded by path — `templates/` is deliberately
+    not an importable package (executor._run_inprocess loads its helpers the
+    same way). Which COPY we load is immaterial: the stash lives on the shared
+    `duckdb` module, not on the reader, so the bundled original next to this
+    file closes the connection a staged copy created."""
+    spec = importlib.util.spec_from_file_location(
+        "__fused_duckdb_reader__", _DUCKDB_READER_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _close_duckdb_stash() -> None:
+    """Best-effort quit-time close of the reader's cached HTTP connection.
+
+    Skips the load entirely when `duckdb` was never imported: no import means no
+    connection can exist, and quit shouldn't pay a multi-hundred-ms duckdb
+    import to discover that. Swallows everything (duckdb missing, unreadable
+    reader, a raising close) — a failure here must not block the quit."""
+    if "duckdb" not in sys.modules:
+        return
+    try:
+        _load_duckdb_reader().close_http_connection()
+    except Exception:
+        logger.warning("closing the duckdb http connection on quit failed",
+                       exc_info=True)
 
 
 def _is_process_alive(pid: int) -> bool:

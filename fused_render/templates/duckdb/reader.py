@@ -223,6 +223,14 @@ def _build_order(sort, columns):
 # back to the plain file path.
 
 
+# Versioned stash key for the long-lived HTTP connection below. Bumping it (a
+# settings change) simply strands the old connection for GC and builds a fresh
+# one — no stale-config connection can outlive a code update in a long-running
+# server. A module constant rather than a literal at each use so
+# _http_connection and close_http_connection cannot drift apart.
+_HTTP_CON_KEY = "_fused_render_http_con_v3"
+
+
 def _http_connection():
     """A DuckDB connection for reading mounted parquet over HTTP, kept alive
     across reader runs. DuckDB's external file cache holds the byte ranges a
@@ -231,12 +239,13 @@ def _http_connection():
     instance, and the executor re-execs this module per call. Stash the
     connection on the *duckdb* module (which does survive in sys.modules of
     the server process) and hand out cursors. Racing calls may both create
-    one; last-stashed wins and the loser is GC'd — harmless, so no lock."""
-    # Versioned stash key: bumping it (settings change) simply strands the old
-    # connection for GC and builds a fresh one — no stale-config connection can
-    # outlive a code update in a long-running server.
-    key = "_fused_render_http_con_v3"
-    con = getattr(duckdb, key, None)
+    one; last-stashed wins and the loser is GC'd — harmless, so no lock.
+
+    Because the stash outlives every reader run, something has to close it
+    before the process exits: on macOS the server runs in-process inside the
+    rumps app and AppKit's `exit()` destructs this connection with NO GIL held
+    (SIGABRT, INCIDENT 2026-07-29). That is close_http_connection's job."""
+    con = getattr(duckdb, _HTTP_CON_KEY, None)
     if con is None:
         con = duckdb.connect(":memory:")
         con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
@@ -268,8 +277,42 @@ def _http_connection():
         # read whole column chunks and parallelizes to the bucket ceiling)
         # without hurting the many-small-group file any more.
         con.execute("SET threads=32")
-        setattr(duckdb, key, con)
+        setattr(duckdb, _HTTP_CON_KEY, con)
     return con.cursor()
+
+
+def close_http_connection() -> bool:
+    """Close and drop the stashed HTTP connection; True if one was closed.
+
+    Called from the app's quit path (fused_render/app.py's `quit_teardown`)
+    while Python is still healthy and the GIL is held. It has to be an explicit
+    step because interpreter finalization never runs on macOS:
+    `rumps.quit_application()` -> `NSApplication.terminate:` -> C `exit()`, and
+    pyobjc releases the GIL for the duration of that ObjC call, so the C++
+    static destructors `exit()` runs execute with no GIL — a surviving
+    `DuckDBPyConnection` destructs there, calls `PyEval_SaveThread`, and
+    Py_FatalError aborts the process (SIGABRT crash dialog, INCIDENT
+    2026-07-29: preview one mounted parquet file and every later quit crashed).
+    Linux/Windows exit through normal finalization and were unaffected.
+
+    Total no-op when no connection was ever built, and never raises: quit must
+    proceed whatever DuckDB thinks of being closed."""
+    con = getattr(duckdb, _HTTP_CON_KEY, None)
+    if con is None:
+        return False
+    # Drop the stash BEFORE closing: the attribute must be gone even if close()
+    # raises, because a closed-but-still-reachable connection is exactly the
+    # object exit()'s destructors trip over — and _http_connection must not hand
+    # out cursors from a connection being torn down.
+    try:
+        delattr(duckdb, _HTTP_CON_KEY)
+    except AttributeError:
+        pass  # raced another closer; it holds the reference now
+    try:
+        con.close()
+    except Exception:
+        return False
+    return True
 
 
 def relation_for(file: str, file_row_number: bool = False) -> str:
