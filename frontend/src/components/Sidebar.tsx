@@ -1214,9 +1214,26 @@ export default function Sidebar({ config }: SidebarProps) {
       )}
       {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
           (margin-top: auto), deliberately unobtrusive: a muted gear row that
-          navigates to the /view/_prefs sentinel. Three equal columns —
-          Templates, Mounts, Preferences. */}
+          navigates to the /view/_prefs sentinel. Four equal columns —
+          Home, Templates, Mounts, Preferences. */}
       <div className="sidebar-footer">
+        <button
+          type="button"
+          title="Home"
+          aria-label="Home"
+          className={
+            "sidebar-item prefs-link" + (location.pathname === "/view/_home" ? " active" : "")
+          }
+          onClick={() => navigateUrl("/view/_home")}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 10.5 12 3l9 7.5" />
+              <path d="M5 9.5V21h14V9.5" />
+            </svg>
+          </span>
+          <span className="prefs-label">Home</span>
+        </button>
         <button
           type="button"
           title="Templates"

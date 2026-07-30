@@ -7,7 +7,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
+import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
@@ -30,6 +30,7 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
+import Home from "./views/Home";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -357,9 +358,11 @@ export default function App({ config }: { config: Config }) {
 
   // Root redirect, exactly like the vanilla route(): replaceState so "/"
   // never enters history. Render-time write is safe — it changes pathname,
-  // so the re-render (via fused:urlchange) derives the real route.
+  // so the re-render (via fused:urlchange) derives the real route. Launch
+  // lands on the Home view (apps/templates/files), not the start dir —
+  // first-run seeding (seed.py showcase) still points where it always did.
   if (location.pathname === "/") {
-    history.replaceState(null, "", urlForFsPath(config.start_dir));
+    history.replaceState(null, "", "/view/_home");
   }
   // The old standalone Fused-account page folded into Preferences as a tab
   // (D125) — redirect its sentinel the same render-time way so existing
@@ -376,9 +379,10 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
+  const isHome = pathname === "/view/_home";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -397,7 +401,9 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isBookmark || bookmarkFile
+              : isHome
+                ? "Home"
+                : isBookmark || bookmarkFile
                 ? "Bookmark"
                 : fsPath
                   ? undefined
@@ -463,6 +469,20 @@ export default function App({ config }: { config: Config }) {
         </div>
         <div id="content">
           <Mounts key={epoch} />
+        </div>
+      </>
+    );
+  } else if (isHome) {
+    // Home (apps / templates / files) — the launch landing; a sentinel
+    // pathname like _prefs, entered from the sidebar footer or the "/"
+    // redirect above.
+    main = (
+      <>
+        <div id="breadcrumb">
+          <StaticBreadcrumb label="Home" />
+        </div>
+        <div id="content">
+          <Home key={epoch} config={config} />
         </div>
       </>
     );

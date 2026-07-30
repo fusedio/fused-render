@@ -3468,12 +3468,12 @@ select.field-control:has(option[value=""]:checked) {
 /* ---- Preferences page (SPEC §20) ------------------------------------------ */
 
 /* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
-/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
-   centered icon over a small muted label. Deliberately understated (D80) —
-   the label just disambiguates the icons. Fused account (D125) no longer
-   gets its own column — its signed-in dot moved onto Preferences — which is
-   what keeps this back down to a single row instead of the 2×2 grid a 4th
-   entry needed. */
+/* Footer: Home, Templates, Mounts, and Preferences as four equal columns,
+   each a centered icon over a small muted label. Deliberately understated
+   (D80) — the label just disambiguates the icons. Fused account (D125)
+   doesn't get its own column — its signed-in dot rides on Preferences.
+   Four columns still fit one row: the labels are short and each column
+   ellipsizes (min-width: 0 + prefs-label overflow) rather than wrapping. */
 .sidebar-footer {
   margin-top: auto;
   padding: 6px;
@@ -5050,6 +5050,104 @@ select.field-control:has(option[value=""]:checked) {
 
 .templates-row:hover .templates-inv-icon {
   color: var(--fg);
+}
+
+/* ---- Home view (/view/_home) --------------------------------------------- */
+/* Rides the .templates-page scaffold (same width/padding/header type scale);
+   only the card grid is new. Cards are quiet bordered tiles matching the
+   .templates-seg / toolbar surface language — light and dark come free from
+   the shared vars. */
+.home-section {
+  margin-top: 26px;
+}
+
+.home-section-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.home-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 14px;
+  min-height: 92px;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-card:hover {
+  border-color: var(--fg-muted);
+}
+
+.home-card-glyph {
+  display: flex;
+  color: var(--fg-muted);
+}
+
+.home-card:hover .home-card-glyph {
+  color: var(--fg);
+}
+
+.home-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-card-sub {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The "New …" card: dashed and muted until hover, so existing items read as
+   the content and creation as the affordance. */
+.home-card-new {
+  border-style: dashed;
+  background: none;
+  color: var(--fg-muted);
+}
+
+.home-card-new:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+/* The single file-explorer card spans naturally but stays clickable-looking
+   at full width. */
+.home-card-wide {
+  width: 100%;
+  flex-direction: row;
+  align-items: center;
+  min-height: 0;
+  gap: 12px;
+}
+
+.home-card-wide .home-card-sub {
+  margin-left: auto;
 }
 
 /* ---- Reduced motion ------------------------------------------------------ */

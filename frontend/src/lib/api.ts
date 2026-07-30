@@ -1312,3 +1312,32 @@ export function createTemplate(name: string, extensions: string[]): Promise<NewT
 export function openTemplateInClaude(name: string): Promise<{ url: string }> {
   return postJson<{ url: string }>("/api/templates/open-in-claude", { name });
 }
+
+// -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
+// A fused_app folder (PR #326 manifest) under the workspace. `entry_html` is
+// the app's "/" route entry file (absolute path), null when the manifest has
+// no resolvable entry; `title` comes from the manifest, null falls back to the
+// folder name in the UI.
+export interface AppInfo {
+  name: string;
+  path: string;
+  entry_html: string | null;
+  title: string | null;
+}
+
+export function getApps(): Promise<{ apps: AppInfo[] }> {
+  return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// Scaffold a new app folder and (optionally) kick off a Claude session seeded
+// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
+// thrown HttpError's message for inline display.
+export interface NewAppResult {
+  path: string;
+  entry_html: string;
+  session_started: boolean;
+}
+
+export function createApp(name: string, prompt: string): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+}
