@@ -309,8 +309,15 @@ def _wrapper_interpreter(candidate: str) -> tuple[str | None, str]:
                 existing = f.read()
         if existing != body:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            # Write-then-rename so a concurrent reader never sees a partial script.
-            tmp = f"{path}.{os.getpid()}.tmp"
+            # Write-then-rename so a concurrent reader never sees a partial
+            # script. The temp name carries the THREAD id as well as the pid
+            # (same reason as envinstall._write_record): two threads of this one
+            # process can be in here at once, and with a pid-only name the first
+            # `os.replace` consumes the shared temp file out from under the
+            # second, which then fails with FileNotFoundError — reported as
+            # "could not write the interpreter wrapper" for a wrapper that is
+            # perfectly fine.
+            tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(body)
             os.chmod(tmp, 0o700)
@@ -339,18 +346,33 @@ def app_interpreter() -> str | None:
     the same installation, hence the same site-packages, which is the entire point
     — `[bundled]` and the core dependencies importable with nothing installed.
 
-    Cached per process (each probe is a subprocess); `reset_app_interpreter_cache`
-    clears it.
+    Cached per process (each probe is a subprocess) and resolved at most once even
+    under concurrent callers; `reset_app_interpreter_cache` clears it.
     """
     global _app_interpreter
+    # Double-checked: the cache only transitions _UNPROBED -> final, so an
+    # unlocked hit is already the final answer and needs no lock.
     if _app_interpreter is not _UNPROBED:
         return _app_interpreter
+    with _app_interpreter_lock:
+        if _app_interpreter is not _UNPROBED:
+            return _app_interpreter
+        _app_interpreter = _resolve_app_interpreter()
+        return _app_interpreter
 
+
+def _resolve_app_interpreter() -> str | None:
+    """Probe the rungs and answer with the interpreter to cache.
+
+    Split out of `app_interpreter` purely so the cache is written in exactly one
+    place, under the lock: every early return here used to assign the global
+    itself, which is what let a losing thread's `None` land on top of a winner's
+    working path.
+    """
     candidate, autodetected = _interpreter_candidate()
     name = os.path.basename(candidate).lower().removesuffix(".exe")
     if autodetected and not name.startswith(_PYTHON_BASENAMES_PREFIX):
         # Rejected WITHOUT spawning it — see _PYTHON_BASENAMES_PREFIX.
-        _app_interpreter = None
         logger.error(
             "%r cannot be this app's interpreter: its name %r is not an "
             "interpreter's, so it was not run. Set %s to a real python.",
@@ -361,8 +383,7 @@ def app_interpreter() -> str | None:
     info, detail = _probe(candidate)
     if info is not None and info["prefix"] == sys.prefix:
         logger.info("header-less scripts will run on %s", candidate)
-        _app_interpreter = candidate
-        return _app_interpreter
+        return candidate
 
     why = detail or (
         f"it reports sys.prefix {info['prefix']!r}, not this app's {sys.prefix!r}"
@@ -382,8 +403,7 @@ def app_interpreter() -> str | None:
                 "header-less scripts will run on %s (PYTHONHOME wrapper for %s)",
                 wrapper, candidate,
             )
-            _app_interpreter = wrapper
-            return _app_interpreter
+            return wrapper
         wrap_detail = wrap_probe_detail or (
             f"the wrapper reports sys.prefix {wrap_info['prefix']!r}, not this "
             f"app's {sys.prefix!r}"
@@ -397,7 +417,6 @@ def app_interpreter() -> str | None:
         "that has them.",
         candidate, why, wrap_detail, _APP_PYTHON_ENV,
     )
-    _app_interpreter = None
     return None
 
 

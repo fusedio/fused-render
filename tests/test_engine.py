@@ -13,6 +13,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 import types
 
@@ -973,3 +974,112 @@ def test_the_wrapper_lives_outside_the_script_venv_path(tmp_path, monkeypatch):
     assert "_app_interpreter" in p
     assert "openfused" not in p
     assert os.path.basename(p) == "python", "should read as an interpreter in logs/ps"
+
+
+# --- concurrency: the probe runs off the event loop, so it runs in parallel ----
+#
+# `/api/run` does `await asyncio.to_thread(app_interpreter)` (so a slow probe
+# cannot stall the loop — test_the_interpreter_probe_does_not_block_the_event_loop
+# pins that). The cost is that two header-less runs starting together are now
+# genuinely concurrent, and both halves of this used to race: an unlocked
+# read-then-write cache whose losing thread could store `None` over a working
+# path (terminal, per process — every header-less script broken until restart),
+# and a wrapper temp file named by pid alone, which two threads of ONE process
+# share so the first `os.replace` steals it from the second.
+
+
+def test_concurrent_probes_resolve_once_and_never_cache_the_loser(monkeypatch):
+    """Many threads, ONE probe, and no caller left holding None.
+
+    The probe is deliberately made to succeed only the first time: without
+    serialization the extra probes are not merely wasteful, one of them caches
+    its failure over the answer that worked.
+    """
+    candidate, _autodetected = engine._interpreter_candidate()
+    seen = []
+    counter = threading.Lock()
+
+    def probe_once(exe):
+        with counter:
+            first = not seen
+            seen.append(exe)
+        time.sleep(0.2)  # wide enough that every thread is inside at once
+        if first:
+            return {"prefix": sys.prefix, "executable": exe}, ""
+        return None, "a second probe of the same candidate deliberately fails"
+
+    monkeypatch.setattr(engine, "_probe", probe_once)
+    # No rung-2 rescue: a failed direct probe is a cached None, which is the
+    # poisoning this test is about.
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: (None, "stub"))
+
+    results = []
+    ready = threading.Barrier(8)
+
+    def call():
+        ready.wait(timeout=30)
+        results.append(engine.app_interpreter())
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "app_interpreter deadlocked"
+
+    assert len(seen) == 1, f"the candidate was probed {len(seen)} times, not once"
+    assert results == [candidate] * 8, (
+        f"concurrent callers disagreed about the interpreter: {results}"
+    )
+    # And the cache kept the working answer, not a loser's None.
+    assert engine.app_interpreter() == candidate
+    assert len(seen) == 1, "the cached answer was re-probed"
+
+
+def test_two_threads_writing_the_wrapper_both_succeed(tmp_path, monkeypatch):
+    """The temp file must be per-THREAD, not per-process.
+
+    `os.chmod` is where both threads are held until both are past the write, so
+    the overlap is deterministic rather than a matter of timing: with one shared
+    temp name the first `os.replace` consumes it and the second raises
+    FileNotFoundError, reported as "could not write the interpreter wrapper" for a
+    wrapper that is perfectly fine — and that spurious failure is then cached.
+    """
+    if os.name == "nt":
+        pytest.skip("the wrapper is POSIX-only by design")
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    home = tmp_path / "home"
+    (home / "lib").mkdir(parents=True)
+    monkeypatch.setenv("PYTHONHOME", str(home))
+    wrapper_path = engine._wrapper_path()
+
+    both_written = threading.Barrier(2)
+    real_chmod = os.chmod
+
+    def chmod_holding_both(path, mode, *a, **kw):
+        real_chmod(path, mode, *a, **kw)
+        if str(path).startswith(wrapper_path) and str(path).endswith(".tmp"):
+            both_written.wait(timeout=30)
+
+    monkeypatch.setattr(os, "chmod", chmod_holding_both)
+
+    out = []
+    threads = [
+        threading.Thread(
+            target=lambda: out.append(engine._wrapper_interpreter("/usr/bin/python3"))
+        )
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "a wrapper write hung"
+
+    assert out == [(wrapper_path, "")] * 2, f"a wrapper write lost its temp file: {out}"
+    body = open(wrapper_path, encoding="utf-8").read()
+    assert f"PYTHONHOME={shlex.quote(str(home))}" in body
+    assert shlex.quote("/usr/bin/python3") in body
+    assert not [
+        n for n in os.listdir(os.path.dirname(wrapper_path)) if n.endswith(".tmp")
+    ], "a temp file was left behind"
