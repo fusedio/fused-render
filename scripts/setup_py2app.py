@@ -325,7 +325,8 @@ OPTIONS = {
         # `[bundled]` and its transitive deps are appended below from
         # BUNDLED_PACKAGES (derived above) — deliberately not hand-listed.
         # Everything that follows is NOT part of [bundled] and stays explicit:
-        # the web/app stack, the fused CLI, and the AppKit shell.
+        # the web/app stack, the fused CLI's data-bearing deps, and the AppKit
+        # shell.
         # web server stack: forced full-copy too, since uvicorn/pydantic-core
         # do dynamic/compiled imports modulegraph can't always follow.
         "fastapi", "starlette", "uvicorn", "h11", "click", "anyio",
@@ -340,21 +341,28 @@ OPTIONS = {
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
         # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
         "WebKit",
-        # The deploy CLI (SPEC §19 DP-3): the [fused] extra build_dmg.sh
-        # installs, run in-bundle via fused_render/_fused_cli.py. `fused`
-        # itself is forced whole (pluggy entry-point plugins + pervasive
-        # in-function imports + non-.py package data), plus the deps that
-        # carry data dirs or dynamic loading a traced-module copy would
-        # drop: botocore's JSON service models (boto3), anthropic's
-        # tokenizer data, keyring's entry-point backends, cryptography's
-        # cffi bindings, pluggy's registry. The rest of fused's dep tree is
-        # pure-python with ordinary imports — modulegraph traces it. The
-        # gate for anything missed here is build_dmg.sh §4c's bundled-CLI
-        # smoke test (real verbs through the shim). `ty` is deliberately
-        # NOT shipped (a Rust binary console script py2app can't carry);
-        # fused's verify scanner detects its absence and skips with a
-        # warning finding.
-        "fused",
+        # The execution engine and deploy CLI (D69, D79, SPEC §19 DP-3), run
+        # in-bundle via fused_render/_fused_cli.py. `fused` ITSELF is no longer
+        # named here: it is a `[bundled]` requirement, so BUNDLED_PACKAGES below
+        # derives it (forced whole, which is what it needs — pluggy entry-point
+        # plugins + pervasive in-function imports + non-.py package data) and
+        # test_bundle_contents.py's reconciliation fails if the bundle would
+        # ever stop carrying it. A hand entry could not be checked that way,
+        # which for the engine meant it could vanish with the suite still green.
+        #
+        # These deps stay explicit: they carry data dirs or dynamic loading that
+        # a traced-module copy would drop — botocore's JSON service models
+        # (boto3), anthropic's tokenizer data, keyring's entry-point backends,
+        # cryptography's cffi bindings, pluggy's registry. The derivation now
+        # reaches most of them through `fused`'s requirements too, and the
+        # duplication is harmless (py2app de-dupes); they are kept named because
+        # the REASON they must be whole-copied is not derivable from metadata.
+        # The rest of fused's dep tree is pure-python with ordinary imports —
+        # modulegraph traces it. The gate for anything missed here is
+        # build_dmg.sh §4c's bundled-CLI smoke test (real verbs through the
+        # shim). `ty` is deliberately NOT shipped (a Rust binary console script
+        # py2app can't carry); fused's verify scanner detects its absence and
+        # skips with a warning finding.
         "boto3", "botocore", "s3transfer", "jmespath",
         "cryptography", "keyring",
         "anthropic", "mcp", "httpx", "httpcore",

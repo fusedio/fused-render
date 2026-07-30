@@ -153,9 +153,14 @@ rm -f "$DIST_DIR"/*.whl
 WHEEL_PATH="$(ls "$DIST_DIR"/*.whl)"
 
 echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild into the build venv"
-# [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
-# no pip and no console scripts, so the Deploy surface runs the package
+# The `fused` engine/deploy CLI is baked into the bundle (SPEC §19 DP-3): the
+# .app has no pip and no console scripts, so the Deploy surface runs the package
 # in-interpreter via fused_render/_fused_cli.py under the bundled python.
+# It now arrives through [bundled] — that is what setup_py2app.py's force-list
+# DERIVES from, so [bundled] is what decides whether the DMG carries it (and
+# tests/test_bundle_contents.py fails if it would not). Naming [fused] here as
+# well is redundant, and kept deliberately: the extras list should still say out
+# loud that this build wants the engine.
 "$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app dmgbuild
 # Force a fresh reinstall of fused-render itself every run so the branch ref
 # baked into $WHEEL_PATH is picked up. The build venv is reused across builds,
@@ -477,7 +482,8 @@ echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
 
 # ---------------------------------------------------------------------------
-# 4c. Bundled fused CLI (SPEC §19 DP-3): the [fused] extra installed above
+# 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
+#     (a [bundled] requirement, so setup_py2app.py's derivation forces it)
 #     ships in the bundle so Deploy works with zero setup. Two artifacts:
 #     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
 #       (bundled python + fused_render/_fused_cli.py shim), for the one-time
@@ -486,7 +492,7 @@ rm -rf "$SMOKE_DIR"
 #       path when running packaged (deploy._setup_cli_hint).
 #     - a smoke test invoking real CLI verbs through the shim, so a py2app
 #       packaging gap (an untraced dynamic import, a dropped data dir - see
-#       setup_py2app.py's fused block) fails the BUILD, not the user's first
+#       setup_py2app.py's fused-deps block) fails the BUILD, not the user's first
 #       deploy. Runs before signing: the wrapper must exist before the seal.
 # ---------------------------------------------------------------------------
 

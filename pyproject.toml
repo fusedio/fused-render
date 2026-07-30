@@ -104,6 +104,20 @@ bundled = [
     # already above; google-auth's refresh transport reuses it.
     "botocore",
     "google-auth",
+    # The execution engine and the deploy CLI (D69, D79, SPEC §19 DP-3). It is
+    # here — not only in the `[fused]` extra below — so that the macOS bundle's
+    # force-list DERIVES it (scripts/setup_py2app.py's bundled_force_lists) and
+    # the "ships, or excluded with a measured cost, never just absent"
+    # reconciliation in tests/test_bundle_contents.py covers it. It used to be a
+    # hand-written entry in that script's `packages` list, i.e. the one thing
+    # whose silent disappearance would strip the engine and the in-bundle CLI
+    # from the DMG without turning a single test red (D177's standing rule:
+    # derive, or make divergence a test failure).
+    #
+    # The requirement string must stay byte-identical to `[fused]`'s — see the
+    # comment there and
+    # tests/test_bundle_contents.py::test_the_bundled_and_fused_extras_pin_the_same_wheel.
+    'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl ; python_version >= "3.11"',
 ]
 # Private-cloud credential chains (optional). botocore buys the AWS provider
 # chain (SSO / credential_process / assume-role / IMDS) for s3sign's resolver
@@ -131,6 +145,14 @@ app = [
 # marker skips it and the built-in executor runs.
 # The wheel URL must match deploy.PINNED_FUSED_REQUIREMENT (the Deploy modal's
 # one-click install, SPEC DP-4) — a test pins the two together.
+#
+# This extra is KEPT even though the same requirement now also sits in
+# `[bundled]` above, and the two must be updated together (a test asserts they
+# are byte-identical). They serve different callers: `[bundled]` is what the
+# packaging derivation and the platform installers read, while `[fused]` is the
+# documented light path to the engine — `pip install "fused-render[fused]"`
+# (README, docs/usage.md) and CI's `fused-engine` job (`.[dev,fused]`), both of
+# which want the engine WITHOUT the ~650 MB scientific stack.
 fused = [
     'fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl ; python_version >= "3.11"',
 ]

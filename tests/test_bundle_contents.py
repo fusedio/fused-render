@@ -267,6 +267,42 @@ def test_every_exclusion_is_declared_and_reasoned():
         )
 
 
+def test_the_bundled_and_fused_extras_pin_the_same_wheel():
+    """`fused` is declared twice on purpose, so the two copies must not drift.
+
+    `[bundled]` is what the packaging derivation reads (setup_py2app.py's
+    `bundled_force_lists`, and therefore the reconciliation below) plus what the
+    Linux/Windows installers install; `[fused]` is the documented light install
+    path — `pip install "fused-render[fused]"` (README, docs/usage.md) and CI's
+    `fused-engine` job (`.[dev,fused]`) — which must be able to get the engine
+    without the ~650 MB scientific stack. Keeping both is the deliberate call;
+    the cost is a duplicated requirement string, and this is the guard that makes
+    the duplication safe instead of hopeful. Byte-identical, not merely
+    same-version: the direct wheel URL and the `python_version` marker are both
+    load-bearing, and a mismatch would mean the bundle and the pip path ship
+    different engines.
+    """
+    pp = _pyproject()
+    extras = pp["project"]["optional-dependencies"]
+    in_bundled = [r for r in extras["bundled"] if _norm(r) == "fused"]
+    in_extra = [r for r in extras["fused"] if _norm(r) == "fused"]
+    assert len(in_bundled) == 1, (
+        "`[bundled]` must declare the `fused` requirement exactly once (the "
+        f"packaging force-list derives the engine from it); got {in_bundled}"
+    )
+    assert len(in_extra) == 1, (
+        f"`[fused]` must declare the `fused` requirement exactly once; got {in_extra}"
+    )
+    assert in_bundled[0] == in_extra[0], (
+        "the `fused` requirement in `[bundled]` and in `[fused]` have drifted:\n"
+        f"  [bundled] {in_bundled[0]!r}\n  [fused]   {in_extra[0]!r}\n"
+        "They must be updated TOGETHER and stay byte-identical. `[bundled]` is "
+        "what the packaging derivation reads (so it decides what the DMG ships); "
+        "`[fused]` is the documented light install path that gets the engine "
+        "without the scientific stack."
+    )
+
+
 def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
     """No third state: shipped, or excluded-with-a-reason. Never just absent.
 

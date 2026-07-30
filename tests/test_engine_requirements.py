@@ -109,7 +109,35 @@ _IMPORT_TO_DIST = {
     # it maps a name nothing provides — harmless, and listing it is what keeps
     # `test_the_import_map_covers_everything_the_app_ships` honest either way.
     "tomli": "tomli",
+    # The engine itself (a `[bundled]` requirement so the macOS force-list
+    # derives it — see pyproject and setup_py2app.py). Mapped, so
+    # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
+    # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
+    "fused": "fused",
 }
+
+# Distributions the app ships that a template may import WITHOUT declaring in its
+# header. The completeness rule exists because a script venv contains only what
+# the header names, so an undeclared import of something the app happens to have
+# is simply absent there. For `fused` that reasoning does not apply: it is the
+# engine that RUNS scripts, not payload a script imports to do its work, and a
+# script venv is expected not to contain it — `engine.py`'s generated epilogue
+# wraps its own `import fused` in `except ImportError` for exactly that reason.
+# Declaring it in a header would instead install the pinned wheel and its whole
+# dependency tree into that venv, which is the opposite of what a header is for.
+#
+# Every `import fused` in the core templates — the only files this module scans —
+# is guarded by `except ImportError`, so the exemption costs nothing here. It is
+# deliberately NOT a claim that no caller can depend on `import fused`
+# succeeding: a USER script with a PEP 723 header legitimately can (e.g. reading
+# a secret through `fused`), and for that case this exemption is silent. That gap
+# is a known product question being decided separately; it is not something this
+# exemption resolves.
+#
+# Kept as a named exemption rather than a missing mapping so it is visible and
+# reasoned — the same shape as the on-demand binary fetches (pxr/pypandoc/typst)
+# and optional readers (rawpy) noted above.
+_COMPLETENESS_EXEMPT = {"fused"}
 
 # NOTE: there is deliberately no hand-maintained "this file inherits that
 # file's venv" table here. The first version of this test had one, listing a
@@ -154,6 +182,9 @@ def _imported_dists(text: str) -> set[str]:
     ast, not a regex: the imports that matter most here are the *function-level*
     ones (a tile handler's `import rasterio`), which is exactly what a naive
     "imports at the top of the file" check misses.
+
+    `_COMPLETENESS_EXEMPT` distributions are dropped: they are mapped (so the
+    coverage test above stays honest) but deliberately not required in a header.
     """
     tree = ast.parse(text)
     mods = set()
@@ -162,7 +193,11 @@ def _imported_dists(text: str) -> set[str]:
             mods.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             mods.add(node.module.split(".")[0])
-    return {_IMPORT_TO_DIST[m] for m in mods if m in _IMPORT_TO_DIST}
+    return {
+        _IMPORT_TO_DIST[m]
+        for m in mods
+        if m in _IMPORT_TO_DIST and _IMPORT_TO_DIST[m] not in _COMPLETENESS_EXEMPT
+    }
 
 
 def _template_files() -> list[str]:
