@@ -417,6 +417,7 @@
     "netcdf"
   ],
   "/": [
+    "fused_app",
     "_listing",
     "graph",
     "preview",

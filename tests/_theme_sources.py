@@ -32,6 +32,7 @@ TIER_ONE_TEMPLATES = (
     "claude",
     "code",
     "duckdb",
+    "fused_app",
     "graph",
     "history",
     "log_studio",

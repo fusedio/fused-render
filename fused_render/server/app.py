@@ -33,6 +33,8 @@ from fused_render.server.common import (
     unhandled_exception,
     _forced_engine,
 )
+from fused_render.server.routers.app_resolve import router as app_resolve_router
+from fused_render.server.routers.call import router as call_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -285,5 +287,10 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(env_router)
     app.include_router(ai_router)
     app.include_router(export_router)
+    # /api/app/resolve — nearest enclosing fused_app for fused.navigate()
+    # (routers/app_resolve.py).
+    app.include_router(app_resolve_router)
+    # /call/<app dir> — fused_app .py pages as REST endpoints (routers/call.py).
+    app.include_router(call_router)
 
     return app

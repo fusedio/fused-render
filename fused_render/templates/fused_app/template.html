@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>App</title>
+<style>
+  /* Appearance (SPEC §30, D134): every colour is a token so the injected
+     runtime's data-theme flip repaints both modes — same convention as the
+     graph template. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --on-accent: #131417;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --on-accent: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: flex;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  #sidebar {
+    flex: none;
+    width: 220px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--bg-alt);
+    overflow-y: auto;
+  }
+  #app-head {
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #app-title { font-size: 15px; font-weight: 600; }
+  #app-desc { margin-top: 4px; font-size: 12px; color: var(--fg-muted); line-height: 1.4; }
+  #app-meta { margin-top: 8px; font-size: 11px; color: var(--fg-muted); }
+  #nav { flex: 1; padding: 8px; }
+  .page-link {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 6px 10px;
+    margin-bottom: 2px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    cursor: pointer;
+  }
+  .page-link:hover { color: var(--fg); }
+  .page-link[aria-current="page"] {
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* Py-endpoint view: result body + copy-able curl line. */
+  #endpoint {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 20px;
+    gap: 14px;
+  }
+  #endpoint[hidden] { display: none; }
+  #endpoint h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  #ep-result {
+    flex: 1;
+    margin: 0;
+    overflow: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #ep-result.error { color: var(--error); }
+  #ep-curl {
+    flex: none;
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--fg-muted);
+    font: 12px ui-monospace, Menlo, Consolas, monospace;
+    cursor: pointer;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  #ep-curl:hover { color: var(--fg); }
+  #notice {
+    flex: none;
+    padding: 8px 14px;
+    font-size: 13px;
+    color: var(--error);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+  }
+  #notice[hidden] { display: none; }
+  #main iframe { flex: 1; border: none; width: 100%; height: 100%; }
+  #status {
+    margin: auto;
+    padding: 20px;
+    max-width: 32rem;
+    color: var(--fg-muted);
+    text-align: center;
+  }
+  #status.error { color: var(--error); }
+  #status[hidden] { display: none; }
+</style>
+</head>
+<body>
+  <div id="sidebar" hidden>
+    <div id="app-head">
+      <div id="app-title"></div>
+      <div id="app-desc"></div>
+      <div id="app-meta"></div>
+    </div>
+    <nav id="nav"></nav>
+  </div>
+  <div id="main">
+    <div id="notice" hidden></div>
+    <div id="status">Loading app…</div>
+    <div id="endpoint" hidden>
+      <h2 id="ep-title"></h2>
+      <pre id="ep-result">Running…</pre>
+      <button id="ep-curl" title="Click to copy"></button>
+    </div>
+  </div>
+  <script>
+    // App shell: `_file` is the app DIRECTORY; fused_app.json inside it
+    // declares a pages list whose "/" item is the entry page. Each page is an
+    // ordinary loose .html view, rendered the way the shell renders one —
+    // an iframe on `/render?path=<abs page path>` (the `_render` shape), so
+    // the injected runtime, runPython, and params all work per page.
+    const sidebarEl = document.getElementById("sidebar");
+    const navEl = document.getElementById("nav");
+    const mainEl = document.getElementById("main");
+    const statusEl = document.getElementById("status");
+    const noticeEl = document.getElementById("notice");
+
+    // Non-blocking inline error above the page frame (unknown route, etc.);
+    // cleared on the next successful navigation.
+    function setNotice(msg) {
+      noticeEl.hidden = !msg;
+      noticeEl.textContent = msg || "";
+    }
+
+    let dir = null;
+    let pages = []; // [{route, file, title}] — route "" is the entry page
+    let endpoints = []; // [{route, file}] — .py pages: /call endpoints, no nav
+    let current = null; // route of the active page
+
+    const endpointEl = document.getElementById("endpoint");
+
+    function clearMain() {
+      const frame = mainEl.querySelector("iframe");
+      if (frame) frame.remove();
+      endpointEl.hidden = true;
+      statusEl.hidden = true;
+    }
+
+    function setStatus(msg, kind) {
+      clearMain();
+      statusEl.hidden = false;
+      statusEl.textContent = msg;
+      statusEl.className = kind || "";
+    }
+
+    function join(base, rel) {
+      return base.replace(/\/+$/, "") + "/" + rel.replace(/^\/+/, "");
+    }
+
+    // Manifest `pages[].path` → route name for the `route` URL param:
+    // "/stats" → "stats", "/" (the entry) → "" (route param absent).
+    function routeName(path) {
+      return String(path || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    }
+
+    function showPage(route) {
+      // Sidebar nav rides fused.navigate — the same merge semantics every
+      // page gets: visible params survive the hop, only `route` changes (and
+      // is REMOVED for the entry page, keeping its URL clean — params.set
+      // can only write "route=", not delete the key). The params.onChange
+      // listener below picks up the URL change and re-renders.
+      fused.navigate(route === "" ? "/" : "/" + route).catch((err) => {
+        setNotice(err.message);
+      });
+    }
+
+    function renderNav() {
+      navEl.textContent = "";
+      for (const p of pages) {
+        const btn = document.createElement("button");
+        btn.className = "page-link";
+        btn.textContent = p.title || p.file;
+        if (p.route === current) btn.setAttribute("aria-current", "page");
+        btn.addEventListener("click", () => showPage(p.route));
+        navEl.appendChild(btn);
+      }
+    }
+
+    async function renderFrame() {
+      const ep = endpoints.find((e) => e.route === current);
+      if (ep) {
+        renderEndpoint(ep);
+        return;
+      }
+      const page = pages.find((p) => p.route === current) || pages[0];
+      const abs = join(dir, page.file);
+      try {
+        const st = await fused.stat(abs);
+        if (st.is_dir) throw new Error("is a directory");
+      } catch (e) {
+        setStatus(`Page file not found: ${page.file}`, "error");
+        return;
+      }
+      clearMain();
+      const frame = document.createElement("iframe");
+      frame.src = "/render?path=" + encodeURIComponent(abs);
+      mainEl.appendChild(frame);
+    }
+
+    // The full /call URL for an endpoint route + non-reserved query params —
+    // same fs-path segment encoding as the /view URL this shell is on.
+    function callUrl(route) {
+      const encoded = dir
+        .replace(/^\/+/, "")
+        .split("/")
+        .filter((s) => s.length > 0)
+        .map(encodeURIComponent)
+        .join("/");
+      const q = new URLSearchParams({ route });
+      const visible = fused.params.getAll();
+      for (const key of Object.keys(visible)) {
+        if (key !== "route" && !key.startsWith("_")) q.set(key, visible[key]);
+      }
+      return location.origin + "/call/" + encoded + "?" + q.toString();
+    }
+
+    // Navigating the shell to a .py route shows the endpoint view: run it
+    // (the same /call URL an external caller would hit, current params
+    // included), pretty-print the result, and show a copy-able curl line.
+    // A /call error (404/500) renders its payload as the result — the curl
+    // line stays either way.
+    async function renderEndpoint(ep) {
+      clearMain();
+      endpointEl.hidden = false;
+      const url = callUrl(ep.route);
+      document.getElementById("ep-title").textContent = "GET /" + ep.route;
+      const curlEl = document.getElementById("ep-curl");
+      const cmd = `curl "${url}"`;
+      curlEl.textContent = cmd;
+      curlEl.onclick = () => {
+        navigator.clipboard && navigator.clipboard.writeText(cmd);
+        curlEl.textContent = "Copied!";
+        setTimeout(() => { curlEl.textContent = cmd; }, 1200);
+      };
+      const resultEl = document.getElementById("ep-result");
+      resultEl.className = "";
+      resultEl.textContent = "Running…";
+      try {
+        const res = await fetch(url);
+        const text = await res.text();
+        let pretty = text;
+        try {
+          pretty = JSON.stringify(JSON.parse(text), null, 2);
+        } catch (e) { /* not JSON — show raw text */ }
+        resultEl.className = res.ok ? "" : "error";
+        resultEl.textContent = pretty;
+      } catch (e) {
+        resultEl.className = "error";
+        resultEl.textContent = String(e);
+      }
+    }
+
+    async function boot() {
+      dir = fused.params.get("_file");
+      if (!dir) {
+        setStatus("No folder selected (missing _file param).", "error");
+        return;
+      }
+      let manifest;
+      try {
+        manifest = JSON.parse(await fused.readFile(join(dir, "fused_app.json")));
+      } catch (e) {
+        setStatus(`Cannot read fused_app.json: ${e.message}`, "error");
+        return;
+      }
+      const title = manifest.title || manifest.name || "App";
+      document.title = title;
+      document.getElementById("app-title").textContent = title;
+      document.getElementById("app-desc").textContent = manifest.description || "";
+      const meta = [];
+      if (manifest.version) meta.push("v" + manifest.version);
+      if (manifest.author && manifest.author.name) meta.push(manifest.author.name);
+      document.getElementById("app-meta").textContent = meta.join(" · ");
+
+      // Chrome opt-out: `nav: "none"` renders pages full-bleed with no
+      // sidebar (the app navigates itself via fused.navigate). Default and
+      // any unknown value → "sidebar" (lenient, forward-compat: a future
+      // enum value must not break the app). Routing/URL sync is unchanged.
+      const bare = manifest.nav === "none";
+
+      // The entry page is the pages[] item routed at "/" (route "", no route
+      // param); it always sorts first. Other routes come from pages[].path.
+      const declared = Array.isArray(manifest.pages) ? manifest.pages : [];
+      const entryDecl = declared.find(
+        (p) => p && p.path === "/" && typeof p.file === "string"
+      );
+      if (!entryDecl) {
+        setStatus('fused_app.json has no page with path "/".', "error");
+        return;
+      }
+      pages = [{
+        route: "",
+        file: entryDecl.file,
+        title: entryDecl.title || manifest.title || entryDecl.file,
+      }];
+      const seenFiles = new Set([entryDecl.file]);
+      const seenRoutes = new Set([""]);
+      endpoints = [];
+      for (const p of declared) {
+        if (!p || typeof p.file !== "string" || seenFiles.has(p.file)) continue;
+        const route = routeName(p.path) || routeName(p.file.replace(/\.\w+$/i, ""));
+        if (!route || seenRoutes.has(route)) continue;
+        seenFiles.add(p.file);
+        seenRoutes.add(route);
+        if (/\.py$/i.test(p.file)) {
+          endpoints.push({ route, file: p.file });
+          continue;
+        }
+        pages.push({ route, file: p.file, title: p.title || p.file });
+      }
+      sidebarEl.hidden = bare;
+
+      // URL `route` param wins over the entry default (refresh/bookmark
+      // restores the open page). An unknown route shows an inline error and
+      // renders the entry page rather than blanking.
+      const known = (r) =>
+        pages.some((p) => p.route === r) || endpoints.some((e) => e.route === r);
+      const requested = routeName(fused.params.get("route") || "");
+      if (known(requested)) {
+        current = requested;
+      } else {
+        current = "";
+        setNotice(`Unknown route "${requested}" — showing ${pages[0].title}.`);
+      }
+      renderNav();
+      renderFrame();
+
+      // Follow route changes that arrive via the URL rather than the nav —
+      // an inner page's fused.navigate(), or Back/Forward. Known route
+      // (page or py endpoint) → switch to it; unknown → inline error +
+      // entry (same as boot). Also refresh an open endpoint view when only
+      // its params changed — the /call URL embeds them.
+      fused.params.onChange(() => {
+        const next = routeName(fused.params.get("route") || "");
+        if (next === current) {
+          if (endpoints.some((e) => e.route === next)) renderFrame();
+          return;
+        }
+        setNotice(null);
+        if (known(next)) {
+          current = next;
+        } else {
+          current = "";
+          setNotice(`Unknown route "${next}" — showing ${pages[0].title}.`);
+        }
+        renderNav();
+        renderFrame();
+      });
+    }
+
+    boot();
+  </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "fused_app": 1,
+  "name": "demo-app",
+  "title": "Demo App",
+  "description": "A tiny multi-page fused-render app: static pages plus a live Python data view.",
+  "version": "0.1.0",
+  "author": { "name": "fused-render" },
+  "pages": [
+    { "path": "/", "file": "index.html", "title": "Overview" },
+    { "path": "/stats", "file": "stats.html", "title": "Live Stats" },
+    { "path": "/about", "file": "about.html", "title": "About" },
+    { "path": "/api/data", "file": "data.py" }
+  ]
+}
