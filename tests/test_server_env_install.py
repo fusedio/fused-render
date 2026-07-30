@@ -438,6 +438,55 @@ installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
     )
 
 
+def test_a_cancel_the_server_could_not_honour_is_never_silent():
+    """`cancel()` reports False when there is nothing to kill yet.
+
+    Inside the spawn window there is no recorded pid — the claim exists, `Popen`
+    has not returned — so `/api/env/cancel` answers `cancelled: false` and the
+    installer runs on. The client had already painted "cancelling…", the next
+    `paint()` overwrote that text with the installer's own detail, the install
+    finished, `poll()` RESOLVED, and the script the user had just cancelled ran
+    anyway with nothing anywhere saying the cancel was dropped.
+
+    Two things are asserted, because either alone still leaves a lie on screen:
+    the user's intent wins over a resolved poll (the script does not run), and the
+    dropped cancel is stated rather than painted over.
+    """
+    result = _run_loader("""
+let polls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install")
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  if (url.startsWith("/api/env/progress")) {
+    polls += 1;
+    if (polls === 1) {
+      // Cancel lands inside the spawn window: nothing to kill yet.
+      installUi.cancel._h.click[0]();
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "install", pct: 25, detail: "downloading", done: false } })});
+    }
+    // ...and the install the user cancelled runs to completion.
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, detail: "installed", done: true,
+                  error: null } })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve(
+    { ok: true, cancelled: false }) });
+};
+installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ resolved: true, detail: installUi.detail.textContent })),
+  (e) => console.log(JSON.stringify({ type: e.type, detail: installUi.detail.textContent })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result.get("type") == "EnvInstallCancelled", (
+        "the install resolved after the user cancelled it, so the script ran"
+    )
+    assert "could not be stopped" in (result.get("detail") or ""), (
+        "a dropped cancel was painted over instead of being reported: "
+        f"{result.get('detail')!r}"
+    )
+
+
 def test_one_finished_install_does_not_tear_the_overlay_off_another():
     """Two .py files with identical requirement sets share one venv key, so both
     calls track the SAME entry. A plain Set means the first to settle deletes it,

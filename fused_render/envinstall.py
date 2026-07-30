@@ -735,8 +735,15 @@ def cancel(key: str) -> bool:
     has no pid to signal, and a "cancelled" record written into that window would
     be overwritten moments later by the spawner's own `_write` — the page would
     show cancelled and then watch the install continue. So cancelling inside the
-    spawn window is a no-op that reports False, and the poll keeps showing
-    "starting"; the user can cancel again once there is an installer to kill.
+    spawn window is a no-op that reports False.
+
+    That False is a real answer and the client MUST act on it: runtime.js's
+    `onCancel` reads `cancelled === false`, says the installer could not be
+    stopped, and leaves the button live so a second press reaches the pid once the
+    record carries one — and its resolve path honours the user's intent even if
+    the install finishes anyway, so a dropped cancel can never end in the script
+    running. It used to be dropped silently: "cancelling…" was overwritten by the
+    next poll's detail and the cancelled run executed.
     """
     if not valid_key(key):
         return False

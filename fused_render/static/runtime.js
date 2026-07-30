@@ -646,16 +646,39 @@
     // stale key leaves the real download running. Mutable because the cancel
     // handler is registered BEFORE the POST resolves and must see the update.
     let activeKey = need.key;
+    // A message that must survive the next poll's paint(). `cancel()` reports
+    // False when there is nothing to kill YET — inside the spawn window the claim
+    // exists but `Popen` has not returned, so no pid is recorded. That answer used
+    // to vanish: "cancelling…" was overwritten by the installer's own detail on
+    // the very next poll, the install ran to completion, and the script the user
+    // had just cancelled executed with nothing anywhere admitting the cancel was
+    // dropped. Held in a variable rather than written straight to the element
+    // because paint() runs on a timer and would win.
+    let notice = "";
     const onCancel = () => {
       cancelled = true;
+      notice = "";
       ui.detail.textContent = "cancelling…";
-      envPost("/api/env/cancel", { key: activeKey }).catch(() => {});
+      envPost("/api/env/cancel", { key: activeKey })
+        .then(({ data }) => {
+          if (data && data.cancelled === false) {
+            // Not a failure of the request — the server had no installer to
+            // signal. Said out loud, and the button stays live (its listener is
+            // never removed on click) so a second press reaches the pid once the
+            // record carries one.
+            notice =
+              "the installer could not be stopped — it had not started yet, or " +
+              "had already finished. Press Cancel again if it is still running.";
+            ui.detail.textContent = notice;
+          }
+        })
+        .catch(() => {});
     };
     ui.cancel.addEventListener("click", onCancel);
 
     const paint = (prog) => {
       if (!prog) return;
-      ui.detail.textContent = prog.detail || prog.stage || "";
+      ui.detail.textContent = notice || prog.detail || prog.stage || "";
       if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
     };
 
@@ -694,6 +717,16 @@
         (prog) => {
           ui.cancel.removeEventListener("click", onCancel);
           hideInstall(need.key);
+          if (cancelled) {
+            // The install finished anyway — a cancel the server could not honour,
+            // or one that lost a race with the last poll. The user's intent still
+            // decides whether the SCRIPT runs: resolving here ran it, which is the
+            // one outcome pressing Cancel must never produce. The venv is built
+            // and stays built; only the run is abandoned.
+            const e = new Error("the install was cancelled");
+            e.type = "EnvInstallCancelled";
+            throw e;
+          }
           return prog;
         },
         (err) => {
