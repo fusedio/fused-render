@@ -43,6 +43,18 @@ from fused_render import engine  # noqa: E402
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 
+# Turns "this distribution is not installed here, so skip it" into a failure.
+#
+# The reconciliation below can only speak about distributions it can find real
+# metadata for, so in an environment WITHOUT `[bundled]` it quietly degrades to
+# almost nothing while still reporting green — the same failure mode the
+# `fused-engine` CI job was created for (a matrix that looked like coverage of
+# the engine and provided none, because no job installed the extra). Set this
+# wherever `[bundled]` really is installed — CI's `bundle-contents` job and
+# `build_dmg.sh`'s build venv — so a run that was SUPPOSED to be the real check
+# cannot silently be a no-op instead.
+_REQUIRE_BUNDLED = os.environ.get("FUSED_RENDER_REQUIRE_BUNDLED") == "1"
+
 
 def _norm(requirement: str) -> str:
     name = requirement.split("[")[0]
@@ -81,6 +93,24 @@ def _declared_dists() -> frozenset[str]:
         {_norm(d) for d in pp["project"]["optional-dependencies"]["bundled"]}
         | {_norm(d) for d in pp["project"]["dependencies"]}
     )
+
+
+@functools.lru_cache(maxsize=1)
+def _declared_dists_installable_here() -> frozenset[str]:
+    """`_declared_dists()` minus the ones this interpreter's markers exclude.
+
+    Only `FUSED_RENDER_REQUIRE_BUNDLED` needs this. The reachability check below
+    reasons about the bundle across platforms, so it wants every declared
+    distribution; demanding one be *installed here* is a claim about this
+    interpreter, and `tomli; python_version < "3.11"` is correctly absent on
+    3.11+. Without the distinction the flag fails on a venv that has `[bundled]`
+    installed exactly as declared — which is how this was found.
+    """
+    pp = _pyproject()
+    raw = list(pp["project"]["optional-dependencies"]["bundled"]) + list(
+        pp["project"]["dependencies"]
+    )
+    return frozenset(_norm(d) for d in raw if engine._marker_applies(d))
 
 
 @functools.lru_cache(maxsize=1)
@@ -324,19 +354,64 @@ def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
             by_dist.setdefault(_norm(dist_name), set()).add(import_name)
 
     unreachable = []
+    absent = []
     for dist in sorted(_macos_dists()):
         names = by_dist.get(dist)
         if not names:
-            continue  # not installed in this env; nothing this test can say
+            # Not installed here, so there is no metadata to map it through and
+            # nothing this test can say — it degrades to a no-op per
+            # distribution. That silent degradation is the whole reason
+            # FUSED_RENDER_REQUIRE_BUNDLED exists: under `pip install -e
+            # ".[dev]"` almost every iteration of this loop takes this branch,
+            # and the test passes while asserting nearly nothing. An environment
+            # that claims to have `[bundled]` must not reach here.
+            if _REQUIRE_BUNDLED and dist in _declared_dists_installable_here():
+                absent.append(dist)
+            continue
         # A dotted entry (google.auth) covers its namespace parent (google).
         if not any(n in forced or any(f.startswith(n + ".") for f in forced)
                    for n in names):
             unreachable.append((dist, sorted(names)))
+    assert not absent, (
+        "FUSED_RENDER_REQUIRE_BUNDLED is set, so this environment claims to have "
+        f"the `[bundled]` extra installed — but these are missing: {absent}. "
+        "Without them the reconciliation below skips them one by one and proves "
+        "nothing. Install `.[bundled]` here, or unset the variable and accept "
+        "that this run is not a real check."
+    )
     assert not unreachable, (
         "these distributions are promised but the macOS bundle would not carry "
         f"them: {unreachable}. Either the derivation in setup_py2app.py missed "
         "them, or they belong in BUNDLED_EXCLUDED with their measured size."
     )
+
+
+@pytest.mark.parametrize("require", [False, True])
+def test_require_bundled_turns_the_per_distribution_skip_into_a_failure(
+    monkeypatch, require
+):
+    """The flag is the mechanism, so it needs its own proof.
+
+    A promised distribution that is simply not installed is the case the
+    reconciliation cannot speak about, and its silence is indistinguishable from
+    success. Both directions are pinned: without the flag an absent distribution
+    is tolerated (that is what makes an ordinary `[dev]` run possible at all),
+    with it set the same absence fails. Otherwise the flag could stop working —
+    a rename, a moved read — and every job that relies on it would keep passing
+    while checking nothing, which is the exact failure it was added to prevent.
+    """
+    fake = "a-distribution-nobody-has-installed"
+    this = sys.modules[__name__]
+    monkeypatch.setattr(this, "_REQUIRE_BUNDLED", require)
+    monkeypatch.setattr(this, "_macos_dists", lambda: frozenset({fake}))
+    monkeypatch.setattr(
+        this, "_declared_dists_installable_here", lambda: frozenset({fake})
+    )
+    if require:
+        with pytest.raises(AssertionError, match="claims to have"):
+            test_the_bundle_ships_everything_it_does_not_explicitly_exclude()
+    else:
+        test_the_bundle_ships_everything_it_does_not_explicitly_exclude()
 
 
 def test_excluded_distributions_are_not_forced_into_the_bundle():

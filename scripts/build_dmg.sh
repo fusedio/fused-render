@@ -169,6 +169,34 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
 
 # ---------------------------------------------------------------------------
+# 2a-bis. Reconcile the force-list against what [bundled] actually installed.
+#
+# tests/test_bundle_contents.py answers "will the .app contain distribution X?"
+# by asking setup_py2app.py's derivation and then checking X is reachable in the
+# environment. Every one of its per-distribution checks SKIPS when X is not
+# installed where pytest runs — which is why it is nearly toothless in the
+# ordinary CI job, whose `pip install -e ".[dev]"` carries none of [bundled].
+#
+# This build venv is the one place in the whole pipeline where [bundled] is
+# genuinely installed, so this is where those skips turn into assertions. Run it
+# HERE — right after the install, before py2app spends minutes copying — so a
+# distribution that would be silently absent from the bundle fails the build
+# rather than shipping. This costs one pytest install; the [bundled] install it
+# needs has already happened. It makes the check load-bearing on every path that
+# builds a DMG (test.yml, release.yml, and a plain local `bash
+# scripts/build_dmg.sh`) instead of only where someone remembered to wire it.
+#
+# FUSED_RENDER_REQUIRE_BUNDLED=1 makes the test's own per-distribution "not
+# installed here, nothing to say" skips into failures, so this cannot degrade
+# into a green no-op if the install above ever stops carrying [bundled].
+# `-o addopts=` clears the repo's `-n auto`, so this needs pytest but not xdist.
+echo "==> reconciling the bundle force-list against the installed [bundled]"
+"$BUILD_VENV/bin/pip" install --quiet pytest
+FUSED_RENDER_REQUIRE_BUNDLED=1 \
+  "$BUILD_VENV/bin/python" -m pytest -q -o addopts= \
+  "$REPO_ROOT/tests/test_bundle_contents.py"
+
+# ---------------------------------------------------------------------------
 # 2b. Stage rclone (D103): mounts (shell/mounts.py, D102) shell out to a real
 #     rclone binary. Bundling it means mounts work with zero user setup - no
 #     brew/apt install, no PATH dependency - instead of the old "one
