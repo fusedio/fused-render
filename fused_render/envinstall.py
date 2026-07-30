@@ -59,9 +59,11 @@ import time
 logger = logging.getLogger(__name__)
 
 # `venv_key` returns sha256(...)[:16], so every real key is 16 lowercase hex
-# characters. Anchored: `fullmatch` semantics via ^...$ on a value that reaches
-# the filesystem.
-_KEY_RE = re.compile(r"^[0-9a-f]{16}$")
+# characters. Matched with `fullmatch`, not `match` against `^...$`: `$` also
+# matches just before a trailing newline, so "<key>\n" would validate and reach
+# os.path.join as a different progress directory than "<key>". No traversal, but
+# the anchoring this value's whole safety story rests on has to be real.
+_KEY_RE = re.compile(r"[0-9a-f]{16}")
 
 # The marker `fused` writes once a venv is complete. A directory without it is
 # half-built and `ensure_requirements_venv` deletes and rebuilds it, so this —
@@ -154,7 +156,8 @@ def is_installed(requirements: list[str]) -> bool:
 def valid_key(key) -> bool:
     """Is `key` shaped like a venv key this module could have produced?
 
-    Every real key is `venv_key`'s output: 16 lowercase hex characters. Anything
+    Every real key is `venv_key`'s output: 16 lowercase hex characters, matched
+    end to end (`fullmatch`, see `_KEY_RE`). Anything
     else is rejected before it can reach the filesystem, because `key` arrives
     straight off the wire (`/api/env/progress?key=`, `/api/env/cancel`) and
     `progress_dir` joins it onto a path.
@@ -168,7 +171,7 @@ def valid_key(key) -> bool:
     for a group leader. Validated here rather than at each endpoint so a future
     caller cannot skip it.
     """
-    return isinstance(key, str) and _KEY_RE.match(key) is not None
+    return isinstance(key, str) and _KEY_RE.fullmatch(key) is not None
 
 
 def progress_dir(key: str) -> str:

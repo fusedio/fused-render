@@ -158,6 +158,7 @@ TRAVERSAL = "../../../../../../tmp/anything"
     "0123456789abcdef0",         # 17 chars
     "0123456789abcdeg",          # 'g' is not hex
     "abc/../../def",
+    "0123456789abcdef\n",        # `$` matches before a trailing newline; a key does not
     "",
 ])
 def test_progress_rejects_a_key_that_is_not_a_key(tmp_path, bad):
@@ -188,6 +189,10 @@ def test_a_traversal_key_never_reaches_the_filesystem(tmp_path, monkeypatch):
 
     assert envinstall.valid_key("431848ef8d0cdcdd") is True
     assert envinstall.valid_key(TRAVERSAL) is False
+    # Truly anchored: `$` alone would accept a trailing newline, so
+    # "<key>\n" would reach os.path.join as a DIFFERENT progress directory
+    # than "<key>" — the documented invariant, not a traversal.
+    assert envinstall.valid_key("431848ef8d0cdcdd\n") is False
     with pytest.raises(ValueError, match="not a valid install key"):
         envinstall.progress_dir(TRAVERSAL)
     # And the two public readers stay quiet rather than raising into a handler.
