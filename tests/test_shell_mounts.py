@@ -2123,7 +2123,9 @@ def test_state_stale_when_rcd_tracks_a_dropped_kernel_mount(home, rcd):
 
 def test_state_disconnected_when_listing_hangs(home, rcd, monkeypatch):
     # A wedged NFS mount blocks listdir forever; the probe times out instead.
+    # POSIX-pinned: only POSIX enumerates the mount.
     c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     ev = threading.Event()
 
@@ -2154,6 +2156,71 @@ def test_state_disconnected_when_stat_returns_enotconn(home, rcd, monkeypatch,
     c, mp = _make_mount(home, rcd, served=served)
     _wedge(monkeypatch, mp)
     assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+# -- the win32 listdir carve-out (INCIDENT 2026-07-30) ---------------------
+#
+# A kernel readdir of a HEALTHY WinFsp mount root can fail for the lifetime of
+# one process, which pinned the page to a red dot Reconnect could not clear.
+
+
+def _raise_enotconn(p):
+    raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+
+def test_state_win32_ignores_a_failing_kernel_listdir(home, rcd, monkeypatch):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.os, "listdir", _raise_enotconn)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "mounted"
+
+
+def test_state_win32_does_not_enumerate_the_mount_at_all(home, rcd, monkeypatch):
+    # Not just tolerant of a failure: a blocking mount root can't stall it either.
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    calls = []
+    monkeypatch.setattr(mounts_mod.os, "listdir", lambda p: calls.append(p))
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "mounted"
+    assert calls == []
+
+
+def test_state_posix_still_disconnected_on_a_failing_listdir(home, rcd,
+                                                            monkeypatch):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.os, "listdir", _raise_enotconn)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+def test_state_win32_still_disconnected_when_rcd_stops_serving(home, rcd,
+                                                              monkeypatch):
+    # Dropping the listdir must not blind the two signals that remain.
+    c, mp = _make_mount(home, rcd, served=False)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+
+
+def test_state_win32_still_stale_when_kernel_dropped_the_mount(home, rcd,
+                                                              monkeypatch):
+    c, mp = _make_mount(home, rcd)
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: False)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "stale"
+
+
+def test_state_probe_failure_is_logged(home, rcd, monkeypatch, caplog):
+    # The swallowed errno is the only evidence of WHY a mount reads broken.
+    c, mp = _make_mount(home, rcd, name="logged")
+    monkeypatch.setattr(mounts_mod.sys, "platform", "linux")
+    monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
+    monkeypatch.setattr(mounts_mod.os, "listdir", _raise_enotconn)
+    assert mounts_mod.mount_state(c, mounts_mod.mounted_paths()) == "disconnected"
+    assert "logged" in caplog.text and "not connected" in caplog.text
 
 
 # -- broken_mount_error: expired detected credentials ----------------------
@@ -2416,6 +2483,23 @@ def test_reconnect_endpoint(client, rcd, monkeypatch):
     r = client.post(f"/api/mounts/{m['id']}/reconnect", headers=FUSED)
     assert r.status_code == 200
     assert client.post("/api/mounts/nope/reconnect", headers=FUSED).status_code == 404
+
+
+def test_get_mounts_win32_healthy_despite_a_failing_kernel_listdir(
+        client, rcd, monkeypatch):
+    # The listing the page polls — where the stuck red dot came from.
+    m = client.post("/api/mounts", json={"name": "data", "remote": "r:bucket"},
+                    headers=FUSED).json()
+    rcd.responses["mount/listmounts"] = {
+        "mountPoints": [{"Fs": "r:bucket", "MountPoint": m["mountpoint"]}]}
+    monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    # 3.12+ shutil.which takes a win32 branch needing _winapi, which the faked
+    # platform must not reach on a POSIX runner.
+    monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: "/usr/bin/rclone")
+    monkeypatch.setattr(mounts_mod.os, "listdir", _raise_enotconn)
+    got = client.get("/api/mounts").json()["mounts"]
+    assert [(c["name"], c["state"], c["mounted"]) for c in got] == [
+        ("data", "mounted", True)]
 
 
 def test_fs_list_errors_for_dead_mount_instead_of_empty(client, rcd, home):
