@@ -2,6 +2,7 @@
 reconnect_mount, and the mount_state/mount_restart_reason/mount_view status
 views the UI and health monitor read."""
 
+import contextlib
 import errno
 import json
 import logging
@@ -143,6 +144,116 @@ def _is_mounted(mp: str) -> bool:
     return _ismount(mp) or _mount_wedged(mp)
 
 
+# Set by unmount_all_for_quit once it commits to tearing the mounts down; read by
+# attach_mount, which then declines. The interlock exists because automount is
+# CONCURRENT with quit: health.startup() runs run_automount on a daemon thread that
+# calls attach_mount per mount, seconds each against S3, so quitting during startup
+# (the readiness-failure abort especially — its whole premise is that automount has
+# had time to run) could land an attach AFTER that mount's unmount thread finished,
+# and rcd was then reaped with a live kernel nfsmount attached. An Event, and never
+# rebound: a plain bool set through `global` would only update this module's dict
+# and every importer would read a frozen copy (the D178 _STAT_CACHE_GEN bug).
+_QUIT_TEARDOWN_LATCH = threading.Event()
+
+
+# Attaches currently inside rcd's mount/mount. A dict, mutated, NOT an int rebound
+# through `global`: an int would be copied by value into every module that imported
+# the name and freeze there (the D178 _STAT_CACHE_GEN bug). The Condition lets the
+# teardown wait for the count to reach zero instead of guessing when to look again.
+_ATTACH_FLIGHT = {"n": 0}
+
+
+_ATTACH_FLIGHT_CV = threading.Condition()
+
+
+@contextlib.contextmanager
+def _attach_in_flight():
+    with _ATTACH_FLIGHT_CV:
+        _ATTACH_FLIGHT["n"] += 1
+    try:
+        yield
+    finally:
+        with _ATTACH_FLIGHT_CV:
+            _ATTACH_FLIGHT["n"] -= 1
+            _ATTACH_FLIGHT_CV.notify_all()
+
+
+def _await_attaches_settled(deadline: float) -> None:
+    """Wait, until `deadline`, for in-flight attaches to finish (and so to have
+    self-detached — see attach_mount). Bounded and never fatal: mount/mount can sit
+    for 60s against a slow remote, far past any quit budget, which is exactly why
+    correctness rests on the attacher cleaning up after itself rather than on this
+    wait succeeding. It just means the sweep below usually looks at a settled
+    world instead of racing one."""
+    with _ATTACH_FLIGHT_CV:
+        while _ATTACH_FLIGHT["n"]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    "quit: %s attach(es) still inside mount/mount at the budget; "
+                    "each one detaches what it attached when it returns",
+                    _ATTACH_FLIGHT["n"])
+                return
+            _ATTACH_FLIGHT_CV.wait(remaining)
+
+
+def _mount_via_rcd(m: dict, mp: str) -> str | None:
+    """The rc side of a fresh attach: ensure a daemon, settle read_only, then
+    mount/mount. Returns an error string or None.
+
+    Split out of attach_mount so the in-flight registration around it — and the quit
+    re-check after it — read as one flat `with` block instead of a nested try."""
+    from fused_render.shell.mounts import _rc, ensure_rcd
+    try:
+        port = ensure_rcd()
+        # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
+        # ReadOnly/rdonly have to be baked into the vfsOpt/mountOpt of the very
+        # mount/mount call, so read-onlyness must be settled first. Previously
+        # this ran AFTER the mount, so an auto-detected read-only remote mounted
+        # WRITABLE on its first attach and only became read-only after a
+        # restart — long enough to accumulate the doomed-upload loop. A
+        # user-set flag short-circuits detection, and an inconclusive probe
+        # leaves whatever is recorded, so this never blocks the mount.
+        _refresh_read_only_flag(m, port)
+        params = {
+            "fs": m["remote"],
+            "mountPoint": mp,
+            "mountType": (
+                "nfsmount" if sys.platform == "darwin"
+                else "cmount" if sys.platform == "win32"
+                else "mount"
+            ),
+            # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
+            # read-only remote's VFS rejects writes instead of caching them for
+            # a forever-retried upload (see _vfs_opt_for).
+            "vfsOpt": _vfs_opt_for(m),
+        }
+        # macOS only: raise the loopback NFS client's timeout, and add "rdonly"
+        # for a read-only mount (see NFS_MOUNT_OPT / _nfs_mount_opt). mountOpt is
+        # the NFS transport layer, not a vfs option, so it does NOT affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve (whose read_only matches the vfsOpt.ReadOnly here).
+        if sys.platform == "darwin":
+            params["mountOpt"] = _nfs_mount_opt(m)
+        # win32 only: force WinFsp DISK mode (NetworkMode off). rclone defaults
+        # Windows mounts to network-redirector mode, which does NOT create a
+        # mount point at the leaf at all. Every win32 detection path here leans
+        # on _ismount: the _await_ismount verify below would fail a SUCCESSFUL
+        # mount, and a retry could then mistake the live mount's contents for a
+        # non-empty leaf (or the force-unmount poll / mount_state would call a
+        # live mount dead). Disk mode creates the volume-device reparse point
+        # that _ismount detects. Like the darwin mountOpt, NetworkMode is a
+        # transport option, NOT a vfs option, so it does not affect the
+        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
+        # serve.
+        elif sys.platform == "win32":
+            params["mountOpt"] = {"NetworkMode": False}
+        _rc(port, "mount/mount", params, timeout=60)
+    except RuntimeError as e:
+        return str(e)
+    return None
+
+
 def attach_mount(m: dict) -> str | None:
     """Mount via rcd; returns an error string or None."""
     from fused_render.shell.mounts import (
@@ -152,6 +263,11 @@ def attach_mount(m: dict) -> str | None:
         ensure_rcd,
         reconnect_mount,
     )
+    # Decline rather than unwind: a mount attached now would either outlive the rcd
+    # reap moments later or have to be torn down again, and the caller (automount,
+    # a reconnect) already treats an error string as "not mounted, logged, move on".
+    if _QUIT_TEARDOWN_LATCH.is_set():
+        return "the app is quitting; not attaching mounts"
     mp = mountpoint(m)
     # Create the mounts root (with its Spotlight-exclusion marker) before the
     # per-mount mountpoint, so the marker is in place the moment the mount goes
@@ -254,53 +370,31 @@ def attach_mount(m: dict) -> str | None:
     # instead (vacuously True off Windows, so POSIX is unaffected).
     if not _winfsp_available():
         return _winfsp_missing_error()
-    try:
-        port = ensure_rcd()
-        # Detect and persist read_only BEFORE mounting (INCIDENT 2026-07-16):
-        # ReadOnly/rdonly have to be baked into the vfsOpt/mountOpt of the very
-        # mount/mount call, so read-onlyness must be settled first. Previously
-        # this ran AFTER the mount, so an auto-detected read-only remote mounted
-        # WRITABLE on its first attach and only became read-only after a
-        # restart — long enough to accumulate the doomed-upload loop. A
-        # user-set flag short-circuits detection, and an inconclusive probe
-        # leaves whatever is recorded, so this never blocks the mount.
-        _refresh_read_only_flag(m, port)
-        params = {
-            "fs": m["remote"],
-            "mountPoint": mp,
-            "mountType": (
-                "nfsmount" if sys.platform == "darwin"
-                else "cmount" if sys.platform == "win32"
-                else "mount"
-            ),
-            # Per-mount vfsOpt: VFS_OPT plus ReadOnly from the record, so a
-            # read-only remote's VFS rejects writes instead of caching them for
-            # a forever-retried upload (see _vfs_opt_for).
-            "vfsOpt": _vfs_opt_for(m),
-        }
-        # macOS only: raise the loopback NFS client's timeout, and add "rdonly"
-        # for a read-only mount (see NFS_MOUNT_OPT / _nfs_mount_opt). mountOpt is
-        # the NFS transport layer, not a vfs option, so it does NOT affect the
-        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
-        # serve (whose read_only matches the vfsOpt.ReadOnly here).
-        if sys.platform == "darwin":
-            params["mountOpt"] = _nfs_mount_opt(m)
-        # win32 only: force WinFsp DISK mode (NetworkMode off). rclone defaults
-        # Windows mounts to network-redirector mode, which does NOT create a
-        # mount point at the leaf at all. Every win32 detection path here leans
-        # on _ismount: the _await_ismount verify below would fail a SUCCESSFUL
-        # mount, and a retry could then mistake the live mount's contents for a
-        # non-empty leaf (or the force-unmount poll / mount_state would call a
-        # live mount dead). Disk mode creates the volume-device reparse point
-        # that _ismount detects. Like the darwin mountOpt, NetworkMode is a
-        # transport option, NOT a vfs option, so it does not affect the
-        # (fs, vfsOpt) VFS-reuse key — the mount still shares its VFS with the
-        # serve.
-        elif sys.platform == "win32":
-            params["mountOpt"] = {"NetworkMode": False}
-        _rc(port, "mount/mount", params, timeout=60)
-    except RuntimeError as e:
-        return str(e)
+    # Everything that can leave a kernel mount behind runs inside one in-flight
+    # registration — not just the rc call — so that when the quit teardown's bounded
+    # wait reports "settled", no attach is still mounting OR still undoing what it
+    # mounted. Extracted into _mount_via_rcd so this stays one flat `with`.
+    with _attach_in_flight():
+        err = _mount_via_rcd(m, mp)
+        if err is not None:
+            return err
+        # A quit can have begun while we sat in mount/mount, which carries a 60s
+        # timeout — far longer than the entire teardown budget. Neither the latch
+        # check at the top of this function (we were already past it) nor the
+        # teardown's sweep (a one-shot look that can land before this call returns,
+        # or even after the daemon is reaped) can cover that. WE are the only party
+        # that knows a mount was just created and the only one positioned to undo it
+        # at the right moment, so the last writer owns leaving nothing attached.
+        # Works even if rcd has already been reaped: _unmount_for_quit's force rung
+        # is a kernel `umount -f`, which needs no daemon. Deliberately BEFORE
+        # _await_ismount — waiting 3s to confirm an attach we are about to destroy is
+        # pointless, and a mount/mount that succeeded rcd-side has to be cleared from
+        # its tracking either way.
+        if _QUIT_TEARDOWN_LATCH.is_set():
+            logger.info("quit began while mounting %r; detaching what we just "
+                        "attached", m.get("name"))
+            _unmount_for_quit(m)
+            return "the app is quitting; not attaching mounts"
     # mount/mount returns success once rcd's NFS server is up and it has
     # invoked the macOS `mount` command — but on a flap-prone loopback NFS
     # mount the kernel attach can silently fail (or drop within seconds),
@@ -420,6 +514,200 @@ def _force_unmount(mp: str) -> str | None:
     if not _is_mounted(mp):
         return None
     return f"force unmount of {mp} failed: {last or 'still mounted'}"
+
+
+_QUIT_UNMOUNT_JOIN_BUDGET_S = 6.0
+
+
+# The hoisted tile-daemon quiesce gets its own bound because it is NOT free: it is
+# sequential over DAEMON_STATE_FILES and each /quit carries a 3s timeout, so two
+# wedged daemons — the very state that makes quiescing worth doing — cost 6s. That
+# used to be spent OUTSIDE the join budget, i.e. outside the number app.py derives
+# its deadline from. Bounded as a whole rather than counted per daemon, so adding a
+# tile daemon to DAEMON_STATE_FILES cannot silently stretch the quit deadline.
+_QUIT_QUIESCE_BUDGET_S = 2.0
+
+
+# What app.py is promised for the whole unmount step, and what its quit deadline is
+# derived from: the quiesce AND the per-mount joins. The two halves stay separate
+# budgets rather than one shared pool because a slow quiesce must not eat the time
+# the unmounts need — detaching the mounts is the correctness-critical half; the
+# quiesce only makes it likelier to succeed on the first rung.
+_QUIT_UNMOUNT_BUDGET_S = _QUIT_QUIESCE_BUDGET_S + _QUIT_UNMOUNT_JOIN_BUDGET_S
+
+
+def _unmount_for_quit(m: dict) -> None:
+    """The unmount ladder for ONE mount on the quit path. Never raises — the
+    caller runs these in parallel and one wedged mount must not take the others
+    (or the quit) with it.
+
+    `detach_mount(force=True)` IS the ladder (ask rcd; on a busy failure quiesce
+    the tile daemons that hold files open under the mount and retry; then
+    `_force_unmount`), the same rung restart_rcd already uses before it kills a
+    daemon — quit is that same "the daemon is about to go away" situation, so it
+    gets the same treatment rather than a second copy of the ladder. `force=True`
+    is required, not incidental: the plain call refuses to force ("failing loudly
+    beats corrupted reads", right for a user action on a live mount), whereas on
+    quit an attached mount whose NFS server is about to be signalled IS the harm.
+
+    Plus a last rung on the one question that actually matters here — is anything
+    still attached? — because detach_mount can answer "done" with a kernel mount
+    still in place. Its own force gate is `_ismount`, which is False for a WEDGED
+    mount (backend already gone, kernel entry retained: every stat ENOTCONNs and
+    posixpath.ismount swallows it), and its success path trusts rcd's OK, which
+    the INCIDENT 2026-07-16 split-brain shows can sit over a kernel mount that
+    stays behind. `_is_mounted` sees both. On the normal path it is False by then
+    and this rung costs nothing; on a mount detach_mount already tried and failed
+    to force it is one last attempt before the process goes away, which the
+    caller's budget bounds."""
+    from fused_render.shell.mounts import (
+        _force_unmount,
+        _is_mounted,
+        detach_mount,
+    )
+    mp = mountpoint(m)
+    try:
+        err = detach_mount(m, force=True)
+        if err:
+            logger.warning("quit: unmount of %r: %s", m.get("name"), err)
+    except Exception:
+        logger.warning("quit: unmount of %r failed", m.get("name"), exc_info=True)
+    try:
+        if _is_mounted(mp):
+            err = _force_unmount(mp)
+            if err:
+                logger.warning("quit: %s", err)
+    except Exception:
+        logger.warning("quit: force unmount of %r failed", m.get("name"),
+                       exc_info=True)
+
+
+def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
+    """Detach every configured mount before rcd is signalled, for app quit.
+
+    The bug this closes (INCIDENT 2026-07-29): on macOS a mount is attached as
+    an `nfsmount`, so the KERNEL holds a real NFS mount whose server IS the rcd
+    process. The quit path killed rcd with those mounts still attached — the NFS
+    server vanished under its own loopback client, the client timed out, and
+    macOS raised "server connection interrupted / disks not ejected properly"
+    for every mount. rclone's SIGTERM unmount cannot be relied on to prevent it
+    (plain umount, rejected by a busy nfsmount) and the SIGKILL escalation skips
+    it entirely. So quit now goes through the same rc-unmount -> force-unmount
+    ladder every other teardown in this module uses.
+
+    Gated on _rcd_is_ours_to_reap: with FUSED_RENDER_RCLONE_PERSIST set (dev) or
+    a still-live foreign spawner, the daemon keeps running — and a running
+    daemon's mounts must keep running with it.
+
+    Bounded and best-effort. Each mount is unmounted on its own thread (the
+    mount_state pattern) so a wedged `umount -f` — which can block for tens of
+    seconds in the kernel, and which we cannot cancel — costs only its share of
+    the wait: after `budget_s` we stop waiting and let the quit proceed. Threads
+    are daemons, so anything still stuck simply dies with the process.
+
+    `budget_s` bounds the per-mount JOINS only; the tile-daemon quiesce ahead of
+    them carries its own bound. The two together are `_QUIT_UNMOUNT_BUDGET_S`,
+    which is what app.py's quit deadline is derived from — see those constants for
+    why the halves are separate."""
+    from fused_render.shell.mounts import (
+        _rcd_is_ours_to_reap,
+        _unmount_for_quit,
+        list_mounts,
+    )
+    if not _rcd_is_ours_to_reap():
+        # Armed only when we actually commit to the teardown: a daemon we are
+        # LEAVING running keeps its mounts, so an attach racing this quit is
+        # harmless there and must not be refused.
+        return
+    # Before the snapshot below, so a concurrent run_automount stops adding mounts
+    # we would then have to chase (see _QUIT_TEARDOWN_LATCH).
+    _QUIT_TEARDOWN_LATCH.set()
+    try:
+        mounts = list_mounts()
+    except Exception:
+        logger.warning("quit: could not read the mount store", exc_info=True)
+        return
+    if mounts:
+        # Once, up front, instead of once per mount: detach_mount asks the tile
+        # daemons to quit whenever ITS unmount comes back busy, and each of those
+        # calls quits ALL daemons — so N busy mounts meant N rounds of /quit
+        # requests (each with a 3s timeout) inside the same budget. Hoisting it
+        # here is also strictly better than reacting to EBUSY: the daemons hold
+        # files open under the mounts (the measured cause), they are going away
+        # with the app regardless, and a released file cannot cause a busy
+        # unmount in the first place. detach_mount keeps its own retry for every
+        # other caller; the duplicate calls it may still make now hit already-dead
+        # ports and fail immediately.
+        # On its own thread, joined against _QUIT_QUIESCE_BUDGET_S: a daemon that
+        # never answers /quit is precisely the wedge this step exists for, and its
+        # 3s-per-daemon cost must not be spent out of the unmounts' budget (or
+        # outside the total app.py derives its deadline from). Called by bare name,
+        # like detach_mount's own call below it: same module, so there is no cycle
+        # to break with a package import — and one name means one thing for a test
+        # to intercept.
+        def _quiesce() -> None:
+            try:
+                _quit_tile_daemons()
+            except Exception:
+                logger.warning("quit: quiescing the tile daemons failed",
+                               exc_info=True)
+
+        quiesce = threading.Thread(target=_quiesce, daemon=True,
+                                   name="quit-quiesce-daemons")
+        quiesce.start()
+        quiesce.join(_QUIT_QUIESCE_BUDGET_S)
+        if quiesce.is_alive():
+            logger.warning("quit: tile daemons did not all release within %.1fs; "
+                           "unmounting anyway (the force rung covers a busy mount)",
+                           _QUIT_QUIESCE_BUDGET_S)
+    threads = []
+    for m in mounts:
+        t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
+                             name=f"quit-unmount-{m.get('name')}")
+        t.start()
+        threads.append((m, t))
+    deadline = time.monotonic() + budget_s
+    for m, t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            logger.warning(
+                "quit: unmount of %r did not finish within %.1fs; leaving it to "
+                "the process exit", m.get("name"), budget_s)
+    # An attach already PAST the latch check and inside rcd's mount/mount when we
+    # armed it detaches ITSELF when it returns (see attach_mount) — that is what
+    # makes this robust rather than a guess, since mount/mount's 60s ceiling is far
+    # past any quit budget. These two rungs narrow the gap it has to cover: wait
+    # (bounded) for such attaches to settle, then ask the KERNEL what is still
+    # attached — a fresh list_mounts, so a record added mid-teardown counts too.
+    # Both spend only the leftover budget, so neither can extend what app.py was
+    # promised, and on the normal path they cost one uncontended lock and N cheap
+    # _is_mounted checks.
+    _await_attaches_settled(deadline)
+    _sweep_late_mounts(deadline)
+
+
+def _sweep_late_mounts(deadline: float) -> None:
+    from fused_render.shell.mounts import _is_mounted, _unmount_for_quit, list_mounts
+    if time.monotonic() >= deadline:
+        return
+    try:
+        late = [m for m in list_mounts() if _is_mounted(mountpoint(m))]
+    except Exception:
+        logger.warning("quit: could not re-check the mount table", exc_info=True)
+        return
+    if not late:
+        return
+    logger.warning("quit: %s mount(s) were still attached after the unmount pass "
+                   "(an attach that raced the teardown); detaching",
+                   len(late))
+    threads = []
+    for m in late:
+        t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
+                             name=f"quit-sweep-{m.get('name')}")
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
 
 
 def detach_mount(m: dict, force: bool = False) -> str | None:
