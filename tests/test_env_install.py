@@ -282,6 +282,44 @@ def test_a_header_whose_venv_exists_just_runs(tmp_path, monkeypatch, warm_fused_
     assert "needs_install" not in out
 
 
+@pytest.mark.parametrize("boom", [
+    # `venv_key_for` imports `fused.agent_core...` unguarded — no fused, no import.
+    ImportError("No module named 'fused'"),
+    # `_backend_attr` raises this BY DESIGN when an upstream private attribute
+    # disappears: guessing would fill a venv no run ever reads. routers/env.py
+    # already catches (ImportError, RuntimeError) for exactly this pair.
+    RuntimeError("this fused build's Backend has no '_venvs_path'"),
+])
+def test_a_preflight_that_cannot_answer_returns_the_house_error_shape(
+    tmp_path, monkeypatch, boom
+):
+    """The pre-flight must fail like every other failure in `run_python`.
+
+    It used to sit ABOVE the try/except that the function's own comment says
+    catches "every other failure", so an `is_installed` that raised escaped as an
+    unhandled exception. /api/run's handler turns that into a 500 whose body is
+    `{"error": "<string>"}`, and runtime.js reads `data.error.message` off it —
+    the user is shown the literal text `undefined` for a diagnostic that was
+    written to be read.
+    """
+    import asyncio
+
+    def _raise(*a, **kw):
+        raise boom
+
+    monkeypatch.setattr(envinstall, "is_installed", _raise)
+    target = tmp_path / "needs.py"
+    target.write_text(
+        '# /// script\n# dependencies = ["imagecodecs"]\n# ///\n'
+        "def main():\n    return 1\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert isinstance(out["error"], dict), out
+    assert set(out["error"]) >= {"type", "message", "traceback"}
+    assert str(boom) in out["error"]["traceback"]
+
+
 def test_a_headerless_script_never_asks_for_an_install(tmp_path, monkeypatch):
     """Nothing to install: it runs on the app's interpreter (PY-17)."""
     import asyncio

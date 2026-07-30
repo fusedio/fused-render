@@ -883,23 +883,32 @@ async def run_python(path: str, params: dict) -> dict:
                 "candidates were tried and why each was rejected.",
             )
 
-    # Pre-flight (PY-18): a header whose venv does not exist yet needs a real
-    # download, which does not fit runPython's ~30s budget. Answer instead of
-    # blocking — the page shows the install loader, POSTs /api/env/install and
-    # retries. Only when there IS something to install: an existing venv runs
-    # straight through, so the normal case pays one marker stat.
-    if requirements:
-        from fused_render import envinstall
-
-        if not envinstall.is_installed(requirements):
-            return _needs_install_dict(requirements, abs_path=os.path.abspath(path))
-
     abs_path = os.path.abspath(path)
     try:
-        # Inside the guard, not before it: build_code reads _binding.py's source
-        # off the package (importlib.resources), so a broken/partial install
-        # fails here — and every other failure in this function returns the house
-        # wire shape rather than raising into the request handler as a 500.
+        # Pre-flight (PY-18): a header whose venv does not exist yet needs a real
+        # download, which does not fit runPython's ~30s budget. Answer instead of
+        # blocking — the page shows the install loader, POSTs /api/env/install and
+        # retries. Only when there IS something to install: an existing venv runs
+        # straight through, so the normal case pays one marker stat.
+        #
+        # Inside the guard, not before it, for the same reason build_code is:
+        # `is_installed` -> `venv_key_for` reaches into `fused.agent_core...`
+        # unguarded, and `_backend_attr` raises RuntimeError BY DESIGN when an
+        # upstream private attribute disappears (routers/env.py catches exactly
+        # that pair for its own calls). Escaping here made /api/run an unhandled
+        # 500 whose body is `{"error": "<string>"}`, and runtime.js reads
+        # `data.error.message` off that — so the diagnostic `_backend_attr` wrote
+        # to be READ reached the user as the literal word `undefined`.
+        if requirements:
+            from fused_render import envinstall
+
+            if not envinstall.is_installed(requirements):
+                return _needs_install_dict(requirements, abs_path=abs_path)
+
+        # build_code reads _binding.py's source off the package
+        # (importlib.resources), so a broken/partial install fails here — and
+        # every other failure in this function returns the house wire shape
+        # rather than raising into the request handler as a 500.
         code = build_code(user_code, os.path.dirname(abs_path), abs_path)
         r = await _execute(
             code, requirements, interpreter,
