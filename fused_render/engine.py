@@ -26,6 +26,24 @@ Code contract under this engine (the fused contract, plus a compat bridge):
     under either engine — a bare ``main()``, called with the same
     annotation-driven string coercion the built-in executor applies.
 
+Which of the three is live depends on WHO runs the script, and the difference is
+load-bearing rather than academic:
+
+  * **Here (local).** The epilogue below reads ``fused._registered_udfs``, and
+    the real ``fused`` wheel has no such attribute — ``fused.udf(fn)`` returns a
+    wrapper and registers nothing. Only the hosted backend's injected ``fused``
+    shim module keeps that list. So locally the first branch never fires and the
+    bare-``main()`` bridge is what actually runs, for every template.
+  * **Hosted (an exported page).** ``export.py`` bundles each ``runPython``
+    target and the ``fused`` wheel's hosting layer turns it into a served
+    entrypoint; that runner resolves ``_registered_udfs`` or ``result`` and has
+    **no bare-main fallback**, so a ``main()`` alone returns null there. That is
+    why 22 template files carry a guarded ``fused.udf(main)`` shim: inert under
+    this engine, and the only thing that makes them callable once deployed.
+
+Neither the shim nor its absence is enforced anywhere, and it is currently
+applied unevenly — see D178.
+
 The wire shape returned here is the built-in executor's
 ``{ok, result, error: {type, message, traceback}, stdout}`` (plus additive
 ``stderr``/``duration_ms`` keys), so runtime.js and every template consume one
