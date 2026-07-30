@@ -385,12 +385,29 @@ def start_quit(server, *, terminate, server_thread=None, teardown=None,
     return watchdog
 
 
+# Guards the quit bookkeeping on `state` — the lazy `quit_ready` event and
+# begin_quit's check-then-set of `quitting`. NOT because the surfaces are exotic:
+# the tray item and the delegate hook are both AppKit callbacks on the main thread,
+# but `_bootstrap_server`'s readiness-failure abort calls the same quit action from
+# the BOOTSTRAP thread, so a Dock/⌘Q quit can genuinely interleave with it. Unlocked,
+# both callers saw `quitting` False and ran two unmount fan-outs and two reaps (the
+# second raising "did not exit"), and two lazily-created events meant one surface
+# waiting on a signal the other never set — an app AppKit never gets a reply from.
+_quit_lock = threading.Lock()
+
+
 def _quit_ready_event(state: dict) -> threading.Event:
     """The one "teardown is finished (or its deadline fired) — dying is now
     correct" signal, shared by every quit surface. Lazily created on `state` so a
     surface that arrives while another's teardown is mid-flight observes the SAME
-    event instead of inventing a second answer. Created on the main thread (both
-    quit entry points are AppKit callbacks), so no lock is needed."""
+    event instead of inventing a second answer.
+
+    Callers already holding `_quit_lock` must use `_quit_ready_event_locked`."""
+    with _quit_lock:
+        return _quit_ready_event_locked(state)
+
+
+def _quit_ready_event_locked(state: dict) -> threading.Event:
     event = state.get("quit_ready")
     if event is None:
         event = state["quit_ready"] = threading.Event()
@@ -418,11 +435,15 @@ def begin_quit(state: dict, *, terminate=None, start=None,
         start = start_quit
     if remove_pidfile is None:
         remove_pidfile = _remove_pidfile
-    ready = _quit_ready_event(state)
-    if state.get("quitting"):
-        logger.info("quit already in progress; joining it")
-        return False
-    state["quitting"] = True
+    # One critical section for the event and the flag: claiming the teardown has to
+    # be atomic against another surface doing the same (see _quit_lock). The lock is
+    # released before `start`, which spawns threads — nothing under it blocks.
+    with _quit_lock:
+        ready = _quit_ready_event_locked(state)
+        if state.get("quitting"):
+            logger.info("quit already in progress; joining it")
+            return False
+        state["quitting"] = True
     remove_pidfile()
 
     def _finished() -> None:

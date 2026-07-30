@@ -1052,3 +1052,65 @@ def test_the_interlock_is_not_armed_when_the_daemon_is_left_running(ladder,
     mounts_mod.unmount_all_for_quit()
 
     assert not mounts_mod._QUIT_TEARDOWN_LATCH.is_set()
+
+
+class _RacingState(dict):
+    """A `state` that holds every caller INSIDE the check-then-set window until they
+    have all read the flag, so the interleave is a certainty rather than a timing
+    accident. A barrier-and-hope version of these tests (start N threads and wait for
+    the GIL to switch in the right microsecond) passed against the *unlocked* code —
+    worse than no test — and a sleep-in-the-read version flipped depending on how
+    fast thread startup happened to be.
+
+    With the window guarded, only one caller ever reaches the read; the barrier then
+    times out, which is why its wait is short and its expiry is not an error."""
+
+    def __init__(self, *a, parties=2, slow_key="quitting", **kw):
+        super().__init__(*a, **kw)
+        self._barrier = threading.Barrier(parties)
+        self._slow_key = slow_key
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        if key == self._slow_key and not self._barrier.broken:
+            try:
+                self._barrier.wait(0.5)
+            except threading.BrokenBarrierError:
+                pass  # guarded: the other caller never got here
+        return value
+
+
+def _race(target, parties=2):
+    threads = [threading.Thread(target=target) for _ in range(parties)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+
+def test_only_one_teardown_starts_when_two_threads_quit_at_once():
+    """begin_quit's check-then-set used to lean on "both entry points are AppKit
+    callbacks, so no lock is needed" — a premise the readiness-failure abort
+    falsified: _bootstrap_server calls the quit action from the BOOTSTRAP thread. A
+    Dock/⌘Q quit interleaving with it could see `quitting` False in both and run two
+    unmount fan-outs and two reaps (the second likely raising "did not exit")."""
+    state = _RacingState(server="srv", server_thread="thr")
+    start = _FakeStart()
+    started = []
+
+    _race(lambda: started.append(app_mod.begin_quit(
+        state, start=start, remove_pidfile=lambda: None)))
+
+    assert started.count(True) == 1, "exactly one caller may start the teardown"
+    assert len(start.calls) == 1
+
+
+def test_the_ready_event_is_the_same_object_for_racing_callers():
+    # Two lazily-created Events would mean one surface waiting on a signal the other
+    # never sets — an app AppKit is waiting on a reply from, forever.
+    state = _RacingState(slow_key="quit_ready")
+    seen = []
+
+    _race(lambda: seen.append(app_mod._quit_ready_event(state)))
+
+    assert len({id(e) for e in seen}) == 1
