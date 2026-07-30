@@ -436,16 +436,20 @@ jobs:
           # infrastructure (index.html + latest.json). Until that applies, warn
           # instead of erroring — though continue-on-error above is the real
           # guarantee the release proceeds regardless.
+          # Order matters: everything index.html depends on (assets, about.html)
+          # must land before index.html itself — the && chain short-circuits, so
+          # a failed dependency upload leaves the OLD page live instead of
+          # publishing a new page with missing images/links.
           if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
                --content-type "application/json" --cache-control "max-age=300" \
-             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
-               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
-             && aws s3 cp scripts/download_page/about.html "s3://${S3_BUCKET}/about.html" \
-               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
+               --content-type "image/png" --cache-control "max-age=86400" \
              && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
                --content-type "image/jpeg" --cache-control "max-age=86400" \
-             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
-               --content-type "image/png" --cache-control "max-age=86400"; then
+             && aws s3 cp scripts/download_page/about.html "s3://${S3_BUCKET}/about.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300"; then
             echo "download page + latest.json published"
             aws cloudfront create-invalidation \
               --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
