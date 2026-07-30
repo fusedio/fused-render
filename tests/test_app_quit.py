@@ -903,3 +903,48 @@ def test_the_readiness_failure_abort_goes_through_the_quit_action():
 
     assert "_bootstrap_server" in _enclosing_functions(
         _app_source_tree(), is_do_quit_call)
+
+
+def test_the_unmount_budget_app_py_is_promised_covers_the_quiesce_too(ladder,
+                                                                     monkeypatch):
+    """`_QUIT_UNMOUNT_BUDGET_S` is what app.py's deadline is built from, so it has
+    to bound the WHOLE step. The hoisted quiesce is sequential over
+    DAEMON_STATE_FILES with a per-daemon timeout, and two wedged tile daemons —
+    the state that motivates quiescing at all — spent that outside the join
+    budget."""
+    assert mounts_mod._QUIT_UNMOUNT_BUDGET_S == pytest.approx(
+        mounts_mod._QUIT_QUIESCE_BUDGET_S + mounts_mod._QUIT_UNMOUNT_JOIN_BUDGET_S)
+
+    # And the join budget is still spent on unmounts alone — a slow quiesce must
+    # not eat the time the mounts need, which is the correctness-critical half.
+    slow = 0.4
+    monkeypatch.setattr(mounts_mod.lifecycle, "_quit_tile_daemons",
+                        lambda: time.sleep(slow))
+    ladder["lingers"].add("alpha")
+    ladder["hang"].add("alpha")
+
+    t0 = time.monotonic()
+    mounts_mod.unmount_all_for_quit(budget_s=0.3)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed >= slow          # the quiesce ran...
+    assert elapsed < slow + 2.0     # ...and the join still got its own budget
+
+
+def test_a_hanging_quiesce_is_bounded_by_its_own_budget(ladder, monkeypatch):
+    # Bounded by construction rather than by counting per-daemon timeouts: a tile
+    # daemon that never answers /quit is exactly the wedge this step exists for,
+    # and DAEMON_STATE_FILES growing must not silently grow the quit deadline.
+    monkeypatch.setattr(mounts_mod.lifecycle, "_QUIT_QUIESCE_BUDGET_S", 0.2)
+    stuck = threading.Event()
+    monkeypatch.setattr(mounts_mod.lifecycle, "_quit_tile_daemons",
+                        lambda: stuck.wait(30))
+    try:
+        t0 = time.monotonic()
+        mounts_mod.unmount_all_for_quit()
+        elapsed = time.monotonic() - t0
+    finally:
+        stuck.set()
+
+    assert elapsed < 3.0
+    assert ladder["kernel"] == set()  # and the mounts still came down

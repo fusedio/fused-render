@@ -422,7 +422,24 @@ def _force_unmount(mp: str) -> str | None:
     return f"force unmount of {mp} failed: {last or 'still mounted'}"
 
 
-_QUIT_UNMOUNT_BUDGET_S = 6.0
+_QUIT_UNMOUNT_JOIN_BUDGET_S = 6.0
+
+
+# The hoisted tile-daemon quiesce gets its own bound because it is NOT free: it is
+# sequential over DAEMON_STATE_FILES and each /quit carries a 3s timeout, so two
+# wedged daemons — the very state that makes quiescing worth doing — cost 6s. That
+# used to be spent OUTSIDE the join budget, i.e. outside the number app.py derives
+# its deadline from. Bounded as a whole rather than counted per daemon, so adding a
+# tile daemon to DAEMON_STATE_FILES cannot silently stretch the quit deadline.
+_QUIT_QUIESCE_BUDGET_S = 2.0
+
+
+# What app.py is promised for the whole unmount step, and what its quit deadline is
+# derived from: the quiesce AND the per-mount joins. The two halves stay separate
+# budgets rather than one shared pool because a slow quiesce must not eat the time
+# the unmounts need — detaching the mounts is the correctness-critical half; the
+# quiesce only makes it likelier to succeed on the first rung.
+_QUIT_UNMOUNT_BUDGET_S = _QUIT_QUIESCE_BUDGET_S + _QUIT_UNMOUNT_JOIN_BUDGET_S
 
 
 def _unmount_for_quit(m: dict) -> None:
@@ -471,7 +488,7 @@ def _unmount_for_quit(m: dict) -> None:
                        exc_info=True)
 
 
-def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_BUDGET_S) -> None:
+def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_JOIN_BUDGET_S) -> None:
     """Detach every configured mount before rcd is signalled, for app quit.
 
     The bug this closes (INCIDENT 2026-07-29): on macOS a mount is attached as
@@ -492,7 +509,12 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_BUDGET_S) -> None:
     mount_state pattern) so a wedged `umount -f` — which can block for tens of
     seconds in the kernel, and which we cannot cancel — costs only its share of
     the wait: after `budget_s` we stop waiting and let the quit proceed. Threads
-    are daemons, so anything still stuck simply dies with the process."""
+    are daemons, so anything still stuck simply dies with the process.
+
+    `budget_s` bounds the per-mount JOINS only; the tile-daemon quiesce ahead of
+    them carries its own bound. The two together are `_QUIT_UNMOUNT_BUDGET_S`,
+    which is what app.py's quit deadline is derived from — see those constants for
+    why the halves are separate."""
     from fused_render.shell.mounts import (
         _rcd_is_ours_to_reap,
         _unmount_for_quit,
@@ -516,14 +538,28 @@ def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_BUDGET_S) -> None:
         # unmount in the first place. detach_mount keeps its own retry for every
         # other caller; the duplicate calls it may still make now hit already-dead
         # ports and fail immediately.
-        # Called by bare name, like detach_mount's own call below it: same module,
-        # so there is no cycle to break with a package import — and one name means
-        # one thing for a test to intercept.
-        try:
-            _quit_tile_daemons()
-        except Exception:
-            logger.warning("quit: quiescing the tile daemons failed",
-                           exc_info=True)
+        # On its own thread, joined against _QUIT_QUIESCE_BUDGET_S: a daemon that
+        # never answers /quit is precisely the wedge this step exists for, and its
+        # 3s-per-daemon cost must not be spent out of the unmounts' budget (or
+        # outside the total app.py derives its deadline from). Called by bare name,
+        # like detach_mount's own call below it: same module, so there is no cycle
+        # to break with a package import — and one name means one thing for a test
+        # to intercept.
+        def _quiesce() -> None:
+            try:
+                _quit_tile_daemons()
+            except Exception:
+                logger.warning("quit: quiescing the tile daemons failed",
+                               exc_info=True)
+
+        quiesce = threading.Thread(target=_quiesce, daemon=True,
+                                   name="quit-quiesce-daemons")
+        quiesce.start()
+        quiesce.join(_QUIT_QUIESCE_BUDGET_S)
+        if quiesce.is_alive():
+            logger.warning("quit: tile daemons did not all release within %.1fs; "
+                           "unmounting anyway (the force rung covers a busy mount)",
+                           _QUIT_QUIESCE_BUDGET_S)
     threads = []
     for m in mounts:
         t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
