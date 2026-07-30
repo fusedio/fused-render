@@ -209,8 +209,16 @@ def _interpreter_home() -> str | None:
     `PYTHONHOME=…/Contents/Resources` (`scripts/build_dmg.sh` does this for every
     invocation of that python and says why), and that is the ONLY thing making
     `Contents/Resources/lib/python3.12` — where py2app flattens both the stdlib
-    and site-packages — findable. Prefer the value we were launched with; fall
-    back to `sys.prefix`, which equals it whenever PYTHONHOME is in effect.
+    and site-packages — findable. The environment we were launched with is the
+    ONLY source read here, and an unset PYTHONHOME is answered with None rather
+    than with `sys.prefix`.
+
+    That `sys.prefix` fallback was deliberately abandoned: without PYTHONHOME the
+    bundle's python reports the BUILD MACHINE's Homebrew framework as its prefix
+    (measured against a real DMG — `_wrapper_interpreter` below records the same
+    measurement), so reading it there yields a path that does not exist on the
+    user's machine. Building a wrapper around that is strictly worse than the
+    honest "this process needs no wrapper".
 
     None means this process does not depend on PYTHONHOME, so there is nothing
     for a wrapper to hand on and no reason to build one.
