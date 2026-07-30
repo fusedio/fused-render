@@ -6,8 +6,10 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
+from fused_render.server.routers import fs_read as _server_fs_read
 from fused_render import server
-from fused_render.server import _walk_bfs, create_app
+from fused_render.server.routers.fs_read import _walk_bfs
+from fused_render.server import create_app
 
 
 def _client(tmp_path):
@@ -32,7 +34,7 @@ def test_walk_stops_at_depth_cap(tmp_path, monkeypatch):
     # A deep, low-fan-out chain (the NAIP state/year/quad/tile shape) never
     # trips the entry-count cap, so only the depth cap bounds it.
     _make_deep_chain(tmp_path, 8)
-    monkeypatch.setattr(server, "WALK_MAX_DEPTH_LOCAL", 2)
+    monkeypatch.setattr(_server_fs_read, "WALK_MAX_DEPTH_LOCAL", 2)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True  # depth cap flags partial coverage
     rels = {e["rel"] for e in data["entries"]}
@@ -96,7 +98,7 @@ def test_walk_bfs_entry_cap_stops_generator(tmp_path):
 def test_walk_entry_cap_via_endpoint(tmp_path, monkeypatch):
     for i in range(20):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(server, "WALK_MAX_ENTRIES", 4)
+    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES", 4)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 4
@@ -113,7 +115,25 @@ class _DisconnectedRequest:
 
 
 def _walk_endpoint(app):
-    return next(r.endpoint for r in app.routes if getattr(r, "path", "") == "/api/fs/walk")
+    # Routes now arrive via app.include_router(...) (the routes live in sibling
+    # router modules, not directly on `app`), so FastAPI wraps each included
+    # router in an opaque holder instead of flattening its routes onto
+    # app.routes. Unwrap via `.routes` (a plain APIRouter) or `.original_router`
+    # (FastAPI's include wrapper) until we hit the leaf APIRoute objects.
+    def _iter_routes(routes):
+        for r in routes:
+            sub = getattr(r, "routes", None)
+            if sub is None:
+                original = getattr(r, "original_router", None)
+                sub = getattr(original, "routes", None) if original is not None else None
+            if sub is not None:
+                yield from _iter_routes(sub)
+            else:
+                yield r
+
+    return next(
+        r.endpoint for r in _iter_routes(app.routes) if getattr(r, "path", "") == "/api/fs/walk"
+    )
 
 
 def test_walk_aborts_on_disconnect(tmp_path):

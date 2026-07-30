@@ -3,18 +3,18 @@ Templates view: edit registry bindings, inspect the template inventory across
 sources, and import/export user templates as zip.
 
 The template *resolution* engine (the suffix-pattern matcher, name resolution,
-splice grammar) already lives in ``fused_render.server`` (D73). This module is
-a thin management layer on top of it: it REUSES ``server._key_segments`` /
-``server._match_registry`` / ``server._names_from_value`` / ``server._resolve_name``
-/ ``server._icon_for`` / ``server._load_registry`` and the dir constants
-``server.TEMPLATES_DIR`` / ``server.USER_TEMPLATES_DIR`` / ``server.BUILTIN_REGISTRY``
-/ ``server.USER_REGISTRY`` — imported as ``server.<name>`` and read at REQUEST
-time so tests can monkeypatch the dirs (test_templates.py's seam).
+splice grammar) lives in ``fused_render.server.templates`` (D73). This module is
+a thin management layer on top of it: it REUSES ``_server_templates._key_segments`` /
+``_server_templates._match_registry`` / ``_server_templates._names_from_value`` / ``_server_templates._resolve_name``
+/ ``_server_templates._icon_for`` / ``_server_templates._load_registry`` and the dir constants
+``_server_templates.TEMPLATES_DIR`` / ``_server_templates.USER_TEMPLATES_DIR`` / ``_server_templates.BUILTIN_REGISTRY``
+/ ``_server_templates.USER_REGISTRY`` (imported here as ``_server_templates``, its old
+flat-module name, purely as a local alias) — read at REQUEST time so tests can
+monkeypatch the dirs (test_templates.py's seam).
 
 ``server`` includes this router lazily inside ``create_app`` (no server->module
-import at module top), so ``from fused_render import server`` here is acyclic:
-this module only touches ``server`` attributes inside request handlers, by which
-point ``server`` is fully imported.
+import at module top), so importing ``fused_render.server.templates`` here at
+module level is acyclic: it never imports ``server`` or ``templates_api``.
 
 Sources (SPEC §1): the builtin/user pair is modelled as an ordered list so a
 third (org/project) can be appended later with zero UI rework — TODAY exactly
@@ -37,7 +37,7 @@ import zipfile
 from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from fused_render import server
+from fused_render.server import templates as _server_templates
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -56,10 +56,10 @@ SOURCES = [
 
 def _sources_payload() -> list:
     """SOURCES with an ABSOLUTE `dir` added per source (SPEC §2.1/§2.2): core's
-    templates dir = server.TEMPLATES_DIR, user's = server.USER_TEMPLATES_DIR.
+    templates dir = _server_templates.TEMPLATES_DIR, user's = _server_templates.USER_TEMPLATES_DIR.
     Read at request time (not baked into SOURCES) so tests that monkeypatch
     those module constants see the patched dirs."""
-    dirs = {"core": server.TEMPLATES_DIR, "user": server.USER_TEMPLATES_DIR}
+    dirs = {"core": _server_templates.TEMPLATES_DIR, "user": _server_templates.USER_TEMPLATES_DIR}
     return [dict(s, dir=os.path.abspath(dirs[s["id"]])) for s in SOURCES]
 
 
@@ -100,7 +100,7 @@ def _source_of_resolved(path: str | None) -> str | None:
     if not path:
         return None
     p = os.path.abspath(path)
-    user_root = os.path.abspath(server.USER_TEMPLATES_DIR)
+    user_root = os.path.abspath(_server_templates.USER_TEMPLATES_DIR)
     if p == user_root or p.startswith(user_root + os.sep):
         return "user"
     return "core"
@@ -111,25 +111,25 @@ def _template_obj(name: str) -> dict:
     (SPEC §2.2). A known sentinel (e.g. "_render") has no folder — source null,
     exists true, no icon. A name that resolves to no folder is kept but marked
     exists:false so the UI can surface it as broken."""
-    if name in server.KNOWN_SENTINELS:
+    if name in _server_templates.KNOWN_SENTINELS:
         return {"name": name, "source": None, "exists": True, "hasIcon": False}
-    path, _err = server._resolve_name(name)
+    path, _err = _server_templates._resolve_name(name)
     if path is None:
         return {"name": name, "source": None, "exists": False, "hasIcon": False}
     return {
         "name": name,
         "source": _source_of_resolved(path),
         "exists": True,
-        "hasIcon": server._icon_for(path) is not None,
+        "hasIcon": _server_templates._icon_for(path) is not None,
     }
 
 
 def _load_registries():
     """Both registries as dicts (missing/corrupt -> {}) plus the read errors."""
-    builtin_reg, builtin_err = server._load_registry(
-        server.BUILTIN_REGISTRY, "built-in registry.json"
+    builtin_reg, builtin_err = _server_templates._load_registry(
+        _server_templates.BUILTIN_REGISTRY, "built-in registry.json"
     )
-    user_reg, user_err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    user_reg, user_err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
     builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
     user_reg = user_reg if isinstance(user_reg, dict) else {}
     return builtin_reg, user_reg, builtin_err, user_err
@@ -139,7 +139,7 @@ def _builtin_names(builtin_key, builtin_reg) -> list:
     """The builtin registry's name list for a key, or []."""
     if builtin_key is None:
         return []
-    names, disabled, _err = server._names_from_value(builtin_key, builtin_reg[builtin_key], [])
+    names, disabled, _err = _server_templates._names_from_value(builtin_key, builtin_reg[builtin_key], [])
     return names if (names and not disabled) else []
 
 
@@ -155,7 +155,7 @@ def _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by
 
     if user_key is not None:
         raw_user_value = user_reg[user_key]
-        names, disabled, error = server._names_from_value(user_key, raw_user_value, builtin_names)
+        names, disabled, error = _server_templates._names_from_value(user_key, raw_user_value, builtin_names)
         effective = [] if disabled else (names or [])
         resolved_source = "user"
         overrides_core = True
@@ -163,7 +163,7 @@ def _compute_entry(display_key, builtin_reg, user_reg, builtin_by_lower, user_by
         # No user override -> the builtin decides. Builtin values are lists in
         # practice, but honour a null (disabled) shape generally.
         b_names, b_disabled, error = (
-            server._names_from_value(builtin_key, builtin_reg[builtin_key], [])
+            _server_templates._names_from_value(builtin_key, builtin_reg[builtin_key], [])
             if builtin_key is not None
             else ([], False, None)
         )
@@ -216,8 +216,8 @@ def _registry_payload() -> dict:
         "sources": _sources_payload(),
         "entries": entries,
         # Back-compat fields so old Preferences code keeps working (SPEC §2.2).
-        "builtin_registry": server.BUILTIN_REGISTRY,
-        "user_registry": server.USER_REGISTRY,
+        "builtin_registry": _server_templates.BUILTIN_REGISTRY,
+        "user_registry": _server_templates.USER_REGISTRY,
         "error": builtin_err or user_err,
     }
 
@@ -328,10 +328,10 @@ def _inventory_payload() -> dict:
     across sources. A user folder shadowing a core folder of the same name is
     emitted ONCE as source=user, shadowsCore=true (the hidden core one is not
     emitted)."""
-    core = _folders_with_template(server.TEMPLATES_DIR)
-    user = _folders_with_template(server.USER_TEMPLATES_DIR)
-    core_dir = os.path.abspath(server.TEMPLATES_DIR)
-    user_dir = os.path.abspath(server.USER_TEMPLATES_DIR)
+    core = _folders_with_template(_server_templates.TEMPLATES_DIR)
+    user = _folders_with_template(_server_templates.USER_TEMPLATES_DIR)
+    core_dir = os.path.abspath(_server_templates.TEMPLATES_DIR)
+    user_dir = os.path.abspath(_server_templates.USER_TEMPLATES_DIR)
 
     bindings = _effective_bindings()
     used_by = {}
@@ -393,7 +393,7 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
         return _error("'key' must be a non-empty string")
     # Grammar: a valid pattern for its population (dir key iff trailing "/").
     is_dir = key.endswith("/")
-    if server._key_segments(key, is_dir) is None:
+    if _server_templates._key_segments(key, is_dir) is None:
         return _error(
             f"invalid registry key {key!r}: must be a dot-anchored suffix pattern "
             "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
@@ -412,15 +412,15 @@ def api_put_registry(body: dict = Body(...), x_fused: str | None = Header(defaul
 
     # Load the user registry for writing; refuse to clobber a corrupt file (a
     # whole-file rewrite would otherwise drop every other binding).
-    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    reg, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
     if err:
         return _error(
             f"refusing to overwrite the user registry: {err}. Move "
-            f"{server.USER_REGISTRY} aside and retry.",
+            f"{_server_templates.USER_REGISTRY} aside and retry.",
         )
     reg = reg if isinstance(reg, dict) else {}
     _apply_binding(reg, key, value)
-    storage.write_json(server.USER_REGISTRY, reg)
+    storage.write_json(_server_templates.USER_REGISTRY, reg)
 
     return _single_entry(key)
 
@@ -436,11 +436,11 @@ def api_reset_registry(body: dict = Body(...), x_fused: str | None = Header(defa
     if not isinstance(key, str) or not key:
         return _error("'key' must be a non-empty string")
 
-    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    reg, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
     if err:
         return _error(
             f"refusing to overwrite the user registry: {err}. Move "
-            f"{server.USER_REGISTRY} aside and retry.",
+            f"{_server_templates.USER_REGISTRY} aside and retry.",
         )
     reg = reg if isinstance(reg, dict) else {}
     removed = False
@@ -449,7 +449,7 @@ def api_reset_registry(body: dict = Body(...), x_fused: str | None = Header(defa
             del reg[k]
             removed = True
     if removed:
-        storage.write_json(server.USER_REGISTRY, reg)
+        storage.write_json(_server_templates.USER_REGISTRY, reg)
 
     entry = _single_entry(key)
     if entry is None:
@@ -488,10 +488,10 @@ def _resolve_export_folder(name: str) -> str | None:
         return None
     if "/" in name or "\\" in name or name in (".", ".."):
         return None
-    user_folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    user_folder = os.path.join(_server_templates.USER_TEMPLATES_DIR, name)
     if os.path.isdir(user_folder):
         return user_folder
-    core_folder = os.path.join(server.TEMPLATES_DIR, name)
+    core_folder = os.path.join(_server_templates.TEMPLATES_DIR, name)
     if os.path.isdir(core_folder):
         return core_folder
     return None
@@ -513,7 +513,7 @@ def api_export_templates(names: list[str] = Query(default=[])):
         return _error(
             "no such template: "
             + ", ".join(repr(n) for n in bad)
-            + f" (looked in {server.USER_TEMPLATES_DIR} and {server.TEMPLATES_DIR})"
+            + f" (looked in {_server_templates.USER_TEMPLATES_DIR} and {_server_templates.TEMPLATES_DIR})"
         )
 
     buf = io.BytesIO()
@@ -564,7 +564,7 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
         return _error("invalid template name")
     clean_registry = body.get("cleanRegistry") is True
 
-    folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    folder = os.path.join(_server_templates.USER_TEMPLATES_DIR, name)
     # Reject symlinks (never follow one out of the user dir) and anything that
     # is not a real user directory — a core-only template resolves here to a
     # path that does not exist under USER_TEMPLATES_DIR, so it 404s.
@@ -575,11 +575,11 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
         # Refuse a corrupt user registry BEFORE the destructive rmtree (same
         # posture as PUT) — a refusal must leave the folder intact so the user
         # can fix the registry and retry the whole gesture.
-        _, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        _, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
         if err:
             return _error(
                 f"refusing to overwrite the user registry: {err}. Move "
-                f"{server.USER_REGISTRY} aside and retry.",
+                f"{_server_templates.USER_REGISTRY} aside and retry.",
             )
 
     shutil.rmtree(folder)
@@ -589,7 +589,7 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
     # Re-read AFTER the rmtree so the sweep rewrites the registry as it is
     # now, not the pre-check's snapshot — a binding edited concurrently while
     # the gesture was in flight must survive the write below.
-    reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+    reg, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
     if err:
         # The folder is already gone; nothing destructive left to refuse. Skip
         # the sweep rather than overwrite a registry we can no longer parse.
@@ -598,7 +598,7 @@ def api_delete_template(body: dict = Body(...), x_fused: str | None = Header(def
 
     cleaned = _sweep_registry_name(reg, name)
     if cleaned:
-        storage.write_json(server.USER_REGISTRY, reg)
+        storage.write_json(_server_templates.USER_REGISTRY, reg)
     return {"deleted": name, "registryKeysCleaned": cleaned}
 
 
@@ -697,7 +697,7 @@ def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
             continue
         kept = []
         for key in keys:
-            if server._key_segments(key, key.endswith("/")) is None:
+            if _server_templates._key_segments(key, key.endswith("/")) is None:
                 warnings.append(f"{_REC_FILENAME}: ignored invalid registry key {key!r} for {name!r}")
                 continue
             kept.append(key)
@@ -819,7 +819,7 @@ async def api_import_templates(
             "name": name,
             "valid": has_html,
             "hasTemplateHtml": has_html,
-            "conflictsExisting": os.path.isdir(os.path.join(server.USER_TEMPLATES_DIR, name)),
+            "conflictsExisting": os.path.isdir(os.path.join(_server_templates.USER_TEMPLATES_DIR, name)),
             "fileCount": file_count,
         }
         rec_keys = recommendations.get(name)
@@ -851,7 +851,7 @@ def _unique_name(base: str) -> str:
     folder — keep-both must never clobber (SPEC §2.7)."""
     candidate = base
     n = 2
-    while os.path.exists(os.path.join(server.USER_TEMPLATES_DIR, candidate)):
+    while os.path.exists(os.path.join(_server_templates.USER_TEMPLATES_DIR, candidate)):
         candidate = f"{base}-{n}"
         n += 1
     return candidate
@@ -891,7 +891,7 @@ def api_commit_import(
         if not isinstance(keys, list) or any(not isinstance(k, str) or not k for k in keys):
             return _error(f"'bindings' for {orig!r} must be an array of registry keys")
         for key in keys:
-            if server._key_segments(key, key.endswith("/")) is None:
+            if _server_templates._key_segments(key, key.endswith("/")) is None:
                 return _error(
                     f"invalid registry key {key!r}: must be a dot-anchored suffix pattern "
                     "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
@@ -900,15 +900,15 @@ def api_commit_import(
     if any(bindings.values()):
         # Refuse to touch a corrupt user registry (a rewrite would drop every
         # other binding) BEFORE moving anything — same posture as PUT.
-        user_reg, reg_err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        user_reg, reg_err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
         if reg_err:
             return _error(
                 f"refusing to overwrite the user registry: {reg_err}. Move "
-                f"{server.USER_REGISTRY} aside and retry.",
+                f"{_server_templates.USER_REGISTRY} aside and retry.",
             )
         user_reg = user_reg if isinstance(user_reg, dict) else {}
 
-    os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
+    os.makedirs(_server_templates.USER_TEMPLATES_DIR, exist_ok=True)
 
     imported, skipped, overwritten, renamed = [], [], [], {}
     landed = {}  # ORIGINAL staged name -> final folder name, for bindings below
@@ -933,7 +933,7 @@ def api_commit_import(
                 continue
 
             if resolution == "overwrite":
-                target = os.path.join(server.USER_TEMPLATES_DIR, name)
+                target = os.path.join(_server_templates.USER_TEMPLATES_DIR, name)
                 if os.path.exists(target):
                     # Displace the original to a sibling backup first; keep the
                     # backup until the whole commit succeeds so it can be
@@ -951,7 +951,7 @@ def api_commit_import(
                 landed[name] = name
             else:  # keep-both
                 final = _unique_name(name)
-                dest = os.path.join(server.USER_TEMPLATES_DIR, final)
+                dest = os.path.join(_server_templates.USER_TEMPLATES_DIR, final)
                 os.rename(staged, dest)
                 applied.append((dest, staged))
                 if final != name:
@@ -988,8 +988,8 @@ def api_commit_import(
     # append to whatever a key already resolves to, never replace it.
     bindings_applied = []
     if bindings:
-        builtin_reg, _builtin_err = server._load_registry(
-            server.BUILTIN_REGISTRY, "built-in registry.json"
+        builtin_reg, _builtin_err = _server_templates._load_registry(
+            _server_templates.BUILTIN_REGISTRY, "built-in registry.json"
         )
         builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
         builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
@@ -1018,7 +1018,7 @@ def api_commit_import(
                 _apply_binding(user_reg, key, base if final in base else base + [final])
                 bindings_applied.append({"key": key, "template": final})
         if bindings_applied:
-            storage.write_json(server.USER_REGISTRY, user_reg)
+            storage.write_json(_server_templates.USER_REGISTRY, user_reg)
 
     return {
         "imported": imported,
@@ -1073,7 +1073,7 @@ def _ensure_starter_skills(dest: str) -> None:
 
 def _template_name_error(name) -> str | None:
     """Why `name` is not usable as a template folder/name, or None if it is.
-    Matches server._resolve_name's rule (SPEC CT-6): one plain path segment, no
+    Matches _server_templates._resolve_name's rule (SPEC CT-6): one plain path segment, no
     '/', '\\', or '.', and no leading '_' (reserved for shell sentinels) — so a
     created template's name always resolves by the PT-6 rule."""
     if not isinstance(name, str) or not name:
@@ -1108,14 +1108,14 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     for ext in extensions:
         if not isinstance(ext, str) or not ext:
             return _error("each extension must be a non-empty registry key string")
-        if server._key_segments(ext, ext.endswith("/")) is None:
+        if _server_templates._key_segments(ext, ext.endswith("/")) is None:
             return _error(
                 f"invalid registry key {ext!r}: must be a dot-anchored suffix pattern "
                 "(e.g. '.csv', '.xyz.json', '.*.json', or a directory key '.zarr/')"
             )
         keys.append(ext)
 
-    dest = os.path.join(server.USER_TEMPLATES_DIR, name)
+    dest = os.path.join(_server_templates.USER_TEMPLATES_DIR, name)
     if os.path.exists(dest):
         return _error(f"a user template named {name!r} already exists", status=409)
 
@@ -1125,15 +1125,15 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
     # problem it never touches.
     reg = {}
     if keys:
-        reg, err = server._load_registry(server.USER_REGISTRY, "registry.json")
+        reg, err = _server_templates._load_registry(_server_templates.USER_REGISTRY, "registry.json")
         if err:
             return _error(
                 f"refusing to overwrite the user registry: {err}. Move "
-                f"{server.USER_REGISTRY} aside and retry.",
+                f"{_server_templates.USER_REGISTRY} aside and retry.",
             )
         reg = reg if isinstance(reg, dict) else {}
 
-    os.makedirs(server.USER_TEMPLATES_DIR, exist_ok=True)
+    os.makedirs(_server_templates.USER_TEMPLATES_DIR, exist_ok=True)
     try:
         shutil.copytree(_STARTER_KIT_DIR, dest)
     except FileExistsError:
@@ -1154,8 +1154,8 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         # already resolves to (its user override, or the core default if the
         # user has no override yet) — never replace an existing multi-mode
         # binding with just this one name.
-        builtin_reg, _builtin_err = server._load_registry(
-            server.BUILTIN_REGISTRY, "built-in registry.json"
+        builtin_reg, _builtin_err = _server_templates._load_registry(
+            _server_templates.BUILTIN_REGISTRY, "built-in registry.json"
         )
         builtin_reg = builtin_reg if isinstance(builtin_reg, dict) else {}
         builtin_by_lower = {str(k).lower(): k for k in builtin_reg}
@@ -1165,7 +1165,7 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
             current_names = [t["name"] for t in entry["templates"]]
             _apply_binding(reg, key, current_names + [name])
         try:
-            storage.write_json(server.USER_REGISTRY, reg)
+            storage.write_json(_server_templates.USER_REGISTRY, reg)
         except Exception as exc:
             # The folder is otherwise complete and usable, but leaving it
             # behind after a reported failure means a retry always 409s. Clean
@@ -1194,7 +1194,7 @@ def api_open_in_claude(body: dict = Body(...), x_fused: str | None = Header(defa
 
     # User templates only — a core-only name resolves to no user folder and 404s
     # (core folders live in the package, never opened for editing here).
-    folder = os.path.join(server.USER_TEMPLATES_DIR, name)
+    folder = os.path.join(_server_templates.USER_TEMPLATES_DIR, name)
     if os.path.islink(folder) or not os.path.isdir(folder):
         return _error(f"no user template named {name!r}", status=404)
 

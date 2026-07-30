@@ -17,8 +17,7 @@ import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
 import { useThemeSync } from "./lib/theme";
 import Sidebar from "./components/Sidebar";
-import ToastHost from "./components/ToastHost";
-import ServerStatusBanner from "./components/ServerStatusBanner";
+import NotificationHost from "./components/NotificationHost";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
 import { isMod } from "./lib/platform";
 import { isOverlayOpen } from "./lib/ui-overlay";
@@ -276,7 +275,7 @@ export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
-  // once here for the page's lifetime (no-ops in embed); renders via ToastHost.
+  // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
 
   // Keep <html data-theme> in step with the appearance preference for the
@@ -501,8 +500,7 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && <Sidebar config={config} />}
       <div id="main">{main}</div>
-      <ToastHost />
-      {!IS_EMBED && <ServerStatusBanner />}
+      <NotificationHost />
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

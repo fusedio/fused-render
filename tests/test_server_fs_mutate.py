@@ -15,11 +15,11 @@ from pathlib import Path
 import pytest
 from fastapi.responses import JSONResponse
 
-from fused_render import server
-from fused_render.server import _fs_copy as COPY
-from fused_render.server import _fs_delete as DELETE
-from fused_render.server import _fs_mkdir as MKDIR
-from fused_render.server import _fs_rename as RENAME
+from fused_render.server import fs_mutate as _server_fs_mutate
+from fused_render.server.fs_mutate import _fs_copy as COPY
+from fused_render.server.fs_mutate import _fs_delete as DELETE
+from fused_render.server.fs_mutate import _fs_mkdir as MKDIR
+from fused_render.server.fs_mutate import _fs_rename as RENAME
 
 # os.access always says yes for root, so the chmod-based gates can't trip.
 skip_root = pytest.mark.skipif(
@@ -172,7 +172,7 @@ def _fake_home(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr(server, "_trash_supported", lambda: True)
+    monkeypatch.setattr(_server_fs_mutate, "_trash_supported", lambda: True)
     return home / ".Trash"
 
 
@@ -200,7 +200,7 @@ def test_delete_trash_dedupe_suffix(tmp_path, monkeypatch):
 def test_delete_trash_unsupported_returns_501(tmp_path, monkeypatch):
     # Non-darwin (or Trash otherwise unavailable) → a 501 the frontend keys on
     # to fall back to a hard delete; the file must be left in place.
-    monkeypatch.setattr(server, "_trash_supported", lambda: False)
+    monkeypatch.setattr(_server_fs_mutate, "_trash_supported", lambda: False)
     f = tmp_path / "f.txt"
     f.write_text("x")
     resp = DELETE({"path": str(f), "trash": True}, x_fused="1")
@@ -213,12 +213,12 @@ def test_delete_trash_failure_is_500_not_501(tmp_path, monkeypatch):
     # A FAILED trash on a supported platform must not reuse the 501
     # "unsupported" signal — that would route the client into the irreversible
     # hard-delete confirm as the follow-up to a recoverable-delete attempt.
-    monkeypatch.setattr(server, "_trash_supported", lambda: True)
+    monkeypatch.setattr(_server_fs_mutate, "_trash_supported", lambda: True)
 
     def boom(path):
         raise OSError("disk sulking")
 
-    monkeypatch.setattr(server, "_move_to_trash", boom)
+    monkeypatch.setattr(_server_fs_mutate, "_move_to_trash", boom)
     f = tmp_path / "f.txt"
     f.write_text("x")
     resp = DELETE({"path": str(f), "trash": True}, x_fused="1")

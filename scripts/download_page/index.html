@@ -105,6 +105,13 @@
     margin: 8px 0;
   }
   a { color: inherit; }
+  .hero-gif {
+    display: block;
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin: 2px 0 12px;
+  }
   footer {
     text-align: center;
     color: var(--muted);
@@ -123,7 +130,7 @@
     </div>
     <p class="tagline">A local file explorer with Python-powered interactive
     HTML views — browse any directory in the browser, preview your data, and
-    author pages that call local Python.</p>
+    author pages that call local Python. Runs entirely on your computer.</p>
   </header>
 
   <section>
@@ -131,8 +138,7 @@
     <!-- Usable before/without latest.json: falls back to the releases page,
          upgraded to the direct DMG link once the manifest loads. -->
     <p><a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a></p>
-    <p class="muted">Signed and notarized app, macOS 11+. Bundles its own
-    Python, the fused CLI, and rclone — nothing else to install.</p>
+    <p class="muted">Signed and notarized app, macOS 11+.</p>
     <p class="muted">Or with Homebrew:</p>
     <pre>brew install --cask fusedio/tap/fused-render</pre>
   </section>
@@ -142,8 +148,7 @@
     <!-- Usable before/without latest.json: falls back to the releases page,
          upgraded to the direct installer link once the manifest loads. -->
     <p><a class="btn" id="windows-exe" href="https://github.com/fusedio/fused-render/releases">Download for Windows</a></p>
-    <p class="muted">Installer (.exe), Windows 10+. Bundles its own Python and
-    the fused CLI — nothing else to install.</p>
+    <p class="muted">Installer (.exe), Windows 10+.</p>
   </section>
 
   <section>
@@ -151,8 +156,7 @@
     <!-- Usable before/without latest.json: falls back to the releases page,
          upgraded to the direct AppImage link once the manifest loads. -->
     <p><a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a></p>
-    <p class="muted">AppImage (x86_64) — make it executable and run. Bundles
-    its own Python and the fused CLI — nothing else to install.</p>
+    <p class="muted">AppImage (x86_64) — make it executable and run.</p>
   </section>
 
   <section>
@@ -164,8 +168,22 @@
     Explorer "Open with" integration for every format it previews.</p>
   </section>
 
+  <section class="hero">
+    <!-- Same demo GIF as the README's hero: right-click a file in Explorer,
+         pick "Open with" → fused-render, and it opens in the browser.
+         Served straight from the main branch so this page never drifts
+         from the README's copy and doesn't need a release-pipeline upload. -->
+    <img class="hero-gif" alt="fused-render: right-click a file in Explorer, pick &quot;Open with&quot; → fused-render, and it opens in the browser" src="https://raw.githubusercontent.com/fusedio/fused-render/main/learn/assets/open_with_right_click.gif">
+    <p class="muted">Right-click a file in Explorer → <strong>Open with</strong> →
+    fused-render, and it opens in your browser, ready to preview.</p>
+    <p><a href="https://github.com/fusedio/fused-render-examples">Browse example views →</a>
+    <span class="muted">copy any of them into your own install and run them as-is.</span></p>
+  </section>
+
   <footer>
-    <a href="https://github.com/fusedio/fused-render/releases">All releases</a>
+    <a href="https://github.com/fusedio/fused-render">GitHub</a>
+    · <a href="https://github.com/fusedio/fused-render/releases">All releases</a>
+    · <a href="https://github.com/fusedio/fused-render-examples">Examples</a>
     · <a href="https://www.fused.io">fused.io</a>
   </footer>
 </main>

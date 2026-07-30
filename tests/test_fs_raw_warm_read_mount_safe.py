@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.server as server_mod
+import fused_render.server.routers.fs_read as fs_read_mod
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import create_app
 from _mount_safe_helpers import (  # noqa: F401 — `home` is a reused fixture
@@ -107,7 +108,7 @@ def test_warm_present_file_proxies_200_without_kernel_stat(warm_raw, monkeypatch
     # silent regression to the old code path can't pass this test.
     def _boom_stat(path):
         raise AssertionError(f"_stat_or_none({path}) touched the mount")
-    monkeypatch.setattr(server_mod, "_stat_or_none", _boom_stat)
+    monkeypatch.setattr(fs_read_mod, "_stat_or_none", _boom_stat)
     # Parent lists the store; the file is present and a regular object.
     _list_returns(monkeypatch, [_entry("cog.tif", size=len(serve.blob))])
 

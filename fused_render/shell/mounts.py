@@ -4853,6 +4853,121 @@ def broken_mount_error(path: str) -> str | None:
             f"in the sidebar")
 
 
+# -- Cloud URL -> local mount path -------------------------------------
+# The shell's path bar (Ctrl/Cmd+L) accepts a bucket URL, not just a local
+# path. There is no cloud browser: the only way the explorer can show
+# s3://bucket/key is through a mount that already covers it, so a URL resolves
+# to the path under that mount's mountpoint — or fails with a message naming
+# what is missing. Scheme -> the rclone backend `type`s that can serve it; the
+# rclone `type` string is what decides, never the remote's NAME (a remote
+# called "s3" may be anything).
+_URL_SCHEME_TYPES = {
+    "s3": ("s3",),
+    "gs": ("google cloud storage",),
+    "gcs": ("google cloud storage",),
+}
+
+
+class CloudUrlError(ValueError):
+    """A cloud URL the shell can't turn into a path. `status` is the HTTP code
+    the endpoint answers with: 400 for a malformed/unsupported URL (the user
+    typed something wrong), 404 for a well-formed URL no mount covers (the
+    user has a mount to add)."""
+
+    def __init__(self, msg: str, status: int = 404):
+        super().__init__(msg)
+        self.status = status
+
+
+def _remote_type(name: str, dump: dict) -> str:
+    """An rclone remote's backend type, lowercased ("" when unknown). Prefers
+    the one-subprocess `config dump` (no rcd daemon needed — a URL must still
+    resolve before anything is mounted) and falls back to the memoized rc
+    config/get for a remote the dump didn't carry."""
+    cfg = dump.get(name) or _remote_config(name) or {}
+    return str(cfg.get("type") or "").lower()
+
+
+def resolve_cloud_url(url: str) -> str:
+    """Local path for a bucket URL (s3://, gs://, gcs://), via the mount that
+    covers it. Raises CloudUrlError when the URL is malformed or no mount
+    covers it.
+
+    A mount's remote is an rclone spec — "aws:" (whole account), "aws:bucket",
+    or "aws:bucket/prefix". Each form covers a different span of a URL, and
+    the MOST SPECIFIC covering mount wins: with both "aws:data" and
+    "aws:data/tiles" mounted, s3://data/tiles/x.tif resolves through the
+    latter, whose mountpoint is the shallower, cheaper listing.
+
+    Mount health is deliberately not probed here — a disconnected mount is
+    still the right destination, and the listing view already explains that
+    state far better (_mount_hint) than a pre-flight guess could."""
+    scheme, sep, rest = url.partition("://")
+    scheme = scheme.lower()
+    if not sep:
+        raise CloudUrlError(f"not a URL: {url}", status=400)
+    types = _URL_SCHEME_TYPES.get(scheme)
+    if not types:
+        raise CloudUrlError(
+            f"{scheme}:// URLs can't be opened in the explorer", status=400)
+    bucket, _, key = rest.lstrip("/").partition("/")
+    if not bucket:
+        raise CloudUrlError(f"{scheme}:// URL names no bucket", status=400)
+    key = key.strip("/")
+
+    bin_ = rclone_bin()
+    dump = _rclone_config_dump(bin_) if bin_ else {}
+    best: tuple[int, dict, str] | None = None
+    scheme_mounted = False  # any mount of this backend type at all
+    for m in list_mounts():
+        rname, _, root = str(m.get("remote") or "").partition(":")
+        if _remote_type(rname, dump) not in types:
+            continue
+        scheme_mounted = True
+        m_bucket, _, prefix = root.strip("/").partition("/")
+        prefix = prefix.strip("/")
+        if not m_bucket:
+            # Bucket-less remote ("aws:") — every bucket is a directory one
+            # level under the mountpoint. Covers any bucket, so it also scores
+            # lowest: a bucket-specific mount of the same remote wins.
+            rel, score = "/".join(p for p in (bucket, key) if p), 0
+        elif m_bucket != bucket:
+            continue
+        elif not prefix:
+            rel, score = key, 1
+        elif key == prefix:
+            rel, score = "", 2 + len(prefix)
+        elif key.startswith(prefix + "/"):
+            rel, score = key[len(prefix) + 1:], 2 + len(prefix)
+        else:
+            continue  # same bucket, but outside this mount's prefix
+        if best is None or score > best[0]:
+            best = (score, m, rel)
+
+    if best is None:
+        if scheme_mounted:
+            raise CloudUrlError(
+                f"no mount covers {scheme}://{bucket} — add one from the "
+                f"Mounts page in the sidebar")
+        raise CloudUrlError(
+            f"no {scheme}:// mount is connected — add one from the Mounts "
+            f"page in the sidebar")
+    _, m, rel = best
+    mp = mountpoint(m)
+    return os.path.join(mp, *rel.split("/")) if rel else mp
+
+
+@router.get("/api/mounts/resolve")
+def resolve_url_endpoint(url: str = ""):
+    """Path bar support: turn a bucket URL into the local path under the mount
+    that covers it. Read-only and side-effect free, so no X-Fused guard (same
+    as GET /api/mounts)."""
+    try:
+        return {"path": resolve_cloud_url(url)}
+    except CloudUrlError as e:
+        return JSONResponse({"error": str(e)}, status_code=e.status)
+
+
 @router.get("/api/mounts")
 def get_mounts():
     live = mounted_paths()

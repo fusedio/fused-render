@@ -1,4 +1,8 @@
-// Persistent server-health banner (bottom-right, above the listing toast).
+// Persistent server-health card, rendered at the foot of the shared
+// notification stack (NotificationHost owns its placement — this component
+// positions nothing). Unlike a toast it has no auto-dismiss: it stays until
+// the server answers again, which is why it sits below the transient entries
+// rather than shuffling among them.
 // Polls /api/config every 5s and shows a "server down" card after two
 // consecutive failures — the backend is a native app the user launches, so
 // the fix is always "reopen the app", not a CLI command. On recovery the

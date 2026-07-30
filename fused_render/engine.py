@@ -6,7 +6,7 @@ importable, /api/run executes code through `LocalPythonComputeBackend` —
 fresh subprocess per call in a temp exec dir, params delivered via
 `_params.json`. When it is not installed, the built-in executor
 (`executor.py`/`_child.py`) runs unchanged. `available()` is the probe;
-`server.py` picks per process.
+`server/common.py`'s `_forced_engine` picks per process.
 
 Which interpreter a script gets is decided by its PEP 723 header (D172):
 

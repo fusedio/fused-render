@@ -1,6 +1,9 @@
-// Global toast store — a queue of transient banners rendered by ToastHost at
-// the app root, so a toast shows regardless of which view is mounted (unlike
-// Listing's own local, listing-scoped toast). A plain module store subscribed
+// Global toast store — a queue of transient banners rendered by
+// NotificationHost at the app root, so a toast shows regardless of which view
+// raised it. THE toast surface: Listing and Preview used to keep their own
+// pane-local slot, which meant a second copy of the dismiss timer and the same
+// message appearing in a different place depending on the view. A plain module
+// store subscribed
 // via useSyncExternalStore: mutations (pushToast/dismissToast) update the
 // module array and notify subscribers; the host re-reads on every change.
 //
