@@ -42,7 +42,7 @@ load-bearing rather than academic:
     this engine, and the only thing that makes them callable once deployed.
 
 Neither the shim nor its absence is enforced anywhere, and it is currently
-applied unevenly — see D178.
+applied unevenly — see D179.
 
 The wire shape returned here is the built-in executor's
 ``{ok, result, error: {type, message, traceback}, stdout}`` (plus additive
