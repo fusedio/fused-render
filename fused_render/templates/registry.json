@@ -419,7 +419,6 @@
   "/": [
     "_listing",
     "graph",
-    "preview",
     "zarr_aoi"
   ],
   ".zarr/": [

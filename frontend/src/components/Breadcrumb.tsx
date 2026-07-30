@@ -198,7 +198,7 @@ function enterPanel(fsPath: string, dir: "row" | "col"): void {
   navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
-// Carry the active `_mode` (e.g. a folder viewed in "preview") across top-bar
+// Carry the active `_mode` (e.g. a folder viewed as "graph") across top-bar
 // navigation so moving between folders preserves the chosen view. Other query
 // params are dropped — a fresh path is a fresh view — and an unknown `_mode`
 // on the target silently falls back to its default (Preview.activeTemplate).
