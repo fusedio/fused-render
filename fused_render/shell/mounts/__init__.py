@@ -290,7 +290,6 @@ from .lifecycle import (
     _FORCE_UNMOUNT_WIN32_BUDGET_S,
     _MOUNT_ATTACH_DEADLINE_S,
     _MOUNT_ATTACH_POLL_S,
-    _QUIT_RC_UNMOUNT_TIMEOUT_S,
     _QUIT_UNMOUNT_BUDGET_S,
     _UNSET,
     _await_ismount,

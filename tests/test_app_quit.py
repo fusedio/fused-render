@@ -195,6 +195,7 @@ def ladder(tmp_path, monkeypatch):
         "rc_fail": set(),            # mount names whose rc mount/unmount errors
         "force_fail": set(),         # mount names whose force unmount raises
         "hang": set(),               # mount names whose force unmount never returns
+        "lingers": set(),            # rcd reports success, kernel mount survives
         "entry": {"port": 5572, "pid": _RCD_PID, "spawner_pid": os.getpid()},
         "signalled": [],             # pids os.kill was called with
         "kernel": {"alpha", "beta"}, # what the kernel still holds
@@ -209,6 +210,11 @@ def ladder(tmp_path, monkeypatch):
         ctx["calls"].append(("rc", method, name))
         if name in ctx["rc_fail"]:
             raise RuntimeError("failed to unmount: device or resource busy")
+        # A successful rcd unmount drops the kernel entry too (StubRcd models it
+        # the same way) — unless the mount is in "lingers", the split-brain where
+        # rcd reports success over a kernel mount that stays behind.
+        if name not in ctx["lingers"]:
+            ctx["kernel"].discard(name)
         return {}
 
     monkeypatch.setattr(mounts_mod, "_rc", _rc)
@@ -217,10 +223,18 @@ def ladder(tmp_path, monkeypatch):
     # _kill_current_rcd's "is it gone yet" poll terminate promptly here.
     monkeypatch.setattr(mounts_mod, "_live_rcd_port",
                         lambda *a, **k: None if ctx["signalled"] else 5572)
-    monkeypatch.setattr(mounts_mod, "_is_mounted",
-                        lambda mp: os.path.basename(mp) in ctx["kernel"])
-    monkeypatch.setattr(mounts_mod, "_ismount",
-                        lambda mp: os.path.basename(mp) in ctx["kernel"])
+    # The simulated kernel mount table, faked where tests/test_shell_mounts.py's
+    # `rcd` fixture fakes it: os.path.ismount, which is what detach_mount's
+    # _ismount reads (lifecycle imports the name at module scope, so patching the
+    # package attribute would not reach it).
+    monkeypatch.setattr(mounts_mod.os.path, "ismount",
+                        lambda p: os.path.basename(p) in ctx["kernel"])
+    # Quiescing the tile daemons is detach_mount's answer to a BUSY unmount (they
+    # hold files open under the mount); recorded, not performed — no daemon exists.
+    # Patched on the defining submodule: detach_mount calls this one by bare name
+    # (a module global), not through the package re-export.
+    monkeypatch.setattr(mounts_mod.lifecycle, "_quit_tile_daemons",
+                        lambda: ctx["calls"].append(("quiesce", None)))
 
     def _force_unmount(mp):
         name = os.path.basename(mp)
@@ -256,28 +270,29 @@ def _names(calls, kind):
     return [c[-1] for c in calls if c[0] == kind]
 
 
-def test_unmount_all_asks_rcd_then_forces_what_the_kernel_still_holds(ladder):
+def test_unmount_all_detaches_every_mount_through_the_ladder(ladder):
     mounts_mod.unmount_all_for_quit()
 
-    # Both rungs, in order, for every mount: rcd's own mount/unmount first, then
-    # the kernel force-unmount a busy macOS nfsmount needs (a plain umount is
-    # what rclone tries on its way out, and what a busy mount rejects).
     # Sorted: mounts are unmounted in PARALLEL (one wedge must not delay the
-    # rest), so only the per-mount rung order below is deterministic.
+    # rest), so the order ACROSS mounts is not deterministic.
     assert sorted(_names(ladder["calls"], "rc")) == ["alpha", "beta"]
-    assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta"]
-    for name in ("alpha", "beta"):
-        assert ladder["calls"].index(("rc", "mount/unmount", name)) < \
-            ladder["calls"].index(("force", name))
+    # rcd's own unmount took, so the kernel force rung has nothing to do — it is
+    # for what rcd cannot or will not detach.
+    assert _names(ladder["calls"], "force") == []
     assert ladder["kernel"] == set()
 
 
-def test_unmount_all_skips_the_force_rung_for_an_already_gone_mount(ladder):
-    ladder["kernel"] = set()  # rcd's own unmount took, or it was never mounted
+def test_unmount_all_forces_a_kernel_mount_rcd_claims_to_have_dropped(ladder):
+    # The INCIDENT 2026-07-16 split-brain, and the reason the force rung is gated
+    # on the KERNEL's view and not on rcd's answer: mount/unmount reports success
+    # while the kernel entry stays behind. Left attached, that entry outlives its
+    # NFS server by exactly the amount of time it takes to signal rcd.
+    ladder["lingers"].add("beta")
 
     mounts_mod.unmount_all_for_quit()
 
-    assert _names(ladder["calls"], "force") == []
+    assert _names(ladder["calls"], "force") == ["beta"]
+    assert ladder["kernel"] == set()
 
 
 def test_unmount_all_still_forces_when_no_daemon_answers(ladder):
@@ -290,6 +305,20 @@ def test_unmount_all_still_forces_when_no_daemon_answers(ladder):
     assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta"]
 
 
+def test_a_busy_mount_quiesces_the_tile_daemons_and_then_forces(ladder):
+    # detach_mount's own EBUSY ladder, reused rather than re-implemented: the tile
+    # daemons hold files open under the mount (the measured EBUSY cause), so they
+    # are asked to quit and the unmount is retried before the force.
+    ladder["rc_fail"].add("alpha")
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert _names(ladder["calls"], "rc").count("alpha") == 2  # asked twice
+    assert ("quiesce", None) in ladder["calls"]
+    assert "alpha" in _names(ladder["calls"], "force")
+    assert ladder["kernel"] == set()
+
+
 def test_a_wedged_mount_does_not_stop_the_others(ladder):
     ladder["mounts"].insert(0, {"id": "w", "name": "wedged", "remote": "s3w:b"})
     ladder["kernel"].add("wedged")
@@ -298,14 +327,16 @@ def test_a_wedged_mount_does_not_stop_the_others(ladder):
 
     mounts_mod.unmount_all_for_quit()
 
-    assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta", "wedged"]
+    assert set(_names(ladder["calls"], "force")) == {"wedged"}
+    assert sorted(_names(ladder["calls"], "rc")).count("alpha") == 1
     assert ladder["kernel"] == {"wedged"}  # only the unfixable one is left
 
 
 def test_a_hanging_unmount_is_bounded_and_does_not_hold_the_others(ladder):
     ladder["mounts"].insert(0, {"id": "h", "name": "hangs", "remote": "s3h:b"})
     ladder["kernel"].add("hangs")
-    ladder["hang"].add("hangs")
+    ladder["lingers"].add("hangs")  # reaches the force rung...
+    ladder["hang"].add("hangs")     # ...which blocks in the kernel forever
 
     t0 = time.monotonic()
     mounts_mod.unmount_all_for_quit(budget_s=0.3)

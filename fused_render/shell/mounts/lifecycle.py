@@ -425,49 +425,47 @@ def _force_unmount(mp: str) -> str | None:
 _QUIT_UNMOUNT_BUDGET_S = 6.0
 
 
-_QUIT_RC_UNMOUNT_TIMEOUT_S = 3.0
-
-
 def _unmount_for_quit(m: dict) -> None:
-    """The unmount ladder for ONE mount on the quit path: ask rcd, then
-    force-unmount whatever kernel mount remains. Never raises — the caller runs
-    these in parallel and one wedged mount must not take the others (or the
-    quit) with it.
+    """The unmount ladder for ONE mount on the quit path. Never raises — the
+    caller runs these in parallel and one wedged mount must not take the others
+    (or the quit) with it.
 
-    Same order and same reasoning as reconnect_mount's leading rungs (ask rcd
-    nicely first so its own tracking is cleared, then force what the kernel
-    still holds because a dead/busy NFS mount rejects plain umount), minus the
-    re-attach: there is nothing to reconnect to when the process is going away.
-    detach_mount is deliberately NOT reused — it refuses to force on its own
-    ("failing loudly beats corrupted reads", correct for a user action on a live
-    mount), whereas on quit the daemon behind every mount is about to be
-    signalled, so leaving a mount attached is the harmful outcome."""
+    `detach_mount(force=True)` IS the ladder (ask rcd; on a busy failure quiesce
+    the tile daemons that hold files open under the mount and retry; then
+    `_force_unmount`), the same rung restart_rcd already uses before it kills a
+    daemon — quit is that same "the daemon is about to go away" situation, so it
+    gets the same treatment rather than a second copy of the ladder. `force=True`
+    is required, not incidental: the plain call refuses to force ("failing loudly
+    beats corrupted reads", right for a user action on a live mount), whereas on
+    quit an attached mount whose NFS server is about to be signalled IS the harm.
+
+    Plus a last rung on the one question that actually matters here — is anything
+    still attached? — because detach_mount can answer "done" with a kernel mount
+    still in place. Its own force gate is `_ismount`, which is False for a WEDGED
+    mount (backend already gone, kernel entry retained: every stat ENOTCONNs and
+    posixpath.ismount swallows it), and its success path trusts rcd's OK, which
+    the INCIDENT 2026-07-16 split-brain shows can sit over a kernel mount that
+    stays behind. `_is_mounted` sees both. On the normal path it is False by then
+    and this rung costs nothing; on a mount detach_mount already tried and failed
+    to force it is one last attempt before the process goes away, which the
+    caller's budget bounds."""
     from fused_render.shell.mounts import (
         _force_unmount,
         _is_mounted,
-        _live_rcd_port,
-        _rc,
+        detach_mount,
     )
     mp = mountpoint(m)
-    port = _live_rcd_port()
-    if port is not None:
-        try:
-            # Short timeout: rcd's unmount either works quickly or is wedged, and
-            # the force rung below is what heals the wedge — waiting longer here
-            # only eats the quit budget.
-            _rc(port, "mount/unmount", {"mountPoint": mp},
-                timeout=_QUIT_RC_UNMOUNT_TIMEOUT_S)
-        except Exception:
-            logger.info("quit: rcd unmount of %r failed; forcing", m.get("name"))
     try:
-        # _is_mounted (not bare ismount): a mount whose backend already died
-        # reads False there while the kernel still holds it — precisely the
-        # entry that must be force-detached before rcd goes away.
-        if not _is_mounted(mp):
-            return
-        err = _force_unmount(mp)
+        err = detach_mount(m, force=True)
         if err:
-            logger.warning("quit: %s", err)
+            logger.warning("quit: unmount of %r: %s", m.get("name"), err)
+    except Exception:
+        logger.warning("quit: unmount of %r failed", m.get("name"), exc_info=True)
+    try:
+        if _is_mounted(mp):
+            err = _force_unmount(mp)
+            if err:
+                logger.warning("quit: %s", err)
     except Exception:
         logger.warning("quit: force unmount of %r failed", m.get("name"),
                        exc_info=True)
