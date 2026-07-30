@@ -63,8 +63,30 @@ def agent():
 
 # --------------------------------------------------------------- the MCP wire
 
+class _Pending:
+    """A request in flight. `join` waits for its own response, not for a turn
+    at the pipe — the reply is delivered by the server's single reader thread."""
+
+    def __init__(self, event):
+        self._event = event
+
+    def join(self, timeout=None):
+        self._event.wait(timeout)
+
+
 class _Server:
-    """A live permission_server subprocess, spoken to the way the CLI does."""
+    """A live permission_server subprocess, spoken to the way the CLI does.
+
+    One thread reads stdout, and it is the only one that ever does. An earlier
+    version gave every in-flight request its own reader thread, which meant two
+    concurrent requests had two threads calling `readline()` on one pipe: either
+    could take either line, so one sink could collect both responses and the
+    other stay empty (`IndexError` on `sink[0]`), or the two could be answered
+    into each other's sink. That is a flake in the harness, not in the server —
+    the server does answer both — and it only bit the concurrency test, on
+    whichever interpreter lost the race that run. Responses are matched to
+    requests by JSON-RPC id, which is what the id is for.
+    """
 
     def __init__(self, perm_dir, env=None):
         self.proc = subprocess.Popen(
@@ -72,32 +94,57 @@ class _Server:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env={**os.environ, **(env or {})})
         self._next_id = 0
+        self._lock = threading.Lock()
+        self._waiters = {}  # JSON-RPC id -> (Event, sink)
+        self._eof = False
+        threading.Thread(target=self._pump, daemon=True).start()
 
-    def call(self, method, params=None):
-        self._next_id += 1
-        self.proc.stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": self._next_id, "method": method,
-            "params": params or {}}) + "\n")
-        self.proc.stdin.flush()
-        return json.loads(self.proc.stdout.readline())
+    def _pump(self):
+        for line in self.proc.stdout:
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            with self._lock:
+                waiter = self._waiters.pop(msg.get("id"), None)
+            if waiter is None:
+                continue  # a notification, or a reply nobody is waiting on
+            event, sink = waiter
+            sink.append(msg)
+            event.set()
+        # Pipe closed. Release anyone still waiting; their sink stays empty,
+        # which is how "the server shut down without replying" reads.
+        with self._lock:
+            self._eof = True
+            orphans, self._waiters = list(self._waiters.values()), {}
+        for event, _ in orphans:
+            event.set()
+
+    def _send(self, method, params, sink):
+        event = threading.Event()
+        with self._lock:
+            self._next_id += 1
+            req_id = self._next_id
+            # Registered before the write, so the reply cannot arrive before
+            # there is somewhere to put it.
+            if self._eof:
+                event.set()
+            else:
+                self._waiters[req_id] = (event, sink)
+            self.proc.stdin.write(json.dumps({
+                "jsonrpc": "2.0", "id": req_id, "method": method,
+                "params": params or {}}) + "\n")
+            self.proc.stdin.flush()
+        return _Pending(event)
+
+    def call(self, method, params=None, timeout=10):
+        sink = []
+        self._send(method, params, sink).join(timeout)
+        assert sink, f"no response to {method} within {timeout}s"
+        return sink[0]
 
     def send_async(self, method, params, sink):
         """Fire a request whose response will not come back for a while."""
-        self._next_id += 1
-        req_id = self._next_id
-        self.proc.stdin.write(json.dumps({
-            "jsonrpc": "2.0", "id": req_id, "method": method,
-            "params": params}) + "\n")
-        self.proc.stdin.flush()
-
-        def read():
-            line = self.proc.stdout.readline()
-            if not line:
-                return  # server shut down without replying; the empty sink says so
-            sink.append(json.loads(line))
-        t = threading.Thread(target=read, daemon=True)
-        t.start()
-        return t
+        return self._send(method, params, sink)
 
     def close(self):
         try:
