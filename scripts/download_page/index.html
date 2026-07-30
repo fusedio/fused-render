@@ -202,9 +202,9 @@
     -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
     mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
   }
-  .ticker-run { display: flex; gap: 12px; }
+  .ticker-run { display: flex; gap: 12px; padding-right: 12px; }
   .ticker-inner {
-    display: flex; gap: 12px; width: max-content;
+    display: flex; width: max-content;
     animation: scroll 46s linear infinite;
   }
   .ticker:hover .ticker-inner { animation-play-state: paused; }
@@ -535,7 +535,8 @@
     document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
       const hash = a.getAttribute("href").slice("about.html".length);
       if (window.fused.env === "local" && ownPath) {
-        a.href = "/render?path=" + encodeURIComponent(ownPath.replace(/\/[^/]*$/, "") + "/about.html") + hash;
+        a.href = "/view" + ownPath.replace(/\/[^/]*$/, "") + "/about.html" + hash;
+        a.target = "_top";
       } else {
         a.href = window.fused.rawUrl("about.html") + hash;
       }

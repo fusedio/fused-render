@@ -459,7 +459,8 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
         const hash = a.getAttribute("href").slice("index.html".length);
         if (window.fused.env === "local" && ownPath) {
           const dir = ownPath.replace(/\/[^/]*$/, "");
-          a.href = "/render?path=" + encodeURIComponent(dir + "/index.html") + hash;
+          a.href = "/view" + dir + "/index.html" + hash;
+          a.target = "_top";
         } else if (window.fused.env !== "local") {
           a.href = window.fused.rawUrl("index.html") + hash;
         }
