@@ -286,6 +286,20 @@ def _kill(pid: int) -> bool:
         return False
 
 
+def _read_record(key: str) -> dict | None:
+    """The install's `progress.json` as written, or None if unreadable.
+
+    No liveness interpretation — that is `progress()`'s job, and separating the
+    two is what lets it re-read after reaping without recursing.
+    """
+    try:
+        with open(_progress_path(key), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def progress(key: str) -> dict | None:
     """The install's current record, or None when it was never started.
 
@@ -299,15 +313,21 @@ def progress(key: str) -> dict | None:
     """
     if not valid_key(key):
         return None
-    path = _progress_path(key)
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
+    data = _read_record(key)
+    if data is None:
         return None
     if not data.get("done") and not _pid_alive(data.get("pid", -1)):
+        # Re-read before calling it a crash. A finished worker writes its final
+        # record and THEN exits, so "the record I read says not-done" and "the
+        # pid is gone" is also what SUCCESS looks like through a stale read —
+        # and the read above is stale by construction, since `_pid_alive` waits
+        # on the pid and so returns only after the worker is already gone. The
+        # window is small but the consequence is not: runtime.js turns an error
+        # record into a hard install failure, so a spurious one aborts an
+        # install whose venv is sitting there complete.
+        fresh = _read_record(key)
+        if fresh is not None and fresh.get("done"):
+            return fresh
         data["done"] = True
         data["error"] = data.get("error") or (
             "the installer exited unexpectedly — see worker.log in "

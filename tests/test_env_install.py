@@ -410,6 +410,52 @@ def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch
 
 
 @requires_fused
+@pytest.mark.parametrize("final", ["success", "real error"])
+def test_a_worker_that_finished_during_the_liveness_check_is_not_called_a_crash(
+    tmp_path, monkeypatch, final
+):
+    """The record is re-read before a dead pid is reported as a crash.
+
+    `progress()` reads progress.json, THEN asks whether the pid is alive — and
+    that read is stale by construction, because `_pid_alive` reaps and so answers
+    "dead" only once the worker is already gone. A worker writes its final record
+    and then exits, so "the record said not-done" + "the pid is gone" is equally
+    what SUCCESS looks like through a stale read.
+
+    Modelled by having the liveness check itself write the final record, which is
+    exactly the ordering the real worker produces. Without the re-read this
+    returns "the installer exited unexpectedly" for a completed install, and
+    runtime.js renders that as a hard failure over a venv that is ready.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    key = "beefbeefbeefbeef"
+    d = envinstall.progress_dir(key)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "progress.json")
+    pending = {"stage": "install", "pct": 50, "detail": "", "done": False,
+               "error": None, "pid": 4242, "ts": time.time()}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(pending, f)
+
+    err = None if final == "success" else "could not resolve nosuchpkg"
+
+    def _dead_and_finished(pid):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({**pending, "stage": "done", "pct": 100, "done": True,
+                       "error": err}, fh)
+        return False
+
+    monkeypatch.setattr(envinstall, "_pid_alive", _dead_and_finished)
+    prog = envinstall.progress(key)
+    assert prog["done"] is True
+    assert prog["error"] == err, (
+        "the worker's own final record must win over the synthesised crash error"
+    )
+    if final == "success":
+        assert prog["pct"] == 100
+
+
+@requires_fused
 @pytest.mark.parametrize("detached", [True, False], ids=["group-leader", "same-group"])
 def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     """Cancel by the pid the worker recorded, and say the install was cancelled.
