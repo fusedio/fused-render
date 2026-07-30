@@ -26,11 +26,14 @@ tests/test_mounts_rcd_owner.py do, so no real rclone, mount or `umount` runs.
 import importlib.util
 import os
 import sys
+import threading
+import time
 import types
 
 import pytest
 
 import fused_render.app as app_mod
+import fused_render.shell.mounts as mounts_mod
 
 
 # --------------------------------------------------------------- duckdb stash
@@ -167,3 +170,181 @@ def test_quit_close_swallows_a_raising_reader_hook(monkeypatch):
     monkeypatch.setattr(app_mod, "_load_duckdb_reader", lambda: stub)
 
     app_mod._close_duckdb_stash()  # must not raise
+
+
+# ----------------------------------------------------- the mount ladder (A)
+# Faked at the same boundary tests/test_shell_mounts.py fakes: `_rc` (rcd's HTTP
+# API), `_force_unmount` (the umount -f / diskutil shell-out) and `_is_mounted`
+# (the kernel mount table). Every one of them is resolved through the package at
+# CALL time by the code under test, so patching `mounts_mod` reaches it.
+
+_RCD_PID = 4321
+
+
+@pytest.fixture()
+def ladder(tmp_path, monkeypatch):
+    """Records the whole quit teardown ladder without touching a real mount."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("FUSED_RENDER_RCLONE_PERSIST", raising=False)
+    monkeypatch.setattr(mounts_mod, "_live_port_cache", None)  # no cross-test leak
+
+    ctx = {
+        "calls": [],                 # ordered ladder trace
+        "mounts": [{"id": "a", "name": "alpha", "remote": "s3a:bucket"},
+                   {"id": "b", "name": "beta", "remote": "s3b:bucket"}],
+        "rc_fail": set(),            # mount names whose rc mount/unmount errors
+        "force_fail": set(),         # mount names whose force unmount raises
+        "hang": set(),               # mount names whose force unmount never returns
+        "entry": {"port": 5572, "pid": _RCD_PID, "spawner_pid": os.getpid()},
+        "signalled": [],             # pids os.kill was called with
+        "kernel": {"alpha", "beta"}, # what the kernel still holds
+        "release": threading.Event(),
+    }
+
+    monkeypatch.setattr(mounts_mod, "list_mounts", lambda: list(ctx["mounts"]))
+    monkeypatch.setattr(mounts_mod.storage, "read_json", lambda path: ctx["entry"])
+
+    def _rc(port, method, params=None, **kw):
+        name = os.path.basename((params or {}).get("mountPoint", ""))
+        ctx["calls"].append(("rc", method, name))
+        if name in ctx["rc_fail"]:
+            raise RuntimeError("failed to unmount: device or resource busy")
+        return {}
+
+    monkeypatch.setattr(mounts_mod, "_rc", _rc)
+
+    # A live daemon until it is signalled — which is also what makes
+    # _kill_current_rcd's "is it gone yet" poll terminate promptly here.
+    monkeypatch.setattr(mounts_mod, "_live_rcd_port",
+                        lambda *a, **k: None if ctx["signalled"] else 5572)
+    monkeypatch.setattr(mounts_mod, "_is_mounted",
+                        lambda mp: os.path.basename(mp) in ctx["kernel"])
+    monkeypatch.setattr(mounts_mod, "_ismount",
+                        lambda mp: os.path.basename(mp) in ctx["kernel"])
+
+    def _force_unmount(mp):
+        name = os.path.basename(mp)
+        ctx["calls"].append(("force", name))
+        if name in ctx["hang"]:
+            ctx["release"].wait(30)  # a wedged umount -f, as seen in the field
+            return f"force unmount of {mp} failed: still mounted"
+        if name in ctx["force_fail"]:
+            raise OSError("mountpoint is wedged")
+        ctx["kernel"].discard(name)
+        return None
+
+    monkeypatch.setattr(mounts_mod, "_force_unmount", _force_unmount)
+
+    # rcd reap gates: proven-ours, and alive until signalled.
+    monkeypatch.setattr(mounts_mod, "_confirmed_our_rcd", lambda entry: True)
+    monkeypatch.setattr(mounts_mod, "_pid_alive",
+                        lambda pid: pid not in ctx["signalled"])
+
+    def _kill(pid, sig):
+        ctx["calls"].append(("kill", pid))
+        ctx["signalled"].append(pid)
+
+    # rcd.py does `import os`, so this is the same module object the code under
+    # test signals through (the documented monkeypatch route for this package).
+    monkeypatch.setattr(mounts_mod.os, "kill", _kill)
+
+    yield ctx
+    ctx["release"].set()  # never leave a hung fake thread waiting 30s
+
+
+def _names(calls, kind):
+    return [c[-1] for c in calls if c[0] == kind]
+
+
+def test_unmount_all_asks_rcd_then_forces_what_the_kernel_still_holds(ladder):
+    mounts_mod.unmount_all_for_quit()
+
+    # Both rungs, in order, for every mount: rcd's own mount/unmount first, then
+    # the kernel force-unmount a busy macOS nfsmount needs (a plain umount is
+    # what rclone tries on its way out, and what a busy mount rejects).
+    # Sorted: mounts are unmounted in PARALLEL (one wedge must not delay the
+    # rest), so only the per-mount rung order below is deterministic.
+    assert sorted(_names(ladder["calls"], "rc")) == ["alpha", "beta"]
+    assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta"]
+    for name in ("alpha", "beta"):
+        assert ladder["calls"].index(("rc", "mount/unmount", name)) < \
+            ladder["calls"].index(("force", name))
+    assert ladder["kernel"] == set()
+
+
+def test_unmount_all_skips_the_force_rung_for_an_already_gone_mount(ladder):
+    ladder["kernel"] = set()  # rcd's own unmount took, or it was never mounted
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert _names(ladder["calls"], "force") == []
+
+
+def test_unmount_all_still_forces_when_no_daemon_answers(ladder):
+    # The "disconnected" state: rcd already died, the kernel mount survives it.
+    ladder["signalled"].append(_RCD_PID)  # makes _live_rcd_port() answer None
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert _names(ladder["calls"], "rc") == []
+    assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta"]
+
+
+def test_a_wedged_mount_does_not_stop_the_others(ladder):
+    ladder["mounts"].insert(0, {"id": "w", "name": "wedged", "remote": "s3w:b"})
+    ladder["kernel"].add("wedged")
+    ladder["rc_fail"].add("wedged")
+    ladder["force_fail"].add("wedged")
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert sorted(_names(ladder["calls"], "force")) == ["alpha", "beta", "wedged"]
+    assert ladder["kernel"] == {"wedged"}  # only the unfixable one is left
+
+
+def test_a_hanging_unmount_is_bounded_and_does_not_hold_the_others(ladder):
+    ladder["mounts"].insert(0, {"id": "h", "name": "hangs", "remote": "s3h:b"})
+    ladder["kernel"].add("hangs")
+    ladder["hang"].add("hangs")
+
+    t0 = time.monotonic()
+    mounts_mod.unmount_all_for_quit(budget_s=0.3)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 3.0, "a wedged umount -f must not consume the quit"
+    assert ladder["kernel"] == {"hangs"}  # alpha/beta went, despite the wedge
+
+
+def test_persist_leaves_every_mount_attached(ladder, monkeypatch):
+    # Dev (dev.sh): rcd is meant to outlive the process, so its mounts must too —
+    # unmounting them would tear the mounts out of a daemon we deliberately keep.
+    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert ladder["calls"] == []
+
+
+def test_another_live_spawner_keeps_its_mounts(ladder):
+    # rcd is shared per-home: a CLI `fused-render` server may still be serving
+    # these very mounts. Same gate stop_local_rcd applies to the reap.
+    ladder["entry"] = {"port": 5572, "pid": _RCD_PID,
+                       "spawner_pid": os.getpid() + 1}
+
+    mounts_mod.unmount_all_for_quit()
+
+    assert ladder["calls"] == []
+
+
+def test_ours_to_reap_agrees_with_the_reap_gate(ladder, monkeypatch):
+    assert mounts_mod._rcd_is_ours_to_reap() is True
+
+    ladder["entry"] = {"port": 5572, "pid": _RCD_PID,
+                       "spawner_pid": os.getpid() + 1}
+    assert mounts_mod._rcd_is_ours_to_reap() is False
+
+    ladder["signalled"].append(os.getpid() + 1)  # spawner exited: orphaned rcd
+    assert mounts_mod._rcd_is_ours_to_reap() is True
+
+    monkeypatch.setenv("FUSED_RENDER_RCLONE_PERSIST", "1")
+    assert mounts_mod._rcd_is_ours_to_reap() is False

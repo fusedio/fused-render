@@ -130,6 +130,7 @@ from .rcd import (
     _rcd_log_path,
     _rcd_registry_path,
     _rcd_state_path,
+    _rcd_is_ours_to_reap,
     _rclone_should_persist,
     _register_rcd,
     _rotate_rcd_log,
@@ -289,6 +290,8 @@ from .lifecycle import (
     _FORCE_UNMOUNT_WIN32_BUDGET_S,
     _MOUNT_ATTACH_DEADLINE_S,
     _MOUNT_ATTACH_POLL_S,
+    _QUIT_RC_UNMOUNT_TIMEOUT_S,
+    _QUIT_UNMOUNT_BUDGET_S,
     _UNSET,
     _await_ismount,
     _force_unmount,
@@ -297,6 +300,7 @@ from .lifecycle import (
     _quit_tile_daemons,
     _stop_serve_for,
     _sync_serves_locked,
+    _unmount_for_quit,
     attach_mount,
     detach_mount,
     mount_restart_reason,
@@ -304,6 +308,7 @@ from .lifecycle import (
     mount_view,
     reconnect_mount,
     sync_serves,
+    unmount_all_for_quit,
 )
 from .credentials import (
     CloudUrlError,

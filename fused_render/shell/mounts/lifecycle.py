@@ -422,6 +422,106 @@ def _force_unmount(mp: str) -> str | None:
     return f"force unmount of {mp} failed: {last or 'still mounted'}"
 
 
+_QUIT_UNMOUNT_BUDGET_S = 6.0
+
+
+_QUIT_RC_UNMOUNT_TIMEOUT_S = 3.0
+
+
+def _unmount_for_quit(m: dict) -> None:
+    """The unmount ladder for ONE mount on the quit path: ask rcd, then
+    force-unmount whatever kernel mount remains. Never raises — the caller runs
+    these in parallel and one wedged mount must not take the others (or the
+    quit) with it.
+
+    Same order and same reasoning as reconnect_mount's leading rungs (ask rcd
+    nicely first so its own tracking is cleared, then force what the kernel
+    still holds because a dead/busy NFS mount rejects plain umount), minus the
+    re-attach: there is nothing to reconnect to when the process is going away.
+    detach_mount is deliberately NOT reused — it refuses to force on its own
+    ("failing loudly beats corrupted reads", correct for a user action on a live
+    mount), whereas on quit the daemon behind every mount is about to be
+    signalled, so leaving a mount attached is the harmful outcome."""
+    from fused_render.shell.mounts import (
+        _force_unmount,
+        _is_mounted,
+        _live_rcd_port,
+        _rc,
+    )
+    mp = mountpoint(m)
+    port = _live_rcd_port()
+    if port is not None:
+        try:
+            # Short timeout: rcd's unmount either works quickly or is wedged, and
+            # the force rung below is what heals the wedge — waiting longer here
+            # only eats the quit budget.
+            _rc(port, "mount/unmount", {"mountPoint": mp},
+                timeout=_QUIT_RC_UNMOUNT_TIMEOUT_S)
+        except Exception:
+            logger.info("quit: rcd unmount of %r failed; forcing", m.get("name"))
+    try:
+        # _is_mounted (not bare ismount): a mount whose backend already died
+        # reads False there while the kernel still holds it — precisely the
+        # entry that must be force-detached before rcd goes away.
+        if not _is_mounted(mp):
+            return
+        err = _force_unmount(mp)
+        if err:
+            logger.warning("quit: %s", err)
+    except Exception:
+        logger.warning("quit: force unmount of %r failed", m.get("name"),
+                       exc_info=True)
+
+
+def unmount_all_for_quit(budget_s: float = _QUIT_UNMOUNT_BUDGET_S) -> None:
+    """Detach every configured mount before rcd is signalled, for app quit.
+
+    The bug this closes (INCIDENT 2026-07-29): on macOS a mount is attached as
+    an `nfsmount`, so the KERNEL holds a real NFS mount whose server IS the rcd
+    process. The quit path killed rcd with those mounts still attached — the NFS
+    server vanished under its own loopback client, the client timed out, and
+    macOS raised "server connection interrupted / disks not ejected properly"
+    for every mount. rclone's SIGTERM unmount cannot be relied on to prevent it
+    (plain umount, rejected by a busy nfsmount) and the SIGKILL escalation skips
+    it entirely. So quit now goes through the same rc-unmount -> force-unmount
+    ladder every other teardown in this module uses.
+
+    Gated on _rcd_is_ours_to_reap: with FUSED_RENDER_RCLONE_PERSIST set (dev) or
+    a still-live foreign spawner, the daemon keeps running — and a running
+    daemon's mounts must keep running with it.
+
+    Bounded and best-effort. Each mount is unmounted on its own thread (the
+    mount_state pattern) so a wedged `umount -f` — which can block for tens of
+    seconds in the kernel, and which we cannot cancel — costs only its share of
+    the wait: after `budget_s` we stop waiting and let the quit proceed. Threads
+    are daemons, so anything still stuck simply dies with the process."""
+    from fused_render.shell.mounts import (
+        _rcd_is_ours_to_reap,
+        _unmount_for_quit,
+        list_mounts,
+    )
+    if not _rcd_is_ours_to_reap():
+        return
+    try:
+        mounts = list_mounts()
+    except Exception:
+        logger.warning("quit: could not read the mount store", exc_info=True)
+        return
+    threads = []
+    for m in mounts:
+        t = threading.Thread(target=_unmount_for_quit, args=(m,), daemon=True,
+                             name=f"quit-unmount-{m.get('name')}")
+        t.start()
+        threads.append((m, t))
+    deadline = time.monotonic() + budget_s
+    for m, t in threads:
+        t.join(max(0.0, deadline - time.monotonic()))
+        if t.is_alive():
+            logger.warning(
+                "quit: unmount of %r did not finish within %.1fs; leaving it to "
+                "the process exit", m.get("name"), budget_s)
+
+
 def detach_mount(m: dict, force: bool = False) -> str | None:
     """Unmount via rcd; on failure ask the tile daemons to release their
     open files and retry once. Returns an error string or None. Never

@@ -664,9 +664,17 @@ def _kill_current_rcd() -> None:
     process that inherited a recycled pid.
 
     No recorded daemon / a dead pid is a clean no-op: the caller's fresh spawn
-    just starts one. SIGTERM first (rcd unmounts cleanly on it), escalating to
-    SIGKILL only if it won't exit within _KILL_TIMEOUT_S; we poll until the
-    daemon's port stops answering AND the pid is gone."""
+    just starts one. SIGTERM first, escalating to SIGKILL only if it won't exit
+    within _KILL_TIMEOUT_S; we poll until the daemon's port stops answering AND
+    the pid is gone.
+
+    This does NOT unmount anything, and must not be trusted to: rclone's own
+    SIGTERM handler issues a PLAIN `umount`, which a busy macOS nfsmount rejects
+    (the state _force_unmount exists for), and the SIGKILL escalation skips even
+    that. Killing rcd while a kernel mount it serves is still attached is what
+    produced the "server connection interrupted / disks not ejected properly"
+    alerts on quit (INCIDENT 2026-07-29). Callers that own the mounts must run
+    the unmount ladder FIRST — see lifecycle.unmount_all_for_quit."""
     from fused_render.shell.mounts import _confirmed_our_rcd, _live_rcd_port, _pid_alive
     entry = storage.read_json(_rcd_state_path())
     if not isinstance(entry, dict):
@@ -700,6 +708,43 @@ def _kill_current_rcd() -> None:
     raise RuntimeError(f"rcd pid {pid} did not exit after {sigs[-1].name}")
 
 
+def _rcd_is_ours_to_reap() -> bool:
+    """Whether THIS process may tear the recorded rcd down on quit — and, by
+    extension, the mounts it serves (unmount_all_for_quit asks the same
+    question: unmounting a daemon's mounts is as much a teardown of it as
+    signalling it, so the two rungs must never disagree about ownership).
+
+    Two gates, both "leave it alone":
+
+      persistence — FUSED_RENDER_RCLONE_PERSIST (dev, set by dev.sh) means the
+      detached daemon is DELIBERATELY meant to outlive this process, mounts and
+      warm VFS cache included, so a fresh server re-adopts them.
+
+      ownership — rcd is shared per-home, so the daemon on record may have been
+      spawned by ANOTHER process still using it (e.g. the app quitting while a
+      CLI `fused-render` server keeps serving mounts). A recorded spawner_pid
+      that is not us and is still alive is the spawner's to reap. A missing
+      spawner_pid (an rcd.json written before the field existed) preserves the
+      old behavior and reaps.
+
+    Does NOT take _rcd_lock — callers under the lock (stop_local_rcd) would
+    deadlock on a re-entrant acquire; this only reads rcd.json."""
+    from fused_render.shell.mounts import _pid_alive, _rclone_should_persist
+    if _rclone_should_persist():
+        return False
+    entry = storage.read_json(_rcd_state_path())
+    if isinstance(entry, dict):
+        spawner_pid = entry.get("spawner_pid") or 0
+        if spawner_pid and spawner_pid != os.getpid() and _pid_alive(spawner_pid):
+            logger.info(
+                "rcd was spawned by pid %s which is still alive; leaving the "
+                "shared daemon (and its mounts) to its owner",
+                spawner_pid,
+            )
+            return False
+    return True
+
+
 def stop_local_rcd() -> None:
     """Best-effort teardown of the rcd we spawned, for the app's quit path.
 
@@ -708,37 +753,19 @@ def stop_local_rcd() -> None:
     On Linux/Windows the process-group killpg / Job Object already collect a
     non-detached rcd, so this is redundant there but harmless.
 
-    Gated on NOT persisting: when FUSED_RENDER_RCLONE_PERSIST is set (dev) the
-    detached daemon is meant to outlive the process, so we leave it running.
+    Gated on _rcd_is_ours_to_reap (persistence + shared-daemon ownership).
     Reuses _kill_current_rcd's safety gates (only ever signals a pid PROVEN to
     be our rclone rcd) and swallows every error — a reap failure must never
     block app quit.
 
-    Ownership gate: rcd is shared per-home, so the daemon on record may have
-    been spawned by ANOTHER process that is still using it (e.g. the app
-    quitting while a CLI `fused-render` server keeps serving mounts). When
-    rcd.json records a spawner_pid that is not us and that pid is still alive,
-    leave the daemon alone — it is the spawner's to reap. A missing
-    spawner_pid (an rcd.json written before the field existed) preserves the
-    old behavior and kills."""
-    from fused_render.shell.mounts import (
-        _kill_current_rcd,
-        _pid_alive,
-        _rclone_should_persist,
-    )
-    if _rclone_should_persist():
-        return
+    Reaps ONLY: it does not unmount, and rcd's own SIGTERM unmount cannot be
+    relied on (see _kill_current_rcd). The caller must have run
+    unmount_all_for_quit first, or the kernel mounts outlive their NFS server
+    and macOS raises the "disks not ejected properly" alerts."""
+    from fused_render.shell.mounts import _kill_current_rcd, _rcd_is_ours_to_reap
     with _rcd_lock:
-        entry = storage.read_json(_rcd_state_path())
-        if isinstance(entry, dict):
-            spawner_pid = entry.get("spawner_pid") or 0
-            if spawner_pid and spawner_pid != os.getpid() and _pid_alive(spawner_pid):
-                logger.info(
-                    "stop_local_rcd: rcd was spawned by pid %s which is still "
-                    "alive; leaving the shared daemon to its owner",
-                    spawner_pid,
-                )
-                return
+        if not _rcd_is_ours_to_reap():
+            return
         try:
             _kill_current_rcd()
         except Exception:
