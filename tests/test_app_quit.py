@@ -79,8 +79,14 @@ def _clear_duckdb_module_state(reader_mod) -> None:
     tests/test_duckdb_reader.py's `source_url` cases don't fail loudly — the reader
     swallows the raise and reads the local path instead, so they assert on a
     silently different code path. (Invisible in this checkout only because httpfs
-    isn't installed and those tests skip.)"""
-    for attr in (reader_mod._HTTP_CON_KEY, reader_mod._HTTP_CON_LATCH):
+    isn't installed and those tests skip.)
+
+    The shared lock goes too. It carries no state, but a test that somehow left it
+    HELD would deadlock every later test in the worker; dropping the attribute means
+    the next test gets a fresh one. Safe only because these tests always join their
+    builder threads — never delete a lock another live thread may hold."""
+    for attr in (reader_mod._HTTP_CON_KEY, reader_mod._HTTP_CON_LATCH,
+                 reader_mod._HTTP_CON_LOCK):
         try:
             delattr(reader_mod.duckdb, attr)
         except AttributeError:
@@ -1114,3 +1120,95 @@ def test_the_ready_event_is_the_same_object_for_racing_callers():
     _race(lambda: seen.append(app_mod._quit_ready_event(state)))
 
     assert len({id(e) for e in seen}) == 1
+
+
+# --------------------------------- the stash cannot be installed after the latch
+# The latch check and the setattr that installs the stash are far apart in wall
+# time: duckdb.connect(":memory:") + LOAD httpfs + four PRAGMAs sit between them.
+# A read that passed the check could therefore install its connection AFTER quit
+# had latched and cleared — and because the latch is one-way, nothing would ever
+# close that one, so the GIL-less exit() abort comes straight back.
+
+
+def _handshake_connect(reader_mod, monkeypatch, built, release):
+    """A duckdb.connect that parks the builder INSIDE the window: it announces it
+    has entered (`built`) and waits for the test to let it out (`release`).
+
+    An Event handshake rather than "start two threads and hope": the same lesson as
+    the begin_quit race tests — a timing-dependent version of this test passes
+    against the broken code, because the window it needs is microseconds wide unless
+    something holds it open."""
+    con = _FakeCon()
+    con.execute = lambda sql: None
+    con.cursor = lambda: "cursor"
+
+    def _connect(*a, **k):
+        built.set()
+        assert release.wait(5), "test never released the builder"
+        return con
+
+    monkeypatch.setattr(reader_mod.duckdb, "connect", _connect, raising=False)
+    return con
+
+
+def test_a_connection_built_before_the_latch_is_never_installed_after_it(
+        reader, monkeypatch):
+    built, release = threading.Event(), threading.Event()
+    con = _handshake_connect(reader, monkeypatch, built, release)
+    outcome = {}
+
+    def _builder():
+        try:
+            outcome["cursor"] = reader._http_connection()
+        except Exception as e:  # noqa: BLE001 — the outcome IS what we assert
+            outcome["error"] = e
+
+    t = threading.Thread(target=_builder, daemon=True)
+    t.start()
+    assert built.wait(5), "the builder never reached the build step"
+
+    # Quit lands squarely in the window: the builder is past the latch check with
+    # a connection in hand and has not stashed it yet.
+    reader.close_http_connection()
+    release.set()
+    t.join(5)
+
+    assert "cursor" not in outcome, "the read must not proceed on a quitting process"
+    assert isinstance(outcome.get("error"), RuntimeError)
+    # The invariant, stated as an assertion: after close_http_connection returns,
+    # NOTHING can put a connection back on the duckdb module.
+    assert not hasattr(reader.duckdb, reader._HTTP_CON_KEY)
+    # And the loser closed what it built. Dropping it for GC is the same crash by a
+    # slower route — CPython may run that destructor at any later point, including
+    # inside exit() with no GIL.
+    assert con.closed == 1
+
+
+def test_the_losing_builder_of_two_closes_its_own_connection(reader, monkeypatch):
+    """Same invariant on the non-quit path, which the old comment waved away as
+    "last-stashed wins and the loser is GC'd — harmless": an unclosed
+    DuckDBPyConnection left for the collector is exactly the object that aborts in
+    exit()'s static destructors."""
+    built, release = threading.Event(), threading.Event()
+    mine = _handshake_connect(reader, monkeypatch, built, release)
+    outcome = {}
+
+    def _builder():
+        outcome["cursor"] = reader._http_connection()
+
+    t = threading.Thread(target=_builder, daemon=True)
+    t.start()
+    assert built.wait(5)
+
+    # Another call finished first and installed ITS connection while we were in
+    # duckdb.connect.
+    winner = _FakeCon()
+    winner.cursor = lambda: "winner-cursor"
+    setattr(reader.duckdb, reader._HTTP_CON_KEY, winner)
+    release.set()
+    t.join(5)
+
+    assert getattr(reader.duckdb, reader._HTTP_CON_KEY) is winner  # one stash
+    assert outcome["cursor"] == "winner-cursor"  # and the caller uses it
+    assert mine.closed == 1                     # the loser is closed, not leaked
+    assert winner.closed == 0

@@ -34,6 +34,7 @@ stay read-only.
 import datetime
 import decimal
 import os
+import threading
 
 import duckdb
 
@@ -239,6 +240,25 @@ _HTTP_CON_KEY = "_fused_render_http_con_v3"
 _HTTP_CON_LATCH = "_fused_render_http_con_closed"
 
 
+_HTTP_CON_LOCK = "_fused_render_http_con_lock"
+
+
+def _http_con_lock():
+    """The lock serializing "is it latched?" against "install the stash", shared by
+    every reader run in this process.
+
+    Also on the duckdb module, and for a sharper reason than the stash: a
+    module-level `threading.Lock()` in THIS file would be a different object every
+    call, since the executor re-execs this module per request — i.e. no lock at all.
+
+    Installed with `dict.setdefault` on the module's `__dict__`, which is the one
+    way to create a shared lock without already having one: the default is
+    constructed before the call, and setdefault itself is a single C-level dict
+    operation, so racing callers all receive whichever Lock landed first and the
+    losers' unused Lock objects are collected."""
+    return duckdb.__dict__.setdefault(_HTTP_CON_LOCK, threading.Lock())
+
+
 def _http_connection():
     """A DuckDB connection for reading mounted parquet over HTTP, kept alive
     across reader runs. DuckDB's external file cache holds the byte ranges a
@@ -246,8 +266,12 @@ def _http_connection():
     of re-downloading row groups — but the cache dies with its database
     instance, and the executor re-execs this module per call. Stash the
     connection on the *duckdb* module (which does survive in sys.modules of
-    the server process) and hand out cursors. Racing calls may both create
-    one; last-stashed wins and the loser is GC'd — harmless, so no lock.
+    the server process) and hand out cursors. Racing calls may both build one;
+    the first to install wins and the loser CLOSES what it built (it used to be
+    dropped for the collector, waved off as harmless — but an unclosed
+    DuckDBPyConnection is precisely the object that aborts in a GIL-less
+    `exit()`, so "someone will collect it eventually" is the same bug on a
+    longer fuse).
 
     Because the stash outlives every reader run, something has to close it
     before the process exits: on macOS the server runs in-process inside the
@@ -257,11 +281,23 @@ def _http_connection():
     Raises once quit has closed the stash, rather than quietly building another
     one: the caller's remote fast path already treats any failure here as "fall
     back to reading the plain file path", which is the correct behavior for a
-    process on its way out. See _HTTP_CON_LATCH."""
-    if getattr(duckdb, _HTTP_CON_LATCH, False):
-        raise RuntimeError(
-            "the shared DuckDB HTTP connection is closed (the app is quitting)")
-    con = getattr(duckdb, _HTTP_CON_KEY, None)
+    process on its way out. See _HTTP_CON_LATCH.
+
+    Building is deliberately done OUTSIDE the lock (connect + LOAD httpfs + the
+    pragmas are real work, and a read must not serialize behind another read's
+    setup) — but the decision to INSTALL is taken under it, re-reading the latch.
+    Checking the latch only up front left a window the width of that setup: a read
+    that passed the check could install its connection after quit had already
+    latched and cleared, and since the latch is one-way, nothing would ever close
+    that one. The invariant this pair of critical sections buys, and the reason the
+    re-check is not merely defensive: once close_http_connection returns, no
+    connection can be installed on the duckdb module again."""
+    lock = _http_con_lock()
+    with lock:
+        if getattr(duckdb, _HTTP_CON_LATCH, False):
+            raise RuntimeError(
+                "the shared DuckDB HTTP connection is closed (the app is quitting)")
+        con = getattr(duckdb, _HTTP_CON_KEY, None)
     if con is None:
         con = duckdb.connect(":memory:")
         con.execute("LOAD httpfs")  # raises if unavailable -> caller falls back
@@ -293,8 +329,31 @@ def _http_connection():
         # read whole column chunks and parallelizes to the bucket ceiling)
         # without hurting the many-small-group file any more.
         con.execute("SET threads=32")
-        setattr(duckdb, _HTTP_CON_KEY, con)
+        with lock:
+            if getattr(duckdb, _HTTP_CON_LATCH, False):
+                # Quit latched while we were building. We own this connection and
+                # nothing else will ever see it, so we must close it here: leaving
+                # it to the collector is the crash on a longer fuse.
+                _close_quietly(con)
+                raise RuntimeError(
+                    "the shared DuckDB HTTP connection is closed (the app is "
+                    "quitting)")
+            winner = getattr(duckdb, _HTTP_CON_KEY, None)
+            if winner is None:
+                setattr(duckdb, _HTTP_CON_KEY, con)
+            else:
+                # A concurrent call installed its own first. Use the shared one (the
+                # point of the stash is one warm cache) and close ours.
+                _close_quietly(con)
+                con = winner
     return con.cursor()
+
+
+def _close_quietly(con) -> None:
+    try:
+        con.close()
+    except Exception:
+        pass  # already invalid; nothing left to do but not raise
 
 
 def close_http_connection() -> bool:
@@ -322,19 +381,29 @@ def close_http_connection() -> bool:
 
     Total no-op when no connection was ever built (the latch still goes on, so a
     late read cannot start one), and never raises: quit must proceed whatever
-    DuckDB thinks of being closed."""
-    setattr(duckdb, _HTTP_CON_LATCH, True)
-    con = getattr(duckdb, _HTTP_CON_KEY, None)
+    DuckDB thinks of being closed.
+
+    Latching and taking the stash happen together under the shared lock, which is
+    what makes the latch a real barrier rather than a hint: a read already PAST the
+    check and inside connect() will re-take that lock before it installs anything,
+    see the latch, and close its own connection instead (see _http_connection).
+    The actual close() is done outside the lock — it can block on DuckDB's own
+    teardown, and a read arriving meanwhile should get its fast refusal, not queue
+    behind us."""
+    with _http_con_lock():
+        setattr(duckdb, _HTTP_CON_LATCH, True)
+        con = getattr(duckdb, _HTTP_CON_KEY, None)
+        # Drop the stash BEFORE closing: the attribute must be gone even if close()
+        # raises, because a closed-but-still-reachable connection is exactly the
+        # object exit()'s destructors trip over — and _http_connection must not hand
+        # out cursors from a connection being torn down.
+        if con is not None:
+            try:
+                delattr(duckdb, _HTTP_CON_KEY)
+            except AttributeError:
+                pass  # raced another closer; it holds the reference now
     if con is None:
         return False
-    # Drop the stash BEFORE closing: the attribute must be gone even if close()
-    # raises, because a closed-but-still-reachable connection is exactly the
-    # object exit()'s destructors trip over — and _http_connection must not hand
-    # out cursors from a connection being torn down.
-    try:
-        delattr(duckdb, _HTTP_CON_KEY)
-    except AttributeError:
-        pass  # raced another closer; it holds the reference now
     try:
         con.close()
     except Exception:
