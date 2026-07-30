@@ -157,6 +157,9 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+_PS_TIMEOUT_S = 3.0
+
+
 def _pid_looks_like_rcd(pid: int) -> bool:
     """True only when pid's command line is recognisably an `rclone ... rcd`.
 
@@ -169,11 +172,14 @@ def _pid_looks_like_rcd(pid: int) -> bool:
     try:
         out = subprocess.run(
             ["ps", "-o", "command=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=_PS_TIMEOUT_S,
         ).stdout.lower()
     except (OSError, subprocess.SubprocessError):
         return False
     return "rclone" in out and "rcd" in out
+
+
+_CONFIRM_RC_TIMEOUT_S = 3.0
 
 
 def _confirmed_our_rcd(entry: dict) -> bool:
@@ -186,7 +192,8 @@ def _confirmed_our_rcd(entry: dict) -> bool:
     port = entry.get("port")
     if port:
         try:
-            if _rc(int(port), "core/pid", timeout=3).get("pid") == pid:
+            if _rc(int(port), "core/pid",
+                   timeout=_CONFIRM_RC_TIMEOUT_S).get("pid") == pid:
                 return True
         except (RuntimeError, ValueError, TypeError):
             pass
@@ -651,6 +658,19 @@ def _ensure_rcd_locked() -> int:
 
 
 _KILL_TIMEOUT_S = 5.0
+
+
+# Worst-case wall time of one _kill_current_rcd, DERIVED from the bounds it is
+# built out of: the identity proof (an rc core/pid that times out, then a `ps`
+# that times out — _confirmed_our_rcd tries both before it will signal anything)
+# plus the SIGTERM and SIGKILL exit polls. Exported because the caller that has
+# to outlast this — app.py's quit deadline — must not restate the arithmetic:
+# tightening any constant above has to move that deadline with it. Excludes the
+# wait for _rcd_lock, which a concurrent spawn can hold for its own 10s; a quit
+# racing a mount attach is not a case worth padding every deadline for, and the
+# hard deadline terminates anyway.
+RCD_REAP_WORST_CASE_S = (
+    _CONFIRM_RC_TIMEOUT_S + _PS_TIMEOUT_S + 2 * _KILL_TIMEOUT_S)
 
 
 def _kill_current_rcd() -> None:

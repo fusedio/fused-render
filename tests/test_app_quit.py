@@ -524,3 +524,29 @@ def test_the_quit_action_works_before_the_server_has_booted():
                             remove_pidfile=lambda: None)()
 
     assert starts == [None]
+
+
+# ------------------------------------------------------------- the arithmetic
+# The hard deadline is a BACKSTOP for a step that hangs, so it has to be larger
+# than every bounded step it waits on — otherwise it fires mid-teardown and
+# becomes the bug it guards against.
+
+
+def test_the_hard_deadline_exceeds_the_sum_of_the_bounded_steps():
+    inner = (app_mod.QUIT_SERVER_DRAIN_S
+             + mounts_mod._QUIT_UNMOUNT_BUDGET_S
+             + mounts_mod.RCD_REAP_WORST_CASE_S)
+
+    # Strictly greater: terminating DURING the rcd SIGTERM wait would skip the
+    # SIGKILL escalation, and on macOS a surviving rcd reparents to launchd — a
+    # live daemon under mounts we may not have finished detaching, which is
+    # exactly the alert this branch exists to stop.
+    assert app_mod.QUIT_HARD_DEADLINE_S > inner
+
+
+def test_the_rcd_reap_worst_case_counts_the_probe_and_both_kill_polls():
+    # Derived from rcd's own constants, not restated in app.py: a change to any
+    # of them has to move the deadline with it.
+    assert mounts_mod.RCD_REAP_WORST_CASE_S == pytest.approx(
+        mounts_mod._CONFIRM_RC_TIMEOUT_S + mounts_mod._PS_TIMEOUT_S
+        + 2 * mounts_mod._KILL_TIMEOUT_S)

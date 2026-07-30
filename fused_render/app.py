@@ -30,6 +30,11 @@ from fused_render import desktop_probe
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_path, setup_logging
 from fused_render.server import create_app, export_app_env, set_server_origin_env
+# The two teardown budgets the quit deadline is derived from (see
+# QUIT_HARD_DEADLINE_S). Imported eagerly — `create_app` above already pulls the
+# mounts package in, so this costs nothing — because a deadline that has to
+# outlast them must be computed FROM them, not restated.
+from fused_render.shell.mounts import _QUIT_UNMOUNT_BUDGET_S, RCD_REAP_WORST_CASE_S
 from fused_render.shell.seed import ensure_fused_dir_and_landing
 
 logger = logging.getLogger("fused_render")
@@ -254,10 +259,26 @@ QUIT_SERVER_DRAIN_S = 2.0
 # Ceiling on the whole teardown, after which the app terminates regardless. It
 # has to exist: a wedged `umount -f` blocks in the kernel and cannot be
 # cancelled, and an app that can never be quit is worse than one that quits with
-# a mount still attached. Sized above the sum of the bounded steps
-# (drain 2s + unmount budget 6s + rcd reap ~5s SIGTERM/SIGKILL polls) so the
-# deadline only ever fires on something genuinely stuck.
-QUIT_HARD_DEADLINE_S = 15.0
+# a mount still attached.
+#
+# DERIVED from the bounds of the steps it waits on, never a hand-picked number:
+# a first cut hardcoded 15s while the steps summed to 21s, so the deadline fired
+# DURING the rcd SIGTERM wait — skipping the SIGKILL escalation, and on macOS a
+# surviving rcd reparents to launchd, leaving a live daemon under mounts whose
+# teardown may not have finished. That is the exact failure this branch exists to
+# stop, reintroduced by arithmetic. Every inner budget is imported (rcd exports
+# its own worst case rather than having 3+3+5+5 restated here), so tightening any
+# of them moves this with it; tests/test_app_quit.py asserts the inequality.
+# The margin covers the unbudgeted interstitials (thread starts, the duckdb close,
+# a `_rcd_lock` handoff).
+QUIT_DEADLINE_MARGIN_S = 2.0
+
+QUIT_HARD_DEADLINE_S = (
+    QUIT_SERVER_DRAIN_S
+    + _QUIT_UNMOUNT_BUDGET_S
+    + RCD_REAP_WORST_CASE_S
+    + QUIT_DEADLINE_MARGIN_S
+)
 
 
 def quit_teardown(server, *, server_thread=None, drain_s: float = QUIT_SERVER_DRAIN_S,
