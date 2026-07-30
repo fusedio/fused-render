@@ -399,3 +399,93 @@ def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch)
     assert seen["cmd"][seen["cmd"].index("-p") + 1] == "hello"
     assert seen["stdin"] == agent.subprocess.DEVNULL
     assert not os.path.exists(os.path.join(agent.RUNS, run_id, "stdin.jsonl"))
+
+
+# --------------------------- landing the creator in the running claude session
+
+# Creating an app with a prompt starts a session the user never sees unless the
+# post-create navigation opens the entry file's CLAUDE-template chat attached to
+# that run. Three sources have to agree for that to work, and none of them can
+# see the other two: Home.tsx builds the URL, registry.json makes "claude" a
+# selectable mode for .html, and the claude template's boot re-attaches from the
+# `run` param. These tests pin the three ends of that contract.
+
+def _repo_text(*parts):
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_home_navigates_into_the_claude_chat_for_the_started_run():
+    home = _repo_text("frontend", "src", "views", "Home.tsx")
+    assert '_mode: "claude"' in home, "post-create nav must select the claude mode"
+    assert "run: runId" in home, "…and attach to the run the POST just started"
+    # the run_id is what gates it: no session (no prompt) -> the default view
+    assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home
+
+
+def test_claude_is_a_selectable_mode_for_html():
+    registry = json.loads(_repo_text("fused_render", "templates", "registry.json"))
+    assert "claude" in registry[".html"]
+
+
+def test_claude_template_boots_into_chat_from_a_bare_run_param():
+    """The page must resume a run it did not start itself: its boot reads the
+    `run` param, enters chat, and polls — no session_id needed (the sidecar
+    entry lands seconds later, once claude reports its id)."""
+    page = _repo_text("fused_render", "templates", "claude", "template.html")
+    assert 'fused.params.get("run")' in page
+    assert "await resumeRun(run_id)" in page
+
+
+def test_run_param_survives_the_shell_runtime():
+    """`run` must be an ordinary view param: the runtime hides every
+    `_`-prefixed name from templates (isReserved), so a reserved-looking name
+    would read back as undefined and the chat would boot to its home card."""
+    assert not "run".startswith("_")
+    runtime = _repo_text("fused_render", "static", "runtime.js")
+    assert 'if (key.startsWith("_")) return true;' in runtime
+
+
+def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatch):
+    """The crux: agent._poll is the page's re-attach path, and it must answer
+    for a run the SERVER spawned (the POST) exactly as for one the page did —
+    same runs dir, same meta, so the page replays the user's prompt and streams
+    the reply. Pinned against a real spawn (stub claude) rather than a mock."""
+    if os.name == "nt":
+        pytest.skip("/bin/sh stub claude is POSIX-only")
+    entry = workspace / "app" / "index.html"
+    entry.parent.mkdir()
+    entry.write_text("<html></html>")
+    stub = tmp_path / "claude"
+    # the stream-json rows poll parses: an init row carrying the session id, a
+    # streamed text delta, and the terminating result row
+    stub.write_text(
+        '#!/bin/sh\ncat > /dev/null\n'
+        'printf \'%s\\n\' \'{"type":"system","subtype":"init","session_id":"sid-live"}\'\n'
+        'printf \'%s\\n\' \'{"type":"stream_event","event":{"type":'
+        '"content_block_delta","delta":{"type":"text_delta","text":"on it"}}}\'\n'
+        'printf \'%s\\n\' \'{"type":"result","subtype":"success",'
+        '"session_id":"sid-live","result":"on it"}\'\nexit 0\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
+
+    run_id, err = apps_mod._start_app_session(str(entry), "make it red")
+    assert err is None and run_id, err
+
+    agent = apps_mod._claude_agent()
+    deadline = time.monotonic() + 30
+    data = {}
+    while time.monotonic() < deadline:
+        data = agent._poll(run_id)
+        if data.get("done"):
+            break
+        time.sleep(0.2)
+    assert data.get("done"), data
+    # the page renders `message` as the user turn and `text` as the reply
+    assert data["message"] == "make it red"
+    assert "on it" in (data.get("text") or "")
+    assert data.get("session_id") == "sid-live"
+    # ...and the session lists in the entry file's sidecar, so a later visit
+    # without a `run` param still finds the conversation
+    assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"

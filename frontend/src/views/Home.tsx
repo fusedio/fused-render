@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createApp, getApps, getTemplateInventory } from "../lib/api";
 import type { AppInfo, Config, TemplateInventory } from "../lib/api";
-import { navigate, navigateUrl } from "../lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
@@ -44,6 +44,16 @@ function appNameError(name: string): string | null {
   if (name.includes("\\")) return 'Name cannot contain "\\".';
   if (name.startsWith(".")) return 'Name cannot start with ".".';
   return null;
+}
+
+// URL of a file's claude-template chat, attached to a specific live run.
+// `_mode` is the shell's template selector; `run` is a plain view param the
+// claude template reads through fused.params (its boot resumes that run, so
+// a session started server-side is picked up exactly like one the page
+// started itself).
+export function claudeChatUrl(fsPath: string, runId: string): string {
+  const params = new URLSearchParams({ _mode: "claude", run: runId });
+  return urlForFsPath(fsPath, "?" + params.toString());
 }
 
 function NewAppModal({ onClose }: { onClose: () => void }) {
@@ -80,9 +90,16 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
         }
         return;
       }
-      // Land on the new app's entry view. If a Claude session was started it
-      // is visible there via the file's claude template — no extra screen.
-      navigate(res.entry_html, { isDir: false });
+      // A session is running: land IN the entry file's claude chat rather than
+      // on its (still-boilerplate) rendered view, so the user watches the work
+      // they just asked for instead of the page it hasn't produced yet.
+      // `?_mode=claude` selects the claude template for this file (SPEC PT-9)
+      // and `run` is the template's own re-attach param — its boot reads it,
+      // enters chat, and streams the live run (agent.py `poll`), replaying the
+      // prompt as the user turn. Without a prompt there is no session, so the
+      // default (rendered) view is the right landing.
+      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       // 409 (collision) and 400 (bad name) both carry the server's message.
       if (alive.current) {
