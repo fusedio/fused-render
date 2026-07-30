@@ -240,6 +240,44 @@ def _write(key: str, record: dict) -> None:
     os.replace(tmp, path)
 
 
+def _write_if_absent(key: str, record: dict) -> dict | None:
+    """Create `progress.json` with `record`, or None if one already exists.
+
+    The parent's `spawn` record exists ONLY to fill the gap before the worker's
+    first write lands, so it must never be able to displace a record the worker
+    already wrote — and `_spawn` returns the moment `Popen` does, with the worker
+    already running. A resolver that fails on its first import genuinely can write
+    its `done` record first; replacing that with `done: False` plus an
+    already-exited pid makes `_recorded_progress` synthesise "the installer exited
+    unexpectedly" for an install that had already reported its real outcome, and
+    runtime.js turns that into a hard failure. Asserting the parent wins the race
+    is what produced D180, so the ordering is guaranteed here instead.
+
+    `O_CREAT|O_EXCL` is the guarantee: the OS makes the create-or-fail atomic, so
+    the worker (which writes through `_write`'s replace, and therefore always
+    overwrites) is the unconditional winner and the parent only ever fills an
+    actual absence. That is also why the record must be written straight into
+    `progress.json` rather than temp-then-replace — `os.replace` cannot refuse.
+    The payload is one small `os.write`, and a reader that catches a torn read
+    degrades to "no record yet", which for a claimed key is already reported as
+    in flight (`progress()`).
+
+    Whoever wins the claim clears any previous attempt's record first (see
+    `start`), so an absence here really does mean "this install has said nothing
+    yet" and not "the last attempt's failure is still lying around".
+    """
+    os.makedirs(progress_dir(key), exist_ok=True)
+    try:
+        fd = os.open(_progress_path(key), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    try:
+        os.write(fd, json.dumps(record).encode())
+    finally:
+        os.close(fd)
+    return record
+
+
 def _pid_alive(pid: int) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -618,14 +656,37 @@ def start(requirements: list[str]) -> dict:
                 f"{progress_dir(key)} is not writable"
             )
         return joined
+    # This attempt owns the key now, so the PREVIOUS attempt's record must go.
+    # `_write_if_absent` below deliberately cannot overwrite a record, so a failed
+    # attempt's error left in place would become this attempt's answer: the loader
+    # would show the old resolver failure the instant it opened while the new
+    # worker downloaded fine behind it. Unlinked before `_spawn`, so the worker
+    # cannot have written yet and nothing real is lost.
+    try:
+        os.unlink(_progress_path(key))
+    except OSError:
+        pass
     pid = _spawn(key, list(requirements))
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
     # and so `_in_flight` is true immediately, closing the double-click window.
+    # It also carries the pid, which is what makes a worker that died before
+    # writing anything (a failed exec) detectable at once rather than after the
+    # claim's grace window.
+    #
+    # Create-if-absent, NOT a write: a fast worker's record is strictly better
+    # than this one (it is the install's real state, and its pid is its own), so
+    # it wins by construction rather than by hoping the parent got there first.
+    # See `_write_if_absent`.
     record = {"stage": "spawn", "pct": STAGE_PCT["spawn"],
               "detail": f"starting installer for {len(requirements)} package(s)",
               "done": False, "error": None, "pid": pid, "ts": time.time()}
-    _write(key, record)
+    if _write_if_absent(key, record) is None:
+        # The worker beat us to it. Report what a poll would report — the same
+        # rule as the join branch above, and for the same reason: a record shape
+        # written only into this response body could disagree with the GET that
+        # follows it.
+        return progress(key) or record
     return record
 
 

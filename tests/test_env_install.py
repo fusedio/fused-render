@@ -839,6 +839,79 @@ def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeyp
 
 
 @requires_fused
+def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
+    tmp_path, monkeypatch
+):
+    """The parent's `spawn` record must not be able to lose a worker's record.
+
+    `_spawn` returns as soon as `Popen` does, and the worker is already running by
+    then — a resolver that fails on its first import can write its `done` record
+    before the parent gets its own line in. The parent's write used to be
+    unconditional, so it replaced that record with `done: False` plus a pid that
+    has already exited; `_recorded_progress` then synthesises "the installer
+    exited unexpectedly" and runtime.js renders it as a hard install failure for
+    an install that had already reported its real outcome. Asserting the parent
+    wins the race is the same reasoning that produced the D180 bug, so the
+    ordering is guaranteed here instead: the worker's record always wins.
+
+    Modelled by having `_spawn` itself write the worker's record, which is exactly
+    the interleaving a fast worker produces.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    reqs = ["pip"]
+    key = envinstall.venv_key_for(reqs)
+    worker_record = {
+        "stage": "error", "pct": 100, "detail": "", "done": True,
+        "error": "RuntimeError: Failed to install: no such distribution",
+        # A pid that cannot be running: 2**31-1 is above every platform's pid_max,
+        # so an unconditional parent write also loses the liveness argument.
+        "pid": 2 ** 31 - 1, "ts": time.time(),
+    }
+
+    def _spawn_then_report(k, r):
+        envinstall._write(k, worker_record)
+        return 2 ** 31 - 1
+
+    monkeypatch.setattr(envinstall, "_spawn", _spawn_then_report)
+    record = envinstall.start(reqs)
+    assert record["error"] == worker_record["error"], record
+    prog = envinstall.progress(key)
+    assert prog["error"] == worker_record["error"], (
+        "the worker's own outcome must survive the parent's spawn record"
+    )
+
+
+@requires_fused
+def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkeypatch):
+    """A taken-over claim starts from no record, not from the old one.
+
+    The parent's spawn record only fills the gap before the worker's first write,
+    so it must never displace a record the worker wrote — but that also means a
+    FAILED attempt's record is still sitting there when the user retries. Left in
+    place it becomes this attempt's answer: the loader would show the previous
+    resolver failure the instant it opened, while the new worker was downloading
+    perfectly well behind it.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    reqs = ["pip"]
+    key = envinstall.venv_key_for(reqs)
+    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: 2 ** 31 - 1)
+    envinstall.start(reqs)
+    assert envinstall.progress(key)["error"], "the first attempt reads as crashed"
+
+    # Age the claim so the retry may take it over, exactly as a real retry does.
+    claim = os.path.join(envinstall.progress_dir(key), "claim")
+    old = time.time() - envinstall._CLAIM_GRACE_S - 60
+    os.utime(claim, (old, old))
+    live = []
+    monkeypatch.setattr(envinstall, "_spawn", lambda k, r: live.append(k) or os.getpid())
+    record = envinstall.start(reqs)
+    assert live == [key], "the retry must spawn"
+    assert record["error"] is None, record
+    assert envinstall.progress(key)["error"] is None
+
+
+@requires_fused
 def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
     reqs = ["pip"]
