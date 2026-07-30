@@ -544,7 +544,7 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
     """Health of one mount: "mounted" | "stale" | "disconnected" | "unmounted".
 
     "mounted" requires both that a live rcd serves the mountpoint AND (when
-    `probe_io`) that the filesystem actually answers a listdir. Pass
+    `probe_io`, POSIX only) that the filesystem actually answers a listdir. Pass
     probe_io=False to SKIP that os.listdir — on an S3-backed mount a kernel
     READDIR of the root is itself a wedge trigger (a slow syscall the timeout
     abandons but cannot cancel), so a caller polling on a timer (the health
@@ -594,10 +594,13 @@ def mount_state(m: dict, rcd_mounts: set, timeout: float = PROBE_TIMEOUT,
                 # health-check).
                 out["state"] = "disconnected"
             else:
-                if probe_io:
+                # POSIX only: on win32 this readdir can fail for the lifetime of
+                # one process while the mount is healthy (INCIDENT 2026-07-30).
+                if probe_io and sys.platform != "win32":
                     os.listdir(mp)  # the actual I/O health check
                 out["state"] = "mounted"
-        except OSError:
+        except OSError as e:
+            logger.warning("mount %r probe failed at %s: %s", m["name"], mp, e)
             out["state"] = "disconnected"
 
     t = threading.Thread(target=probe, daemon=True, name=f"mount-probe-{m['name']}")
