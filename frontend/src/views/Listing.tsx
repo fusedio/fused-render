@@ -50,6 +50,8 @@ import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
 import { MenuIcons } from "../components/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "../components/FsDialogs";
+import { SplitRightIcon } from "../components/SplitIcons";
+import ListingPreviewPane from "../components/ListingPreviewPane";
 
 // A right-clicked row, normalized so both listing rows (name relative to the
 // listed folder) and search-result rows (a `rel` path into a subtree) drive the
@@ -131,8 +133,61 @@ function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
   return { sort, order };
 }
 
+// The preview pane's per-folder state, from the same viewstate querystring the
+// sort rides in (keys `pane`/`panew` alongside `sort`/`order`). Deliberately
+// NOT URL-synced (unlike sort): the pane is workspace layout, not view content
+// a shared link should impose. Default off — a folder never toggled shows the
+// plain listing exactly as before.
+const PANE_MIN_W = 220;
+const PANE_MAX_FRAC = 0.65;
+const PANE_DEFAULT_W = 420;
+
+function resolvePane(fsPath: string): { on: boolean; width: number } {
+  const s = new URLSearchParams(getViewState(fsPath));
+  const w = parseInt(s.get("panew") || "", 10);
+  return { on: s.get("pane") === "1", width: Number.isFinite(w) && w >= PANE_MIN_W ? w : PANE_DEFAULT_W };
+}
+
+// Merge the pane keys into this folder's saved state without touching a saved
+// sort (and vice versa — setSort merges the same way).
+function savePaneState(fsPath: string, on: boolean, width: number): void {
+  const s = new URLSearchParams(getViewState(fsPath));
+  if (on) {
+    s.set("pane", "1");
+    s.set("panew", String(Math.round(width)));
+  } else {
+    s.delete("pane");
+    s.delete("panew");
+  }
+  const qs = s.toString();
+  setViewState(fsPath, qs ? "?" + qs : "");
+}
+
 function currentQuery(): string {
   return new URLSearchParams(location.search).get("q") || "";
+}
+
+// Shimmering placeholder rows shown while the listing fetch is in flight —
+// same column shape as the real rows (icon + name + size + mtime), just with
+// shimmer bars instead of text so the table never reads as "frozen". The
+// width cycles make the bars ragged like real filenames.
+const SKEL_NAME_W = [70, 45, 82, 38, 60, 50, 74, 42, 66, 34];
+const SKEL_SIZE_W = [34, 28, 40, 24, 36, 30, 26, 38, 32, 22];
+function skeletonRows(n: number): React.ReactNode {
+  return Array.from({ length: n }, (_, i) => (
+    <tr key={i} className="skel-row">
+      <td className="name">
+        <span className="skel-bar icon-skel" />
+        <span className="skel-bar" style={{ width: `${SKEL_NAME_W[i % SKEL_NAME_W.length]}%` }} />
+      </td>
+      <td className="size">
+        <span className="skel-bar" style={{ width: SKEL_SIZE_W[i % SKEL_SIZE_W.length] }} />
+      </td>
+      <td className="mtime">
+        <span className="skel-bar" style={{ width: 84 }} />
+      </td>
+    </tr>
+  ));
 }
 
 // A dot-leading query segment is explicit intent to SEE hidden entries.
@@ -367,9 +422,10 @@ export default function Listing({
   // (not navigate) so the view doesn't remount.
   useEffect(() => {
     if (new URLSearchParams(location.search).get("sort")) return; // URL is authoritative
-    const saved = getViewState(fsPath);
-    if (!saved) return; // nothing stored → leave default sort + clean URL
-    const s = new URLSearchParams(saved);
+    const s = new URLSearchParams(getViewState(fsPath));
+    // No stored SORT → leave default sort + clean URL. (The stored string may
+    // still carry pane keys — those never ride the URL.)
+    if (!s.get("sort")) return;
     const params = new URLSearchParams(location.search);
     params.set("sort", s.get("sort") || "name");
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
@@ -414,6 +470,48 @@ export default function Listing({
   const selectedPath = sel.lead;
   // A Load more fetch (next page of a truncated listing) is in flight.
   const [loadingMore, setLoadingMore] = useState(false);
+
+  // --- Preview pane (right-hand split) ---------------------------------------
+  // Visibility + width restore from this folder's saved viewstate (same store
+  // as the sort — see resolvePane); both persist on change. Width is clamped
+  // live during the divider drag; the max fraction is enforced against the
+  // split container's current size.
+  const [pane, setPane] = useState<{ on: boolean; width: number }>(() => resolvePane(fsPath));
+  const splitRef = useRef<HTMLDivElement>(null);
+  const togglePane = () => {
+    setPane((prev) => {
+      const next = { ...prev, on: !prev.on };
+      savePaneState(fsPath, next.on, next.width);
+      return next;
+    });
+  };
+  // The divider drag: pointer capture keeps the drag alive when the cursor
+  // crosses into the pane's iframe (which would otherwise swallow mousemove).
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const divider = e.currentTarget;
+    divider.setPointerCapture(e.pointerId);
+    divider.classList.add("dragging");
+    let width = pane.width;
+    const onMove = (ev: PointerEvent) => {
+      const rect = splitRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      // The pane is the right side: its width is the distance from the cursor
+      // to the container's right edge, clamped to [min, max fraction].
+      width = Math.max(PANE_MIN_W, Math.min(rect.width * PANE_MAX_FRAC, rect.right - ev.clientX));
+      setPane((prev) => (prev.width === width ? prev : { ...prev, width }));
+    };
+    const onUp = () => {
+      divider.classList.remove("dragging");
+      divider.removeEventListener("pointermove", onMove);
+      divider.removeEventListener("pointerup", onUp);
+      divider.removeEventListener("pointercancel", onUp);
+      savePaneState(fsPath, true, width);
+    };
+    divider.addEventListener("pointermove", onMove);
+    divider.addEventListener("pointerup", onUp);
+    divider.addEventListener("pointercancel", onUp);
+  };
 
   // --- Context-menu / file-operation state ----------------------------------
   // The open context menu (position + items) and the open modal, both local to
@@ -895,7 +993,11 @@ export default function Listing({
     setSortState(next);
     // Remember this folder's choice so returning to it later restores this sort.
     // Only sort/order are persisted — the in-folder search `q` stays transient.
-    setViewState(fsPath, "?sort=" + next.sort + "&order=" + next.order);
+    // Merged into the saved string so the pane keys (resolvePane) survive.
+    const saved = new URLSearchParams(getViewState(fsPath));
+    saved.set("sort", next.sort);
+    saved.set("order", next.order);
+    setViewState(fsPath, "?" + saved.toString());
   };
 
   const setSearchSortKey = (key: SortKey) => {
@@ -1852,25 +1954,15 @@ export default function Listing({
       );
     }
   } else if (state.status === "loading") {
-    body = (
-      <tr>
-        <td colSpan={3} className="status-message">
-          Loading…
-        </td>
-      </tr>
-    );
+    body = skeletonRows(8);
   } else if (state.status === "error") {
     // In the provisional scaffold phase a list failure is most likely a stale
     // dir hint pointing at a file (its /api/fs/list 404s); suppress the hard
-    // error and show neutral loading — stat is still resolving and will replace
-    // this scaffold with the correct file view. Post-stat (committed render),
-    // a genuine list failure surfaces normally.
+    // error and show the neutral loading skeleton — stat is still resolving and
+    // will replace this scaffold with the correct file view. Post-stat
+    // (committed render), a genuine list failure surfaces normally.
     body = provisional ? (
-      <tr>
-        <td colSpan={3} className="status-message">
-          Loading…
-        </td>
-      </tr>
+      skeletonRows(8)
     ) : (
       <tr>
         <td colSpan={3} className="status-message error">
@@ -1974,71 +2066,106 @@ export default function Listing({
   return (
     <div className="listing">
       <div className="listing-search">
-        <input
-          ref={searchInputRef}
-          type="search"
-          className="listing-search-input"
-          placeholder="Start typing to search…"
-          value={query}
-          onFocus={prefetchWalk}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.preventDefault();
-              setQuery("");
-              e.currentTarget.blur();
-            }
-          }}
-        />
-        {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
-          <span className="listing-search-spinner" aria-hidden="true" />
-        )}
-        {searchCount !== null && (
-          <span className="listing-search-count" title={searchCountTitle}>
-            {searchCount}
-          </span>
-        )}
-        {/* Multi-selection readout — a single selected row needs no count. */}
-        {sel.paths.length > 1 && (
-          <span className="listing-search-count">{sel.paths.length} selected</span>
-        )}
+        {/* The box wraps input + pinned chips so the pane toggle can sit to
+            their right without disturbing the chips' inside-the-input pin. */}
+        <div className="listing-search-box">
+          <input
+            ref={searchInputRef}
+            type="search"
+            className="listing-search-input"
+            placeholder="Start typing to search…"
+            value={query}
+            onFocus={prefetchWalk}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setQuery("");
+                e.currentTarget.blur();
+              }
+            }}
+          />
+          {searching && (validWalk.status === "idle" || validWalk.status === "streaming") && (
+            <span className="listing-search-spinner" aria-hidden="true" />
+          )}
+          {searchCount !== null && (
+            <span className="listing-search-count" title={searchCountTitle}>
+              {searchCount}
+            </span>
+          )}
+          {/* Multi-selection readout — a single selected row needs no count. */}
+          {sel.paths.length > 1 && (
+            <span className="listing-search-count">{sel.paths.length} selected</span>
+          )}
+        </div>
+        <button
+          type="button"
+          className={"listing-pane-toggle" + (pane.on ? " active" : "")}
+          title={pane.on ? "Hide preview pane" : "Show preview pane"}
+          aria-pressed={pane.on}
+          onClick={togglePane}
+        >
+          <SplitRightIcon />
+        </button>
       </div>
-      <div
-        className={"listing-scroll" + (isStale ? " listing-stale" : "")}
-        onContextMenu={openBackgroundMenu}
-      >
-        <table className="listing-table">
-          <thead>
-            <tr>
-              {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
-                searching ? (
-                  // While searching, headers sort the results; no active arrow
-                  // means relevance (fuzzy-rank) order.
-                  <th
-                    key={key}
-                    className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
-                    onClick={() => setSearchSortKey(key)}
-                  >
-                    {label}
-                    {searchSort?.sort === key && (
-                      <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
-                    )}
-                  </th>
-                ) : (
-                  <th
-                    key={key}
-                    className={"sortable" + (key === sort ? " sorted" : "")}
-                    onClick={() => setSort(key)}
-                  >
-                    {label}
-                    {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
-                  </th>
-                )
-              )}
-            </tr>
-          </thead>
-          <tbody>{body}</tbody>
-        </table>
+      <div className="listing-split" ref={splitRef}>
+        <div
+          className={"listing-scroll" + (isStale ? " listing-stale" : "")}
+          onContextMenu={openBackgroundMenu}
+        >
+          <table className="listing-table">
+            <thead>
+              <tr>
+                {(Object.entries(SORT_KEYS) as [SortKey, string][]).map(([key, label]) =>
+                  searching ? (
+                    // While searching, headers sort the results; no active arrow
+                    // means relevance (fuzzy-rank) order.
+                    <th
+                      key={key}
+                      className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
+                      onClick={() => setSearchSortKey(key)}
+                    >
+                      {label}
+                      {searchSort?.sort === key && (
+                        <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
+                      )}
+                    </th>
+                  ) : (
+                    <th
+                      key={key}
+                      className={"sortable" + (key === sort ? " sorted" : "")}
+                      onClick={() => setSort(key)}
+                    >
+                      {label}
+                      {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
+                    </th>
+                  )
+                )}
+              </tr>
+            </thead>
+            <tbody>{body}</tbody>
+          </table>
+        </div>
+        {pane.on && (
+          <>
+            <div
+              className="listing-divider"
+              onPointerDown={onDividerPointerDown}
+              role="separator"
+              aria-orientation="vertical"
+            />
+            <div className="listing-pane-slot" style={{ flexBasis: pane.width }}>
+              {/* Keyed on the previewed path: switching rows remounts the pane,
+                  so a stale iframe never lingers a frame while the new row's
+                  stat/list resolves. */}
+              <ListingPreviewPane
+                key={sel.paths.length === 1 && leadRow ? leadRow.path : "none"}
+                row={sel.paths.length === 1 && leadRow ? leadRow : null}
+                selCount={sel.paths.length}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {menu && (
