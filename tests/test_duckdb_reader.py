@@ -31,6 +31,22 @@ reader = _load("reader.py")
 writer = _load("writer.py")
 
 
+@pytest.fixture(autouse=True)
+def _no_leaked_quit_latch():
+    """Fail LOUDLY if another test in this worker left the reader's quit latch set
+    on the shared duckdb module (tests/test_app_quit.py trips it on purpose, and a
+    fixture that only conditionally restored it once leaked it here).
+
+    Without this the failure mode is silent, not loud: `_http_connection` raises
+    past the latch, and the remote fast path is *designed* to swallow that and read
+    the local file instead — so the source_url tests below would keep passing while
+    asserting on the fallback path rather than the shared-connection one they name."""
+    assert not getattr(duckdb, reader._HTTP_CON_LATCH, False), (
+        "the duckdb HTTP-connection quit latch leaked from an earlier test; "
+        "the remote-read tests here would silently exercise the local-path fallback")
+    yield
+
+
 # ---------------------------------------------------------------- fixtures
 
 def _make(tmp_path, name, sql):

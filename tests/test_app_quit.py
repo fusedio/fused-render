@@ -66,18 +66,39 @@ class _FakeCon:
             raise RuntimeError("connection already invalidated")
 
 
+def _clear_duckdb_module_state(reader_mod) -> None:
+    """Remove BOTH pieces of process-global state the reader keeps on the duckdb
+    module — the connection stash and the one-way quit latch.
+
+    `monkeypatch.delattr(..., raising=False)` is NOT this, which is the trap the
+    first version of the fixture fell into: it records an undo entry only when the
+    attribute already EXISTS, so on a clean run there is nothing to restore and a
+    test that trips the latch leaves `duckdb._fused_render_http_con_closed = True`
+    on the real, sys.modules-resident duckdb module for the rest of the worker.
+    After that `_http_connection` raises for every later test in the process, and
+    tests/test_duckdb_reader.py's `source_url` cases don't fail loudly — the reader
+    swallows the raise and reads the local path instead, so they assert on a
+    silently different code path. (Invisible in this checkout only because httpfs
+    isn't installed and those tests skip.)"""
+    for attr in (reader_mod._HTTP_CON_KEY, reader_mod._HTTP_CON_LATCH):
+        try:
+            delattr(reader_mod.duckdb, attr)
+        except AttributeError:
+            pass
+
+
 @pytest.fixture()
-def reader(monkeypatch):
-    """reader.py with a guaranteed-clean stash slot on the real duckdb module.
-    monkeypatch.delattr/setattr restores whatever was there, so a stash a
-    previous test in this worker created can't leak in (or out)."""
+def reader():
+    """reader.py with a guaranteed-clean stash slot AND latch on the real duckdb
+    module — cleaned both before and after, explicitly, since the latch is one-way
+    by design and must not outlive the test that tripped it."""
     pytest.importorskip("duckdb")
     mod = _load_reader()
-    monkeypatch.delattr(mod.duckdb, mod._HTTP_CON_KEY, raising=False)
-    # Same for the quit latch: it is one-way ON PURPOSE, so a test that trips it
-    # must not leave the next test in this worker unable to build a connection.
-    monkeypatch.delattr(mod.duckdb, mod._HTTP_CON_LATCH, raising=False)
-    return mod
+    _clear_duckdb_module_state(mod)
+    try:
+        yield mod
+    finally:
+        _clear_duckdb_module_state(mod)
 
 
 def test_close_http_connection_closes_and_clears_the_stash(reader):
@@ -638,6 +659,20 @@ def test_the_latch_holds_on_a_process_that_never_read_a_remote_file(reader,
 
     with pytest.raises(RuntimeError):
         reader._http_connection()
+    assert not hasattr(reader.duckdb, reader._HTTP_CON_KEY)
+
+
+def test_the_fixture_leaves_no_latch_behind_for_the_next_test(reader):
+    """The cross-test leak IS the defect here, not the latch itself: this pins the
+    cleanup both halves of the fixture use, so a duckdb module that some other test
+    file then imports is as it was found."""
+    setattr(reader.duckdb, reader._HTTP_CON_KEY, _FakeCon())
+    reader.close_http_connection()  # closes, and latches
+    assert getattr(reader.duckdb, reader._HTTP_CON_LATCH, False) is True
+
+    _clear_duckdb_module_state(reader)
+
+    assert not hasattr(reader.duckdb, reader._HTTP_CON_LATCH)
     assert not hasattr(reader.duckdb, reader._HTTP_CON_KEY)
 
 
