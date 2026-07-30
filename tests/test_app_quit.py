@@ -251,6 +251,15 @@ def ladder(tmp_path, monkeypatch):
     def _rc(port, method, params=None, **kw):
         name = os.path.basename((params or {}).get("mountPoint", ""))
         ctx["calls"].append(("rc", method, name))
+        if method == "mount/mount":
+            # Where a real attach spends its time (up to a 60s timeout against S3).
+            # A test can park an attach in here and decide when it lands.
+            if ctx.get("mount_entered") is not None:
+                ctx["mount_entered"].set()
+            if ctx.get("block_mount") is not None:
+                assert ctx["block_mount"].wait(10), "test never released mount/mount"
+            ctx["kernel"].add(name)  # the kernel mount now exists
+            return {}
         if name in ctx["rc_fail"]:
             raise RuntimeError("failed to unmount: device or resource busy")
         # A successful rcd unmount drops the kernel entry too (StubRcd models it
@@ -1212,3 +1221,79 @@ def test_the_losing_builder_of_two_closes_its_own_connection(reader, monkeypatch
     assert outcome["cursor"] == "winner-cursor"  # and the caller uses it
     assert mine.closed == 1                     # the loser is closed, not leaked
     assert winner.closed == 0
+
+
+# ----------------------------- an attach already inside rcd's mount/mount (A)
+# The layer the latch and the sweep both miss: attach_mount that has ALREADY passed
+# the latch check and is inside `mount/mount`, which carries a 60s timeout. It can
+# return after the teardown's sweep has looked, or even after stop_local_rcd — and
+# it then leaves a live kernel nfsmount under a reaped daemon. Waiting for it is not
+# an option (60s against an 8s budget), so the attacher itself is made responsible
+# for leaving nothing attached: it is the only party that knows what it just created
+# and the only one positioned to act at the right moment.
+
+
+@pytest.fixture()
+def attacher(ladder, monkeypatch):
+    """`ladder` plus the minimum needed to drive a real attach_mount: the rc calls
+    around mount/mount are faked, and the read-only probe and serve reconciliation
+    (neither under test here) are stubbed out."""
+    monkeypatch.setattr(mounts_mod, "ensure_rcd", lambda: 5572)
+    monkeypatch.setattr(mounts_mod.lifecycle, "_refresh_read_only_flag",
+                        lambda m, port=None: None)
+    monkeypatch.setattr(mounts_mod.lifecycle, "sync_serves", lambda: None)
+    monkeypatch.setattr(mounts_mod.lifecycle, "_update_mount", lambda m: None)
+    ladder["block_mount"] = threading.Event()
+    ladder["mount_entered"] = threading.Event()
+    return ladder
+
+
+def test_an_attach_that_lands_after_the_sweep_detaches_itself(attacher):
+    late = {"id": "l", "name": "late", "remote": "s3l:bucket"}
+    outcome = {}
+
+    def _attach():
+        outcome["err"] = mounts_mod.attach_mount(late)
+
+    t = threading.Thread(target=_attach, daemon=True)
+    t.start()
+    # Park the attach INSIDE mount/mount, the way a real 60s S3 attach sits there.
+    assert attacher["mount_entered"].wait(5), "the attach never reached mount/mount"
+
+    # The entire teardown runs and finishes — fan-out, in-flight wait, sweep — while
+    # that attach is still in the daemon.
+    mounts_mod.unmount_all_for_quit(budget_s=0.2)
+    assert attacher["kernel"] == set()
+
+    # Only now does mount/mount return, with the mount actually attached.
+    attacher["block_mount"].set()
+    t.join(5)
+
+    assert outcome["err"] and "quit" in outcome["err"].lower()
+    # The attacher undid its own work: nothing is left for the reaped daemon to
+    # orphan, which is the whole invariant.
+    assert attacher["kernel"] == set(), "an attach that lost the race left a mount"
+    assert "late" in _names(attacher["calls"], "force") or \
+        ("rc", "mount/unmount", "late") in attacher["calls"]
+
+
+def test_the_teardown_waits_briefly_for_an_attach_in_flight(attacher):
+    late = {"id": "l", "name": "late", "remote": "s3l:bucket"}
+    done = threading.Event()
+
+    def _attach():
+        mounts_mod.attach_mount(late)
+        done.set()
+
+    t = threading.Thread(target=_attach, daemon=True)
+    t.start()
+    assert attacher["mount_entered"].wait(5)
+
+    # Let mount/mount return a beat after the fan-out, i.e. during the wait.
+    threading.Timer(0.2, attacher["block_mount"].set).start()
+    mounts_mod.unmount_all_for_quit(budget_s=1.0)
+
+    # The teardown did not walk away while an attach was still landing.
+    assert done.is_set(), "the teardown swept before the in-flight attach settled"
+    assert attacher["kernel"] == set()
+    t.join(5)
