@@ -133,31 +133,42 @@ function resolveSort(fsPath: string): { sort: SortKey; order: SortOrder } {
   return { sort, order };
 }
 
-// The preview pane's per-folder state, from the same viewstate querystring the
-// sort rides in (keys `pane`/`panew` alongside `sort`/`order`). Deliberately
-// NOT URL-synced (unlike sort): the pane is workspace layout, not view content
-// a shared link should impose. Default off — a folder never toggled shows the
+// The preview pane's per-folder state. Visibility follows the sort's model:
+// an explicit `?preview` in the URL wins (and rides along on directory
+// navigation — see lib/router navigate, which carries it so the pane is
+// sticky between folders), otherwise this folder's saved viewstate (keys
+// `pane`/`panew` alongside `sort`/`order`). Width is viewstate-only — a pixel
+// width isn't something a shared link should impose. A folder with no saved
+// width opens the pane at HALF the split container (width null until the
+// measuring effect resolves it; PANE_FALLBACK_W covers the pre-paint frame
+// and the unmeasurable edge). Default off — a folder never toggled shows the
 // plain listing exactly as before.
 const PANE_MIN_W = 220;
 const PANE_MAX_FRAC = 0.65;
-const PANE_DEFAULT_W = 420;
+const PANE_DEFAULT_FRAC = 0.5;
+const PANE_FALLBACK_W = 420;
 
-function resolvePane(fsPath: string): { on: boolean; width: number } {
+function resolvePane(fsPath: string): { on: boolean; width: number | null } {
   const s = new URLSearchParams(getViewState(fsPath));
+  const url = new URLSearchParams(location.search);
+  // `preview=true` exactly — the owner's literal format (any other value
+  // reads as absent, falling back to the saved state).
+  const on = url.get("preview") !== null ? url.get("preview") === "true" : s.get("pane") === "1";
   const w = parseInt(s.get("panew") || "", 10);
-  return { on: s.get("pane") === "1", width: Number.isFinite(w) && w >= PANE_MIN_W ? w : PANE_DEFAULT_W };
+  return { on, width: Number.isFinite(w) && w >= PANE_MIN_W ? w : null };
 }
 
 // Merge the pane keys into this folder's saved state without touching a saved
-// sort (and vice versa — setSort merges the same way).
-function savePaneState(fsPath: string, on: boolean, width: number): void {
+// sort (and vice versa — setSort merges the same way). A null width (still at
+// the measured-default half) isn't persisted — only a dragged width is a
+// choice worth remembering.
+function savePaneState(fsPath: string, on: boolean, width: number | null): void {
   const s = new URLSearchParams(getViewState(fsPath));
+  s.delete("pane");
+  s.delete("panew");
   if (on) {
     s.set("pane", "1");
-    s.set("panew", String(Math.round(width)));
-  } else {
-    s.delete("pane");
-    s.delete("panew");
+    if (width !== null) s.set("panew", String(Math.round(width)));
   }
   const qs = s.toString();
   setViewState(fsPath, qs ? "?" + qs : "");
@@ -431,6 +442,19 @@ export default function Listing({
     params.set("order", s.get("order") === "desc" ? "desc" : "asc");
     replaceSearch(location.pathname + "?" + params.toString());
   }, [fsPath]);
+  // Same URL reflection for a pane restored from saved viewstate (URL carried
+  // no `preview`): put `preview=true` on the address bar so refresh, bookmarks
+  // and onward navigation (which carries the param) all see the shown state.
+  // Only ever ADDS the param — a URL without it and a folder without saved
+  // pane state keep the clean URL, and an explicit `?preview=false` stays
+  // authoritative (resolvePane already read it as off).
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get("preview") !== null) return; // URL is authoritative
+    if (!new URLSearchParams(getViewState(fsPath)).get("pane")) return;
+    const params = new URLSearchParams(location.search);
+    params.set("preview", "true");
+    replaceSearch(location.pathname + "?" + params.toString());
+  }, [fsPath]);
   const [refresh, setRefresh] = useState(0); // bumped by the dir watch socket
   // loadMore captures the refresh generation it started in; a dir-watch refresh
   // on the SAME path (App keys StatView on epoch+fsPath, so cross-directory
@@ -472,15 +496,33 @@ export default function Listing({
   const [loadingMore, setLoadingMore] = useState(false);
 
   // --- Preview pane (right-hand split) ---------------------------------------
-  // Visibility + width restore from this folder's saved viewstate (same store
-  // as the sort — see resolvePane); both persist on change. Width is clamped
-  // live during the divider drag; the max fraction is enforced against the
-  // split container's current size.
-  const [pane, setPane] = useState<{ on: boolean; width: number }>(() => resolvePane(fsPath));
+  // Visibility restores URL-first (resolvePane: `?preview=true` wins, then the
+  // folder's saved viewstate); width is viewstate-only. Toggling writes BOTH:
+  // the URL (replaceSearch, like setSort — on sets `preview=true`, off deletes
+  // it; navigate() then carries the param between folders, making the pane
+  // sticky) and the viewstate (so a folder re-opened from a clean URL
+  // remembers). Width is clamped live during the divider drag; the max
+  // fraction is enforced against the split container's current size.
+  const [pane, setPane] = useState<{ on: boolean; width: number | null }>(() => resolvePane(fsPath));
   const splitRef = useRef<HTMLDivElement>(null);
+  // No saved width: default to half the split container, measured at first
+  // open (layout effect — before paint, so the pane never flashes another
+  // width). The clamps still apply; the fallback constant only covers the
+  // unmeasurable edge (ref not mounted yet).
+  useLayoutEffect(() => {
+    if (!pane.on || pane.width !== null) return;
+    const w = splitRef.current?.getBoundingClientRect().width;
+    const half = w ? Math.max(PANE_MIN_W, Math.min(w * PANE_MAX_FRAC, w * PANE_DEFAULT_FRAC)) : PANE_FALLBACK_W;
+    setPane((prev) => (prev.width === null ? { ...prev, width: half } : prev));
+  }, [pane.on, pane.width]);
   const togglePane = () => {
     setPane((prev) => {
       const next = { ...prev, on: !prev.on };
+      const params = new URLSearchParams(location.search);
+      if (next.on) params.set("preview", "true");
+      else params.delete("preview");
+      const qs = params.toString();
+      replaceSearch(location.pathname + (qs ? "?" + qs : ""));
       savePaneState(fsPath, next.on, next.width);
       return next;
     });
@@ -2181,7 +2223,13 @@ export default function Listing({
               role="separator"
               aria-orientation="vertical"
             />
-            <div className="listing-pane-slot" style={{ flexBasis: pane.width }}>
+            <div
+              className="listing-pane-slot"
+              // Null width = first open with nothing saved: half the container
+              // as a flex percentage until the measuring layout effect pins a
+              // pixel value (same visual, so no flash either way).
+              style={{ flexBasis: pane.width ?? `${PANE_DEFAULT_FRAC * 100}%` }}
+            >
               {/* Keyed on the previewed path: switching rows remounts the pane,
                   so a stale iframe never lingers a frame while the new row's
                   stat/list resolves. */}
