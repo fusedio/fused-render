@@ -231,6 +231,26 @@ def test_progress_returns_the_record(tmp_path):
     assert resp.json()["progress"]["detail"] == "downloading"
 
 
+def test_progress_during_the_spawn_window_is_not_null(tmp_path, monkeypatch):
+    """The endpoint the loader polls must not answer null for a claimed install.
+
+    A claim exists from before `_spawn` until the parent's first `_write` lands
+    after `Popen` returns. Any poll inside that window — the caller that lost the
+    claim, or a reloaded page that never POSTed — used to get
+    `"progress": null`, and runtime.js turns that into the hard failure "the
+    installer left no progress record" over an install that is running fine.
+    """
+    from fused_render import envinstall
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    client = _client(tmp_path)
+    key = "0a5eeded00000001"
+    assert envinstall._claim(key) is True  # the winner, still inside Popen
+    body = client.get(f"/api/env/progress?key={key}", headers=HEADERS).json()
+    assert body["progress"] is not None, "a claimed install is not 'never started'"
+    assert body["progress"]["done"] is False
+
+
 def test_cancel_needs_a_key(tmp_path):
     client = _client(tmp_path)
     resp = client.post("/api/env/cancel", json={}, headers=HEADERS)

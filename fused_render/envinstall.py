@@ -198,6 +198,29 @@ def _progress_path(key: str) -> str:
     return os.path.join(progress_dir(key), "progress.json")
 
 
+def _claim_path(key: str) -> str:
+    return os.path.join(progress_dir(key), "claim")
+
+
+def _claim_within_grace(claim: str) -> bool:
+    """Is `claim` young enough to still count as a live install?
+
+    The ONE definition of "a claim that still counts", read by both `progress()`
+    (which reports such a claim as in flight) and `_claim_is_stale` (which refuses
+    to take it over). Two independent age rules for one fact would drift, and the
+    drift would be invisible: they would disagree only inside a window measured in
+    milliseconds.
+
+    A claim that cannot be stat'd (already taken over, or gone) is not within
+    grace — there is nothing to be behind it.
+    """
+    try:
+        age = time.time() - os.path.getmtime(claim)
+    except OSError:
+        return False
+    return age <= _CLAIM_GRACE_S
+
+
 def _write(key: str, record: dict) -> None:
     """Atomically replace `progress.json` — a poll must never read a half-write.
 
@@ -303,8 +326,15 @@ def _read_record(key: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def progress(key: str) -> dict | None:
-    """The install's current record, or None when it was never started.
+def _recorded_progress(key: str) -> dict | None:
+    """The install's state **as far as `progress.json` knows**, or None.
+
+    Everything `progress()` used to be. Split out because `progress()` now also
+    reports a claim with no record as in flight, and `_claim_is_stale` must NOT see
+    that: it decides whether to take a claim over, so a claim-derived "in flight"
+    would make the claim its own alibi and nothing would ever be stealable — one
+    crash would wedge the key forever, the exact failure `_claim_is_stale` exists
+    to prevent. This is the record-only view, so the two cannot become circular.
 
     A record that is not `done` but whose pid is gone is a crash, and is
     reported as finished-with-an-error — the same liveness check
@@ -339,6 +369,49 @@ def progress(key: str) -> dict | None:
     return data
 
 
+def progress(key: str) -> dict | None:
+    """The install's current state, or None when it was never started.
+
+    A claim and a progress record are two facts about ONE state, and this function
+    owns the question. The claim is created before `_spawn`, and the parent's first
+    `_write` lands only after `Popen` returns — a fork/exec of a Python
+    interpreter. For that whole window "claim present, no record" is what a
+    perfectly healthy install looks like, and answering None for it means "never
+    started": runtime.js treats a null record as a hard failure ("the installer
+    left no progress record"), so the first open of a PEP 723 template could fail
+    while the install it was waiting on ran to completion.
+
+    Fixed here rather than in `start()`'s join branch because the poll is a
+    SEPARATE request: a synthetic record in one response body does nothing for the
+    GET /api/env/progress that follows it, nor for a reloaded page that polls
+    without ever having POSTed.
+
+    Past `_CLAIM_GRACE_S` a claim with no record is not "starting" any more — the
+    server died between claiming and writing — and saying "starting" forever would
+    wedge the key with a poll that never ends. So it resolves as
+    done-with-an-error: the installer never got off the ground, which the caller
+    can show and retry (and the retry's `_claim` takes the stale claim over). The
+    grace window is `_claim_within_grace`'s, shared with `_claim_is_stale` so the
+    two agree by construction.
+    """
+    prog = _recorded_progress(key)
+    if prog is not None:
+        return prog
+    if not valid_key(key):
+        return None
+    claim = _claim_path(key)
+    if not os.path.exists(claim):
+        return None
+    if _claim_within_grace(claim):
+        return {"stage": "spawn", "pct": STAGE_PCT["spawn"],
+                "detail": "an installer for these packages is starting",
+                "done": False, "error": None, "pid": None, "ts": time.time()}
+    return {"stage": "done", "pct": 100, "detail": "the installer never started",
+            "done": True, "pid": None, "ts": time.time(),
+            "error": "the installer never started — see worker.log in "
+                     + progress_dir(key)}
+
+
 def _in_flight(key: str) -> bool:
     prog = progress(key)
     return bool(prog) and not prog.get("done")
@@ -360,9 +433,8 @@ def _claim(key: str) -> bool:
     and if someone else wins that takeover we join them rather than spawn a
     second worker.
     """
-    d = progress_dir(key)
-    os.makedirs(d, exist_ok=True)
-    claim = os.path.join(d, "claim")
+    os.makedirs(progress_dir(key), exist_ok=True)
+    claim = _claim_path(key)
     for attempt in (1, 2):
         try:
             fd = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -396,19 +468,22 @@ def _claim_is_stale(key: str, claim: str) -> bool:
     six workers while the O_EXCL create was working perfectly. (Measured; that is
     how this function came to exist.)
 
-    So: with a record, `progress()` decides — it has already reaped a dead worker
-    into `done`. Without one, only age can distinguish "mid-spawn" from "the
-    server died between claiming and writing", and the grace window is short
-    enough that a genuine crash self-heals rather than wedging the key.
+    So: with a record, the RECORD decides — `_recorded_progress` has already reaped
+    a dead worker into `done`. Without one, only age can distinguish "mid-spawn"
+    from "the server died between claiming and writing", and the grace window is
+    short enough that a genuine crash self-heals rather than wedging the key.
+
+    Deliberately `_recorded_progress`, not `progress()`: `progress()` reports a
+    fresh claim as in flight, so consulting it here would let a claim vouch for
+    itself and no claim could ever be taken over. Same grace window either way —
+    `_claim_within_grace` is the single definition — but the evidence for "someone
+    is behind this claim" must come from something other than the claim's own
+    existence.
     """
-    prog = progress(key)
+    prog = _recorded_progress(key)
     if prog is not None:
         return bool(prog.get("done"))
-    try:
-        age = time.time() - os.path.getmtime(claim)
-    except OSError:
-        return False
-    return age > _CLAIM_GRACE_S
+    return not _claim_within_grace(claim)
 
 
 def uv_bin() -> str | None:
@@ -522,14 +597,27 @@ def start(requirements: list[str]) -> dict:
         _write(key, record)
         return record
     if not _claim(key):
-        # Someone else owns this install — join it. `progress()` can still be
-        # None for the instant between their claim and their first write, so
-        # report a starting record rather than nothing.
-        return progress(key) or {
-            "stage": "spawn", "pct": STAGE_PCT["spawn"],
-            "detail": "an installer for these packages is already starting",
-            "done": False, "error": None, "pid": None, "ts": time.time(),
-        }
+        # Someone else owns this install — join it, and report exactly what a poll
+        # would see. No synthetic record here any more: `progress()` covers the
+        # instant between their claim and their first write, and it is the function
+        # the client's NEXT request calls, so a second record shape written only
+        # into this response body could disagree with the poll that follows it —
+        # which is how "the installer left no progress record" reached a user whose
+        # install was running fine. Non-None by construction: every path where
+        # `_claim` returns False leaves a claim in place, and `progress()` reports a
+        # claim.
+        joined = progress(key)
+        if joined is None:
+            # Neither claimed nor joinable: `_claim` only gets here when the
+            # filesystem refused the create/unlink. Said out loud rather than
+            # returned as None — the endpoint turns a RuntimeError into a message
+            # the user can read, and None would reach runtime.js as the very
+            # "installer left no progress record" this function stopped producing.
+            raise RuntimeError(
+                "could not start or join an installer for these packages: "
+                f"{progress_dir(key)} is not writable"
+            )
+        return joined
     pid = _spawn(key, list(requirements))
     # Written by the PARENT, before the worker's first write lands, so the very
     # first poll after the click shows "starting" instead of "never started" —
@@ -551,10 +639,17 @@ def cancel(key: str) -> bool:
 
     An invalid key kills nothing. This is the endpoint that would otherwise read
     a `pid` out of an attacker-chosen file and signal it (see `valid_key`).
+
+    Deliberately `_recorded_progress`, not `progress()`: a claim with no record yet
+    has no pid to signal, and a "cancelled" record written into that window would
+    be overwritten moments later by the spawner's own `_write` — the page would
+    show cancelled and then watch the install continue. So cancelling inside the
+    spawn window is a no-op that reports False, and the poll keeps showing
+    "starting"; the user can cancel again once there is an installer to kill.
     """
     if not valid_key(key):
         return False
-    prog = progress(key)
+    prog = _recorded_progress(key)
     if not prog or prog.get("done"):
         return False
     pid = prog.get("pid", -1)

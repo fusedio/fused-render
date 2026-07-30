@@ -704,6 +704,102 @@ def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch
     assert len(spawned) == 2, "a dead installer's claim should be taken over"
 
 
+def test_a_fresh_claim_with_no_record_reads_as_an_install_in_flight(monkeypatch):
+    """The claim IS the install, from the instant it exists.
+
+    A claim is written before `_spawn`, and the parent's first `_write` only
+    happens after `Popen` returns — a fork/exec of a Python interpreter. For that
+    whole window "claim present, no record" is the truth of a perfectly healthy
+    install, and `progress()` used to answer None for it: never started. runtime.js
+    turns a null record into a hard failure ("the installer left no progress
+    record"), so the first open of any PEP 723 template could fail while the
+    install it was waiting on ran to completion. Whoever polls — the caller that
+    lost the claim, or a page that reloaded and never POSTed at all — must get a
+    pollable record, which is why this is fixed in `progress()` and not in the
+    response body `start()` happens to return.
+    """
+    key = "0c1a1f00000000e1"
+    assert envinstall._claim(key) is True, "nothing else holds this key"
+    assert envinstall._read_record(key) is None, "mid-spawn: no record written yet"
+    prog = envinstall.progress(key)
+    assert prog is not None, "a claimed install is in flight, not 'never started'"
+    assert prog["done"] is False
+    assert prog["error"] is None
+    assert envinstall._in_flight(key) is True
+
+
+def test_a_stale_claim_with_no_record_resolves_instead_of_polling_forever(monkeypatch):
+    """The other side of treating a claim as evidence: it has to expire.
+
+    A server killed between claiming and its first `_write` leaves a claim no
+    process is behind. Reading that as "starting" forever would wedge the key —
+    the poller would never stop and the page would never say anything. So past
+    `_CLAIM_GRACE_S` the answer is done-with-an-error: the installer never got off
+    the ground, which is an answer the caller can act on (show it, offer a retry —
+    and the retry's `_claim` takes the stale claim over).
+    """
+    key = "0c1a15000000d0e1"
+    assert envinstall._claim(key) is True
+    claim = os.path.join(envinstall.progress_dir(key), "claim")
+    old = time.time() - envinstall._CLAIM_GRACE_S - 60
+    os.utime(claim, (old, old))
+    prog = envinstall.progress(key)
+    assert prog is not None
+    assert prog["done"] is True, "an abandoned claim must end the poll"
+    assert "never started" in prog["error"]
+    assert envinstall._in_flight(key) is False
+
+
+def test_claim_takeover_still_turns_on_claim_age_not_on_progress(monkeypatch):
+    """`_claim_is_stale` must not be able to read the claim as its own alibi.
+
+    It asks `progress()` whether the install is in flight, and `progress()` now
+    reports a fresh claim as in flight — so a careless fix makes the claim the
+    evidence for itself and no claim is ever stealable again, which is exactly the
+    "one crash wedges the key forever" failure `_claim_is_stale` was written to
+    prevent. Both directions are pinned here: fresh is not stealable, aged is.
+    """
+    key = "0c1a1a6ed0000001"
+    assert envinstall._claim(key) is True
+    assert envinstall._claim(key) is False, "a fresh claim is not stealable"
+
+    claim = os.path.join(envinstall.progress_dir(key), "claim")
+    old = time.time() - envinstall._CLAIM_GRACE_S - 60
+    os.utime(claim, (old, old))
+    assert envinstall._claim_is_stale(key, claim) is True
+    assert envinstall._claim(key) is True, "an abandoned claim must be takeable"
+
+
+@requires_fused
+def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeypatch):
+    """The user-visible bug, at the layer that produced it.
+
+    The docs template fires `warmup` and awaits `import` for the same file, so one
+    of the two always loses the claim and takes `start()`'s join branch. That
+    branch's synthetic record only ever protected the POST's own response body;
+    the loser's very next act is a SEPARATE GET /api/env/progress, which called
+    `progress()` fresh and got null — "Cannot open sample.docx: the installer left
+    no progress record" while the install was running fine. Distinct from
+    `test_the_loader_polls_the_key_the_installer_actually_returned` in
+    test_server_env_install.py, which reaches the same message via the WRONG key;
+    here the key is right and the record simply had not been written yet.
+    """
+    monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
+    reqs = ["pip"]
+    key = envinstall.venv_key_for(reqs)
+    monkeypatch.setattr(
+        envinstall, "_spawn", lambda *a: pytest.fail("the loser must not spawn")
+    )
+    # The winner, still inside `Popen`: claim taken, nothing written yet.
+    assert envinstall._claim(key) is True
+    record = envinstall.start(reqs)
+    assert record is not None and record["done"] is False
+    # ...and the loser's next act is a fresh poll, not a re-read of that body.
+    polled = envinstall.progress(key)
+    assert polled is not None, "the poll after the join must not read null"
+    assert polled["done"] is False
+
+
 @requires_fused
 def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(envinstall, "venvs_path", lambda: str(tmp_path / "venvs"))
