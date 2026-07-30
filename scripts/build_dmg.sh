@@ -191,7 +191,26 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # into a green no-op if the install above ever stops carrying [bundled].
 # `-o addopts=` clears the repo's `-n auto`, so this needs pytest but not xdist.
 echo "==> reconciling the bundle force-list against the installed [bundled]"
-"$BUILD_VENV/bin/pip" install --quiet pytest
+# --no-deps, and it is load-bearing: this venv IS the payload. py2app runs under
+# it and copies modules out of its site-packages, and its purelib is cp -R'd
+# straight into the .app below. Left to resolve, pip picks pluggy/packaging/
+# iniconfig for PYTEST's constraints — pluggy is in setup_py2app.py's explicit
+# force list and packaging reaches the bundle through the derivation closure — so
+# a version the DMG ships changes on a pip warning nobody reads. `iniconfig` is
+# named because pytest needs it and nothing else here pulls it in; pluggy and
+# packaging arrive with the wheel's own resolution above.
+"$BUILD_VENV/bin/pip" install --quiet --no-deps pytest iniconfig
+# Which means a missing pytest dependency now fails as an ImportError instead of
+# being quietly installed over the payload's pin. Said out loud, with the fix, so
+# it cannot read as a broken reconciliation step.
+if ! "$BUILD_VENV/bin/python" -c 'import pytest' >/dev/null 2>&1; then
+  echo "FATAL: pytest does not import in the build venv." >&2
+  echo "       It is installed --no-deps on purpose (this venv is the shipped" >&2
+  echo "       payload), so something pytest needs is not among the wheel's own" >&2
+  echo "       dependencies any more. Add it to the --no-deps install above." >&2
+  "$BUILD_VENV/bin/python" -c 'import pytest' >&2 || true
+  exit 1
+fi
 FUSED_RENDER_REQUIRE_BUNDLED=1 \
   "$BUILD_VENV/bin/python" -m pytest -q -o addopts= \
   "$REPO_ROOT/tests/test_bundle_contents.py"
@@ -452,9 +471,14 @@ if [[ -n "$STAGED_PACKAGES" ]]; then
   # Prove it IMPORTS through the bundled interpreter, the way a run would. A
   # copied directory python cannot import is exactly the failure this step
   # exists to prevent, and it is invisible without an actual import.
+  # `|| true` INSIDE the substitution (the idiom `UV_SRC` uses below): without it
+  # `set -euo pipefail` aborts on the ASSIGNMENT when the import fails — which is
+  # the case this step exists for — so the ERR trap fires and the check plus the
+  # `echo` below never run. The traceback `2>&1` just captured would be thrown
+  # away and the operator told only "failed at line N". The grep IS the check.
   GOOGLE_SMOKE="$(env PYTHONHOME="$APP_DIR/Contents/Resources" \
     "$APP_DIR/Contents/MacOS/python" -c \
-    'import google.auth, google.oauth2; print("google-auth OK", google.auth.__version__)' 2>&1)"
+    'import google.auth, google.oauth2; print("google-auth OK", google.auth.__version__)' 2>&1 || true)"
   if ! echo "$GOOGLE_SMOKE" | grep -q "google-auth OK"; then
     echo "FATAL: staged google-auth does not import in the bundle:" >&2
     echo "$GOOGLE_SMOKE" >&2
@@ -497,10 +521,13 @@ def main() -> dict:
         "answer": con.execute("SELECT 42").fetchone()[0],
     }
 PYEOF
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+# `pipefail` makes it doubly necessary here: the upstream `echo` counts too.
 SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
   env PYTHONHOME="$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/MacOS/python" \
-  "$APP_PYLIB/fused_render/_child.py")"
+  "$APP_PYLIB/fused_render/_child.py" 2>&1 || true)"
 if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
   echo "FATAL: duckdb smoke test failed through _child.py:" >&2
   echo "$SMOKE_OUT" >&2
@@ -607,7 +634,9 @@ UV_DEST="$APP_DIR/Contents/Resources/bin/uv"
 mkdir -p "$(dirname "$UV_DEST")"
 cp "$UV_SRC" "$UV_DEST"
 chmod +x "$UV_DEST"
-UV_SMOKE_OUT="$("$UV_DEST" --version)"
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+UV_SMOKE_OUT="$("$UV_DEST" --version || true)"
 if ! echo "$UV_SMOKE_OUT" | grep -q "^uv "; then
   echo "FATAL: bundled uv failed to report its version:" >&2
   echo "$UV_SMOKE_OUT" >&2
@@ -621,7 +650,9 @@ mkdir -p "$(dirname "$RCLONE_DEST")"
 cp "$RCLONE_STAGED_BIN" "$RCLONE_DEST"
 chmod +x "$RCLONE_DEST"
 
-RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version)"
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version || true)"
 if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; then
   echo "FATAL: bundled rclone failed to report its version:" >&2
   echo "$RCLONE_SMOKE_OUT" >&2
