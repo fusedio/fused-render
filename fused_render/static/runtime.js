@@ -552,11 +552,14 @@
   // progress.json, polled) — one pattern in this app, not two.
   const INSTALL_POLL_MS = 500;
   let installUi = null;
-  // Keys currently installing. A page can call two different .py files, each
-  // with its own header, so the overlay is shared by more than one install: it
-  // has to stay up until the LAST one finishes, or the first to end would tear
-  // the loader out from under the others and the page would sit blank.
-  const installing = new Set();
+  // Live installs, as key -> how many calls are waiting on it. A page can call
+  // two different .py files, each with its own header, so the overlay is shared
+  // by more than one install and has to stay up until the LAST one finishes, or
+  // the first to end tears the loader out from under the others and the page sits
+  // blank with no cancel button. Ref-COUNTED, not a Set of keys: two .py files
+  // with identical requirement sets share one venv key, so a Set would hold a
+  // single entry that the first call to settle deletes.
+  const installing = new Map();
 
   function installOverlay() {
     if (installUi) return installUi;
@@ -596,7 +599,7 @@
 
   function showInstall(need) {
     const ui = installOverlay();
-    installing.add(need.key);
+    installing.set(need.key, (installing.get(need.key) || 0) + 1);
     if (!ui.mounted) {
       document.body.appendChild(ui.el);
       ui.mounted = true;
@@ -608,7 +611,9 @@
   }
 
   function hideInstall(key) {
-    installing.delete(key);
+    const left = (installing.get(key) || 0) - 1;
+    if (left > 0) installing.set(key, left);
+    else installing.delete(key);
     if (installing.size) return; // another install is still running
     if (installUi && installUi.mounted) {
       installUi.el.remove();
@@ -632,10 +637,19 @@
   function installEnv(need, pyPath, ownPath) {
     const ui = showInstall(need);
     let cancelled = false;
+    // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
+    // /api/env/install re-derives the requirements from the .py on disk and
+    // returns its own key, and editing a .py and letting live-reload re-run it is
+    // this app's core workflow — so the file really can change between /api/run's
+    // needs_install and this POST. Polling the stale key then reads a null
+    // progress record and fails an install that is running fine; cancelling the
+    // stale key leaves the real download running. Mutable because the cancel
+    // handler is registered BEFORE the POST resolves and must see the update.
+    let activeKey = need.key;
     const onCancel = () => {
       cancelled = true;
       ui.detail.textContent = "cancelling…";
-      envPost("/api/env/cancel", { key: need.key }).catch(() => {});
+      envPost("/api/env/cancel", { key: activeKey }).catch(() => {});
     };
     ui.cancel.addEventListener("click", onCancel);
 
@@ -646,7 +660,7 @@
     };
 
     const poll = () =>
-      fetch("/api/env/progress?key=" + encodeURIComponent(need.key), {
+      fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
         headers: { "X-Fused": "1" },
       })
         .then((res) => res.json())
@@ -669,6 +683,10 @@
     return envPost("/api/env/install", { py: pyPath, html: ownPath })
       .then(({ res, data }) => {
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        // The installer's key wins over the pre-flight's from here on (see
+        // `activeKey`). `hideInstall` still gets need.key — that is the entry
+        // `showInstall` counted.
+        if (data && typeof data.key === "string" && data.key) activeKey = data.key;
         paint(data && data.progress);
         return poll();
       })

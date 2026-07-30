@@ -288,6 +288,156 @@ def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatc
     assert str(boom) in resp.json()["error"]
 
 
+# --- the loader's own JS, executed ---------------------------------------------
+#
+# The structural assertions below cannot see behaviour, and both bugs these two
+# tests cover were behavioural: which key gets polled, and when the overlay is
+# torn down. So the loader's real source is lifted out of runtime.js and run under
+# node against a stub document/fetch — the same approach
+# test_claude_permission_bridge.py uses for the card's own button builder.
+
+_KEY_A = "a" * 16   # what /api/run's needs_install carried
+_KEY_B = "b" * 16   # what /api/env/install re-derived off the .py on disk
+
+_JS_PRELUDE = """
+function makeEl() {
+  return {
+    style: { cssText: "" }, textContent: "", children: [], _h: {},
+    appendChild(c) { this.children.push(c); return c; },
+    append(...c) { this.children.push(...c); },
+    remove() { this.removed = true; },
+    addEventListener(t, f) { (this._h[t] = this._h[t] || []).push(f); },
+    removeEventListener(t, f) {
+      const a = this._h[t] || []; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1);
+    },
+  };
+}
+globalThis.document = { createElement: () => makeEl(), body: makeEl() };
+"""
+
+
+def _loader_js():
+    """The install-loader block of runtime.js, verbatim."""
+    import fused_render
+
+    path = os.path.join(os.path.dirname(fused_render.__file__), "static", "runtime.js")
+    src = open(path, encoding="utf-8").read()
+    start = src.index("  const INSTALL_POLL_MS")
+    return src[start:src.index("  function runPython(", start)]
+
+
+def _run_loader(scenario):
+    import json
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is needed to run the loader's own JS")
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False,
+                                     encoding="utf-8") as f:
+        f.write(_JS_PRELUDE + _loader_js() + scenario)
+        harness = f.name
+    try:
+        out = subprocess.run([node, harness], capture_output=True, text=True, timeout=60)
+    finally:
+        os.unlink(harness)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_the_loader_polls_the_key_the_installer_actually_returned():
+    """/api/env/install re-derives the requirements off the .py on disk and
+    returns its OWN key. Editing a .py and letting live-reload re-run it is this
+    app's core workflow, so the file really can change between /api/run's
+    pre-flight and the POST — and then the install runs under key B while the
+    page polls key A, `progress` is null, and the loader fails an install that is
+    running perfectly with "the installer left no progress record".
+    """
+    result = _run_loader("""
+const polled = [];
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install")
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  if (url.startsWith("/api/env/progress")) {
+    const key = decodeURIComponent(url.split("key=")[1]);
+    polled.push(key);
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true, key,
+      progress: key === "%(b)s"
+        ? { stage: "done", pct: 100, done: true, error: null } : null })});
+  }
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ ok: true, polled })),
+  (e) => console.log(JSON.stringify({ ok: false, error: e.message, polled })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result["ok"] is True, result
+    assert _KEY_B in result["polled"]
+    assert _KEY_A not in result["polled"], (
+        "the loader polled the pre-flight key instead of the installer's own"
+    )
+
+
+def test_cancelling_cancels_the_install_that_is_actually_running():
+    """Same key mix-up, in the direction that leaves a download running: the
+    cancel POST has to name the installer's key, not the pre-flight one. The
+    handler is registered before the POST resolves, so it must read the resolved
+    key rather than the one it captured."""
+    result = _run_loader("""
+const cancelled = [];
+let polls = 0;
+globalThis.fetch = (url, opts) => {
+  if (url === "/api/env/install")
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(
+      { ok: true, key: "%(b)s", progress: { stage: "spawn", pct: 0, done: false } })});
+  if (url.startsWith("/api/env/progress")) {
+    polls += 1;
+    if (polls === 1) {
+      // The user clicks Cancel while the install is genuinely in flight.
+      installUi.cancel._h.click[0]();
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+        progress: { stage: "install", pct: 25, done: false } })});
+    }
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true,
+      progress: { stage: "done", pct: 100, done: true,
+                  error: "the install was cancelled" } })});
+  }
+  cancelled.push(JSON.parse(opts.body).key);
+  return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+};
+installEnv({ key: "%(a)s", requirements: ["x"] }, "a.py", "a.html").then(
+  () => console.log(JSON.stringify({ resolved: true, cancelled })),
+  (e) => console.log(JSON.stringify({ type: e.type, cancelled })));
+""" % {"a": _KEY_A, "b": _KEY_B})
+    assert result.get("type") == "EnvInstallCancelled", result
+    assert result["cancelled"] == [_KEY_B], (
+        "cancel named the pre-flight key, so the running installer kept going"
+    )
+
+
+def test_one_finished_install_does_not_tear_the_overlay_off_another():
+    """Two .py files with identical requirement sets share one venv key, so both
+    calls track the SAME entry. A plain Set means the first to settle deletes it,
+    `installing.size` hits 0, and the second install polls on with no UI and no
+    cancel button."""
+    result = _run_loader("""
+const need = { key: "%(a)s", requirements: ["x"] };
+showInstall(need);
+showInstall(need);
+hideInstall(need.key);
+const afterFirst = installUi.mounted;
+hideInstall(need.key);
+console.log(JSON.stringify({ afterFirst, afterSecond: installUi.mounted }));
+""" % {"a": _KEY_A})
+    assert result["afterFirst"] is True, (
+        "the overlay was removed while a second install with the same key was live"
+    )
+    assert result["afterSecond"] is False, "the overlay must go once the last one ends"
+
+
 def test_the_runtime_drives_the_loader():
     """The client half, asserted structurally — nothing in this suite executes
     runtime.js (it needs a real browser), the same reasoning as
