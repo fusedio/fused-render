@@ -269,8 +269,15 @@ if (-not ($LearnListing -match 'assets/')) {
     # -match on the line array filters; -not(non-empty) is the membership test.
     throw "learn.zip nested entries are not forward-slash separated (assets/ missing)"
 }
+# --no-project: the script is stdlib-only (plus its sibling file_associations),
+# so a plain `uv run` would resolve+install the WHOLE project — minutes of work
+# whose only effect on this build is a new way to fail. It is how v0.3.13 lost
+# its installer: an extra's dependency was unresolvable on one of the Python
+# versions `requires-python` allows, and this line, not the bundle, is what uv
+# refused.
 Invoke-Native $Uv @(
-    "run", "python", (Join-Path $RepoRoot "scripts\windows\generate_installer_registry.py"),
+    "run", "--no-project", "python",
+    (Join-Path $RepoRoot "scripts\windows\generate_installer_registry.py"),
     (Join-Path $StageDir "registry.iss")
 )
 Set-Content -Path (Join-Path $StageDir "payload.complete") -Encoding Ascii -Value $Version
