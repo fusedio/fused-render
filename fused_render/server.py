@@ -4903,8 +4903,19 @@ def create_app(start_dir: str) -> FastAPI:
             )
         from fused_render import envinstall
 
-        record = envinstall.start(reqs)
-        return JSONResponse({"ok": True, "key": envinstall.venv_key_for(reqs),
+        # envinstall speaks to the fused backend: `venv_key_for` imports
+        # `fused.agent_core...` unguarded, and `_backend_attr` raises RuntimeError
+        # BY DESIGN when an upstream attribute is missing (guessing would fill a
+        # venv no run reads). Both are reachable here without the fused engine — a
+        # page loaded before the engine preference was switched, or any direct API
+        # call — and uncaught they become a 500 the loader shows as a bare
+        # "HTTP 500", discarding the diagnostic that was the whole point.
+        try:
+            record = envinstall.start(reqs)
+            key = envinstall.venv_key_for(reqs)
+        except (ImportError, RuntimeError) as e:
+            return _error(str(e))
+        return JSONResponse({"ok": True, "key": key,
                              "requirements": reqs, "progress": record})
 
     # `key` comes straight off the wire and becomes a path component, so its
@@ -4933,7 +4944,12 @@ def create_app(start_dir: str) -> FastAPI:
             return err
         from fused_render import envinstall
 
-        return JSONResponse({"ok": True, "key": key, "progress": envinstall.progress(key)})
+        # Same containment as /api/env/install: the error shape, not a 500.
+        try:
+            prog = envinstall.progress(key)
+        except (ImportError, RuntimeError) as e:
+            return _error(str(e))
+        return JSONResponse({"ok": True, "key": key, "progress": prog})
 
     @app.post("/api/env/cancel")
     def api_env_cancel(body: dict = Body(...), x_fused: str | None = Header(default=None)):
@@ -4945,9 +4961,14 @@ def create_app(start_dir: str) -> FastAPI:
             return err
         from fused_render import envinstall
 
-        killed = envinstall.cancel(key)
+        # Same containment as /api/env/install: the error shape, not a 500.
+        try:
+            killed = envinstall.cancel(key)
+            prog = envinstall.progress(key)
+        except (ImportError, RuntimeError) as e:
+            return _error(str(e))
         return JSONResponse({"ok": True, "key": key, "cancelled": killed,
-                             "progress": envinstall.progress(key)})
+                             "progress": prog})
 
     @app.post("/api/ai")
     async def api_ai(body: dict = Body(...), x_fused: str | None = Header(default=None)):

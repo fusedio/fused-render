@@ -245,6 +245,49 @@ def test_cancel_of_an_unknown_key_is_a_clean_no_op(tmp_path):
     assert resp.json()["cancelled"] is False
 
 
+@pytest.mark.parametrize("boom", [
+    # `venv_key_for` imports `fused.agent_core...` unguarded — no fused, no import.
+    ImportError("No module named 'fused'"),
+    ModuleNotFoundError("No module named 'fused.agent_core'"),
+    # `_backend_attr` raises this BY DESIGN, with the diagnostic that matters.
+    RuntimeError("this fused build's Backend has no '_venvs_path', so the "
+                 "install loader cannot tell where its script venvs live"),
+])
+def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatch, boom):
+    """Reachable without the fused engine: a page loaded before the engine
+    preference was switched, or any direct API call.
+
+    `_backend_attr`'s message was written to be READ by the user — a 500 renders
+    in the loader as a bare "HTTP 500" and throws that diagnostic away.
+    """
+    from fused_render import envinstall
+
+    def _raise(*a, **kw):
+        raise boom
+
+    client = _client(tmp_path)
+    target = _py(tmp_path, "declared.py",
+                 '# /// script\n# dependencies = ["pyproj"]\n# ///\n'
+                 "def main():\n    return 1\n")
+    monkeypatch.setattr(envinstall, "start", _raise)
+    monkeypatch.setattr(envinstall, "venv_key_for", _raise)
+    monkeypatch.setattr(envinstall, "progress", _raise)
+    monkeypatch.setattr(envinstall, "cancel", _raise)
+
+    resp = client.post("/api/env/install", json={"py": str(target)}, headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert str(boom) in resp.json()["error"]
+
+    resp = client.get("/api/env/progress?key=0123456789abcdef", headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert str(boom) in resp.json()["error"]
+
+    resp = client.post("/api/env/cancel", json={"key": "0123456789abcdef"},
+                       headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert str(boom) in resp.json()["error"]
+
+
 def test_the_runtime_drives_the_loader():
     """The client half, asserted structurally — nothing in this suite executes
     runtime.js (it needs a real browser), the same reasoning as
