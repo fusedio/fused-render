@@ -23,6 +23,27 @@
 # (executor.py/_child.py) keeps working completely unchanged (D33).
 set -euo pipefail
 
+# Every failure reports itself. `set -e` aborts with NO message when the failing
+# command is quiet — a bare `test -d`, a subshell whose child already printed
+# something that looked like success, or a process killed by a signal. That is
+# exactly how a CI run of this script died between py2app and the next step with
+# no error at all: the only clue was which `==>` heading had not printed yet.
+# One trap turns any such exit into a located failure, for this bug and the next.
+_build_failed() {
+  local status=$?
+  echo "" >&2
+  echo "FATAL: build_dmg.sh failed at line ${BASH_LINENO[0]:-?} (exit $status)" >&2
+  echo "       command: ${BASH_COMMAND}" >&2
+  if [[ $status -gt 128 ]]; then
+    echo "       exit > 128 means KILLED BY SIGNAL $((status - 128)) — most likely" >&2
+    echo "       the OS reclaiming memory, not a bug in the command itself." >&2
+  fi
+  echo "       disk:" >&2
+  df -h "${BUILD_DIR:-$PWD}" >&2 2>/dev/null || true
+  exit "$status"
+}
+trap _build_failed ERR
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -132,15 +153,67 @@ rm -f "$DIST_DIR"/*.whl
 WHEEL_PATH="$(ls "$DIST_DIR"/*.whl)"
 
 echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild into the build venv"
-# [fused] bakes the deploy CLI into the bundle (SPEC §19 DP-3): the .app has
-# no pip and no console scripts, so the Deploy surface runs the package
+# The `fused` engine/deploy CLI is baked into the bundle (SPEC §19 DP-3): the
+# .app has no pip and no console scripts, so the Deploy surface runs the package
 # in-interpreter via fused_render/_fused_cli.py under the bundled python.
+# It now arrives through [bundled] — that is what setup_py2app.py's force-list
+# DERIVES from, so [bundled] is what decides whether the DMG carries it (and
+# tests/test_bundle_contents.py fails if it would not). Naming [fused] here as
+# well is redundant, and kept deliberately: the extras list should still say out
+# loud that this build wants the engine.
 "$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app dmgbuild
 # Force a fresh reinstall of fused-render itself every run so the branch ref
 # baked into $WHEEL_PATH is picked up. The build venv is reused across builds,
 # so pip would otherwise treat an unchanged version as already-satisfied and
 # keep a stale _baked_branch.py from a previous ref/wheel.
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "${WHEEL_PATH}"
+
+# ---------------------------------------------------------------------------
+# 2a-bis. Reconcile the force-list against what [bundled] actually installed.
+#
+# tests/test_bundle_contents.py answers "will the .app contain distribution X?"
+# by asking setup_py2app.py's derivation and then checking X is reachable in the
+# environment. Every one of its per-distribution checks SKIPS when X is not
+# installed where pytest runs — which is why it is nearly toothless in the
+# ordinary CI job, whose `pip install -e ".[dev]"` carries none of [bundled].
+#
+# This build venv is the one place in the whole pipeline where [bundled] is
+# genuinely installed, so this is where those skips turn into assertions. Run it
+# HERE — right after the install, before py2app spends minutes copying — so a
+# distribution that would be silently absent from the bundle fails the build
+# rather than shipping. This costs one pytest install; the [bundled] install it
+# needs has already happened. It makes the check load-bearing on every path that
+# builds a DMG (test.yml, release.yml, and a plain local `bash
+# scripts/build_dmg.sh`) instead of only where someone remembered to wire it.
+#
+# FUSED_RENDER_REQUIRE_BUNDLED=1 makes the test's own per-distribution "not
+# installed here, nothing to say" skips into failures, so this cannot degrade
+# into a green no-op if the install above ever stops carrying [bundled].
+# `-o addopts=` clears the repo's `-n auto`, so this needs pytest but not xdist.
+echo "==> reconciling the bundle force-list against the installed [bundled]"
+# --no-deps, and it is load-bearing: this venv IS the payload. py2app runs under
+# it and copies modules out of its site-packages, and its purelib is cp -R'd
+# straight into the .app below. Left to resolve, pip picks pluggy/packaging/
+# iniconfig for PYTEST's constraints — pluggy is in setup_py2app.py's explicit
+# force list and packaging reaches the bundle through the derivation closure — so
+# a version the DMG ships changes on a pip warning nobody reads. `iniconfig` is
+# named because pytest needs it and nothing else here pulls it in; pluggy and
+# packaging arrive with the wheel's own resolution above.
+"$BUILD_VENV/bin/pip" install --quiet --no-deps pytest iniconfig
+# Which means a missing pytest dependency now fails as an ImportError instead of
+# being quietly installed over the payload's pin. Said out loud, with the fix, so
+# it cannot read as a broken reconciliation step.
+if ! "$BUILD_VENV/bin/python" -c 'import pytest' >/dev/null 2>&1; then
+  echo "FATAL: pytest does not import in the build venv." >&2
+  echo "       It is installed --no-deps on purpose (this venv is the shipped" >&2
+  echo "       payload), so something pytest needs is not among the wheel's own" >&2
+  echo "       dependencies any more. Add it to the --no-deps install above." >&2
+  "$BUILD_VENV/bin/python" -c 'import pytest' >&2 || true
+  exit 1
+fi
+FUSED_RENDER_REQUIRE_BUNDLED=1 \
+  "$BUILD_VENV/bin/python" -m pytest -q -o addopts= \
+  "$REPO_ROOT/tests/test_bundle_contents.py"
 
 # ---------------------------------------------------------------------------
 # 2b. Stage rclone (D103): mounts (shell/mounts.py, D102) shell out to a real
@@ -267,14 +340,36 @@ rm -rf "$PY2APP_DIST" "$BUILD_DIR/py2app-build"
 # requires is no longer supported") against our real PEP 621 project file.
 # setup_py2app.py resolves REPO_ROOT itself, so cwd doesn't affect what gets
 # built - it just needs to not be a directory with its own pyproject.toml.
+# `|| PY2APP_STATUS=$?` rather than letting `set -e` abort inside the subshell:
+# py2app's last output is its own codesign success, so an abort here reads as
+# "the build stopped for no reason" — which is precisely what it did in CI.
+PY2APP_STATUS=0
 (
   cd "$BUILD_DIR"
   FUSED_RENDER_ICNS="$ICNS_PATH" "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/setup_py2app.py" py2app \
     --dist-dir "$PY2APP_DIST" \
     --bdist-base "$BUILD_DIR/py2app-build"
-)
+) || PY2APP_STATUS=$?
 
-test -d "$APP_DIR"
+if [[ $PY2APP_STATUS -ne 0 ]]; then
+  echo "FATAL: py2app exited $PY2APP_STATUS" >&2
+  if [[ $PY2APP_STATUS -gt 128 ]]; then
+    echo "       (killed by signal $((PY2APP_STATUS - 128)) — py2app can print a" >&2
+    echo "        successful-looking codesign line and then be killed; check memory" >&2
+    echo "        and disk below rather than reading the last line as success)" >&2
+  fi
+  df -h "$BUILD_DIR" >&2 2>/dev/null || true
+  exit "$PY2APP_STATUS"
+fi
+echo "==> py2app finished (exit 0)"
+df -h "$BUILD_DIR" | tail -1
+
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "FATAL: py2app reported success but $APP_DIR does not exist." >&2
+  echo "       py2app-dist contains:" >&2
+  ls -la "$PY2APP_DIST" >&2 2>/dev/null || echo "       (no $PY2APP_DIST at all)" >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 4a. Prune dead weight from the bundle (D116). py2app's `packages` option
@@ -346,6 +441,52 @@ echo "    pruned; app now $(du -sh "$APP_DIR" | cut -f1)"
 
 echo "==> bundle sanity: Mach-O-as-.py check"
 APP_PYLIB="$APP_DIR/Contents/Resources/lib/python3.12"
+
+# ---------------------------------------------------------------------------
+# 4a-bis. Stage the packages py2app cannot carry (setup_py2app.STAGED_PACKAGES).
+#     Today that is `google` (google-auth): a PEP 420 namespace package, which
+#     py2app's package bootstrap cannot resolve, and naming its subpackages
+#     dotted instead FAILS THE BUILD - collect_packagedirs() (build_app.py:1210)
+#     maps get_bootstrap() over every `packages` entry and
+#     modulegraph.util.imp_find_module then calls imp.find_module("google"),
+#     which raises. So it is copied straight in, the same explicit staging that
+#     rclone and uv get below. The list is read from setup_py2app.py so there is
+#     exactly one declaration of it.
+# ---------------------------------------------------------------------------
+
+STAGED_PACKAGES="$("$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/_staged_packages.py")"
+if [[ -n "$STAGED_PACKAGES" ]]; then
+  BUILD_SITE="$("$BUILD_VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  for pkg in $STAGED_PACKAGES; do
+    SRC="$BUILD_SITE/$pkg"
+    if [[ ! -d "$SRC" ]]; then
+      echo "FATAL: staged package '$pkg' not found at $SRC" >&2
+      exit 1
+    fi
+    echo "==> staging package $pkg into the bundle"
+    rm -rf "$APP_PYLIB/$pkg"
+    cp -R "$SRC" "$APP_PYLIB/$pkg"
+    find "$APP_PYLIB/$pkg" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
+  done
+  # Prove it IMPORTS through the bundled interpreter, the way a run would. A
+  # copied directory python cannot import is exactly the failure this step
+  # exists to prevent, and it is invisible without an actual import.
+  # `|| true` INSIDE the substitution (the idiom `UV_SRC` uses below): without it
+  # `set -euo pipefail` aborts on the ASSIGNMENT when the import fails — which is
+  # the case this step exists for — so the ERR trap fires and the check plus the
+  # `echo` below never run. The traceback `2>&1` just captured would be thrown
+  # away and the operator told only "failed at line N". The grep IS the check.
+  GOOGLE_SMOKE="$(env PYTHONHOME="$APP_DIR/Contents/Resources" \
+    "$APP_DIR/Contents/MacOS/python" -c \
+    'import google.auth, google.oauth2; print("google-auth OK", google.auth.__version__)' 2>&1 || true)"
+  if ! echo "$GOOGLE_SMOKE" | grep -q "google-auth OK"; then
+    echo "FATAL: staged google-auth does not import in the bundle:" >&2
+    echo "$GOOGLE_SMOKE" >&2
+    exit 1
+  fi
+  echo "    $GOOGLE_SMOKE"
+fi
+
 # find -exec ... {} + (not `xargs -I{}`, which aborts with "command line
 # cannot be assembled, too long" over a large file set - see the signing loop
 # below) enumerates >1M .py files whose first 4 bytes are a Mach-O magic.
@@ -380,10 +521,13 @@ def main() -> dict:
         "answer": con.execute("SELECT 42").fetchone()[0],
     }
 PYEOF
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+# `pipefail` makes it doubly necessary here: the upstream `echo` counts too.
 SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
   env PYTHONHOME="$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/MacOS/python" \
-  "$APP_PYLIB/fused_render/_child.py")"
+  "$APP_PYLIB/fused_render/_child.py" 2>&1 || true)"
 if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
   echo "FATAL: duckdb smoke test failed through _child.py:" >&2
   echo "$SMOKE_OUT" >&2
@@ -393,7 +537,8 @@ echo "    $SMOKE_OUT"
 rm -rf "$SMOKE_DIR"
 
 # ---------------------------------------------------------------------------
-# 4c. Bundled fused CLI (SPEC §19 DP-3): the [fused] extra installed above
+# 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
+#     (a [bundled] requirement, so setup_py2app.py's derivation forces it)
 #     ships in the bundle so Deploy works with zero setup. Two artifacts:
 #     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
 #       (bundled python + fused_render/_fused_cli.py shim), for the one-time
@@ -402,7 +547,7 @@ rm -rf "$SMOKE_DIR"
 #       path when running packaged (deploy._setup_cli_hint).
 #     - a smoke test invoking real CLI verbs through the shim, so a py2app
 #       packaging gap (an untraced dynamic import, a dropped data dir - see
-#       setup_py2app.py's fused block) fails the BUILD, not the user's first
+#       setup_py2app.py's fused-deps block) fails the BUILD, not the user's first
 #       deploy. Runs before signing: the wrapper must exist before the seal.
 # ---------------------------------------------------------------------------
 
@@ -453,13 +598,61 @@ echo "    fused --help / share --help / env list OK"
 #     needed there. shell/mounts.py's rclone_bin() looks here first.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)
+#     builds a per-script venv for the few templates whose deps are too heavy to
+#     bundle, and on macOS it has no other way to do it. `fused`'s venv builder
+#     prefers `uv venv` and falls back to `<python> -m venv` — and this bundle
+#     ships NO `venv`, `ensurepip` or `pip` module at all (py2app copies only what
+#     setup_py2app.py names). Measured on an installed DMG without uv on PATH:
+#     `RuntimeError: Failed to create venv ...: No module named venv`. So without
+#     this, opening a .pptx trades one dead end ("pip install python-pptx", which
+#     a DMG user cannot do) for another.
+#
+#     uv is also the RIGHT mechanism rather than merely the available one:
+#     upstream's venvs.py prefers it precisely because it needs no ensurepip
+#     bootstrap, "which matters when `exe` is an embedded/packaged interpreter (a
+#     py2app .app's python)". Verified against the mounted bundle: `uv venv
+#     --python <Contents/MacOS/python>` succeeds and `uv pip install` into it
+#     works, because uv constructs venvs itself instead of importing `venv`.
+#
+#     The Linux AppImage (build_linux_appimage.sh) and the Windows installer
+#     (build_windows_installer.ps1) already ship uv next to their python; this
+#     brings macOS in line. Copied from the build host's uv, like those two do.
+# ---------------------------------------------------------------------------
+
+echo "==> bundling uv"
+UV_SRC="$(command -v uv || true)"
+if [[ -z "$UV_SRC" ]]; then
+  echo "FATAL: uv not found on PATH, but the bundle needs it: the install loader" >&2
+  echo "       cannot build a script venv without it (no venv/ensurepip/pip in" >&2
+  echo "       this bundle), so heavy-dependency templates would dead-end." >&2
+  echo "       Install uv (https://docs.astral.sh/uv/) and re-run." >&2
+  exit 1
+fi
+UV_DEST="$APP_DIR/Contents/Resources/bin/uv"
+mkdir -p "$(dirname "$UV_DEST")"
+cp "$UV_SRC" "$UV_DEST"
+chmod +x "$UV_DEST"
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+UV_SMOKE_OUT="$("$UV_DEST" --version || true)"
+if ! echo "$UV_SMOKE_OUT" | grep -q "^uv "; then
+  echo "FATAL: bundled uv failed to report its version:" >&2
+  echo "$UV_SMOKE_OUT" >&2
+  exit 1
+fi
+echo "    $UV_SMOKE_OUT"
+
 echo "==> bundling rclone ${RCLONE_VERSION}"
 RCLONE_DEST="$APP_DIR/Contents/Resources/bin/rclone"
 mkdir -p "$(dirname "$RCLONE_DEST")"
 cp "$RCLONE_STAGED_BIN" "$RCLONE_DEST"
 chmod +x "$RCLONE_DEST"
 
-RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version)"
+# `|| true` for the same reason as the google-auth smoke above: `set -e` would
+# abort on the assignment and take the diagnostic with it.
+RCLONE_SMOKE_OUT="$("$RCLONE_DEST" version || true)"
 if ! echo "$RCLONE_SMOKE_OUT" | head -1 | grep -q "rclone ${RCLONE_VERSION}"; then
   echo "FATAL: bundled rclone failed to report its version:" >&2
   echo "$RCLONE_SMOKE_OUT" >&2

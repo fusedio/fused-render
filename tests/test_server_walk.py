@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server import walk as _server_walk
 from fused_render import server
 from fused_render.server import create_app
 
@@ -61,7 +62,7 @@ def test_walk_prunes_hidden_and_ignored(tmp_path):
 def test_walk_truncation_flag(tmp_path, monkeypatch):
     for i in range(10):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES", 3)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES", 3)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 3
@@ -132,7 +133,7 @@ def test_walk_truncation_keeps_shallow_coverage(tmp_path, monkeypatch):
         d = tmp_path / name
         d.mkdir()
         (d / "child.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES", 10)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES", 10)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True
     rels = {e["rel"] for e in data["entries"]}
@@ -202,7 +203,7 @@ def _stream_lines(client, path, **params):
 def test_walk_stream_batches_and_terminal_record(tmp_path, monkeypatch):
     for i in range(7):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_BATCH_SIZE", 3)
+    monkeypatch.setattr(_server_walk, "WALK_BATCH_SIZE", 3)
     lines = _stream_lines(_client(tmp_path), str(tmp_path))
     *batches, terminal = lines
     assert terminal == {"done": True, "truncated": False, "total": 7}
@@ -219,7 +220,7 @@ def test_walk_stream_time_flush_streams_below_one_batch(tmp_path, monkeypatch):
     # every entry, so five files must arrive as five batches, not one.
     for i in range(5):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_FLUSH_INTERVAL_S", 0.0)
+    monkeypatch.setattr(_server_walk, "WALK_FLUSH_INTERVAL_S", 0.0)
     lines = _stream_lines(_client(tmp_path), str(tmp_path))
     *batches, terminal = lines
     assert terminal == {"done": True, "truncated": False, "total": 5}
@@ -239,7 +240,7 @@ def test_walk_stream_same_entries_as_plain(tmp_path):
 def test_walk_stream_truncation(tmp_path, monkeypatch):
     for i in range(10):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES", 4)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES", 4)
     lines = _stream_lines(_client(tmp_path), str(tmp_path))
     terminal = lines[-1]
     assert terminal["done"] is True
@@ -399,7 +400,7 @@ def test_walk_outside_mounts_keeps_big_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     for i in range(10):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES_REMOTE", 3)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES_REMOTE", 3)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is False
     assert len(data["entries"]) == 10

@@ -156,10 +156,10 @@ def _fused_wrapper(tmp_path, src: str, params: dict) -> dict:
 def _fused_backend(tmp_path, src: str, params: dict, monkeypatch) -> dict:
     """The fused engine end to end, through the real local compute backend.
 
-    DEFAULT_REQUIREMENTS is emptied (as in test_engine.py's integration tests)
-    so the venv is bare: fast, offline-safe, and irrelevant to binding.
+    The cases declare no PEP 723 header, so they run on the app's own
+    interpreter with no venv at all (PY-17) — fast, offline, and irrelevant to
+    binding, which is what this file is about.
     """
-    monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "backend" / "target.py"
     target.parent.mkdir(exist_ok=True)
@@ -177,6 +177,6 @@ def test_wrapper_binding_matches_builtin(tmp_path, case):
 
 @requires_fused
 @pytest.mark.parametrize("case", CASES, ids=IDS)
-def test_real_backend_binding_matches_builtin(tmp_path, case, monkeypatch, warm_fused_backend_venv):
+def test_real_backend_binding_matches_builtin(tmp_path, case, monkeypatch):
     _id, src, params, expected = case
     assert _fused_backend(tmp_path, src, params, monkeypatch) == expected

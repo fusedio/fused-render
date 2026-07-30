@@ -34,6 +34,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.config import router as config_router
+from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
 from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
@@ -41,7 +42,12 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
-from fused_render.server.templates import TEMPLATES_DIR
+# The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
+# (tests repoint it at a staged copy before calling create_app, and
+# core_templates staging is the reason it can move at all), and a by-value
+# re-binding here would freeze the asset mounts on the package directory no
+# matter what the module says. Same class of bug as D178's `_STAT_CACHE_GEN`.
+from fused_render.server import templates as _server_templates
 
 
 
@@ -88,6 +94,55 @@ def export_app_env() -> None:
     os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
     os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
     shell_mounts.export_ro_mounts_env()
+    _export_bundled_uv_path()
+
+
+def _export_bundled_uv_path() -> None:
+    """Put the bundled ``uv`` on PATH so template daemons can find it.
+
+    Five templates build their daemon's venv with uv and resolve it as
+    ``shutil.which("uv")`` — geotiff, zarr_aoi and netcdf's tile servers, plus
+    las and pyramid. They have to resolve it that way: a template may ASK a fact
+    about its environment but never branch on how the app was installed
+    (SPEC §26/MD-11, D166), so "if this is a bundle, look in Contents/Resources"
+    cannot live in a template file.
+
+    The macOS bundle ships uv at ``Contents/Resources/bin/uv``, which is neither
+    beside the interpreter nor on anyone's PATH — ``envinstall._worker_env()`` was
+    the only thing that prepended it, and only for the install worker. So on a DMG
+    with no user-installed uv every one of those five silently fell back to
+    ``sys.executable``: geotiff lost ``imagecodecs``/``pyproj`` (LZW and JPEG
+    tiles stop decoding), zarr_aoi lost ``s3fs``/``gcsfs``/``crc32c`` (every
+    remote store fails to open), and las/pyramid raised advice a DMG user cannot
+    act on. Before PEP 723 headers were dropped from those templates the script
+    venv had incidentally supplied the deps, which is why this only surfaced now
+    (D174 accepted a narrower version of it back when the DMG shipped no uv at
+    all — it does now, so the premise is gone).
+
+    Fixed here, once, rather than in five templates: the /api/run child and the
+    daemon it spawns both inherit this process's environment, so prepending the
+    directory makes every existing ``shutil.which("uv")`` start working with no
+    template edit. It is also the SAME mechanism the Linux and Windows desktop
+    supervisors already use — they prepend their payload's tools dir to the
+    server's PATH (``supervisor/paths.py``) — so this closes the platform gap
+    instead of adding a second pattern.
+
+    Prepended, so the bundled uv wins over an older system one, matching
+    ``_worker_env``. Resolution is ``envinstall.uv_bin()``'s, shared rather than
+    restated: it already knows all three packaged layouts, and a second copy would
+    drift. No uv anywhere is not an error here — a dev checkout without uv is
+    normal, and the templates say so themselves when they need it.
+    """
+    from fused_render import envinstall
+
+    uv = envinstall.uv_bin()
+    if not uv:
+        return
+    uv_dir = os.path.dirname(os.path.abspath(uv))
+    path = os.environ.get("PATH", "")
+    if uv_dir in path.split(os.pathsep):
+        return  # already reachable; do not grow PATH on every call
+    os.environ["PATH"] = (uv_dir + os.pathsep + path) if path else uv_dir
 
 
 def create_app(start_dir: str) -> FastAPI:
@@ -134,7 +189,7 @@ def create_app(start_dir: str) -> FastAPI:
     # product has no network at runtime (no CDNs anywhere).
     app.mount(
         "/template-assets",
-        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "vendor")),
+        StaticFiles(directory=os.path.join(_server_templates.TEMPLATES_DIR, "vendor")),
         name="template-assets",
     )
     # First-party ESM shared by the sci preview templates (geotiff/netcdf
@@ -145,7 +200,7 @@ def create_app(start_dir: str) -> FastAPI:
     # resolved as a template name.
     app.mount(
         "/template-shared",
-        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "shared")),
+        StaticFiles(directory=os.path.join(_server_templates.TEMPLATES_DIR, "shared")),
         name="template-shared",
     )
 
@@ -224,6 +279,10 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)
+    # The script-venv install loader (routers/env.py): /api/env/install,
+    # /api/env/progress, /api/env/cancel — what the page shell drives after
+    # /api/run's pre-flight answers `needs_install` (PY-18 / D173).
+    app.include_router(env_router)
     app.include_router(ai_router)
     app.include_router(export_router)
 

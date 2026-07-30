@@ -82,7 +82,7 @@ def test_stale_ttl_recomputes(client, monkeypatch):
         return {"path": path, "is_dir": True, "mtime": 1.0}
 
     monkeypatch.setattr(_server_fs_read, "_fs_stat", stub)
-    monkeypatch.setattr(_server_fs_read, "_STAT_TTL_S", 0.0)
+    monkeypatch.setattr(_server_mount, "_STAT_TTL_S", 0.0)
 
     client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})
     client.get("/api/fs/stat", params={"path": "/mnt/some/dir"})

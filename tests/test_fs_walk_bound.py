@@ -7,6 +7,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server import walk as _server_walk
 from fused_render import server
 from fused_render.server.routers.fs_read import _walk_bfs
 from fused_render.server import create_app
@@ -34,7 +35,7 @@ def test_walk_stops_at_depth_cap(tmp_path, monkeypatch):
     # A deep, low-fan-out chain (the NAIP state/year/quad/tile shape) never
     # trips the entry-count cap, so only the depth cap bounds it.
     _make_deep_chain(tmp_path, 8)
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_DEPTH_LOCAL", 2)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_DEPTH_LOCAL", 2)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True  # depth cap flags partial coverage
     rels = {e["rel"] for e in data["entries"]}
@@ -98,7 +99,7 @@ def test_walk_bfs_entry_cap_stops_generator(tmp_path):
 def test_walk_entry_cap_via_endpoint(tmp_path, monkeypatch):
     for i in range(20):
         (tmp_path / f"f{i}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "WALK_MAX_ENTRIES", 4)
+    monkeypatch.setattr(_server_walk, "WALK_MAX_ENTRIES", 4)
     data = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)}).json()
     assert data["truncated"] is True
     assert len(data["entries"]) == 4

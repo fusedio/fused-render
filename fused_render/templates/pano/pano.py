@@ -1,6 +1,13 @@
 # /// script
-# dependencies = ["py360convert>=1.0.4"]
+# dependencies = ["py360convert>=1.0.4", "numpy", "pillow"]
 # ///
+# py360convert is the reason this template keeps a header at all — it is in
+# neither `[bundled]` nor the core deps, so the app's own interpreter cannot
+# supply it (PY-17). numpy and pillow ARE in `[bundled]`, and are declared here
+# anyway because a header is the complete dependency list: this file gets a venv
+# containing exactly these three, and it imports all of them (numpy throughout,
+# pillow as `PIL.Image`). They used to be supplied by a baseline set installed
+# alongside every header, which is gone (D172).
 """Backend for the pano preview template: validates/classifies the target
 image, normalizes it (any Pillow-readable format -> browser-displayable
 JPEG/PNG capped at 8192px), and runs on-the-fly projection conversions

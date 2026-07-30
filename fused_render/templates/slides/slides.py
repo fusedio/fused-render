@@ -1,6 +1,3 @@
-# /// script
-# dependencies = ["python-pptx", "Pillow", "fpdf2"]
-# ///
 """Backend dispatcher for the slides template — an AI-native .pptx viewer/editor.
 
 One bare `main(action=...)` function (the fused-render contract). It owns

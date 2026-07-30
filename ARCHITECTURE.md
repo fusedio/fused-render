@@ -37,7 +37,7 @@ fused-render/
 ├── fused_render/
 │   ├── __init__.py             # __version__
 │   ├── cli.py                  # arg parse → uvicorn.run + open browser
-│   ├── server/                 # the FastAPI server, one concern per module (D172)
+│   ├── server/                 # the FastAPI server, one concern per module (D178)
 │   │   ├── __init__.py         # re-exports create_app/set_server_origin_env/export_app_env
 │   │   ├── app.py              # create_app(): FastAPI() construction + app.state wiring + include_router() only
 │   │   ├── common.py           # logger/STATIC_DIR/_error/_require_fused, exception handler, access-log middleware, pooled-client + get_start_dir/get_shell_path deps
@@ -56,6 +56,7 @@ fused-render/
 │   │       ├── fs_read.py      # /api/fs/stat|conditions|list|walk|raw|events|reveal
 │   │       ├── render.py       # /render
 │   │       ├── run.py          # /api/run
+│   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)

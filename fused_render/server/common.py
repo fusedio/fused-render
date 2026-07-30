@@ -57,6 +57,13 @@ def _forced_engine() -> str | None:
         ok = False
     if ok:
         logger.info("execution engine: fused (forced by FUSED_RENDER_ENGINE)")
+        # Probe the app's interpreter now, while logging is configured and no
+        # request is waiting (PY-17): it decides whether every header-less script
+        # runs on this app's python or falls back to a script venv, and the
+        # fallback's warning is the only signal a user gets that it happened. On
+        # the preference-driven path (`raw is None`) the first /api/run probes
+        # instead — still after logging setup, just not in the startup log.
+        _engine.app_interpreter()
         return "fused"
     if requested == "fused":
         raise RuntimeError(

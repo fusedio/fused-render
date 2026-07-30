@@ -21,6 +21,7 @@ FUSED_RENDER_HOME is redirected per test so nothing touches the real
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -221,6 +222,48 @@ def test_export_app_env_sets_all_three_vars(exported, monkeypatch):
     assert os.environ["FUSED_RENDER_HOME_DIR"] == str(exported)
     assert os.environ["FUSED_RENDER_MOUNTS_DIR"] == str(exported / "mounts")
     assert os.environ["FUSED_RENDER_RO_MOUNTS"] == ""
+
+
+def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monkeypatch):
+    """A packaged build's own uv must be findable by `shutil.which("uv")`.
+
+    Five templates set up their daemon's venv with uv and resolve it exactly that
+    way (`geotiff/tile_server.py`, `zarr_aoi/tile_server.py`,
+    `netcdf/grid_tile_server.py`, `las/las_reader.py`,
+    `pyramid/overview_pyramid.py`) — they must, because a template may not branch
+    on how the app was installed. The macOS bundle ships uv at
+    `Contents/Resources/bin/uv`, which is NOT beside the interpreter and was on
+    nobody's PATH: only `envinstall._worker_env()` put it there, and only for the
+    install worker. So on a DMG with no user-installed uv, `_daemon_python()` fell
+    back to the app interpreter — which has neither `imagecodecs`/`pyproj` (geotiff
+    loses LZW and JPEG tiles) nor `s3fs`/`gcsfs`/`crc32c` (every remote zarr store
+    fails to open), and las/pyramid raised advice the user cannot follow. The
+    Linux and Windows supervisors already prepend their payload's bin dir
+    (`supervisor/paths.py`), so this is the same mechanism, not a second one.
+
+    Asserted through `shutil.which` rather than any fused_render helper, because
+    `shutil.which` is what the templates actually call.
+    """
+    from fused_render import server
+
+    contents = tmp_path / "Fused.app" / "Contents"
+    (contents / "MacOS").mkdir(parents=True)
+    (contents / "Resources" / "bin").mkdir(parents=True)
+    interp = contents / "MacOS" / "python"
+    interp.write_text("")
+    uv = contents / "Resources" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    uv.write_text("")
+    os.chmod(uv, 0o755)
+    monkeypatch.setattr(sys, "executable", str(interp))
+    monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
+    # A PATH with no uv anywhere on it: the bundled one is the only uv there is,
+    # which is precisely the DMG-without-a-dev-toolchain case.
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+    server.export_app_env()
+    assert shutil.which("uv") == str(uv)
 
 
 def test_ro_mounts_env_tracks_a_store_write(home, monkeypatch):

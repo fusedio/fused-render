@@ -9,21 +9,53 @@ it skips them; the engine itself falls back the same way).
 import asyncio
 import json
 import os
+import shlex
+import stat
+import subprocess
 import sys
+import threading
+import time
 import types
 
 import pytest
 
+import conftest
 from fused_render import engine
+
+
+def _toml_available() -> bool:
+    """Can a PEP 723 block be parsed in this environment?"""
+    try:
+        import tomllib  # noqa: F401
+    except ImportError:
+        try:
+            import tomli  # noqa: F401
+        except ImportError:
+            return False
+    return True
+
+
+@pytest.fixture(autouse=True)
+def _fresh_interpreter_probe():
+    """The resolved app interpreter is cached per process; clear it per test.
+
+    Every test that monkeypatches `sys.executable` or FUSED_RENDER_APP_PYTHON
+    would otherwise be answered from (or poison) another test's cache.
+    """
+    engine.reset_app_interpreter_cache()
+    yield
+    engine.reset_app_interpreter_cache()
 
 
 # --- script_requirements (PEP 723) ------------------------------------------
 
-# tomllib is 3.11+; the engine itself is unreachable on 3.10 (the fused package
-# needs 3.11, so available() is False), but requires-python is >=3.10 — keep a
-# 3.10 dev `pytest` green by skipping the parser tests there.
+# The PEP 723 parser needs `tomllib` (3.11+ stdlib) or the `tomli` dependency
+# that covers 3.10. Gated on AVAILABILITY rather than on the version: with tomli
+# installed these tests run on 3.10 too, and they should — that is the whole point
+# of shipping the fallback. A version check would have kept them silently skipped
+# on the one interpreter where the bug lived.
 requires_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="tomllib (PEP 723 parsing) needs Python 3.11+"
+    not _toml_available(), reason="needs tomllib (3.11+) or the tomli package"
 )
 
 
@@ -227,12 +259,23 @@ class _FakeResult:
 
 
 class _FakeBackend:
+    """Both halves of the real backend's contract, so `calls` shows WHICH ran.
+
+    A fake with only `execute()` would make every header-less run look like the
+    venv path (engine.py falls back when `_execute_sync` is absent), which is
+    exactly the distinction these tests are about.
+    """
+
     def __init__(self, result):
         self._result = result
         self.calls = []
 
     async def execute(self, **kw):
-        self.calls.append(kw)
+        self.calls.append({"via": "execute", **kw})
+        return self._result
+
+    def _execute_sync(self, **kw):
+        self.calls.append({"via": "_execute_sync", **kw})
         return self._result
 
 
@@ -253,10 +296,14 @@ def test_success_maps_to_legacy_shape(monkeypatch, tmp_path):
     assert out["result"] == {"x": 1}
     assert out["stdout"] == "hi\n"
     assert out["duration_ms"] == 5
-    # Params travel as _params.json; requirements include the defaults set.
+    # Params travel as _params.json. The script declares no header, so it runs
+    # on the app's interpreter with no venv and no requirements at all (D172):
+    # a baseline set is exactly what this engine stopped installing.
     call = backend.calls[0]
     assert "_params.json" in call["input_files"]
-    assert "pyarrow" in call["requirements"]
+    assert call["via"] == "_execute_sync"
+    assert call["interpreter"] == engine.app_interpreter()
+    assert "requirements" not in call
 
 
 def test_error_maps_to_legacy_error_object(monkeypatch, tmp_path):
@@ -295,6 +342,47 @@ def test_unbuildable_wrapper_is_an_engine_error_not_a_500(monkeypatch, tmp_path)
     assert "no such resource" in out["error"]["traceback"]
 
 
+def test_the_interpreter_probe_does_not_block_the_event_loop(monkeypatch, tmp_path):
+    """`app_interpreter` runs up to two 5s subprocess probes, synchronously.
+
+    `/api/run` awaits `run_python` directly (no `to_thread`), so calling the
+    probe inline stalls the WHOLE server for its duration — the /api/fs/events
+    websocket, the file watcher, every other in-flight request — on the first
+    header-less run of a process. Asserted by counting how many times a
+    concurrent 10ms task gets to run while the probe is "in progress": inline,
+    the answer is zero.
+    """
+    target = tmp_path / "t.py"
+    target.write_text("def main():\n    return 1\n")
+
+    def _slow_probe():
+        time.sleep(0.5)
+        return None  # -> InterpreterUnavailable; this test is about the stall
+
+    monkeypatch.setattr(engine, "app_interpreter", _slow_probe)
+
+    async def _drive():
+        ticks = 0
+
+        async def _tick():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        beat = asyncio.create_task(_tick())
+        out = await engine.run_python(str(target), {})
+        beat.cancel()
+        return ticks, out
+
+    ticks, out = asyncio.run(_drive())
+    assert out["error"]["type"] == "InterpreterUnavailable"  # probe really ran
+    assert ticks > 5, (
+        f"the event loop only ticked {ticks} times during a 0.5s interpreter "
+        "probe — run_python is calling app_interpreter inline"
+    )
+
+
 def test_missing_file_is_legacy_error(monkeypatch, tmp_path):
     out = asyncio.run(engine.run_python(str(tmp_path / "nope.py"), {}))
     assert out["ok"] is False and out["error"]["type"] == "FileNotFoundError"
@@ -328,9 +416,7 @@ def test_ci_claiming_to_cover_this_engine_actually_runs_it():
 
 
 @requires_fused
-def test_real_backend_runs_bare_main(monkeypatch, tmp_path, warm_fused_backend_venv):
-    # Bare venv (no default data stack) so the test is fast and offline-safe.
-    monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
+def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "sine.py"
     target.write_text(
@@ -344,8 +430,7 @@ def test_real_backend_runs_bare_main(monkeypatch, tmp_path, warm_fused_backend_v
 
 
 @requires_fused
-def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path, warm_fused_backend_venv):
-    monkeypatch.setattr(engine, "DEFAULT_REQUIREMENTS", [])
+def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "boom.py"
     target.write_text("def main():\n    raise ValueError('nope')\n")
@@ -354,3 +439,647 @@ def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path, warm_fuse
     assert out["error"]["type"] == "ValueError"
     assert str(target) in out["error"]["traceback"]
     assert "_fused_run_main" not in out["error"]["traceback"]
+
+
+# --- the app's own interpreter (PY-17 / D172) ---------------------------------
+#
+# A header-less script runs with `interpreter=<the app's real python>` and gets
+# no venv. Everything here is about the one way that ships broken: `interpreter=`
+# is spawned verbatim as argv[0], so handing it something that is not a genuine
+# python (a py2app launcher stub, a `pythonw` with no console, an interpreter
+# that cannot self-locate its stdlib once the backend strips PYTHONHOME) would
+# spawn the wrong process instead of running the script — and `requirements` is
+# silently ignored on that branch, so there is no fallback to notice.
+
+
+def test_app_interpreter_is_this_installation_s_python():
+    """The resolved interpreter really runs, and is the SAME install as ours.
+
+    Same `sys.prefix` is the whole point: that is what makes the app's own
+    site-packages (`[bundled]` + core `dependencies`) visible to a header-less
+    script without installing anything.
+    """
+    exe = engine.app_interpreter()
+    assert exe is not None, "a dev checkout's sys.executable is a real python"
+    proc = subprocess.run(
+        [exe, "-c", "import sys; print(sys.prefix)"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == sys.prefix
+
+
+def test_app_interpreter_probe_rejects_a_launcher_stub(monkeypatch, tmp_path):
+    """A py2app-style launcher stub must never be returned as an interpreter.
+
+    The stub is executable and exits 0 — the exact shape that would pass a
+    naive `os.path.isfile` / `os.access(X_OK)` check and then spawn the whole
+    app as a subprocess on every run.
+    """
+    stub = tmp_path / "FusedRender"
+    stub.write_text("#!/bin/sh\necho 'launching the app'\nexit 0\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(stub))
+    assert engine.app_interpreter() is None
+
+
+def test_app_interpreter_probe_rejects_a_foreign_python(monkeypatch, tmp_path):
+    """A real python that is a DIFFERENT installation is rejected too.
+
+    It would run the script — with someone else's site-packages, so every
+    `[bundled]` import a header-less template makes would fail for reasons the
+    traceback cannot explain. Simulated by a stub that reports a prefix which
+    is not ours.
+    """
+    fake = tmp_path / "python3"
+    fake.write_text(
+        "#!/bin/sh\n"
+        "printf '{\"prefix\": \"/somewhere/else\", \"executable\": \"%s\"}\\n' \"$0\"\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(fake))
+    assert engine.app_interpreter() is None
+
+
+def test_app_interpreter_probe_survives_the_stripped_child_env(monkeypatch):
+    """The probe must run under the env the BACKEND will use, not ours.
+
+    `python_compute` strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP
+    from the child. A packaged interpreter that only self-locates its stdlib
+    *because* the app process exports PYTHONHOME would pass a probe run with
+    our env and then die in the real child — so the probe drops the same vars.
+    """
+    seen = {}
+    real_run = subprocess.run
+
+    def spy(cmd, **kw):
+        seen.update(kw.get("env") or {})
+        seen["_had_env"] = kw.get("env") is not None
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(engine.subprocess, "run", spy)
+    engine.app_interpreter()
+    assert seen["_had_env"], "the probe must pass an explicit env, not inherit"
+    for var in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSTARTUP"):
+        assert var not in seen, f"{var} must be stripped from the probe env"
+
+
+def test_windows_launcher_pythonw_resolves_to_the_console_python(monkeypatch, tmp_path):
+    """On Windows the app runs under `pythonw.exe`; prefer `python.exe`.
+
+    Same install (so same site-packages and the same `sys.prefix`), but with a
+    usable standard-stream setup — `pythonw` is the windowless build the
+    launcher stub and the AppRun analog exec, and the backend captures the
+    child's stdout/stderr.
+    """
+    (tmp_path / "pythonw.exe").write_text("")
+    (tmp_path / "python.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
+    assert engine._interpreter_candidate() == (str(tmp_path / "python.exe"), True)
+
+
+def test_pythonw_without_a_console_sibling_keeps_itself(monkeypatch, tmp_path):
+    (tmp_path / "pythonw.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))
+    assert engine._interpreter_candidate() == (str(tmp_path / "pythonw.exe"), True)
+
+
+def test_an_autodetected_non_python_name_is_never_spawned(monkeypatch, tmp_path):
+    """A launcher-stub `sys.executable` is rejected WITHOUT creating a process.
+
+    Being wrong here is not merely a failed probe: spawning a py2app launcher
+    could start a second copy of the whole app. The name check is what means we
+    never have to know what that stub does with `-c`.
+    """
+    stub = tmp_path / "FusedRender"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(sys, "executable", str(stub))
+    spawned = []
+    monkeypatch.setattr(
+        engine.subprocess, "run",
+        lambda cmd, **kw: spawned.append(cmd) or pytest.fail("must not spawn"),
+    )
+    assert engine.app_interpreter() is None
+    assert spawned == []
+
+
+def test_an_explicit_override_is_probed_even_with_an_odd_name(monkeypatch, tmp_path):
+    """FUSED_RENDER_APP_PYTHON is deliberate config: a wrapper name is allowed.
+
+    It still has to pass the probe — the escape hatch relaxes the name guard,
+    not the verification.
+    """
+    wrapper = tmp_path / "app-python-wrapper"
+    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(wrapper))
+    assert engine.app_interpreter() == str(wrapper)
+
+
+def test_the_probe_timeout_is_short_enough_to_not_read_as_a_hang():
+    """It is paid on the request path in the case it exists to catch."""
+    assert engine._PROBE_TIMEOUT_S <= 10
+
+
+@requires_fused
+def test_a_headerless_script_runs_on_the_app_interpreter(monkeypatch, tmp_path):
+    """The end-to-end assertion: no venv, and the child IS the app's python.
+
+    Checked from inside the child (its own `sys.executable`/`sys.prefix`)
+    rather than from the requirements we passed — `interpreter=` silently
+    ignores `requirements`, so only the child can say which python ran.
+    """
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "who.py"
+    target.write_text(
+        "import sys\n"
+        "def main():\n"
+        "    return {'exe': sys.executable, 'prefix': sys.prefix}\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"]["prefix"] == sys.prefix
+    assert out["result"]["exe"] == engine.app_interpreter()
+
+
+@requires_fused
+def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
+    """The point of the switch: `[bundled]` works with no header and no install."""
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "reads.py"
+    target.write_text(
+        "def main():\n"
+        "    import pandas, pyarrow\n"
+        "    return sorted(pandas.DataFrame({'a': [1, 2]}).a.tolist())\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"] == [1, 2]
+
+
+@requires_fused
+def test_a_declared_header_still_gets_its_own_venv(
+    monkeypatch, tmp_path, warm_fused_backend_venv
+):
+    """A header keeps today's venv path — it must NOT land on the app python."""
+    monkeypatch.setattr(engine, "_backend", None)
+    target = tmp_path / "declared.py"
+    target.write_text(
+        conftest.WARM_HEADER
+        + "import sys\n"
+        "def main():\n"
+        "    return {'prefix': sys.prefix}\n"
+    )
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is True, out
+    assert out["result"]["prefix"] != sys.prefix
+    assert "venvs" in out["result"]["prefix"]
+
+
+@requires_tomllib
+def test_a_header_is_the_complete_requirement_list(monkeypatch, tmp_path):
+    """A header goes to the venv path, and its venv gets EXACTLY the header.
+
+    No baseline is unioned in (D172), so a header means what PEP 723 says it
+    means. This is the assertion that stops a baseline being reintroduced.
+    """
+    target = tmp_path / "declared.py"
+    target.write_text(
+        "# /// script\n"
+        '# dependencies = ["imagecodecs", "pyproj"]\n'
+        "# ///\n"
+        "def main():\n    return 1\n"
+    )
+    backend = _FakeBackend(_FakeResult(return_value="1"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    # Past the install-loader pre-flight (PY-18), which would otherwise answer
+    # `needs_install` for these two: this test is about what reaches the backend.
+    monkeypatch.setattr("fused_render.envinstall.is_installed", lambda reqs: True)
+    asyncio.run(engine.run_python(str(target), {}))
+    call = backend.calls[0]
+    assert call["via"] == "execute"
+    assert call["requirements"] == ["imagecodecs", "pyproj"]
+
+
+def test_no_resolvable_interpreter_is_a_loud_error_not_a_venv(monkeypatch, tmp_path):
+    """A header-less script must NEVER silently fall back to a venv.
+
+    With no baseline requirements (D172) that venv is stdlib-only, so a template
+    that works today would die on `import numpy` — an error about the wrong thing
+    entirely, on a path the user can't see. It would also mean a header-less core
+    template hitting PyPI, which must never happen. So: run nothing, and return a
+    configuration error that names its own fix.
+    """
+    stub = tmp_path / "not-python"
+    stub.write_text("#!/bin/sh\nexit 3\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", str(stub))
+    # No wrapper rescue either.
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: (None, "stub"))
+
+    backend = _FakeBackend(_FakeResult(return_value="null"))
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    target = tmp_path / "plain.py"
+    target.write_text("def main():\n    return None\n")
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "InterpreterUnavailable"
+    assert "FUSED_RENDER_APP_PYTHON" in out["error"]["message"]
+    assert backend.calls == [], "nothing may be executed"
+
+
+def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
+    """Same rule for the other way the interpreter path can be unavailable."""
+
+    class NoSyncBackend:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, **kw):
+            self.calls.append(kw)
+            raise AssertionError("must not run in a venv")
+
+    backend = NoSyncBackend()
+    monkeypatch.setattr(engine, "get_backend", lambda: backend)
+    target = tmp_path / "plain.py"
+    target.write_text("def main():\n    return None\n")
+    out = asyncio.run(engine.run_python(str(target), {}))
+    assert out["ok"] is False
+    assert out["error"]["type"] == "EngineError"
+    assert "_execute_sync" in out["error"]["traceback"]
+    assert backend.calls == []
+
+
+# --- the PYTHONHOME wrapper: making the packaged macOS app work ---------------
+#
+# Measured against a real DMG (FusedRender-0.3.12), because every earlier guess
+# about this bundle turned out wrong:
+#
+#   * stripped of PYTHONHOME, `Contents/MacOS/python` reports the BUILD
+#     MACHINE's Homebrew framework as `sys.prefix` — a path absent on a user's
+#     machine. So rung 1 cannot work there.
+#   * the bundle ships NO `venv` module (not in Resources/lib/python3.12, not in
+#     lib/python312.zip) and the embedded Python.framework holds only the dylib,
+#     no second interpreter. A venv-based rescue is impossible, not just awkward.
+#   * with PYTHONHOME restored, `sys.prefix` IS Contents/Resources and pandas /
+#     geopandas / rasterio all import.
+#
+# CI cannot mount a DMG, so the stand-in below reproduces the property that
+# matters: an interpreter whose stdlib AND site-packages live in one directory
+# reachable only via PYTHONHOME. `test_the_stand_in_really_needs_pythonhome`
+# keeps it honest.
+
+
+def _bundle_like_python(tmp_path):
+    """A python that can only find its stdlib AND one package via PYTHONHOME.
+
+    py2app's shape, built with symlinks: ONE directory holding the stdlib and
+    site-packages flattened together. Returns (base_interpreter, home, sentinel).
+
+    The package is a sentinel this function WRITES, not a real distribution.
+    Borrowing `pandas` made the whole file environment-dependent and it failed
+    both ways in CI: on the runner where pandas is importable from the base
+    interpreter the bare stand-in found it (so the guard below fired, correctly);
+    on the runners where pandas is not installed at all there was nothing for the
+    wrapper to find (so the positive assertions could not pass). A sentinel that
+    exists ONLY inside the stand-in's lib dir makes both halves true by
+    construction, on every runner, with no dependency on what is installed.
+    """
+    import sysconfig
+
+    tag = "python3.%d" % sys.version_info[1]
+    home = tmp_path / "fakebundle"
+    libdir = home / "lib" / tag
+    libdir.mkdir(parents=True)
+    stdlib = sysconfig.get_paths()["stdlib"]
+    if not os.path.isdir(stdlib):
+        pytest.skip("no stdlib directory to model a bundle from")
+    for name in os.listdir(stdlib):
+        dst = libdir / name
+        if not dst.exists():
+            try:
+                os.symlink(os.path.join(stdlib, name), dst)
+            except OSError:
+                pass
+    # The app's "own package": importable only when PYTHONHOME points here.
+    sentinel = "fused_render_bundle_sentinel"
+    (libdir / f"{sentinel}.py").write_text("MARKER = 'from-the-bundle'\n")
+    base = os.path.join(sys.base_prefix, "bin", "python3")
+    if not os.path.exists(base):
+        pytest.skip("no base interpreter to build a bundle-like stand-in from")
+    return base, str(home), sentinel
+
+
+def _stripped():
+    """The env a backend child gets."""
+    return {k: v for k, v in os.environ.items()
+            if k not in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "PYTHONSTARTUP")}
+
+
+@pytest.fixture
+def bundle_like(tmp_path, monkeypatch):
+    """This process as it is inside the .app: PYTHONHOME set, foreign raw prefix."""
+    if os.name == "nt":
+        pytest.skip("the wrapper is POSIX-only by design")
+    base, home, sentinel = _bundle_like_python(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("FUSED_RENDER_APP_PYTHON", base)
+    # The app claims the bundle's prefix, as py2app's launcher arranges.
+    monkeypatch.setenv("PYTHONHOME", home)
+    monkeypatch.setattr(sys, "prefix", home)
+    return base, home, sentinel
+
+
+def test_the_stand_in_really_needs_pythonhome(tmp_path):
+    """Guard the guard: if the stand-in stops modelling the bundle, say so.
+
+    A stand-in that worked WITHOUT PYTHONHOME would make every test below pass
+    while testing nothing — the failure mode of any simulated environment.
+    """
+    if os.name == "nt":
+        pytest.skip("POSIX-only")
+    base, home, sentinel = _bundle_like_python(tmp_path)
+    env = _stripped()
+    bare = subprocess.run([base, "-c", f"import {sentinel}"], capture_output=True,
+                          text=True, env=env, timeout=120)
+    assert bare.returncode != 0, (
+        "the stand-in must NOT find the app's package without PYTHONHOME, or every "
+        "test below it passes while testing nothing"
+    )
+    with_home = subprocess.run(
+        [base, "-c", f"import {sentinel},sys; print(sys.prefix, {sentinel}.MARKER)"],
+        capture_output=True, text=True, env=dict(env, PYTHONHOME=home), timeout=120,
+    )
+    assert with_home.returncode == 0, with_home.stderr
+    assert with_home.stdout.split() == [home, "from-the-bundle"]
+
+
+def test_a_bundle_like_interpreter_is_rescued_by_the_wrapper(bundle_like):
+    """The macOS path end to end: rung 1 rejected, rung 2 accepted."""
+    base, home, sentinel = bundle_like
+    resolved = engine.app_interpreter()
+    assert resolved is not None, "the wrapper should have rescued this"
+    assert resolved != base, "it must be the wrapper, not the rejected raw python"
+    assert resolved == engine._wrapper_path()
+
+    proc = subprocess.run(
+        [resolved, "-c", f"import {sentinel},sys; print(sys.prefix)"],
+        capture_output=True, text=True, env=_stripped(), timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == home
+
+
+def test_the_child_sees_the_WRAPPER_as_its_sys_executable(bundle_like):
+    """`exec -a` is load-bearing, and this is why.
+
+    geotiff/tile_server.py and zarr_aoi/tile_server.py spawn their daemons as
+    `[sys.executable, …]` with PYTHONHOME **scrubbed** from the child env (their
+    own comments explain why — a bundle-scoped PYTHONHOME would poison a uv
+    venv). With the raw python as `sys.executable` that spawn loses the app's
+    packages; measured on the real DMG as `ModuleNotFoundError: No module named
+    'pandas'`. Pointing it at the wrapper makes the re-spawn immune to the scrub.
+    """
+    resolved = engine.app_interpreter()
+    assert resolved is not None
+    proc = subprocess.run(
+        [resolved, "-c", "import sys; print(sys.executable)"],
+        capture_output=True, text=True, env=_stripped(), timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == resolved
+
+
+def test_a_daemon_respawned_through_sys_executable_still_works(bundle_like):
+    """The exact pattern geotiff/zarr/usd use, with the exact env they use.
+
+    This is the difference between the feature working and a confusing second
+    failure one level down, so it is asserted against the real spawn shape rather
+    than inferred from sys.executable alone.
+    """
+    _base, _home, sentinel = bundle_like
+    resolved = engine.app_interpreter()
+    assert resolved is not None
+    grandchild = (
+        "import os, subprocess, sys\n"
+        "denv = {k: v for k, v in os.environ.items() "
+        "if k not in ('PYTHONPATH', 'PYTHONHOME')}\n"
+        "r = subprocess.run([sys.executable, '-c', "
+        f"'import {sentinel}; print(\"deep ok\")'], "
+        "capture_output=True, text=True, env=denv)\n"
+        "print(r.returncode, (r.stdout or r.stderr).strip().splitlines()[-1])\n"
+    )
+    proc = subprocess.run(
+        [resolved, "-c", grandchild],
+        capture_output=True, text=True, env=_stripped(), timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().startswith("0 deep ok"), proc.stdout
+
+
+def test_the_wrapper_is_probed_not_trusted(bundle_like, monkeypatch):
+    """It must earn its place by running, like any other candidate."""
+    real_probe = engine._probe
+    probed = []
+
+    def spy(exe):
+        probed.append(exe)
+        return real_probe(exe)
+
+    monkeypatch.setattr(engine, "_probe", spy)
+    resolved = engine.app_interpreter()
+    assert resolved in probed, "the wrapper was accepted without being run"
+
+
+def test_a_wrapper_that_does_not_work_is_rejected(bundle_like, monkeypatch):
+    """A wrapper pointing somewhere useless must not be returned."""
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: ("/bin/false", ""))
+    assert engine.app_interpreter() is None
+
+
+def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
+    """A DMG can be mounted at `/Volumes/Fused Render`; nothing may split on it."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "a state dir"))
+    home = tmp_path / "home with spaces"
+    (home / "lib").mkdir(parents=True)
+    monkeypatch.setenv("PYTHONHOME", str(home))
+    weird = tmp_path / "py dir" / "python"
+    weird.parent.mkdir()
+    weird.write_text("")
+    path, detail = engine._wrapper_interpreter(str(weird))
+    assert path is not None, detail
+    body = open(path, encoding="utf-8").read()
+    assert shlex.quote(str(home)) in body
+    assert shlex.quote(str(weird)) in body
+    # Tokenising the exec line must recover the paths intact, not split them.
+    exec_line = [ln for ln in body.splitlines() if ln.startswith("exec ")][0]
+    assert str(weird) in shlex.split(exec_line)
+    assert '"$@"' in exec_line, "argv must be forwarded quoted"
+
+
+def test_the_wrapper_is_private_and_regenerated_only_when_it_changes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    home = tmp_path / "home"
+    (home / "lib").mkdir(parents=True)
+    monkeypatch.setenv("PYTHONHOME", str(home))
+
+    path, _ = engine._wrapper_interpreter("/usr/bin/python3")
+    assert path is not None
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o700, "derived state, owner-only"
+    first = os.stat(path).st_mtime_ns
+    body = open(path, encoding="utf-8").read()
+
+    # Same inputs -> untouched, not rewritten with identical content.
+    again, _ = engine._wrapper_interpreter("/usr/bin/python3")
+    assert again == path
+    assert os.stat(path).st_mtime_ns == first
+    assert open(path, encoding="utf-8").read() == body
+
+    # Different candidate -> regenerated.
+    engine._wrapper_interpreter("/usr/bin/python3.11")
+    assert open(path, encoding="utf-8").read() != body
+
+
+def test_no_wrapper_without_a_pythonhome_to_restore(tmp_path, monkeypatch):
+    """Gated to the case that needs it: a self-locating interpreter gets none.
+
+    This is what keeps Windows and the Linux AppImage on rung 1.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("PYTHONHOME", raising=False)
+    path, detail = engine._wrapper_interpreter(sys.executable)
+    assert path is None
+    assert "PYTHONHOME" in detail
+    assert not os.path.exists(engine._wrapper_path())
+
+
+def test_a_bogus_pythonhome_is_not_wrapped(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "does-not-exist"))
+    path, _detail = engine._wrapper_interpreter(sys.executable)
+    assert path is None
+
+
+def test_the_wrapper_lives_outside_the_script_venv_path(tmp_path, monkeypatch):
+    """It must not be mistakable for a requirements venv.
+
+    `fused`'s venvs_path is keyed by requirement set, and
+    `ensure_requirements_venv` deletes directories there lacking its ready marker.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    p = engine._wrapper_path()
+    assert "_app_interpreter" in p
+    assert "openfused" not in p
+    assert os.path.basename(p) == "python", "should read as an interpreter in logs/ps"
+
+
+# --- concurrency: the probe runs off the event loop, so it runs in parallel ----
+#
+# `/api/run` does `await asyncio.to_thread(app_interpreter)` (so a slow probe
+# cannot stall the loop — test_the_interpreter_probe_does_not_block_the_event_loop
+# pins that). The cost is that two header-less runs starting together are now
+# genuinely concurrent, and both halves of this used to race: an unlocked
+# read-then-write cache whose losing thread could store `None` over a working
+# path (terminal, per process — every header-less script broken until restart),
+# and a wrapper temp file named by pid alone, which two threads of ONE process
+# share so the first `os.replace` steals it from the second.
+
+
+def test_concurrent_probes_resolve_once_and_never_cache_the_loser(monkeypatch):
+    """Many threads, ONE probe, and no caller left holding None.
+
+    The probe is deliberately made to succeed only the first time: without
+    serialization the extra probes are not merely wasteful, one of them caches
+    its failure over the answer that worked.
+    """
+    candidate, _autodetected = engine._interpreter_candidate()
+    seen = []
+    counter = threading.Lock()
+
+    def probe_once(exe):
+        with counter:
+            first = not seen
+            seen.append(exe)
+        time.sleep(0.2)  # wide enough that every thread is inside at once
+        if first:
+            return {"prefix": sys.prefix, "executable": exe}, ""
+        return None, "a second probe of the same candidate deliberately fails"
+
+    monkeypatch.setattr(engine, "_probe", probe_once)
+    # No rung-2 rescue: a failed direct probe is a cached None, which is the
+    # poisoning this test is about.
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: (None, "stub"))
+
+    results = []
+    ready = threading.Barrier(8)
+
+    def call():
+        ready.wait(timeout=30)
+        results.append(engine.app_interpreter())
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "app_interpreter deadlocked"
+
+    assert len(seen) == 1, f"the candidate was probed {len(seen)} times, not once"
+    assert results == [candidate] * 8, (
+        f"concurrent callers disagreed about the interpreter: {results}"
+    )
+    # And the cache kept the working answer, not a loser's None.
+    assert engine.app_interpreter() == candidate
+    assert len(seen) == 1, "the cached answer was re-probed"
+
+
+def test_two_threads_writing_the_wrapper_both_succeed(tmp_path, monkeypatch):
+    """The temp file must be per-THREAD, not per-process.
+
+    `os.chmod` is where both threads are held until both are past the write, so
+    the overlap is deterministic rather than a matter of timing: with one shared
+    temp name the first `os.replace` consumes it and the second raises
+    FileNotFoundError, reported as "could not write the interpreter wrapper" for a
+    wrapper that is perfectly fine — and that spurious failure is then cached.
+    """
+    if os.name == "nt":
+        pytest.skip("the wrapper is POSIX-only by design")
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
+    home = tmp_path / "home"
+    (home / "lib").mkdir(parents=True)
+    monkeypatch.setenv("PYTHONHOME", str(home))
+    wrapper_path = engine._wrapper_path()
+
+    both_written = threading.Barrier(2)
+    real_chmod = os.chmod
+
+    def chmod_holding_both(path, mode, *a, **kw):
+        real_chmod(path, mode, *a, **kw)
+        if str(path).startswith(wrapper_path) and str(path).endswith(".tmp"):
+            both_written.wait(timeout=30)
+
+    monkeypatch.setattr(os, "chmod", chmod_holding_both)
+
+    out = []
+    threads = [
+        threading.Thread(
+            target=lambda: out.append(engine._wrapper_interpreter("/usr/bin/python3"))
+        )
+        for _ in range(2)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "a wrapper write hung"
+
+    assert out == [(wrapper_path, "")] * 2, f"a wrapper write lost its temp file: {out}"
+    body = open(wrapper_path, encoding="utf-8").read()
+    assert f"PYTHONHOME={shlex.quote(str(home))}" in body
+    assert shlex.quote("/usr/bin/python3") in body
+    assert not [
+        n for n in os.listdir(os.path.dirname(wrapper_path)) if n.endswith(".tmp")
+    ], "a temp file was left behind"

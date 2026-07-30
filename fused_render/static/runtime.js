@@ -539,6 +539,213 @@
     }
   }
 
+  // ---- the script-venv install loader (SPEC PY-18, D173) --------------------
+  //
+  // Most .py files run on the app's own interpreter and install nothing. A file
+  // that declares a `# /// script` header naming something the app doesn't ship
+  // (geotiff's imagecodecs, zarr_aoi's s3fs, pano's py360convert…) needs a
+  // one-time download, and /api/run answers `needs_install` rather than blocking
+  // past runPython's ~30s budget. Handled HERE, in the shell, so every template
+  // gets it without a line of its own code.
+  //
+  // Shape follows the docs template's typst install (a detached worker writing
+  // progress.json, polled) — one pattern in this app, not two.
+  const INSTALL_POLL_MS = 500;
+  let installUi = null;
+  // Live installs, as key -> how many calls are waiting on it. A page can call
+  // two different .py files, each with its own header, so the overlay is shared
+  // by more than one install and has to stay up until the LAST one finishes, or
+  // the first to end tears the loader out from under the others and the page sits
+  // blank with no cancel button. Ref-COUNTED, not a Set of keys: two .py files
+  // with identical requirement sets share one venv key, so a Set would hold a
+  // single entry that the first call to settle deletes.
+  const installing = new Map();
+
+  function installOverlay() {
+    if (installUi) return installUi;
+    const el = document.createElement("div");
+    el.style.cssText = [
+      "position:fixed", "inset:0", "z-index:2147483646",
+      "background:rgba(12,14,18,0.94)", "color:#e6edf3",
+      "font-family:ui-sans-serif,system-ui,-apple-system,sans-serif",
+      "font-size:14px", "padding:32px", "box-sizing:border-box",
+      "display:flex", "flex-direction:column", "gap:14px",
+      "align-items:center", "justify-content:center", "text-align:center",
+    ].join(";");
+    const title = document.createElement("div");
+    title.style.cssText = "font-size:17px;font-weight:600;";
+    const detail = document.createElement("div");
+    detail.style.cssText =
+      "opacity:0.8;max-width:60ch;white-space:pre-wrap;word-break:break-word;" +
+      "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;";
+    const track = document.createElement("div");
+    track.style.cssText =
+      "width:min(420px,80vw);height:6px;border-radius:3px;background:#2b313b;overflow:hidden;";
+    const bar = document.createElement("div");
+    bar.style.cssText =
+      "height:100%;width:0%;background:#4c8eda;transition:width 0.3s ease;";
+    track.appendChild(bar);
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.style.cssText = [
+      "margin-top:6px", "padding:6px 16px", "border-radius:6px",
+      "border:1px solid #3a424e", "background:#1d222a", "color:#e6edf3",
+      "font-size:13px", "cursor:pointer",
+    ].join(";");
+    el.append(title, track, detail, cancel);
+    installUi = { el, title, detail, bar, cancel, mounted: false };
+    return installUi;
+  }
+
+  function showInstall(need) {
+    const ui = installOverlay();
+    installing.set(need.key, (installing.get(need.key) || 0) + 1);
+    if (!ui.mounted) {
+      document.body.appendChild(ui.el);
+      ui.mounted = true;
+    }
+    ui.title.textContent = "Installing " + (need.requirements || []).join(", ");
+    ui.detail.textContent = "starting…";
+    ui.bar.style.width = "0%";
+    return ui;
+  }
+
+  function hideInstall(key) {
+    const left = (installing.get(key) || 0) - 1;
+    if (left > 0) installing.set(key, left);
+    else installing.delete(key);
+    if (installing.size) return; // another install is still running
+    if (installUi && installUi.mounted) {
+      installUi.el.remove();
+      installUi.mounted = false;
+    }
+  }
+
+  function envPost(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify(body),
+    }).then((res) => res.json().then((data) => ({ res, data })));
+  }
+
+  // Run the install to completion. Resolves when the venv is ready; rejects with
+  // the installer's VERBATIM message otherwise — a resolver failure ("no wheels
+  // with a matching platform tag for imagecodecs") is the actual answer the user
+  // needs, and rewriting it into something friendlier is what made this opaque
+  // in the first place.
+  function installEnv(need, pyPath, ownPath) {
+    const ui = showInstall(need);
+    let cancelled = false;
+    // The key to poll and to cancel is the INSTALLER's, not the pre-flight's.
+    // /api/env/install re-derives the requirements from the .py on disk and
+    // returns its own key, and editing a .py and letting live-reload re-run it is
+    // this app's core workflow — so the file really can change between /api/run's
+    // needs_install and this POST. Polling the stale key then reads a null
+    // progress record and fails an install that is running fine; cancelling the
+    // stale key leaves the real download running. Mutable because the cancel
+    // handler is registered BEFORE the POST resolves and must see the update.
+    let activeKey = need.key;
+    // A message that must survive the next poll's paint(). `cancel()` reports
+    // False when there is nothing to kill YET — inside the spawn window the claim
+    // exists but `Popen` has not returned, so no pid is recorded. That answer used
+    // to vanish: "cancelling…" was overwritten by the installer's own detail on
+    // the very next poll, the install ran to completion, and the script the user
+    // had just cancelled executed with nothing anywhere admitting the cancel was
+    // dropped. Held in a variable rather than written straight to the element
+    // because paint() runs on a timer and would win.
+    let notice = "";
+    const onCancel = () => {
+      cancelled = true;
+      notice = "";
+      ui.detail.textContent = "cancelling…";
+      envPost("/api/env/cancel", { key: activeKey })
+        .then(({ data }) => {
+          if (data && data.cancelled === false) {
+            // Not a failure of the request — the server had no installer to
+            // signal. Said out loud, and the button stays live (its listener is
+            // never removed on click) so a second press reaches the pid once the
+            // record carries one.
+            notice =
+              "the installer could not be stopped — it had not started yet, or " +
+              "had already finished. Press Cancel again if it is still running.";
+            ui.detail.textContent = notice;
+          }
+        })
+        .catch(() => {});
+    };
+    ui.cancel.addEventListener("click", onCancel);
+
+    const paint = (prog) => {
+      if (!prog) return;
+      ui.detail.textContent = notice || prog.detail || prog.stage || "";
+      if (typeof prog.pct === "number") ui.bar.style.width = prog.pct + "%";
+    };
+
+    const poll = () =>
+      fetch("/api/env/progress?key=" + encodeURIComponent(activeKey), {
+        headers: { "X-Fused": "1" },
+      })
+        .then((res) => res.json())
+        .then((body) => {
+          const prog = body && body.progress;
+          paint(prog);
+          if (!prog) {
+            // The record vanished (or never landed). Treat as failure rather
+            // than polling forever — a silent loader is the failure mode this
+            // whole flow exists to remove.
+            throw new Error("the installer left no progress record");
+          }
+          if (!prog.done) {
+            return new Promise((r) => setTimeout(r, INSTALL_POLL_MS)).then(poll);
+          }
+          if (prog.error) throw new Error(prog.error);
+          return prog;
+        });
+
+    return envPost("/api/env/install", { py: pyPath, html: ownPath })
+      .then(({ res, data }) => {
+        if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        // The installer's key wins over the pre-flight's from here on (see
+        // `activeKey`). `hideInstall` still gets need.key — that is the entry
+        // `showInstall` counted.
+        if (data && typeof data.key === "string" && data.key) activeKey = data.key;
+        paint(data && data.progress);
+        return poll();
+      })
+      .then(
+        (prog) => {
+          ui.cancel.removeEventListener("click", onCancel);
+          hideInstall(need.key);
+          if (cancelled) {
+            // The install finished anyway — a cancel the server could not honour,
+            // or one that lost a race with the last poll. The user's intent still
+            // decides whether the SCRIPT runs: resolving here ran it, which is the
+            // one outcome pressing Cancel must never produce. The venv is built
+            // and stays built; only the run is abandoned.
+            const e = new Error("the install was cancelled");
+            e.type = "EnvInstallCancelled";
+            throw e;
+          }
+          return prog;
+        },
+        (err) => {
+          ui.cancel.removeEventListener("click", onCancel);
+          hideInstall(need.key);
+          if (cancelled) {
+            const e = new Error("the install was cancelled");
+            e.type = "EnvInstallCancelled";
+            throw e;
+          }
+          // Verbatim, and tagged so a page can tell an install failure from its
+          // script's own error.
+          err.type = "EnvInstallError";
+          err.traceback = err.message;
+          throw err;
+        }
+      );
+  }
+
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -573,33 +780,45 @@
       if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
     };
     const ownPath = new URLSearchParams(window.location.search).get("path");
-    return fetch("/api/run", {
-      method: "POST",
-      // X-Fused forces a CORS preflight so a foreign page can't fire this
-      // execute endpoint blind (see server.py _require_fused).
-      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
-                           controller._callId),
-      body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
-      signal: controller.signal,
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.stdout) {
-          console.log("[python]", data.stdout);
-        }
-        // Watch the executed file for auto-reload, even on failure (LR-2): a
-        // broken py that gets fixed must still trigger a reload. Read before
-        // the ok check so it's recorded either way.
-        if (data.resolved_py) watchPath(data.resolved_py);
-        if (!data.ok) {
-          const err = new Error(data.error && data.error.message);
-          err.type = data.error && data.error.type;
-          err.traceback = data.error && data.error.traceback;
-          err.stdout = data.stdout;
-          throw err;
-        }
-        return data.result;
-      })
+    const attempt = () =>
+      fetch("/api/run", {
+        method: "POST",
+        // X-Fused forces a CORS preflight so a foreign page can't fire this
+        // execute endpoint blind (see server.py _require_fused).
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                             controller._callId),
+        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
+        signal: controller.signal,
+      }).then((res) => res.json());
+
+    // `installed` guards against a loop: if the run still reports needs_install
+    // after a successful install, something disagrees about the venv key, and
+    // one clear failure beats installing forever.
+    const handle = (data, installed) => {
+      if (data.stdout) {
+        console.log("[python]", data.stdout);
+      }
+      // Watch the executed file for auto-reload, even on failure (LR-2): a
+      // broken py that gets fixed must still trigger a reload. Read before
+      // the ok check so it's recorded either way.
+      if (data.resolved_py) watchPath(data.resolved_py);
+      if (data.needs_install && !installed) {
+        return installEnv(data.needs_install, pyPath, ownPath).then(() =>
+          attempt().then((next) => handle(next, true))
+        );
+      }
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    };
+
+    return attempt()
+      .then((data) => handle(data, false))
       .then(
         (result) => {
           cleanup();

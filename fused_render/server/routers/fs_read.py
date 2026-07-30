@@ -20,10 +20,23 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored
+# The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
+# caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
+# and friends — never re-bound here by `from … import`. Each of those modules says
+# in a comment that the knob "is a module attribute so tests can override it", and
+# a by-value copy in this module makes that promise a lie for every read on this
+# side of the split: the override silently does nothing, which is how a
+# cap/TTL test passes while exercising the production value. Importing the module
+# also means the WRONG seam (`setattr(fs_read, "WALK_MAX_ENTRIES", …)`) raises
+# AttributeError instead of quietly doing nothing. D178 is the same bug
+# (`_STAT_CACHE_GEN`) caught during this split, so it is a known pattern.
+#
+# CACHES and SENTINELS stay by-value on purpose: a dict is the same object either
+# way, and `_WALK_TRUNCATED` is compared with `is`, so a re-bound copy would break
+# identity rather than merely go stale.
 from fused_render.server import mount as _server_mount
 from fused_render.server.mount import (
     _STAT_CACHE,
-    _STAT_TTL_S,
     _fs_stat,
     _mount_probe,
     _stat_or_none,
@@ -34,20 +47,14 @@ from fused_render.server.proxy import (
     _proxy_raw_bearer,
     _proxy_raw_pooled,
 )
+from fused_render.server import templates as _server_templates
 from fused_render.server.templates import (
     _CONDITIONS_CACHE,
-    _CONDITIONS_TTL_S,
     _conditions_payload,
     _prefs_mtime,
 )
+from fused_render.server import walk as _server_walk
 from fused_render.server.walk import (
-    LIST_MAX_ENTRIES,
-    WALK_BATCH_SIZE,
-    WALK_FLUSH_INTERVAL_S,
-    WALK_MAX_DEPTH_LOCAL,
-    WALK_MAX_DEPTH_REMOTE,
-    WALK_MAX_ENTRIES,
-    WALK_MAX_ENTRIES_REMOTE,
     _WALK_TRUNCATED,
     _list_direct,
     _list_response,
@@ -85,7 +92,7 @@ def api_fs_stat(path: str):
     from fused_render.shell.mounts import is_mount_backed
 
     cached = _STAT_CACHE.get(path)
-    if cached is not None and time.monotonic() - cached[0] < _STAT_TTL_S:
+    if cached is not None and time.monotonic() - cached[0] < _server_mount._STAT_TTL_S:
         return cached[1]
     # Snapshot the invalidation generation BEFORE the (slow) stat. _fs_stat
     # releases the GIL on its cold mount LIST, so a concurrent mutation can
@@ -124,7 +131,7 @@ def api_fs_conditions(path: str):
     pm = _prefs_mtime()
     cached = _CONDITIONS_CACHE.get(path)
     if (cached is not None
-            and time.monotonic() - cached[0] < _CONDITIONS_TTL_S
+            and time.monotonic() - cached[0] < _server_templates._CONDITIONS_TTL_S
             and cached[1] == pm):
         return cached[2]
     result = _conditions_payload(path)
@@ -224,8 +231,8 @@ def api_fs_list(path: str, cursor: str | None = None):
         # any entry missing a Name (a malformed rc entry must not 500).
         entries = _sort_entries(
             [_mount_list_item(de) for de in listed if de.get("Name")])
-        truncated = len(entries) > LIST_MAX_ENTRIES
-        return _list_response(path, entries[:LIST_MAX_ENTRIES], truncated, None)
+        truncated = len(entries) > _server_walk.LIST_MAX_ENTRIES
+        return _list_response(path, entries[:_server_walk.LIST_MAX_ENTRIES], truncated, None)
     if not os.path.isdir(path):
         return _error(f"not a directory: {path}", status=400)
     entries = []
@@ -240,15 +247,15 @@ def api_fs_list(path: str, cursor: str | None = None):
     # Read one past the cap to detect overflow, then trim.
     try:
         with os.scandir(path) as it:
-            dents = list(itertools.islice(it, LIST_MAX_ENTRIES + 1))
+            dents = list(itertools.islice(it, _server_walk.LIST_MAX_ENTRIES + 1))
     except OSError as e:
         broken = shell_mounts.broken_mount_error(path)
         if broken:
             return _error(broken, status=503)
         return _error(f"cannot read directory {path}: {e}", status=400)
-    truncated = len(dents) > LIST_MAX_ENTRIES
+    truncated = len(dents) > _server_walk.LIST_MAX_ENTRIES
     if truncated:
-        dents = dents[:LIST_MAX_ENTRIES]
+        dents = dents[:_server_walk.LIST_MAX_ENTRIES]
     if not dents:
         # A dead mount leaves a plain empty dir (or a wedged NFS mount
         # serving nothing) at the mountpoint — an empty listing under
@@ -335,8 +342,10 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # remote LIST round-trip, so both caps drop to their _REMOTE values (see
     # the constants' comments). The caps are enforced INSIDE _walk_bfs so the
     # walk terminates early instead of the consumer draining a huge tree.
-    max_entries = WALK_MAX_ENTRIES_REMOTE if under_mount else WALK_MAX_ENTRIES
-    max_depth = WALK_MAX_DEPTH_REMOTE if under_mount else WALK_MAX_DEPTH_LOCAL
+    max_entries = (_server_walk.WALK_MAX_ENTRIES_REMOTE if under_mount
+                   else _server_walk.WALK_MAX_ENTRIES)
+    max_depth = (_server_walk.WALK_MAX_DEPTH_REMOTE if under_mount
+                 else _server_walk.WALK_MAX_DEPTH_LOCAL)
     walker = _walk_bfs(path, include_hidden, max_entries=max_entries, max_depth=max_depth)
 
     # Force the ROOT listing eagerly (the first next() runs it) so a dead
@@ -394,7 +403,8 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
             batch.append(entry)
             total += 1
             now = time.monotonic()
-            if len(batch) >= WALK_BATCH_SIZE or now - last_flush >= WALK_FLUSH_INTERVAL_S:
+            if (len(batch) >= _server_walk.WALK_BATCH_SIZE
+                    or now - last_flush >= _server_walk.WALK_FLUSH_INTERVAL_S):
                 yield json.dumps({"entries": batch}) + "\n"
                 batch = []
                 last_flush = now

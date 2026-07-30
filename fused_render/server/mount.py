@@ -2,7 +2,7 @@ import os
 import stat as stat_mod
 
 from fused_render.server.common import _error
-from fused_render.server.templates import _templates_for
+from fused_render.server import templates as _server_templates
 
 
 
@@ -154,7 +154,7 @@ def _mount_stat_payload(path: str, is_dir: bool, size, mtime) -> dict:
     (size/mtime) with NO kernel os.stat/os.access on the mount. `writable` is
     True by construction — the caller only reaches this after clearing the
     read-only gate (mount_read_only False)."""
-    templates, template_error = _templates_for(path, is_dir)
+    templates, template_error = _server_templates._templates_for(path, is_dir)
     payload = {
         "path": path,
         "name": os.path.basename(path) or path,
@@ -223,7 +223,7 @@ def _stat_payload(path: str, is_dir: bool, st: os.stat_result | None = None) -> 
 
     if st is None:
         st = _mount_safe_stat(path)
-    templates, template_error = _templates_for(path, is_dir)
+    templates, template_error = _server_templates._templates_for(path, is_dir)
 
     payload = {
         "path": path,

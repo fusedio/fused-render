@@ -3,7 +3,10 @@ import hashlib
 import json
 import os
 
-from fused_render.server.mount import _STAT_TIMEOUT_S
+# The MODULE, not the value: `_STAT_TIMEOUT_S` is a knob mount.py documents as
+# monkeypatchable, and a by-value copy here would make patching the module that
+# DEFINES it a silent no-op (the same class of bug as D178's `_STAT_CACHE_GEN`).
+from fused_render.server import mount as _server_mount
 
 
 
@@ -229,7 +232,7 @@ class _WatchEntry:
         self._inflight = asyncio.ensure_future(self._stat_signal())
         try:
             sig = await asyncio.wait_for(
-                asyncio.shield(self._inflight), _STAT_TIMEOUT_S)
+                asyncio.shield(self._inflight), _server_mount._STAT_TIMEOUT_S)
         except asyncio.TimeoutError:
             return _UNCHANGED  # leave _inflight running; consumed on a later tick
         self._inflight = None

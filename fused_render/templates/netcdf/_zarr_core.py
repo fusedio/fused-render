@@ -11,9 +11,6 @@ that has zarr, which handles everything.
 
 Emits the same JSON schema as the NetCDF reader, so its viewer mirrors that one.
 """
-# /// script
-# dependencies = ["numpy"]
-# ///
 
 import json
 import sys

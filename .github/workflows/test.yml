@@ -246,6 +246,18 @@ jobs:
       # which works but is markedly slower). Same action the desktop jobs use.
       - uses: astral-sh/setup-uv@v5
 
+      # tests/test_server_env_install.py runs the install loader's own JS under
+      # node (the only way to assert which key gets polled and when the overlay
+      # comes down), and skips those four tests when node is missing. The
+      # zero-skip gate below turns any skip into a job failure, so node has to be
+      # DECLARED here: it was passing only because the current `ubuntu-latest`
+      # image happens to ship one, and a runner-image change would have failed
+      # this job for a reason unrelated to the engine. Same version as the
+      # frontend job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install fused-render (dev + fused extras)
         run: pip install -e ".[dev,fused]"
 
@@ -260,17 +272,26 @@ jobs:
         # while providing none, so it is asserted twice over:
         #   * FUSED_RENDER_REQUIRE_FUSED_ENGINE turns engine.available() from a
         #     skip condition into an assertion (test_engine.py);
-        #   * these two files — the real-backend integration tests and the
-        #     cross-engine binding parity table — must report ZERO skips on
-        #     3.11 with the extra installed. Nothing in them has another reason
-        #     to skip, so any skip means the extra didn't take effect.
+        #   * these three files — the real-backend integration tests, the
+        #     cross-engine binding parity table, and the install-loader HTTP
+        #     surface — must report ZERO skips on 3.11 with the extra
+        #     installed. Every OTHER reason those files can skip is provisioned
+        #     by the steps above (the extra itself, uv, rclone, and node for the
+        #     loader's JS tests), so any skip means the extra didn't take
+        #     effect. tests/test_ci_engine_gate.py keeps that list honest.
+        #     test_server_env_install
+        #     is listed because two of its tests skip without `fused` on the
+        #     matrix job, and they are the only coverage of "requirements come
+        #     from the .py, never the request body" — exactly the kind of
+        #     silent CI skip that let a broken bundle ship.
         # `shell: bash` for pipefail: without it the pipe into tee would hide
         # pytest's exit code.
         shell: bash
         env:
           FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: |
-          python -m pytest tests/test_engine.py tests/test_engine_parity.py -q -rs \
+          python -m pytest tests/test_engine.py tests/test_engine_parity.py \
+            tests/test_server_env_install.py -q -rs \
             | tee engine-tests.log
           if grep -qE '[0-9]+ skipped' engine-tests.log; then
             echo "::error::engine tests skipped in the job whose whole purpose is to run them"
@@ -285,6 +306,51 @@ jobs:
         env:
           FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: python -m pytest tests/ -q
+
+  # Does the macOS bundle actually contain what `[bundled]` promises? Same shape
+  # of hole as `fused-engine` above, one extra along: tests/test_bundle_contents.py
+  # can only speak about a distribution it finds real metadata for, and the
+  # matrix installs `.[dev]`, which carries none of `[bundled]`. So the file ran
+  # everywhere and asserted almost nothing — a green check for the invariant that
+  # a DMG had already violated (D176: `python-pptx` missing, the slides template
+  # telling a DMG user to `pip install`).
+  #
+  # build_dmg.sh now runs the same file in its build venv, which is the strongest
+  # place for it, but that build is gated on `macos_packaging` — which does NOT
+  # include pyproject.toml. Adding a distribution to `[bundled]` is exactly the
+  # change this test polices and exactly the change that would not have built a
+  # DMG, so this job exists to catch it: `app` fires on pyproject.toml.
+  #
+  # ubuntu, not macos: the reconciliation reads pyproject.toml and imports
+  # setup_py2app.py (stdlib + fused_render only, its build work behind a
+  # `py2app in sys.argv` guard), so nothing here needs a Mac — only the metadata
+  # of a real `[bundled]` install. One install on one cheap runner.
+  bundle-contents:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.12 is what all three desktop builds ship, so the markers this
+          # resolves are the ones the bundle actually gets.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install fused-render (dev + bundled extras)
+        run: pip install -e ".[dev,bundled]"
+
+      - name: Reconcile the bundle against what [bundled] installed
+        # FUSED_RENDER_REQUIRE_BUNDLED=1 is what makes this job load-bearing
+        # rather than decorative: it turns the file's per-distribution "not
+        # installed here" skips into failures, so if this install ever stops
+        # carrying `[bundled]`, the job fails instead of passing vacuously.
+        env:
+          FUSED_RENDER_REQUIRE_BUNDLED: "1"
+        run: python -m pytest tests/test_bundle_contents.py -q -rs
 
   # Linux desktop supervisor (docs/LINUX_DESKTOP_SPEC.md). With the
   # linux-desktop extra installed, the _linux backend tests EXECUTE here instead
@@ -434,6 +500,13 @@ jobs:
           name: shell-dist
           path: fused_render/static/shell-dist
 
+      # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
+      # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
+      # no other way to build a script venv there (D176). The Linux and Windows
+      # build scripts already require uv on the host the same way; macOS runners
+      # do not have it preinstalled, so the build fails loudly without this.
+      - uses: astral-sh/setup-uv@v5
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -461,7 +534,7 @@ jobs:
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
-    needs: [detect-changes, frontend, test-python, fused-engine, linux-desktop, windows-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
     if: always()
     steps:
       - name: Check test status
@@ -474,9 +547,9 @@ jobs:
             echo "No relevant changes; skipped."
             exit 0
           fi
-          # app fired ⇒ these four always run (they gate on app only), so
+          # app fired ⇒ these five always run (they gate on app only), so
           # anything other than success is a failure.
-          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}"; do
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
             if [[ "$result" != "success" ]]; then
               echo "Job did not succeed: $result"
               exit 1

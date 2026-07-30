@@ -161,6 +161,32 @@ def upgraded_install(tmp_path, monkeypatch):
     return _server_templates.TEMPLATES_DIR
 
 
+def test_the_asset_mounts_read_the_templates_dir_seam(tmp_path, monkeypatch):
+    """`/template-assets` and `/template-shared` must serve the STAGED dir.
+
+    Both are `StaticFiles` mounts built inside `create_app`, so they resolve
+    `TEMPLATES_DIR` exactly once — and the server<->server split re-bound that
+    constant into `server/app.py` by value, which silently detached it from the
+    module every other test (and the fixture above) repoints. The mounts then
+    served the package directory no matter what, so a test asserting on a staged
+    vendor/shared asset would have been quietly testing the package's copy: green
+    for the wrong reason, which is worse than red. Same class of bug as D178's
+    `_STAT_CACHE_GEN`.
+    """
+    from fused_render.server import templates as _server_templates
+
+    fake = tmp_path / "staged-templates"
+    (fake / "vendor").mkdir(parents=True)
+    (fake / "shared").mkdir(parents=True)
+    (fake / "vendor" / "marked.js").write_text("// staged vendor", encoding="utf-8")
+    (fake / "shared" / "sciviz.js").write_text("// staged shared", encoding="utf-8")
+    monkeypatch.setattr(_server_templates, "TEMPLATES_DIR", str(fake))
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    assert client.get("/template-assets/marked.js").text == "// staged vendor"
+    assert client.get("/template-shared/sciviz.js").text == "// staged shared"
+
+
 @pytest.mark.parametrize("template", ["text", "code"])
 def test_render_serves_a_theme_aware_tier_one_template(tmp_path, upgraded_install, template):
     """The one test that reads what the server actually SENDS.

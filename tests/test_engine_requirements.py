@@ -1,18 +1,40 @@
-"""What the fused engine's script venvs must contain (SPEC DM-2 / PY-12).
+"""Which core templates may carry a PEP 723 header, and what it must contain
+(SPEC PY-16/PY-17, D172).
 
-Under the fused engine a script's interpreter is a venv built from
-`engine.DEFAULT_REQUIREMENTS` plus that script's own PEP 723 header — nothing
-else. The `[bundled]` extra (what the packaged app's interpreter ships) is a
-*different* set, and the two were connected only by a comment saying "keep the
-two lists in sync", which was false in ten places and could not fail.
+Under the fused engine a script with **no** header runs on the app's own
+interpreter, which has `[bundled]` + the core `dependencies` — so a header on
+such a script buys nothing and costs a download. A script **with** a header gets
+a venv containing exactly what the header declares and nothing else, so a
+dependency it forgot to declare is simply absent.
 
-These tests replace that comment. The first pins the intended relationship
-between DEFAULT_REQUIREMENTS, `[bundled]` and the core `dependencies`, with
-every deliberate delta listed and reasoned. The second is the one that catches
-real breakage: a template importing a `[bundled]` distribution that its venv
-would not contain — which is a silent loss of function under this engine (a
-guarded import degrades, an unguarded one 500s a tile request), never a
-startup error anyone would notice.
+That makes the header decision a three-part invariant, and every part is
+derived from the source here rather than written down, because a written-down
+version is what failed before: the predecessor of this file pinned
+`DEFAULT_REQUIREMENTS` against `[bundled]` with a hand-kept list of deltas, and
+before that a *comment* claimed the two were in sync while being wrong in ten
+places.
+
+  1. **A header must be read** — the file has to be something `run_python` is
+     actually handed. A header on a helper module or a spawned daemon is inert
+     *and looks correct*, which is why it survives review: D170 shipped one on
+     `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying a
+     complete, accurate, never-read list of its own (D174).
+  2. **A header must be necessary** — it has to declare something the app's
+     interpreter does not already have. Enforced in
+     tests/test_bundle_contents.py, because on macOS that means the BUNDLE's
+     contents rather than `[bundled]`'s promises (D176).
+  3. **A header must be complete** — every `[bundled]`/core distribution the
+     file imports, at any nesting depth, is declared in the header of *each*
+     entry point that can execute it. This is the half with teeth: it is what
+     caught `pano/pano.py` importing numpy and pillow while declaring only
+     `py360convert`, which worked solely because a baseline set used to be
+     installed alongside every header. With that baseline gone, an incomplete
+     header is a broken template — and a silent one (a guarded import degrades,
+     an unguarded one 500s a tile request), never a startup error anyone sees.
+
+Under PY-18 a header also *triggers a download*, so each of these now costs a
+user-visible wait rather than only disk: an inert or unnecessary header means a
+progress bar for an environment nothing will ever import from.
 """
 import ast
 import functools
@@ -38,44 +60,16 @@ tomllib = pytest.importorskip(
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 
-# Distributions in `[bundled]` that DEFAULT_REQUIREMENTS deliberately omits.
-# The rule: a dependency used by exactly one template belongs in that
-# template's PEP 723 header, not in the set installed into *every* script's
-# venv — the header mechanism exists for this, and it keeps the shared venv
-# (built on first run, per requirement set) small.
-BUNDLED_NOT_DEFAULT = {
-    # Declared by the *entrypoint* of the template that needs them (see their
-    # `# /// script` headers): slides/{engine,slides}.py, excel/reader.py,
-    # usd/reader.py, geotiff/tile_server.py, map/map_render.py,
-    # {netcdf/grid_tile_server,zarr_aoi/tile_server}.py, pdf_studio/pdf.py,
-    # log_studio/reader.py.
-    "python-pptx",
-    "fpdf2",
-    "msgpack",
-    "rasterio",
-    "zarr",
-    "pymupdf",
-    "pikepdf",
-    "drain3",
-    # Server-side only: the s3sign/gcssign credential chains run in the
-    # fused-render process, never in a user script's venv. Installing botocore
-    # (~80 MB) into every script venv would buy nothing.
-    "botocore",
-    "google-auth",
-}
-
-# In DEFAULT_REQUIREMENTS but not in `[bundled]`: both are *core* dependencies
-# (`[project] dependencies`), so the packaged interpreter has them via the
-# install rather than via the extra — but a script venv is built from scratch
-# and would not, and the tabular readers (structure/, duckdb/) are unusable
-# without them.
-DEFAULT_NOT_BUNDLED = {"pyarrow", "duckdb"}
-
-# import name -> distribution name, for every distribution in `[bundled]` plus
-# the two core ones above. Only these are checked: this is a guard on the
-# bundled/default relationship, not a general dependency linter (on-demand
-# fetches like pxr/pypandoc and genuinely optional readers like rawpy have
-# their own mechanisms and are covered by their own tests).
+# import name -> distribution name, for every distribution the app's own
+# interpreter provides (`[bundled]` + core `dependencies`). Only these are
+# checked: this is a guard on what the app ships versus what a script venv
+# would contain, not a general dependency linter (on-demand binary fetches like
+# pxr/pypandoc/typst and genuinely optional readers like rawpy have their own
+# mechanisms and their own tests).
+#
+# `test_the_import_map_covers_everything_the_app_ships` keeps this honest — a
+# distribution added to `[bundled]` with no entry here would be invisible to
+# the completeness half and silently exempt from it.
 _IMPORT_TO_DIST = {
     "numpy": "numpy",
     "pandas": "pandas",
@@ -100,7 +94,50 @@ _IMPORT_TO_DIST = {
     "pikepdf": "pikepdf",
     "drain3": "drain3",
     "botocore": "botocore",
+    # `google` is a namespace package shared with every other google library, so
+    # the top-level name doesn't identify google-auth on its own — but it is the
+    # only `google` distribution the app ships, so here the mapping is exact.
+    "google": "google-auth",
+    # Core `dependencies`. A template importing one of these is unusual but not
+    # forbidden, and under a header it would be just as absent as a bundled one.
+    "fastapi": "fastapi",
+    "uvicorn": "uvicorn",
+    "websockets": "websockets",
+    "multipart": "python-multipart",
+    "httpx": "httpx",
+    # Only installed on <3.11 (it backports 3.11's stdlib tomllib), so on 3.11+
+    # it maps a name nothing provides — harmless, and listing it is what keeps
+    # `test_the_import_map_covers_everything_the_app_ships` honest either way.
+    "tomli": "tomli",
+    # The engine itself (a `[bundled]` requirement so the macOS force-list
+    # derives it — see pyproject and setup_py2app.py). Mapped, so
+    # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
+    # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
+    "fused": "fused",
 }
+
+# Distributions the app ships that a template may import WITHOUT declaring in its
+# header. The completeness rule exists because a script venv contains only what
+# the header names, so an undeclared import of something the app happens to have
+# is simply absent there. For `fused` that reasoning does not apply: it is the
+# engine that RUNS scripts, not payload a script imports to do its work, and a
+# script venv is expected not to contain it — `engine.py`'s generated epilogue
+# wraps its own `import fused` in `except ImportError` for exactly that reason.
+# Declaring it in a header would instead install the pinned wheel and its whole
+# dependency tree into that venv, which is the opposite of what a header is for.
+#
+# Every `import fused` in the core templates — the only files this module scans —
+# is guarded by `except ImportError`, so the exemption costs nothing here. It is
+# deliberately NOT a claim that no caller can depend on `import fused`
+# succeeding: a USER script with a PEP 723 header legitimately can (e.g. reading
+# a secret through `fused`), and for that case this exemption is silent. That gap
+# is a known product question being decided separately; it is not something this
+# exemption resolves.
+#
+# Kept as a named exemption rather than a missing mapping so it is visible and
+# reasoned — the same shape as the on-demand binary fetches (pxr/pypandoc/typst)
+# and optional readers (rawpy) noted above.
+_COMPLETENESS_EXEMPT = {"fused"}
 
 # NOTE: there is deliberately no hand-maintained "this file inherits that
 # file's venv" table here. The first version of this test had one, listing a
@@ -122,8 +159,21 @@ def _norm(requirement: str) -> str:
 
 
 def _header_deps(text: str) -> set[str]:
-    """Distributions declared in a file's PEP 723 block ({} when it has none)."""
-    return {_norm(d) for d in engine.script_requirements(text)}
+    """Distributions declared in a file's PEP 723 block ({} when it has none).
+
+    `apply_markers=False`, because these invariants are properties of the SOURCE
+    and must hold on every platform, not of the machine running pytest. This
+    already bit once: `log_studio/reader.py` carried a `sys_platform ==
+    'darwin'` header, which with marker filtering on read as EMPTY everywhere
+    but macOS — so on the Linux `fused-engine` job that file looked header-LESS
+    and both the entrypoint and completeness invariants skipped it silently. No
+    header in the tree carries a marker today (that one is gone with the
+    `drain3` exclusion it existed for, D176 as amended), so this is now a
+    FORWARD guard: the next marker-scoped header must not be able to be inert or
+    incomplete behind a green suite, which is the same class of hole as the
+    never-read headers this file exists to catch.
+    """
+    return {_norm(d) for d in engine.script_requirements(text, apply_markers=False)}
 
 
 def _imported_dists(text: str) -> set[str]:
@@ -132,6 +182,9 @@ def _imported_dists(text: str) -> set[str]:
     ast, not a regex: the imports that matter most here are the *function-level*
     ones (a tile handler's `import rasterio`), which is exactly what a naive
     "imports at the top of the file" check misses.
+
+    `_COMPLETENESS_EXEMPT` distributions are dropped: they are mapped (so the
+    coverage test above stays honest) but deliberately not required in a header.
     """
     tree = ast.parse(text)
     mods = set()
@@ -140,7 +193,11 @@ def _imported_dists(text: str) -> set[str]:
             mods.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             mods.add(node.module.split(".")[0])
-    return {_IMPORT_TO_DIST[m] for m in mods if m in _IMPORT_TO_DIST}
+    return {
+        _IMPORT_TO_DIST[m]
+        for m in mods
+        if m in _IMPORT_TO_DIST and _IMPORT_TO_DIST[m] not in _COMPLETENESS_EXEMPT
+    }
 
 
 def _template_files() -> list[str]:
@@ -252,49 +309,125 @@ def _venv_roots(relpath: str, graph: dict, _seen: frozenset = frozenset()) -> se
     return roots or {relpath}
 
 
-def test_default_requirements_relationship_to_pyproject():
-    """DEFAULT_REQUIREMENTS vs `[bundled]` vs core `dependencies` — exactly.
+@functools.lru_cache(maxsize=1)
+def _runpython_targets() -> frozenset[str]:
+    """Template .py files that something can actually hand to `run_python`.
 
-    Read from pyproject.toml rather than restated here: a second hardcoded copy
-    of the list is the failure this test exists to prevent.
+    Derived, not listed: a `.py` is an entry point when a NON-.py file in its own
+    template folder names it — which is what a `fused.runPython('./x.py')` call
+    site in the template's .html is, and equally a registry/manifest reference.
+    Sibling .py files are excluded on purpose: one module importing another is
+    exactly the relationship that does NOT make the importee an entry point.
+    """
+    targets = set()
+    for dirpath, _dirnames, filenames in os.walk(_TEMPLATES):
+        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+            continue
+        prose = ""
+        for name in filenames:
+            if name.endswith(".py"):
+                continue
+            try:
+                with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as f:
+                    prose += f.read()
+            except OSError:
+                continue
+        for name in filenames:
+            if name.endswith(".py") and name in prose:
+                targets.add(os.path.relpath(os.path.join(dirpath, name), _TEMPLATES))
+    return frozenset(targets)
+
+
+@functools.lru_cache(maxsize=1)
+def _app_dists() -> frozenset[str]:
+    """What the app's own interpreter provides: `[bundled]` + core `dependencies`.
+
+    Read from pyproject.toml, never restated: a second copy of the list is the
+    exact failure the predecessor of this file existed to prevent.
     """
     pp = _pyproject()
-    bundled = {_norm(d) for d in pp["project"]["optional-dependencies"]["bundled"]}
-    core = {_norm(d) for d in pp["project"]["dependencies"]}
-    defaults = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS}
-
-    # Nothing invented: every default is something the app itself ships.
-    assert defaults <= bundled | core
-
-    assert bundled - defaults == BUNDLED_NOT_DEFAULT, (
-        "the `[bundled]` extra changed: either add the distribution to "
-        "engine.DEFAULT_REQUIREMENTS, or list it in BUNDLED_NOT_DEFAULT with "
-        "the template header that declares it instead"
+    return frozenset(
+        {_norm(d) for d in pp["project"]["optional-dependencies"]["bundled"]}
+        | {_norm(d) for d in pp["project"]["dependencies"]}
     )
-    assert defaults - bundled == DEFAULT_NOT_BUNDLED
+
+
+def test_the_import_map_covers_everything_the_app_ships():
+    """Every app distribution must be reachable through `_IMPORT_TO_DIST`.
+
+    Without this, adding a distribution to `[bundled]` quietly exempts it from
+    the completeness half below — the check would keep passing while no longer
+    checking that dependency at all.
+    """
+    unmapped = sorted(_app_dists() - set(_IMPORT_TO_DIST.values()))
+    assert not unmapped, (
+        f"{unmapped} are in `[bundled]`/core `dependencies` but have no entry in "
+        "_IMPORT_TO_DIST, so a template importing one would not be checked. Add "
+        "the import name -> distribution mapping."
+    )
+
+
+# Part 2 — a header must be NECESSARY — lives in tests/test_bundle_contents.py,
+# not here. Necessity has to be judged against what the macOS BUNDLE ships
+# (setup_py2app.py), and judging it against `[bundled]` is the bug that shipped
+# a DMG telling the user to `pip install python-pptx` (D176). One home for it.
 
 
 @pytest.mark.parametrize("relpath", _template_files())
-def test_bundled_imports_are_reachable_under_the_fused_engine(relpath):
-    """Every `[bundled]` distribution a template imports must be in the venv.
+def test_a_header_only_sits_on_a_runpython_entrypoint(relpath):
+    """Part 3: a header must be READ (PY-16).
+
+    `run_python` reads the header of the file it is *handed* and of no other, so
+    a header on a helper module or a daemon is inert — and inert while looking
+    entirely correct, which is why it survives review. D170 shipped exactly this
+    on `map/vector_tile_server.py`, and `geotiff/_tiff_core.py` was carrying the
+    same thing: a full, accurate, never-read dependency list.
+
+    The cost is not only cosmetic now. Under PY-18 a header is what triggers the
+    install loader, so an inert one can also mean a download for an environment
+    nothing ever runs in.
+    """
+    graph = _template_graph()
+    if not graph["header"][relpath]:
+        return
+    assert relpath in _runpython_targets(), (
+        f"{relpath} carries a `# /// script` header but nothing in its template "
+        "folder names it as a runPython target, so the header is never read. "
+        "Either the file is an entry point and its call site should reference it, "
+        "or the header belongs on the file that IS handed to run_python (its "
+        "importer / spawner) — or, if a self-managed venv already covers it, "
+        "delete the header."
+    )
+
+
+@pytest.mark.parametrize("relpath", _template_files())
+def test_a_retained_header_is_complete(relpath):
+    """Part 2: a header must be COMPLETE (PY-16).
 
     Checked against *every* entry point that can execute this file (see
-    _venv_roots), not against the file's own header: the engine reads the
+    `_venv_roots`), not against the file's own header: the engine reads the
     header of the file it is handed and nothing else, so declaring a dependency
     on a helper module or a spawned daemon has no effect at all — the classic
-    way this gap hides. What isn't covered works on the packaged app's
-    interpreter (which has all of `[bundled]`) and silently stops working here.
+    way this gap hides.
+
+    Only roots that HAVE a header are checked. A root without one runs on the
+    app's interpreter, where every distribution here is present by definition;
+    there is nothing a venv could be missing.
     """
     graph = _template_graph()
     needed = graph["imports"][relpath]
-    defaults = {_norm(d) for d in engine.DEFAULT_REQUIREMENTS}
 
     for root in sorted(_venv_roots(relpath, graph)):
-        missing = sorted(needed - (defaults | graph["header"][root]))
+        header = graph["header"][root]
+        if not header:
+            continue  # runs on the app's interpreter — it has all of these
+        missing = sorted(needed - header)
         assert not missing, (
             f"{relpath} imports {missing}, which its script venv would not "
-            f"contain when it runs via {root}. Declare them in {root}'s "
-            "`# /// script` header (preferred, if that template is the only "
-            "user) — a header on a non-entrypoint file is never read — or add "
-            "them to engine.DEFAULT_REQUIREMENTS."
+            f"contain when it runs via {root}: a header is the COMPLETE "
+            f"dependency list now, with no baseline unioned in (D172). Declare "
+            f"them in {root}'s `# /// script` header — a header on a "
+            "non-entrypoint file is never read — or, if that template needs "
+            "nothing outside `[bundled]`, delete the header entirely so it runs "
+            "on the app's own interpreter."
         )
