@@ -14,7 +14,7 @@ child process, exactly the pattern the flow app uses for project deploys
     the ONE autodetected source, the `fused` package importable in this
     interpreter via the `_fused_cli.py` shim) lives in fusedcli.py, shared
     with the account surface (account.py). `POST /api/deploy/install`
-    pip-installs the wheel pinned by `PINNED_FUSED_REQUIREMENT` into the
+    pip-installs the release pinned by `PINNED_FUSED_REQUIREMENT` into the
     server's interpreter when it is missing (Python 3.11+ with pip).
   * **Export to a temporary bundle.** Each deploy re-exports the page into a
     fresh temp directory (`export.export_page`) and hands that bundle to
@@ -130,19 +130,17 @@ def _now_iso() -> str:
 # -- the one-click install (the CLI seam itself is fusedcli.py) ---------------
 
 
-# The fused wheel the one-click install lands (POST /api/deploy/install) —
+# The fused release the one-click install lands (POST /api/deploy/install) —
 # the single IN-CODE source of the pin. pyproject.toml's `[fused]` extra must
-# point at the SAME wheel; tests/test_deploy.py pins the two together. A code
+# point at the SAME version; tests/test_deploy.py pins the two together. A code
 # constant, deliberately NOT importlib.metadata.requires("fused-render"):
 # dist-info metadata is absent on a source-tree run and on app bundles that
 # strip dist-info, and it goes STALE on an editable install that predates the
 # extra (metadata only refreshes on reinstall) — all of which disabled the
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
-PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post10-py3-none-any.whl"
-)
-# The wheel's own environment marker (python_version >= "3.11"), enforced here
+PINNED_FUSED_REQUIREMENT = "fused==2.9.3b2"
+# The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
 FUSED_MIN_PYTHON = (3, 11)
 

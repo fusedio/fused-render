@@ -308,7 +308,7 @@ def test_the_bundled_and_fused_extras_pin_the_same_wheel():
     without the ~650 MB scientific stack. Keeping both is the deliberate call;
     the cost is a duplicated requirement string, and this is the guard that makes
     the duplication safe instead of hopeful. Byte-identical, not merely
-    same-version: the direct wheel URL and the `python_version` marker are both
+    same-version: the version pin and the `python_version` marker are both
     load-bearing, and a mismatch would mean the bundle and the pip path ship
     different engines.
     """

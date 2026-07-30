@@ -275,7 +275,7 @@ def test_external_override_scrubs_interpreter_env(tmp_path, monkeypatch):
 
 def test_pinned_requirement_matches_pyproject_extra():
     # deploy.PINNED_FUSED_REQUIREMENT is the in-code source of the pin; the
-    # pyproject [fused] extra must reference the SAME wheel or a wheel install
+    # pyproject [fused] extra must reference the SAME version, or a pip install
     # and the one-click install would land different builds.
     import pathlib
 
