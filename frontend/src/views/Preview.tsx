@@ -260,17 +260,39 @@ function usePreviewFileMenu(
 }
 
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
-// or unknown/stale value falls back to the default silently. The default is
-// the first UNCONDITIONAL entry (CT-12: a gated template is never the default
-// while a normal one exists) — only an all-conditional list falls back to its
-// first (by then verdict-allowed) entry.
-function defaultTemplate(templates: TemplateEntry[]): TemplateEntry {
+// or unknown/stale value falls back to the default silently. For FILES the
+// default is the first UNCONDITIONAL entry (CT-12: a gated template is never
+// the default while a normal one exists) — only an all-conditional list falls
+// back to its first (by then verdict-allowed) entry. For DIRECTORIES the rule
+// is relaxed: a gated entry whose verdict already landed ALLOWED can be the
+// default in list order (an app folder opens as the app, not the listing) —
+// while verdicts are still in flight the first unconditional entry (the
+// listing) renders, so a brief listing→app swap is possible but nothing gated
+// is ever shown before its gate says yes.
+function defaultTemplate(
+  templates: TemplateEntry[],
+  conditions: Record<string, boolean> | null,
+  isDir: boolean
+): TemplateEntry {
+  if (isDir) {
+    const allowed = templates.find(
+      (t) => !t.conditional || (conditions !== null && conditions[t.mode] === true)
+    );
+    if (allowed) return allowed;
+  }
   return templates.find((t) => !t.conditional) || templates[0];
 }
 
-function activeTemplate(templates: TemplateEntry[]): TemplateEntry {
+function activeTemplate(
+  templates: TemplateEntry[],
+  conditions: Record<string, boolean> | null,
+  isDir: boolean
+): TemplateEntry {
   const requested = new URLSearchParams(location.search).get("_mode");
-  return templates.find((t) => t.mode === requested) || defaultTemplate(templates);
+  return (
+    templates.find((t) => t.mode === requested) ||
+    defaultTemplate(templates, conditions, isDir)
+  );
 }
 
 // Deferred condition.py verdicts (CT-12). Stat only MARKS gated templates
@@ -382,14 +404,25 @@ function TemplatePreview({
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
   // switcher as a disabled spinner, not selectable, never the default.
   const isPending = (t: TemplateEntry) => !!t.conditional && conditions === null;
-  const defaultEntry = defaultTemplate(templates);
-  const [mode, setModeState] = useState<string>(() => activeTemplate(templates).mode);
+  const defaultEntry = defaultTemplate(templates, conditions, stat.is_dir);
+  const [mode, setModeState] = useState<string>(
+    () => activeTemplate(templates, conditions, stat.is_dir).mode
+  );
   const entry = templates.find((t) => t.mode === mode) || defaultEntry;
   // A verdict landing can DROP the current mode (URL-requested conditional
   // that resolved false): fall back to the default, same silent posture as an
-  // unknown `_mode`.
+  // unknown `_mode`. It can also CHANGE the default (a directory's gated app
+  // view resolving allowed): with no explicit `_mode` on the URL the view is
+  // still showing "the default", so follow it — an explicit user switch away
+  // from the default always writes `_mode` (doSetMode), which pins the mode
+  // and keeps this from overriding a choice.
   useEffect(() => {
-    if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
+    if (!templates.some((t) => t.mode === mode)) {
+      setModeState(defaultEntry.mode);
+      return;
+    }
+    const requested = new URLSearchParams(location.search).get("_mode");
+    if (!requested && mode !== defaultEntry.mode) setModeState(defaultEntry.mode);
   }, [templates, mode, defaultEntry.mode]);
   const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted

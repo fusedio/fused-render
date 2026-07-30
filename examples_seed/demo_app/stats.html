@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Demo App — Live Stats</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed; --fg-muted: #9aa0a6; --border: #2a2d33;
+    --bg: #131417; --bg-alt: #1b1d21; --accent: #E5FF44; --error: #ff6b6b;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023; --fg-muted: #61656c; --border: #d8dade;
+    --bg: #ffffff; --bg-alt: #f4f5f7; --accent: #5f7300; --error: #c62828;
+  }
+  body {
+    margin: 0; padding: 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg);
+  }
+  h1 { font-size: 20px; }
+  p.hint { color: var(--fg-muted); font-size: 13px; }
+  table { border-collapse: collapse; margin-top: 12px; min-width: 24rem; }
+  th, td { text-align: left; padding: 6px 14px 6px 0; border-bottom: 1px solid var(--border); }
+  th { color: var(--fg-muted); font-size: 12px; font-weight: 500; }
+  td.size { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+  #out.error { color: var(--error); }
+</style>
+</head>
+<body>
+  <h1>Files in this app</h1>
+  <p class="hint">Computed live by <code>stats.py</code> via fused.runPython().</p>
+  <label>show top
+    <input id="top" type="range" min="1" max="20" />
+    <span id="topval"></span>
+  </label>
+  <div id="out">Loading…</div>
+  <script>
+    const topEl = document.getElementById("top");
+    const out = document.getElementById("out");
+
+    function fmt(n) {
+      if (n >= 1 << 20) return (n / (1 << 20)).toFixed(1) + " MB";
+      if (n >= 1 << 10) return (n / (1 << 10)).toFixed(1) + " KB";
+      return n + " B";
+    }
+
+    async function draw() {
+      const top = fused.params.get("top") || "8";
+      topEl.value = top;
+      document.getElementById("topval").textContent = top;
+      try {
+        const data = await fused.runPython("./stats.py", { top });
+        out.className = "";
+        out.innerHTML =
+          "<table><tr><th>name</th><th>size</th></tr>" +
+          data.entries
+            .map((e) => `<tr><td>${e.name}</td><td class="size">${fmt(e.size)}</td></tr>`)
+            .join("") +
+          `</table><p class="hint">${data.total} files total</p>`;
+      } catch (err) {
+        out.className = "error";
+        out.textContent = `${err.type || "error"}: ${err.message}`;
+      }
+    }
+
+    topEl.addEventListener("input", () => fused.params.set("top", topEl.value));
+    fused.params.onChange(draw);
+    draw();
+  </script>
+</body>
+</html>
