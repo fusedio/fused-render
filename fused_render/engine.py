@@ -39,6 +39,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import traceback
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,17 @@ _backend = None
 _UNPROBED = object()
 _app_interpreter = _UNPROBED
 
+# The probe used to be serialized for free: `app_interpreter()` ran on the
+# single-threaded event loop. `/api/run` now does `await
+# asyncio.to_thread(app_interpreter)` (so a slow probe cannot stall the loop),
+# which makes it genuinely concurrent — and two header-less runs starting at once
+# would then both probe, with the LOSER free to cache its `None` over the
+# winner's working path. `None` is terminal and per-process, so that one race
+# breaks every header-less script until the server restarts. Hence one lock,
+# held only around the resolve; the fast path below still reads the cache
+# unlocked, which is safe because the cache only ever goes _UNPROBED -> final.
+_app_interpreter_lock = threading.Lock()
+
 # Escape hatch and test seam: an explicit interpreter to use for header-less
 # scripts. Still probed — an override that is not a usable python is a
 # misconfiguration to fall back from, not a reason to spawn it.
@@ -144,7 +156,8 @@ _PYTHON_BASENAMES_PREFIX = "python"
 def reset_app_interpreter_cache() -> None:
     """Forget the probed interpreter so the next call re-resolves it."""
     global _app_interpreter
-    _app_interpreter = _UNPROBED
+    with _app_interpreter_lock:
+        _app_interpreter = _UNPROBED
 
 
 def _stripped_env_vars() -> tuple[str, ...]:
@@ -469,18 +482,18 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
 def _marker_applies(requirement: str) -> bool:
     """Does this PEP 508 requirement's environment marker hold here?
 
-    A requirement with no marker always applies. This is what lets one template
+    A requirement with no marker always applies. Markers exist so a template can
     declare a dependency **only where the app doesn't already ship it**:
 
         dependencies = ["python-pptx; sys_platform == 'darwin'"]
 
-    which is not a micro-optimisation but the difference between correct and
-    wrong per platform. `[bundled]` is installed wholesale into the Linux
-    AppImage and the Windows installer, while macOS's py2app build copies only
-    what `setup_py2app.py` names and deliberately omits the heavy ones — so
-    "does the app have python-pptx?" genuinely has different answers, and a
-    header that ignored that would make Linux and Windows build a venv (and
-    re-download 24 MB) for something already on their interpreter.
+    No template needs that today — all three platform builds now ship the whole
+    `[bundled]` extra (D176, as amended), so a `[bundled]` distribution is
+    present everywhere and a template that only needed one would carry no header
+    at all. Support stays because the situation is one packaging decision away:
+    the moment a build holds something back (`BUNDLED_EXCLUDED`), a header that
+    ignored the marker would make the other platforms build a venv and
+    re-download a package already on their interpreter.
 
     An unparseable or unevaluatable marker is treated as APPLYING: the dependency
     then gets installed where it might not have been needed, which is wasteful.

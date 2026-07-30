@@ -75,26 +75,28 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # cligj...) come along for free, which is the whole point — they were previously
 # either hand-listed or, worse, arriving incidentally.
 
-# The ONE distribution from `[bundled]` that this bundle deliberately does not
-# ship. Not a size decision — that reasoning is SUPERSEDED (D176). The bundle now
-# carries everything else `[bundled]` promises, accepting ~85 MB of growth, and
-# `drain3` is held out on purpose so the install loader (SPEC PY-18) stays
-# EXERCISED on a real packaged app instead of being code no shipped build runs.
+# Distributions from `[bundled]` that this bundle deliberately does NOT ship.
+# Currently none: the bundle carries everything `[bundled]` promises, accepting
+# ~85 MB of growth, because completeness beat size (D176 — the size-based split
+# proposed there is SUPERSEDED and must not be reinstated).
 #
-# Why drain3 specifically, and it is not arbitrary: a script venv cannot see the
-# app's site-packages, so an excluded dependency forces its template to declare
-# its COMPLETE third-party closure. drain3 is the only candidate whose closure is
-# exactly itself — log_studio imports nothing else third-party — so nothing
-# already bundled gets re-downloaded. Every other choice would drag Pillow,
-# openpyxl or numpy into a venv alongside it. It still does real resolution work
-# (jsonpickle and cachetools, both hard-pinned), so the path being exercised is
-# the real one.
+# The mechanism stays even while the dict is empty, and that is the point. It
+# makes the bundle's invariant enforceable: every `[bundled]` distribution
+# either ships, or is named here with its MEASURED cost — never just quietly
+# absent, which is the state that shipped a DMG telling users to run a pip
+# command they cannot run. An entry maps a distribution name (as spelled in
+# `[bundled]`) to a short string stating that cost and the reason;
+# `tests/test_bundle_contents.py::test_every_exclusion_is_declared_and_reasoned`
+# rejects entries that name a non-`[bundled]` distribution or omit a size, and
+# `test_the_bundle_ships_everything_it_does_not_explicitly_exclude` fails for
+# anything missing that is not listed here. When a genuinely large dependency
+# does need holding back, both the machinery and its tests are already here.
 #
-# log_studio therefore carries a `sys_platform == 'darwin'` PEP 723 header:
-# Linux and Windows install `[bundled]` wholesale and already have drain3.
-BUNDLED_EXCLUDED = {
-    "drain3": "0.1 MB — held out deliberately so the install loader stays exercised",
-}
+# Excluding a distribution has a real consequence to weigh: a script venv cannot
+# see the app's site-packages, so the templates that import it must declare their
+# COMPLETE third-party closure in a PEP 723 header, and everything else in that
+# closure gets re-downloaded per venv.
+BUNDLED_EXCLUDED = {}
 
 # Top-level names that must never be forced via `packages`, whatever the
 # metadata says. PEP 420 namespace packages (no `__init__.py`) break py2app's

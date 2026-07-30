@@ -134,13 +134,16 @@ def _header_deps(text: str) -> set[str]:
     """Distributions declared in a file's PEP 723 block ({} when it has none).
 
     `apply_markers=False`, because these invariants are properties of the SOURCE
-    and must hold on every platform, not of the machine running pytest. With
-    marker filtering on, `log_studio/reader.py`'s `sys_platform == 'darwin'`
-    header reads as empty everywhere but macOS — so on the Linux `fused-engine`
-    job that file would look header-LESS and both the entrypoint and
-    completeness invariants would skip it silently. A platform-scoped header
-    that was inert or incomplete would then pass a green suite, which is the
-    same class of hole as the never-read headers this file exists to catch.
+    and must hold on every platform, not of the machine running pytest. This
+    already bit once: `log_studio/reader.py` carried a `sys_platform ==
+    'darwin'` header, which with marker filtering on read as EMPTY everywhere
+    but macOS — so on the Linux `fused-engine` job that file looked header-LESS
+    and both the entrypoint and completeness invariants skipped it silently. No
+    header in the tree carries a marker today (that one is gone with the
+    `drain3` exclusion it existed for, D176 as amended), so this is now a
+    FORWARD guard: the next marker-scoped header must not be able to be inert or
+    incomplete behind a green suite, which is the same class of hole as the
+    never-read headers this file exists to catch.
     """
     return {_norm(d) for d in engine.script_requirements(text, apply_markers=False)}
 

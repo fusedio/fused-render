@@ -379,37 +379,3 @@ def test_a_header_declares_the_sibling_that_actually_works(relpath):
             f"the payload behind it — use {better!r} instead. The venv would build "
             "cleanly and fail at runtime."
         )
-
-
-@pytest.mark.parametrize("relpath", _template_files())
-def test_a_header_only_macos_needs_is_scoped_to_macos(relpath):
-    """A header that only macOS needs must be marker-scoped to macOS.
-
-    The unit is the WHOLE header, not each dependency, because a header is
-    all-or-nothing per platform: if it binds at all, the script gets an isolated
-    venv that must contain everything it imports. So `pano` rightly declares
-    numpy unmarked — py360convert is absent everywhere, so pano always gets a
-    venv and that venv always needs numpy. But `slides` declares only things the
-    AppImage and the Windows installer already ship, so its header must not bind
-    there at all, or those platforms build a venv and re-download 24 MB of
-    python-pptx they have on their own interpreter — the same waste D174 removed
-    from the daemon launchers, reintroduced by the back door.
-
-    PEP 723 carries PEP 508 markers, so the template states this itself rather
-    than the engine guessing (see `engine._marker_applies`).
-    """
-    raw = _raw_header(relpath)
-    if not raw:
-        return
-    # Would the OTHER platforms be missing anything this header declares?
-    others_lack = {_norm(d) for d in raw} - _declared_dists()
-    if others_lack:
-        return  # the header is needed everywhere; unmarked deps are correct
-    unmarked = sorted(_norm(d) for d in raw if ";" not in d)
-    assert not unmarked, (
-        f"every dependency {relpath} declares is already shipped by the Linux "
-        f"AppImage and the Windows installer, so its header must bind on macOS "
-        f"ONLY — but {unmarked} carry no environment marker. Add "
-        "`; sys_platform == 'darwin'` to each, or those platforms will build a "
-        "venv and re-download packages they already have."
-    )
