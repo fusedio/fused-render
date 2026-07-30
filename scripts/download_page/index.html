@@ -513,8 +513,20 @@
   // Inside Fused Render (local app or a deployed share), relative image and
   // cross-page link paths don't resolve against the page; route images through
   // the injected fused.rawUrl and point about.html links at the right route.
+  // When about.html is the deployed entry instead, this page is served via
+  // <mount>/_asset?name=index.html with NO injected runtime — rewrite images
+  // to sibling _asset URLs and about.html links back to the mount root.
   // No-op on plain static hosting.
-  if (window.fused && window.fused.rawUrl) {
+  const assetMode = location.pathname.match(/^(.*)\/_asset$/);
+  if (assetMode && new URLSearchParams(location.search).get("name") === "index.html") {
+    document.querySelectorAll("img[src]").forEach((img) => {
+      const src = img.getAttribute("src");
+      if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = assetMode[0] + "?name=" + encodeURIComponent(src);
+    });
+    document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
+      a.href = (assetMode[1] || "/") + a.getAttribute("href").slice("about.html".length);
+    });
+  } else if (window.fused && window.fused.rawUrl) {
     document.querySelectorAll("img[src]").forEach((img) => {
       const src = img.getAttribute("src");
       if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = window.fused.rawUrl(src);
