@@ -156,27 +156,47 @@ def test_nothing_forced_as_a_package_is_a_namespace_package():
     )
 
 
-def test_native_packages_are_found_when_platlib_is_not_purelib():
+@pytest.mark.parametrize("home_scheme,other_scheme",
+                         [("platlib", "purelib"), ("purelib", "platlib")])
+def test_both_site_schemes_are_probed_for_the_packages_includes_split(
+    tmp_path, home_scheme, other_scheme
+):
     """The packages/includes split must look in BOTH site directories.
 
     `bundled_force_lists` decides `packages` vs `includes` by whether the import
-    name is a directory on disk. In this venv `purelib == platlib`, so reading
-    only `purelib` happens to find everything — but extension packages (numpy,
-    pandas, scipy, pyarrow, shapely) install into `platlib`, and on any
-    interpreter whose schemes differ every one of them would miss the directory
-    test and be forced via `includes`. That is exactly the failure the `_duckdb`
-    comment documents: py2app copies a bare `<name>.py` that shadows the real
-    package.
+    name is a directory on disk. Pure-Python distributions land in `purelib` and
+    extension ones in `platlib`; the two coincide inside a venv, so probing only
+    one scheme happens to find everything here and silently misfiles the other
+    scheme's packages on any interpreter where they differ — sending them to
+    `includes`, which is exactly the failure the `_duckdb` comment documents:
+    py2app copies a bare `<name>.py` that shadows the real package.
 
-    Simulated by pointing `purelib` at an empty directory and leaving the real
-    site dir as `platlib` — the divergence, without needing such an interpreter.
+    Proven WITHOUT betting on where any real distribution landed on this machine
+    (a `pip install -e` into a non-venv prefix moves them around, and CI's 3.10
+    job does exactly that). Instead both schemes are redirected: one at a
+    synthetic package directory holding a real bundled import name, the other at
+    an empty directory. Run both ways round, so each scheme is shown to be
+    consulted on its own.
     """
     import sysconfig
 
     module = _packaging_module()
-    real = sysconfig.get_paths()
-    empty = os.path.join(_REPO, "build", "_no_such_purelib")
-    fake = dict(real, purelib=empty, platlib=real["platlib"])
+    # A name the derivation genuinely reaches from `[bundled]`, so the synthetic
+    # directory below is classified rather than skipped. Taken from the real
+    # output instead of hardcoded — the list is derived, so the test asks for it.
+    real_packages, real_includes = module.bundled_force_lists()
+    forced = sorted(set(real_packages) | set(real_includes))
+    assert forced, "bundled_force_lists() forced nothing; nothing to redirect"
+    name = forced[0]
+
+    home = tmp_path / home_scheme
+    (home / name).mkdir(parents=True)
+    (home / name / "__init__.py").write_text("")
+    empty = tmp_path / other_scheme
+    empty.mkdir()
+
+    fake = dict(sysconfig.get_paths(),
+                **{home_scheme: str(home), other_scheme: str(empty)})
     orig = sysconfig.get_paths
     try:
         sysconfig.get_paths = lambda *a, **kw: fake
@@ -184,16 +204,11 @@ def test_native_packages_are_found_when_platlib_is_not_purelib():
     finally:
         sysconfig.get_paths = orig
 
-    native = {"numpy", "pandas", "scipy", "pyarrow", "shapely"}
-    installed = {n for n in native if importlib.util.find_spec(n) is not None}
-    misforced = sorted(installed & set(includes))
-    assert not misforced, (
-        f"{misforced} were forced via `includes` because only `purelib` was "
-        "probed; py2app would copy a bare .py shadowing the real package"
-    )
-    assert installed <= set(packages), (
-        f"{sorted(installed - set(packages))} vanished from the force lists "
-        "entirely when purelib and platlib differed"
+    assert name in packages, (
+        f"{name!r} is a real package directory under {home_scheme} but was not "
+        f"classified into `packages` — {home_scheme} is not being probed, so "
+        f"py2app would copy a bare {name}.py shadowing the real package "
+        f"(it landed in `includes`: {name in includes})"
     )
 
 
