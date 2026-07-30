@@ -75,30 +75,47 @@
     color: var(--on-accent);
     font-weight: 600;
   }
-  #api {
-    flex: none;
-    padding: 10px 14px;
-    border-top: 1px solid var(--border);
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* Py-endpoint view: result body + copy-able curl line. */
+  #endpoint {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 20px;
+    gap: 14px;
   }
-  #api[hidden] { display: none; }
-  #api-head { font-size: 11px; color: var(--fg-muted); margin-bottom: 6px; }
-  .api-link {
+  #endpoint[hidden] { display: none; }
+  #endpoint h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  #ep-result {
+    flex: 1;
+    margin: 0;
+    overflow: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-alt);
+    font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #ep-result.error { color: var(--error); }
+  #ep-curl {
+    flex: none;
     display: block;
     width: 100%;
     text-align: left;
-    padding: 3px 0;
-    border: none;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
     background: transparent;
     color: var(--fg-muted);
-    font: inherit;
-    font-size: 12px;
+    font: 12px ui-monospace, Menlo, Consolas, monospace;
     cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
-  .api-link:hover { color: var(--fg); }
-  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #ep-curl:hover { color: var(--fg); }
   #notice {
     flex: none;
     padding: 8px 14px;
@@ -128,14 +145,15 @@
       <div id="app-meta"></div>
     </div>
     <nav id="nav"></nav>
-    <div id="api" hidden>
-      <div id="api-head">API</div>
-      <div id="api-list"></div>
-    </div>
   </div>
   <div id="main">
     <div id="notice" hidden></div>
     <div id="status">Loading app…</div>
+    <div id="endpoint" hidden>
+      <h2 id="ep-title"></h2>
+      <pre id="ep-result">Running…</pre>
+      <button id="ep-curl" title="Click to copy"></button>
+    </div>
   </div>
   <script>
     // App shell: `_file` is the app DIRECTORY; fused_app.json inside it
@@ -158,14 +176,23 @@
 
     let dir = null;
     let pages = []; // [{route, file, title}] — route "" is the entry page
+    let endpoints = []; // [{route, file}] — .py pages: /call endpoints, no nav
     let current = null; // route of the active page
 
+    const endpointEl = document.getElementById("endpoint");
+
+    function clearMain() {
+      const frame = mainEl.querySelector("iframe");
+      if (frame) frame.remove();
+      endpointEl.hidden = true;
+      statusEl.hidden = true;
+    }
+
     function setStatus(msg, kind) {
+      clearMain();
       statusEl.hidden = false;
       statusEl.textContent = msg;
       statusEl.className = kind || "";
-      const frame = mainEl.querySelector("iframe");
-      if (frame) frame.remove();
     }
 
     function join(base, rel) {
@@ -202,6 +229,11 @@
     }
 
     async function renderFrame() {
+      const ep = endpoints.find((e) => e.route === current);
+      if (ep) {
+        renderEndpoint(ep);
+        return;
+      }
       const page = pages.find((p) => p.route === current) || pages[0];
       const abs = join(dir, page.file);
       try {
@@ -211,17 +243,14 @@
         setStatus(`Page file not found: ${page.file}`, "error");
         return;
       }
-      statusEl.hidden = true;
-      let frame = mainEl.querySelector("iframe");
-      if (frame) frame.remove();
-      frame = document.createElement("iframe");
+      clearMain();
+      const frame = document.createElement("iframe");
       frame.src = "/render?path=" + encodeURIComponent(abs);
       mainEl.appendChild(frame);
     }
 
-    // Bottom-of-sidebar list of the app's Python endpoints: each row shows
-    // the route and click-copies its full /call URL (same fs-path segment
-    // encoding as the /view URL this shell is already on).
+    // The full /call URL for an endpoint route + non-reserved query params —
+    // same fs-path segment encoding as the /view URL this shell is on.
     function callUrl(route) {
       const encoded = dir
         .replace(/^\/+/, "")
@@ -229,26 +258,47 @@
         .filter((s) => s.length > 0)
         .map(encodeURIComponent)
         .join("/");
-      return location.origin + "/call/" + encoded + "?route=" + encodeURIComponent(route);
+      const q = new URLSearchParams({ route });
+      const visible = fused.params.getAll();
+      for (const key of Object.keys(visible)) {
+        if (key !== "route" && !key.startsWith("_")) q.set(key, visible[key]);
+      }
+      return location.origin + "/call/" + encoded + "?" + q.toString();
     }
 
-    function renderApiSection(endpoints) {
-      const apiEl = document.getElementById("api");
-      const listEl = document.getElementById("api-list");
-      apiEl.hidden = endpoints.length === 0;
-      listEl.textContent = "";
-      for (const ep of endpoints) {
-        const btn = document.createElement("button");
-        btn.className = "api-link";
-        const url = callUrl(ep.route);
-        btn.textContent = "GET /" + ep.route;
-        btn.title = url + " — click to copy";
-        btn.addEventListener("click", () => {
-          navigator.clipboard && navigator.clipboard.writeText(url);
-          btn.textContent = "Copied!";
-          setTimeout(() => { btn.textContent = "GET /" + ep.route; }, 1200);
-        });
-        listEl.appendChild(btn);
+    // Navigating the shell to a .py route shows the endpoint view: run it
+    // (the same /call URL an external caller would hit, current params
+    // included), pretty-print the result, and show a copy-able curl line.
+    // A /call error (404/500) renders its payload as the result — the curl
+    // line stays either way.
+    async function renderEndpoint(ep) {
+      clearMain();
+      endpointEl.hidden = false;
+      const url = callUrl(ep.route);
+      document.getElementById("ep-title").textContent = "GET /" + ep.route;
+      const curlEl = document.getElementById("ep-curl");
+      const cmd = `curl "${url}"`;
+      curlEl.textContent = cmd;
+      curlEl.onclick = () => {
+        navigator.clipboard && navigator.clipboard.writeText(cmd);
+        curlEl.textContent = "Copied!";
+        setTimeout(() => { curlEl.textContent = cmd; }, 1200);
+      };
+      const resultEl = document.getElementById("ep-result");
+      resultEl.className = "";
+      resultEl.textContent = "Running…";
+      try {
+        const res = await fetch(url);
+        const text = await res.text();
+        let pretty = text;
+        try {
+          pretty = JSON.stringify(JSON.parse(text), null, 2);
+        } catch (e) { /* not JSON — show raw text */ }
+        resultEl.className = res.ok ? "" : "error";
+        resultEl.textContent = pretty;
+      } catch (e) {
+        resultEl.className = "error";
+        resultEl.textContent = String(e);
       }
     }
 
@@ -297,7 +347,7 @@
       }];
       const seenFiles = new Set([entryDecl.file]);
       const seenRoutes = new Set([""]);
-      const endpoints = []; // .py pages: REST endpoints (/call), not nav routes
+      endpoints = [];
       for (const p of declared) {
         if (!p || typeof p.file !== "string" || seenFiles.has(p.file)) continue;
         const route = routeName(p.path) || routeName(p.file.replace(/\.\w+$/i, ""));
@@ -311,13 +361,14 @@
         pages.push({ route, file: p.file, title: p.title || p.file });
       }
       sidebarEl.hidden = bare;
-      if (!bare) renderApiSection(endpoints);
 
       // URL `route` param wins over the entry default (refresh/bookmark
       // restores the open page). An unknown route shows an inline error and
       // renders the entry page rather than blanking.
+      const known = (r) =>
+        pages.some((p) => p.route === r) || endpoints.some((e) => e.route === r);
       const requested = routeName(fused.params.get("route") || "");
-      if (pages.some((p) => p.route === requested)) {
+      if (known(requested)) {
         current = requested;
       } else {
         current = "";
@@ -327,13 +378,18 @@
       renderFrame();
 
       // Follow route changes that arrive via the URL rather than the nav —
-      // an inner page's fused.navigate(), or Back/Forward. Known route →
-      // switch to it; unknown → inline error + entry (same as boot).
+      // an inner page's fused.navigate(), or Back/Forward. Known route
+      // (page or py endpoint) → switch to it; unknown → inline error +
+      // entry (same as boot). Also refresh an open endpoint view when only
+      // its params changed — the /call URL embeds them.
       fused.params.onChange(() => {
         const next = routeName(fused.params.get("route") || "");
-        if (next === current) return;
+        if (next === current) {
+          if (endpoints.some((e) => e.route === next)) renderFrame();
+          return;
+        }
         setNotice(null);
-        if (pages.some((p) => p.route === next)) {
+        if (known(next)) {
           current = next;
         } else {
           current = "";

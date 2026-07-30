@@ -112,7 +112,7 @@ GET /call/<abs app dir, /view-style encoded>?route=api/data&year=2025
 - The `.py` follows the ordinary `main(**params)` contract (see `fused-render-authoring`): query params other than `route` and `_`-prefixed keys arrive as **strings** and are coerced by parameter annotations (`year: int = 2024` receives `int("2025")`); return **JSON-native** values — the response body IS the return value, `application/json`, 200.
 - Errors: python exception → 500 with `{"error": {type, message, traceback}}` (+ `stdout` when any); missing `route` → 400; unknown route, route pointing at html, missing/escaping file, or a dir that isn't a valid app → 404.
 - No auth header needed — `/call` is meant for external callers (curl, cron, services). Same 60 s timeout as every run.
-- Endpoint files don't affect app validity (the `"/"` entry page rules are unchanged); the sidebar shows an **API** section listing each endpoint's `/call` URL (click to copy).
+- Endpoint files don't affect app validity (the `"/"` entry page rules are unchanged). Endpoints are **hidden from the sidebar nav**; navigating the shell to a py route (`?route=api/data`, or `fused.navigate("/api/data")`) shows an **endpoint view**: the live result (pretty-printed JSON) plus a copy-able `curl` command with the full `/call` URL and current params.
 
 ## App view vs file listing (mode switcher)
 
