@@ -385,34 +385,164 @@ def start_quit(server, *, terminate, server_thread=None, teardown=None,
     return watchdog
 
 
-def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
-    """The Quit action shared by BOTH quit surfaces — the rumps menu item and the
-    popover's `quitApp_`, which receives it through the controller's actions dict.
+def _quit_ready_event(state: dict) -> threading.Event:
+    """The one "teardown is finished (or its deadline fired) — dying is now
+    correct" signal, shared by every quit surface. Lazily created on `state` so a
+    surface that arrives while another's teardown is mid-flight observes the SAME
+    event instead of inventing a second answer. Created on the main thread (both
+    quit entry points are AppKit callbacks), so no lock is needed."""
+    event = state.get("quit_ready")
+    if event is None:
+        event = state["quit_ready"] = threading.Event()
+    return event
 
-    Module-level (not a `main()` closure) so it is testable without AppKit; it
-    takes `main()`'s `state` dict because the server and its thread only exist
-    once the bootstrap thread has published them.
 
-    Idempotent: the app stays alive and clickable while teardown runs, so a
-    second Quit click must NOT start a second reap racing the first. The pidfile
-    is removed on the calling (main) thread — it costs microseconds, and a
-    relaunch during a slow teardown must not find this dying instance and hand
-    the user a browser tab on a closing server."""
+def begin_quit(state: dict, *, terminate=None, start=None,
+               remove_pidfile=None) -> bool:
+    """Start THE teardown unless one is already running; True if this call
+    started it.
+
+    Every quit surface funnels through here — the tray menu item, the popover's
+    `quitApp_`, and AppKit's own `terminate:` (Dock menu Quit, ⌘Q,
+    logout/restart) — because they must converge on ONE teardown: the app stays
+    alive and clickable while it runs, so a second Quit from any surface has to
+    join the one in flight rather than race a second unmount + reap against it.
+
+    `terminate` (optional) runs after `state["quit_ready"]` is set, so a surface
+    that owes AppKit an action at the end can hang it there while every surface
+    still observes the same event. The pidfile is removed on the calling (main)
+    thread: it costs microseconds, and a relaunch during a slow teardown must not
+    find this dying instance and hand the user a browser tab on a closing
+    server."""
     if start is None:
         start = start_quit
     if remove_pidfile is None:
         remove_pidfile = _remove_pidfile
+    ready = _quit_ready_event(state)
+    if state.get("quitting"):
+        logger.info("quit already in progress; joining it")
+        return False
+    state["quitting"] = True
+    remove_pidfile()
 
+    def _finished() -> None:
+        # Set BEFORE the surface's own action, because that action is typically
+        # what re-enters AppKit's terminate: — and the delegate hook reads this
+        # event to answer NSTerminateNow instead of waiting on a teardown that
+        # has already finished.
+        ready.set()
+        if terminate is not None:
+            terminate()
+
+    start(state.get("server"), terminate=_finished,
+          server_thread=state.get("server_thread"))
+    return True
+
+
+def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
+    """The Quit action for the two surfaces WE own — the rumps menu item and the
+    popover's `quitApp_`, which receives it through the controller's actions
+    dict. Module-level (not a `main()` closure) so it is testable without AppKit;
+    it takes `main()`'s `state` dict because the server and its thread only exist
+    once the bootstrap thread has published them."""
     def _do_quit() -> None:
-        if state.get("quitting"):
-            logger.info("quit already in progress; ignoring")
-            return
-        state["quitting"] = True
-        remove_pidfile()
-        start(state.get("server"), terminate=terminate,
-              server_thread=state.get("server_thread"))
+        begin_quit(state, terminate=terminate, start=start,
+                   remove_pidfile=remove_pidfile)
 
     return _do_quit
+
+
+# AppKit's NSApplicationTerminateReply values, spelled out because AppKit is
+# macOS-only and this module must import everywhere (see the module docstring).
+# Verified against the real framework, and ABI-stable: NSTerminateCancel 0,
+# NSTerminateNow 1, NSTerminateLater 2.
+NS_TERMINATE_NOW = 1
+NS_TERMINATE_LATER = 2
+
+# Backstop on the wait for `quit_ready` in the AppKit reply thread. An app AppKit
+# is still waiting on a reply for cannot be quit at all, so a teardown that
+# somehow never signals must not strand it: reply anyway. Past the quit deadline,
+# since a teardown that hits the deadline DOES signal.
+QUIT_APPKIT_REPLY_WAIT_S = QUIT_HARD_DEADLINE_S + 5.0
+
+
+def make_appkit_terminate_hook(state: dict, *, reply, start=None,
+                               remove_pidfile=None):
+    """`applicationShouldTerminate:` for the quit surfaces AppKit owns itself.
+
+    The app is a REGULAR app — `scripts/setup_py2app.py` deliberately sets no
+    LSUIElement (D34: Dock icon AND menu bar item) — so the Dock icon's
+    right-click Quit, ⌘Q and logout/restart all go straight to
+    `-[NSApplication terminate:]` and, without this hook, straight on to C
+    `exit()`: no drain, no duckdb close, no unmount, no rcd reap. Every defect
+    the teardown exists to fix was fully live on those surfaces, and none of them
+    passes through the tray action.
+
+    The canonical Cocoa answer, and the only one that keeps the teardown off the
+    main thread: return NSTerminateLater, do the work, then call
+    `replyToApplicationShouldTerminate:` — which is what `reply` is (main-thread
+    only, so `main()` hands us a callAfter hop).
+
+    Three cases, all of which must end in the process dying exactly once:
+      * teardown already finished — this terminate: IS our own end-of-teardown
+        action re-entering, or a second Quit after one completed: NSTerminateNow,
+        nothing to wait for (answering Later here would hang the quit forever).
+      * a teardown in flight (a tray/popover Quit first) — do NOT start a second;
+        wait for the shared event and reply. Its own terminate action may reach
+        exit() first; whichever wins, the other is moot.
+      * nothing started yet — AppKit is the first surface: start the same
+        teardown, with the reply as its ending instead of a nested terminate:.
+    """
+    def _reply_when_ready(ready: threading.Event) -> None:
+        if not ready.wait(QUIT_APPKIT_REPLY_WAIT_S):
+            logger.warning("quit: teardown never signalled; replying to AppKit "
+                           "anyway rather than leaving the app unquittable")
+        try:
+            reply(True)
+        except Exception:
+            # Nothing is left to try: quit_ready is set, so the NEXT Quit from
+            # any surface answers NSTerminateNow and exits immediately.
+            logger.warning("quit: replying to AppKit failed", exc_info=True)
+
+    def _should_terminate() -> int:
+        ready = _quit_ready_event(state)
+        if ready.is_set():
+            return NS_TERMINATE_NOW
+        begin_quit(state, start=start, remove_pidfile=remove_pidfile)
+        threading.Thread(target=_reply_when_ready, args=(ready,), daemon=True,
+                         name="quit-appkit-reply").start()
+        return NS_TERMINATE_LATER
+
+    return _should_terminate
+
+
+def install_terminate_hook(delegate_class, hook) -> bool:
+    """Attach `applicationShouldTerminate:` to rumps' delegate class; True on
+    success.
+
+    rumps builds ONE delegate (`rumps.rumps.NSApp`, a pyobjc NSObject subclass)
+    and sets it as the NSApplication delegate in `App.run()`. It defines no
+    `applicationShouldTerminate_`, so adding the method to the class is enough —
+    pyobjc registers the selector automatically and resolves its real signature
+    from AppKit's protocol metadata (verified: `I@:@`, an unsigned-int return, so
+    returning NSTerminateLater actually reaches AppKit as 2). This is the same
+    mechanism the openFiles/openURLs/reopen patches above already rely on, which
+    is also why it survives a rumps upgrade: it adds a method rumps has no
+    opinion about instead of wrapping one.
+
+    Never raises (PV-8 shape): if a future rumps rejects the patch, log it and
+    keep today's behavior — an app that won't launch is worse than one whose
+    AppKit-initiated quit skips the teardown."""
+    def applicationShouldTerminate_(self, _app):
+        return hook()
+
+    try:
+        delegate_class.applicationShouldTerminate_ = applicationShouldTerminate_
+    except Exception:
+        logger.exception("could not install applicationShouldTerminate_; Dock/⌘Q "
+                         "quits will bypass the teardown")
+        return False
+    return True
 
 
 def main() -> None:
@@ -453,7 +583,8 @@ def main() -> None:
         "pending": [],       # file views requested before the server was ready
         "server": None,      # uvicorn.Server, set by the bootstrap thread
         "server_thread": None,  # its thread, so quit can drain it (bounded)
-        "quitting": False,   # a quit is in flight; ignore further Quit clicks
+        "quitting": False,   # a teardown is in flight; later Quits join it
+        "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
         "pin": None,         # menubar_pin.PinController, built after run loop start
     }
 
@@ -547,6 +678,26 @@ def main() -> None:
         applicationShouldHandleReopen_hasVisibleWindows_
     )
 
+    # ---- AppKit-initiated quit (Dock menu Quit, ⌘Q, logout/restart) ----------
+    # Same delegate-patch mechanism as the three handlers above, for the quit
+    # surfaces that never touch our menu item — see make_appkit_terminate_hook for
+    # why they would otherwise reach exit() with no teardown at all.
+    def _reply_to_appkit(should_terminate: bool) -> None:
+        # replyToApplicationShouldTerminate: is AppKit, so main-thread only, and
+        # we are on the reply thread. callAfter is delivered in the run loop's
+        # common modes, which includes the mode AppKit runs while it waits for
+        # this reply.
+        from AppKit import NSApplication
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(
+            lambda: NSApplication.sharedApplication()
+            .replyToApplicationShouldTerminate_(should_terminate))
+
+    install_terminate_hook(
+        rumps.rumps.NSApp,
+        make_appkit_terminate_hook(state, reply=_reply_to_appkit))
+
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
         server, server_thread, landing = _start_server_thread(port)
@@ -555,7 +706,11 @@ def main() -> None:
         if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
             # Log file, not print: Finder-launched apps have no visible stderr.
             logger.error("server did not become ready on port %s", port)
-            rumps.quit_application()
+            # Through the quit ACTION, not straight to quit_application: by now
+            # the server has been up for as long as 15s, so run_automount has had
+            # ample time to spawn rcd and attach mounts — aborting past the
+            # teardown would strand exactly what the teardown exists to detach.
+            _do_quit()
             return
         _write_pidfile(port)
         state["ready"] = True

@@ -629,3 +629,233 @@ def test_the_tile_daemons_are_quiesced_once_before_the_mounts_fan_out(ladder):
     # detach_mount's own busy-retry may still repeat it per mount — that stays its
     # contract for its other callers, and after the hoisted call above those
     # requests hit already-dead ports and fail immediately.
+
+
+# ------------------------------------------- AppKit's own quit surfaces (D34)
+# The app is a REGULAR app (setup_py2app.py sets no LSUIElement: Dock icon AND
+# menu bar item, D34), so the Dock icon's right-click Quit, ⌘Q and logout/restart
+# all send -[NSApplication terminate:] straight through to exit(). Those surfaces
+# never touch make_quit_action, so before applicationShouldTerminate_ existed
+# every defect this branch fixes was still fully live on them. The delegate hook
+# and the tray action must converge on ONE teardown.
+
+
+class _FakeStart:
+    """Stand-in for start_quit: records the call and lets the test decide when
+    teardown 'finishes' by invoking the terminate callback."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, server, *, terminate, server_thread=None, **kw):
+        self.calls.append((server, server_thread))
+        self.terminate = terminate
+        return None
+
+    def finish(self):
+        self.terminate()
+
+
+@pytest.fixture()
+def quit_state():
+    return {"server": "srv", "server_thread": "thr"}
+
+
+def test_begin_quit_starts_one_teardown_and_flags_ready_before_terminating(
+        quit_state):
+    start = _FakeStart()
+    order = []
+    started = app_mod.begin_quit(
+        quit_state, terminate=lambda: order.append("terminate"),
+        start=start, remove_pidfile=lambda: order.append("pidfile"))
+
+    assert started is True
+    assert order == ["pidfile"]
+    assert start.calls == [("srv", "thr")]
+    assert not app_mod._quit_ready_event(quit_state).is_set()
+
+    start.finish()  # teardown done (or its deadline fired)
+
+    # ready is set BEFORE the surface's own terminate action, because the AppKit
+    # hook reads it to answer NSTerminateNow for the terminate: that action causes.
+    assert app_mod._quit_ready_event(quit_state).is_set()
+    assert order == ["pidfile", "terminate"]
+
+
+def test_begin_quit_joins_a_teardown_already_in_flight(quit_state):
+    assert app_mod.begin_quit(quit_state, start=_FakeStart(),
+                              remove_pidfile=lambda: None) is True
+    second = _FakeStart()
+
+    assert app_mod.begin_quit(quit_state, start=second,
+                              remove_pidfile=lambda: None) is False
+    assert second.calls == []
+
+
+def test_appkit_quit_starts_the_same_teardown_and_replies_when_it_is_done(
+        quit_state):
+    start = _FakeStart()
+    replies = []
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=replies.append, start=start,
+        remove_pidfile=lambda: None)
+
+    assert hook() == app_mod.NS_TERMINATE_LATER  # AppKit waits for our reply
+    assert start.calls == [("srv", "thr")]       # ...on the ONE teardown
+    time.sleep(0.05)
+    assert replies == [], "must not resume termination before teardown finishes"
+
+    start.finish()
+
+    deadline = time.monotonic() + 3.0
+    while not replies and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert replies == [True]
+
+
+def test_appkit_quit_during_a_tray_teardown_does_not_start_a_second_one(
+        quit_state):
+    start = _FakeStart()
+    tray_terminated = []
+    app_mod.make_quit_action(quit_state, terminate=lambda: tray_terminated.append(True),
+                             start=start, remove_pidfile=lambda: None)()
+    second = _FakeStart()
+    replies = []
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=replies.append, start=second,
+        remove_pidfile=lambda: None)
+
+    assert hook() == app_mod.NS_TERMINATE_LATER
+    assert second.calls == []  # converged on the tray's teardown
+
+    start.finish()
+
+    deadline = time.monotonic() + 3.0
+    while not replies and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert replies == [True]
+    assert tray_terminated == [True]
+
+
+def test_appkit_terminate_after_our_own_teardown_finished_is_immediate(quit_state):
+    # The tray path ends by calling terminate: itself, which re-enters this hook.
+    # Nothing is left to wait for, so answering LATER would hang the quit.
+    start = _FakeStart()
+    app_mod.make_quit_action(quit_state, terminate=lambda: None, start=start,
+                             remove_pidfile=lambda: None)()
+    start.finish()
+
+    second = _FakeStart()
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=lambda ok: pytest.fail("no reply is owed"),
+        start=second, remove_pidfile=lambda: None)
+
+    assert hook() == app_mod.NS_TERMINATE_NOW
+    assert second.calls == []
+
+
+def test_appkit_reply_is_not_left_pending_if_ready_is_never_set(quit_state,
+                                                               monkeypatch):
+    # Defence in depth: an app AppKit is waiting on a reply for is unquittable, so
+    # the waiter gives up on the event rather than waiting forever.
+    monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.2)
+    replies = []
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=replies.append, start=lambda *a, **k: None,
+        remove_pidfile=lambda: None)
+
+    assert hook() == app_mod.NS_TERMINATE_LATER
+
+    deadline = time.monotonic() + 3.0
+    while not replies and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert replies == [True]
+
+
+def test_appkit_reply_failure_does_not_raise_into_the_thread(quit_state,
+                                                            monkeypatch):
+    monkeypatch.setattr(app_mod, "QUIT_APPKIT_REPLY_WAIT_S", 0.1)
+
+    def _boom(_ok):
+        raise RuntimeError("callAfter unavailable")
+
+    hook = app_mod.make_appkit_terminate_hook(
+        quit_state, reply=_boom, start=lambda *a, **k: None,
+        remove_pidfile=lambda: None)
+    assert hook() == app_mod.NS_TERMINATE_LATER
+    time.sleep(0.3)  # the waiter thread must die quietly
+
+
+def test_installing_the_terminate_hook_never_makes_the_app_unquittable():
+    """PV-8 shape: if the delegate patch fails (a rumps that rejects it, an
+    upgrade that changes the class), log and keep today's behavior instead of
+    raising out of main() — an app that won't launch is worse than one whose
+    AppKit quit skips the teardown."""
+    class _Locked:
+        def __setattr__(self, name, value):
+            raise TypeError("cannot set attributes on this class")
+
+    assert app_mod.install_terminate_hook(_Locked(), lambda: 1) is False
+
+    class _Open:
+        pass
+
+    target = _Open()
+    assert app_mod.install_terminate_hook(target, lambda: 1) is True
+    assert callable(target.applicationShouldTerminate_)
+
+
+# ---- no surface may reach NSApplication.terminate: around the teardown -------
+
+
+def _app_source_tree():
+    import ast
+    path = os.path.join(os.path.dirname(__file__), "..", "fused_render", "app.py")
+    with open(path) as f:
+        return ast.parse(f.read())
+
+
+def _enclosing_functions(tree, predicate):
+    """Names of the functions containing a node matching `predicate`."""
+    import ast
+    found = []
+
+    def walk(node, stack):
+        for child in ast.iter_child_nodes(node):
+            nxt = stack
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                nxt = stack + [child.name]
+            if predicate(child):
+                found.append(stack[-1] if stack else "<module>")
+            walk(child, nxt)
+
+    walk(tree, [])
+    return found
+
+
+def test_quit_application_is_only_ever_called_from_the_terminate_hop():
+    """Structural, because the bypass is invisible in behavior: any code path that
+    calls rumps.quit_application() directly gets AppKit's exit() with NO teardown
+    — no drain, no duckdb close, no unmount, no rcd reap. The readiness-failure
+    abort in _bootstrap_server did exactly that (the server has been up for as
+    long as 15s by then, so run_automount has had ample time to attach mounts)."""
+    import ast
+
+    def is_quit_call(node):
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "quit_application")
+
+    assert set(_enclosing_functions(_app_source_tree(), is_quit_call)) == {
+        "_terminate"}
+
+
+def test_the_readiness_failure_abort_goes_through_the_quit_action():
+    import ast
+
+    def is_do_quit_call(node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_do_quit")
+
+    assert "_bootstrap_server" in _enclosing_functions(
+        _app_source_tree(), is_do_quit_call)
