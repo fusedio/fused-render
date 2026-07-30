@@ -2493,6 +2493,9 @@ def test_get_mounts_win32_healthy_despite_a_failing_kernel_listdir(
     rcd.responses["mount/listmounts"] = {
         "mountPoints": [{"Fs": "r:bucket", "MountPoint": m["mountpoint"]}]}
     monkeypatch.setattr(mounts_mod.sys, "platform", "win32")
+    # 3.12+ shutil.which takes a win32 branch needing _winapi, which the faked
+    # platform must not reach on a POSIX runner.
+    monkeypatch.setattr(mounts_mod.shutil, "which", lambda name: "/usr/bin/rclone")
     monkeypatch.setattr(mounts_mod.os, "listdir", _raise_enotconn)
     got = client.get("/api/mounts").json()["mounts"]
     assert [(c["name"], c["state"], c["mounted"]) for c in got] == [
