@@ -262,6 +262,9 @@ def _move_to_trash(path: str) -> None:
             ],
             check=True,
             capture_output=True,
+            # close_fds=False → posix_spawn, skipping PROJ's crashing atfork
+            # handler; see executor.py's run call for the full story.
+            close_fds=False,
         )
 
 

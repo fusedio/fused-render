@@ -199,6 +199,9 @@ def _kill_process_tree(proc) -> None:
         subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
             capture_output=True,
+            # close_fds=False → posix_spawn, skipping PROJ's crashing atfork
+            # handler; see executor.py's run call for the full story.
+            close_fds=False,
             creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         proc.kill()

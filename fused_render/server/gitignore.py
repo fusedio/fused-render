@@ -25,6 +25,10 @@ def _empty_git_dir():
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                # close_fds=False → posix_spawn, skipping PROJ's crashing
+                # atfork handler; see executor.py's run call for the full
+                # story. Same on every spawn in this file.
+                close_fds=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
@@ -76,6 +80,7 @@ class _IgnoreOracle:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
+                close_fds=False,  # posix_spawn, not fork — see _empty_git_dir
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except OSError:
@@ -144,6 +149,7 @@ def _repo_toplevel(path):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            close_fds=False,  # posix_spawn, not fork — see _empty_git_dir
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -182,6 +188,7 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            close_fds=False,  # posix_spawn, not fork — see _empty_git_dir
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.SubprocessError):
