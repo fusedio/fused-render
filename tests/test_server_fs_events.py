@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.shell.mounts as mounts_mod
 from fused_render.server import watch as _server_watch
+from fused_render.server import mount as _server_mount
 from fused_render.server import create_app
 
 
@@ -356,7 +357,7 @@ def test_read_consumes_a_completed_slow_stat(tmp_path, monkeypatch):
     # CONSUME its finished result rather than discard the done future and start
     # over — else a path whose stat always exceeds the timeout never primes.
     entry = _server_watch._WatchEntry(str(tmp_path / "f.html"))
-    monkeypatch.setattr(_server_watch, "_STAT_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(_server_mount, "_STAT_TIMEOUT_S", 0.02)
 
     async def slow():
         await asyncio.sleep(0.1)

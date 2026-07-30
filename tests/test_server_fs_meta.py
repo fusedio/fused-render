@@ -64,6 +64,29 @@ def test_stat_dir_shape(tmp_path):
     assert data["size"] is None
 
 
+def test_stat_resolves_templates_through_the_templates_module(tmp_path, monkeypatch):
+    """The stat payload's `templates` must come from the LIVE resolver.
+
+    `server/mount.py` re-bound `_templates_for` by value in the server split, so
+    `monkeypatch.setattr(_server_templates, "_templates_for", …)` — the seam
+    test_condition_gate_seed.py uses — stopped reaching the stat payload while
+    still reaching /api/fs/conditions. A test patching it and asserting on stat
+    would have got the unpatched resolver and passed for the wrong reason. D178
+    records the same class of bug (`_STAT_CACHE_GEN`) from the same split, so it
+    is a known pattern rather than an isolated slip.
+    """
+    from fused_render.server import templates as _server_templates
+
+    (tmp_path / "f.bin").write_bytes(b"abcd")
+    monkeypatch.setattr(
+        _server_templates, "_templates_for", lambda path, is_dir: (["stub-mode"], None)
+    )
+    data = _client(tmp_path).get(
+        "/api/fs/stat", params={"path": str(tmp_path / "f.bin")}
+    ).json()
+    assert data["templates"] == ["stub-mode"]
+
+
 def test_stat_missing_path_is_404(tmp_path):
     r = _client(tmp_path).get("/api/fs/stat", params={"path": str(tmp_path / "nope")})
     assert r.status_code == 404

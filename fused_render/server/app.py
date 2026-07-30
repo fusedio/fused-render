@@ -42,7 +42,12 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
-from fused_render.server.templates import TEMPLATES_DIR
+# The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
+# (tests repoint it at a staged copy before calling create_app, and
+# core_templates staging is the reason it can move at all), and a by-value
+# re-binding here would freeze the asset mounts on the package directory no
+# matter what the module says. Same class of bug as D178's `_STAT_CACHE_GEN`.
+from fused_render.server import templates as _server_templates
 
 
 
@@ -135,7 +140,7 @@ def create_app(start_dir: str) -> FastAPI:
     # product has no network at runtime (no CDNs anywhere).
     app.mount(
         "/template-assets",
-        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "vendor")),
+        StaticFiles(directory=os.path.join(_server_templates.TEMPLATES_DIR, "vendor")),
         name="template-assets",
     )
     # First-party ESM shared by the sci preview templates (geotiff/netcdf
@@ -146,7 +151,7 @@ def create_app(start_dir: str) -> FastAPI:
     # resolved as a template name.
     app.mount(
         "/template-shared",
-        StaticFiles(directory=os.path.join(TEMPLATES_DIR, "shared")),
+        StaticFiles(directory=os.path.join(_server_templates.TEMPLATES_DIR, "shared")),
         name="template-shared",
     )
 

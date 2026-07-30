@@ -269,7 +269,7 @@ def test_list_local_over_cap_truncated(tmp_path, monkeypatch):
     d.mkdir()
     for i in range(7):
         (d / f"f{i:02d}.txt").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(_server_fs_read, "LIST_MAX_ENTRIES", 3)
+    monkeypatch.setattr(_server_walk, "LIST_MAX_ENTRIES", 3)
     data = _client(tmp_path).get("/api/fs/list", params={"path": str(d)}).json()
     assert data["truncated"] is True
     assert data["cursor"] is None
@@ -282,7 +282,7 @@ def test_list_rc_route_over_cap_truncated(home, rcd, tmp_path, monkeypatch):
     c = mounts_mod.add_mount("data", "remote:bucket/prefix")
     rcd.responses["operations/list"] = {
         "list": [_entry(f"f{i:03d}.txt", size=1) for i in range(10)]}
-    monkeypatch.setattr(_server_fs_read, "LIST_MAX_ENTRIES", 4)
+    monkeypatch.setattr(_server_walk, "LIST_MAX_ENTRIES", 4)
     data = _client(tmp_path).get(
         "/api/fs/list", params={"path": mounts_mod.mountpoint(c)}).json()
     assert data["truncated"] is True

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import server
 from fused_render.server.routers import fs_read as _server_fs_read
+from fused_render.server import templates as _server_templates
 from fused_render.server.common import _error
 
 
@@ -69,7 +70,7 @@ def test_stale_ttl_recomputes(client, monkeypatch):
         return {"path": path, "conditions": {}}
 
     monkeypatch.setattr(_server_fs_read, "_conditions_payload", stub)
-    monkeypatch.setattr(_server_fs_read, "_CONDITIONS_TTL_S", 0.0)
+    monkeypatch.setattr(_server_templates, "_CONDITIONS_TTL_S", 0.0)
 
     client.get("/api/fs/conditions", params={"path": "/some/dir"})
     client.get("/api/fs/conditions", params={"path": "/some/dir"})
