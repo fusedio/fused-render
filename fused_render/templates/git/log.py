@@ -149,6 +149,10 @@ _NO_EXT_DIFF = "--no-ext-diff"
 _LOG_FORMAT = "%H%x00%h%x00%an%x00%aI%x00%ar%x00%s"
 _LOG_FIELDS = ("sha", "short", "author", "date", "relative", "subject")
 
+# A rename with only ONE side inside the open scope is a MOVE relative to that
+# scope, and the direction is the whole point of showing it.
+_MOVE_LABELS = {"in": "Moved into this scope", "out": "Moved out of this scope"}
+
 _STATUS_LABELS = {
     "M": "Modified", "A": "Added", "D": "Deleted", "R": "Renamed",
     "C": "Copied", "U": "Unmerged", "T": "Type changed", "?": "Untracked",
@@ -443,8 +447,18 @@ def _status(root, rel, is_dir):
             orig = fields[i].decode("utf-8", "replace")
             i += 1
         dirty = True
-        if not _in_scope(path, rel, is_dir):
+        # BOTH sides of a rename/copy are scope-tested. Testing only the new path
+        # dropped a file MOVED OUT of the open folder from the list entirely —
+        # and "it left this folder" is exactly the kind of change this view is for.
+        # The two directions are different facts, so which side matched is
+        # reported rather than flattened into "renamed".
+        in_new = _in_scope(path, rel, is_dir)
+        in_old = orig is not None and _in_scope(orig, rel, is_dir)
+        if not (in_new or in_old):
             continue
+        moved = None
+        if orig is not None and not (in_new and in_old):
+            moved = "in" if in_new else "out"
         x, y = code[0], code[1]
         untracked = code == "??"
         entries.append({
@@ -453,10 +467,12 @@ def _status(root, rel, is_dir):
             "y": y,
             "path": path,
             "orig": orig,
+            "moved": moved,
             "staged": not untracked and x not in (" ", "?"),
             "unstaged": not untracked and y not in (" ", "?"),
             "untracked": untracked,
-            "label": _STATUS_LABELS.get("?" if untracked else (x if x != " " else y), ""),
+            "label": (_MOVE_LABELS[moved] if moved else
+                      _STATUS_LABELS.get("?" if untracked else (x if x != " " else y), "")),
         })
     truncated = byte_capped or dangling or len(entries) > MAX_CHANGES
     # A byte cap means the repo-wide dirty verdict is `True` regardless of what

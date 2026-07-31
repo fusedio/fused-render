@@ -3515,6 +3515,16 @@ that path. Offered for **both** directories and text-ish files, always as a
   descendant, and the scope is still dirty because of it. Entries carry the raw
   `XY` letters (`M`/`A`/`D`/`R`/`??`…) plus derived
   `staged`/`unstaged`/`untracked` flags and, for a rename, both paths.
+  **Both sides of a rename are scope-tested**, and the entry is listed when EITHER
+  matches: testing only the new path dropped a file moved *out* of the open folder
+  from the list entirely, which is precisely the change a scoped view exists to
+  show. This is also the concrete reason the filter is ours rather than git's —
+  verified, not assumed: `git status --porcelain -- pkg` omits `R outside/gone.py`
+  ← `pkg/leaving.py`, so delegating the scope to a pathspec would reintroduce the
+  same defect. A rename with only one side in scope is a **move relative to that
+  scope**, a different fact from a rename, so the direction is reported
+  (`moved: "in" | "out" | null`) and labelled rather than flattened; nothing is
+  "moved" relative to the repository root, where both sides are always in scope.
 - **GT-8** **Nothing is unbounded, and every bound is VISIBLE.** The log grows a
   **window** (`limit = PAGE_SIZE * pages`, one call, so a restored URL costs one
   round trip) rather than paging with client-side accumulation, and `limit + 1` per

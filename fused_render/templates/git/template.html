@@ -241,6 +241,7 @@
   .row .code.is-M, .row .code.is-T { color: var(--st-mod); }
   .row .code.is-D { color: var(--st-del); }
   .row .code.is-R, .row .code.is-C { color: var(--st-ren); }
+  .row .where.is-moved { border-color: var(--st-ren); color: var(--st-ren); }
   .row .where {
     flex: none;
     padding: 0 6px;
@@ -529,6 +530,10 @@ function changeRow(change, selected) {
   const label = change.orig
     ? change.orig + " -> " + change.path
     : change.path;
+  /* A rename with only one side in the open scope is a MOVE relative to it, and
+     the direction is the fact worth reading — "renamed" says nothing about a file
+     that left the folder you are looking at. Its own badge, before the
+     staged/unstaged one, because it answers a different question. */
   const row = el("button", {
     className: "row",
     type: "button",
@@ -536,8 +541,14 @@ function changeRow(change, selected) {
   },
     el("span", { className: "code is-" + letter, textContent: change.status }),
     el("span", { className: "path", textContent: label }),
+    change.moved
+      ? el("span", { className: "where is-moved",
+                     textContent: "moved " + change.moved }) : null,
     el("span", { className: "where", textContent: where }));
   if (selected) row.setAttribute("aria-current", "true");
+  /* A moved-OUT row's `path` is outside the scope, but the diff is `-- <path>`
+     against HEAD and git resolves it from the repo ROOT, so the row still opens
+     the right diff: the pathspec is repo-relative, not scope-relative. */
   row.addEventListener("click", () => setParams({ wt: change.path, sel: null }));
   return row;
 }

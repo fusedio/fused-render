@@ -868,3 +868,78 @@ def test_the_two_has_more_defects_do_not_mask_each_other(reader, deep_repo, monk
     assert len(got["commits"]) == 5
 
 
+# ------------------------------------------- B: both sides of a rename are scoped
+
+
+@pytest.fixture()
+def moved_repo(tmp_path):
+    """A repo with a file moved OUT of `pkg/`, one moved IN, one renamed inside."""
+    root = str(tmp_path / "moves")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    body = ("x" * 200 + "\n")
+    write(root, "pkg/leaving.py", body)
+    write(root, "pkg/staying.py", body + "stay\n")
+    write(root, "outside/arriving.py", body + "arrive\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-07-01T10:00:00+00:00")
+    git(root, "mv", os.path.join("pkg", "leaving.py"), os.path.join("outside", "gone.py"))
+    git(root, "mv", os.path.join("outside", "arriving.py"), os.path.join("pkg", "here.py"))
+    git(root, "mv", os.path.join("pkg", "staying.py"), os.path.join("pkg", "renamed.py"))
+    return root
+
+
+def test_a_rename_out_of_the_scope_is_still_listed(reader, moved_repo):
+    # The defect: only the NEW path was scope-tested, so a file moved OUT of the
+    # open folder vanished from Uncommitted — which is exactly the change the view
+    # exists to surface.
+    got = reader.main(os.path.join(moved_repo, "pkg"))
+    by_path = {c["path"]: c for c in got["changes"]}
+    assert "outside/gone.py" in by_path, "a move out of the scope was dropped"
+    gone = by_path["outside/gone.py"]
+    assert gone["orig"] == "pkg/leaving.py"
+    assert gone["moved"] == "out"
+    assert "out" in gone["label"].lower()
+
+
+def test_a_rename_into_the_scope_is_listed_as_moved_in(reader, moved_repo):
+    got = reader.main(os.path.join(moved_repo, "pkg"))
+    here = next(c for c in got["changes"] if c["path"] == "pkg/here.py")
+    assert here["orig"] == "outside/arriving.py"
+    assert here["moved"] == "in"
+    assert "into" in here["label"].lower()
+
+
+def test_a_rename_wholly_inside_the_scope_is_not_a_move(reader, moved_repo):
+    # Both sides in scope: an ordinary rename, and it must NOT wear a direction.
+    got = reader.main(os.path.join(moved_repo, "pkg"))
+    inside = next(c for c in got["changes"] if c["path"] == "pkg/renamed.py")
+    assert inside["orig"] == "pkg/staying.py"
+    assert inside["moved"] is None
+    assert inside["label"] == "Renamed"
+
+
+def test_a_rename_touching_neither_side_of_the_scope_stays_out(reader, moved_repo):
+    # The filter must still filter: from `outside/`, the purely-inside-pkg rename
+    # is not this scope's business.
+    got = reader.main(os.path.join(moved_repo, "outside"))
+    assert "pkg/renamed.py" not in {c["path"] for c in got["changes"]}
+    # …while both moves, which each have one side here, are listed.
+    assert {"outside/gone.py", "pkg/here.py"} <= {c["path"] for c in got["changes"]}
+
+
+def test_the_repository_root_sees_every_rename_with_no_direction(reader, moved_repo):
+    got = reader.main(moved_repo)
+    for change in got["changes"]:
+        if change["orig"]:
+            assert change["moved"] is None, "nothing is 'moved' relative to the root"
+
+
+def test_a_moved_out_row_still_opens_its_diff(reader, moved_repo):
+    # The row's path is outside the scope, but the pathspec is repo-relative, so
+    # clicking it must still resolve — a listed row that cannot be opened is worse
+    # than one that was hidden.
+    got = reader.main(moved_repo, op="worktree", entry="outside/gone.py")
+    assert got["ok"] is True
+
+
