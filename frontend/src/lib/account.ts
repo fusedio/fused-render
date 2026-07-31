@@ -90,6 +90,20 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
     setError(err);
   };
 
+  // Did THIS sign-in complete? Logged in AND the credentials file is not the one
+  // `begin` recorded. Shared by the poll and by `cancel`'s reconcile because the two
+  // must agree on what "done" means: cancel tested bare `logged_in`, so on the
+  // re-auth path — where credentials are already present, just rejected — pressing
+  // Cancel reported a completed sign-in that never happened, and dismissed the very
+  // note that had asked the user to sign in again.
+  //
+  // With no baseline (the pre-flight read failed, or `begin` never ran) this degrades
+  // to the old presence check: right for the signed-out case, and merely eager for a
+  // re-auth — never the reverse.
+  const isFreshLogin = (status: AccountStatus) =>
+    status.logged_in &&
+    (stampAtBegin.current === null || status.creds_stamp !== stampAtBegin.current);
+
   const begin = async () => {
     setError(null);
     setConnecting(true);
@@ -117,14 +131,7 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
         return; // transient (server restart, network blip) — keep polling
       }
       if (timer.current === null) return; // canceled while the fetch was in flight
-      // Fresh credentials = logged in AND the file is not the one we started with.
-      // With no baseline (the pre-flight read failed) this degrades to the old
-      // presence check, which is right for the signed-out case and merely eager
-      // for a re-auth — never the reverse.
-      const fresh =
-        status.logged_in &&
-        (stampAtBegin.current === null || status.creds_stamp !== stampAtBegin.current);
-      if (fresh) {
+      if (isFreshLogin(status)) {
         finish(null);
         notifyAccountChanged(); // e.g. the sidebar's signed-in dot
         onLoggedInRef.current(status);
@@ -144,9 +151,11 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
     // The sign-in may have COMPLETED in the gap before the cancel landed
     // (credentials written, child already gone) — reconcile once instead of
     // leaving a signed-in user on a signed-out view until the next refocus.
+    // Same freshness test the poll uses (`isFreshLogin`): what makes this a
+    // completed sign-in is new credentials, not the presence of any.
     try {
       const status = await getAccountStatus();
-      if (status.logged_in) {
+      if (isFreshLogin(status)) {
         notifyAccountChanged();
         onLoggedInRef.current(status);
       }

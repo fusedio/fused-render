@@ -2372,6 +2372,12 @@ provisioning stays a documented terminal flow.
   check, so that path is byte-for-byte unchanged. If the pre-flight read of the
   baseline fails the hook degrades to presence — eager for a re-auth, correct for
   a fresh sign-in — rather than refusing to complete at all.
+  **Cancel's reconcile applies the same test** (one shared `isFreshLogin`, not two
+  copies of the rule). Cancel re-reads the status because the sign-in may have landed
+  in the gap before the cancel took effect, and that read must ask the same question
+  the poll asks: testing presence there meant that on the re-auth path — credentials
+  present, merely rejected — pressing Cancel announced a completed sign-in that never
+  happened and dismissed the note that had asked the user to sign in again.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
