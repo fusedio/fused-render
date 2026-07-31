@@ -113,6 +113,16 @@ export default function CloneModal({ onClose, onCloned, initialSrc = "" }: Clone
       onClose={onClose}
       initialFocus={inputRef}
       width={560}
+      // Esc / backdrop / ✕ are shut off for the WRITE only. Disabling the Cancel
+      // button alone left the other three exits open, and taking one mid-clone lost
+      // the result of a request that kept running: files land in the Fused folder
+      // with no success state and no navigation to the new page, so the user is left
+      // to discover the folder themselves. Deliberately NOT gated on the preview —
+      // that step writes nothing, so there is nothing to abandon. This is the
+      // opposite call from DeployModal, which stays closeable because its action
+      // completes server-side and the modal reports on it afterwards; a clone's
+      // result is only ever delivered to this one response.
+      busy={busy === "clone"}
       footer={
         done ? (
           <button type="button" className="btn btn-primary" onClick={onClose}>

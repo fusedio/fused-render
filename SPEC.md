@@ -1356,7 +1356,14 @@ working, not a second opinion about the format.
   folder prefers the link. The same order applies on the commit path, which may run with no
   preview at all. The confirm button says
   **Clone to local**, not "Clone to <folder>": the body above it already names the
-  destination, and a generated folder name in a button label is noise.
+  destination, and a generated folder name in a button label is noise. The modal is
+  **undismissable during the write** (`Modal`'s `busy`, so Esc / backdrop / ✕ are all
+  shut off, not just the Cancel button): the request keeps running, so an exit taken
+  mid-clone lands files in the workspace while dropping the only delivery of the
+  result — no success state, no navigation, and a folder the user has to find for
+  themselves. The preview step stays dismissable, since it writes nothing. Opposite
+  call from DeployModal, which stays closeable because its action completes
+  server-side and the dialog reports on it afterwards.
   **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
   `https://` link into the **path bar**, which previously answered "can't open https:// URLs
   in the explorer" — true and useless — and hands the link to the confirm step rather than
