@@ -357,7 +357,7 @@ const page = await fused.runPython("./reader.py",
 | `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
-| `.md` | `markdown`, `code` | rendered markdown |
+| `.md` | `markdown`, `code`, `claude` | notes editor (§32) + raw source + chat about the note |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
 | `.pdf` | `pdf` | browser-native embed |
@@ -656,6 +656,25 @@ controls write). An earlier iteration had each paged view expose a
 put annotation-aware code inside view templates. Accepted trade-off: annotate
 cannot ask a view whether a row is truly gone from the data, so a comment
 past the data's end keeps its "row N" chip instead of turning "detached".
+
+**Which anchor strategy a view gets** is decided inside the annotate template
+alone (the containment invariant above), and the rule is **a lineNumbers gutter
+that is actually laid out** (`getBoundingClientRect().height > 0`), not "is this
+CodeMirror" and not merely "does `.cm-lineNumbers` exist": the gutter is the only
+place the line number can be read from, and `cmVisibleLines` pairs only gutter
+elements with real height, so the probe must make the same measurement. The
+markdown notes view ships `basicSetup` — the gutter element is there — but hides
+`.cm-gutters` outright, being prose (MD-18a), so it takes the ordinary
+element-path/quote anchors instead. Getting that wrong is silent by construction:
+both gesture handlers `preventDefault()` before resolving and bail on an
+unresolvable anchor, so the mis-detected view swallowed every click, dropped
+every selection and painted no stored comment, with nothing logged anywhere
+(fixed 2026-07-31). In a gutterless editor a quote anchor's container is hoisted
+to `.cm-content`, because the `.cm-line` div the selection actually sits in is
+remounted on scroll and its structural path drifts onto another line; the quote
+plus its occurrence index locates the span within the stable content element, and
+off-screen text simply has no pin until it scrolls back in — off-screen, not
+detached, as with code anchors.
 
 **Comment focus deep link:** an ordinary `comment` template param carries an
 id-only deep link (the history→annotate contract, HV-8; mirrors the claude
@@ -2753,10 +2772,19 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   in `selectedLines`, because a browser text selection inside a non-editable view
   still reaches the state's selection and would un-render whatever was swiped
   over; the guard makes the mode deterministic rather than dependent on that.
-  **Editing is the default** — Obsidian's default, and a note must never silently
-  open read-only. The preference lives in `fused.params` under `edit`
-  (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh and
-  travels in a shared URL. It is layered **on top of** the file's real
+  **A note opens READ-ONLY** (owner call 2026-07-31, reversing the earlier
+  Obsidian-matching "editing is the default"): opening a file in an explorer is a
+  read, and on the always-editable surface a stray keystroke on a note you opened
+  to look at rewrites it — editing is one click away and, once asked for, stays
+  in the URL. It also makes the view a better annotate stage (§17): the framed
+  document takes no edits and reveals no markers under the reviewer's clicks.
+  The preference lives in `fused.params` under
+  `edit` (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh
+  and travels in a shared URL; an absent param is read-only, and only an explicit
+  `"1"` grants editing. `aria-pressed` on the corner button therefore tracks
+  **editing** — the non-default state, so the accent marks the surface you can
+  change — while the glyph names the current mode (padlock read-only, pencil
+  editing). It is layered **on top of** the file's real
   writability and can never override it: for a genuinely unwritable file (MD-15)
   the toggle is *disabled* with a title saying why. Switching to read-only
   flushes pending edits first (`await save()`), for the same reason navigation
@@ -2775,9 +2803,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
   The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
   the graph together, and its accessible name says so.
-- **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
-  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
-  **unchanged** as the raw-source escape hatch. Two editors for one extension
+- **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code", "claude",
+  "reader", "annotate"]` — `markdown` now supersedes `code` for notes, and `code`
+  stays **unchanged** as the raw-source escape hatch. `claude` sits where it sits
+  on `.html` (after the editors, before the trailing meta-modes): the chat
+  template is file-type agnostic — it works off `_file` and its own `<file>.json`
+  sidecar — and binding it here is what gives a note the chat mode AND turns on
+  annotate's **Send to Claude** handoff, which hides itself wherever the target's
+  mode list has no `claude` to hand the review to (§17, owner call 2026-07-31). Two editors for one extension
   with two save models is accepted rather than reconciled: `code` is the
   generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
   is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
@@ -3114,9 +3147,13 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   folders are different places), ordered by depth then name, with the
   folderless ghost nodes in a trailing `unresolved` band rather than lumped
   into the root's. Band names are drawn in **screen space** at the left edge, so
-  the legend stays readable and on-screen at any zoom or pan; the name is drawn
-  even for a single band, because "these are all in `x/`" is the answer the
-  layout exists to give; alternate bands carry a whisper of foreground fill,
+  the legend stays readable and on-screen at any zoom or pan; **names (and the
+  left gutter they reserve) appear only where there is more than one band** —
+  with a single band the vertical axis distinguishes nothing, so the legend is
+  one folder name repeated down the edge of a panel it labels in whole, which
+  the breadcrumb already does; dropping it hands the gutter's width back to the
+  lane layout (owner call 2026-07-31, reversing the earlier "draw it even for one
+  band"); alternate bands carry a whisper of foreground fill,
   because a fill says "this strip is one folder" everywhere the strip is where
   a lone separator hairline read as a stray edge. `y` belongs to the layout,
   except for a node the user dragged, which keeps the position they chose.

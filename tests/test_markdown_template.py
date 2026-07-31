@@ -147,10 +147,15 @@ def test_the_mode_is_the_same_two_facets_the_unwritable_path_uses(source):
 
 def test_the_mode_lives_in_a_param_so_it_survives_a_refresh(source):
     # The same shape `graph` and `depth` use (MD-20), so the mode is
-    # refresh-proof and the URL is shareable. Editing is the default: an absent
-    # param must not silently make notes read-only.
-    assert 'fused.params.get("edit") !== "0"' in source
+    # refresh-proof and the URL is shareable. Read-only is the default: an absent
+    # param opens the note locked, and only an explicit "1" grants editing, so a
+    # stray keystroke on a note you opened to READ cannot rewrite it.
+    assert 'fused.params.get("edit") === "1"' in source
     assert 'fused.params.set("edit", next)' in source
+    # Every other reader of the param agrees on that default, or a fresh load
+    # would disagree with the first onChange about which mode it is in.
+    assert 'lastEdit = fused.params.get("edit") || "0";' in source
+    assert 'const edit = params.edit || "0";' in source
 
 
 def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
@@ -160,12 +165,14 @@ def test_the_mode_toggle_is_a_corner_button_not_a_toolbar(source):
     assert 'aria-pressed' in source[source.index('id="toggle-edit"'):][:400]
 
 
-def test_the_accent_marks_read_only_not_the_default(source):
-    # Editing is the default (MD-1a), so accenting it would leave the corner
-    # permanently lit and say nothing. `aria-pressed` tracks read-only, and the
-    # glyph follows: pencil while editing, padlock when locked.
-    assert 'editToggleEl.setAttribute("aria-pressed", String(!on));' in source
-    assert '#toggle-edit[aria-pressed="true"] .icon-edit { display: none; }' in source
+def test_the_accent_marks_editing_not_the_default(source):
+    # Read-only is the default (MD-1a), so accenting it would leave the corner
+    # permanently lit and say nothing. `aria-pressed` tracks EDITING, and the
+    # glyph names the current mode: padlock while locked, pencil while editing.
+    assert 'editToggleEl.setAttribute("aria-pressed", String(on));' in source
+    assert '#toggle-edit .icon-edit { display: none; }' in source
+    assert '#toggle-edit[aria-pressed="true"] .icon-edit { display: block; }' in source
+    assert '#toggle-edit[aria-pressed="true"] .icon-lock { display: none; }' in source
     assert 'class="icon-lock"' in source
 
 

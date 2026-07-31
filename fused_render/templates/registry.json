@@ -129,12 +129,14 @@
   ".md": [
     "markdown",
     "code",
+    "claude",
     "reader",
     "annotate"
   ],
   ".markdown": [
     "markdown",
     "code",
+    "claude",
     "reader",
     "annotate"
   ],
