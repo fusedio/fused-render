@@ -2491,6 +2491,21 @@ lists the last files opened in the app, each carrying the params it last had.
   so 3 valid rows survive RC-7 filtering.
 - **RC-7** Entries whose file no longer exists are **hidden silently** from
   the GET response — never deleted from disk (the file may come back).
+- **RC-12** A **delete or Move-to-Bin drops the row immediately**, without
+  waiting for RC-7. RC-7 only bites on a GET, and deleting a file triggers none —
+  so the row used to sit in the sidebar pointing at a file that no longer existed
+  until the user's next navigation happened to refresh the cache. Every delete /
+  trash site instead calls **one** function with the path that went away
+  (`fs-actions.notePathDeleted`, which also prunes the clipboard — one call so the
+  next thing that needs to hear about a delete is added there rather than hunted
+  for across the views), and `recents.dropRecentsFor` drops that path plus
+  anything under it (prefix + `/`, since deleting a folder takes its contents).
+  **Local, no request**: the store runs deeper than the three displayed rows
+  (RC-6's buffer), so the freed slot refills from the cache already held, by the
+  same RC-11 arithmetic a vanished-on-refresh entry gets. A re-GET would be the
+  wrong tool — RC-7's existence check fails *open* on an indeterminate answer, so
+  a row the user just deleted could come straight back. Nothing is written to the
+  store, so a file restored from the Bin reappears in Recents as RC-7 intends.
 - **RC-8** API (`fused_render/shell/recents.py`): `GET /api/recents`
   (unguarded read, filtered per RC-7), `POST /api/recents/open {url}` and
   `PUT /api/recents/collapsed {collapsed}` (both X-Fused-guarded, D36). The

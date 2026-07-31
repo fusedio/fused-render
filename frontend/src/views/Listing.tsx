@@ -30,7 +30,7 @@ import {
   freeDuplicatePath,
   freePastePath,
   copyToClipboard,
-  clearClipboardIfDeleted,
+  notePathDeleted,
   remapClipboardPath,
   pruneDescendantPaths,
   trashEntry,
@@ -1600,7 +1600,7 @@ export default function Listing({
           try {
             for (const row of rows) {
               await deleteEntry(row.path, row.isDir);
-              clearClipboardIfDeleted(row.path);
+              notePathDeleted(row.path);
               deleted++;
             }
           } catch (e) {
@@ -1634,7 +1634,7 @@ export default function Listing({
         const r = await trashEntry(row.path, row.isDir);
         if (r.status === "trashed") {
           trashed.push(row);
-          clearClipboardIfDeleted(row.path);
+          notePathDeleted(row.path);
         } else if (r.status === "unsupported") {
           unsupported.push(row);
         } else if (failed === null) {
