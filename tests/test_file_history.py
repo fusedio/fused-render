@@ -1,5 +1,5 @@
 """Tests for the Claude-file-history reader
-(fused_render/templates/shared/file_history.py). SPEC §33.
+(fused_render/templates/shared/file_history.py). SPEC §34.
 
 Like appenv.py next to it this is a stdlib-only TEMPLATE module, not a package
 module — a template child under the fused engine has no PYTHONPATH, so it can

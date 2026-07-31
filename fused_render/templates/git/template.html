@@ -1,0 +1,849 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Git</title>
+<style>
+  /* Appearance (SPEC §30/AP-9, D134). The dark block below IS this view's
+     palette; every colour a rule uses is a token from it, because a literal is
+     a colour light mode cannot repaint (tests/test_theme.py enforces both the
+     opt-in on <html> and the two blocks defining the SAME token set).
+     `data-theme` is written onto <html> by the injected runtime, which acts only
+     because this document opted in via `data-fused-theme`. */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #22252b;
+    --line: #2a2d33;
+    --line-strong: #3a3e46;
+    --line-hover: #454a53;
+    --ink: #e8eaed;
+    --ink-2: #9aa0a6;
+    --ink-3: #868d94;
+    --accent: #E5FF44;
+    --accent-dim: #b8cc36;
+    --on-accent: #131417;
+    --grid-dot: #1e2126;
+    --skel-shine: #2f333c;
+    /* status letters: added / modified / deleted / renamed / untracked */
+    --st-add: #7ec97e;
+    --st-mod: #d9b34a;
+    --st-del: #e08585;
+    --st-ren: #7fb4e0;
+    --st-new: #9aa0a6;
+    /* diff gutter + hunk colours */
+    --diff-add-bg: #16241a;
+    --diff-add-fg: #a8dfa8;
+    --diff-del-bg: #251618;
+    --diff-del-fg: #efb0b0;
+    --diff-hunk-fg: #86a7c4;
+    --diff-meta-fg: #9aa0a6;
+    /* empty state + truncation notice */
+    --note-line: #5c4a1f;
+    --note-bg: #1b1913;
+    --note-fg: #e8d8ac;
+  }
+  /* The brand lime is unreadable as text on white, so light mode uses
+     shell.css's same-hue deep olive — one token still serving text, focus ring
+     and the selected-row edge. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --line-strong: #c4c8ce;
+    --line-hover: #b4b9c0;
+    --ink: #1f2023;
+    --ink-2: #61656c;
+    --ink-3: #6f747c;
+    --accent: #5f7300;
+    --accent-dim: #4e5f00;
+    --on-accent: #ffffff;
+    --grid-dot: #e8eaed;
+    --skel-shine: #dfe2e7;
+    --st-add: #2f7d32;
+    --st-mod: #8a6410;
+    --st-del: #a32828;
+    --st-ren: #1f5f96;
+    --st-new: #61656c;
+    --diff-add-bg: #e8f6e8;
+    --diff-add-fg: #1f5f22;
+    --diff-del-bg: #fdecec;
+    --diff-del-fg: #8f2020;
+    --diff-hunk-fg: #2b5f88;
+    --diff-meta-fg: #61656c;
+    --note-line: #e0cd94;
+    --note-bg: #fdf7e6;
+    --note-fg: #6b5316;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+    background-size: 28px 28px;
+    /* The page body NEVER scrolls horizontally — wide content (diffs) scrolls
+       inside its own container instead. */
+    overflow-x: hidden;
+  }
+  #root {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 28px 24px 80px;
+    min-width: 0;
+  }
+  a { color: var(--accent-dim); }
+
+  /* ================= panes ================= */
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
+    gap: 20px;
+    margin-top: 24px;
+    align-items: start;
+  }
+  .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 900px) {
+    .cols, .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
+    /* Stacked, the diff goes ABOVE the lists. Otherwise clicking a commit
+       appends a pane thirty rows below the fold and reads as "nothing
+       happened" — the response to a click has to be where the eye already is. */
+    .cols > .col:last-child:not(:first-child) { order: -1; }
+    .pane { position: static; }
+    .diff { max-height: 50vh; }
+  }
+  .col { min-width: 0; }
+
+  section { margin: 0 0 22px; }
+  section > h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  section > h2 .n { color: var(--ink-2); font-weight: 400; letter-spacing: 0; }
+  /* The branch (and an unborn/detached HEAD) rides the section label rather than a
+     header band: it is DATA, and the one fact the shell's chrome cannot supply.
+     Normal case, letter-spacing reset because a path is not a label. */
+  section > h2 .state {
+    color: var(--accent-dim);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  section > h2 .sep { color: var(--ink-3); font-weight: 400; }
+
+  /* ================= rows ================= */
+  .rows {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    border: 0;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  .row:first-child { border-top: 0; }
+  .row:hover { background: var(--surface-2); }
+  .row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .row[aria-current="true"] {
+    background: var(--surface-2);
+    box-shadow: inset 3px 0 0 0 var(--accent);
+  }
+  .row[aria-current="true"] .subject, .row[aria-current="true"] .path { font-weight: 700; }
+  .row .sha {
+    flex: none;
+    color: var(--accent-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .row .subject, .row .path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Two trailing columns rather than one "author · date" string: in a 420px
+     list the single string truncated from the RIGHT, which ate the date — the
+     one field you actually scan a log by. So the date is `flex: none` and never
+     truncates, and the author is the field that gives way. */
+  .row .who {
+    flex: none;
+    max-width: 12ch;
+    color: var(--ink-3);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row .when {
+    flex: none;
+    color: var(--ink-3);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .row .code {
+    flex: none;
+    width: 2ch;
+    white-space: pre;
+    font-weight: 700;
+    color: var(--st-new);
+  }
+  .row .code.is-A { color: var(--st-add); }
+  .row .code.is-M, .row .code.is-T { color: var(--st-mod); }
+  .row .code.is-D { color: var(--st-del); }
+  .row .code.is-R, .row .code.is-C { color: var(--st-ren); }
+  .row .where.is-moved { border-color: var(--st-ren); color: var(--st-ren); }
+  .row .where {
+    flex: none;
+    padding: 0 6px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--ink-3);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+
+  .more {
+    display: block;
+    width: 100%;
+    padding: 9px 12px;
+    border: 0;
+    border-top: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .more:hover { color: var(--ink); background: var(--surface-2); }
+  .more:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .more[disabled] { color: var(--ink-3); cursor: default; background: transparent; }
+
+  .none { padding: 12px; color: var(--ink-3); font-size: 12px; }
+
+  /* ================= diff pane ================= */
+  .pane {
+    position: sticky;
+    top: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .pane-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .pane-head .title {
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pane-head .sub { color: var(--ink-3); font-size: 11px; }
+  .close {
+    flex: none;
+    padding: 2px 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .close:hover { color: var(--ink); border-color: var(--line-hover); }
+  .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* The one place wide content lives: its OWN scroll container, so the page
+     body never gains a horizontal scrollbar (a diff line is arbitrarily long). */
+  .diff {
+    margin: 0;
+    padding: 0;
+    max-height: 70vh;
+    overflow: auto;
+    font-size: 12px;
+    line-height: 1.45;
+    tab-size: 4;
+  }
+  .diff .ln {
+    display: block;
+    padding: 0 12px;
+    white-space: pre;
+    color: var(--ink);
+  }
+  .diff .ln.add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
+  .diff .ln.del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
+  .diff .ln.hunk { color: var(--diff-hunk-fg); }
+  .diff .ln.meta { color: var(--diff-meta-fg); }
+
+  .note {
+    margin: 0;
+    padding: 9px 12px;
+    border-top: 1px solid var(--note-line);
+    background: var(--note-bg);
+    color: var(--note-fg);
+    font-size: 11px;
+  }
+
+  /* ================= empty / error state ================= */
+  .empty {
+    margin-top: 36px;
+    padding: 28px 24px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--surface);
+    text-align: center;
+  }
+  .empty .glyph { color: var(--ink-3); }
+  .empty h2 { margin: 12px 0 6px; font-size: 15px; font-weight: 700; }
+  .empty p { margin: 0 auto; max-width: 46ch; color: var(--ink-2); font-size: 12px; }
+
+  /* ================= skeleton =================
+     Laid out at the real thing's dimensions, so nothing jumps when data lands. */
+  .skel-bar {
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--skel-shine) 50%, var(--surface-2) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.3s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skel-bar { animation: none; }
+    .row, .more, .close { transition: none; }
+  }
+  .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
+  .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
+  .skel-row:first-child { border-top: 0; }
+  .skel-cell { height: 12px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="skeleton">
+    <div class="cols no-diff">
+      <div class="col">
+        <section>
+          <div class="skel-bar skel-h2"></div>
+          <div class="rows">
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:2ch"></span><span class="skel-bar skel-cell" style="width:44%"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:2ch"></span><span class="skel-bar skel-cell" style="width:32%"></span></div>
+          </div>
+        </section>
+        <section>
+          <div class="skel-bar skel-h2" style="width:90px"></div>
+          <div class="rows">
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:48%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:36%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:54%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:41%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+  <div id="view" hidden></div>
+</div>
+<div id="live" class="sr-only" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ state
+ * Params ARE the state (the house pattern): every piece of UI state — which
+ * commit is selected, which uncommitted entry is selected, how many pages of
+ * log are loaded — lives in the URL, so a refresh or a bookmark reproduces the
+ * exact view, including an open diff pane.
+ *
+ *   pages=<n>     how many log pages are loaded (1-based; the "load more" count)
+ *   sel=<sha>     the selected commit  }  mutually exclusive: at most one diff
+ *   wt=<relpath>  the selected change  }  target at a time, so setting one
+ *                                         clears the other
+ */
+const PAGE_SIZE = 30;
+const READER = "./log.py";
+
+const file = fused.params.get("_file") || "";
+const skeleton = document.getElementById("skeleton");
+const view = document.getElementById("view");
+const live = document.getElementById("live");
+
+/* Serial guard: concurrent runPython calls can resolve out of order, and a
+ * stale overview landing after a fresh one would repaint the wrong data. */
+let seq = 0;
+/* The last good overview, kept so selecting a commit repaints the pane without
+ * refetching the log. */
+let snapshot = null;
+
+const num = (key, fallback) => {
+  const raw = parseInt(fused.params.get(key) || "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+};
+
+/* `fused.params` has no delete — an empty string is how a param is cleared, and
+ * it leaves `key=` behind in the URL. So a no-op write is SKIPPED: clearing `wt`
+ * while selecting a commit is the common case, and writing it would stamp a bare
+ * `&wt=` onto every URL the view produces. It also keeps `onChange` (hence
+ * `draw`) from firing for a write that changed nothing. */
+function setParams(patch) {
+  for (const [key, value] of Object.entries(patch)) {
+    const next = value === null ? "" : String(value);
+    if ((fused.params.get(key) || "") === next) continue;
+    fused.params.set(key, next);
+  }
+}
+
+const el = (tag, props, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props || {});
+  for (const kid of kids.flat()) {
+    if (kid !== null && kid !== undefined && kid !== false) node.append(kid);
+  }
+  return node;
+};
+
+/* ------------------------------------------------------------------ chrome */
+
+function icon(paths, size) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", size || 28);
+  svg.setAttribute("height", size || 28);
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.6");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of paths) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+    svg.append(p);
+  }
+  return svg;
+}
+
+const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+                      "M18 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M6 22a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"];
+
+function emptyState(title, message) {
+  return el("div", { className: "empty" },
+    el("div", { className: "glyph" }, icon(BRANCH_GLYPH, 30)),
+    el("h2", { textContent: title }),
+    el("p", { textContent: message }));
+}
+
+/* ------------------------------------------------------- repository state text
+
+ * A template renders INSIDE the shell's chrome — breadcrumb, preview header, mode
+ * switcher — so it does not own a header of its own (owner ruling: "a template is
+ * not the same as app, it does not require any headers"). Anything the shell
+ * already says (the repo's name, the path this view is scoped to) is therefore not
+ * repeated at all, and the one fact the shell CANNOT supply — which branch these
+ * commits are on — rides the section label, which is content rather than chrome.
+ *
+ * Dirty state needs no separate light: `UNCOMMITTED n` already carries it, and a
+ * count is a strictly better signal than a lamp. The one case a count cannot
+ * carry honestly is a truncated read (item 1's byte cap), where `n` is a floor
+ * rather than a total — that is what `+` says, with the list's own note below it.
+ */
+
+function branchState(repo) {
+  const parts = [repo.detached
+    ? "detached at " + (repo.head || "unknown commit")
+    : (repo.branch || "no branch")];
+  // An unborn branch has a name but no commits; that is a property of the HEAD we
+  // are naming, so it belongs beside it rather than in a band of its own.
+  if (!repo.has_commits) parts.push("no commits yet");
+  return parts.join(" · ");
+}
+
+/* ------------------------------------------------- uncommitted + commit lists */
+
+function changeRow(change, selected) {
+  const letter = change.untracked ? "?" : (change.x !== " " ? change.x : change.y);
+  const where = change.untracked ? "untracked"
+    : (change.staged && change.unstaged) ? "staged + unstaged"
+    : change.staged ? "staged" : "unstaged";
+  const label = change.orig
+    ? change.orig + " -> " + change.path
+    : change.path;
+  /* A rename with only one side in the open scope is a MOVE relative to it, and
+     the direction is the fact worth reading — "renamed" says nothing about a file
+     that left the folder you are looking at. Its own badge, before the
+     staged/unstaged one, because it answers a different question. */
+  const row = el("button", {
+    className: "row",
+    type: "button",
+    title: (change.label || where) + " — " + label,
+  },
+    el("span", { className: "code is-" + letter, textContent: change.status }),
+    el("span", { className: "path", textContent: label }),
+    change.moved
+      ? el("span", { className: "where is-moved",
+                     textContent: "moved " + change.moved }) : null,
+    el("span", { className: "where", textContent: where }));
+  if (selected) row.setAttribute("aria-current", "true");
+  /* A moved-OUT row's `path` is outside the scope, but the diff is `-- <path>`
+     against HEAD and git resolves it from the repo ROOT, so the row still opens
+     the right diff: the pathspec is repo-relative, not scope-relative. */
+  row.addEventListener("click", () => setParams({ wt: change.path, sel: null }));
+  return row;
+}
+
+function commitRow(commit, selected) {
+  const row = el("button", {
+    className: "row",
+    type: "button",
+    title: commit.subject + "\n" + commit.author + " — " + commit.date,
+  },
+    el("span", { className: "sha", textContent: commit.short }),
+    el("span", { className: "subject", textContent: commit.subject || "(no subject)" }),
+    el("span", { className: "who", textContent: commit.author }),
+    el("span", { className: "when", textContent: commit.relative }));
+  if (selected) row.setAttribute("aria-current", "true");
+  row.addEventListener("click", () => setParams({ sel: commit.sha, wt: null }));
+  return row;
+}
+
+function listSection(title, count, rows, emptyText, footer, state) {
+  const body = el("div", { className: "rows" });
+  if (rows.length) {
+    for (const row of rows) body.append(row);
+  } else {
+    body.append(el("div", { className: "none", textContent: emptyText }));
+  }
+  if (footer) body.append(footer);
+  return el("section", null,
+    el("h2", null, title,
+      count !== null ? el("span", { className: "n", textContent: count }) : null,
+      state ? el("span", { className: "sep", textContent: "·" }) : null,
+      state ? el("span", { className: "state", textContent: state }) : null),
+    body);
+}
+
+/* ------------------------------------------------------------------ diff pane */
+
+const LINE_CLASS = (line) => {
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+++") || line.startsWith("---")) return "meta";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  if (line.startsWith("diff ") || line.startsWith("index ")
+      || line.startsWith("similarity ") || line.startsWith("rename ")
+      || line.startsWith("new file") || line.startsWith("deleted file")
+      || line.startsWith("old mode") || line.startsWith("new mode")
+      || line.startsWith("Binary files")) return "meta";
+  return "";
+};
+
+function diffBody(text) {
+  const pre = el("pre", { className: "diff", tabIndex: 0 });
+  /* One element per line rather than one big text node: a diff needs per-line
+     backgrounds, and a stack of styled spans is what gives it them without a
+     syntax highlighter. */
+  const frag = document.createDocumentFragment();
+  for (const line of text.split("\n")) {
+    frag.append(el("span", { className: "ln " + LINE_CLASS(line), textContent: line || " " }));
+  }
+  pre.append(frag);
+  return pre;
+}
+
+function diffPane(title, sub, payload) {
+  const close = el("button", { className: "close", type: "button", textContent: "Close" });
+  close.addEventListener("click", () => setParams({ sel: null, wt: null }));
+
+  const pane = el("div", { className: "pane" },
+    el("div", { className: "pane-head" },
+      el("span", { className: "title", textContent: title }),
+      sub ? el("span", { className: "sub", textContent: sub }) : null,
+      close));
+
+  if (payload === "loading") {
+    pane.append(el("div", { className: "rows" },
+      el("div", { className: "skel-row" },
+        el("span", { className: "skel-bar skel-cell", style: "width:70%" })),
+      el("div", { className: "skel-row" },
+        el("span", { className: "skel-bar skel-cell", style: "width:45%" })),
+      el("div", { className: "skel-row" },
+        el("span", { className: "skel-bar skel-cell", style: "width:60%" }))));
+    return pane;
+  }
+  if (!payload.ok) {
+    pane.append(el("div", { className: "none", textContent: payload.message || "Could not read that diff." }));
+    return pane;
+  }
+  /* An untracked DIRECTORY has no diff — git collapsed it to one `dir/` row, so
+     its honest answer is what is inside it. Each file clicks through to its own
+     whole-file diff. */
+  if (payload.kind === "untracked-dir") {
+    if (!payload.files.length) {
+      pane.append(el("div", { className: "none", textContent:
+        "This directory is untracked and holds nothing git would add "
+        + "(it may contain only ignored files)." }));
+      return pane;
+    }
+    const rows = el("div", { className: "rows" });
+    for (const name of payload.files) {
+      const row = el("button", { className: "row", type: "button", title: name },
+        el("span", { className: "code is-?", textContent: "??" }),
+        el("span", { className: "path", textContent: name }));
+      row.addEventListener("click", () => setParams({ wt: name, sel: null }));
+      rows.append(row);
+    }
+    pane.append(rows);
+    if (payload.truncated) {
+      pane.append(el("p", { className: "note", textContent:
+        "Only the first " + payload.files.length + " untracked files in this "
+        + "directory are listed." }));
+    }
+    return pane;
+  }
+  if (payload.empty) {
+    /* Two different situations wore the commit sentence. A worktree entry that
+       diffs to nothing is not "a commit that missed the scope" — it is a file
+       whose content matches HEAD (mode-only change, or already reverted). */
+    pane.append(el("div", { className: "none", textContent: payload.kind === "diff"
+      ? "Nothing to show: this file's contents already match HEAD."
+      : "Nothing in this commit touched the path this view is scoped to." }));
+    return pane;
+  }
+  pane.append(diffBody(payload.diff));
+  if (payload.truncated) {
+    pane.append(el("p", { className: "note", textContent:
+      "Diff truncated at " + payload.shown_lines + " lines (cap: "
+      + payload.max_lines + " lines / " + Math.round(payload.max_bytes / 1024)
+      + " KB). Open the file in git for the rest." }));
+  }
+  return pane;
+}
+
+/* ------------------------------------------------------------------ render */
+
+function show(node) {
+  view.replaceChildren(node);
+  skeleton.hidden = true;
+  view.hidden = false;
+}
+
+function announce(text) {
+  live.textContent = text;
+}
+
+function renderRefusal(payload) {
+  /* Whole-VIEW refusals only — the reasons `_locate` can produce. A per-entry
+     refusal (`symlink`, `outside-repo` from the worktree op) never reaches here:
+     it comes back from `loadDiff` and is rendered inside the pane as its own
+     message, next to the row that caused it, which is where it belongs. */
+  const titles = {
+    "not-a-repo": "Not a git repository",
+    "missing": "Nothing to show",
+    "mount": "Not available on remote mounts",
+    "no-git": "git is not available",
+    "timeout": "git did not answer in time",
+    "git-failed": "git could not read this repository",
+    "bad-op": "Unsupported request",
+  };
+  show(el("div", null,
+    emptyState(titles[payload.reason] || "Nothing to show",
+               payload.message || "There is no git history for this path.")));
+  announce(titles[payload.reason] || "No git history");
+}
+
+function render(data, diff) {
+  const pages = num("pages", 1);
+  const sel = fused.params.get("sel") || "";
+  const wt = fused.params.get("wt") || "";
+
+  const changeRows = data.changes.map((c) => changeRow(c, c.path === wt));
+  const commitRows = data.commits.map((c) => commitRow(c, c.sha === sel));
+
+  /* Three terminal states, not two. The page grows its WINDOW (`limit =
+     PAGE_SIZE * pages`) rather than paging, so the server's ceiling on that
+     window has to be visible here: `has_more` stays honestly true once the clamp
+     bites, and offering "load more" on it refetched the same rows forever. So
+     `capped` — not `has_more` — decides whether another click can do anything. */
+  const loadMore = (data.has_more && !data.capped)
+    ? el("button", { className: "more", type: "button",
+                     textContent: "Load " + PAGE_SIZE + " more commits" })
+    : (data.has_more && data.capped)
+      ? el("button", { className: "more", type: "button", disabled: true,
+                       textContent: "Showing the most recent " + data.commits.length
+                         + " commits for this path — use git for deeper history" })
+      : (data.commits.length
+          ? el("button", { className: "more", type: "button", disabled: true,
+                           textContent: "End of history for this path" })
+          : null);
+  if (loadMore && !loadMore.disabled) {
+    loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
+  }
+
+  /* `n+` rather than `n` when the read was truncated: the count is then a floor,
+     not a total, which is the one thing a bare count cannot say honestly. */
+  const changeCount = String(data.changes.length) + (data.changes_truncated ? "+" : "");
+
+  const left = el("div", { className: "col" },
+    listSection("Uncommitted", changeCount, changeRows,
+      data.repo.dirty
+        ? "No uncommitted changes under this path."
+        : "Working tree is clean.",
+      /* One flag, two causes (MAX_CHANGES or the status byte cap), so the
+         wording has to be true of both — "the first N" is a lie when the cap
+         fired before N entries were even in scope. */
+      data.changes_truncated
+        ? el("p", { className: "note", textContent:
+            "This list is truncated: the repository has more uncommitted "
+            + "changes than this view will read." })
+        : null,
+      /* The branch lives here — see branchState(): the shell supplies identity,
+         so the only header-ish fact left is the one it cannot. */
+      branchState(data.repo)),
+    listSection("History", String(data.commits.length), commitRows,
+      data.repo.has_commits
+        ? "No commits have touched this path yet."
+        : "This repository has no commits yet.",
+      loadMore));
+
+  const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
+  if (diff) cols.append(el("div", { className: "col" }, diff));
+
+  show(cols);
+}
+
+/* ------------------------------------------------------------------ loading */
+
+async function loadDiff(data) {
+  const sel = fused.params.get("sel") || "";
+  const wt = fused.params.get("wt") || "";
+  if (sel) {
+    const known = data.commits.find((c) => c.sha === sel);
+    const payload = await fused.runPython(READER, { file, op: "commit", sha: sel })
+      .catch((err) => ({ ok: false, message: err.message }));
+    const meta = payload.ok ? payload.commit : known;
+    return diffPane(
+      (meta && meta.short ? meta.short + "  " : "") + (meta ? meta.subject : sel),
+      data.repo.rel ? "scoped to " + data.repo.rel : null,
+      payload);
+  }
+  if (wt) {
+    const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt })
+      .catch((err) => ({ ok: false, message: err.message }));
+    const sub = !payload.ok ? null
+      : payload.kind === "untracked-dir" ? "untracked directory — contents"
+      : payload.untracked ? "untracked — whole file"
+      : "working tree vs HEAD";
+    return diffPane(wt, sub, payload);
+  }
+  return null;
+}
+
+async function draw() {
+  const mine = ++seq;
+  const pages = num("pages", 1);
+  const sel = fused.params.get("sel") || "";
+  const wt = fused.params.get("wt") || "";
+
+  if (!file) {
+    renderRefusal({ reason: "missing", message: "No file or folder was selected." });
+    return;
+  }
+
+  /* Repaint from the snapshot first when only the SELECTION changed: the log
+     and the change list are unchanged, so refetching them would blank a list
+     the user is looking at. The diff then arrives into an already-laid-out
+     pane. */
+  const reuse = snapshot && snapshot.pages === pages;
+  let data = reuse ? snapshot.data : null;
+
+  if (data) {
+    render(data, (sel || wt) ? diffPane(sel || wt, null, "loading") : null);
+  }
+
+  if (!data) {
+    let payload;
+    try {
+      payload = await fused.runPython(READER, {
+        file, op: "overview", limit: PAGE_SIZE * pages, page: 0,
+      });
+    } catch (err) {
+      /* A crash in the reader is still an empty state here, not the red
+         traceback overlay: the overlay is a debugging affordance for a view's
+         own bug, and "this folder has no git" is not one. */
+      renderRefusal({ reason: "git-failed", message: err.message });
+      return;
+    }
+    if (mine !== seq) return;
+    if (!payload.ok) {
+      snapshot = null;
+      renderRefusal(payload);
+      return;
+    }
+    data = payload;
+    snapshot = { pages, data };
+    render(data, (sel || wt) ? diffPane(sel || wt, null, "loading") : null);
+    announce(data.commits.length + " commits, " + data.changes.length
+             + " uncommitted changes");
+  }
+
+  if (!sel && !wt) return;
+  const diff = await loadDiff(data);
+  if (mine !== seq) return;
+  render(data, diff);
+}
+
+/* Escape closes the diff pane — the one shortcut this view needs beyond the
+   native tab/enter that every row already has as a <button>. */
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && (fused.params.get("sel") || fused.params.get("wt"))) {
+    event.preventDefault();
+    setParams({ sel: null, wt: null });
+  }
+});
+
+fused.params.onChange(draw);
+draw();
+</script>
+</body>
+</html>

@@ -12,7 +12,7 @@ do is point at the real one: every builder takes an explicit root and the
 test that leaked would be writing into the user's live edit history — the exact
 data the feature exists to protect.
 
-Layout reproduced, verified against a real session (see SPEC §33):
+Layout reproduced, verified against a real session (see SPEC §34):
 
     <config>/file-history/<sessionId>/<sha256(abspath)[:16]>@v<N>
     <config>/projects/<cwd with / -> ->/<sessionId>.jsonl

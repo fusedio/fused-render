@@ -1,6 +1,6 @@
 """Read Claude Code's own file-history store, and restore a file from it.
 
-SPEC §33 / DECISIONS D193, D194.
+SPEC §34 / DECISIONS D194, D195.
 
 This is the undo the editor templates never had: Claude Code checkpoints a full
 copy of every file it is about to change, and that store — not git — is the
@@ -190,6 +190,21 @@ def writable_reason(file: str) -> str:
     letting the UI guess was the actual defect.
     """
     file = os.path.abspath(file)
+    # A SYMLINK, or a DIRECTORY, is refused for reasons that have nothing to do
+    # with permissions — but they belong here anyway, because this is the function
+    # every layer already consults to decide whether to offer a revert at all.
+    # `apply_revert` refused both correctly and refused them ALONE, one layer below
+    # the decision: so the sheet opened on a target that could not succeed, the
+    # bridge stashed the sidecar with content read THROUGH the link, and only then
+    # did the write raise — a failed revert that still mutated `revertStash`, with
+    # the wrong file's content in it. Same shape as the read-only case before it:
+    # the guard existed, just under the layer that offers the action.
+    if os.path.isdir(file):
+        return "it is a directory, not a file"
+    if os.path.islink(file):
+        return ("it is a symlink — os.replace would replace the LINK rather than "
+                "write through it, and the checkpoint chain belongs to the path "
+                "the view opened, not to the link's target")
     try:
         from appenv import mount_read_only
     except ImportError:
@@ -592,6 +607,48 @@ def _unsafe_skips(skipped, target):
     return [s for s in skipped if s["mtime"] is None or s["mtime"] >= floor]
 
 
+def offer_reason(file, target, blocking, at_earliest, unconfirmed, versions):
+    """"" when the AUTOMATIC revert may be offered, else why it may not.
+
+    THE single authority for "may this action be offered, and if not why", and it
+    exists because three separate findings had the same root cause: a guard that
+    lived below the layer deciding whether to offer the action. The read-only
+    verdict was checked in `apply_revert` but not in the plan, so the sheet opened
+    on a doomed target; the symlink refusal likewise, so the stash ran first; and
+    the blocking-skips refusal was computed in `revert_plan` while the panel
+    published a striped target and an enabled button that could only ever produce
+    that refusal. Point-fixing each one would leave the fourth to be found by a
+    user, so the panel, the rows, the sheet and the bridge now all read ONE answer.
+
+    Deliberately about the AUTOMATIC choice only. An explicitly clicked version is
+    a different request and stays available: "revert the last change" is a
+    question this module answers (and can therefore decline to answer when the
+    scan has a hole in it), whereas "revert to THIS version" is the user naming
+    the target themselves, where there is nothing left to guess. That asymmetry is
+    stated here rather than left as an accident of which gate happens to run.
+    """
+    why = writable_reason(file)
+    if why:
+        return "This file cannot be reverted: " + why
+    if blocking:
+        # A refusal `revert_plan` will certainly produce, so it must not be
+        # presented as an available action first (N1: with a target still alive
+        # the panel struck it as "this is what Revert does" and every press hit
+        # the same refusal).
+        n = len(blocking)
+        if unconfirmed:
+            return ("%d version(s) could not be read, so this cannot be confirmed "
+                    "as the earliest checkpoint — refusing to guess." % n)
+        return ("%d version(s) could not be read, so the last change cannot be "
+                "identified — refusing to guess." % n)
+    if not versions:
+        return "Claude has no recorded versions of this file."
+    if at_earliest or target is None:
+        return ("Already at the earliest checkpoint Claude recorded — nothing "
+                "older to revert to.")
+    return ""
+
+
 def _selection(entries, cur_bytes, skipped):
     """(position, target, at_earliest, unconfirmed, blocking) — one computation.
 
@@ -629,6 +686,23 @@ def timeline(file, enrich: bool = False) -> dict:
     root = history_root()
     why_not = writable_reason(file)
 
+    # ONE answer, so the panel cannot advertise an action the plan will refuse.
+    # Publishing `revert` only when it may actually be offered is what makes the
+    # striped row and the enabled button correct by construction rather than by
+    # two separate conditions the view has to keep in step.
+    blocked = offer_reason(file, target, blocking, at_earliest, unconfirmed,
+                           versions)
+    # FH-3's rule, and the one case where a refusal is PROVISIONAL rather than
+    # final: an unenriched scan cannot see the creation boundary, so its
+    # "nothing older" is a guess and must not disable anything. There is no
+    # target to publish either (the walk found none), so the button needs its own
+    # signal — `offer` — rather than inferring permission from `revert`.
+    provisional = (bool(blocked) and not enrich and not blocking
+                   and versions and not writable_reason(file)
+                   and (at_earliest or target is None))
+    if provisional:
+        blocked = ""
+    offer = not blocked
     notes = []
     if store_error is not None:
         available = True  # it is THERE; we could not read it
@@ -641,13 +715,13 @@ def timeline(file, enrich: bool = False) -> dict:
                          % root)
         elif not versions:
             notes.append("Claude has no recorded versions of this file.")
-        elif unconfirmed:
-            # A STATE, not an error to be discovered by clicking: it will refuse
-            # identically on every press, so the panel disables the button and
-            # shows the reason, exactly as it does for at_earliest.
-            notes.append("A version could not be read, so this cannot be "
-                         "confirmed as the earliest checkpoint — refusing to "
-                         "guess.")
+        elif blocked:
+            # Every un-offerable state is a STATE with its reason on screen, not
+            # an error discovered by clicking: each would refuse identically on
+            # every press. The `at_earliest and not enrich` carve-out is FH-3's
+            # rule — an unenriched scan may not claim terminality, so it stays
+            # quiet and lets the click ask the (always-enriched) plan.
+            notes.append(blocked)
         elif at_earliest and enrich:
             # Only claimable from an ENRICHED scan. Without the transcripts the
             # did-not-exist boundary is invisible, so an unenriched scan reports
@@ -674,7 +748,15 @@ def timeline(file, enrich: bool = False) -> dict:
         "current": cur,
         "versions": versions,
         "position": versions[position]["id"] if position >= 0 else None,
-        "revert": target["id"] if target else None,
+        # The row to stripe: only ever the target of an action that may actually
+        # be offered, so the stripe cannot advertise a refusal.
+        "revert": target["id"] if (target and offer) else None,
+        # May the button be pressed? Separate from `revert` because of the
+        # provisional case above, where there is no target to name and the click
+        # is nonetheless the right thing to allow — the plan is the authority and
+        # it enriches.
+        "offer": offer,
+        "offer_reason": blocked,
         # PROVISIONAL unless `enriched`. `revert_plan` always enriches (it has no
         # `enrich` parameter at all), so an unenriched timeline can be one step
         # short of the truth and must never be used to decide that there is
@@ -740,39 +822,36 @@ def revert_plan(file, entry_id=None) -> dict:
         versions, cur_bytes, skipped)
 
     if entry_id is None:
-        if blocking:
-            # Refuse rather than walk to a different point in history — but say
-            # WHICH refusal it is. The two read very differently to a user: one
-            # means "I found candidates and cannot tell which is right", the
-            # other means "I found none and cannot promise there are none".
-            reasons = " ".join(s["reason"] for s in blocking)
-            if unconfirmed:
-                err = ("%d version(s) could not be read, so this cannot be "
-                       "confirmed as the earliest checkpoint — there may be an "
-                       "older change to revert to, and guessing that there is "
-                       "not would be wrong. %s" % (len(blocking), reasons))
-            else:
-                err = ("%d version(s) could not be read, so the last change "
-                       "cannot be identified — reverting would guess. %s"
-                       % (len(blocking), reasons))
-            return {"ok": False, "at_earliest": False,
+        # The SAME authority the panel reads, so the two can never disagree about
+        # whether this action is available (that disagreement was the whole of
+        # N1: a striped row and a live button over a plan that always refused).
+        blocked = offer_reason(file, auto_target, blocking, at_earliest,
+                              unconfirmed, versions)
+        if store_error is not None:
+            blocked = ("Cannot read the file-history store — "
+                       + _why(store_error, history_root()))
+        if blocked:
+            # The per-version reasons are appended HERE and not in offer_reason:
+            # the panel wants one short sentence it can render inline, and the
+            # click wants the errno detail that says which file to go and fix.
+            err = blocked
+            if blocking:
+                err += " " + " ".join(s["reason"] for s in blocking)
+            return {"ok": False, "at_earliest": at_earliest,
                     "unconfirmed": unconfirmed, "blocking": blocking,
                     "skipped": skipped, "current": cur, "error": err}
         entry = auto_target
-        if entry is None:
-            if store_error is not None:
-                err = ("Cannot read the file-history store — "
-                       + _why(store_error, history_root()))
-            elif not versions:
-                err = "Claude has no recorded versions of this file."
-            else:
-                err = ("Already at the earliest checkpoint Claude recorded — "
-                       "nothing older to revert to.")
-            return {"ok": False, "at_earliest": at_earliest,
-                    "unconfirmed": False, "blocking": [],
-                    "skipped": skipped, "current": cur, "error": err}
     else:
+        # An explicit id is a different request and is NOT gated on the automatic
+        # refusals (see offer_reason): the user named this version, so there is
+        # nothing to guess. It is still gated on writability, below — that one is
+        # about whether the write can land at all, which no amount of naming fixes.
         entry = _resolve(file, entry_id)
+        why = writable_reason(file)
+        if why:
+            return {"ok": False, "at_earliest": False, "unconfirmed": False,
+                    "blocking": [], "skipped": skipped, "current": cur,
+                    "error": "This file cannot be reverted: " + why}
 
     return {
         "ok": True,
@@ -793,8 +872,8 @@ def revert_plan(file, entry_id=None) -> dict:
         "unconfirmed": False,
         "blocking": [],
         "skipped": skipped,
-        "writable": writable_reason(file) == "",
-        "writable_reason": writable_reason(file),
+        "writable": True,   # a plan is only returned for a writable target now
+        "writable_reason": "",
     }
 
 

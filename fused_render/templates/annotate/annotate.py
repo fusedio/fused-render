@@ -25,7 +25,7 @@ detect a read-only remote mount, degrading to pure os.access when appenv isn't
 reachable (a copy of this folder taken without its `shared/` sibling). See
 _sidecar_writable.
 
-It ALSO serves the view's revert surface (SPEC §33, D193), which is a different
+It ALSO serves the view's revert surface (SPEC §34, D194), which is a different
 job on the same file: the version timeline and the restore itself live in
 `../shared/file_history.py` (Claude Code's own checkpoint store, deliberately not
 git), and this module is the bridge that (a) turns every failure into an
@@ -213,7 +213,7 @@ def _sidecar_writable(file: str) -> bool:
     return os.access(os.path.dirname(path), os.W_OK)
 
 
-# ------------------------------------------------------------- revert (§33)
+# ------------------------------------------------------------- revert (§34)
 
 #: Stash entries kept in the sidecar. Small on purpose: this is an "oh no, undo
 #: the undo" buffer, not a version store — `file_history` already is one — and
@@ -373,6 +373,15 @@ def _revert(file: str, version_id, confirm_unique: bool) -> dict:
     plan = _plan(file, version_id, fh)
     if not plan.get("ok"):
         return plan
+    # Writability is re-read from the plan BEFORE anything is written. `_stash`
+    # runs first by design (after the write there is nothing left to copy), so a
+    # target that cannot be written must be refused here or the stash lands and
+    # `apply_revert` then raises — a failed revert that still mutated the sidecar.
+    # For a symlink that was worse than useless: the stashed content was read
+    # THROUGH the link, so the sidecar held the wrong file's bytes.
+    if plan.get("writable") is False:
+        return {"error": "This file cannot be reverted: "
+                         + (plan.get("writable_reason") or "it is not writable")}
     if plan.get("unique_current") and not confirm_unique:
         return {"error": "this file's current content is in no checkpoint, so "
                          "the revert would destroy the only copy — pass "

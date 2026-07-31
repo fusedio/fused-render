@@ -268,7 +268,7 @@
   }
   #sidefoot button:hover { filter: brightness(1.06); }
   #sidefoot button:disabled { opacity: 0.4; cursor: default; }
-  /* Version history + revert (SPEC §33). Its own footer block rather than a
+  /* Version history + revert (SPEC §34). Its own footer block rather than a
      section of #sidefoot, because that one is display:none'd wherever the file
      has no claude mode (Send to Claude would go nowhere) and reverting has
      nothing to do with whether a chat view exists. */
@@ -314,7 +314,7 @@
   .hrow.next { border-left-color: var(--accent); background: var(--accent-wash); }
   /* Where disk sits in the chain — one shape family, two colours, one meaning.
      Without it the list gives no clue why the target is the row it is: the rule
-     is positional, not "the newest that differs" (SPEC §33/FH-3). */
+     is positional, not "the newest that differs" (SPEC §34/FH-3). */
   .hrow.here .hdot, .hrow.here .hwhen { color: var(--fg); }
   .hrow .hv { font-weight: 600; min-width: 22px; }
   .hrow .hwhen { color: var(--fg-muted); flex: 1 1 auto; }
@@ -328,7 +328,7 @@
   #histnote { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
   #histnote.error { color: var(--error); }
   /* Confirm sheet. A restore is the one destructive action in this view — the
-     bytes on disk are frequently in NO checkpoint (SPEC §33/FH-2), so this is
+     bytes on disk are frequently in NO checkpoint (SPEC §34/FH-2), so this is
      never a plain button press. */
   #confirm {
     position: fixed; inset: 0; z-index: 50; display: none;
@@ -1585,7 +1585,7 @@
       window.top.location.href = top.pathname + (search ? "?" + search : "");
     });
 
-    // --- version history + revert (SPEC §33) ---------------------------------
+    // --- version history + revert (SPEC §34) ---------------------------------
     // Backed by Claude Code's OWN file-history store, not git: it answers "what
     // did this file look like before the agent touched it", which is the
     // question a reviewer sitting in this view actually asks, and it has an
@@ -1766,15 +1766,15 @@
       // pressing the button four times in the running app. So while unenriched,
       // a missing target leaves the button LIVE and the click asks the plan,
       // which is the authority.
-      const terminal = timeline.at_earliest && timeline.enriched;
-      // `unconfirmed` is as terminal for the button as `at_earliest`: it will
-      // refuse identically on every press, so it is a STATE with a visible
-      // reason, not an error the user can only discover by clicking. Gated on
-      // `enriched` for the same reason at_earliest is — neither claim can be
-      // made from a scan that has not looked everywhere.
-      const stuck = timeline.unconfirmed && timeline.enriched;
-      revertBtn.disabled = busy || timeline.writable === false || stuck ||
-        (!target && (terminal || !timeline.versions.length));
+      // ONE condition, because the payload already carries the one answer:
+      // `revert` is published only when the automatic action may actually be
+      // offered (writable, no blocking skips, not terminal), so the button and
+      // the striped row below can no longer disagree with what the plan will do.
+      // Three findings came from this being several conditions the view had to
+      // keep in step with the plan by hand — a read-only target, an unconfirmed
+      // terminal state, and a blocking skip WITH a live target, which struck a
+      // row as "this is what Revert does" over a plan that always refused.
+      revertBtn.disabled = busy || timeline.offer === false;
       histToggle.hidden = !timeline.versions.length;
       histList.hidden = !histOpen;
       histList.textContent = "";
@@ -1807,7 +1807,7 @@
           // helper reports 0 and BOTH the label and the tooltip fall silent —
           // "1970" would be a confident lie about when the file was created.
           when.textContent = v.mtime ? ago(v.mtime) : "time unknown";
-          // Sessions are why two rows can both say v2 (SPEC §33/FH-3), so the
+          // Sessions are why two rows can both say v2 (SPEC §34/FH-3), so the
           // session's short id is the only thing that disambiguates them.
           when.title = (v.mtime
             ? new Date(v.mtime * 1000).toLocaleString() + " · "
@@ -1839,14 +1839,14 @@
       histToggle.textContent = histOpen
         ? "▾ History (" + rows + ")"
         : "▸ History";
+      // `offer_reason` is the same sentence the plan would refuse with, so the
+      // reason a disabled button is disabled is already on screen — no press
+      // required to find out. Writability comes through the same channel.
       // Through setNote like every other write to this element. renderHistory is
       // the BASELINE painter and setNote/reportOutcome are the overrides, but
       // "one function touches this node" is the invariant that stopped four
       // ordering bugs, so it should not have an exception carved into it.
-      setNote(timeline.writable === false
-        ? "This file cannot be reverted: " +
-          (timeline.writable_reason || "it is not writable") + "."
-        : (timeline.note || ""), false);
+      setNote(timeline.note || timeline.offer_reason || "", false);
     }
 
     // Every history/revert failure arrives as an `{error}` DICT rather than a
@@ -1916,7 +1916,7 @@
     });
 
     // `versionId === null` means "the last change", resolved by the POSITIONAL
-    // rule (SPEC §33/FH-3): where disk sits in the chain, then one step back.
+    // rule (SPEC §34/FH-3): where disk sits in the chain, then one step back.
     // No `enrich` is passed — deliberately. It used to be `enrich: enriched`,
     // which made the same button perform a restore before History was expanded
     // and a delete after; the plan and the write now always enrich, so only the

@@ -1,5 +1,5 @@
 """Tests for annotate.py's revert actions — the seam between the annotate view
-and the Claude-file-history reader (SPEC §33, D193).
+and the Claude-file-history reader (SPEC §34, D194).
 
 `file_history.py` owns the store and the write; annotate.py owns two things it
 cannot: turning every failure into an `{"error": ...}` DICT (a raised exception
@@ -452,13 +452,34 @@ def test_the_page_echoes_the_plan_id_and_the_confirm_token(source):
     assert "confirm_unique" in call
 
 
-def test_an_unenriched_timeline_may_not_disable_the_button(source):
+def test_an_unenriched_timeline_still_offers_the_click(claude_home, tmp_path):
     """The boot timeline cannot see the did-not-exist boundary, so its
-    `at_earliest` is provisional; believing it disabled the button on a file
-    whose remaining step back was a delete."""
+    `at_earliest` is provisional; believing it disabled the button on a file whose
+    remaining step back was a delete. Asserted on the PAYLOAD now rather than on
+    the view's conditions — `revert` is the one field the button reads."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    boot = ann.main(action="history", file=f)
+    assert boot["enriched"] is False
+    assert boot["offer"] is True           # the click must still be possible
+    rich = ann.main(action="history", file=f, enrich=True)
+    assert rich["revert"].endswith("@none1")
+
+
+def test_the_button_reads_exactly_one_field(source):
+    """Three findings came from the view keeping several conditions in step with
+    the plan by hand. `revert` is published only when the action may actually be
+    offered, so there is one thing to read and nothing to keep in step."""
     body = source[source.index("function renderHistory"):]
     body = body[:body.index("async function callHistory")]
-    assert "timeline.at_earliest && timeline.enriched" in body
+    assert "revertBtn.disabled = busy || timeline.offer === false;" in body
+    assert "timeline.unconfirmed" not in body   # no second condition survives
+    assert "timeline.at_earliest" not in body
 
 
 def test_the_position_is_marked_in_the_list(source):
@@ -1140,15 +1161,18 @@ def test_the_disclosure_state_is_not_written_to_the_url(source):
 
 # --- B1: a read-only target must not reach a destructive confirm ----------
 
-def test_the_plan_carries_the_reason_it_is_not_writable(claude_home, ro_mount):
-    """The bool alone is a dead end: a read-only mount, a chmod'd file and an
-    unwritable directory are three different things for the user to do."""
+def test_the_plan_refuses_an_unwritable_target_with_its_reason(claude_home,
+                                                               ro_mount):
+    """Strengthened: the plan does not hand back `ok: True` with a false flag for
+    the caller to remember to check — it REFUSES, because a plan is an offer and
+    this action cannot be offered. The bool alone was also a dead end: a read-only
+    mount, a chmod'd file, a symlink and an unwritable directory are four
+    different things for the user to do."""
     ann = _load_annotate()
     write_version(claude_home, "s", ro_mount, "wanted\n")
     plan = ann.main(action="revert_plan", file=ro_mount)
-    assert plan["ok"] is True          # a PLAN is still legitimate...
-    assert plan["writable"] is False   # ...but it says the write would not land
-    assert "read-only mount" in plan["writable_reason"]
+    assert plan["ok"] is False
+    assert "read-only mount" in plan["error"]
     assert ann.main(action="history", file=ro_mount)["writable_reason"]
 
 
@@ -1160,9 +1184,11 @@ def test_the_reason_distinguishes_a_chmod_from_a_mount(claude_home, tmp_path):
     os.chmod(f, 0o444)
     try:
         plan = ann.main(action="revert_plan", file=f)
-        assert plan["writable"] is False
-        assert "the file itself is read-only" in plan["writable_reason"]
-        assert "mount" not in plan["writable_reason"]
+        assert plan["ok"] is False
+        assert "the file itself is read-only" in plan["error"]
+        assert "mount" not in plan["error"]
+        assert "the file itself is read-only" in ann.main(
+            action="history", file=f)["writable_reason"]
     finally:
         os.chmod(f, 0o644)
 
@@ -1190,10 +1216,12 @@ def test_rows_are_inert_on_an_unwritable_target(source, tmp_path):
     assert 'row.style.cursor = "default"' in body
 
 
-def test_the_note_says_why_it_is_not_writable(source):
+def test_the_note_says_why_the_button_is_dead(source):
+    """`offer_reason` is the same sentence the plan would refuse with, so no press
+    is needed to discover why a disabled button is disabled."""
     body = source[source.index("function renderHistory"):]
     body = body[:body.index("async function callHistory")]
-    assert "timeline.writable_reason" in body
+    assert "timeline.offer_reason" in body
 
 
 # --- B2: the toggle label follows the fetch's outcome ---------------------
@@ -1275,12 +1303,28 @@ def test_a_skip_with_a_target_keeps_the_other_wording(claude_home, tmp_path,
     assert "last change cannot be identified" in plan["error"]
 
 
-def test_the_unconfirmed_state_disables_the_button(source):
-    """A stable refusal must not be a loop the user discovers by pressing."""
-    body = source[source.index("function renderHistory"):]
-    body = body[:body.index("async function callHistory")]
-    assert "timeline.unconfirmed && timeline.enriched" in body
-    assert "|| stuck ||" in body
+def test_the_unconfirmed_state_withholds_the_target(claude_home, tmp_path,
+                                                    monkeypatch):
+    """A stable refusal must not be a loop the user discovers by pressing — so it
+    is withheld from the payload the button reads, not merely special-cased in the
+    view."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "unreadable\n", mtime=500)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    tl = ann.main(action="history", file=f, enrich=True)
+    assert tl["unconfirmed"] is True
+    assert tl["revert"] is None                      # no row to stripe
+    assert tl["offer"] is False                      # nothing to press
+    assert "earliest" in tl["offer_reason"]          # ...and it says why
 
 
 def test_a_refusal_settles_the_panel_instead_of_looping(source):
@@ -1301,3 +1345,193 @@ def test_the_two_terminal_states_are_never_both_claimed(claude_home, tmp_path,
     write_version(claude_home, "s", f, "v1\n", mtime=1000)
     tl = fh_mod.main(action="history", file=f, enrich=True)
     assert (tl["at_earliest"], tl["unconfirmed"]) == (True, False)
+
+
+# ======================================== review round 5: the guard-layer class
+# B1, N1 and N2 all had one root cause — a guard living BELOW the layer that
+# decides whether to offer the action — so these pin the single authority
+# (`file_history.offer_reason`) that every layer now consults, rather than the
+# three point fixes.
+
+# --- N1: a blocking skip WITH a live target -------------------------------
+
+def _blocked_chain(claude_home, tmp_path, monkeypatch, unreadable="@v3"):
+    """disk == v3; v1/v2 older. Making one version unreadable leaves a live
+    target while `revert_plan` will refuse the automatic choice."""
+    f = _target(tmp_path, "v3\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+    write_version(claude_home, "s", f, "v3\n", mtime=3000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if unreadable in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    return f
+
+
+def test_a_blocking_skip_with_a_live_target_offers_nothing(claude_home, tmp_path,
+                                                            monkeypatch):
+    """The other half of the unconfirmed fix, and the identical defect: with a
+    target still alive the panel kept publishing it, struck that row as "this is
+    what Revert does", and left the button enabled over a plan that always
+    refused — the same click-refuse loop, surviving every reload."""
+    ann = _load_annotate()
+    f = _blocked_chain(claude_home, tmp_path, monkeypatch)
+
+    tl = ann.main(action="history", file=f, enrich=True)
+    assert tl["blocking"]
+    assert tl["unconfirmed"] is False    # a target DOES exist...
+    assert tl["offer"] is False          # ...and it is still not offerable
+    assert tl["revert"] is None          # so no row is struck as the target
+    assert "last change cannot be identified" in tl["offer_reason"]
+
+    plan = ann.main(action="revert_plan", file=f)
+    assert plan["ok"] is False
+    # The panel's sentence and the plan's refusal are the same answer.
+    assert tl["offer_reason"].split(" —")[0] in plan["error"]
+
+
+def test_an_explicit_id_still_works_when_the_automatic_choice_is_blocked(
+        claude_home, tmp_path, monkeypatch):
+    """The asymmetry is deliberate and is stated in `offer_reason`: "revert the
+    last change" is a question this module answers, and can decline to answer from
+    an incomplete scan; "revert to THIS version" is the user naming the target, so
+    there is nothing left to guess."""
+    ann = _load_annotate()
+    f = _blocked_chain(claude_home, tmp_path, monkeypatch)
+
+    plan = ann.main(action="revert_plan", file=f, version_id="s@v1")
+    assert plan["ok"] is True
+    assert plan["version"] == 1
+    # v3 being unreadable means disk matches no READABLE checkpoint, so the plan
+    # correctly reports unique_current and the bridge correctly demands the token
+    # — the explicit path is unblocked, not ungated.
+    assert plan["unique_current"] is True
+    out = ann.main(action="revert", file=f, version_id="s@v1",
+                   confirm_unique=True)
+    assert out["ok"] is True
+    with open(f, encoding="utf-8") as h:
+        assert h.read() == "v1\n"
+
+
+def test_the_panel_and_the_plan_cannot_disagree_about_availability(claude_home,
+                                                                   tmp_path,
+                                                                   monkeypatch):
+    """The property the single authority buys: whenever the panel offers the
+    automatic revert the plan accepts it, and whenever it does not the plan
+    refuses. Swept over the states that used to disagree."""
+    ann = _load_annotate()
+    cases = []
+
+    # (1) ordinary: offerable
+    f1 = _target(tmp_path, "v2\n", name="a.txt")
+    write_version(claude_home, "s", f1, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f1, "v2\n", mtime=2000)
+    cases.append(f1)
+    # (2) terminal
+    f2 = _target(tmp_path, "v1\n", name="b.txt")
+    write_version(claude_home, "s", f2, "v1\n", mtime=1000)
+    cases.append(f2)
+    # (3) no versions at all
+    cases.append(_target(tmp_path, "x\n", name="c.txt"))
+
+    for f in cases:
+        tl = ann.main(action="history", file=f, enrich=True)
+        plan = ann.main(action="revert_plan", file=f)
+        assert tl["offer"] == bool(plan.get("ok")), f
+
+
+# --- N2: a symlink must not reach the sheet or the stash -----------------
+
+def test_a_symlink_is_refused_at_the_plan_layer(claude_home, tmp_path):
+    """`apply_revert` refused symlinks correctly and refused them ALONE, one layer
+    below the decision to offer — so the sheet opened on a target that could not
+    succeed and the stash ran first."""
+    ann = _load_annotate()
+    real = tmp_path / "real.txt"
+    real.write_text("real content\n")
+    link = str(tmp_path / "link.txt")
+    os.symlink(str(real), link)
+    write_version(claude_home, "s", link, "wanted\n")
+
+    tl = ann.main(action="history", file=link, enrich=True)
+    assert tl["writable"] is False
+    assert "symlink" in tl["writable_reason"]
+    assert tl["offer"] is False
+    plan = ann.main(action="revert_plan", file=link)
+    assert plan["ok"] is False
+    assert "symlink" in plan["error"]
+
+
+def test_a_failed_symlink_revert_does_not_write_the_stash(claude_home, tmp_path):
+    """The damage the missing plan-layer check actually did: `_stash` read THROUGH
+    the link, so a revert that then raised had already put the WRONG file's content
+    into the sidecar."""
+    ann = _load_annotate()
+    real = tmp_path / "real.txt"
+    real.write_text("real content\n")
+    link = str(tmp_path / "link.txt")
+    os.symlink(str(real), link)
+    write_version(claude_home, "s", link, "wanted\n")
+
+    out = ann.main(action="revert", file=link, version_id="s@v1",
+                   confirm_unique=True)
+    assert "error" in out
+    assert "symlink" in out["error"]
+    assert not os.path.exists(link + ".json")        # no sidecar at all
+    assert not os.path.exists(str(real) + ".json")
+    assert os.path.islink(link)
+    with open(str(real), encoding="utf-8") as h:
+        assert h.read() == "real content\n"          # untouched
+
+
+def test_the_symlink_reason_is_not_the_read_only_wording(claude_home, tmp_path):
+    """A user can act on "this is a symlink"; "read-only" would send them to
+    chmod, which would not help."""
+    ann = _load_annotate()
+    real = tmp_path / "real.txt"
+    real.write_text("x\n")
+    link = str(tmp_path / "link.txt")
+    os.symlink(str(real), link)
+    write_version(claude_home, "s", link, "wanted\n")
+    reason = ann.main(action="history", file=link)["writable_reason"]
+    assert "symlink" in reason
+    assert "read-only" not in reason
+
+
+@skip_root
+def test_no_unwritable_target_reaches_the_stash(claude_home, tmp_path):
+    """Generalized past the symlink: `_stash` runs BEFORE the write by design, so
+    ANY target the write will reject has to be refused before it — a chmod'd file
+    used to stash and then raise."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "keep\n")
+    write_version(claude_home, "s", f, "other\n")
+    os.chmod(f, 0o444)
+    try:
+        out = ann.main(action="revert", file=f, version_id="s@v1",
+                       confirm_unique=True)
+        assert "error" in out
+        assert not os.path.exists(_sidecar(f))
+        with open(f, encoding="utf-8") as h:
+            assert h.read() == "keep\n"
+    finally:
+        os.chmod(f, 0o644)
+
+
+def test_a_directory_target_is_refused_the_same_way(claude_home, tmp_path):
+    """Folded into the same answer rather than staying a separate raise in
+    apply_revert."""
+    ann = _load_annotate()
+    d = tmp_path / "adir"
+    d.mkdir()
+    write_version(claude_home, "s", str(d), "payload\n")
+    tl = ann.main(action="history", file=str(d), enrich=True)
+    assert tl["offer"] is False
+    assert "directory" in tl["writable_reason"]
+    assert "error" in ann.main(action="revert", file=str(d), version_id="s@v1")
+    assert os.path.isdir(str(d))
