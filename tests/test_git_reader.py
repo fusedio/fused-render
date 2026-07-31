@@ -657,3 +657,49 @@ def test_the_change_count_cap_still_reports_truncation(reader, tmp_path, monkeyp
     assert len(got["changes"]) == 4 and got["changes_truncated"] is True
 
 
+# --------------------------------------------------- caps: pagination under drops
+
+
+def test_a_dropped_log_record_does_not_end_pagination(reader, repo, monkeypatch):
+    # `has_more` must count the records GIT emitted, not the ones we kept: one
+    # dropped record on a full page made `len(commits) == limit`, so the UI said
+    # "End of history for this path" while more commits existed.
+    real = reader._git
+
+    def corrupt_one(root, *args, **kwargs):
+        out = real(root, *args, **kwargs)
+        if "log" in args:
+            lines = out.split(b"\n")
+            if lines and lines[0]:
+                lines[0] = b"not\x00enough\x00fields"  # 3 fields, not 6 -> dropped
+            return b"\n".join(lines)
+        return out
+
+    monkeypatch.setattr(reader, "_git", corrupt_one)
+    got = reader.main(repo, op="log", limit=2, page=0)
+    assert got["ok"] is True
+    # git emitted 3 records (limit + 1); one was dropped, so exactly `limit`
+    # survive — the arrangement under which counting KEPT records computed
+    # `2 > 2` == False and stopped pagination one page early.
+    assert len(got["commits"]) == 2
+    assert got["has_more"] is True, "a drop must not end pagination"
+
+
+def test_the_last_page_still_reports_no_more_when_a_record_drops(reader, repo, monkeypatch):
+    # The other direction: counting raw records must not INVENT a next page.
+    real = reader._git
+
+    def corrupt_one(root, *args, **kwargs):
+        out = real(root, *args, **kwargs)
+        if "log" in args:
+            lines = [line for line in out.split(b"\n") if line]
+            if lines:
+                lines[0] = b"not\x00enough\x00fields"
+            return b"\n".join(lines) + b"\n"
+        return out
+
+    monkeypatch.setattr(reader, "_git", corrupt_one)
+    got = reader.main(repo, op="log", limit=2, page=2)  # 6 commits: last page
+    assert got["has_more"] is False
+
+

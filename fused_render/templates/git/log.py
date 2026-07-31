@@ -484,15 +484,18 @@ def _log(root, rel, limit, page):
     raw = _git(root, "log", "--no-color", f"--format={_LOG_FORMAT}",
                f"--max-count={limit + 1}", f"--skip={page * limit}",
                *_pathspec(rel))
+    # `has_more` counts the records GIT emitted, not the ones we kept. Counting
+    # kept records instead let one dropped record on a full page make
+    # `len(commits) == limit`, so the UI said "End of history for this path" while
+    # more commits existed — a malformed record must not end pagination.
+    records = [line for line in raw.decode("utf-8", "replace").split("\n") if line]
+    has_more = len(records) > limit
     commits = []
-    for line in raw.decode("utf-8", "replace").split("\n"):
-        if not line:
-            continue
+    for line in records:
         parts = line.split("\0")
         if len(parts) != len(_LOG_FIELDS):
             continue  # a record we cannot trust is dropped, never half-read
         commits.append(dict(zip(_LOG_FIELDS, parts)))
-    has_more = len(commits) > limit
     return commits[:limit], has_more, limit, page
 
 
