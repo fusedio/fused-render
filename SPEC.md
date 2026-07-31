@@ -3463,7 +3463,21 @@ that path. Offered for **both** directories and text-ish files, always as a
   every pathspec, wrapped in `:(literal)` so a filename holding `*`, `?`, `[` or a
   leading `:` matches itself instead of becoming a glob or pathspec magic. A `sha`
   arrives from a URL param and is validated as a hex object name **before any argv
-  is built**, so an option-shaped value cannot cause even one fork. Log records
+  is built**, so an option-shaped value cannot cause even one fork. Containment of a
+  working-tree **entry** is two checks in two places, and which place matters: the
+  entry's realpath must resolve under the repository root — for EVERY entry, before
+  any git call, since that also catches an ordinary file reached through a symlinked
+  parent directory — while the refusal of a **symlinked entry** belongs only on the
+  **untracked** branches, because those are the ones that read bytes off a resolved
+  name (`git diff --no-index` renders the target under the link's name, and
+  `os.path.isdir` follows a link into the untracked-directory listing). A **tracked**
+  symlink must diff normally: `git diff HEAD -- <rel>` treats it as a symlink,
+  diffing the link's target *path text* without reading through it — so putting that
+  refusal one level too early refuses every symlink row, including the safe one.
+  Residual, accepted and stated: a tracked symlink whose target is outside the repo
+  is refused by the realpath check even though its branch would be safe, because
+  containment stays ONE rule for the whole op rather than varying by a trackedness we
+  only learn from a git call. Log records
   are `%x00`-delimited fields, one commit per line (every field in the format is
   single-line by construction, so the newline is an unambiguous record separator);
   status is `--porcelain=v1 -z`, whose rename form puts the NEW path first.

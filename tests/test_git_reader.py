@@ -1023,3 +1023,111 @@ def test_a_tracked_directory_still_diffs_against_head(reader, repo):
     got = reader.main(repo, op="worktree", entry="pkg")
     assert got["ok"] is True and got["kind"] == "diff"
     assert "return 111" in got["diff"]
+
+
+# ------------------------------- E: tracked vs untracked symlinks are different
+#
+# The containment fix put the `islink` refusal in `_contain`, which runs BEFORE the
+# tracked/untracked split, so it refused every symlink row — including a tracked,
+# modified symlink whose branch never reads through the link. These two tests are a
+# PAIR: refusing the untracked one and rendering the tracked one is the distinction,
+# and either alone would let the placement drift back.
+
+
+def _linked_repo(root, target, *, tracked):
+    """A repo holding `link -> target`, committed when `tracked`."""
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q")
+    write(root, "real.txt", "real contents\n")
+    write(root, "other.txt", "other contents\n")
+    os.symlink(target, os.path.join(root, "link"))
+    git(root, "add", "-A" if tracked else "real.txt")
+    git(root, "commit", "-q", "-m", "seed", when="2026-08-01T10:00:00+00:00")
+    return root
+
+
+def test_a_tracked_symlink_modified_in_the_worktree_still_diffs(reader, tmp_path):
+    # The regression: this row failed in the pane. `git diff HEAD -- link` diffs
+    # the link's TARGET PATH TEXT and never reads through it, so it is safe and
+    # must render.
+    root = _linked_repo(str(tmp_path / "tracked-link"), "real.txt", tracked=True)
+    os.remove(os.path.join(root, "link"))
+    os.symlink("other.txt", os.path.join(root, "link"))
+
+    listed = reader.main(root)
+    assert "link" in {c["path"] for c in listed["changes"]}, "the row must be listed"
+
+    got = reader.main(root, op="worktree", entry="link")
+    assert got["ok"] is True, got
+    assert got["kind"] == "diff"
+    # The diff is the link text changing, NOT either file's contents.
+    assert "real.txt" in got["diff"] and "other.txt" in got["diff"]
+    assert "real contents" not in got["diff"]
+    assert "other contents" not in got["diff"]
+
+
+def test_an_untracked_symlink_is_still_refused(reader, tmp_path):
+    # The other half of the pair: no safe branch exists for this one, because
+    # `--no-index` would render the target's bytes under the link's name.
+    root = _linked_repo(str(tmp_path / "untracked-link"), "real.txt", tracked=False)
+    got = reader.main(root, op="worktree", entry="link")
+    assert got["ok"] is False and got["reason"] == "symlink"
+    assert "real contents" not in str(got)
+
+
+def test_an_untracked_symlink_to_a_directory_is_refused_too(reader, tmp_path):
+    # `os.path.isdir` follows the link, so without a guard on BOTH untracked
+    # branches this would slip into the untracked-directory listing instead.
+    root = str(tmp_path / "dirlink")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "seed.txt", "seed\n")
+    write(root, "inner/kept.txt", "kept\n")
+    git(root, "add", "seed.txt")
+    git(root, "commit", "-q", "-m", "seed", when="2026-08-02T10:00:00+00:00")
+    os.symlink(os.path.join(root, "inner"), os.path.join(root, "innerlink"))
+
+    got = reader.main(root, op="worktree", entry="innerlink")
+    assert got["ok"] is False and got["reason"] == "symlink"
+
+
+def test_a_symlink_row_listed_inside_an_untracked_directory_is_checked_when_clicked(
+        reader, tmp_path):
+    # `_untracked_dir` lists rows via `ls-files --others`; each row is a fresh
+    # `wt=` request, so it must be containment-checked on ITS OWN and not trusted
+    # because its parent row was.
+    root = str(tmp_path / "nested-link")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "seed.txt", "seed\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-08-03T10:00:00+00:00")
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("SENSITIVE\n", encoding="utf-8")
+    os.makedirs(os.path.join(root, "fresh"))
+    write(root, "fresh/plain.txt", "plain\n")
+    os.symlink(str(outside), os.path.join(root, "fresh", "leak.txt"))
+
+    listing = reader.main(root, op="worktree", entry="fresh/")
+    assert listing["kind"] == "untracked-dir"
+    assert "fresh/leak.txt" in listing["files"], "git lists it; we must not hide it"
+
+    clicked = reader.main(root, op="worktree", entry="fresh/leak.txt")
+    assert clicked["ok"] is False
+    assert clicked["reason"] in ("outside-repo", "symlink")
+    assert "SENSITIVE" not in str(clicked)
+    # The sibling that is an ordinary file still opens.
+    assert reader.main(root, op="worktree", entry="fresh/plain.txt")["ok"] is True
+
+
+def test_a_tracked_symlink_pointing_outside_the_repo_is_refused(reader, tmp_path):
+    # Documented residual of keeping containment uniform (see `_contain`): this
+    # branch would be safe, but one containment rule for the whole op beats a rule
+    # that varies by a fact we learn from a git call. Pinned so the trade is
+    # visible if anyone revisits it.
+    outside = tmp_path / "outside.txt"
+    outside.write_text("OUTSIDE\n", encoding="utf-8")
+    root = _linked_repo(str(tmp_path / "tracked-out"), str(outside), tracked=True)
+    got = reader.main(root, op="worktree", entry="link")
+    assert got["ok"] is False and got["reason"] == "outside-repo"
+    assert "OUTSIDE" not in str(got)

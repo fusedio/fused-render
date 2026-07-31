@@ -590,33 +590,49 @@ def _check_op(op, sha, entry):
 
 
 def _contain(root, rel, full):
-    """The half of the containment check that needs the filesystem (GT-6).
+    """Containment for EVERY working-tree entry: the realpath must be under root.
 
-    `_check_op`'s string test is necessary and not sufficient: it proves the
-    entry NAMES nothing outside the repository, but every consumer of that name
-    FOLLOWS symlinks. `os.path.isfile` follows them, and so does
-    `git diff --no-index -- /dev/null <rel>`, which renders the target's bytes —
-    so an untracked `link -> /etc/shadow` sitting inside the repo passes a string
-    test made of nothing but repo-relative segments and then puts that file in
-    the diff pane. The check plainly means "inside the repository", so it is made
-    to mean that:
+    `_check_op`'s string test is necessary and not sufficient — it proves the
+    entry NAMES nothing outside the repository, but the consumers of that name
+    resolve it, so a link is how a repo-relative-looking name reaches outside.
+    This also covers the case an `islink` test on the final component misses
+    entirely: an ordinary file reached through a symlinked PARENT directory.
 
-    * the REALPATH must still be under the root — which also covers a symlinked
-      parent directory, where the final component is not a link at all;
-    * and a symlinked entry is refused outright even when its target stays
-      inside, because `--no-index` would show the target's content under the
-      link's name, which is a different file than the row claims.
+    Deliberately kept uniform across the tracked and untracked branches rather
+    than pushed down into the one that reads bytes. One containment rule for the
+    whole op is easier to reason about than a rule that varies by trackedness —
+    and trackedness is something we learn from a git call, i.e. later than this.
 
-    Only the working-tree op needs this. A TRACKED symlink goes through
-    `git diff HEAD -- <rel>`, where git handles it as a symlink (it diffs the
-    link's target path text, it does not read through it) — the `--no-index`
-    branch is the one that reads bytes off whatever the name resolves to.
+    Known residual, stated rather than hidden: a TRACKED symlink whose target is
+    outside the repo is refused here even though its branch (`git diff HEAD --`)
+    would never read through it. That is the conservative side of the trade, and
+    it costs a diff nobody can see rather than showing bytes from outside.
     """
     real_root = os.path.realpath(root)
     real = os.path.realpath(full)
     if real != real_root and not real.startswith(real_root + os.sep):
         raise _Refused("outside-repo",
                        f"{rel} resolves outside the repository.")
+
+
+def _refuse_untracked_link(rel, full):
+    """Refuse a symlink on the UNTRACKED branches only.
+
+    Placement is the whole point, and getting it wrong is what this function
+    exists to fix: the check used to sit in `_contain`, which runs before the
+    tracked/untracked split, so it refused every symlink row — including a
+    TRACKED, modified symlink whose branch is perfectly safe. `git diff HEAD --
+    <rel>` treats a symlink as a symlink: it diffs the link's target *path text*
+    and never reads through it, so a tracked link must diff normally.
+
+    An untracked link has no such branch. `git diff --no-index -- /dev/null
+    <rel>` follows it and renders the TARGET's bytes under the link's name, which
+    is a different file than the row claims — true whether the target is outside
+    the repository (already refused by `_contain`) or inside it. And an untracked
+    symlink to a DIRECTORY would slip into the `_untracked_dir` listing branch by
+    way of `os.path.isdir` following it, so this guards both untracked branches
+    rather than only the `--no-index` call.
+    """
     if os.path.islink(full):
         raise _Refused("symlink",
                        f"{rel} is a symbolic link. Open its target directly — "
@@ -660,6 +676,8 @@ def _worktree(root, entry, has_commits):
     tracked = _git(root, "ls-files", "--error-unmatch", "-z", *_pathspec(rel),
                    allow=(0, 1, 128)).strip(b"\0")
     untracked = not tracked
+    if untracked:
+        _refuse_untracked_link(rel, full)
     # One stat decides directory-ness. The status row's trailing "/" would say the
     # same thing, but `_check_op` strips it (deliberately — it is a path, and a
     # trailing slash must not change containment), so the fact is re-derived here
