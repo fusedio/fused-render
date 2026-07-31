@@ -37,8 +37,11 @@ SAMPLE_NB = {
         # test can tell a saved render from a fresh execution
         {"cell_type": "code", "id": "c1", "metadata": {}, "execution_count": 1,
          "source": "print('hello run')",
-         "outputs": [{"output_type": "stream", "name": "stdout",
-                      "text": "saved hello\n"}]},
+         "outputs": [
+             {"output_type": "stream", "name": "stdout", "text": "saved hello\n"},
+             {"output_type": "display_data", "data": {
+                 "text/html": "<img src='/no-such-output-image' onerror='window.__nbXss=true'>"}},
+         ]},
         {"cell_type": "code", "id": "c2", "metadata": {},
          "execution_count": None, "source": "x = 41", "outputs": []},
         {"cell_type": "code", "id": "c3", "metadata": {},
@@ -172,6 +175,9 @@ def test_notebook_end_to_end(page_and_nb):
     assert frame.locator("#nb").count() == 1
     assert "Sample notebook" in _cell_text(frame, "m1", ".md-view h1")
     assert "saved hello" in _cell_text(frame, "c1", ".console")
+    _wait_for(lambda: frame.locator(".html-out").count() == 1 or None, 10)
+    time.sleep(0.5)  # let a failing image fire its onerror handler if scripts can run
+    assert frame.evaluate("window.__nbXss === true") is False
 
     # run the print cell: fresh stdout replaces the saved output, count bumps
     _run_cell(frame, "c1")

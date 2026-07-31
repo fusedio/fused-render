@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 
 import pytest
 
@@ -282,3 +283,79 @@ def test_cache_dir_default_without_server_env(kernel_mod, monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
     assert kernel_mod._cache_dir() == os.path.expanduser(
         "~/.cache/fused-render-notebook")
+
+
+def test_listdir_does_not_fallback_to_a_kernel_scan_when_stat_fails(
+        kernel_mod, monkeypatch, tmp_path):
+    def stat_failed(*_):
+        raise OSError("server unavailable")
+
+    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_failed)
+    monkeypatch.setattr(kernel_mod.os, "listdir",
+                        lambda _: pytest.fail("must not scan an unverified mount"))
+    with pytest.raises(OSError, match="server unavailable"):
+        kernel_mod._listdir(str(tmp_path), "http://127.0.0.1:9999")
+
+
+def _daemon_request(state, path, body):
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{state['port']}{path}?t={state['token']}",
+        data=json.dumps(body).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as response:
+        return json.load(response)
+
+
+def test_daemon_serializes_restart_and_execute(tmp_path):
+    home = tmp_path / "home"
+    env = dict(os.environ, FUSED_RENDER_HOME=str(home))
+    proc = subprocess.Popen(
+        [sys.executable, KERNEL, "--serve"], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    state_path = home / "cache" / "notebook-daemon" / "daemon.json"
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not state_path.exists():
+            time.sleep(0.05)
+        assert state_path.exists(), "daemon did not write its state file"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        kernel = _daemon_request(state, "/kernel/ensure", {
+            "nb_path": str(tmp_path / "test.ipynb"), "python": sys.executable})
+        for _ in range(10):
+            errors = []
+            barrier = threading.Barrier(2)
+
+            def request(path, body):
+                try:
+                    barrier.wait()
+                    _daemon_request(state, path, body)
+                except BaseException as exc:  # communicate thread failures to pytest
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=lambda: request(
+                    "/kernel/restart", {"kernel_id": kernel["kernel_id"]}),
+                    daemon=True),
+                threading.Thread(target=lambda: request(
+                    "/kernel/execute", {"kernel_id": kernel["kernel_id"],
+                                        "cell_id": "c1", "code": "1 + 1"}),
+                    daemon=True),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+                assert not thread.is_alive()
+            assert not errors
+    finally:
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            try:
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{state['port']}/quit?t={state['token']}",
+                    timeout=3).read()
+            except OSError:
+                pass
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)

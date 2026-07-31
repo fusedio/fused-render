@@ -51,6 +51,12 @@ KERNEL_IDLE_S = 30 * 60
 EVENT_BUFFER_MAX = 10000
 
 
+def _ensure_cache_dir():
+    os.makedirs(CACHE_DIR, mode=0o700, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(CACHE_DIR, 0o700)
+
+
 def _me():
     if "__file__" in globals():
         return os.path.abspath(__file__)
@@ -86,7 +92,7 @@ def _alive(port, version):
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/ping", timeout=2) as r:
             d = json.load(r)
         return d.get("ok") and d.get("version") == version
-    except Exception:
+    except (OSError, ValueError):
         return False
 
 
@@ -99,7 +105,7 @@ def _read_state():
 
 
 def _claim_lock():
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    _ensure_cache_dir()
     try:
         fd = os.open(START_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
@@ -108,7 +114,7 @@ def _claim_lock():
                 os.unlink(START_LOCK)
                 return _claim_lock()
         except OSError:
-            pass
+            return False
         return False
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(str(os.getpid()))
@@ -135,12 +141,9 @@ def _remote_meta(src, path):
     import urllib.request
     if not src:
         return None
-    try:
-        with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
-                                    timeout=10) as r:
-            return json.load(r)
-    except Exception:  # noqa: BLE001 — unreachable stat -> presume local
-        return None
+    with urllib.request.urlopen(_server_url(src, "/api/fs/stat", path),
+                                timeout=10) as r:
+        return json.load(r)
 
 
 def _list_remote(src, path, cap=5000):
@@ -170,10 +173,7 @@ def _listdir(path, src):
     if meta and meta.get("remote"):
         if not meta.get("is_dir"):
             base = os.path.dirname(base) or os.path.expanduser("~")
-        try:
-            entries = _list_remote(src, base)
-        except Exception:  # noqa: BLE001
-            entries = []
+        entries = _list_remote(src, base)
         for ent in entries:
             nm = ent["name"]
             if nm.startswith("."):
@@ -248,7 +248,7 @@ def main(action: str = "ensure", path: str = "", src: str = "", name: str = ""):
             urllib.request.urlopen(
                 f"http://127.0.0.1:{st.get('port')}/quit?t={st.get('token', '')}",
                 timeout=1).read()
-        except Exception:
+        except OSError:
             pass
 
     if not _claim_lock():
@@ -290,7 +290,7 @@ def main(action: str = "ensure", path: str = "", src: str = "", name: str = ""):
     finally:
         try:
             os.unlink(START_LOCK)
-        except OSError:
+        except FileNotFoundError:
             pass
 
 
@@ -338,12 +338,13 @@ def _serve():
             kw = ({"creationflags": subprocess.CREATE_NO_WINDOW}
                   if os.name == "nt" else {})
             cwd = os.path.dirname(self.nb_path)
-            self.proc = subprocess.Popen(
+            proc = subprocess.Popen(
                 [self.python, _body()],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd=cwd if os.path.isdir(cwd) else None, env=env,
                 text=True, encoding="utf-8", errors="replace", bufsize=1, **kw)
-            threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
+            self.proc = proc
+            threading.Thread(target=self._read, args=(proc,), daemon=True).start()
 
         def _read(self, proc):
             for line in proc.stdout:
@@ -386,9 +387,12 @@ def _serve():
             if len(self.events) > EVENT_BUFFER_MAX:
                 del self.events[:len(self.events) - EVENT_BUFFER_MAX]
 
-        def _send(self, req):
-            self.proc.stdin.write(json.dumps(req) + "\n")
-            self.proc.stdin.flush()
+        def _send_locked(self, req):
+            proc = self.proc
+            if proc is None or proc.poll() is not None or proc.stdin is None:
+                raise RuntimeError("kernel is dead — restart it")
+            proc.stdin.write(json.dumps(req) + "\n")
+            proc.stdin.flush()
 
         def execute(self, cell_id, code):
             with self.lock:
@@ -402,31 +406,49 @@ def _serve():
                 if self.ready.is_set():
                     self.state = "busy"
                 self.last_used = time.time()
-            self._send({"op": "execute", "id": eid, "code": code})
+                try:
+                    self._send_locked({"op": "execute", "id": eid, "code": code})
+                except (BrokenPipeError, OSError, RuntimeError, ValueError) as exc:
+                    self.pending.remove(eid)
+                    self.cells.pop(eid, None)
+                    self.counts.pop(eid, None)
+                    self.state = "dead"
+                    self._push({"type": "dead", "returncode": None})
+                    raise RuntimeError("kernel is dead — restart it") from exc
             return eid, self.exec_count
 
         def interrupt(self):
-            self.last_used = time.time()
-            self._send({"op": "interrupt"})
+            with self.lock:
+                self.last_used = time.time()
+                self._send_locked({"op": "interrupt"})
 
         def restart(self):
-            old, self.proc = self.proc, None
-            self.ready.clear()
-            _kill(old)
             with self.lock:
+                old, self.proc = self.proc, None
+                self.ready.clear()
+                _kill(old)
                 self.pending = []
+                self.cells = {}
+                self.counts = {}
                 self.exec_count = 0
                 self.state = "starting"
                 self.last_used = time.time()
                 self._push({"type": "restarted"})
-            self._spawn()
+                try:
+                    self._spawn()
+                except OSError:
+                    self.state = "dead"
+                    self._push({"type": "dead", "returncode": None})
+                    raise
 
         def shutdown(self):
-            old, self.proc = self.proc, None
             with self.lock:
+                old, self.proc = self.proc, None
                 self.state = "dead"
                 self.pending = []
-            _kill(old)
+                self.cells = {}
+                self.counts = {}
+                _kill(old)
 
     def _kill(proc):
         if proc is None or proc.poll() is not None:
@@ -542,7 +564,7 @@ def _serve():
                     self._send(404, {"error": "not found"})
             except KeyError as e:
                 self._send(404, {"error": str(e).strip("'")})
-            except Exception as e:
+            except (OSError, RuntimeError, TypeError, ValueError) as e:
                 self._send(500, {"error": str(e)})
 
         def do_POST(self):
@@ -554,6 +576,8 @@ def _serve():
             try:
                 n = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(n) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("request body must be a JSON object")
                 if u.path == "/kernel/ensure":
                     self._send(200, do_ensure(body))
                 elif u.path == "/kernel/execute":
@@ -574,7 +598,7 @@ def _serve():
                     self._send(404, {"error": "not found"})
             except KeyError as e:
                 self._send(404, {"error": str(e).strip("'")})
-            except Exception as e:
+            except (OSError, RuntimeError, TypeError, ValueError) as e:
                 self._send(500, {"error": str(e)})
 
         def _send(self, code, obj):
@@ -592,10 +616,15 @@ def _serve():
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     port = srv.server_address[1]
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(STATE, "w", encoding="utf-8") as fh:
+    _ensure_cache_dir()
+    tmp_state = f"{STATE}.{os.getpid()}.tmp"
+    fd = os.open(tmp_state, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if os.name != "nt":
+        os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"port": port, "token": TOKEN,
                    "pid": os.getpid(), "version": VERSION}, fh)
+    os.replace(tmp_state, STATE)
 
     def reaper():
         while True:

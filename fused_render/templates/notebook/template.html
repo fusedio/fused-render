@@ -199,6 +199,7 @@
   .outputs { display: none; padding: 6px 4px 2px; overflow-x: auto; }
   .outputs.has { display: block; }
   .outputs img { max-width: 100%; }
+  .outputs .html-out { display: block; width: 100%; border: 0; }
   .outputs pre {
     margin: 0;
     font-family: "Cascadia Code", Consolas, ui-monospace, monospace;
@@ -513,8 +514,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
 
   let daemon = null, daemonP = null;   // {port, token}
   let kernelId = null, kernelP = null;
-  let since = 0, polling = false;
+  let since = 0, polling = false, pollEpoch = 0;
   let kState = "off";
+  let runningAll = false;
 
   const CUSTOM_ENV = "__custom__";
   const ANSI_RE = /\u001b\[[0-9;]*[A-Za-z]/g;
@@ -766,16 +768,17 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   // kernel for this notebook, then retry the original request against the new
   // kernel id. Anything still failing surfaces as an actionable message —
   // never the raw "Failed to fetch".
-  async function dFetch(path, body) {
+  async function dFetch(path, body, recover = true) {
     try {
       return await dSend(path, body);
     } catch (err) {
-      if (!(err instanceof TypeError) || recovering) {
+      if (!recover || !(err instanceof TypeError) || recovering) {
         throw err instanceof TypeError ? new Error(DAEMON_UNREACHABLE) : err;
       }
       recovering = true;
       try {
         const oldKernel = kernelId;
+        stopPolling();
         daemon = null;
         daemonP = null;
         kernelId = null;
@@ -833,13 +836,20 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   function anyRunning() {
     return cells.some((c) => c.running);
   }
+  function stopPolling() {
+    pollEpoch += 1;
+    polling = false;
+  }
   function startPolling() {
     if (polling || !kernelId) return;
+    const id = kernelId;
+    const epoch = ++pollEpoch;
     polling = true;
     (async () => {
       try {
-        while (polling) {
-          const r = await dFetch(`/kernel/events?kernel_id=${kernelId}&since=${since}`);
+        while (polling && epoch === pollEpoch && kernelId === id) {
+          const r = await dFetch(`/kernel/events?kernel_id=${id}&since=${since}`, undefined, false);
+          if (epoch !== pollEpoch || kernelId !== id) return;
           since = r.next;
           for (const ev of r.events) handleEvent(ev);
           setKState(r.state);
@@ -847,11 +857,12 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
           await sleep(200);
         }
       } catch (err) {
+        if (epoch !== pollEpoch || kernelId !== id) return;
         toast(err.message || String(err));
         for (const c of cells) { if (c.running) { c.running = false; setDot(c, ""); } }
         setKState("dead"); // honest chip state instead of an endless spinner
       } finally {
-        polling = false;
+        if (epoch === pollEpoch) polling = false;
       }
     })();
   }
@@ -922,11 +933,17 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     setDot(c, "");
   }
   function clearOutputs(c) {
+    const previous = c.model.outputs;
     c.model.outputs = [];
     c.outEl.innerHTML = "";
     c.outEl.classList.remove("has");
     c.conEl.innerHTML = "";
     c.conEl.classList.remove("has");
+    return previous;
+  }
+  function restoreOutputs(c, outputs) {
+    c.model.outputs = outputs;
+    for (const out of outputs) renderOutput(c, out);
   }
   function appendOutput(c, out) {
     const outs = c.model.outputs;
@@ -960,8 +977,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     } else if (out.output_type === "execute_result" || out.output_type === "display_data") {
       const d = out.data || {};
       if (d["text/html"]) {
-        el = document.createElement("div");
-        el.innerHTML = joinText(d["text/html"]);
+        el = document.createElement("iframe");
+        el.className = "html-out";
+        el.setAttribute("sandbox", "");
+        el.srcdoc = joinText(d["text/html"]);
       } else if (d["image/png"]) {
         el = document.createElement("img");
         el.src = "data:image/png;base64," + joinText(d["image/png"]).replace(/\s/g, "");
@@ -1527,22 +1546,26 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
 
   // ------------------------------------------------------------- running
   async function runCell(c) {
+    if (runningAll || c.running) return;
     if (c.model.cell_type === "markdown") {
       renderMdCell(c);
       markDirty();
       return;
     }
+    let previousOutputs;
     try {
       syncEditor(c);
-      clearOutputs(c);
+      previousOutputs = clearOutputs(c);
       c.running = true;
       c.runStart = null;
       c.timeEl.textContent = "";
       setDot(c, "run");
       await ensureKernel();
       await dFetch("/kernel/execute", { kernel_id: kernelId, cell_id: c.id, code: c.model.source });
+      markDirty();
       startPolling();
     } catch (err) {
+      if (previousOutputs) restoreOutputs(c, previousOutputs);
       c.running = false;
       setDot(c, "err");
       toast("Run failed: " + (err.message || err));
@@ -1560,21 +1583,35 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
   }
   async function runAll() {
+    if (runningAll || anyRunning()) return;
+    runningAll = true;
+    let active = null;
     try {
       await ensureKernel();
       for (const c of cells) {
         if (c.model.cell_type !== "code") continue;
         syncEditor(c);
-        clearOutputs(c);
+        const previousOutputs = clearOutputs(c);
         c.running = true;
+        active = { cell: c, outputs: previousOutputs };
         c.runStart = null;
         c.timeEl.textContent = "";
         setDot(c, "run");
         await dFetch("/kernel/execute", { kernel_id: kernelId, cell_id: c.id, code: c.model.source });
+        markDirty();
+        active = null;
       }
-      startPolling();
     } catch (err) {
+      if (active) {
+        restoreOutputs(active.cell, active.outputs);
+        active.cell.running = false;
+        active.cell.runStart = null;
+        setDot(active.cell, "err");
+      }
       toast("Run all failed: " + (err.message || err));
+    } finally {
+      runningAll = false;
+      startPolling();
     }
   }
   async function interruptKernel() {
@@ -1632,16 +1669,26 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   });
   async function switchEnv(path) {
     if ((pythonPath() || "") === path) return;
+    runningAll = false;
+    stopPolling();
+    const previous = pythonPath();
+    try {
+      if (kernelId) {
+        await dFetch("/kernel/shutdown", { kernel_id: kernelId });
+      }
+    } catch (err) {
+      kernelId = null;
+      kernelP = null;
+      since = 0;
+      envEl.value = previous;
+      throw err;
+    }
     const meta = nb.metadata.fused_render || (nb.metadata.fused_render = {});
     meta.python = path;
     markDirty();
-    if (kernelId) {
-      await dFetch("/kernel/shutdown", { kernel_id: kernelId });
-    }
     kernelId = null;
     kernelP = null;
     since = 0;
-    polling = false;
     for (const c of cells) markStale(c);
     await ensureKernel();
   }
