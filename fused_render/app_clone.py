@@ -333,6 +333,40 @@ def _safe_folder_name(name: str | None) -> str:
     return cleaned or "cloned-page"
 
 
+#: The shape `share create` mints an OPAQUE public token in: lowercased base32, 26+ chars — a
+#: 128-bit CSPRNG draw (fused's `mounts.opaque_token`, whose `is_opaque_token` rule this
+#: mirrors; both planes mint with that same function). Copied rather than imported because
+#: `fused` is an optional extra here and cloning must work with no CLI installed at all.
+#:
+#: A shape check, never a security decision — it only chooses which of two names a folder gets.
+#: The distinction it is after: a *named* link is one the publisher deliberately typed
+#: (`share create --token my-solar-map`), while an unnamed public link's token is random.
+_OPAQUE_TOKEN = re.compile(r"^[a-z2-7]{26,}$")
+
+
+def _link_name(url: str) -> str | None:
+    """The publisher's own name for this deployment, from its URL — or None if there isn't one.
+
+    A deployed page's URL ends in its token, and a token is either a name the publisher chose
+    or a random opaque string. When it is a chosen one it is the **best** name available for
+    the clone's folder: it is what the publisher calls this deployment, what the link the user
+    followed says, and it is stable across redeploys (a repoint keeps the token). The app name
+    is a fallback, not a first choice — two pages can share it, and it describes the source
+    file rather than the thing that was shared.
+
+    None for an opaque token, where the app name is far more useful than 26 random characters.
+    Read from the URL we are about to fetch — nothing in the inventory reports whether a token
+    was named, and the URL is the one part of this the user actually saw.
+    """
+    segments = [s for s in urlsplit(url).path.split("/") if s]
+    if segments and segments[-1] == CLONE_SUB_PATH:
+        segments = segments[:-1]
+    if not segments:
+        return None
+    token = segments[-1]
+    return None if _OPAQUE_TOKEN.match(token) else token
+
+
 # The bundle's own `manifest.json` is NOT kept in the clone. It is read during the import
 # (`_read_bundle` — for `root` and `page`) and then dropped with the rest of staging. An
 # earlier build wrote it into the page folder as a dotfile "so a later export could reproduce
@@ -485,7 +519,9 @@ def probe(src: str) -> dict:
     _require_supported_protocol(meta)
     files = meta.get("files")
     files = files if isinstance(files, list) else []
-    name = _safe_folder_name(meta.get("name") if isinstance(meta.get("name"), str) else None)
+    app_name = meta.get("name") if isinstance(meta.get("name"), str) else None
+    # The link's own name when the publisher chose one, else the app name (`_link_name`).
+    name = _safe_folder_name(_link_name(url) or app_name)
     try:
         dest = zip_import.unique_dir(fused_dir(), name)
     except zip_import.ZipRejected as exc:
@@ -495,7 +531,9 @@ def probe(src: str) -> dict:
         raise CloneError(str(exc)) from None
     return {
         "url": url,
-        "name": meta.get("name") if isinstance(meta.get("name"), str) else name,
+        # The app's own name, for the confirm step's heading — the FOLDER is `name`/`folder`
+        # below, which prefers the link's name when there is one.
+        "name": app_name if app_name else name,
         # Destination paths, not archive members — the confirm step's list has to name what
         # will exist on disk (see `_destination_files`).
         "files": _destination_files(files, meta.get("root")),
@@ -504,9 +542,9 @@ def probe(src: str) -> dict:
         # describe the download, they are not a schema this client computes against.
         "download_bytes": meta.get("download_bytes"),
         "dest": dest,
-        # The folder name only ever differs from `name` when something is already there —
-        # surface it so the confirm step can say "will be cloned as …" rather than
-        # surprising the user after the fact.
+        # The folder the clone will use. It only differs from the name derived above when
+        # something is already there — surface it so the confirm step can say "will be cloned
+        # as …" rather than surprising the user after the fact.
         "folder": os.path.basename(dest),
         "renamed": os.path.basename(dest) != name,
     }
@@ -570,7 +608,9 @@ def clone(src: str, folder: str | None = None) -> dict:
 
     try:
         layout = _read_bundle(staging_dir)
-        name = _safe_folder_name(layout["name"])
+        # Same order the preview uses, so the fallback name matches what a preview would have
+        # shown: the link's own name when the publisher chose one, else the bundle's.
+        name = _safe_folder_name(_link_name(url) or layout["name"])
         os.makedirs(fused_dir(), exist_ok=True)
         # The payload dir becomes the page folder: the manifest's `root` holds the files at
         # their real page-relative paths, which is exactly the local layout. The manifest is

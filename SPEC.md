@@ -1340,10 +1340,18 @@ working, not a second opinion about the format.
   but nothing read it back — `export_page` recomputes the manifest from the page's own files —
   so it was write-only clutter, one more path the confirm step had to predict, and a second
   move on the commit path that needed its own rollback. The commit is now a single rename.
-  The folder is named after the **deployed app's name** (the inventory's advisory `name`,
-  reduced to a conservative allow-list since it arrives from a host we do not control and
-  becomes a path) — which is why the publisher side states `--name` explicitly (DP-20)
-  instead of letting the export's temp directory name the app. The confirm button says
+  The folder is named after the **link**, falling back to the **app name**: a deployed page's
+  URL ends in its token, which is either a name the publisher chose (`share create --token
+  my-solar-map`) or a random opaque one, and a chosen name is the best name available — it is
+  what the link the user followed says, what the publisher calls the deployment, and it is
+  stable across redeploys (a repoint keeps the token). An opaque token (lowercased base32, 26+
+  chars — `app_clone._OPAQUE_TOKEN`, mirroring fused's `mounts.is_opaque_token`; a shape check
+  used for naming only, never as a gate) names nothing, so the app name wins there — which is
+  why the publisher side states `--name` explicitly (DP-20) instead of letting the export's
+  temp directory name the app. Both are reduced to a conservative allow-list before becoming a
+  path, since both arrive from outside. The app name still heads the confirm step; only the
+  folder prefers the link. The same order applies on the commit path, which may run with no
+  preview at all. The confirm button says
   **Clone to local**, not "Clone to <folder>": the body above it already names the
   destination, and a generated folder name in a button label is noise.
   **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an

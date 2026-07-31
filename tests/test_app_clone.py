@@ -30,6 +30,11 @@ FUSED = {"X-Fused": "1"}
 PAGE_HTML = "<html><head></head><body><script>fused.runPython('./sine.py', {});</script></body></html>"
 SINE = "def main(n: int = 1):\n    return n\n"
 
+#: A deployed page whose token is the OPAQUE kind `share create --public` mints with no
+#: `--token`: lowercased base32, 26 chars of CSPRNG. The folder name falls back to the app
+#: name for these; most tests here use the *named* link (`.../my-link`) instead.
+OPAQUE_LINK = "https://open.fused.io/p45jyhkofofan5od3hq3fjemk4"
+
 
 def _bundle_zip(
     *,
@@ -124,7 +129,7 @@ class Harness:
 
 
 def _exhausted(*a, **k):
-    raise zip_import.ZipRejected("could not find an unused folder name for 'my-page' in /w")
+    raise zip_import.ZipRejected("could not find an unused folder name for 'my-link' in /w")
 
 
 @pytest.fixture
@@ -410,9 +415,9 @@ def test_the_preview_describes_what_the_clone_will_do(h):
     assert [f["path"] for f in body["files"]] == ["page.html", "sine.py"]
     assert body["bytes"] == 330
     assert body["download_bytes"] == 420
-    assert body["folder"] == "my-page"
+    assert body["folder"] == "my-link"
     assert body["renamed"] is False
-    assert body["dest"] == os.path.join(str(h.workspace), "my-page")
+    assert body["dest"] == os.path.join(str(h.workspace), "my-link")
 
 
 def test_the_preview_names_the_files_the_clone_will_actually_create(h):
@@ -467,15 +472,66 @@ def test_a_host_that_omits_root_leaves_member_names_alone(h):
     assert "files/page.html" in listed  # unchanged, not guessed at
 
 
+def test_the_folder_is_named_after_the_link_when_the_publisher_named_it(h):
+    """A chosen link name is the best name available for the clone's folder.
+
+    `share create --token my-link` is the publisher deliberately naming this deployment — it
+    is what the link the user followed says and what the publisher calls it, and it survives
+    redeploys (a repoint keeps the token). The app name is the fallback: it describes the
+    source file, and two pages can share it.
+    """
+    h.serve(meta=_meta(name="my-page"))
+    body = h.client.get(
+        "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+    ).json()
+    assert body["folder"] == "my-link"
+    # The app's own name still heads the confirm step — only the FOLDER prefers the link.
+    assert body["name"] == "my-page"
+
+
+def test_an_opaque_link_falls_back_to_the_app_name(h):
+    # 26 random base32 characters name nothing. An unnamed public link's token is minted by
+    # CSPRNG, so it is a worse folder name than the app's own — the fallback is not a
+    # degradation here, it is the better of the two.
+    h.serve(meta=_meta(name="my-page"))
+    body = h.client.get("/api/clone-app/info", params={"src": OPAQUE_LINK}).json()
+    assert body["folder"] == "my-page"
+
+
+def test_an_opaque_link_falls_back_on_the_commit_path_too(h):
+    # The POST can be made with no preview at all, so the same order has to hold there.
+    h.serve(archive=_bundle_zip(name="my-page"))
+    resp = h.client.post("/api/clone-app", json={"src": OPAQUE_LINK}, headers=FUSED)
+    assert resp.json()["folder"] == "my-page"
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://open.fused.io/my-link", "my-link"),
+        ("https://open.fused.io/my-link/_clone", "my-link"),
+        # A named mount on the managed plane is namespaced under the org slug — the TOKEN is
+        # the last segment, not the org.
+        ("https://open.fused.io/acme/solar-2026", "solar-2026"),
+        (OPAQUE_LINK, None),
+        # 25 chars is short of the opaque shape, so it reads as a name — which is the safe
+        # direction: the worst case is a folder named after a real token the user can see.
+        ("https://open.fused.io/" + "a" * 25, "a" * 25),
+    ],
+)
+def test_the_link_name_is_read_from_the_url(url, expected):
+    assert app_clone._link_name(url) == expected
+
+
 def test_the_preview_reports_the_collision_safe_name_it_will_use(h):
     # The confirm step must name the folder the clone ACTUALLY lands in, or the user goes
-    # looking for "my-page" and finds their unrelated existing folder instead.
-    (h.workspace / "my-page").mkdir()
+    # looking for "my-link" and finds their unrelated existing folder instead.
+    (h.workspace / "my-link").mkdir()
     h.serve(meta=_meta())
     body = h.client.get(
         "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
     ).json()
-    assert body["folder"] == "my-page-2"
+    assert body["folder"] == "my-link-2"
     assert body["renamed"] is True
 
 
@@ -529,33 +585,33 @@ def test_a_clone_lands_as_an_openable_local_page(h):
 def test_the_clone_lands_in_the_folder_the_preview_promised(h, tmp_path):
     # CL-1: the preview writes nothing, so it cannot reserve the name — the client passes it
     # back instead. Without that, a page appearing in the workspace between the two calls
-    # would silently move the clone: `my-page` is free at preview time, so the confirm button
-    # shows "will be cloned to my-page", and it must still land there even though a LATER-created
+    # would silently move the clone: `my-link` is free at preview time, so the confirm button
+    # shows "will be cloned to my-link", and it must still land there even though a LATER-created
     # sibling would otherwise shift the derived name.
     h.serve(meta=_meta(), archive=_bundle_zip())
     preview = h.client.get(
         "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
     ).json()
-    assert preview["folder"] == "my-page"
+    assert preview["folder"] == "my-link"
     resp = h.client.post(
         "/api/clone-app",
         json={"src": "https://open.fused.io/my-link", "folder": preview["folder"]},
         headers=FUSED,
     )
-    assert resp.json()["folder"] == "my-page"
+    assert resp.json()["folder"] == "my-link"
 
 
 def test_a_promised_folder_that_is_taken_by_then_falls_back_and_reports_it(h):
     # The race the carry-through cannot close: honouring a name that now exists would
     # overwrite or merge (CL-2), so the derived name wins and the RESPONSE is authoritative.
-    (h.workspace / "my-page").mkdir()
+    (h.workspace / "my-link").mkdir()
     h.serve(archive=_bundle_zip())
     resp = h.client.post(
         "/api/clone-app",
-        json={"src": "https://open.fused.io/my-link", "folder": "my-page"},
+        json={"src": "https://open.fused.io/my-link", "folder": "my-link"},
         headers=FUSED,
     )
-    assert resp.json()["folder"] == "my-page-2"
+    assert resp.json()["folder"] == "my-link-2"
 
 
 def test_a_destination_appearing_mid_commit_is_never_nested_into(h, monkeypatch):
@@ -563,7 +619,7 @@ def test_a_destination_appearing_mid_commit_is_never_nested_into(h, monkeypatch)
     prediction and the write cannot swallow the payload.
 
     `shutil.move` onto an existing directory moves the source *inside* it — the clone would
-    land at `my-page/my-page/page.html` while the response said `my-page`, and the reported
+    land at `my-link/my-link/page.html` while the response said `my-link`, and the reported
     `view` path would 404. The rename fails instead, and the next name is used.
     """
     real_rename = app_clone.os.rename
@@ -585,11 +641,11 @@ def test_a_destination_appearing_mid_commit_is_never_nested_into(h, monkeypatch)
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     )
     body = resp.json()
-    assert body["folder"] == "my-page-2"
+    assert body["folder"] == "my-link-2"
     # The page is where the response says it is, and the squatter is untouched.
     assert os.path.isfile(body["page"])
-    assert (h.workspace / "my-page" / "someone-elses-file").read_text() == "mine"
-    assert not (h.workspace / "my-page" / "page.html").exists()
+    assert (h.workspace / "my-link" / "someone-elses-file").read_text() == "mine"
+    assert not (h.workspace / "my-link" / "page.html").exists()
 
 
 def test_running_out_of_folder_names_is_a_message_not_a_500(h, monkeypatch):
@@ -639,7 +695,7 @@ def test_a_second_clone_of_the_same_page_never_overwrites_the_first(h):
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     ).json()
     assert second["dest"] != first["dest"]
-    assert second["folder"] == "my-page-2"
+    assert second["folder"] == "my-link-2"
     with open(os.path.join(first["dest"], "page.html"), encoding="utf-8") as f:
         assert f.read() == "MY LOCAL EDITS"
 
@@ -959,9 +1015,7 @@ def test_a_hostile_app_name_cannot_steer_where_the_clone_lands(h, tmp_path):
 
 def test_an_empty_app_name_still_yields_a_usable_folder(h):
     h.serve(archive=_bundle_zip(manifest_over={"name": "///"}))
-    resp = h.client.post(
-        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
-    )
+    resp = h.client.post("/api/clone-app", json={"src": OPAQUE_LINK}, headers=FUSED)
     assert resp.json()["folder"] == "cloned-page"
 
 
