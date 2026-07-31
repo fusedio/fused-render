@@ -984,16 +984,23 @@
   // forward mapping: a leading single-letter segment is a drive, a leading
   // "unc" segment is a share, anything else is POSIX — meaningful only for a
   // path this same host's sidecarPath could have produced.
+  //
+  // Windows-shaped segments (drive letter / "unc") are only ever real on a
+  // Windows host — gated on sidecarRoot's OWN shape, not just a segment's
+  // length, so a real POSIX top-level dir that happens to be one letter long
+  // (e.g. a real "/a/file.txt", subpath "a/file.txt") is never misread as a
+  // drive letter on a POSIX host.
   function targetPathFromSidecarPath(path) {
     return loadConfig().then(() => {
       if (typeof sidecarRoot !== "string") return null;
       if (path.indexOf(sidecarRoot + "/") !== 0 || !/\.json$/i.test(path)) return null;
       const rel = path.slice(sidecarRoot.length + 1, -".json".length);
       const parts = rel.split("/");
-      if (parts[0] && parts[0].length === 1 && /[A-Za-z]/.test(parts[0])) {
+      const windowsHost = /^[A-Za-z]:/.test(sidecarRoot);
+      if (windowsHost && parts[0] && parts[0].length === 1 && /[A-Za-z]/.test(parts[0])) {
         return parts[0].toUpperCase() + ":\\" + parts.slice(1).join("\\");
       }
-      if (parts[0] === "unc" && parts.length >= 3) {
+      if (windowsHost && parts[0] === "unc" && parts.length >= 3) {
         return "\\\\" + parts[1] + "\\" + parts[2] +
           (parts.length > 3 ? "\\" + parts.slice(3).join("\\") : "");
       }
@@ -1131,11 +1138,25 @@
   // (see configPromise) rather than a second fetch. sidecarPath/
   // targetPathFromSidecarPath below await this before answering, since there
   // is no way to compute a sidecar's location without it.
+  //
+  // The assignment lives INSIDE loadConfig's own promise chain, not in
+  // startAutoReload's separate .then() below: startAutoReload only begins on
+  // DOMContentLoaded (LR-5), but an inline template can call
+  // fused.sidecarPath() before that fires. Doing the assignment here means
+  // whichever caller reaches loadConfig() first — startAutoReload or a
+  // template's own sidecarPath() call — populates sidecarRoot/mountsRoot/
+  // callsDir exactly once, since configPromise is memoized.
   let sidecarRoot = null;
   let configPromise = null;
   function loadConfig() {
     if (!configPromise) {
-      configPromise = fetch("/api/config").then((res) => res.json()).catch(() => ({}));
+      configPromise = fetch("/api/config").then((res) => res.json()).then((cfg) => {
+        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
+        if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
+        if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
+        if (cfg && typeof cfg.sidecar_root === "string") sidecarRoot = cfg.sidecar_root;
+        return cfg;
+      }).catch(() => ({}));
     }
     return configPromise;
   }
@@ -1234,15 +1255,11 @@
       if (file && !isUnwatchable(file)) watched.add(file);
       if (autoReloadEnabled) resubscribe();
     };
-    loadConfig()
-      .then((cfg) => {
-        if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
-        if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
-        if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
-        if (cfg && typeof cfg.sidecar_root === "string") sidecarRoot = cfg.sidecar_root;
-      })
-      .catch(() => {})
-      .then(begin);
+    // loadConfig's own promise chain does the mountsRoot/callsDir/callsSuffix/
+    // sidecarRoot assignment now (so a template calling fused.sidecarPath()
+    // before this ever runs still gets it) — this just waits on it. loadConfig
+    // never rejects (its own .catch(() => ({})) absorbs a fetch failure).
+    loadConfig().then(begin);
   }
 
   window.fused = {
