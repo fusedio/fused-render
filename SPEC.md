@@ -3427,16 +3427,53 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   would be a performance trap. `abspath` is load-bearing, not cosmetic: a
   relative path hashes to something the store never heard of, so the lookup
   would silently find nothing rather than fail.
-- **FH-3** **Versions are checkpoints, not per-edit pre-images — so "revert the
-  last change" is the newest version whose content DIFFERS from disk.** Measured
-  on a real session: 6 of 13 files matched their highest `@vN`, 7 did not,
-  because the file moved on after the last checkpoint. "Restore the highest N"
-  is therefore wrong roughly half the time, and would frequently be a no-op that
-  reads as a broken button. The differs-from-disk rule is correct whether a
-  checkpoint is a pre- or a post-image, which sidesteps the ambiguity rather than
-  betting on a reading of it. `differs` is a byte comparison per version, and an
-  ABSENT file makes every version differ — which is what gives "the agent
-  deleted my file" an undo.
+- **FH-3** **Versions are checkpoints, not per-edit pre-images, and undo is
+  POSITIONAL: find where disk sits in the chain, then step backwards.** Two
+  wrong rules were ruled out, in order, and both matter.
+
+  *"Restore the highest `@vN`"* is wrong roughly half the time. Measured on a
+  real session: 6 of 13 files matched their highest version, 7 did not, because
+  the file moved on after the last checkpoint. Restoring the highest N would
+  frequently be a no-op that reads as a broken button.
+
+  *"The newest version whose content differs from disk"* replaced it, and is the
+  sharper lesson: it reads as obviously correct, survived two reviews, and
+  **oscillates on the second press**.
+
+      disk == v3  ->  v3 differs=False, v2 differs=True  ->  target v2
+      disk == v2  ->  v3 differs=True and is newest      ->  target v3
+
+  ...for ever, with v1 unreachable at any point. It answers "which checkpoint is
+  most recent and isn't what I have", which is not what undo means.
+
+  The rule is therefore positional-then-differs, over the newest-first list:
+  **(1)** `position` = index of the **newest** entry whose content equals disk
+  (newest, not oldest: with duplicate content on both sides of a real checkpoint,
+  walking from the oldest match steps straight over it). **(2)** target = the
+  first entry **older** than `position` that still **differs** from disk — the
+  differs-check stays inside the walk rather than taking `position + 1`, because
+  identical adjacent versions are common and restoring one writes the same bytes
+  back. **(3)** `position == -1` (disk is in no checkpoint at all) means the first
+  step back is "discard to the most recent checkpoint": target = entry 0. This is
+  the same index that yields `unique_current`, derived once so the two can never
+  disagree. **(4)** no such older entry ⇒ `at_earliest`, a distinct terminal state
+  that DISABLES the button and says why — falling back to something newer is
+  exactly what made the previous rule a toggle. Result: `v3 → v2 → v1 → delete →
+  disabled`, monotonic, whole chain reachable. "Redo" needs no new UI, because
+  the timeline already lets the user click a newer row explicitly; that asymmetry
+  is right for a button labelled "Revert last change".
+
+  `differs` is a byte comparison per version. An ABSENT file makes every content
+  version differ — which is what gives "the agent deleted my file" an undo — while
+  making a did-not-exist boundary MATCH, so the walk terminates there instead of
+  offering a delete that would do nothing.
+
+  `at_earliest` may only be claimed by an **enriched** scan (FH-5). The boot
+  timeline skips the transcripts, cannot see the creation boundary, and so reports
+  it one step early; a view that believed it disabled the button on a file whose
+  remaining step back was a delete the plan would have offered. The unenriched
+  answer is provisional (`enriched: false` on the payload) and the click asks
+  `revert_plan`, which always enriches and is the authority.
 - **FH-4** **Chains are per-session and version numbers collide, so the timeline
   merges on TIME.** A path edited across several sessions has a separate chain
   under each `<sessionId>/`, and N **restarts**: two sessions both holding a
@@ -3457,9 +3494,25 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   **substring prefilter** so `json.loads` runs on the handful of candidate lines
   rather than the file (a 5 MB transcript becomes a 5 MB `in` scan); and a
   blanket except per transcript, so corrupt/truncated/half-written degrades to
-  "no extra rows", never to an error. `trackingPath` is repo-relative and this
-  code does not know the repo root, so it is matched as a path-boundary **suffix**
-  of the target's absolute path. Such a row carries its own record's timestamp —
+  "no extra rows", never to an error. Transcripts are reached by a **glob** on
+  `projects/*/<sessionId>.jsonl`, not by deriving the slug: the slug is the cwd
+  with separators replaced, which is lossy (a directory name containing `-` is
+  indistinguishable from a separator) and was never evidence of anything.
+
+  **Attribution is an identity test on the record's absolute `realParentDir`, not
+  a path suffix** — `join(realParentDir, basename(trackingPath)) ==
+  abspath(target)` — and this is the sharpest correctness rule in the feature.
+  `trackingPath` is repo-relative and this code has no idea what the repo root is,
+  so the original suffix match had no project attribution at all: `src/main.py`,
+  `README.md` and `index.ts` recur across every checkout on the disk, so an
+  unrelated project that CREATED its own `src/main.py` injected a boundary row
+  into this file's timeline — and since boundary rows sort by the transcript's own
+  timestamp it was typically the newest entry, hence the revert target, turning
+  "Revert last change" into a **DELETE of a file the agent never created**, behind
+  a confirm sheet asserting "Claude created it" about a file it had never seen. A
+  record with no usable `realParentDir` is **refused**, never guessed: the cost of
+  refusing is one missing row, the cost of guessing is deleting the wrong file.
+  Such a row carries its own record's timestamp —
   never a neighbouring row's; verified on a real chain where the creation
   boundary's `backupTime` is nine minutes before the next checkpoint's and only
   *looked* duplicated at display granularity — and when that stamp will not parse
@@ -3497,13 +3550,42 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   dir it listed, a hash it derived). And a restore may only touch a path the
   store **already has a version for**, which is the only target guard available
   to a module that cannot see the view: a crafted `file` param reaches nothing
-  the agent never edited. Directory targets are refused outright.
+  the agent never edited. Directory targets are refused outright, and so are
+  **symlinks**: `os.replace` swaps the LINK for a regular file rather than
+  writing through it, so a "successful" revert left the real file untouched with
+  its pre-revert content while the stash captured a file that was never
+  overwritten. Refusing is chosen over `realpath`-ing first, deliberately — the
+  store's key is the sha256 of the path the VIEW opened, so following a link
+  would revert a path whose own timeline is a different chain, and silently
+  editing a file the user did not name is worse than declining to.
 - **FH-9** **A confirm step is mandatory, because the content it overwrites is
   often the only copy.** Current on-disk bytes are frequently in NO checkpoint
   (FH-3), so a naive restore vaporizes work with no undo — the sharpest hazard in
   the feature. The plan payload reports `unique_current` (no version holds what is
   on disk) and the view gates an explicit warning on it, alongside byte counts,
-  line counts and the line delta, before any write. The delta is stated as **what
+  line counts and the line delta, before any write.
+
+  **The plan also reports whether a stash will actually be kept** (`stash`,
+  `stash_note`), computed by the same predicate the write runs — a stat, a decode
+  and an access, so there is no reason for the sheet not to know. Without it the
+  sheet carried a permanent hedge ("a copy is kept ... unless too large or not
+  text"), which made the one genuinely unrecoverable combination —
+  `unique_current` AND no stash — read exactly like the safe case; the write then
+  destroyed the only copy and the user learned about it in the past tense, beside
+  "Reverted to v3". That combination now gets stronger wording and a **second,
+  explicit gesture** (an acknowledgement that must be ticked before the button
+  enables), gated on the irreversible case only: demanding it for an ordinary step
+  back, which loses nothing unrecorded, would train the tick away.
+
+  **The bridge enforces the gate too, not just the page.** `revert` requires the
+  plan's `id` echoed back (also a freshness check — a plan built against one disk
+  state and applied against another is how a user confirms one diff and gets
+  another) and an explicit `confirm_unique` when the plan set `unique_current`,
+  refusing as data otherwise. The previous guard was a source grep asserting one
+  `action: "revert"` call site, which pins today's template rather than the bridge,
+  so any future second caller inherited an unguarded file-destroying entry point.
+
+  The delta is stated as **what
   the restore does** — lines it introduces, lines it takes away — because that is
   the number a confirm step has to show; the reverse framing reads identically on
   symmetric edits and lies on every asymmetric one. Above a byte cap, or for
@@ -3517,9 +3599,21 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
   cap or for non-text content, because the sidecar is a small JSON file three
   other writers rewrite constantly, not a version store — `file_history` already
-  is one. A skip is **reported**, so the view can make its confirm step firmer
-  rather than silently losing the net. A revert the user confirmed is never
-  blocked by a stash that could not be written.
+  is one. A skip is **reported** (FH-9) so the confirm step can escalate rather
+  than silently losing the net, and a revert the user confirmed — having been told
+  whether a copy would be kept — is never then blocked by a sidecar that could
+  not be written.
+
+  The stash is **byte-faithful**: the target is read in BINARY and decoded
+  explicitly, and the recorded `size` is the byte count. Text mode applied
+  universal-newline translation, so a CRLF file stashed as LF — the recovered
+  content was not the bytes that were destroyed, and it disagreed with the `size`
+  stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
+  not a hypothetical. Each of the three refusals (too large, unreadable, not
+  UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
+  text", or a `getsize` failure into "nothing on disk to stash" (which reads as
+  "the file is absent"), describes a fixable machine problem as a fact about the
+  content.
 - **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
   a template's `main` becomes the red traceback overlay, and "no store on this
   machine", "no versions for this file", "already matches the latest checkpoint",
@@ -3533,6 +3627,17 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   malformed `@vN` filenames are skipped, never fatal; only the exact decimal form
   the store writes is accepted, so `@v01` stays invisible rather than becoming a
   second, ambiguous "version 1".
+
+  Two distinctions inside that, both of which were collapsed at first. An
+  **unreadable** store or session dir is NOT the same as an empty one: it is
+  reported with its path and errno, because `chmod` is actionable and "no versions
+  for this file" sends the user looking at the wrong thing. And a **missing**
+  `appenv` degrades to the pure `os.access` rule (there is no flag to consult),
+  while a read-only-mount probe that RAISES fails **closed** — a blanket
+  `except Exception` around the call re-opened exactly the incident the probe
+  exists for, letting a malformed `FUSED_RENDER_RO_MOUNTS` fall through to the lie,
+  report `ok: true`, and surface the 403 later at an async upload this UI never
+  sees.
 - **FH-12** **It lives in `templates/shared/file_history.py`, stdlib-only, and
   is reached by `sys.path`, not by importing the package.** Same reason
   `appenv.py` sits beside it: a template child under the fused engine has **no
@@ -3546,3 +3651,14 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   changed — the store holds checkpoints, not edits (FH-3), so a per-edit undo is
   not derivable from it. The `claude` and `history` templates adopting the reader
   is later work; nothing here is annotate-specific except the UI.
+- **FH-14** **A dropped version is surfaced, and it BLOCKS the automatic choice.**
+  A version that cannot be read (or stat'd) is excluded from the timeline, and
+  under the positional rule an exclusion moves both where the walk starts and
+  where it lands — so it cannot be a silent `continue`. Every drop is recorded in
+  `skipped` with its path, reason and errno and named in the payload's `note`; and
+  when a skip sits at or newer than the chosen target (or its own time is unknown,
+  so its place in the chain is unknowable), `revert_plan` **refuses** rather than
+  walking to a different point in history and presenting it as "the last change".
+  Older skips are deliberately harmless: one unreadable ancient checkpoint must
+  not cost the user their undo. An **explicitly chosen** row is never blocked —
+  the user named that version, so there is nothing to guess.
