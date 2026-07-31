@@ -1,16 +1,15 @@
 // Home view — the `/view/_home` sentinel route and the app's launch landing
-// ("/" redirects here). Three sections on one page:
-//   1. Apps — fused_app folders (GET /api/apps) as a card grid, plus a
-//      "New app" card that opens the create modal (POST /api/apps/new).
-//   2. Templates — the resolved template pool (GET /api/templates/inventory),
-//      each card deep-linking into the Templates view's Library tab.
-//   3. Files — one card into the Fused workspace dir (the file explorer).
-// Card lists render in the order the server returns (apps: sorted by name;
-// templates: inventory order) and never reorder under interaction — keys are
-// stable paths/names, and the "New …" card sits in a fixed slot at the end.
+// ("/" redirects here). Structure, top to bottom:
+//   1. Hero card — headline + blurb with the page's two verbs as buttons:
+//      "New app" (create modal → POST /api/apps/new) and "Browse files".
+//   2. Doorways — three equal cards for the app's entry points: file
+//      explorer, apps hub (the Fused workspace dir), templates manager.
+//   3. Recent — the 9 most recently updated apps (GET /api/apps), sorted
+//      once per fetch so the grid never reorders under interaction; keys
+//      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { createApp, getApps, getTemplateInventory } from "../lib/api";
-import type { AppInfo, Config, TemplateInventory } from "../lib/api";
+import { createApp, getApps } from "../lib/api";
+import type { AppInfo, Config } from "../lib/api";
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -232,59 +231,152 @@ function SectionRule({
   );
 }
 
+// One doorway card per top-level entry point. The glyph square borrows the
+// listing's file-icon hues (set inline as `color`; fill/border derive from it
+// via color-mix) so the three cards are distinguishable at a glance without
+// inventing new palette.
+function Doorway({
+  hue,
+  title,
+  desc,
+  onClick,
+  glyph,
+  titleAttr,
+}: {
+  hue: string;
+  title: string;
+  desc: string;
+  onClick: () => void;
+  glyph: ReactNode;
+  titleAttr?: string;
+}) {
+  return (
+    <button type="button" className="home-door" onClick={onClick} title={titleAttr}>
+      <span className="home-door-glyph" aria-hidden="true" style={{ color: hue }}>
+        {glyph}
+      </span>
+      <span className="home-door-title">{title}</span>
+      <span className="home-door-desc">{desc}</span>
+      <span className="home-door-arrow" aria-hidden="true">
+        →
+      </span>
+    </button>
+  );
+}
+
 export default function Home({ config }: { config: Config }) {
   const apps = useLoad(getApps);
-  const templates = useLoad<TemplateInventory>(getTemplateInventory);
   const [creating, setCreating] = useState(false);
 
   return (
     <div className="home-page">
       <div className="home-inner">
-        {/* Hero: the product's one magic verb — describe an app, Claude builds
-            it. A faux prompt bar (button, not a real input: the modal owns the
-            actual fields) with a blinking accent caret; the page's single
-            accent moment. */}
+        {/* Hero card: the product's pitch plus its two verbs. "New app" is the
+            page's primary action (opens the create modal — the actual fields
+            live there); "Browse files" is the everyday doorway. */}
         <header className="home-hero">
-          <div className="home-hero-eyebrow">fused-render</div>
-          <h1 className="home-hero-title">What do you want to build?</h1>
-          <button type="button" className="home-prompt" onClick={() => setCreating(true)}>
-            <span className="home-prompt-caret" aria-hidden="true" />
-            <span className="home-prompt-hint">Describe an app — Claude builds it in your workspace</span>
-            <kbd className="home-prompt-key" aria-hidden="true">new app</kbd>
-          </button>
+          <div className="home-hero-badge">
+            <span className="home-hero-dot" aria-hidden="true" />
+            fused-render
+          </div>
+          <h1 className="home-hero-title">
+            Build your next
+            <br />
+            <span className="home-hero-accent">local app</span>
+          </h1>
+          <p className="home-hero-sub">
+            Describe an app and Claude builds it in your workspace — or explore your files
+            with interactive templates. Everything lives as plain folders you own.
+          </p>
+          <div className="home-hero-actions">
+            <button type="button" className="btn btn-primary home-hero-cta" onClick={() => setCreating(true)}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              New app
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary home-hero-cta"
+              onClick={() => navigate(config.fused_dir, { isDir: true })}
+            >
+              Browse files
+            </button>
+          </div>
         </header>
+
+        {/* Doorways: one card per entry point. */}
+        <div className="home-doors">
+          <Doorway
+            hue="var(--icon-folder)"
+            title="File explorer"
+            desc="Navigate your workspace and open any file with its template."
+            titleAttr={config.fused_dir}
+            onClick={() => navigate(config.fused_dir, { isDir: true })}
+            glyph={
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+              </svg>
+            }
+          />
+          <Doorway
+            hue="var(--icon-code)"
+            title="Apps"
+            desc={`Every folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
+            titleAttr={config.fused_dir}
+            onClick={() => navigate(config.fused_dir, { isDir: true })}
+            glyph={
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                <rect x="14" y="14" width="7" height="7" rx="1.5" />
+              </svg>
+            }
+          />
+          <Doorway
+            hue="var(--icon-json)"
+            title="Templates"
+            desc="Build a custom interactive view for any file extension."
+            onClick={() => navigateUrl("/view/_templates")}
+            glyph={
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+              </svg>
+            }
+          />
+        </div>
 
         <section className="home-section">
           <SectionRule
-            label="apps"
+            label="recent"
             count={apps.status === "ok" ? apps.data.apps.length : undefined}
+            action={
+              apps.status === "ok" && apps.data.apps.length > 9 ? (
+                <button
+                  type="button"
+                  className="home-rule-action"
+                  onClick={() => navigate(config.fused_dir, { isDir: true })}
+                >
+                  View all →
+                </button>
+              ) : undefined
+            }
           />
           {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
           {apps.status === "loading" && <div className="home-loading">Loading…</div>}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
-              No apps yet. Describe one above — it lands in {basename(config.fused_dir)} as a
+              No apps yet. Hit “New app” above — it lands in {basename(config.fused_dir)} as a
               folder you own.
             </div>
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
             <div className="home-apps">
-              {/* "New app" holds the FIRST slot (owner call — creation is the
-                  page's primary action), then the 9 most recently updated
-                  apps. Sort is computed once per fetch: recency (updated_at
-                  epoch seconds, missing → last; name breaks ties) — stable
-                  under interaction since nothing re-sorts after load. */}
-              <button type="button" className="home-app home-app-new" onClick={() => setCreating(true)}>
-                <span className="home-app-monogram" aria-hidden="true">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </span>
-                <span className="home-app-text">
-                  <span className="home-app-title">New app</span>
-                  <span className="home-app-sub">describe it, Claude builds it</span>
-                </span>
-              </button>
+              {/* The 9 most recently updated apps. Sort is computed once per
+                  fetch: recency (updated_at epoch seconds, missing → last;
+                  name breaks ties) — stable under interaction since nothing
+                  re-sorts after load. */}
               {apps.data.apps
                 .slice()
                 .sort(
@@ -297,84 +389,6 @@ export default function Home({ config }: { config: Config }) {
                 ))}
             </div>
           )}
-          {apps.status === "ok" && apps.data.apps.length > 9 && (
-            <button
-              type="button"
-              className="home-rule-action home-apps-all"
-              onClick={() => navigate(config.fused_dir, { isDir: true })}
-            >
-              All apps →
-            </button>
-          )}
-        </section>
-
-        <section className="home-section">
-          <SectionRule
-            label="templates"
-            count={templates.status === "ok" ? templates.data.templates.length : undefined}
-            action={
-              <button
-                type="button"
-                className="home-rule-action"
-                onClick={() => navigateUrl("/view/_templates")}
-              >
-                Manage →
-              </button>
-            }
-          />
-          {templates.status === "error" && <ErrorBanner>{templates.message}</ErrorBanner>}
-          {templates.status === "loading" && <div className="home-loading">Loading…</div>}
-          {templates.status === "ok" && (
-            // Every chip lands on the Templates view's Library tab (it has no
-            // per-template URL selection) — so these are a quiet rail, not
-            // cards pretending to be individual destinations.
-            <div className="home-chips">
-              {templates.data.templates.map((t) => (
-                <button
-                  type="button"
-                  // name is unique in the inventory (a user template shadowing
-                  // a core one is emitted once, source="user").
-                  key={t.name}
-                  className={"home-chip" + (t.source !== "core" ? " home-chip-user" : "")}
-                  title={t.path}
-                  onClick={() => navigateUrl("/view/_templates?tab=library")}
-                >
-                  {t.name}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="home-chip home-chip-new"
-                // Creation is a modal local to the Templates view (no URL
-                // trigger) — deep-link to its Library tab where the "New
-                // template" button lives.
-                onClick={() => navigateUrl("/view/_templates?tab=library")}
-              >
-                + New template
-              </button>
-            </div>
-          )}
-        </section>
-
-        <section className="home-section">
-          <SectionRule label="files" />
-          <button
-            type="button"
-            className="home-files"
-            title={config.fused_dir}
-            onClick={() => navigate(config.fused_dir, { isDir: true })}
-          >
-            <span className="home-files-glyph" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
-              </svg>
-            </span>
-            <span className="home-files-text">
-              <span className="home-files-title">Browse your workspace</span>
-              <span className="home-files-path">{config.fused_dir.replace(config.home, "~")}</span>
-            </span>
-            <span className="home-files-arrow" aria-hidden="true">→</span>
-          </button>
         </section>
       </div>
 

@@ -5086,86 +5086,162 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .home-inner {
-  max-width: 760px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: 56px 28px 72px;
+  padding: 40px 28px 72px;
 }
 
-/* Hero */
+/* Hero card: bordered panel with a faint accent wash drifting out of the top
+   corner — the page's one decorative moment; everything inside stays on
+   tokens so both themes hold. */
 .home-hero {
-  margin-bottom: 44px;
+  position: relative;
+  overflow: hidden;
+  padding: 36px 36px 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 22px;
 }
 
-.home-hero-eyebrow {
+.home-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 130% at 100% 0%,
+    color-mix(in srgb, var(--accent) 12%, transparent),
+    transparent 55%
+  );
+}
+
+.home-hero > * {
+  position: relative;
+}
+
+.home-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--fg-muted);
-  margin-bottom: 10px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  margin-bottom: 18px;
+}
+
+.home-hero-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .home-hero-title {
-  margin: 0 0 18px;
-  font-size: 27px;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  margin: 0 0 14px;
+  font-size: 38px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
 }
 
-/* Faux prompt bar — a button styled as an input, since the real fields live
-   in the modal it opens. The caret is the page's one accent use. */
-.home-prompt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 13px 14px;
-  font: inherit;
-  text-align: left;
-  background: var(--bg-alt);
+.home-hero-accent {
+  color: var(--accent);
+}
+
+.home-hero-sub {
+  margin: 0 0 22px;
+  max-width: 520px;
+  font-size: 14px;
+  line-height: 1.55;
   color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  cursor: text;
 }
 
-.home-prompt:hover,
-.home-prompt:focus-visible {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+.home-hero-actions {
+  display: flex;
+  gap: 10px;
 }
 
-.home-prompt-caret {
-  width: 2px;
-  height: 17px;
-  flex: 0 0 auto;
-  background: var(--accent);
-  animation: home-caret-blink 1.1s steps(1) infinite;
+.home-hero-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
 }
 
-@keyframes home-caret-blink {
-  50% {
-    opacity: 0;
+/* Doorways: three equal cards, one per entry point. Glyph square repaints
+   from the inline per-card hue (file-icon palette). */
+.home-doors {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 760px) {
+  .home-doors {
+    grid-template-columns: 1fr;
   }
 }
 
-.home-prompt-hint {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13.5px;
+.home-door {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 18px 18px 16px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
 }
 
-.home-prompt-key {
-  flex: 0 0 auto;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+.home-door:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.home-door-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  margin-bottom: 6px;
+}
+
+.home-door-title {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.home-door-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
   color: var(--fg-muted);
-  background: var(--bg);
+}
+
+.home-door-arrow {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  color: var(--fg-muted);
+  opacity: 0;
+}
+
+.home-door:hover .home-door-arrow {
+  opacity: 1;
 }
 
 /* Section rule: mono label + count, hairline filling the middle. */
@@ -5289,141 +5365,6 @@ select.field-control:has(option[value=""]:checked) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The trailing "New app" row: dashed monogram, muted until hover. */
-.home-app-new {
-  color: var(--fg-muted);
-}
-
-.home-app-new .home-app-monogram {
-  background: none;
-  border: 1px dashed var(--border);
-  color: var(--fg-muted);
-}
-
-.home-app-new:hover {
-  color: var(--fg);
-}
-
-.home-app-new:hover .home-app-monogram {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.home-app-new .home-app-title {
-  font-weight: 500;
-}
-
-/* Templates: a mono chip rail. One shared destination (the Library tab), so
-   the chips stay quiet — user templates get an accent tick to stand apart
-   from core. */
-.home-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-
-.home-chip {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  padding: 5px 10px;
-  background: var(--bg-alt);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.home-chip:hover {
-  color: var(--fg);
-  border-color: var(--fg-muted);
-}
-
-.home-chip-user {
-  color: var(--fg);
-}
-
-.home-chip-user::before {
-  content: "";
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  margin-right: 6px;
-  vertical-align: 1px;
-}
-
-.home-chip-new {
-  background: none;
-  border-style: dashed;
-}
-
-.home-chip-new:hover {
-  border-color: var(--accent);
-}
-
-/* Files: one wide doorway row. */
-.home-files {
-  display: flex;
-  align-items: center;
-  gap: 13px;
-  width: 100%;
-  padding: 13px 14px;
-  font: inherit;
-  text-align: left;
-  background: var(--bg-alt);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  cursor: pointer;
-}
-
-.home-files:hover {
-  border-color: var(--fg-muted);
-}
-
-.home-files-glyph {
-  display: flex;
-  color: var(--icon-folder);
-}
-
-.home-files-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.home-files-title {
-  font-size: 13.5px;
-  font-weight: 600;
-}
-
-.home-files-path {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.home-files-arrow {
-  margin-left: auto;
-  color: var(--fg-muted);
-}
-
-.home-files:hover .home-files-arrow {
-  color: var(--fg);
-}
-
-/* "All apps →" under the truncated grid, right-aligned to match the rule
-   actions. */
-.home-apps-all {
-  display: block;
-  margin: 10px 0 0 auto;
 }
 
 /* Loading / empty voices. */
