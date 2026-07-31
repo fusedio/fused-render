@@ -148,7 +148,7 @@ def _now_iso() -> str:
 # Move this to a released version once one carries the flags; the string is duplicated in
 # pyproject's `[fused]` extra and its bundled-deps list, and tests hold all three equal.
 PINNED_FUSED_REQUIREMENT = (
-    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post12-py3-none-any.whl"
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post13-py3-none-any.whl"
 )
 # The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
