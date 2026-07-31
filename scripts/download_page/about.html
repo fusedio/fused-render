@@ -56,11 +56,13 @@
   }
   .story { max-width: 520px; }
   .story section {
-    min-height: 72vh;
+    min-height: 100vh;
     display: flex; flex-direction: column; justify-content: center;
-    padding: 8vh 0;
+    padding: 6vh 0;
   }
-  .story section.hero-sec { min-height: 66vh; }
+  /* The top bar (~66px) sits above the hero; subtract it so the next
+     section's heading stays below the fold on first paint. */
+  .story section.hero-sec { min-height: calc(100vh - 90px); }
 
   h1 {
     font-size: clamp(2.1rem, 3.4vw, 3rem);
