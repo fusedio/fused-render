@@ -473,16 +473,12 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isHome) {
     // Home (apps / templates / files) — the launch landing, lives at "/"
-    // itself (old /view/_home sentinel redirects here above).
+    // itself (old /view/_home sentinel redirects here above). No breadcrumb
+    // bar: no path/bookmark actions make sense above a landing page.
     main = (
-      <>
-        <div id="breadcrumb">
-          <StaticBreadcrumb label="Home" />
-        </div>
-        <div id="content">
-          <Home key={epoch} config={config} />
-        </div>
-      </>
+      <div id="content">
+        <Home key={epoch} config={config} />
+      </div>
     );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
