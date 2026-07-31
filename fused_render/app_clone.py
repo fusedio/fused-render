@@ -43,6 +43,7 @@ and a gated mount simply reports that it cannot be cloned from here.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import ipaddress
 import json
@@ -211,9 +212,13 @@ class _Fetched:
     handing back a closed response invites a ``.content`` access that raises.
     """
 
-    def __init__(self, status_code: int, content: bytes) -> None:
+    def __init__(self, status_code: int, content: bytes, etag: str | None = None) -> None:
         self.status_code = status_code
         self.content = content
+        #: The response's `ETag`, which for a clone download is the archive's digest — kept so
+        #: the import can verify the bytes it received end-to-end, across whatever proxied
+        #: them, without a second request or a value threaded through the client.
+        self.etag = etag
 
 
 def _get(url: str) -> _Fetched:
@@ -259,9 +264,10 @@ def _get(url: str) -> _Fetched:
                             f"{MAX_DOWNLOAD_BYTES // (1024 * 1024)} MB and was stopped"
                         )
                 status = resp.status_code
+                etag = resp.headers.get("etag")
     except httpx.HTTPError as exc:
         raise CloneError(f"could not reach the page: {exc}") from None
-    fetched = _Fetched(status, bytes(body))
+    fetched = _Fetched(status, bytes(body), etag)
     _raise_for_clone_status(fetched.status_code, fetched.content)
     return fetched
 
@@ -327,6 +333,50 @@ def _safe_folder_name(name: str | None) -> str:
     return cleaned or "cloned-page"
 
 
+# The clone protocol versions this client can import (fused's spec/serve/clone-protocol.md).
+# A SET, not a floor: the version is a compatibility axis, not a ratchet, and a host speaking
+# something outside it must be refused rather than guessed at. Absent means an older host that
+# predates the field, which is the one case that falls back to trusting the archive's own
+# declared shape.
+SUPPORTED_CLONE_PROTOCOLS = frozenset({1})
+
+
+def _require_supported_protocol(meta: dict) -> None:
+    """Refuse an inventory this client cannot import.
+
+    The archive's layout is defined by `fused`, not here, so compatibility is read from the
+    stated `protocol` rather than sniffed out of the zip. Refusing an unknown version is the
+    point: a client that instead unpacked a format it does not understand would either write a
+    broken page or, worse, write one that looks fine.
+    """
+    version = meta.get("protocol")
+    if version is None:
+        return  # a host predating the field; the bundle's own version check still applies
+    if version not in SUPPORTED_CLONE_PROTOCOLS:
+        raise CloneError(
+            f"this page was published with a newer clone format (protocol {version!r}) than "
+            "this version of fused-render can import — update fused-render and try again"
+        )
+
+
+def _verify_digest(payload: bytes, expected: str | None) -> None:
+    """Check downloaded bytes against the digest the inventory stated.
+
+    Cheap, and it converts the one failure mode a size check cannot catch — bytes that arrived
+    complete but wrong — into a clear refusal instead of a corrupt page in the workspace. Only
+    `sha256:` is understood; an unrecognised algorithm is treated as no digest rather than as a
+    failure, so a future algorithm cannot make this client reject valid clones.
+    """
+    if not expected or not expected.startswith("sha256:"):
+        return
+    actual = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    if actual != expected:
+        raise CloneError(
+            "the download did not match the checksum the page published — it may have been "
+            "corrupted or altered in transit; try again"
+        )
+
+
 def probe(src: str) -> dict:
     """What cloning `src` would fetch and where it would land — no writes.
 
@@ -345,6 +395,7 @@ def probe(src: str) -> dict:
         raise CloneError("the page's host did not return a readable clone inventory") from None
     if not isinstance(meta, dict) or not meta.get("clone"):
         raise CloneError("that URL is not a clonable fused-render page")
+    _require_supported_protocol(meta)
     files = meta.get("files")
     files = files if isinstance(files, list) else []
     name = _safe_folder_name(meta.get("name") if isinstance(meta.get("name"), str) else None)
@@ -364,8 +415,8 @@ def probe(src: str) -> dict:
             if isinstance(f, dict)
         ],
         "bytes": meta.get("bytes"),
-        # What the transfer will actually cost, when the host reports it (a newer serve
-        # path does; an older one does not, and a client must not print a wrong number).
+        # Advisory hints, echoed for the confirm step and for nothing else — `files`/`bytes`
+        # describe the download, they are not a schema this client computes against.
         "download_bytes": meta.get("download_bytes"),
         "dest": dest,
         # The folder name only ever differs from `name` when something is already there —
@@ -405,6 +456,10 @@ def clone(src: str, folder: str | None = None) -> dict:
     """
     url = clone_url_from(src)
     fetched = _get(url)
+    # Before the archive is opened at all: bytes that arrived complete but wrong are the one
+    # failure a length check cannot see, and this turns them into a refusal rather than a
+    # corrupt page in the workspace.
+    _verify_digest(fetched.content, fetched.etag)
     try:
         zf = zipfile.ZipFile(io.BytesIO(fetched.content))
     except zipfile.BadZipFile:
@@ -478,10 +533,16 @@ def clone(src: str, folder: str | None = None) -> dict:
 def _read_bundle(staging_dir: str) -> dict:
     """Locate the manifest, the payload dir, and the page inside a staged bundle.
 
-    Everything here is read from an archive we did not create, so each field is validated
-    rather than trusted: `root` and `page` become paths, so a value like `../..` or `/etc`
-    must be refused before it is joined — the same reason the serve path validates them at
-    publish time.
+    Reads the *minimum* the import needs — `root` (where the payload sits) and `page` (what to
+    open afterwards) — and treats the rest of the manifest as opaque. Duplicating `fused`'s
+    bundle rules here would put a second copy of the schema on the wrong side of the boundary,
+    where it would drift.
+
+    The containment checks below are **not** that duplication, and stay regardless of what the
+    publisher already validated: these two fields arrive inside an archive fetched over the
+    network and are about to become filesystem paths on the user's machine. Validating them at
+    the point of use is the trust boundary doing its job, not a second opinion about the
+    format.
     """
     manifest_path = os.path.join(staging_dir, "manifest.json")
     if not os.path.isfile(manifest_path):
@@ -493,6 +554,11 @@ def _read_bundle(staging_dir: str) -> dict:
         raise CloneError("the download's manifest.json could not be read") from None
     if not isinstance(manifest, dict):
         raise CloneError("the download's manifest.json is not an object")
+    # The archive's *shape* is `fused`'s to define, and `_require_supported_protocol` is where
+    # compatibility is decided from the inventory's stated version. This is the fallback for a
+    # host that predates that field, and the one bundle-schema fact this client needs: which
+    # layout the two path fields below describe. Everything else in the manifest is opaque —
+    # entrypoints, assets, resources are read by fused-render's own loader later, not here.
     version = manifest.get("fused_render_bundle")
     if version != 2:
         raise CloneError(

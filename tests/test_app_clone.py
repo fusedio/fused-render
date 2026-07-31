@@ -12,6 +12,7 @@ tests that *are* about the network stub one layer lower (`socket.getaddrinfo`,
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -88,13 +89,25 @@ class Harness:
         self.client = TestClient(create_app(start_dir=str(tmp_path)))
         self._monkeypatch = monkeypatch
 
-    def serve(self, *, meta: bytes | None = None, archive: bytes | None = None, status: int = 200):
-        """Stub the one fetch seam: `?meta=1` gets `meta`, the bare URL gets `archive`."""
+    def serve(
+        self,
+        *,
+        meta: bytes | None = None,
+        archive: bytes | None = None,
+        status: int = 200,
+        etag: str | None = None,
+    ):
+        """Stub the one fetch seam: `?meta=1` gets `meta`, the bare URL gets `archive`.
+
+        `etag` models the digest a current host sends with the archive; omitted, it models an
+        older host that sends none (the protocol's advisory fields are additive)."""
 
         def _fake_get(url: str):
             self.requests.append(url)
             body = meta if url.endswith("?meta=1") else archive
-            return app_clone._Fetched(status, body if body is not None else b"")
+            return app_clone._Fetched(
+                status, body if body is not None else b"", None if url.endswith("?meta=1") else etag
+            )
 
         self._monkeypatch.setattr(app_clone, "_get", _fake_get)
 
@@ -234,10 +247,13 @@ def test_an_unresolvable_host_is_a_clean_error(monkeypatch):
 class _FakeStream:
     """Enough of a streamed `httpx.Response` for `_get`: status, redirect flag, chunks."""
 
-    def __init__(self, status_code=200, content=b"", is_redirect=False):
+    def __init__(self, status_code=200, content=b"", is_redirect=False, headers=None):
         self.status_code = status_code
         self._content = content
         self.is_redirect = is_redirect
+        # `_get` reads the ETag off the response (the archive's digest), so the double has to
+        # carry headers.
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
@@ -581,6 +597,68 @@ def test_the_clone_endpoint_requires_the_shell_guard(h):
     resp = h.client.post("/api/clone-app", json={"src": "https://open.fused.io/my-link"})
     assert resp.status_code == 403
     assert "X-Fused" in resp.json()["error"]
+
+
+def test_a_newer_clone_protocol_is_refused_with_an_upgrade_message(h):
+    """Compatibility is read from the inventory's stated version, not sniffed from the archive.
+
+    `fused` owns the artifact's layout, so a client that unpacked a format it does not
+    understand would either write a broken page or — worse — one that looks fine. The refusal
+    names the remedy, since "update fused-render" is something the user can act on.
+    """
+    body = json.loads(_meta())
+    body["protocol"] = 99
+    h.serve(meta=json.dumps(body).encode())
+    resp = h.client.get("/api/clone-app/info", params={"src": "https://open.fused.io/p"})
+    assert resp.status_code == 400
+    assert "newer clone format" in resp.json()["error"]
+
+
+def test_the_current_protocol_and_a_host_that_states_none_both_import(h):
+    # Protocol 1 is what this client speaks; a host predating the field is an older plane, and
+    # a weaker guarantee is not an error — the bundle's own version check still applies there.
+    for meta_body in ({**json.loads(_meta()), "protocol": 1}, json.loads(_meta())):
+        h.serve(meta=json.dumps(meta_body).encode(), archive=_bundle_zip())
+        resp = h.client.get("/api/clone-app/info", params={"src": "https://open.fused.io/p"})
+        assert resp.status_code == 200, resp.json()
+
+
+def test_a_download_that_fails_its_published_checksum_is_refused(h):
+    """Bytes that arrive complete but WRONG are the one failure a length check cannot see.
+
+    The archive's `ETag` is the digest `fused` computed over the bytes it assembled, so this is
+    an end-to-end check across whatever proxied them — and it must fire before the zip is
+    opened, so a corrupted archive never reaches the workspace.
+    """
+    h.serve(archive=_bundle_zip(), etag="sha256:" + "0" * 64)
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "did not match the checksum" in resp.json()["error"]
+    assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
+
+
+def test_a_download_matching_its_checksum_imports(h):
+    archive = _bundle_zip()
+    h.serve(archive=archive, etag="sha256:" + hashlib.sha256(archive).hexdigest())
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.json()
+    assert os.path.isfile(resp.json()["page"])
+
+
+@pytest.mark.parametrize("etag", [None, '"opaque-etag"', "md5:abc"])
+def test_an_absent_or_unrecognised_digest_does_not_block_an_import(h, etag):
+    # An older host sends no ETag, and a proxy may send an opaque one. Treating either as a
+    # failure would make this client reject valid clones — the digest strengthens the import
+    # when present rather than gating it.
+    h.serve(archive=_bundle_zip(), etag=etag)
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.json()
 
 
 def test_a_download_that_is_not_a_zip_is_refused(h):

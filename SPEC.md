@@ -1136,6 +1136,10 @@ the product gains network access.
   changed from a terminal shows through instead of being re-sent stale. Repoint states it
   explicitly in both directions — the CLI preserves an omitted flag, which is right for a
   CLI and wrong for a dialog whose toggle is always a definite statement.
+  The posture is only ever read from **deployment metadata** — the mount record, or our pointer
+  record as its cache — and never inferred from what happens to be on disk or from which route
+  the user came in through. That is what makes create / repoint / recreate predictable: the
+  decision is carried, not recomputed, so the same source published twice cannot flip it.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
@@ -1151,8 +1155,22 @@ The viewer half of app cloning; the publisher half is the Deploy dialog's toggle
 Paste a deployed page's URL, and if its publisher allowed cloning, download its export
 bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
 
+**Our side of a three-party boundary.** The contract is `fused`'s
+`spec/serve/clone-protocol.md`: *a deployed app may expose an authorized, versioned clone
+artifact; importing it is deterministic and does not require reconstructing deployment state.*
+`fused` owns the artifact — its layout, path rules, byte assembly, size limits, and the
+`protocol` version that states compatibility. The host serving it owns **authorization** only.
+**This repo owns safe local import**, and nothing else: fetch, verify, unpack, atomically claim
+a destination. So we read the protocol fields, use the advisory hints to place files and to
+describe the download, and treat the archive's interior as opaque — a second copy of the bundle
+schema on this side of the boundary would only drift from the one that defines it. What we do
+*not* delegate is validating the two manifest path fields we consume (CL-5): they arrive over
+the network and become paths on the user's machine, so checking them here is the trust boundary
+working, not a second opinion about the format.
+
 - **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
-  (read-only — the file list, the download size, and the exact destination folder) and
+  (read-only — the file list, the size, and the exact destination folder, all of it advisory
+  metadata the host may omit, in which case the confirm step simply shows less) and
   `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
   the client passes that folder back on the second call and the clone honours it while it is
   free, so a page appearing in the workspace in between can't invalidate what the user was
@@ -1178,13 +1196,25 @@ bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
   `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
   stripped, since quietly removing it would clone from a different origin than the URL
   appears to name. No credentials are ever sent (CL-6).
-- **CL-4** **The archive is hostile.** A public URL does not make its bytes trustworthy:
-  redirects are not followed (a followed redirect applies none of the other guards to where
-  the request lands); the host must resolve **entirely** to public addresses, checked on
-  every answer so a split public/private name is refused too — this process sits inside the
-  user's LAN and beside `169.254.169.254`; and the download is capped on bytes actually
-  received, never on `Content-Length`.
-- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`):
+- **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
+  things, in order of importance. The *archive* is untrusted regardless of where it came from
+  (CL-5), and the download is verified: an unrecognised `protocol` version is refused rather
+  than guessed at, and the bytes are checked against the digest the host published as the
+  download's `ETag` — bytes that arrive complete but wrong are the one failure a length check
+  cannot see, and this makes "importing is deterministic" something we confirm instead of
+  assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
+  *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
+  process sits inside the user's LAN beside `169.254.169.254`: one seam
+  (`_validated_address` + `_get`) resolves the host, refuses it unless **every** answer is
+  public, dials the validated address while keeping the hostname for `Host`/SNI (so the check
+  cannot be undone by re-resolution), follows no redirects, and caps on bytes actually
+  received rather than on `Content-Length`. Deliberately centralized and small — it is a
+  boundary control on a local app, not the architecture of this feature.
+- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`).
+  Shared *within this repo* — `fused`'s own validators cannot be reused here because the viewer
+  must work with no `fused` installed at all (the deploy feature installs it as a pinned wheel
+  into a separate environment and drives it as a CLI, so there is nothing importable in
+  process). What crosses the boundary is therefore the **format contract**, not the code:
   entry validation before any write, symlink refusal, path-escape refusal, per-entry and
   total caps enforced on bytes actually decompressed (the declared sizes are attacker
   controlled), staging-then-move. A second extractor "just for clones" is how a hardened
