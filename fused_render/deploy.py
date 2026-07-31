@@ -139,7 +139,17 @@ def _now_iso() -> str:
 # extra (metadata only refreshes on reinstall) — all of which disabled the
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
-PINNED_FUSED_REQUIREMENT = "fused==2.9.3b2"
+# Pinned to a direct wheel URL, not a PyPI version: the clone flags this module sends
+# (`--allow-clone` / `--no-allow-clone`, see `_create_args`/`_repoint_args`) land in
+# `fusedio/fused` #351, which has no PyPI release yet. `fused==2.9.3b2` exposes NEITHER
+# flag, so a deploy with cloning on failed and — worse — EVERY repoint failed, since the
+# repoint states the posture explicitly in both directions. Same artifact the managed
+# control plane pins (`openfused_server`), so the two planes agree on the CLI surface.
+# Move this to a released version once one carries the flags; the string is duplicated in
+# pyproject's `[fused]` extra and its bundled-deps list, and tests hold all three equal.
+PINNED_FUSED_REQUIREMENT = (
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post12-py3-none-any.whl"
+)
 # The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
 FUSED_MIN_PYTHON = (3, 11)
