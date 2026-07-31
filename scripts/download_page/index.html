@@ -395,13 +395,13 @@
           <a class="active" href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/hexagon_lab" target="_blank" rel="noopener">
             <img src="assets/hexagon_lab.jpg" alt="Interactive 3D hexagon map rendered from a parquet file — open the Hexagon lab example on GitHub" fetchpriority="high">
           </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/disaster_response_dashboard" target="_blank" rel="noopener">
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/disaster_response_dashboard" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
             <img src="assets/disaster_response_dashboard.jpg" alt="Disaster response dashboard fusing satellite imagery and building footprints — open the example on GitHub">
           </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener">
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
             <img src="assets/cog_overview_pyramid.jpg" alt="Satellite GeoTIFF resolution pyramid in 3D — open the example on GitHub">
           </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/local-tools/notion_db" target="_blank" rel="noopener">
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/local-tools/notion_db" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
             <img src="assets/notion_db.jpg" alt="Task tracker rendered from local parquet files — open the example on GitHub">
           </a>
         </div>
@@ -588,7 +588,12 @@
     let timer = null;
     function show(i) {
       idx = i;
-      slides.forEach((el, n) => el.classList.toggle("active", n === i));
+      slides.forEach((el, n) => {
+        const on = n === i;
+        el.classList.toggle("active", on);
+        el.setAttribute("aria-hidden", String(!on));
+        el.tabIndex = on ? 0 : -1;
+      });
       urls.forEach((el, n) => el.classList.toggle("active", n === i));
       dots.forEach((el, n) => el.classList.toggle("active", n === i));
     }
