@@ -230,6 +230,24 @@ def test_notebook_end_to_end(page_and_nb):
     _wait_for(lambda: "NameError" in _cell_text(frame, "c3", ".outputs .err-out"), 30)
 
 
+def test_restart_failure_leaves_kernel_retryable(page_and_nb):
+    page, frame, _ = page_and_nb
+
+    def fail_restart(route):
+        route.fulfill(status=500, content_type="application/json",
+                      body=json.dumps({"error": "test restart failure"}))
+
+    page.route("**/kernel/restart?*", fail_restart)
+    try:
+        frame.locator("#restart").dispatch_event("click")
+        _wait_for(lambda: "Kernel dead" in frame.locator("#kchip-text").inner_text(), 15)
+    finally:
+        page.unroute("**/kernel/restart?*", fail_restart)
+
+    _run_cell(frame, "c1")
+    _wait_for(lambda: "hello run" in _cell_text(frame, "c1", ".console"), 60)
+
+
 # ------------------------------------------------------------------ Ask AI
 # /api/ai is intercepted with Playwright routes, so these cover the template's
 # use of fused.ai against both response shapes runtime.js parses: plain JSON

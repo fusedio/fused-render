@@ -828,7 +828,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         setKState(r.state);
         startPolling();
         return kernelId;
-      })().catch((err) => { kernelP = null; setKState(kernelId ? kState : "off"); throw err; });
+      })().catch((err) => { kernelP = null; setKState(kernelId ? "dead" : "off"); throw err; });
     }
     return kernelP;
   }
@@ -1631,6 +1631,8 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       for (const c of cells) markStale(c);
       startPolling();
     } catch (err) {
+      kernelP = null;
+      setKState(kernelId ? "dead" : "off");
       toast("Restart failed: " + (err.message || err));
     }
   }
