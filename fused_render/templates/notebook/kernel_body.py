@@ -29,6 +29,8 @@ import traceback
 import warnings
 
 REAL_STDOUT = sys.stdout
+REAL_STDERR = sys.stderr
+REAL_STDIN = sys.stdin
 EMIT_LOCK = threading.Lock()
 RUNNING = threading.Event()
 STREAM_CAP = 2 * 1024 * 1024
@@ -140,8 +142,10 @@ def execute(exec_id, code):
     out = StreamWriter("stdout", exec_id, budget)
     err = StreamWriter("stderr", exec_id, budget)
     saved = sys.stdout, sys.stderr, sys.stdin
-    sys.stdout, sys.stderr, sys.stdin = out, err, io.StringIO()
     try:
+        # the swap lives inside the try: an interrupt landing mid-assignment
+        # is still caught here and the finally restores the saved trio
+        sys.stdout, sys.stderr, sys.stdin = out, err, io.StringIO()
         tree = ast.parse(code, "<cell>", "exec")
         last = None
         if tree.body and isinstance(tree.body[-1], ast.Expr):
@@ -254,6 +258,26 @@ def main():
                 RUNNING.set()
                 try:
                     execute(req["id"], req.get("code") or "")
+                except KeyboardInterrupt:
+                    # the interrupt landed in execute's own bookkeeping
+                    # (parse/emit/stdio swap), outside the user-code try —
+                    # the cell must still resolve, and stdio must be sane.
+                    # At-least-once: a second interrupt can raise inside this
+                    # handler too; duplicates are daemon-safe, a missing done
+                    # is not
+                    RUNNING.clear()  # stop further signalling first
+                    while True:
+                        try:
+                            sys.stdout, sys.stderr, sys.stdin = (
+                                REAL_STDOUT, REAL_STDERR, REAL_STDIN)
+                            emit({"type": "error", "id": req["id"],
+                                  "ename": "KeyboardInterrupt", "evalue": "",
+                                  "traceback": ["KeyboardInterrupt"]})
+                            emit({"type": "done", "id": req["id"],
+                                  "duration_ms": 0})
+                            break
+                        except KeyboardInterrupt:
+                            pass
                 finally:
                     RUNNING.clear()
         except KeyboardInterrupt:

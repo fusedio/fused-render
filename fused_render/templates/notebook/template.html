@@ -886,7 +886,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       } catch (err) {
         if (epoch !== pollEpoch || kernelId !== id) return;
         toast(err.message || String(err));
-        for (const c of cells) { if (c.running) { c.running = false; setDot(c, ""); } }
+        for (const c of cells) markStale(c); // also stops the elapsed ticker
         kernelP = null; // a cached resolved promise would defeat the re-ensure
         setKState("dead"); // honest chip state instead of an endless spinner
       } finally {
@@ -1615,6 +1615,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
   }
   function runCellAndAdvance(c) {
+    if (runningAll) return; // no run, no insert-below during a batch
     runCell(c);
     const i = cells.indexOf(c);
     if (i === cells.length - 1) {
@@ -1631,9 +1632,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     let active = null;
     try {
       await ensureKernel();
-      for (const c of cells) {
+      const batch = cells.slice(); // cells inserted mid-batch don't join it
+      for (const c of batch) {
         if (!runningAll) break; // Interrupt aborts the rest of the batch
-        if (c.model.cell_type !== "code") continue;
+        if (c.model.cell_type !== "code" || !cells.includes(c)) continue;
         syncEditor(c);
         // outputs clear on the cell's `started` event, not at submit: a
         // reconnect mid-batch voids queued executes, and those cells must
@@ -1676,7 +1678,13 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   async function restartKernel() {
     runningAll = false; // a mid-batch restart aborts the rest of the batch
     try {
-      if (!kernelId) { await ensureKernel(); return; }
+      if (!kernelId) {
+        // a failed recovery can strand running flags with no kernel — Restart
+        // must clear them or every future run stays blocked on anyRunning()
+        for (const c of cells) markStale(c);
+        await ensureKernel();
+        return;
+      }
       setKState("starting");
       await dFetch("/kernel/restart", { kernel_id: kernelId });
       kernelP = Promise.resolve(kernelId);
@@ -1775,11 +1783,20 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   });
 
   // --------------------------------------------------------- file actions
+  function shellPrefix() {
+    // Stay inside the shell's active prefix (router.ts PREFIX): an /embed/
+    // session keeps routing under /embed/, never teleported to /view/.
+    try {
+      const p = window.top.location.pathname;
+      if (p.startsWith("/embed/") || p === "/embed") return "/embed/";
+    } catch (e) { /* cross-origin — assume the normal shell */ }
+    return "/view/";
+  }
   function viewUrlFor(path) {
     // mirror the shell's /view codec (frontend/src/lib/router.ts): forward
     // slashes for drive paths, per-segment encoding, no leading slash
     const norm = /^[A-Za-z]:[\\/]/.test(path) ? path.replace(/\\/g, "/") : path;
-    return "/view/" + norm.replace(/^\/+/, "").split("/").filter(Boolean)
+    return shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
       .map(encodeURIComponent).join("/");
   }
   function navigateShell(path) {
