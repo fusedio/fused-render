@@ -1,0 +1,284 @@
+"""Protocol tests for the notebook template's mini-kernel (kernel_body.py):
+spawn it with this interpreter, feed execute ops over stdin, and assert the
+JSON-lines events — streams, last-expression display, state persistence
+across cells, error shape, and the stdin interrupt path."""
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+
+import pytest
+
+BODY = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "fused_render", "templates", "notebook", "kernel_body.py")
+KERNEL = os.path.join(os.path.dirname(BODY), "kernel.py")
+
+
+def _load_kernel_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("nb_kernel", KERNEL)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class KernelProc:
+    def __init__(self):
+        self.proc = subprocess.Popen(
+            [sys.executable, BODY],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", bufsize=1)
+        self.events = []
+        self.lock = threading.Lock()
+        self.new_event = threading.Condition(self.lock)
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            ev = json.loads(line)
+            with self.new_event:
+                self.events.append(ev)
+                self.new_event.notify_all()
+
+    def send(self, req):
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
+
+    def wait_for(self, pred, timeout=15):
+        deadline = time.monotonic() + timeout
+        with self.new_event:
+            while True:
+                for ev in self.events:
+                    if pred(ev):
+                        return ev
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError(
+                        f"event not seen within {timeout}s; got {self.events}")
+                self.new_event.wait(remaining)
+
+    def run(self, exec_id, code, timeout=15):
+        self.send({"op": "execute", "id": exec_id, "code": code})
+        self.wait_for(lambda e: e.get("type") == "done" and e.get("id") == exec_id,
+                      timeout)
+        with self.lock:
+            return [e for e in self.events if e.get("id") == exec_id]
+
+    def close(self):
+        self.proc.kill()
+        self.proc.wait(timeout=10)
+
+
+@pytest.fixture()
+def kernel():
+    k = KernelProc()
+    k.wait_for(lambda e: e.get("type") == "ready")
+    yield k
+    k.close()
+
+
+def _of_type(events, t):
+    return [e for e in events if e.get("type") == t]
+
+
+def test_ready_event(kernel):
+    ev = kernel.wait_for(lambda e: e.get("type") == "ready")
+    assert ev["python"] and ev["version"]
+
+
+def test_stream_stdout(kernel):
+    events = kernel.run("e1", "print('hello')\nprint('world')")
+    text = "".join(e["text"] for e in _of_type(events, "stream")
+                   if e["name"] == "stdout")
+    assert text == "hello\nworld\n"
+
+
+def test_execution_timing_events(kernel):
+    events = kernel.run("e1", "import time; time.sleep(0.2)")
+    types = [e["type"] for e in events]
+    assert types.index("started") < types.index("done")
+    done = _of_type(events, "done")[0]
+    # Windows sleep/monotonic granularity undershoots — allow slack
+    assert done["duration_ms"] >= 150
+
+
+def test_stream_stderr(kernel):
+    events = kernel.run("e1", "import sys; sys.stderr.write('oops\\n')")
+    text = "".join(e["text"] for e in _of_type(events, "stream")
+                   if e["name"] == "stderr")
+    assert text == "oops\n"
+
+
+def test_last_expression_display(kernel):
+    events = kernel.run("e1", "a = 20\na + 22")
+    results = _of_type(events, "execute_result")
+    assert results and results[0]["data"] == {"text/plain": "42"}
+
+
+def test_statement_only_has_no_result(kernel):
+    events = kernel.run("e1", "a = 1")
+    assert not _of_type(events, "execute_result")
+
+
+def test_none_result_is_suppressed(kernel):
+    events = kernel.run("e1", "None")
+    assert not _of_type(events, "execute_result")
+
+
+def test_state_persists_across_cells(kernel):
+    kernel.run("e1", "x = 1")
+    events = kernel.run("e2", "x + 1")
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "2"}
+
+
+def test_repr_html_display(kernel):
+    code = ("class T:\n"
+            "    def _repr_html_(self):\n"
+            "        return '<b>rich</b>'\n"
+            "T()")
+    events = kernel.run("e1", code)
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/html": "<b>rich</b>"}
+
+
+def test_error_event(kernel):
+    events = kernel.run("e1", "y = 1\nraise ValueError('boom')")
+    err = _of_type(events, "error")[0]
+    assert err["ename"] == "ValueError" and err["evalue"] == "boom"
+    tb = "\n".join(err["traceback"])
+    assert "<cell>" in tb and "kernel_body" not in tb
+    # the kernel keeps serving after an error
+    events = kernel.run("e2", "y")
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "1"}
+
+
+def test_syntax_error(kernel):
+    events = kernel.run("e1", "def broken(:")
+    err = _of_type(events, "error")[0]
+    assert err["ename"] == "SyntaxError"
+
+
+def test_output_truncation(kernel):
+    events = kernel.run("e1", "print('x' * 1000000)\nprint('y' * 3000000)",
+                        timeout=60)
+    total = sum(len(e["text"]) for e in _of_type(events, "stream"))
+    assert total <= 2 * 1024 * 1024 + 100
+    assert any("truncated" in e["text"] for e in _of_type(events, "stream"))
+    # the cap is per execution — the next cell streams again
+    events = kernel.run("e2", "print('fresh')")
+    assert any("fresh" in e["text"] for e in _of_type(events, "stream"))
+
+
+def test_interrupt_running_cell(kernel):
+    kernel.send({"op": "execute", "id": "e1", "code": "import time\ntime.sleep(60)"})
+    time.sleep(0.5)  # let the cell reach the sleep
+    kernel.send({"op": "interrupt"})
+    kernel.wait_for(lambda e: e.get("type") == "done" and e.get("id") == "e1",
+                    timeout=15)
+    with kernel.lock:
+        errs = [e for e in kernel.events
+                if e.get("type") == "error" and e.get("id") == "e1"]
+    assert errs and errs[0]["ename"] == "KeyboardInterrupt"
+    # still serving afterwards
+    events = kernel.run("e2", "1 + 1")
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "2"}
+
+
+def test_matplotlib_figure(kernel):
+    pytest.importorskip("matplotlib")
+    code = ("import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "plt.plot([1, 2, 3])\n"
+            "plt.show()")
+    events = kernel.run("e1", code, timeout=60)
+    disp = _of_type(events, "display_data")
+    assert disp and disp[0]["data"]["image/png"]
+    # plt.show() under Agg must not spam the non-interactive warning
+    stderr = "".join(e["text"] for e in _of_type(events, "stream")
+                     if e.get("name") == "stderr")
+    assert "non-interactive" not in stderr
+    # figures are closed after the cell — a no-plot cell emits none
+    events = kernel.run("e2", "z = 1")
+    assert not _of_type(events, "display_data")
+
+
+# --------------------------------------------------- modal path resolution
+
+@pytest.fixture(scope="module")
+def kernel_mod():
+    return _load_kernel_module()
+
+
+def test_resolve_plain_name(kernel_mod, tmp_path):
+    r = kernel_mod._resolve_dest(str(tmp_path), "plain")
+    assert r["path"] == str(tmp_path).replace(os.sep, "/") + "/plain.ipynb"
+    assert r["name"] == "plain.ipynb"
+
+
+def test_resolve_keeps_existing_suffix(kernel_mod, tmp_path):
+    r = kernel_mod._resolve_dest(str(tmp_path), "done.IPYNB")
+    assert r["path"].endswith("/done.IPYNB")
+    assert not r["path"].lower().endswith(".ipynb.ipynb")
+
+
+def test_resolve_relative_subpath(kernel_mod, tmp_path):
+    (tmp_path / "sub").mkdir()
+    r = kernel_mod._resolve_dest(str(tmp_path), "sub/x")
+    assert r["path"].endswith("/sub/x.ipynb")
+    assert r["dir"].endswith("/sub")
+
+
+def test_resolve_absolute_overrides_directory(kernel_mod, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    r = kernel_mod._resolve_dest(str(tmp_path), str(other / "abs"))
+    assert r["dir"] == str(other).replace(os.sep, "/")
+    assert r["path"].endswith("/other/abs.ipynb")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows separator semantics")
+def test_resolve_windows_backslashes(kernel_mod, tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    r = kernel_mod._resolve_dest(str(tmp_path), "sub\\y")
+    assert r["path"].endswith("/sub/y.ipynb")
+    r = kernel_mod._resolve_dest(str(tmp_path), str(sub) + "\\z")
+    assert r["path"].endswith("/sub/z.ipynb")
+
+
+def test_resolve_missing_parent_is_error(kernel_mod, tmp_path):
+    r = kernel_mod._resolve_dest(str(tmp_path), "no-such-dir/x")
+    assert "Folder does not exist" in r["error"]
+    assert "no-such-dir" in r["error"]
+
+
+def test_resolve_empty_name_is_error(kernel_mod, tmp_path):
+    assert "error" in kernel_mod._resolve_dest(str(tmp_path), "  ")
+
+
+# ------------------------------------------------- daemon cache dir per home
+
+def test_cache_dir_prefers_resolved_home_dir(kernel_mod, monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "h1"))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "h2"))
+    assert kernel_mod._cache_dir() == os.path.join(
+        str(tmp_path / "h1"), "cache", "notebook-daemon")
+
+
+def test_cache_dir_falls_back_to_home_env(kernel_mod, monkeypatch, tmp_path):
+    monkeypatch.delenv("FUSED_RENDER_HOME_DIR", raising=False)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    assert kernel_mod._cache_dir() == os.path.join(
+        str(tmp_path), "cache", "notebook-daemon")
+
+
+def test_cache_dir_default_without_server_env(kernel_mod, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_HOME_DIR", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
+    assert kernel_mod._cache_dir() == os.path.expanduser(
+        "~/.cache/fused-render-notebook")
