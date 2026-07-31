@@ -36,6 +36,7 @@ TIER_ONE_TEMPLATES = (
     "history",
     "log_studio",
     "markdown",
+    "notebook",
     "plist",
     "sqlite",
     "structure",

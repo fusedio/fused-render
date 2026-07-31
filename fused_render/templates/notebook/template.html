@@ -6,17 +6,40 @@
 <script src="/template-assets/codemirror.bundle.js"></script>
 <script src="/template-shared/ro-badge.js"></script>
 <style>
-  /* Marimo-style look: light-first, airy, single centered column of
-     chromeless-at-rest cells. `data-theme` is written onto <html> by the
-     injected runtime because this document opted in via `data-fused-theme`
+  /* Marimo-style look: airy, single centered column of chromeless-at-rest
+     cells. `data-theme` is written onto <html> by the injected runtime
+     because this document opted in via `data-fused-theme`
      (see fused_render/static/runtime.js). */
   :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --fg: #e7e9ec;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --accent: #12b886;
+    --accent-fg: #ffffff;
+    --error: #ff6b6b;
+    --error-bg: #2a1c1e;
+    --console-bg: #1b1e23;
+    --bar-bg: rgba(20, 22, 26, 0.88);
+    --menu-bg: #1e2126;
+    --dot-idle: #4a4f57;
+    --dot-ok: #12b886;
+    --dot-err: #ff6b6b;
+    --dot-run: #f59f00;
+    --shadow-soft: rgba(0, 0, 0, 0.25);
+    --shadow: rgba(0, 0, 0, 0.45);
+    --shadow-strong: rgba(0, 0, 0, 0.6);
+    --scrim: rgba(8, 10, 13, 0.55);
+  }
+  :root[data-theme="light"] {
     color-scheme: light;
     --bg: #fcfcfc;
     --fg: #1f2023;
     --fg-muted: #74787e;
     --border: #e6e7ea;
     --accent: #0ca678;
+    --accent-fg: #ffffff;
     --error: #c92a2a;
     --error-bg: #fff5f5;
     --console-bg: #f6f7f8;
@@ -26,20 +49,10 @@
     --dot-ok: #12b886;
     --dot-err: #fa5252;
     --dot-run: #f59f00;
-  }
-  :root[data-theme="dark"] {
-    color-scheme: dark;
-    --bg: #14161a;
-    --fg: #e7e9ec;
-    --fg-muted: #9aa0a6;
-    --border: #2a2d33;
-    --accent: #12b886;
-    --error: #ff6b6b;
-    --error-bg: #2a1c1e;
-    --console-bg: #1b1e23;
-    --bar-bg: rgba(20, 22, 26, 0.88);
-    --menu-bg: #1e2126;
-    --dot-idle: #4a4f57;
+    --shadow-soft: rgba(0, 0, 0, 0.05);
+    --shadow: rgba(0, 0, 0, 0.13);
+    --shadow-strong: rgba(0, 0, 0, 0.25);
+    --scrim: rgba(15, 18, 22, 0.35);
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; }
@@ -124,8 +137,8 @@
     border-radius: 8px;
     padding: 6px 8px 6px 4px;
   }
-  .cell:hover { border-color: var(--border); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); }
-  .cell:focus-within { border-color: var(--accent); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05); }
+  .cell:hover { border-color: var(--border); box-shadow: 0 1px 4px var(--shadow-soft); }
+  .cell:focus-within { border-color: var(--accent); box-shadow: 0 1px 4px var(--shadow-soft); }
   /* command-mode selection: Jupyter-style accent bar on the left edge */
   .cell.selected::before {
     content: "";
@@ -188,7 +201,7 @@
     background: var(--menu-bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 6px 20px var(--shadow);
     padding: 4px;
     z-index: 25;
   }
@@ -349,7 +362,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 18, 22, 0.35);
+    background: var(--scrim);
   }
   #modal-overlay[hidden] { display: none; }
   #modal {
@@ -357,7 +370,7 @@
     background: var(--menu-bg);
     border: 1px solid var(--border);
     border-radius: 10px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 16px 48px var(--shadow-strong);
     padding: 16px 18px;
     font-size: 13px;
   }
@@ -410,7 +423,7 @@
   #modal-error { color: var(--error); font-size: 12px; min-height: 16px; margin-top: 8px; }
   #modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
   #modal-btns button { border: 1px solid var(--border); padding: 4px 14px; border-radius: 6px; }
-  #modal-btns .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #modal-btns .primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
   #modal-btns .primary:hover { background: var(--accent); opacity: 0.9; }
 
   #toast {
@@ -425,7 +438,7 @@
     border-radius: 8px;
     padding: 8px 14px;
     font-size: 13px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+    box-shadow: 0 6px 20px var(--shadow);
     display: none;
     z-index: 40;
   }
@@ -575,7 +588,8 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         mdSafeUrl(url) ? '<a href="' + url + '" target="_blank" rel="noopener">' + text + "</a>" : m);
   }
   function mdSafeUrl(url) {
-    return /^(https?:|mailto:|#)/i.test(url) || /^[\w./-]+$/.test(url);
+    // the relative fallback must reject protocol-relative //host URLs
+    return /^(https?:|mailto:|#)/i.test(url) || /^(?!\/\/)[\w./-]+$/.test(url);
   }
   function mdBlocks(text) {
     const lines = escapeHtml(text).split("\n");
@@ -772,26 +786,35 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     try {
       return await dSend(path, body);
     } catch (err) {
-      if (!recover || !(err instanceof TypeError) || recovering) {
-        throw err instanceof TypeError ? new Error(DAEMON_UNREACHABLE) : err;
+      const network = err instanceof TypeError;
+      // the daemon reaps kernels idle > 30 min while other traffic keeps the
+      // daemon itself alive — a cached kernel_id can outlive its kernel
+      const reaped = !network && kernelId &&
+        /unknown kernel_id/i.test(err.message || "");
+      if (!recover || (!network && !reaped) || recovering) {
+        throw network ? new Error(DAEMON_UNREACHABLE) : err;
       }
       recovering = true;
       try {
         const oldKernel = kernelId;
         stopPolling();
-        daemon = null;
-        daemonP = null;
         kernelId = null;
         kernelP = null;
         since = 0;
-        await ensureDaemon();
+        if (network) {
+          daemon = null;
+          daemonP = null;
+          await ensureDaemon();
+        }
         if (oldKernel) {
           await ensureKernel();
           for (const c of cells) markStale(c);
-          toast("Kernel connection was lost; reconnected with a fresh kernel — re-run earlier cells if needed.");
+          toast(network
+            ? "Kernel connection was lost; reconnected with a fresh kernel — re-run earlier cells if needed."
+            : "The kernel had been shut down while idle; started a fresh one — re-run earlier cells if needed.");
         }
         let p = oldKernel && kernelId ? path.split(oldKernel).join(kernelId) : path;
-        p = p.replace(/([?&])since=\d+/, "$1since=0"); // the new kernel's seq restarts
+        p = p.replace(/([?&])since=\d+/, "$1since=" + since); // resume at the new kernel's seq
         const b = body && body.kernel_id ? { ...body, kernel_id: kernelId } : body;
         return await dSend(p, b);
       } catch (err2) {
@@ -824,7 +847,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         setKState("starting");
         const r = await dFetch("/kernel/ensure", { nb_path: file, python: pythonPath() });
         kernelId = r.kernel_id;
-        since = 0;
+        since = r.seq || 0; // a reused warm kernel must not replay its history
         setKState(r.state);
         startPolling();
         return kernelId;
@@ -836,6 +859,8 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   function anyRunning() {
     return cells.some((c) => c.running);
   }
+  // A superseded loop (env switch, reconnect) must not touch shared state:
+  // its late failure would toast and force the fresh kernel's chip to "dead".
   function stopPolling() {
     pollEpoch += 1;
     polling = false;
@@ -860,6 +885,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         if (epoch !== pollEpoch || kernelId !== id) return;
         toast(err.message || String(err));
         for (const c of cells) { if (c.running) { c.running = false; setDot(c, ""); } }
+        kernelP = null; // a cached resolved promise would defeat the re-ensure
         setKState("dead"); // honest chip state instead of an endless spinner
       } finally {
         if (epoch === pollEpoch) polling = false;
@@ -1057,10 +1083,11 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   }
   function lockEditor(c) {
     if (!c.view) return;
-    c.view.dispatch({
-      effects: CM.StateEffect.reconfigure.of(c.extensions.concat([
-        CM.EditorView.editable.of(false), CM.EditorState.readOnly.of(true)]))
-    });
+    // the lock must live on c.extensions — the theme observer reconfigures
+    // from it, and a transient set would be dropped on the next theme flip
+    c.extensions = c.extensions.concat([
+      CM.EditorView.editable.of(false), CM.EditorState.readOnly.of(true)]);
+    c.view.dispatch({ effects: CM.StateEffect.reconfigure.of(c.extensions) });
   }
   const themeObserver = new MutationObserver(() => {
     for (const c of cells) {
@@ -1632,7 +1659,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       startPolling();
     } catch (err) {
       kernelP = null;
-      setKState(kernelId ? "dead" : "off");
+      setKState(kernelId ? "dead" : "off"); // never strand the chip on Starting
       toast("Restart failed: " + (err.message || err));
     }
   }

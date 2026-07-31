@@ -303,6 +303,7 @@ except ImportError:
 
 # ================================================================ daemon
 def _serve():
+    import hmac
     import secrets
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs
@@ -352,7 +353,7 @@ def _serve():
                     ev = json.loads(line)
                 except ValueError:
                     continue
-                self._handle(ev)
+                self._handle(ev, proc)
             proc.wait()
             with self.lock:
                 if self.proc is proc and self.state != "dead":
@@ -360,8 +361,13 @@ def _serve():
                     self.pending = []
                     self._push({"type": "dead", "returncode": proc.returncode})
 
-        def _handle(self, ev):
+        def _handle(self, ev, proc):
             with self.lock:
+                if proc is not self.proc:
+                    # buffered output from a process restart already killed —
+                    # after restart resets exec_count, its reused ids would
+                    # attach these events to the wrong cells
+                    return
                 if ev.get("type") == "ready":
                     self.info = {"python": ev.get("python"),
                                  "version": ev.get("version")}
@@ -398,10 +404,12 @@ def _serve():
             with self.lock:
                 if self.state == "dead":
                     raise RuntimeError("kernel is dead — restart it")
+                proc = self.proc
                 self.exec_count += 1
                 eid = f"e{self.exec_count}"
+                count = self.exec_count
                 self.cells[eid] = cell_id
-                self.counts[eid] = self.exec_count
+                self.counts[eid] = count
                 self.pending.append(eid)
                 if self.ready.is_set():
                     self.state = "busy"
@@ -415,7 +423,7 @@ def _serve():
                     self.state = "dead"
                     self._push({"type": "dead", "returncode": None})
                     raise RuntimeError("kernel is dead — restart it") from exc
-            return eid, self.exec_count
+            return eid, count
 
         def interrupt(self):
             with self.lock:
@@ -483,8 +491,12 @@ def _serve():
             with klock:
                 kernels.pop(kid, None)
             raise RuntimeError(f"kernel did not start under {python}")
+        # seq lets a reconnecting client poll from "now" instead of replaying
+        # a warm kernel's whole event buffer over its cells
+        with k.lock:
+            seq = k.seq
         return {"kernel_id": kid, "state": k.state, "python": python,
-                "info": k.info}
+                "info": k.info, "seq": seq}
 
     def do_execute(body):
         k = get_kernel(body)
@@ -530,8 +542,8 @@ def _serve():
             pass
 
         def _gate(self, q):
-            if q.get("t", [""])[0] != TOKEN and \
-                    self.headers.get("X-Token") != TOKEN:
+            if not (hmac.compare_digest(q.get("t", [""])[0], TOKEN) or
+                    hmac.compare_digest(self.headers.get("X-Token") or "", TOKEN)):
                 self._send(403, {"error": "forbidden"})
                 return False
             return True
@@ -589,8 +601,10 @@ def _serve():
                     get_kernel(body).restart()
                     self._send(200, {"ok": True})
                 elif u.path == "/kernel/shutdown":
-                    k = get_kernel(body)
-                    k.shutdown()
+                    # idempotent: shutting down a reaped kernel is a no-op
+                    k = kernels.get(body.get("kernel_id") or "")
+                    if k is not None:
+                        k.shutdown()
                     with klock:
                         kernels.pop(body.get("kernel_id"), None)
                     self._send(200, {"ok": True})
@@ -631,11 +645,13 @@ def _serve():
             time.sleep(60)
             now = time.time()
             with klock:
-                for kid, k in list(kernels.items()):
-                    if now - k.last_used > KERNEL_IDLE_S:
-                        k.shutdown()
-                        kernels.pop(kid, None)
+                idle = [(kid, k) for kid, k in kernels.items()
+                        if now - k.last_used > KERNEL_IDLE_S]
+                for kid, _ in idle:
+                    kernels.pop(kid, None)
                 empty = not kernels
+            for _, k in idle:
+                k.shutdown()  # proc.wait can take seconds — not under klock
             if empty and now - last_hit[0] > IDLE_EXIT_S:
                 srv.shutdown()
                 return

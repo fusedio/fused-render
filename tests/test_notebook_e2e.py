@@ -737,3 +737,75 @@ def test_daemon_recovery_and_isolation(page_and_nb, server):
               in frame.locator("#toast").inner_text(), 60)
     _wait_for(lambda: "one" in _cell_text(frame, target, ".console"), 120)
     assert "Failed to fetch" not in frame.locator("body").inner_text()
+
+
+def test_saved_html_output_is_sandboxed(page_and_nb, server):
+    # a .ipynb from anywhere can carry a pre-baked text/html output — opening
+    # it must never execute script in the template's (same-)origin: html
+    # outputs render inside a scriptless sandboxed iframe
+    page, _frame, _nb = page_and_nb
+    hostile = {
+        "cells": [{
+            "cell_type": "code", "id": "h1", "metadata": {},
+            "execution_count": 1, "source": "pass",
+            "outputs": [{
+                "output_type": "display_data", "metadata": {},
+                "data": {"text/html": [
+                    "<script>window.__pwned = 1</script>",
+                    '<img src="x" onerror="window.__pwned = 2">',
+                    "<b>bold ok</b>",
+                ]},
+            }],
+        }],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5,
+    }
+    path = os.path.join(str(server["work"]), "hostile.ipynb")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(hostile, f)
+
+    page.goto(f"http://127.0.0.1:{server['port']}" + _view_url(path))
+    frame = _find_frame(page, containing="hostile.ipynb")
+    _wait_for(lambda: frame.locator(".cell").count() == 1, 30)
+    out = frame.locator('.cell[data-id="h1"] .outputs iframe.html-out')
+    _wait_for(lambda: out.count() == 1, 15)
+    assert out.get_attribute("sandbox") == ""
+    assert "bold ok" in (out.get_attribute("srcdoc") or "")
+    time.sleep(0.5)  # the script / img onerror would have fired by now
+    assert frame.evaluate("() => window.__pwned") is None
+
+
+def test_reaped_kernel_recovers_transparently(page_and_nb, server):
+    # the daemon reaps kernels idle > 30 min while staying alive itself; a
+    # cached kernel_id must recover with a fresh kernel, not surface
+    # "unknown kernel_id" (still on hostile.ipynb from the previous test)
+    page, _frame, _nb = page_and_nb
+    frame = _find_frame(page, containing="hostile.ipynb")
+    # h1's saved execution_count is already 1 — wait on .time, which only a
+    # real execution sets, so the shutdown below can't race kernel startup
+    _run_cell(frame, "h1")
+    _wait_for(lambda: re.match(r"^\d", _cell_text(frame, "h1", ".time") or ""), 90)
+
+    with open(_daemon_state_path(server["home"]), encoding="utf-8") as f:
+        st = json.load(f)
+    base = f"http://127.0.0.1:{st['port']}"
+    nb_path = os.path.join(str(server["work"]), "hostile.ipynb")
+
+    def post(route, payload):
+        req = urllib.request.Request(
+            f"{base}{route}?t={st['token']}",
+            data=json.dumps(payload).encode("utf-8"), method="POST")
+        return json.load(urllib.request.urlopen(req, timeout=10))
+
+    kid = post("/kernel/ensure", {"nb_path": nb_path, "python": ""})["kernel_id"]
+    post("/kernel/shutdown", {"kernel_id": kid})  # what the idle reaper does
+    post("/kernel/shutdown", {"kernel_id": kid})  # idempotent for a gone kernel
+
+    # new source, so fresh console output proves the re-run truly executed
+    editor = frame.locator('.cell[data-id="h1"] .cm-content')
+    editor.click()
+    editor.press("Control+a")
+    editor.press_sequentially("print('back')")
+    _run_cell(frame, "h1")
+    _wait_for(lambda: "shut down while idle" in frame.locator("#toast").inner_text(), 60)
+    _wait_for(lambda: "back" in _cell_text(frame, "h1", ".console"), 90)
+    assert "unknown kernel_id" not in frame.locator("body").inner_text()

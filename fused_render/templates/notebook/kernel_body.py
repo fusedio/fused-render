@@ -8,10 +8,11 @@ events on stdout (ready/stream/execute_result/display_data/error/done, one
 object per line). Nothing else may print to the real stdout — sys.stdout/
 stderr/stdin are swapped while user code runs. Cells execute serially on the
 main thread in one shared namespace; interrupt rides the stdin reader thread
-via signal.raise_signal(SIGINT), which raises KeyboardInterrupt in the
-running cell and — unlike _thread.interrupt_main() — also wakes a C-blocked
-main thread (time.sleep) on Windows, where console CTRL events would need a
-console neither the daemon nor this process has.
+and raises KeyboardInterrupt in the running cell: pthread_kill(main_thread,
+SIGINT) on POSIX (only delivery to the main thread itself interrupts a
+C-blocked time.sleep there) and signal.raise_signal(SIGINT) on Windows, where
+the C handler wakes sleeping threads and — unlike console CTRL events — needs
+no console, which neither the daemon nor this process has.
 """
 import ast
 import base64
@@ -204,7 +205,14 @@ def read_requests(q):
             continue
         req = json.loads(line)
         if req.get("op") == "interrupt":
-            signal.raise_signal(signal.SIGINT)
+            if os.name == "nt":
+                signal.raise_signal(signal.SIGINT)
+            else:
+                # raise_signal from this thread sets the flag but cannot wake
+                # a main thread C-blocked in e.g. time.sleep on POSIX — the
+                # signal must be delivered to the main thread itself
+                signal.pthread_kill(
+                    threading.main_thread().ident, signal.SIGINT)
         else:
             q.put(req)
     q.put(None)  # stdin closed — the daemon is gone
