@@ -108,12 +108,34 @@ async function createAppUnderFreeName(name: string, prompt: string) {
   }
 }
 
-// Starter ideas under the composer: clicking one fills the box (never
-// submits) so the user can edit before building.
-const SAMPLE_PROMPTS = [
-  "A habit tracker with streaks and a weekly heatmap",
-  "A markdown notes app with full-text search",
-  "A dashboard that charts my CSV files",
+// Starter ideas under the composer: a short chip label on the UI, and the
+// verbose brief that actually lands in the box on click (never submits) —
+// detailed enough that Claude builds the right thing on the first pass.
+const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
+  {
+    label: "Habit tracker",
+    prompt:
+      "A habit tracker. Let me define habits with a name and a target cadence " +
+      "(daily or specific weekdays), check them off for today, and edit or delete them. " +
+      "Show the current streak per habit and a weekly heatmap of completions. " +
+      "Persist everything locally so my history survives restarts.",
+  },
+  {
+    label: "Markdown notes",
+    prompt:
+      "A markdown notes app. A sidebar lists my notes sorted by last edited; " +
+      "I can create, rename, and delete notes, and edit them with a live markdown preview. " +
+      "Include full-text search across all notes with matching snippets highlighted. " +
+      "Store notes as plain .md files in the app folder so they stay portable.",
+  },
+  {
+    label: "CSV dashboard",
+    prompt:
+      "A CSV dashboard. Let me drop or pick a CSV file, then show a sortable, filterable " +
+      "table of its rows plus summary stats per numeric column (min, max, mean, nulls). " +
+      "Let me pick columns to chart as a bar, line, or scatter plot. " +
+      "Handle large-ish files gracefully and remember the last file I opened.",
+  },
 ];
 
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
@@ -210,13 +232,14 @@ function HeroComposer() {
       <div className="home-composer-samples">
         {SAMPLE_PROMPTS.map((s) => (
           <button
-            key={s}
+            key={s.label}
             type="button"
             className="home-composer-sample"
+            title={s.prompt}
             disabled={busy}
-            onClick={() => setPrompt(s)}
+            onClick={() => setPrompt(s.prompt)}
           >
-            {s}
+            {s.label}
           </button>
         ))}
       </div>
