@@ -808,7 +808,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         }
         if (oldKernel) {
           await ensureKernel();
-          for (const c of cells) markStale(c);
+          // the retried request re-executes body.cell_id on the new kernel —
+          // staling it would let a duplicate run queue behind the live one
+          for (const c of cells) if (!body || c.id !== body.cell_id) markStale(c);
           toast(network
             ? "Kernel connection was lost; reconnected with a fresh kernel — re-run earlier cells if needed."
             : "The kernel had been shut down while idle; started a fresh one — re-run earlier cells if needed.");

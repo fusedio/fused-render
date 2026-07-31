@@ -493,12 +493,14 @@ def _serve():
                 k._spawn()
             except OSError as e:
                 with klock:
-                    kernels.pop(kid, None)
+                    if kernels.get(kid) is k:
+                        del kernels[kid]
                 raise RuntimeError(f"could not start {python}: {e}")
         if not k.ready.wait(timeout=20) or k.state == "dead":
-            k.shutdown()
             with klock:
-                kernels.pop(kid, None)
+                if kernels.get(kid) is k:
+                    del kernels[kid]
+            k.shutdown()
             raise RuntimeError(f"kernel did not start under {python}")
         # seq lets a reconnecting client poll from "now" instead of replaying
         # a warm kernel's whole event buffer over its cells
@@ -611,11 +613,10 @@ def _serve():
                     self._send(200, {"ok": True})
                 elif u.path == "/kernel/shutdown":
                     # idempotent: shutting down a reaped kernel is a no-op
-                    k = kernels.get(body.get("kernel_id") or "")
-                    if k is not None:
-                        k.shutdown()
                     with klock:
-                        kernels.pop(body.get("kernel_id"), None)
+                        k = kernels.pop(body.get("kernel_id") or "", None)
+                    if k is not None:
+                        k.shutdown()  # proc.wait can take seconds — not under klock
                     self._send(200, {"ok": True})
                 else:
                     self._send(404, {"error": "not found"})
