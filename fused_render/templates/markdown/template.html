@@ -1684,14 +1684,29 @@
       return out;
     }
 
+    // NESTING depth over the levels actually present, not the raw level: a note
+    // that starts at `##` is not an indented note, and `#` → `###` is one step in
+    // rather than two. Shared by the two surfaces that draw the same note's
+    // headings — the completion popup and the sidebar outline — because "the popup
+    // indents the way the outline does" (MD-14) is only true if it is one rule and
+    // not two that agree on the notes we happened to look at.
+    function withDepth(headings) {
+      const stack = [];
+      return headings.map((h) => {
+        while (stack.length && stack[stack.length - 1] >= h.level) stack.pop();
+        stack.push(h.level);
+        return { ...h, depth: stack.length - 1 };
+      });
+    }
+
     // A heading row says its nesting the way the SIDEBAR's outline says it —
     // indentation, plus the level as a dimmed marker in the detail column (MD-14,
     // MD-19b). Printing `### ` into the label was a third visual language for the
     // one thing this template already renders twice: the same note's headings.
     function headingOptions(headings, prefix, encode) {
-      return headings.map((h) => ({
+      return withDepth(headings).map((h) => ({
         label: prefix + "#" + (encode ? encodeTarget(h.text) : h.text),
-        displayLabel: "  ".repeat(Math.max(0, h.level - 1)) + h.text,
+        displayLabel: "  ".repeat(h.depth) + h.text,
         detail: "H" + h.level,
         type: "text",
       }));
@@ -2115,14 +2130,21 @@
       const doc = view.state.doc;
       const rows = [];
       let fence = null;         // the opening run while inside a fenced block
-      let frontmatter = false;
-      for (let n = 1; n <= doc.lines; n++) {
-        const text = doc.line(n).text;
-        if (n === 1 && text.trim() === "---") { frontmatter = true; continue; }
-        if (frontmatter) {
-          if (/^(---|\.\.\.)[ \t]*$/.test(text)) frontmatter = false;
-          continue;
+      // The closer is found BEFORE anything is skipped, which is the whole point:
+      // an UNCLOSED `---` is not frontmatter, it is a horizontal rule someone is
+      // still typing under. Marking it open and skipping to the end of the
+      // document blanked the entire outline from the keystroke that opened the
+      // block until the one that closed it, while graph.py's `_frontmatter_span`
+      // and the decoration scan above both kept those headings — three surfaces
+      // for the same note disagreeing (MD-19b, and MD-18a for the same rule).
+      let frontmatterEnd = 0;
+      if (doc.lines > 1 && doc.line(1).text.trim() === "---") {
+        for (let n = 2; n <= doc.lines; n++) {
+          if (/^(---|\.\.\.)[ \t]*$/.test(doc.line(n).text)) { frontmatterEnd = n; break; }
         }
+      }
+      for (let n = frontmatterEnd + 1; n <= doc.lines; n++) {
+        const text = doc.line(n).text;
         const opener = /^ {0,3}(`{3,}|~{3,})/.exec(text);
         if (fence !== null) {
           // Inside a fence everything is code, including the closing line.
@@ -2157,15 +2179,7 @@
       if (key === outlineKey) return;
       outlineKey = key;
 
-      // Indent by NESTING depth, computed from the levels actually present: a
-      // note that starts at `##` is not an indented note, and `#` → `###` is one
-      // step in rather than two.
-      const stack = [];
-      const drawn = rows.map((row) => {
-        while (stack.length && stack[stack.length - 1] >= row.level) stack.pop();
-        stack.push(row.level);
-        return { ...row, depth: stack.length - 1 };
-      });
+      const drawn = withDepth(rows);
 
       headEl.textContent = rows.length ? `Outline (${rows.length})` : "Outline";
       listEl.innerHTML = drawn.length

@@ -3233,7 +3233,15 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   and this template stays poll-free (MD-17). The heading scan mirrors graph.py's
   `_mask_code` — frontmatter and fenced code masked, ATX only — so a
   `# not a heading` inside a fenced block is as absent here as it is from every
-  other heading surface. Not the syntax tree, tempting though it is: it is parsed
+  other heading surface. Mirroring it includes the case that bites while typing:
+  an **unclosed** `---` is not frontmatter (`_frontmatter_span` returns no span,
+  and MD-18a's decoration scan finds the end before it dims anything), so the
+  closer is found before any line is skipped. A standing "in frontmatter" flag
+  emptied the whole outline from the keystroke that opened the block to the one
+  that closed it, while the other two surfaces kept those headings — caught in
+  review. Indentation is **nesting depth over the levels present**, and the
+  `[[#` popup calls the same function rather than a matching copy (MD-14), since
+  a note that starts at `##` or skips a level is where two copies diverge. Not the syntax tree, tempting though it is: it is parsed
   only as far as CM has got, so a long note would silently lose its tail
   headings. Rows scroll by **line**, not by heading text (they were built from
   that line; matching by text hands the second `## Notes` to the first one), and

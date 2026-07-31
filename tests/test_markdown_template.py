@@ -750,14 +750,15 @@ def test_a_row_shows_a_dimmed_detail_column_beside_its_label(source):
     assert 'color: "var(--fg-muted)"' in detail
     assert 'fontStyle: "normal"' in detail        # CM's base italicises it
     # The label is the flexible half and clips rather than wrapping, and its
-    # leading spaces survive: a heading row indents by level (MD-19b's language).
+    # leading spaces survive: a heading row indents by nesting depth, the same
+    # rule the sidebar outline uses (MD-19b's language).
     label = theme[theme.index(".cm-completionLabel"):]
     label = label[:label.index("},")]
     assert 'whiteSpace: "pre"' in label
     assert 'textOverflow: "ellipsis"' in label
     headings = source[source.index("function headingOptions"):]
     headings = headings[:headings.index("\n    }")]
-    assert '"  ".repeat(Math.max(0, h.level - 1)) + h.text' in headings
+    assert '"  ".repeat(h.depth) + h.text' in headings
     assert 'detail: "H" + h.level' in headings
     # Not the literal hashes it used to print into the label.
     assert '"#".repeat(h.level)' not in headings
@@ -986,8 +987,9 @@ def test_an_outline_row_scrolls_to_its_own_line_and_reads_when_locked(source):
     render = render[:render.index("\n    }")]
     assert 'data-line="${row.line}"' in render
     assert "--ol-depth: ${row.depth}" in render
-    # Nesting depth from the levels present, not from the hash count.
-    assert "while (stack.length && stack[stack.length - 1] >= row.level) stack.pop();" in render
+    # Nesting depth from the levels present, not from the hash count — and it
+    # comes from the shared rule, not a copy of it (see the popup's test).
+    assert "withDepth(rows)" in render
     # Same voice as the backlinks empty state, and the same row class, so one
     # panel has one row style.
     assert '<div class="bl-empty">No headings in this note.</div>' in render
@@ -997,6 +999,41 @@ def test_an_outline_row_scrolls_to_its_own_line_and_reads_when_locked(source):
     click = source[source.index('const outlined = event.target.closest("[data-line]");'):]
     click = click[:click.index("const create = ")]
     assert 'scrollToLine(parseInt(outlined.getAttribute("data-line"), 10));' in click
+
+
+def test_an_unclosed_frontmatter_block_is_not_frontmatter(source):
+    # Reported in review. The scan used to set a flag on a first-line `---` and
+    # skip every line until a closer, so from the keystroke that opened the block
+    # to the one that closed it the whole outline was empty — while graph.py's
+    # `_frontmatter_span` (no closer, no span) and the decoration scan above (which
+    # looks for the end BEFORE it dims anything) both kept those headings. Three
+    # surfaces for one note's headings, so it is one rule: find the closer first.
+    body = source[source.index("function documentHeadings"):]
+    body = body[:body.index("\n    // The last outline drawn")]
+    opened = body.index("let frontmatterEnd = 0;")
+    loop = body.index("for (let n = frontmatterEnd + 1; n <= doc.lines; n++) {")
+    assert opened < loop, "the closer must be found before any line is skipped"
+    # No standing flag can outlive the block any more.
+    assert "let frontmatter = false;" not in body
+    assert "frontmatter = true" not in body
+
+
+def test_the_popup_indents_a_heading_by_the_same_rule_as_the_outline(source):
+    # Reported in review: the popup indented by raw level while the outline
+    # indented by nesting depth, so a note starting at `##` — or one that skips a
+    # level — was drawn two ways, against what MD-14 says. One function now, used
+    # by both, which is the only version of "they match" that stays true.
+    depth = source[source.index("function withDepth(headings) {"):]
+    depth = depth[:depth.index("\n    }")]
+    assert "while (stack.length && stack[stack.length - 1] >= h.level) stack.pop();" in depth
+    options = source[source.index("function headingOptions(headings, prefix, encode) {"):]
+    options = options[:options.index("\n    }")]
+    assert "withDepth(headings)" in options
+    assert '"  ".repeat(h.depth)' in options
+    # The raw level survives only as the dimmed marker, where it is the point.
+    assert 'detail: "H" + h.level' in options
+    assert "h.level - 1" not in options
+    assert source.count("stack[stack.length - 1] >=") == 1, "one rule, not two"
 
 
 def test_the_graph_gets_the_panel_s_leftover_space_not_the_backlinks(source):
