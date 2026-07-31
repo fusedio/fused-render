@@ -156,13 +156,22 @@ def clone_url_from(src: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def _assert_public_address(host: str) -> None:
-    """Refuse a host that resolves to an address this process should not be pointed at.
+def _validated_address(host: str) -> str:
+    """Resolve `host`, refuse it unless **every** answer is public, and return the address
+    we will connect to.
 
-    Checked on the **resolved** addresses, not the name: a hostname under someone else's
+    Returning the address is the whole point, and the reason this is not a bare assertion:
+    validating a name and then handing the *name* to an HTTP client leaves a
+    **DNS-rebinding** window — the client resolves again when it connects, so an attacker
+    can answer with a public address for the check and a loopback, private, or
+    metadata address for the connection. The caller dials this address and keeps the
+    hostname only for the `Host` header and TLS (see :func:`_get`).
+
+    Checked on the **resolved** addresses, never the name: a hostname under someone else's
     control can point anywhere, so a name-based allow/deny list proves nothing. Every
-    answer must be public — if a name resolves to both a public and a private address, it
-    is refused, since we cannot control which one the connection would use.
+    answer must be public — a name resolving to both a public and a private address is
+    refused outright rather than filtered, since "some answers are fine" is not a property
+    we can hold a connection to.
 
     This is the guard that matters most in a desktop app: the process sits inside the
     user's network, so an unchecked URL is a request their browser could not make.
@@ -173,6 +182,7 @@ def _assert_public_address(host: str) -> None:
         raise CloneError(f"could not resolve {host!r}: {exc}") from None
     if not infos:
         raise CloneError(f"could not resolve {host!r}")
+    chosen: str | None = None
     for info in infos:
         raw = info[4][0]
         try:
@@ -187,6 +197,10 @@ def _assert_public_address(host: str) -> None:
                 f"{host!r} resolves to a non-public address ({raw}); "
                 "only publicly hosted pages can be cloned"
             )
+        if chosen is None:
+            chosen = raw
+    assert chosen is not None  # non-empty infos and every answer validated above
+    return chosen
 
 
 class _Fetched:
@@ -210,11 +224,26 @@ def _get(url: str) -> _Fetched:
     wherever the request actually landed.
     """
     parts = urlsplit(url)
-    _assert_public_address(parts.hostname or "")
+    host = parts.hostname or ""
+    address = _validated_address(host)
+    # Dial the address we validated, not the name. httpx would otherwise resolve the name
+    # again at connect time, and nothing guarantees it gets the answer we checked — the
+    # DNS-rebinding window. The hostname still travels as `Host` (so the far end routes
+    # correctly) and as `sni_hostname`, which is what the TLS layer uses for SNI *and* for
+    # certificate verification — so pinning the address costs no authentication: a cert
+    # valid for the hostname is still required.
+    literal = f"[{address}]" if ":" in address else address
+    netloc = literal if parts.port is None else f"{literal}:{parts.port}"
+    connect_url = urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
     body = bytearray()
     try:
         with httpx.Client(timeout=_TIMEOUT, follow_redirects=False) as client:
-            with client.stream("GET", url, headers={"accept": "*/*"}) as resp:
+            with client.stream(
+                "GET",
+                connect_url,
+                headers={"accept": "*/*", "host": parts.netloc},
+                extensions={"sni_hostname": host},
+            ) as resp:
                 if resp.is_redirect:
                     raise CloneError(
                         "the page's host redirected the request; a clone URL must be "
@@ -302,7 +331,11 @@ def probe(src: str) -> dict:
     """What cloning `src` would fetch and where it would land — no writes.
 
     Mirrors the git flow's `/api/clone/info`: the confirm step must describe exactly what
-    the commit step will do, so the destination reported here is the one the clone uses.
+    the commit step will do, so the destination reported here is the one the clone uses —
+    the client passes `folder` back to :func:`clone`, which honours it while it is free
+    (CL-1). Reserving it here would mean creating a directory during a preview the user has
+    not confirmed, so the guarantee is carry-through rather than a lock: if the name is
+    taken between the two calls, the clone's own response names where it landed.
     """
     url = clone_url_from(src)
     fetched = _get(f"{url}?meta=1")
@@ -344,13 +377,21 @@ def _staging_root() -> str:
     return os.path.join(fused_dir(), ".clone-staging")
 
 
-def clone(src: str) -> dict:
+def clone(src: str, folder: str | None = None) -> dict:
     """Download, validate, unpack, and move a deployed page into the Fused workspace.
 
     Staged first, then moved: an archive that fails any check must leave nothing behind,
     and a half-written page in the workspace would look like a real one. The move is a
     rename into a directory that did not exist a moment ago (`unique_dir`), so it can
     neither overwrite nor merge into anything.
+
+    `folder` is the destination the confirm step showed the user (CL-1). It is honoured when
+    it is still free, which is what makes the preview's promise hold: the preview writes
+    nothing, so it cannot *reserve* a name, and recomputing the name here would silently
+    land the clone somewhere else if the workspace changed in between. When it is no longer
+    free — or absent, as for a programmatic caller — the name is derived as usual and the
+    returned `folder` is the authoritative answer. Client-supplied, so it goes through
+    `_safe_folder_name` like any other untrusted name and can only ever be one segment.
     """
     url = clone_url_from(src)
     fetched = _get(url)
@@ -381,14 +422,26 @@ def clone(src: str) -> dict:
         layout = _read_bundle(staging_dir)
         name = _safe_folder_name(layout["name"])
         os.makedirs(fused_dir(), exist_ok=True)
-        dest = zip_import.unique_dir(fused_dir(), name)
+        reserved = _safe_folder_name(folder) if folder else None
+        if reserved and not os.path.exists(os.path.join(fused_dir(), reserved)):
+            dest = os.path.join(fused_dir(), reserved)
+        else:
+            dest = zip_import.unique_dir(fused_dir(), name)
         # The payload dir becomes the page folder: the manifest's `root` holds the files at
         # their real page-relative paths, which is exactly the local layout. The manifest
         # itself rides along as a dotfile so a re-export can reproduce the same bundle
         # without the user having to keep it somewhere.
         shutil.move(layout["payload"], dest)
-        if layout["manifest_path"]:
-            shutil.move(layout["manifest_path"], os.path.join(dest, ".fused-render-bundle.json"))
+        try:
+            shutil.move(
+                layout["manifest_path"], os.path.join(dest, ".fused-render-bundle.json")
+            )
+        except OSError as exc:
+            # The commit is two moves, so the second one failing would otherwise leave a
+            # clone in the workspace that this call reports as failed — the one state the
+            # stage-then-move design exists to prevent. Roll the first move back.
+            shutil.rmtree(dest, ignore_errors=True)
+            raise CloneError(f"could not finish writing the clone: {exc}") from None
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -430,7 +483,7 @@ def _read_bundle(staging_dir: str) -> dict:
     page = manifest.get("page")
     if not isinstance(root, str) or not root or not isinstance(page, str) or not page:
         raise CloneError("the download's manifest.json is missing 'root' or 'page'")
-    payload = _contained(staging_dir, root, "root")
+    payload = _contained(staging_dir, root, "root", child=True)
     if not os.path.isdir(payload):
         raise CloneError(f"the download declares root {root!r} but no such folder is in it")
     page_path = _contained(payload, page, "page")
@@ -446,12 +499,19 @@ def _read_bundle(staging_dir: str) -> dict:
     }
 
 
-def _contained(base: str, relative: str, field: str) -> str:
+def _contained(base: str, relative: str, field: str, *, child: bool = False) -> str:
     """`base/relative`, proven to stay under `base`.
 
     Same containment rule `zip_import.reject_reason` applies to entry names, applied to the
     manifest's own path fields — the archive's entries can be safe while a manifest field
     points outside the bundle, and this one is used to *move* a directory.
+
+    ``child=True`` additionally requires the result to be strictly *inside* `base`, which is
+    what `root` needs: a `root` of ``"."`` resolves to the staging directory itself, and
+    accepting that broke the staged-then-move guarantee outright — `clone` moved the staging
+    dir into the workspace and then tried to move `manifest.json` out of the path it had just
+    vacated, raising an uncaught `FileNotFoundError` and leaving a half-built clone behind. So
+    `root` must name a real child directory, not the bundle root.
     """
     normalized = relative.replace("\\", "/")
     if normalized.startswith("/") or os.path.isabs(normalized):
@@ -462,6 +522,11 @@ def _contained(base: str, relative: str, field: str) -> str:
     root = os.path.normpath(base)
     if target != root and not target.startswith(root + os.sep):
         raise CloneError(f"the download's {field} escapes the bundle ({relative!r})")
+    if child and target == root:
+        raise CloneError(
+            f"the download's {field} must name a folder inside the bundle, not the bundle "
+            f"itself ({relative!r})"
+        )
     return target
 
 
@@ -482,7 +547,11 @@ def api_clone_app(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    folder = body.get("folder")
     try:
-        return clone(str(body.get("src") or ""))
+        return clone(
+            str(body.get("src") or ""),
+            folder if isinstance(folder, str) and folder else None,
+        )
     except CloneError as exc:
         return _error(str(exc))

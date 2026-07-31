@@ -611,8 +611,11 @@ export function cloneAppInfo(src: string): Promise<ClonePreview> {
   return getJson<ClonePreview>(`/api/clone-app/info?src=${encodeURIComponent(src)}`);
 }
 
-export function cloneApp(src: string): Promise<CloneResult> {
-  return postJson<CloneResult>("/api/clone-app", { src });
+// `folder` is the destination the preview showed, passed back so the clone lands where the
+// user was told it would. Omitted, the backend derives it — the response is authoritative
+// either way.
+export function cloneApp(src: string, folder?: string): Promise<CloneResult> {
+  return postJson<CloneResult>("/api/clone-app", { src, folder });
 }
 
 export function installFused(): Promise<void> {

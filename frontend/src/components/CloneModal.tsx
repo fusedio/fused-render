@@ -80,7 +80,9 @@ export default function CloneModal({ onClose, onCloned, initialSrc = "" }: Clone
     setBusy("clone");
     setError(null);
     try {
-      const result = await cloneApp(trimmed);
+      // Pass the previewed folder through so the clone lands in the folder the confirm
+      // button just named (CL-1) — the preview writes nothing, so it cannot reserve it.
+      const result = await cloneApp(trimmed, preview?.folder);
       if (!alive.current) return;
       setDone(result);
       onCloned(result);
@@ -89,7 +91,7 @@ export default function CloneModal({ onClose, onCloned, initialSrc = "" }: Clone
     } finally {
       if (alive.current) setBusy(null);
     }
-  }, [trimmed, busy, onCloned]);
+  }, [trimmed, busy, onCloned, preview]);
 
   // Deep-link entry: a URL arrived with the modal, so preview it immediately — the user
   // already expressed intent by following the link. The clone itself still needs their

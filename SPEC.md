@@ -1153,8 +1153,12 @@ bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
 
 - **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
   (read-only — the file list, the download size, and the exact destination folder) and
-  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses,
-  so a collision can't invalidate what the user was shown. `CloneModal.tsx`; the sidebar
+  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
+  the client passes that folder back on the second call and the clone honours it while it is
+  free, so a page appearing in the workspace in between can't invalidate what the user was
+  shown. Carry-through rather than a lock — reserving the name would mean creating a
+  directory during a preview the user has not confirmed — so in the race the clone's own
+  response names where it landed, which is what the success view shows. `CloneModal.tsx`; the sidebar
   footer's "Open deployed app" entry opens it, and the modal navigates to the cloned page
   on success.
 - **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on

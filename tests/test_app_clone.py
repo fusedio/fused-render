@@ -194,7 +194,7 @@ def test_hosts_resolving_to_non_public_addresses_are_refused(monkeypatch, addr):
         lambda *a, **k: [(family, 1, 6, "", (addr, 443))],
     )
     with pytest.raises(app_clone.CloneError, match="non-public address"):
-        app_clone._assert_public_address("evil.example")
+        app_clone._validated_address("evil.example")
 
 
 def test_a_host_resolving_to_both_public_and_private_is_refused(monkeypatch):
@@ -206,14 +206,16 @@ def test_a_host_resolving_to_both_public_and_private_is_refused(monkeypatch):
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443)), (2, 1, 6, "", ("127.0.0.1", 443))],
     )
     with pytest.raises(app_clone.CloneError, match="non-public address"):
-        app_clone._assert_public_address("split.example")
+        app_clone._validated_address("split.example")
 
 
 def test_a_public_host_passes(monkeypatch):
     monkeypatch.setattr(
         app_clone.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
     )
-    app_clone._assert_public_address("open.fused.io")  # no raise
+    # Returns the address it validated — the value `_get` dials, so the connection cannot
+    # land on an answer that was never checked.
+    assert app_clone._validated_address("open.fused.io") == "93.184.216.34"
 
 
 def test_an_unresolvable_host_is_a_clean_error(monkeypatch):
@@ -222,7 +224,106 @@ def test_an_unresolvable_host_is_a_clean_error(monkeypatch):
 
     monkeypatch.setattr(app_clone.socket, "getaddrinfo", _boom)
     with pytest.raises(app_clone.CloneError, match="could not resolve"):
-        app_clone._assert_public_address("nx.example")
+        app_clone._validated_address("nx.example")
+
+
+class _FakeStream:
+    """Enough of a streamed `httpx.Response` for `_get`: status, redirect flag, chunks."""
+
+    def __init__(self, status_code=200, content=b"", is_redirect=False):
+        self.status_code = status_code
+        self._content = content
+        self.is_redirect = is_redirect
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def iter_bytes(self):
+        yield self._content
+
+
+class _FakeClient:
+    """Records what `_get` actually dialled. Instances land in `calls`, which the tests
+    read — the whole point is the connect URL, not the body."""
+
+    calls: list[dict] = []
+
+    def __init__(self, *, timeout=None, follow_redirects=None):
+        self.follow_redirects = follow_redirects
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def stream(self, method, url, *, headers=None, extensions=None):
+        _FakeClient.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers or {},
+                "extensions": extensions or {},
+                "follow_redirects": self.follow_redirects,
+            }
+        )
+        return _FakeStream(content=b"zipbytes")
+
+
+@pytest.fixture
+def dialled(monkeypatch):
+    """Stub one layer below `_get`: DNS answers one address, httpx records the connect."""
+    _FakeClient.calls = []
+    monkeypatch.setattr(
+        app_clone.socket, "getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
+    )
+    monkeypatch.setattr(app_clone.httpx, "Client", _FakeClient)
+    return _FakeClient.calls
+
+
+def test_the_request_dials_the_validated_address_not_the_name(dialled):
+    # The DNS-rebinding fix: validating a NAME and then handing the name to httpx lets the
+    # client resolve again at connect time, so an attacker can answer public for the check
+    # and loopback for the connection. `_get` must dial the address that was checked.
+    fetched = app_clone._get("https://open.fused.io/my-link/_clone")
+    assert fetched.content == b"zipbytes"
+    call = dialled[-1]
+    assert call["url"] == "https://93.184.216.34/my-link/_clone"
+    # ...while the hostname still travels, so pinning the address costs no authentication:
+    # `sni_hostname` drives SNI *and* certificate verification, and `Host` routes at the
+    # far end.
+    assert call["extensions"]["sni_hostname"] == "open.fused.io"
+    assert call["headers"]["host"] == "open.fused.io"
+    assert call["follow_redirects"] is False
+
+
+def test_a_v6_address_is_dialled_in_brackets_with_the_port_kept(monkeypatch):
+    _FakeClient.calls = []
+    monkeypatch.setattr(
+        app_clone.socket, "getaddrinfo", lambda *a, **k: [(10, 1, 6, "", ("2606:2800:220::1", 443))]
+    )
+    monkeypatch.setattr(app_clone.httpx, "Client", _FakeClient)
+    app_clone._get("https://open.fused.io:8443/p/_clone")
+    call = _FakeClient.calls[-1]
+    # A bare v6 literal in a URL is unparseable, and dropping the port would silently
+    # retarget the request at 443.
+    assert call["url"] == "https://[2606:2800:220::1]:8443/p/_clone"
+    assert call["headers"]["host"] == "open.fused.io:8443"
+
+
+def test_a_redirect_is_refused_rather_than_followed(dialled, monkeypatch):
+    # Every other guard applies to the URL we validated; a followed redirect would apply
+    # none of them to wherever the request landed.
+    monkeypatch.setattr(
+        _FakeClient,
+        "stream",
+        lambda self, *a, **k: _FakeStream(status_code=302, is_redirect=True),
+    )
+    with pytest.raises(app_clone.CloneError, match="redirected"):
+        app_clone._get("https://open.fused.io/my-link/_clone")
 
 
 # -- status mapping ------------------------------------------------------------
@@ -353,6 +454,54 @@ def test_a_clone_lands_as_an_openable_local_page(h):
     assert h.requests == ["https://open.fused.io/my-link/_clone"]
 
 
+def test_the_clone_lands_in_the_folder_the_preview_promised(h, tmp_path):
+    # CL-1: the preview writes nothing, so it cannot reserve the name — the client passes it
+    # back instead. Without that, a page appearing in the workspace between the two calls
+    # would silently move the clone: `my-page` is free at preview time, so the confirm button
+    # says "Clone to my-page", and it must still land there even though a LATER-created
+    # sibling would otherwise shift the derived name.
+    h.serve(meta=_meta(), archive=_bundle_zip())
+    preview = h.client.get(
+        "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+    ).json()
+    assert preview["folder"] == "my-page"
+    resp = h.client.post(
+        "/api/clone-app",
+        json={"src": "https://open.fused.io/my-link", "folder": preview["folder"]},
+        headers=FUSED,
+    )
+    assert resp.json()["folder"] == "my-page"
+
+
+def test_a_promised_folder_that_is_taken_by_then_falls_back_and_reports_it(h):
+    # The race the carry-through cannot close: honouring a name that now exists would
+    # overwrite or merge (CL-2), so the derived name wins and the RESPONSE is authoritative.
+    (h.workspace / "my-page").mkdir()
+    h.serve(archive=_bundle_zip())
+    resp = h.client.post(
+        "/api/clone-app",
+        json={"src": "https://open.fused.io/my-link", "folder": "my-page"},
+        headers=FUSED,
+    )
+    assert resp.json()["folder"] == "my-page-2"
+
+
+def test_a_hostile_promised_folder_cannot_steer_where_the_clone_lands(h, tmp_path):
+    # `folder` arrives from a client, so it is reduced like any other untrusted name: one
+    # segment, no separators, no traversal.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    h.serve(archive=_bundle_zip())
+    resp = h.client.post(
+        "/api/clone-app",
+        json={"src": "https://open.fused.io/my-link", "folder": "../../outside/pwned"},
+        headers=FUSED,
+    )
+    dest = resp.json()["dest"]
+    assert os.path.dirname(os.path.abspath(dest)) == str(h.workspace)
+    assert sorted(p.name for p in outside.iterdir()) == []
+
+
 def test_a_second_clone_of_the_same_page_never_overwrites_the_first(h):
     # An archive carries no identity we can verify, so there is no "update in place" here
     # (unlike the git flow) — landing on top of an existing folder would be data loss.
@@ -446,6 +595,49 @@ def test_a_manifest_page_pointing_outside_the_payload_is_refused(h):
     )
     assert resp.status_code == 400
     assert "may not contain '..'" in resp.json()["error"]
+
+
+@pytest.mark.parametrize("root", [".", "./", "files/.."])
+def test_a_manifest_root_naming_the_bundle_itself_is_refused(h, root):
+    # `root` is the directory `clone` MOVES, so accepting the staging dir itself broke the
+    # staged-then-move guarantee: the move vacated the path `manifest.json` was still
+    # expected at, raising an uncaught FileNotFoundError and leaving a half-built clone in
+    # the workspace. `root` must name a real child directory.
+    h.serve(archive=_bundle_zip(manifest_over={"root": root}))
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert "must name a folder inside the bundle" in error or "may not contain '..'" in error
+    # Nothing landed: the refusal happens before either move (`.clone-staging` is the
+    # staging root, swept of its contents but not itself removed).
+    assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
+
+
+def test_a_failed_manifest_move_rolls_the_payload_move_back(h, monkeypatch):
+    # The commit is two moves. The second one failing would otherwise leave a clone in the
+    # workspace that this call reports as failed — the one state stage-then-move exists to
+    # prevent.
+    real_move = app_clone.shutil.move
+    calls: list[int] = []
+
+    def _second_move_fails(src, dst):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(app_clone.shutil, "move", _second_move_fails)
+    h.serve(archive=_bundle_zip())
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "could not finish writing the clone" in resp.json()["error"]
+    # Rolled back: no page folder in the workspace, so a failed call leaves nothing that
+    # looks like a real clone.
+    assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
 
 
 def test_an_absolute_manifest_root_is_refused(h):
