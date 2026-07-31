@@ -828,10 +828,14 @@ def _app_dir_for(path: str) -> str:
 
 
 def _commit_turn(file: str, message: str) -> None:
-    """Commit whatever a finished turn left in the target's APP repo.
+    """FALLBACK sweep: commit whatever a finished turn left UNcommitted in
+    the target's APP repo.
 
     App folders are version-controlled from creation (fused_render/app_git.py)
-    and every Claude turn must land as its own small commit. Hard-scoped: a
+    and the app's CLAUDE.md instructs claude to commit its own work in small
+    chunks as it goes — when it did, the tree is clean and this is a no-op.
+    This sweep only catches the turns where that instruction was not honoured,
+    so no turn's work is ever left outside history. Hard-scoped: a
     target outside an app dir, or an app dir without a `.git`, commits nothing
     — this template also chats about files in arbitrary folders, and silently
     committing into a user's real repository is the one wrong move.
@@ -991,13 +995,18 @@ def _poll(run_id: str) -> dict:
     except (OSError, json.JSONDecodeError):
         meta = {}
 
-    # First poll that sees the run finished commits its work into the app's
-    # repo (one-shot via a marker, like the sidecar record below). Errors
-    # commit too: a crashed turn may still have edited files, and history
-    # must hold every turn — the marker is claimed BEFORE the commit so a
-    # racing concurrent poll can't double-commit.
+    # First poll that sees the run finished CLEANLY sweeps anything left
+    # uncommitted into the app's repo (one-shot via a marker, like the
+    # sidecar record below). This is a FALLBACK: the app's CLAUDE.md tells
+    # claude to commit as it works and end every turn with a clean tree, so
+    # when it honoured that this add -A finds nothing and no commit happens.
+    # Errored turns are skipped — a crash mid-edit is not a state worth
+    # enshrining; the next clean turn's sweep picks the survivors up. The
+    # marker is claimed BEFORE the commit so a racing concurrent poll can't
+    # double-commit.
     commit_marker = os.path.join(run_dir, "committed")
-    if done and "file" in meta and not os.path.exists(commit_marker):
+    if done and not error and "file" in meta \
+            and not os.path.exists(commit_marker):
         try:
             fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
