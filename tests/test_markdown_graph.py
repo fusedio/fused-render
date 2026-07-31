@@ -769,7 +769,9 @@ def test_candidates_lists_notes_headings_and_assets(graph, tmp_path):
     assert hub["title"] == "Hub"
     assert [h["text"] for h in hub["headings"]] == ["Hub", "Details"]
     assert "tags" not in out
-    assert out["assets"] == ["sub/pic.png"]
+    # An asset row is `{rel, embed}`: the path, and the form `![[…]]` may insert
+    # for it (MD-14). Here nothing shadows it, so the basename is enough.
+    assert out["assets"] == [{"rel": "sub/pic.png", "embed": "pic.png"}]
 
 
 def test_a_candidates_link_form_is_the_shortest_unambiguous_one(graph, tmp_path):
@@ -788,6 +790,22 @@ def test_a_candidates_link_form_is_the_shortest_unambiguous_one(graph, tmp_path)
     }
 
 
+def test_a_link_form_is_validated_from_the_note_it_will_be_inserted_into(graph, tmp_path):
+    # `file` names the note the popup is running in, and tier 1 resolves relative
+    # to that note's folder — so the sibling is reachable as the bare basename
+    # from there, while the far one has to carry its folder. Validated from the
+    # ROOT (no `file`) the two are indistinguishable and both carry a folder.
+    root = _vault(tmp_path, {
+        "docs/n.md": "x\n", "docs/Same.md": "x\n", "b/Same.md": "x\n",
+    })
+    forms = {n["rel"]: n["link"] for n in graph.main(
+        action="candidates", root=root, file=os.path.join(root, "docs", "n.md"))["notes"]}
+    assert forms["docs/Same.md"] == "Same"
+    assert forms["b/Same.md"] == "b/Same"
+    rooted = {n["rel"]: n["link"] for n in graph.main(action="candidates", root=root)["notes"]}
+    assert rooted["docs/Same.md"] == "docs/Same"
+
+
 def test_every_candidate_link_form_resolves_back_to_its_own_note(graph, tmp_path):
     # The property that matters: what the popup inserts is what resolution
     # finds. Asserted rather than reasoned about, because the two rules are
@@ -799,6 +817,85 @@ def test_every_candidate_link_form_resolves_back_to_its_own_note(graph, tmp_path
     paths = [n["rel"] for n in out["notes"]]
     for note in out["notes"]:
         assert graph.resolve_link(note["link"], "Top.md", paths) == note["rel"], note["link"]
+
+
+def test_an_asset_embed_form_is_the_shortest_one_that_resolves_back(graph, tmp_path):
+    # `![[img/a.png]]` written in `docs/` binds to `docs/img/a.png` the moment
+    # that file exists, because tier 1 of resolution is relative to the linking
+    # note's own folder (MD-4). So the root-relative path is NOT a safe form to
+    # insert, and the payload must offer whatever does resolve back: `../` for the
+    # one at the root, the plain path for the one in the note's own subtree.
+    root = _vault(tmp_path, {
+        "docs/n.md": "x\n",
+        "img/a.png": "x",
+        "docs/img/a.png": "x",
+        "docs/solo.png": "x",
+    })
+    out = graph.main(action="candidates", root=root,
+                     file=os.path.join(root, "docs", "n.md"))
+    assert {a["rel"]: a["embed"] for a in out["assets"]} == {
+        "docs/img/a.png": "img/a.png",
+        "docs/solo.png": "solo.png",
+        "img/a.png": "../img/a.png",
+    }
+
+
+def test_an_asset_with_no_unambiguous_form_says_so_instead_of_lying(graph, tmp_path):
+    # The stem-key collision: `_candidate_index` files a note under its stem, so
+    # the note `img/a.png.md` and the asset `img/a.png` share the key `img/a.png`
+    # and `_only` refuses to pick between them (MD-4). No form of either resolves
+    # back, so both carry a null form — the popup drops the row rather than
+    # inserting a path the resolver reads as somebody else's file.
+    root = _vault(tmp_path, {"n.md": "x\n", "img/a.png": "x", "img/a.png.md": "x\n"})
+    out = graph.main(action="candidates", root=root)
+    assert {a["rel"]: a["embed"] for a in out["assets"]} == {"img/a.png": None}
+    shadow = [n for n in out["notes"] if n["rel"] == "img/a.png.md"][0]
+    assert shadow["embed"] is None
+    # The note is still reachable by a plain `[[…]]`: that resolves through the
+    # note index, where the asset is not a candidate at all.
+    assert shadow["link"] == "a.png"
+
+
+def test_every_candidate_embed_form_resolves_back_to_its_own_file(graph, tmp_path):
+    # The asset half of the property above, and the reason `embed` exists as a
+    # second field: an embed resolves through notes PLUS assets, so a form
+    # validated against the note index is not validated for `![[…]]`. Every
+    # non-null form must round-trip from the note the popup ran in.
+    root = _vault(tmp_path, {
+        "docs/n.md": "x\n",
+        "docs/Same.md": "x\n",
+        "b/Same.md": "x\n",
+        "img/a.png": "x",
+        "docs/img/a.png": "x",
+        "deep/nest/pic.png": "x",
+        "pic.png": "x",
+    })
+    rel = "docs/n.md"
+    out = graph.main(action="candidates", root=root, file=os.path.join(root, rel))
+    paths = [n["rel"] for n in out["notes"]] + [a["rel"] for a in out["assets"]]
+    rows = [(a["rel"], a["embed"]) for a in out["assets"]]
+    rows += [(n["rel"], n["embed"]) for n in out["notes"]]
+    assert [form for _, form in rows if form], "every form was null — vacuous"
+    for target, form in rows:
+        if form is None:
+            continue
+        assert graph.resolve_link(form, rel, paths) == target, (target, form)
+
+
+def test_the_suffix_index_answers_exactly_what_the_endswith_scan_answered(graph):
+    # `_suffix_index` is a memoisation of resolution's third tier and nothing
+    # else — ~1.9s of `endswith` at the caps became a ~40ms payload (D191) — so
+    # the only thing to assert is that it changed no answer, ambiguous ones
+    # included.
+    paths = ["a.md", "a/b.md", "c/a/b.md", "img/a.png", "img/a.png.md", "d/e/f/g.md"]
+    index = graph._candidate_index(paths)
+    suffixes = graph._suffix_index(index)
+    targets = ["a", "b", "a/b", "c/a/b", "a.png", "img/a.png", "g", "f/g",
+               "e/f/g", "nope", "b.md"]
+    for from_rel in ("", "a/b.md", "c/a/b.md", "d/e/f/g.md"):
+        for target in targets:
+            assert (graph.resolve_link(target, from_rel, paths, index, suffixes)
+                    == graph.resolve_link(target, from_rel, paths, index)), (target, from_rel)
 
 
 def test_candidates_refuses_a_mount_backed_root(graph, tmp_path, monkeypatch):
