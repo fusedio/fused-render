@@ -549,3 +549,111 @@ def test_an_untracked_diff_header_is_repository_relative(reader, repo):
     assert got["ok"] is True
     assert "a/pkg/fresh.txt" in got["diff"]
     assert repo not in got["diff"]
+
+
+# ------------------------------------------------------- caps: status byte bound
+#
+# The byte cap is reachable only in absurd states (~220k modified files at the
+# 4 MB default — measured), so these lower the cap instead of building a fixture
+# that big. What they pin is the FRAMING, which is where the first version was
+# wrong: it sliced `subprocess.run`'s captured output, so the cap bounded no
+# memory and cut at an arbitrary byte, showing a truncated path in the UI.
+
+
+def _status_bytes(reader, root):
+    """The exact status stream the reader parses, for sizing a cap against."""
+    raw, truncated = reader._git_stream(
+        os.path.realpath(root),
+        ("status", "--porcelain=v1", "-z", "--untracked-files=normal",
+         "--ignored=no"),
+        10 ** 9, allow=(0,))
+    assert truncated is False
+    return raw
+
+
+def test_the_status_cap_is_a_real_memory_bound_not_a_slice(reader, repo, monkeypatch):
+    # `_git_stream` must stop READING at the cap. Proven by the returned length:
+    # a post-hoc slice of captured output would be indistinguishable in content,
+    # so the property under test is that the stream itself is bounded.
+    raw, truncated = reader._git_stream(
+        os.path.realpath(repo),
+        ("status", "--porcelain=v1", "-z", "--untracked-files=normal",
+         "--ignored=no"),
+        24, allow=(0,))
+    assert truncated is True
+    assert len(raw) <= 24
+
+
+def test_a_byte_capped_status_never_shows_a_truncated_path(reader, repo, monkeypatch):
+    # The blocking defect: a mid-record cut left the last entry carrying half a
+    # path — a wrong path in the UI, and a row that fails when clicked. Every
+    # path that survives must be one git actually emitted, at every cap length.
+    full = _status_bytes(reader, repo)
+    real = {chunk.decode()[3:] for chunk in full.split(b"\0")
+            if len(chunk) >= 4 and chunk[:2] != b"R "}
+    assert real, "fixture must be dirty"
+
+    for cap in range(4, len(full) + 4):
+        monkeypatch.setattr(reader, "MAX_STATUS_BYTES", cap)
+        got = reader.main(repo)
+        assert got["ok"] is True, cap
+        for change in got["changes"]:
+            assert change["path"] in real, (
+                f"cap={cap} produced a path git never emitted: {change['path']!r}")
+
+
+def test_a_byte_capped_status_reports_truncation_and_stays_dirty(reader, repo, monkeypatch):
+    monkeypatch.setattr(reader, "MAX_STATUS_BYTES", 20)
+    got = reader.main(repo)
+    assert got["ok"] is True
+    assert got["changes_truncated"] is True
+    # git had more to say than we read, so "clean" is not an answer we may give.
+    assert got["repo"]["dirty"] is True
+
+
+def test_an_uncapped_status_is_not_flagged_truncated(reader, repo):
+    got = reader.main(repo)
+    assert got["changes_truncated"] is False
+
+
+def test_a_cut_between_a_renames_two_halves_drops_the_rename(reader, tmp_path, monkeypatch):
+    # The subtlest half of the defect: a cut landing between `R <to>` and its
+    # `<from>` shifted the pairing by one for everything after it. Cutting at
+    # every byte of a rename-bearing status must never mis-pair — an entry either
+    # carries its true `orig` or is not shown at all.
+    root = str(tmp_path / "renames")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    for i in range(3):
+        write(root, f"old{i}.txt", ("x" * 200 + "\n") * (i + 1))
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "add", when="2026-05-01T10:00:00+00:00")
+    for i in range(3):
+        git(root, "mv", f"old{i}.txt", f"new{i}.txt")
+
+    truth = {f"new{i}.txt": f"old{i}.txt" for i in range(3)}
+    full = _status_bytes(reader, root)
+    assert b"R " in full
+
+    for cap in range(4, len(full) + 4):
+        monkeypatch.setattr(reader, "MAX_STATUS_BYTES", cap)
+        got = reader.main(root)
+        assert got["ok"] is True, cap
+        for change in got["changes"]:
+            if change["x"] == "R":
+                assert change["orig"] == truth[change["path"]], (
+                    f"cap={cap} mis-paired {change['path']} -> {change['orig']}")
+
+
+def test_the_change_count_cap_still_reports_truncation(reader, tmp_path, monkeypatch):
+    # MAX_CHANGES and the byte cap share one flag; this is the other cause.
+    root = str(tmp_path / "many")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    for i in range(9):
+        write(root, f"f{i}.txt", "x\n")
+    monkeypatch.setattr(reader, "MAX_CHANGES", 4)
+    got = reader.main(root)
+    assert len(got["changes"]) == 4 and got["changes_truncated"] is True
+
+

@@ -690,9 +690,13 @@ function render(data, diff) {
       data.repo.dirty
         ? "No uncommitted changes under this path."
         : "Working tree is clean.",
+      /* One flag, two causes (MAX_CHANGES or the status byte cap), so the
+         wording has to be true of both — "the first N" is a lie when the cap
+         fired before N entries were even in scope. */
       data.changes_truncated
         ? el("p", { className: "note", textContent:
-            "Only the first " + data.changes.length + " changes are listed." })
+            "This list is truncated: the repository has more uncommitted "
+            + "changes than this view will read." })
         : null),
     listSection("History", data.commits.length, commitRows,
       data.repo.has_commits

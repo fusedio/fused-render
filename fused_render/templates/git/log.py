@@ -203,16 +203,21 @@ def _git(root, *args, allow=(0,)):
     return proc.stdout
 
 
-def _git_capped(root, *args, cap_bytes, cap_lines, allow=(0, 1)):
-    """Stream a git command's stdout, stopping at the first cap that is hit.
+def _git_stream(root, args, cap_bytes, allow=(0, 1)):
+    """Stream a git command's stdout, stopping at `cap_bytes`.
 
-    Streamed rather than captured because the caps exist for outputs whose size
-    is the problem: `subprocess.run` would buffer the whole hundred-megabyte
-    diff into memory before we got a chance to trim it. A watchdog timer kills
-    the process, so a git that stops writing mid-stream cannot park a blocking
-    read forever — `timeout=` does not exist on a manual read loop.
+    Streamed rather than captured because a byte cap applied to
+    `subprocess.run`'s result is not a bound at all — the whole output is in
+    memory by the time the slice happens, so the cap only trims what gets
+    PARSED. Reading with a cap and killing the process is what makes it a real
+    memory bound. A watchdog timer does the killing, so a git that stops writing
+    mid-stream cannot park a blocking read forever (`timeout=` does not exist on
+    a manual read loop).
 
-    Returns `(text, truncated, shown_lines)`.
+    Returns `(raw_bytes, truncated)`. The caller owns record framing: a cap fires
+    at an arbitrary byte, so whatever the last record was, it is a FRAGMENT and
+    the caller must discard it (`_git_capped` drops the partial line, `_status`
+    drops everything after the last NUL).
     """
     try:
         proc = subprocess.Popen(
@@ -253,12 +258,20 @@ def _git_capped(root, *args, cap_bytes, cap_lines, allow=(0, 1)):
             code = None
 
     # A cap that fired means we closed the pipe under git, so its exit status is
-    # about the broken pipe and not about the diff — only judge it when we read
+    # about the broken pipe and not about the output — only judge it when we read
     # the stream to its end.
     if not truncated and code is not None and code not in allow:
         raise _Refused("git-failed", f"git exited {code}.")
+    return b"".join(chunks), truncated
 
-    text = b"".join(chunks).decode("utf-8", "replace")
+
+def _git_capped(root, *args, cap_bytes, cap_lines, allow=(0, 1)):
+    """A streamed git command as text, capped in bytes AND in lines.
+
+    Returns `(text, truncated, shown_lines)`.
+    """
+    raw, truncated = _git_stream(root, args, cap_bytes, allow)
+    text = raw.decode("utf-8", "replace")
     lines = text.split("\n")
     if truncated and lines:
         lines.pop()  # a byte cap almost certainly cut mid-line; drop the fragment
@@ -382,11 +395,28 @@ def _status(root, rel, is_dir):
     `--porcelain=v1 -z` is the stable machine format: `XY <path>NUL`, and for a
     rename or copy `XY <to>NUL<from>NUL` — the `-z` form reverses the arrow'd
     order, so the NEW path comes first.
+
+    STREAMED under a byte cap, and the cap's fragment is discarded before
+    parsing. Both halves matter and the first version of this got both wrong by
+    slicing `subprocess.run`'s captured output: the slice bounded nothing (the
+    whole output was already in memory) and it cut at an arbitrary byte, so the
+    last entry showed a TRUNCATED PATH — a wrong path in the UI, and a row that
+    fails when clicked. Worse, a cut landing inside a rename's `<to>` record
+    shifted the `<from>` pairing by one for everything after it. So: cut back to
+    the last NUL (only whole NUL-terminated fields survive), and drop a trailing
+    rename whose `<from>` did not make it. Returns
+    `(entries, truncated, dirty)`, where `truncated` now covers BOTH caps.
     """
-    raw = _git(root, "status", "--porcelain=v1", "-z",
-               "--untracked-files=normal", "--ignored=no")[:MAX_STATUS_BYTES]
+    raw, byte_capped = _git_stream(
+        root, ("status", "--porcelain=v1", "-z",
+               "--untracked-files=normal", "--ignored=no"),
+        MAX_STATUS_BYTES, allow=(0,))
+    if byte_capped:
+        # Keep only complete NUL-terminated fields. A whole stream ends with NUL,
+        # so this is a no-op on untruncated output and drops exactly the fragment.
+        raw = raw[: raw.rfind(b"\0") + 1]
     fields = raw.split(b"\0")
-    entries, dirty = [], False
+    entries, dirty, dangling = [], False, False
     i = 0
     while i < len(fields):
         record = fields[i]
@@ -397,7 +427,14 @@ def _status(root, rel, is_dir):
         path = record[3:].decode("utf-8", "replace")
         orig = None
         if code[0] in ("R", "C"):
-            orig = fields[i].decode("utf-8", "replace") if i < len(fields) else None
+            if i >= len(fields) - 1:
+                # The paired `<from>` field is missing: the byte cap landed
+                # between the two halves of one rename. Emitting the entry would
+                # show a rename with no source; dropping it keeps every entry
+                # that IS shown fully correct.
+                dangling = True
+                break
+            orig = fields[i].decode("utf-8", "replace")
             i += 1
         dirty = True
         if not _in_scope(path, rel, is_dir):
@@ -415,8 +452,10 @@ def _status(root, rel, is_dir):
             "untracked": untracked,
             "label": _STATUS_LABELS.get("?" if untracked else (x if x != " " else y), ""),
         })
-    truncated = len(entries) > MAX_CHANGES
-    return entries[:MAX_CHANGES], truncated, dirty
+    truncated = byte_capped or dangling or len(entries) > MAX_CHANGES
+    # A byte cap means the repo-wide dirty verdict is `True` regardless of what
+    # survived parsing — git had more to say than we were willing to read.
+    return entries[:MAX_CHANGES], truncated, dirty or byte_capped
 
 
 def _in_scope(path, rel, is_dir):
@@ -503,6 +542,7 @@ def _check_op(op, sha, entry):
         # silently resolve outside the repository.
         if os.path.isabs(entry) or any(part == ".." for part in rel.split("/")):
             raise _Refused("outside-repo", "That path is outside the repository.")
+
 
 
 def _worktree(root, entry, has_commits):
