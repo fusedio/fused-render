@@ -658,6 +658,17 @@ function parseComments() {
 
 let attached = parseComments();
 
+// The return ticket that came with those comments (`claudeReturn=<mode>`, set by
+// annotate's "Send to Claude"). Captured into JS memory at boot for the same
+// reason `attached` is: clearTopClaudeComments strips it from the shell URL
+// immediately, so the URL cannot be consulted later. Empty when this chat was
+// opened normally — then nothing ever navigates away.
+const returnMode = fused.params.get("claudeReturn") || "";
+// Armed only by the send that actually carries comments (composeAndSend), and
+// consumed by that run's completion (pollLoop). A plain chat turn afterwards
+// must not teleport the user out of the conversation.
+let pendingReturn = false;
+
 function buildChip(c, i) {
   const chip = document.createElement("div");
   chip.className = "chip";
@@ -719,10 +730,15 @@ function formatComments(arr) {
 //      the bug. Clearing the live entry in place with replaceState (never a
 //      push) means the comments were never on any reachable entry. We keep
 //      them only in the in-memory `attached` array for the send.
-// Surgical + best-effort: only this one key is deleted, the balanced
-// `_layout=(…)` span (its `&` is literal) is excised first and reattached last
-// byte-for-byte, and any failure is swallowed. Mirror of the write side —
-// annotate's "Send to Claude" sets this same top param the same way.
+// Surgical + best-effort: only the handoff keys are deleted (`claudeComments`
+// and its `claudeReturn` return ticket — both are one-shot boot inputs, already
+// in memory as `attached`/`returnMode`, and a Back entry still carrying them
+// would re-attach a review that was already sent), the balanced `_layout=(…)`
+// span (its `&` is literal) is excised first and reattached last byte-for-byte,
+// and any failure is swallowed. Mirror of the write side — annotate's "Send to
+// Claude" sets these same top params the same way.
+const HANDOFF_PARAMS = ["claudeComments", "claudeReturn"];
+
 function clearTopClaudeComments() {
   let top;
   try { top = window.top; void top.location.href; } catch (e) { return; }  // cross-origin
@@ -742,8 +758,8 @@ function clearTopClaudeComments() {
     rest = (full.slice(0, m.index) + full.slice(i)).replace(/^&|&$/g, "");
   }
   const params = new URLSearchParams(rest);
-  if (!params.has("claudeComments")) return;
-  params.delete("claudeComments");
+  if (!HANDOFF_PARAMS.some((k) => params.has(k))) return;
+  HANDOFF_PARAMS.forEach((k) => params.delete(k));
   let search = params.toString();
   if (span) search += (search ? "&" : "") + span;
   const url = top.location.pathname + (search ? "?" + search : "");
@@ -751,6 +767,58 @@ function clearTopClaudeComments() {
     top.history.replaceState(top.history.state, "", url);
     top.dispatchEvent(new Event("fused:urlchange"));  // let the shell re-sync
   } catch (e) { /* best-effort — a failed clear must not break the send */ }
+}
+
+// ── the return trip ───────────────────────────────────────────
+// Send the shell back to the mode that handed us the comments, once that run is
+// done. Without this the handoff is one-way: this frame calls
+// fused.autoReload(false) and owns the whole viewport, so a user who sent a
+// review sat in the chat and never saw the edited file.
+//
+// ⚠️ DELIBERATE STANDARD-BREAK, for the same two reasons as
+// clearTopClaudeComments above: `_mode` lives on the SHELL url (above this
+// pane's param boundary, D72) and is a RESERVED param name that
+// fused.params.set refuses outright (runtime.js isReserved), so switching mode
+// can only be done by writing window.top's URL. The navigation itself reuses
+// the history template's navigateShell idiom — pushState + a `fused:navigate`
+// event so the React shell re-routes in place, with a hard `location.href`
+// assignment as the cross-origin/no-shell fallback — rather than inventing a
+// third way to move the shell. Every other param (`comments`, `view`,
+// `session_id`, the `_layout` span) is preserved byte-for-byte, so the review
+// and the framed sibling view come back exactly as they were.
+function returnToMode(mode) {
+  let top;
+  try { top = window.top; void top.location.href; } catch (e) { return; }  // cross-origin
+  const full = (top.location.search || "").replace(/^\?/, "");
+  const m = /(^|&)_layout=\(/.exec(full);
+  let span = null;
+  let rest = full;
+  if (m) {
+    const start = m.index + m[1].length;
+    let i = start + "_layout=(".length, depth = 1;
+    while (i < full.length && depth > 0) {
+      if (full[i] === "(") depth++;
+      else if (full[i] === ")") depth--;
+      i++;
+    }
+    span = full.slice(start, i);
+    rest = (full.slice(0, m.index) + full.slice(i)).replace(/^&|&$/g, "");
+  }
+  const params = new URLSearchParams(rest);
+  params.set("_mode", mode);
+  // `run` marks a chat run as in-flight and is what the next boot re-attaches
+  // to (resumeRun). The run we are returning FROM has finished, so carrying the
+  // id back would make a later hop into chat re-poll a dead run.
+  params.delete("run");
+  let search = params.toString();
+  if (span) search += (search ? "&" : "") + span;
+  const url = top.location.pathname + (search ? "?" + search : "");
+  try {
+    top.history.pushState(null, "", url);
+    top.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (e) { /* fall through */ }
+  try { top.location.href = url; } catch (e) { location.href = url; }
 }
 
 // Fold any attached comments into the outgoing message, then hand off to the
@@ -763,6 +831,10 @@ function composeAndSend(typed) {
     message = typed ? block + "\n\n" + typed : block;
     attached = [];
     renderAttachments();
+    // Arm the return trip for THIS run only (consumed in pollLoop). Set here,
+    // not at boot, because the user may never send: an unsent handoff must
+    // leave them wherever they are.
+    if (returnMode) pendingReturn = true;
   }
   sendMessage(message);
 }
@@ -1240,6 +1312,14 @@ async function pollLoop(run_id) {
         } else if (data.text) {
           addAssistant("").lastChild.innerHTML = renderMd(data.text);
         }
+        // The comment-carrying run finished cleanly: hand the shell back to the
+        // mode that sent it, so the reviewer sees the edited file instead of
+        // sitting in a chat that never reloads. Consumed either way — one send,
+        // one return, so a follow-up turn in this session stays in the chat.
+        // Deliberately NOT on the error path (nor in the catch below): a run
+        // that failed or was aborted has changed nothing to go back and look
+        // at, and navigating away would hide the error message.
+        if (pendingReturn && !data.error) returnToMode(returnMode);
         break;
       }
       await sleep(400);
@@ -1253,6 +1333,10 @@ async function pollLoop(run_id) {
     if (reply) reply.remove();
     addError(err.message);
   } finally {
+    // One send, one return: cleared however this run ended (done, errored, or
+    // the poll itself threw) so a later turn in the same session can never
+    // inherit the ticket and teleport the user out of the conversation.
+    pendingReturn = false;
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
   }
 }
