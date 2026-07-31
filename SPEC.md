@@ -532,7 +532,7 @@ Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlit
 
 - **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
 - **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
-- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar, `shared/file_history.py`'s revert — §33/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The two `os.replace` writers that also consult the mount flag through `shared/appenv` (annotate's `_sidecar_writable`, `file_history.file_writable`) are the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
 - **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
@@ -729,6 +729,17 @@ subset, so a missing id means "not in this review", not "deleted". The live URL
 hydration for a deep link whose id is absent from the live set, not a live-store
 sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
 fails silently (no error UI, no focus).
+
+**Revert + version timeline** (§33, D193) is the one surface in this template
+that is not about comments: a footer block in the sidebar offering "Revert last
+change" plus an expandable list of every checkpoint Claude Code holds for the
+target, each individually restorable behind a confirm sheet. It is its own footer
+rather than part of `#sidefoot`, which is hidden wherever the file has no
+`claude` mode — reverting has nothing to do with whether a chat view exists.
+`annotate.py` gains three actions (`history`, `revert_plan`, `revert`) over
+`../shared/file_history.py`; all the store semantics, the safety gates and the
+degradation rules live in §33, and everything there is deliberately
+annotate-agnostic so `claude` and `history` can adopt the same reader.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
@@ -3385,3 +3396,153 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
+
+## 33. File History — Revert from Claude Code's Checkpoints (D193)
+
+Goal: give a template view an **undo for the agent's edits**, with no version
+control involved. Claude Code already writes a full copy of every file it is
+about to change; this reads that store, presents the file's version timeline,
+and restores from it. Wired into `annotate` first (§17); the reader is shared so
+`claude` and `history` can adopt it.
+
+- **FH-1** **The store, and why it is the authority instead of git.** Content
+  lives at
+  `<claude-config-dir>/file-history/<sessionId>/<sha256(abspath)[:16]>@v<N>`,
+  where each `@vN` is a **full copy** of the file at a checkpoint, never a diff.
+  `<claude-config-dir>` is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`,
+  resolved through `expanduser` on a `join` rather than a literal `"~/.claude"`
+  (this package ships a `windows/` dir, and a hardcoded forward slash survives
+  `expanduser` unchanged there and then never matches a normalized path). Git
+  answers "what did the last commit say"; this answers "what did this file look
+  like before the agent touched it", which is the question a reviewer sitting in
+  a view actually asks — and it has an answer in a directory that is not a
+  repository at all, which git does not. The two are complementary, not
+  alternatives; a separate git-backed template is its own work.
+- **FH-2** **Enumeration is filesystem-only, because the filename key is a pure
+  function of the path.** The hash is verified as `sha256` of the **absolute**
+  path truncated to 16 hex chars (13/13 files of a real session), so one file's
+  entire timeline is `<history-root>/*/<hash>@v*` — no transcript parsing on the
+  render path. That is the whole reason this is cheap enough to call on a view
+  boot: the session transcripts reach **5 MB+** each and reading one per render
+  would be a performance trap. `abspath` is load-bearing, not cosmetic: a
+  relative path hashes to something the store never heard of, so the lookup
+  would silently find nothing rather than fail.
+- **FH-3** **Versions are checkpoints, not per-edit pre-images — so "revert the
+  last change" is the newest version whose content DIFFERS from disk.** Measured
+  on a real session: 6 of 13 files matched their highest `@vN`, 7 did not,
+  because the file moved on after the last checkpoint. "Restore the highest N"
+  is therefore wrong roughly half the time, and would frequently be a no-op that
+  reads as a broken button. The differs-from-disk rule is correct whether a
+  checkpoint is a pre- or a post-image, which sidesteps the ambiguity rather than
+  betting on a reading of it. `differs` is a byte comparison per version, and an
+  ABSENT file makes every version differ — which is what gives "the agent
+  deleted my file" an undo.
+- **FH-4** **Chains are per-session and version numbers collide, so the timeline
+  merges on TIME.** A path edited across several sessions has a separate chain
+  under each `<sessionId>/`, and N **restarts**: two sessions both holding a
+  `@v2` for one path is ordinary, not an edge case. Order is the backup file's
+  mtime, with N only as a tiebreak *within* a session, never across. A version is
+  therefore identified by the **pair**, surfaced as one opaque id
+  (`"<session>@v<N>"`), and the row's tooltip names the session because that is
+  the only thing distinguishing two rows that both say `v2`.
+- **FH-5** **A null `backupFileName` means the file did not exist, so reverting
+  across it is a DELETE.** Not a restore of empty content, which would leave a
+  zero-byte file the agent never created. The filesystem cannot represent "no
+  content", so this fact lives only in the transcript
+  (`<config>/projects/<cwd with / -> ->/<sessionId>.jsonl`, records of type
+  `file-history-delta` / `file-history-snapshot`) and arrives only through
+  **opt-in enrichment**: the view's boot call does not read transcripts, and only
+  an expanded History panel pays for one. Three guards keep that affordable and
+  quiet — a byte cap checked by `stat` before anything opens; a per-line
+  **substring prefilter** so `json.loads` runs on the handful of candidate lines
+  rather than the file (a 5 MB transcript becomes a 5 MB `in` scan); and a
+  blanket except per transcript, so corrupt/truncated/half-written degrades to
+  "no extra rows", never to an error. `trackingPath` is repo-relative and this
+  code does not know the repo root, so it is matched as a path-boundary **suffix**
+  of the target's absolute path. Such a row carries its own record's timestamp —
+  never a neighbouring row's; verified on a real chain where the creation
+  boundary's `backupTime` is nine minutes before the next checkpoint's and only
+  *looked* duplicated at display granularity — and when that stamp will not parse
+  the view renders "time unknown" rather than 1970. It also wears its own version
+  number (the creation boundary is `version: 1` in a real store), so it is
+  numbered like every row below it with "did not exist" as the annotation
+  explaining what restoring it does; a dash appears only for a record with no
+  usable number, since `v0` would invent a version the store never wrote. Its id
+  is `"<session>@none<N>"`, which keeps it distinct from a content `@vN` that
+  shares the number.
+- **FH-6** **Strictly read-only with respect to the Claude config dir.** Nothing
+  writes, moves or unlinks anything under it, ever: it is the user's live edit
+  history and this is a guest in it. Asserted as a **whole-tree byte snapshot**
+  across every action rather than per call, so a write added anywhere later trips
+  the test. A corollary accepted deliberately: the user's own annotate saves are
+  not checkpointed by anyone, so they are **not revertible** — this reverts the
+  agent's edits, and only those.
+- **FH-7** **The one write is to the target, gated and atomic.** `file_writable`
+  is the same three-part gate as `annotate.py::_sidecar_writable` (RO-3, RO-6):
+  the read-only-mount check FIRST, through `shared/appenv`'s env contract, because
+  `os.access(W_OK)` **lies** under a read-only mount with CacheMode=full — the
+  write lands in the local VFS cache and only 403s at the async upload; then W_OK
+  on the **directory** (mkstemp and the replace both land there — this half the
+  sidecar's gate does not need and a replace does); then W_OK on the file itself
+  when it exists, since `os.replace` goes through the directory and would
+  otherwise blow past a `chmod -w`. The write is mkstemp + `os.replace` in the
+  target's own directory — atomic, never cross-device — and carries an existing
+  file's mode onto the replacement, because a fresh mkstemp is 0600 and a revert
+  has no business changing permissions.
+- **FH-8** **Path confinement is a matching problem, not a sanitizing one.** The
+  selector a client sends is an **opaque id matched against the enumerated
+  timeline** and never joined into a path, so an id carrying `..`, separators or
+  an absolute prefix has nothing to traverse — it simply resolves to no entry.
+  Every path opened is one this code built itself from (history root, a session
+  dir it listed, a hash it derived). And a restore may only touch a path the
+  store **already has a version for**, which is the only target guard available
+  to a module that cannot see the view: a crafted `file` param reaches nothing
+  the agent never edited. Directory targets are refused outright.
+- **FH-9** **A confirm step is mandatory, because the content it overwrites is
+  often the only copy.** Current on-disk bytes are frequently in NO checkpoint
+  (FH-3), so a naive restore vaporizes work with no undo — the sharpest hazard in
+  the feature. The plan payload reports `unique_current` (no version holds what is
+  on disk) and the view gates an explicit warning on it, alongside byte counts,
+  line counts and the line delta, before any write. The delta is stated as **what
+  the restore does** — lines it introduces, lines it takes away — because that is
+  the number a confirm step has to show; the reverse framing reads identically on
+  symmetric edits and lies on every asymmetric one. Above a byte cap, or for
+  content that is not UTF-8, the delta degrades to net counts (or none) and
+  **says it is inexact** rather than implying a diff nobody computed: difflib is
+  quadratic in the worst case and a timeline renders every version.
+- **FH-10** **Second line of defence: the pre-restore content is stashed in the
+  target's own `<file>.json` sidecar**, under `revertStash`, through the same
+  read-merge-write `annotate.py` already uses — so `claudeSessions`,
+  `bookmarkHistory`, `comments` and every other unowned key round-trip. Never
+  into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
+  cap or for non-text content, because the sidecar is a small JSON file three
+  other writers rewrite constantly, not a version store — `file_history` already
+  is one. A skip is **reported**, so the view can make its confirm step firmer
+  rather than silently losing the net. A revert the user confirmed is never
+  blocked by a stash that could not be written.
+- **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
+  a template's `main` becomes the red traceback overlay, and "no store on this
+  machine", "no versions for this file", "already matches the latest checkpoint",
+  "read-only mount", "stale version id" are all ordinary states of this surface.
+  So each is an `{"error": ...}` or `{"ok": false, "error": ...}` dict, and the
+  timeline payload carries its own `note` for the empty states. A missing store
+  entirely hides the panel — that is "this feature does not apply here", not an
+  empty state worth chrome — while a store that exists and holds nothing for
+  *this* file gets a line of text, because there the absence is a fact about the
+  file. Unreadable session dirs, stray non-directories in the history root and
+  malformed `@vN` filenames are skipped, never fatal; only the exact decimal form
+  the store writes is accepted, so `@v01` stays invisible rather than becoming a
+  second, ambiguous "version 1".
+- **FH-12** **It lives in `templates/shared/file_history.py`, stdlib-only, and
+  is reached by `sys.path`, not by importing the package.** Same reason
+  `appenv.py` sits beside it: a template child under the fused engine has **no
+  PYTHONPATH**, so `import fused_render...` always fails there — which is exactly
+  why `annotate.py` reaches appenv this way. A `fused_render/file_history.py`
+  would be unreachable from the only place that needs it. A copy of a template
+  folder taken without its `shared/` sibling degrades to "revert not offered",
+  the same shape appenv already has.
+- **FH-13** **Non-goals.** No writing to the store, no restoring the store
+  itself, no per-hunk revert, and no reconstruction of what an individual edit
+  changed — the store holds checkpoints, not edits (FH-3), so a per-edit undo is
+  not derivable from it. The `claude` and `history` templates adopting the reader
+  is later work; nothing here is annotate-specific except the UI.

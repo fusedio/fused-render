@@ -1525,7 +1525,13 @@
           dot.textContent = v.id === target ? "●" : "○";
           const num = document.createElement("span");
           num.className = "hv";
-          num.textContent = v.existed ? "v" + v.version : "—";
+          // A did-not-exist checkpoint IS a numbered version of the chain — in a
+          // real store it is `version: 1`, the creation boundary — so it wears
+          // its number like every row below it and "did not exist" (right-hand
+          // column) explains what restoring it does. The dash is kept only for a
+          // record that carried no usable number: "v0" would invent a version
+          // the store never wrote.
+          num.textContent = v.version >= 1 ? "v" + v.version : "—";
           const when = document.createElement("span");
           when.className = "hwhen";
           // A content version's time is its backup file's mtime; a

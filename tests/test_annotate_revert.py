@@ -446,6 +446,33 @@ def test_expanding_enriches_before_it_paints(source):
     assert body.index("loadHistory(true)") < body.index("renderHistory()")
 
 
+def test_a_did_not_exist_row_wears_its_own_version_number(source):
+    """It is version 1 of the chain in a real store — the creation boundary — so
+    it is numbered like every row below it, with "did not exist" as the annotation
+    that explains what restoring it does. The dash survives only for a record
+    that carried no usable number, since "v0" would invent one the store never
+    wrote."""
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert 'v.version >= 1 ? "v" + v.version : "—"' in body
+
+
+def test_a_did_not_exist_row_keeps_the_version_from_its_record(claude_home,
+                                                               tmp_path):
+    ann = _load_annotate()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        # Real shape: the creation boundary is version 1, and the content
+        # checkpoint that follows it is version 2.
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T07:14:04.850Z"),
+    ])
+    ghost = [v for v in ann.main(action="history", file=f, enrich=True)["versions"]
+             if not v["existed"]][0]
+    assert ghost["version"] == 1
+    assert ghost["id"] == "s@none1"  # still distinct from a content `s@v1`
+
+
 def test_an_unknown_timestamp_is_not_rendered_as_1970(source):
     """`_epoch` returns 0 for a stamp it cannot parse, and `new Date(0)` is a
     confident lie about when a file was created."""
