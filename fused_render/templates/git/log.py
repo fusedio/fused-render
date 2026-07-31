@@ -623,6 +623,36 @@ def _contain(root, rel, full):
                        "this view will not read through a link.")
 
 
+def _untracked_dir(root, rel):
+    """The untracked files inside a collapsed `dir/` status entry.
+
+    `--untracked-files=normal` reports a wholly-untracked directory as a single
+    `dir/` row, and a directory has no diff: `git diff HEAD -- dir/` is empty, so
+    the row used to open a blank pane wearing the commit-oriented copy ("nothing
+    in this commit touched the path…") — wrong twice over, since it is not a
+    commit and the path IS in scope. A directory's honest answer is what is
+    inside it, so that is what this returns, and each entry is clickable through
+    to its own whole-file diff.
+
+    GIT does the enumeration, not this module: `ls-files --others
+    --exclude-standard` is the canonical "what would `git add` pick up here",
+    which means the answer already honours .gitignore and nested excludes instead
+    of reimplementing them. It is read through `_git_stream` under the same byte
+    cap as `git status`, and capped again by entry count, so a 100k-file untracked
+    tree is bounded twice on the way in — the reason it is NOT `os.walk`, which
+    would be an unbounded recursion inside a template (the discipline the gate
+    documents and the reader keeps).
+    """
+    raw, byte_capped = _git_stream(
+        root, ("ls-files", "--others", "--exclude-standard", "-z",
+               *_pathspec(rel)),
+        MAX_STATUS_BYTES, allow=(0,))
+    if byte_capped:
+        raw = raw[: raw.rfind(b"\0") + 1]   # whole NUL-terminated fields only
+    names = [chunk.decode("utf-8", "replace") for chunk in raw.split(b"\0") if chunk]
+    return names[:MAX_CHANGES], byte_capped or len(names) > MAX_CHANGES
+
+
 def _worktree(root, entry, has_commits):
     rel = (entry or "").replace("\\", "/").strip("/")
     full = os.path.join(root, *rel.split("/"))
@@ -630,6 +660,21 @@ def _worktree(root, entry, has_commits):
     tracked = _git(root, "ls-files", "--error-unmatch", "-z", *_pathspec(rel),
                    allow=(0, 1, 128)).strip(b"\0")
     untracked = not tracked
+    # One stat decides directory-ness. The status row's trailing "/" would say the
+    # same thing, but `_check_op` strips it (deliberately — it is a path, and a
+    # trailing slash must not change containment), so the fact is re-derived here
+    # rather than smuggled through the param.
+    if untracked and os.path.isdir(full):
+        files, truncated = _untracked_dir(root, rel)
+        return {
+            "ok": True,
+            "kind": "untracked-dir",
+            "target": rel,
+            "untracked": True,
+            "files": files,
+            "truncated": truncated,
+            "max_files": MAX_CHANGES,
+        }
     if untracked and os.path.isfile(full):
         # An untracked file has nothing in the index to diff against, so the
         # whole file IS the change. `--no-index` is git's own way to say that,
@@ -654,6 +699,7 @@ def _worktree(root, entry, has_commits):
     diff, shown = _trim(diff, shown)
     return {
         "ok": True,
+        "kind": "diff",
         "target": rel,
         "untracked": untracked,
         "diff": diff,

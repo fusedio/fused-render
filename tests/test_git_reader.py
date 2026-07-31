@@ -943,3 +943,83 @@ def test_a_moved_out_row_still_opens_its_diff(reader, moved_repo):
     assert got["ok"] is True
 
 
+# --------------------------------------- C: an untracked directory has no diff
+
+
+@pytest.fixture()
+def untracked_dir_repo(tmp_path):
+    root = str(tmp_path / "utd")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "tracked.txt", "tracked\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-07-02T10:00:00+00:00")
+    write(root, "fresh/a.txt", "aaa\n")
+    write(root, "fresh/b.txt", "bbb\n")
+    write(root, "fresh/deep/c.txt", "ccc\n")
+    return root
+
+
+def test_git_collapses_the_untracked_directory_to_one_row(reader, untracked_dir_repo):
+    # The premise: `--untracked-files=normal` reports `fresh/`, not its files.
+    got = reader.main(untracked_dir_repo)
+    assert [c["path"] for c in got["changes"]] == ["fresh/"]
+
+
+def test_an_untracked_directory_lists_its_contents_instead_of_an_empty_diff(
+        reader, untracked_dir_repo):
+    # The defect: `fresh/` fell through to the vs-HEAD branch, `git diff HEAD --
+    # fresh/` was empty, and the pane showed the commit-oriented copy — wrong
+    # twice, since it is not a commit and the path IS in scope.
+    got = reader.main(untracked_dir_repo, op="worktree", entry="fresh/")
+    assert got["ok"] is True
+    assert got["kind"] == "untracked-dir"
+    assert got.get("empty") is None, "a directory must not claim an empty diff"
+    assert sorted(got["files"]) == ["fresh/a.txt", "fresh/b.txt", "fresh/deep/c.txt"]
+    assert got["truncated"] is False
+
+
+def test_an_untracked_directory_resolves_without_its_trailing_slash_too(
+        reader, untracked_dir_repo):
+    # `_check_op` strips the trailing slash (it is a path, and a slash must not
+    # change containment), so directory-ness is re-derived by stat.
+    got = reader.main(untracked_dir_repo, op="worktree", entry="fresh")
+    assert got["kind"] == "untracked-dir" and len(got["files"]) == 3
+
+
+def test_an_untracked_directory_listing_honours_gitignore(reader, untracked_dir_repo):
+    # `ls-files --others --exclude-standard` is asked precisely so the answer is
+    # "what git would add", excludes included, rather than a reimplementation.
+    write(untracked_dir_repo, ".gitignore", "fresh/b.txt\n")
+    got = reader.main(untracked_dir_repo, op="worktree", entry="fresh/")
+    assert "fresh/b.txt" not in got["files"]
+    assert "fresh/a.txt" in got["files"]
+
+
+def test_an_untracked_directory_listing_is_capped(reader, untracked_dir_repo, monkeypatch):
+    monkeypatch.setattr(reader, "MAX_CHANGES", 2)
+    got = reader.main(untracked_dir_repo, op="worktree", entry="fresh/")
+    assert len(got["files"]) == 2 and got["truncated"] is True
+
+
+def test_a_wholly_ignored_untracked_directory_lists_nothing(reader, untracked_dir_repo):
+    write(untracked_dir_repo, ".gitignore", "fresh/\n")
+    got = reader.main(untracked_dir_repo, op="worktree", entry="fresh/")
+    # Reachable from a stale `wt=` deep link after the ignore was added. An empty
+    # list, not a lie about a diff — the UI has its own sentence for this.
+    assert got["ok"] is True and got["kind"] == "untracked-dir" and got["files"] == []
+
+
+def test_a_file_entry_still_reports_kind_diff(reader, repo):
+    # The `kind` discriminator must be present on the ordinary path too, or the
+    # UI cannot tell a real empty diff from a directory.
+    assert reader.main(repo, op="worktree", entry="pkg/core.py")["kind"] == "diff"
+    assert reader.main(repo, op="worktree", entry="pkg/fresh.txt")["kind"] == "diff"
+
+
+def test_a_tracked_directory_still_diffs_against_head(reader, repo):
+    # Only UNTRACKED directories take the listing branch; a tracked directory has
+    # a real diff and must keep it.
+    got = reader.main(repo, op="worktree", entry="pkg")
+    assert got["ok"] is True and got["kind"] == "diff"
+    assert "return 111" in got["diff"]

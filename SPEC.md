@@ -3553,7 +3553,20 @@ that path. Offered for **both** directories and text-ish files, always as a
   repository, missing path, mount-backed, no git binary, timeout, empty repository
   (no commits yet), detached HEAD (reported by short sha, `branch: null`), a path
   with no history, a path outside the repository, binary files (git's own "Binary
-  files … differ", never dumped), renames. The view renders a calm empty state
+  files … differ", never dumped), renames. **An untracked DIRECTORY is one of those
+  states, not a diff:** `--untracked-files=normal` collapses a wholly untracked
+  directory to a single `dir/` row, and a directory has no patch — so the entry
+  answers with what is *inside* it (`kind: "untracked-dir"`, each file clickable
+  through to its own whole-file diff) instead of an empty pane wearing the
+  commit-oriented sentence, which was wrong twice over since it is not a commit and
+  the path IS in scope. The listing is `git ls-files --others --exclude-standard`,
+  i.e. "what `git add` would pick up here" with .gitignore and nested excludes
+  already honoured rather than reimplemented, read through the same streamed byte
+  cap as `git status` and capped again by entry count — never an `os.walk`, which
+  would be an unbounded recursion inside a template. Every empty state names its
+  OWN situation: a worktree entry that diffs to nothing says its contents match
+  HEAD, which is not the sentence for a commit that missed the scope. The view
+  renders a calm empty state
   from the payload — a folder without git is an ordinary situation, so even a
   reader crash is caught into that state rather than the red traceback overlay,
   which is a debugging affordance for a view's own bug.

@@ -634,9 +634,39 @@ function diffPane(title, sub, payload) {
     pane.append(el("div", { className: "none", textContent: payload.message || "Could not read that diff." }));
     return pane;
   }
+  /* An untracked DIRECTORY has no diff — git collapsed it to one `dir/` row, so
+     its honest answer is what is inside it. Each file clicks through to its own
+     whole-file diff. */
+  if (payload.kind === "untracked-dir") {
+    if (!payload.files.length) {
+      pane.append(el("div", { className: "none", textContent:
+        "This directory is untracked and holds nothing git would add "
+        + "(it may contain only ignored files)." }));
+      return pane;
+    }
+    const rows = el("div", { className: "rows" });
+    for (const name of payload.files) {
+      const row = el("button", { className: "row", type: "button", title: name },
+        el("span", { className: "code is-?", textContent: "??" }),
+        el("span", { className: "path", textContent: name }));
+      row.addEventListener("click", () => setParams({ wt: name, sel: null }));
+      rows.append(row);
+    }
+    pane.append(rows);
+    if (payload.truncated) {
+      pane.append(el("p", { className: "note", textContent:
+        "Only the first " + payload.files.length + " untracked files in this "
+        + "directory are listed." }));
+    }
+    return pane;
+  }
   if (payload.empty) {
-    pane.append(el("div", { className: "none",
-      textContent: "Nothing in this commit touched the path this view is scoped to." }));
+    /* Two different situations wore the commit sentence. A worktree entry that
+       diffs to nothing is not "a commit that missed the scope" — it is a file
+       whose content matches HEAD (mode-only change, or already reverted). */
+    pane.append(el("div", { className: "none", textContent: payload.kind === "diff"
+      ? "Nothing to show: this file's contents already match HEAD."
+      : "Nothing in this commit touched the path this view is scoped to." }));
     return pane;
   }
   pane.append(diffBody(payload.diff));
@@ -752,9 +782,11 @@ async function loadDiff(data) {
   if (wt) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt })
       .catch((err) => ({ ok: false, message: err.message }));
-    return diffPane(wt,
-      payload.ok && payload.untracked ? "untracked — whole file" : "working tree vs HEAD",
-      payload);
+    const sub = !payload.ok ? null
+      : payload.kind === "untracked-dir" ? "untracked directory — contents"
+      : payload.untracked ? "untracked — whole file"
+      : "working tree vs HEAD";
+    return diffPane(wt, sub, payload);
   }
   return null;
 }
