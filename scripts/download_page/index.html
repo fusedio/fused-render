@@ -300,8 +300,6 @@
   }
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-  .tab .tag { color: var(--muted); font-size: 11px; font-weight: 500; margin-left: 6px; display: none; }
-  .tab.detected .tag { display: inline; }
   .dl {
     display: none;
     padding: 28px 2px 4px;
@@ -452,9 +450,9 @@
   <section class="downloads" id="downloads">
     <h2>Get Fused Render</h2>
     <div class="tabs" role="tablist">
-      <button class="tab active" data-os="mac" role="tab">macOS<span class="tag">detected</span></button>
-      <button class="tab" data-os="win" role="tab">Windows<span class="tag">detected</span></button>
-      <button class="tab" data-os="linux" role="tab">Linux<span class="tag">detected</span></button>
+      <button class="tab active" data-os="mac" role="tab">macOS</button>
+      <button class="tab" data-os="win" role="tab">Windows</button>
+      <button class="tab" data-os="linux" role="tab">Linux</button>
     </div>
     <div class="dl active" data-os="mac">
       <!-- Usable before/without latest.json: falls back to the releases page,
@@ -618,7 +616,6 @@
     const os = mobile ? null : /Mac/.test(ua) ? "mac" : /Win/.test(ua) ? "win" : /Linux|X11/.test(ua) ? "linux" : null;
     if (!os) return;
     activate(os);
-    document.querySelector('.tab[data-os="' + os + '"]').classList.add("detected");
   })();
 </script>
 </body>
