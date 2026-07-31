@@ -9,7 +9,7 @@
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { createApp, getApps } from "../lib/api";
+import { aiComplete, createApp, getApps } from "../lib/api";
 import type { Config } from "../lib/api";
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -54,6 +54,153 @@ function appNameError(name: string): string | null {
 export function claudeChatUrl(fsPath: string, runId: string): string {
   const params = new URLSearchParams({ _mode: "claude", run: runId });
   return urlForFsPath(fsPath, "?" + params.toString());
+}
+
+// -- Prompt-first creation (the hero composer) --------------------------------
+
+// Kebab-case whatever the model (or, as a fallback, the user's own prompt)
+// gave us into a safe app folder name: lowercase, [a-z0-9-] only, at most
+// five words. Never returns something _app_name_error would reject.
+function kebabName(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .split("-")
+      .filter(Boolean)
+      .slice(0, 5)
+      .join("-")
+      .slice(0, 48) || "my-app"
+  );
+}
+
+const NAME_SYSTEM_PROMPT =
+  "You name software projects. Given a description of an app, reply with a " +
+  "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
+  "letters and digits only. Reply with ONLY the name — no quotes, no prose.";
+
+// A kebab-case folder name for an app described by `prompt`: ask the AI relay
+// (haiku, the server default — cheap and fast), fall back to slugging the
+// prompt's own words when the relay is unavailable or answers garbage.
+async function suggestAppName(prompt: string): Promise<string> {
+  try {
+    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT);
+    const name = kebabName(text.trim().split(/\s+/)[0] ?? "");
+    if (name !== "my-app") return name;
+  } catch {
+    // relay down / claude missing: the slug fallback below still works
+  }
+  return kebabName(prompt);
+}
+
+// Create the app under a collision-proof name: on 409 retry with -2, -3, …
+// Any other failure propagates.
+async function createAppUnderFreeName(name: string, prompt: string) {
+  for (let i = 1; ; i++) {
+    const attempt = i === 1 ? name : `${name}-${i}`;
+    try {
+      return await createApp(attempt, prompt);
+    } catch (e) {
+      if ((e as { status?: number }).status !== 409 || i >= 20) throw e;
+    }
+  }
+}
+
+// The hero's prompt box — the claude.ai / v0 "what do you want to build?"
+// composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
+// lands in the new folder's claude chat exactly like the New-app panel does.
+function HeroComposer() {
+  const [prompt, setPrompt] = useState("");
+  const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
+
+  const busy = phase !== "idle";
+  const canSubmit = prompt.trim().length > 0 && !busy;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    const trimmed = prompt.trim();
+    setError(null);
+    setPhase("naming");
+    try {
+      const name = await suggestAppName(trimmed);
+      if (!alive.current) return;
+      setPhase("creating");
+      const res = await createAppUnderFreeName(name, trimmed);
+      // Same landing logic as NewAppPanel: a session error must not read as
+      // success, and a live run means the claude chat is the right landing.
+      if (res.session_error) {
+        if (alive.current) {
+          setError(`App created, but Claude didn't start: ${res.session_error}`);
+          setPhase("idle");
+        }
+        return;
+      }
+      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      else navigate(res.entry_html, { isDir: false });
+    } catch (e) {
+      if (alive.current) {
+        setError((e as Error).message);
+        setPhase("idle");
+      }
+    }
+  };
+
+  return (
+    <div className="home-composer-wrap">
+      <div className={"home-composer" + (busy ? " is-busy" : "")}>
+        <TextArea
+          className="home-composer-input"
+          placeholder="What do you want to build?"
+          aria-label="What do you want to build?"
+          value={prompt}
+          rows={3}
+          disabled={busy}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter submits (the composer is a one-shot prompt, not a
+            // document); Shift+Enter keeps the newline for longer briefs.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="home-composer-bar">
+          <span className="home-composer-hint">
+            {phase === "naming" && "Naming your app…"}
+            {phase === "creating" && "Creating the app…"}
+            {phase === "idle" && (
+              <>
+                <kbd>↵</kbd> to build · <kbd>⇧↵</kbd> for a new line
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            className="home-composer-send"
+            aria-label="Build it"
+            title="Build it"
+            disabled={!canSubmit}
+            onClick={submit}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 19V5M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
 }
 
 // The three explainer cards above the form: what a fused app is, in one glance.
@@ -394,8 +541,13 @@ export default function Home({ config }: { config: Config }) {
             Describe an app and Claude builds it in your workspace — or explore your files
             with interactive templates. Everything lives as plain folders you own.
           </p>
+          {/* The primary verb, prompt-first: describe the app right here and a
+              named, scaffolded folder + claude session comes back. The buttons
+              below stay as the structured (name-it-yourself) path and the
+              everyday file doorway. */}
+          <HeroComposer />
           <div className="home-hero-actions">
-            <button type="button" className="btn btn-primary home-hero-cta" onClick={() => setCreating(true)}>
+            <button type="button" className="btn btn-secondary home-hero-cta" onClick={() => setCreating(true)}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" />
               </svg>

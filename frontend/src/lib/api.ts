@@ -1355,3 +1355,15 @@ export interface NewAppResult {
 export function createApp(name: string, prompt: string): Promise<NewAppResult> {
   return postJson<NewAppResult>("/api/apps/new", { name, prompt });
 }
+
+// -- AI completion (POST /api/ai) ---------------------------------------------
+// The fused.ai relay: one non-streaming completion through the server's warm
+// Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;
+// the shell uses this for small utility completions (e.g. naming a new app
+// from its prompt on Home), not for anything conversational.
+export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
+  return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
+    prompt,
+    ...(system_prompt ? { system_prompt } : {}),
+  }).then((r) => r.result.text);
+}
