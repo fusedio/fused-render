@@ -167,18 +167,63 @@ def extract_to_staging(
     return total_written
 
 
+def _candidates(parent: str, name: str, limit: int, preferred: str | None = None):
+    """The folder names to try, in order: `preferred` (a name already shown to the user),
+    then ``name``, ``name-2``, ``name-3``… Single-sourced so the *prediction* and the
+    *claim* walk the same sequence and cannot disagree about which name is next."""
+    if preferred and preferred != name:
+        yield os.path.join(parent, preferred)
+    yield os.path.join(parent, name)
+    for n in range(2, limit + 1):
+        yield os.path.join(parent, f"{name}-{n}")
+
+
+def move_into_new_dir(
+    src: str, parent: str, name: str, *, preferred: str | None = None, limit: int = 200
+) -> str:
+    """Rename ``src`` to an unused folder under ``parent`` and return where it landed.
+
+    ``os.rename``, deliberately, not ``shutil.move``: `move()` onto an **existing
+    directory** moves the source *inside* it. So a destination that appeared between an
+    ``exists()`` check and the move — a concurrent clone, or anything else writing to the
+    workspace — would silently nest the payload one level deeper and still report success,
+    leaving the page somewhere other than where the caller says it is. `rename` cannot nest:
+    it fails (`ENOTEMPTY` on POSIX, `EEXIST`/`FileExistsError` on Windows), and this retries
+    the next name instead of guessing.
+
+    The one case POSIX `rename` *does* replace is an existing **empty** directory. That is
+    accepted: an empty folder holds nothing to lose, and no clone has written into one yet.
+    """
+    last: OSError | None = None
+    for candidate in _candidates(parent, name, limit, preferred):
+        if os.path.exists(candidate):
+            continue  # cheap skip; the rename below is what actually decides
+        try:
+            os.rename(src, candidate)
+        except OSError as exc:
+            # The destination was taken between the check and the rename (or is a file, or a
+            # non-empty dir). Try the next name rather than nesting or overwriting.
+            last = exc
+            continue
+        return candidate
+    raise ZipRejected(
+        f"could not find an unused folder name for {name!r} in {parent} "
+        f"(tried {limit} variants{f'; last error: {last}' if last else ''}); "
+        "rename or move the existing folders"
+    )
+
+
 def unique_dir(parent: str, name: str, *, limit: int = 200) -> str:
     """A path under ``parent`` that does not exist yet: ``name``, then ``name-2``, ``name-3``…
+
+    A **prediction**, not a reservation — it creates nothing, so a caller that then writes
+    there must handle the name having been taken in between (:func:`move_into_new_dir` does).
 
     Never overwrites and never merges into an existing directory — a clone landing on top
     of unrelated files is indistinguishable from data loss, and merging would leave a
     half-this half-that folder that neither runs nor re-exports.
     """
-    candidate = os.path.join(parent, name)
-    if not os.path.exists(candidate):
-        return candidate
-    for n in range(2, limit + 1):
-        candidate = os.path.join(parent, f"{name}-{n}")
+    for candidate in _candidates(parent, name, limit):
         if not os.path.exists(candidate):
             return candidate
     raise ZipRejected(

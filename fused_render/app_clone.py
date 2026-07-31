@@ -348,7 +348,13 @@ def probe(src: str) -> dict:
     files = meta.get("files")
     files = files if isinstance(files, list) else []
     name = _safe_folder_name(meta.get("name") if isinstance(meta.get("name"), str) else None)
-    dest = zip_import.unique_dir(fused_dir(), name)
+    try:
+        dest = zip_import.unique_dir(fused_dir(), name)
+    except zip_import.ZipRejected as exc:
+        # A workspace already holding `name`, `name-2`, … `name-200`. Surfaced as the same
+        # actionable CloneError as every other refusal: unhandled, it would reach the route
+        # as a 500, which tells the user nothing about the folders they need to tidy.
+        raise CloneError(str(exc)) from None
     return {
         "url": url,
         "name": meta.get("name") if isinstance(meta.get("name"), str) else name,
@@ -374,6 +380,10 @@ def probe(src: str) -> dict:
 
 
 def _staging_root() -> str:
+    """Staging lives INSIDE the workspace on purpose: the commit is a rename
+    (`zip_import.move_into_new_dir`), which requires source and destination on the same
+    filesystem. Staging under the OS temp dir would work only until temp sat on a different
+    volume, where the rename fails outright rather than quietly copying."""
     return os.path.join(fused_dir(), ".clone-staging")
 
 
@@ -422,16 +432,26 @@ def clone(src: str, folder: str | None = None) -> dict:
         layout = _read_bundle(staging_dir)
         name = _safe_folder_name(layout["name"])
         os.makedirs(fused_dir(), exist_ok=True)
-        reserved = _safe_folder_name(folder) if folder else None
-        if reserved and not os.path.exists(os.path.join(fused_dir(), reserved)):
-            dest = os.path.join(fused_dir(), reserved)
-        else:
-            dest = zip_import.unique_dir(fused_dir(), name)
         # The payload dir becomes the page folder: the manifest's `root` holds the files at
         # their real page-relative paths, which is exactly the local layout. The manifest
         # itself rides along as a dotfile so a re-export can reproduce the same bundle
         # without the user having to keep it somewhere.
-        shutil.move(layout["payload"], dest)
+        #
+        # The move both CLAIMS the name and commits the payload, so there is no window
+        # between choosing a folder and filling it: `move_into_new_dir` renames (never
+        # nesting into a directory that appeared in the meantime) and walks on to the next
+        # name if the destination is taken.
+        try:
+            dest = zip_import.move_into_new_dir(
+                layout["payload"],
+                fused_dir(),
+                name,
+                preferred=_safe_folder_name(folder) if folder else None,
+            )
+        except zip_import.ZipRejected as exc:
+            raise CloneError(str(exc)) from None
+        except OSError as exc:
+            raise CloneError(f"could not write the clone: {exc}") from None
         try:
             shutil.move(
                 layout["manifest_path"], os.path.join(dest, ".fused-render-bundle.json")

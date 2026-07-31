@@ -109,6 +109,10 @@ class Harness:
         self._monkeypatch.setattr(app_clone, "_get", _fake_get)
 
 
+def _exhausted(*a, **k):
+    raise zip_import.ZipRejected("could not find an unused folder name for 'my-page' in /w")
+
+
 @pytest.fixture
 def h(tmp_path, monkeypatch):
     return Harness(tmp_path, monkeypatch)
@@ -486,6 +490,58 @@ def test_a_promised_folder_that_is_taken_by_then_falls_back_and_reports_it(h):
     assert resp.json()["folder"] == "my-page-2"
 
 
+def test_a_destination_appearing_mid_commit_is_never_nested_into(h, monkeypatch):
+    """The commit claims the name by RENAMING, so a folder that appears between the
+    prediction and the write cannot swallow the payload.
+
+    `shutil.move` onto an existing directory moves the source *inside* it — the clone would
+    land at `my-page/my-page/page.html` while the response said `my-page`, and the reported
+    `view` path would 404. The rename fails instead, and the next name is used.
+    """
+    real_rename = app_clone.os.rename
+    first = {"done": False}
+
+    def _someone_else_got_there(src, dst):
+        # Simulate the race precisely: the first candidate becomes a NON-EMPTY directory
+        # (an empty one is legitimately replaceable) an instant before the rename.
+        if not first["done"]:
+            first["done"] = True
+            os.makedirs(dst, exist_ok=True)
+            with open(os.path.join(dst, "someone-elses-file"), "w") as f:
+                f.write("mine")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(app_clone.os, "rename", _someone_else_got_there)
+    h.serve(archive=_bundle_zip())
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    body = resp.json()
+    assert body["folder"] == "my-page-2"
+    # The page is where the response says it is, and the squatter is untouched.
+    assert os.path.isfile(body["page"])
+    assert (h.workspace / "my-page" / "someone-elses-file").read_text() == "mine"
+    assert not (h.workspace / "my-page" / "page.html").exists()
+
+
+def test_running_out_of_folder_names_is_a_message_not_a_500(h, monkeypatch):
+    # `unique_dir`/`move_into_new_dir` raise ZipRejected on exhaustion; unconverted it would
+    # reach the route as an unhandled 500 that names neither the cause nor the remedy.
+    monkeypatch.setattr(app_clone.zip_import, "unique_dir", _exhausted)
+    monkeypatch.setattr(app_clone.zip_import, "move_into_new_dir", _exhausted)
+    h.serve(meta=_meta(), archive=_bundle_zip())
+    preview = h.client.get(
+        "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+    )
+    assert preview.status_code == 400
+    assert "unused folder name" in preview.json()["error"]
+    cloned = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert cloned.status_code == 400
+    assert "unused folder name" in cloned.json()["error"]
+
+
 def test_a_hostile_promised_folder_cannot_steer_where_the_clone_lands(h, tmp_path):
     # `folder` arrives from a client, so it is reduced like any other untrusted name: one
     # segment, no separators, no traversal.
@@ -619,16 +675,12 @@ def test_a_failed_manifest_move_rolls_the_payload_move_back(h, monkeypatch):
     # The commit is two moves. The second one failing would otherwise leave a clone in the
     # workspace that this call reports as failed — the one state stage-then-move exists to
     # prevent.
-    real_move = app_clone.shutil.move
-    calls: list[int] = []
+    # The payload is committed by rename (`move_into_new_dir`); the manifest is the one
+    # remaining `shutil.move`, so failing it is failing the second half of the commit.
+    def _manifest_move_fails(src, dst):
+        raise OSError("disk full")
 
-    def _second_move_fails(src, dst):
-        calls.append(1)
-        if len(calls) == 2:
-            raise OSError("disk full")
-        return real_move(src, dst)
-
-    monkeypatch.setattr(app_clone.shutil, "move", _second_move_fails)
+    monkeypatch.setattr(app_clone.shutil, "move", _manifest_move_fails)
     h.serve(archive=_bundle_zip())
     resp = h.client.post(
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED

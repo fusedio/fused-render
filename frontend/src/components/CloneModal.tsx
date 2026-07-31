@@ -32,8 +32,9 @@ export interface CloneModalProps {
   // Called with the cloned page's /view path so the caller can navigate to it — the modal
   // never navigates itself (the shell owns routing).
   onCloned: (result: CloneResult) => void;
-  // Prefilled URL, for the deep-link entry (fused-render://open?app=…). Empty for the
-  // in-app "Open a deployed app" entry.
+  // Prefilled URL. Used by the in-app entry when it already knows the URL; the
+  // `fused-render://open?app=…` deep link that would also supply it is DEFERRED (§33 CL-7),
+  // so nothing routes one today — this is the seam it will use, not a live entry point.
   initialSrc?: string;
 }
 
@@ -93,9 +94,9 @@ export default function CloneModal({ onClose, onCloned, initialSrc = "" }: Clone
     }
   }, [trimmed, busy, onCloned, preview]);
 
-  // Deep-link entry: a URL arrived with the modal, so preview it immediately — the user
-  // already expressed intent by following the link. The clone itself still needs their
-  // explicit click; following a link is not consent to write files.
+  // A URL arrived with the modal, so preview it immediately — supplying one is already an
+  // expression of intent. The clone itself still needs an explicit click; arriving with a
+  // URL (or, once CL-7 lands, following a link) is not consent to write files.
   const autoPreviewed = useRef(false);
   useEffect(() => {
     if (initialSrc && !autoPreviewed.current) {

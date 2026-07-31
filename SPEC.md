@@ -1158,7 +1158,12 @@ bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
   free, so a page appearing in the workspace in between can't invalidate what the user was
   shown. Carry-through rather than a lock — reserving the name would mean creating a
   directory during a preview the user has not confirmed — so in the race the clone's own
-  response names where it landed, which is what the success view shows. `CloneModal.tsx`; the sidebar
+  response names where it landed, which is what the success view shows. The commit **claims
+  the name by renaming** (`zip_import.move_into_new_dir`), never `shutil.move`: move onto an
+  existing directory moves the payload *inside* it, which would report success with the page
+  a level below where `view` points, so a taken destination fails the rename and the next
+  name is tried. Running out of names is a stated refusal at both steps, not a 500.
+  `CloneModal.tsx`; the sidebar
   footer's "Open deployed app" entry opens it, and the modal navigates to the cloned page
   on success.
 - **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
@@ -1192,6 +1197,12 @@ bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
   `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
   mount exists or whether cloning is on — so the message names both possibilities rather
   than guessing one.
+- **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
+  §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
+  *params* on the same `open` action as the extension point), but it needs its own confirm
+  surface and supervisor dispatch, and nothing routes one today. `CloneModal` takes an
+  `initialSrc` and auto-previews it, which is the seam that entry will use — it is not
+  evidence the link works.
 
 ## 20. Preferences — Shell Settings Page (M12)
 
