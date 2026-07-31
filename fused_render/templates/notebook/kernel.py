@@ -341,7 +341,8 @@ def _serve():
             self.counts = {}  # exec_id -> execution_count
             self.pending = []
             self.last_used = time.time()
-            self.lock = threading.Lock()
+            # RLock: restart spawns while holding it; _spawn locks the install
+            self.lock = threading.RLock()
 
         def _spawn(self):
             env = {k: v for k, v in os.environ.items()
@@ -361,7 +362,17 @@ def _serve():
                 if not cwd:
                     raise
                 proc = subprocess.Popen([self.python, _body()], cwd=None, **kw)
-            self.proc = proc
+            with self.lock:
+                installed = self.state != "dead"
+                if installed:
+                    self.proc = proc
+                else:
+                    # a shutdown won the race while Popen ran — never resurrect
+                    # it; ready wakes the ensure waiter into its dead-state check
+                    self.ready.set()
+            if not installed:
+                _kill(proc)
+                return
             threading.Thread(target=self._read, args=(proc,), daemon=True).start()
 
         def _read(self, proc):
@@ -473,6 +484,7 @@ def _serve():
                 self.pending = []
                 self.cells = {}
                 self.counts = {}
+                self.ready.set()  # wake ensure waiters into the dead-state check
                 _kill(old)
 
     def _kill(proc):

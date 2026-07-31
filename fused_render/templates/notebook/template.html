@@ -1587,8 +1587,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   async function runCell(c) {
     if (runningAll || c.running) return;
     if (c.model.cell_type === "markdown") {
-      renderMdCell(c);
-      markDirty();
+      renderMdCell(c); // pure view change — edits already marked dirty on input
       return;
     }
     let previousOutputs;

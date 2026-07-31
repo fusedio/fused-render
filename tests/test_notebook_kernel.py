@@ -373,7 +373,8 @@ def _daemon_request(state, path, body):
         f"http://127.0.0.1:{state['port']}{path}?t={state['token']}",
         data=json.dumps(body).encode("utf-8"), method="POST",
         headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as response:
+    # above the daemon's own 20s ready-wait so a slow spawn 500s, not timeouts
+    with urllib.request.urlopen(req, timeout=30) as response:
         return json.load(response)
 
 
@@ -452,6 +453,7 @@ def test_daemon_concurrent_shutdown_and_ensure_never_orphan(daemon_state, tmp_pa
     body = {"nb_path": str(tmp_path / "nb.ipynb"), "python": sys.executable}
     kid = _daemon_request(daemon_state, "/kernel/ensure", body)["kernel_id"]
     for _ in range(10):
+        t0 = time.monotonic()
         errors = []
         barrier = threading.Barrier(2)
 
@@ -476,6 +478,8 @@ def test_daemon_concurrent_shutdown_and_ensure_never_orphan(daemon_state, tmp_pa
             thread.join(30)
             assert not thread.is_alive()
         assert not errors
+        # a raced ensure must fail fast, never sit out the 20s ready-wait
+        assert time.monotonic() - t0 < 15
     final = _daemon_request(daemon_state, "/kernel/ensure", body)
     r = _daemon_request(daemon_state, "/kernel/execute", {
         "kernel_id": final["kernel_id"], "cell_id": "c1", "code": "40 + 2"})
