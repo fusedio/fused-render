@@ -9,6 +9,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "../lib/api";
 import type { AppInfo } from "../lib/api";
+import { requestCloneApp } from "../lib/cloneApp";
+import { useDeployEnabled } from "../lib/prefs";
 import { navigateUrl } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppPreviewCard } from "../components/AppPreviewCard";
@@ -39,6 +41,8 @@ export default function Apps() {
   const [tag, setTag] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("recent");
   const [creating, setCreating] = useState(false);
+  // Whether deploying is switched on at all — the import entry follows it (see the toolbar).
+  const deployEnabled = useDeployEnabled();
   // Bumped when the panel creates an app: refetches the grid without clearing it.
   const [nonce, setNonce] = useState(0);
 
@@ -120,6 +124,21 @@ export default function Apps() {
             </svg>
             New app
           </button>
+          {/* Gated on the Deploy-apps preference (SPEC §34 CL-1): with deploying switched
+              off the whole surface that produces these links is hidden, so an entry for
+              importing one would advertise a feature the user has turned away from. The
+              path bar's pasted-link route stays available regardless — refusing a URL the
+              user explicitly pasted is a worse failure than showing one extra button. */}
+          {deployEnabled && (
+            <button type="button" className="btn" onClick={() => requestCloneApp()}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              Open deployed app
+            </button>
+          )}
           {tags.length > 0 && (
             <div className="apps-tags" role="group" aria-label="Filter by tag">
               <button

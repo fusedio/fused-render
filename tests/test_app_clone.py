@@ -404,16 +404,74 @@ def test_the_preview_describes_what_the_clone_will_do(h):
     assert body["url"] == "https://open.fused.io/my-link/_clone"
     assert h.requests == ["https://open.fused.io/my-link/_clone?meta=1"]
     assert body["name"] == "my-page"
+    # DESTINATION paths, in the inventory's order — not the archive's member names, which is
+    # what this asserted while the preview was describing files the clone never creates.
     assert [f["path"] for f in body["files"]] == [
-        "manifest.json",
-        "files/page.html",
-        "files/sine.py",
+        app_clone.BUNDLE_MANIFEST_NAME,
+        "page.html",
+        "sine.py",
     ]
     assert body["bytes"] == 330
     assert body["download_bytes"] == 420
     assert body["folder"] == "my-page"
     assert body["renamed"] is False
     assert body["dest"] == os.path.join(str(h.workspace), "my-page")
+
+
+def test_the_preview_names_the_files_the_clone_will_actually_create(h):
+    """Archive member names are NOT destination paths, and the confirm step promises the latter.
+
+    A v2 archive holds `manifest.json` plus `<root>/<key>`; the clone makes the payload dir
+    *become* the page folder and renames the manifest to a dotfile. So a preview that echoed
+    the inventory verbatim listed `files/sine.py` and `manifest.json` — neither of which ever
+    appears — under copy that says "will be cloned to <folder>". This asserts the mapping, and
+    that the numbers still describe the same set.
+    """
+    h.serve(meta=_meta())
+    body = h.client.get(
+        "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+    ).json()
+    listed = [f["path"] for f in body["files"]]
+    # The payload root is stripped — these land at the top of the page folder...
+    assert "page.html" in listed and "sine.py" in listed
+    # ...the manifest lands as the dotfile `clone()` actually writes...
+    assert app_clone.BUNDLE_MANIFEST_NAME in listed
+    # ...and nothing archive-internal leaks into a list the user reads as their folder.
+    assert not any(p.startswith("files/") for p in listed)
+    assert "manifest.json" not in listed
+
+
+def test_the_dotfile_name_is_one_constant_shared_with_the_writer(h):
+    # The preview PREDICTS a name the clone WRITES; two literals would let the promise drift
+    # from the act. Clone for real and compare the on-disk name against the previewed one.
+    h.serve(meta=_meta(), archive=_bundle_zip())
+    preview = h.client.get(
+        "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+    ).json()
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    dest = resp.json()["dest"]
+    on_disk = sorted(p.name for p in __import__("pathlib").Path(dest).iterdir())
+    assert app_clone.BUNDLE_MANIFEST_NAME in on_disk
+    # Every previewed path exists where the preview said it would.
+    for rel in [f["path"] for f in preview["files"]]:
+        assert (__import__("pathlib").Path(dest) / rel).exists(), f"previewed but absent: {rel}"
+
+
+def test_a_host_that_omits_root_leaves_member_names_alone(h):
+    # `root` is advisory. With none, an archive-relative path is honest; inventing a
+    # destination path by stripping a guessed prefix would not be.
+    body = json.loads(_meta())
+    body.pop("root")
+    h.serve(meta=json.dumps(body).encode())
+    listed = [
+        f["path"]
+        for f in h.client.get(
+            "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
+        ).json()["files"]
+    ]
+    assert "files/page.html" in listed  # unchanged, not guessed at
 
 
 def test_the_preview_reports_the_collision_safe_name_it_will_use(h):

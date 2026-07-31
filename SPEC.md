@@ -1304,9 +1304,24 @@ working, not a second opinion about the format.
   existing directory moves the payload *inside* it, which would report success with the page
   a level below where `view` points, so a taken destination fails the rename and the next
   name is tried. Running out of names is a stated refusal at both steps, not a 500.
-  `CloneModal.tsx`; the sidebar
-  footer's "Open deployed app" entry opens it, and the modal navigates to the cloned page
-  on success.
+  The preview's file list names the paths the clone will
+  **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
+  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and writes
+  the manifest as the `BUNDLE_MANIFEST_NAME` dotfile — so echoing the inventory verbatim
+  listed `files/sine.py` and `manifest.json`, neither of which ever appears, under copy
+  promising otherwise. That name is one constant shared with the writer, since a preview
+  predicting a filename a second literal produces is how the promise drifts from the act.
+  **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
+  `https://` link into the **path bar**, which previously answered "can't open https:// URLs
+  in the explorer" — true and useless — and hands the link to the confirm step rather than
+  pre-judging it; and an **Open deployed app** entry on the **Apps page**, shown only while
+  the PF-8 Deploy-apps toggle is on, since with deploying off the surface that produces
+  these links is hidden and an import entry would advertise a feature the user has turned
+  away from. The path-bar route is deliberately NOT gated: refusing a URL the user
+  explicitly pasted is a worse failure than one extra button. It is mounted at the shell
+  rather than in the sidebar — where it briefly lived — because Home and Apps render without
+  a sidebar, so an entry there is unreachable from the page that should host it. The modal
+  navigates to the cloned page on success.
 - **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
   `.git` for identity, which is what lets it safely *update* an existing clone. An archive
   carries no provenance we can verify, so there is no update branch here: every clone lands

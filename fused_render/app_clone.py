@@ -333,6 +333,13 @@ def _safe_folder_name(name: str | None) -> str:
     return cleaned or "cloned-page"
 
 
+#: The name the bundle's `manifest.json` is written under inside a cloned page. A DOTFILE, so
+#: it stays out of the way of the page's own files, and kept at all so a later `export` can
+#: reproduce the same bundle without the user having had to save it somewhere. Named here
+#: rather than inline at the move, because the confirm step has to predict the same name — a
+#: second literal is how a preview starts describing files the clone does not write.
+BUNDLE_MANIFEST_NAME = ".fused-render-bundle.json"
+
 # What this client can import (fused's spec/serve/clone-protocol.md), stated as ONE table so
 # the two places compatibility is checked cannot drift: the protocol version a host advertises
 # in its inventory, and the bundle version the archive itself declares. A mapping, not two
@@ -429,6 +436,33 @@ def _verify_digest(payload: bytes, etag: str | None) -> None:
         )
 
 
+def _destination_files(files: list, root: object) -> list[dict]:
+    """The inventory's archive members, expressed as the paths the clone will CREATE.
+
+    The two are not the same thing, and showing the former is how a confirm step ends up
+    describing files that never appear. A v2 archive holds `manifest.json` at its top plus
+    `<root>/<key>` for every page file; `clone` then makes the payload dir *become* the page
+    folder and renames the manifest to :data:`BUNDLE_MANIFEST_NAME`. So `files/sine.py` in the
+    archive lands at `sine.py` in the user's folder, and `manifest.json` lands as a dotfile.
+
+    `root` is advisory (a host may omit it), so a member that does not sit under it — or any
+    shape not recognised — passes through unchanged rather than being guessed at: an honest
+    archive-relative path beats an invented destination one.
+    """
+    prefix = f"{root}/" if isinstance(root, str) and root else None
+    out: list[dict] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and prefix and path.startswith(prefix):
+            path = path[len(prefix) :]
+        elif path == "manifest.json":
+            path = BUNDLE_MANIFEST_NAME
+        out.append({"path": path, "bytes": entry.get("bytes")})
+    return out
+
+
 def probe(src: str) -> dict:
     """What cloning `src` would fetch and where it would land — no writes.
 
@@ -461,11 +495,9 @@ def probe(src: str) -> dict:
     return {
         "url": url,
         "name": meta.get("name") if isinstance(meta.get("name"), str) else name,
-        "files": [
-            {"path": f.get("path"), "bytes": f.get("bytes")}
-            for f in files
-            if isinstance(f, dict)
-        ],
+        # Destination paths, not archive members — the confirm step's list has to name what
+        # will exist on disk (see `_destination_files`).
+        "files": _destination_files(files, meta.get("root")),
         "bytes": meta.get("bytes"),
         # Advisory hints, echoed for the confirm step and for nothing else — `files`/`bytes`
         # describe the download, they are not a schema this client computes against.
@@ -561,7 +593,7 @@ def clone(src: str, folder: str | None = None) -> dict:
             raise CloneError(f"could not write the clone: {exc}") from None
         try:
             shutil.move(
-                layout["manifest_path"], os.path.join(dest, ".fused-render-bundle.json")
+                layout["manifest_path"], os.path.join(dest, BUNDLE_MANIFEST_NAME)
             )
         except OSError as exc:
             # The commit is two moves, so the second one failing would otherwise leave a
