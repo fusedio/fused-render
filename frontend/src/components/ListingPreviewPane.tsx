@@ -131,9 +131,15 @@ export default function ListingPreviewPane({
           const templates = st.templates.filter(
             (e) => e.path !== null || KNOWN_SENTINEL_MODES.has(e.mode)
           );
+          // "_listing" mounts the shell's Listing component full-screen
+          // (Preview.tsx), not an iframe — the pane has no slot for that, so
+          // a registry bind putting "_listing" on a file (rare, but legal)
+          // must not fall into `show()` and build a `path=null` render URL.
+          // Skip it here; the pane still tries the file's other templates.
+          const embeddable = templates.filter((e) => e.mode !== "_listing");
           // Same default-mode rule as Preview (CT-12): the first UNCONDITIONAL
           // entry, which renders without waiting on any gate.
-          const t = templates.find((e) => !e.conditional);
+          const t = embeddable.find((e) => !e.conditional);
           if (t) {
             show(t);
             return;
@@ -143,14 +149,14 @@ export default function ListingPreviewPane({
           // once verdicts land), so the pane must not claim "no preview" —
           // resolve the gates and show the first allowed one. Fail closed on
           // an empty list or a broken gate: metadata card.
-          if (templates.length === 0) {
+          if (embeddable.length === 0) {
             setState({ status: "meta", size: st.size });
             return;
           }
           resolveConditions(path).then(
             (r) => {
               if (!alive) return;
-              const allowed = templates.find((e) => r.conditions[e.mode] === true);
+              const allowed = embeddable.find((e) => r.conditions[e.mode] === true);
               if (allowed) show(allowed);
               else setState({ status: "meta", size: st.size });
             },
