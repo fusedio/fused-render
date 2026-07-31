@@ -240,7 +240,10 @@ def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, mo
     assert (workspace / "local" / "demo" / "index.html").is_file()
 
 
-@pytest.mark.parametrize("bad", ["", "  ", "a/b", "a\\b", ".hidden", None, 7])
+@pytest.mark.parametrize(
+    "bad",
+    ["", "  ", "a/b", "a\\b", ".hidden", " .hidden", " a/b ", None, 7],
+)
 def test_bad_names_are_rejected(client, workspace, bad):
     r = client.post("/api/apps/new", json={"name": bad, "prompt": ""}, headers=HDRS)
     assert r.status_code == 400

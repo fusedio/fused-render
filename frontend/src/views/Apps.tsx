@@ -39,6 +39,8 @@ export default function Apps() {
   const [tag, setTag] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("recent");
   const [creating, setCreating] = useState(false);
+  // Bumped when the panel creates an app: refetches the grid without clearing it.
+  const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -49,7 +51,7 @@ export default function Apps() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [nonce]);
 
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
@@ -167,7 +169,9 @@ export default function Apps() {
         )}
       </div>
 
-      {creating && <NewAppPanel onClose={() => setCreating(false)} />}
+      {creating && (
+        <NewAppPanel onClose={() => setCreating(false)} onCreated={() => setNonce((n) => n + 1)} />
+      )}
     </div>
   );
 }

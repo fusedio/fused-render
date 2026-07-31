@@ -21,8 +21,11 @@ import { AppCard } from "../components/AppCard";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
-function useLoad<T>(fetcher: () => Promise<T>): Loaded<T> {
+// Returns the load state plus a reload: bumping the nonce refetches while the
+// previous data stays on screen, so a refresh never flashes the loading state.
+function useLoad<T>(fetcher: () => Promise<T>): [Loaded<T>, () => void] {
   const [state, setState] = useState<Loaded<T>>({ status: "loading" });
+  const [nonce, setNonce] = useState(0);
   useEffect(() => {
     let alive = true;
     fetcher().then(
@@ -33,8 +36,8 @@ function useLoad<T>(fetcher: () => Promise<T>): Loaded<T> {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return state;
+  }, [nonce]);
+  return [state, () => setNonce((n) => n + 1)];
 }
 
 // Mirror the server's app-name rules client-side so obvious rejects give an
@@ -197,7 +200,7 @@ const SAMPLE_PROMPTS: { label: string; prompt: string; glyph: ReactNode }[] = [
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
 // composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
 // lands in the new folder's claude chat exactly like the New-app panel does.
-function HeroComposer() {
+function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
   const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -224,6 +227,9 @@ function HeroComposer() {
       if (!alive.current) return;
       setPhase("creating");
       const res = await createAppUnderFreeName(name, trimmed);
+      // The folder exists from here on, so the Recent grid is stale — refresh it
+      // now, since the session-error branch below stays on this page.
+      onCreated();
       // Same landing logic as NewAppPanel: a session error must not read as
       // success, and a live run means the claude chat is the right landing.
       if (res.session_error) {
@@ -385,8 +391,10 @@ const APP_STEPS: { title: string; desc: string }[] = [
 // the left edge (60vw, full width under 800px) over a dim scrim. Deliberately
 // NOT the shared Modal chassis — that centres a width-clamped dialog, which
 // fights an edge-anchored panel. Close behaviour matches the modal it replaces:
-// scrim click, Esc, or ✕, all gated by `busy`.
-export function NewAppPanel({ onClose }: { onClose: () => void }) {
+// scrim click, Esc, or ✕, all gated by `busy`. `onCreated` fires once the folder
+// exists (session error or not) so the caller's list can refresh underneath —
+// it never closes the panel, whose own success/error state still has to be read.
+export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -416,10 +424,11 @@ export function NewAppPanel({ onClose }: { onClose: () => void }) {
     setError(null);
     try {
       const res = await createApp(trimmedName, prompt.trim());
+      onCreated?.();
       // The folder exists either way, but a prompt that never reached Claude
       // must not look like success: navigating straight to a boilerplate view
       // is exactly how "it sent nothing to Claude" reads as working. Stay put
-      // and say why; the app is listed on Home once the modal closes.
+      // and say why; `onCreated` above already listed it behind the panel.
       if (res.session_error) {
         if (alive.current) {
           setError(`App created, but Claude didn't start: ${res.session_error}`);
@@ -639,7 +648,7 @@ function Doorway({
 }
 
 export default function Home({ config }: { config: Config }) {
-  const apps = useLoad(getApps);
+  const [apps, reloadApps] = useLoad(getApps);
 
   return (
     <div className="home-page">
@@ -665,7 +674,7 @@ export default function Home({ config }: { config: Config }) {
               and a named, scaffolded folder + claude session comes back. The
               structured (name-it-yourself) NewAppPanel lives on /apps now,
               and file browsing has its doorway card below. */}
-          <HeroComposer />
+          <HeroComposer onCreated={reloadApps} />
         </header>
 
         {/* Doorways: one card per entry point. */}

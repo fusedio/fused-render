@@ -348,15 +348,6 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // First-run onboarding tour: fire once after first paint so the listing and
-  // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already
-  // seen). Empty deps — App mounts once for the page's lifetime.
-  useEffect(() => {
-    if (IS_EMBED) return;
-    const id = setTimeout(() => maybeAutoStartTour(), 600);
-    return () => clearTimeout(id);
-  }, []);
-
   // Home lives at "/" itself now (not a /view/_home sentinel) — old bookmarks
   // and links to the sentinel redirect the same render-time way as _account
   // below. Render-time write is safe — it changes pathname, so the re-render
@@ -414,6 +405,22 @@ export default function App({ config }: { config: Config }) {
                   ? undefined
                   : null
   );
+
+  // First-run onboarding tour: fire after paint so the listing and breadcrumb
+  // are mounted (maybeAutoStartTour no-ops in embed / if already seen). Keyed
+  // on `pathname`, not mount-once: App never remounts, and a first visit now
+  // lands on the chrome-free "/" where there is no #sidebar to point at, so the
+  // attempt has to repeat until a route with the shell chrome comes up. The ref
+  // stops the retries once the tour has run — otherwise a browser that refuses
+  // the "seen" write would restart it on every navigation.
+  const tourPending = useRef(true);
+  useEffect(() => {
+    if (IS_EMBED || !tourPending.current) return;
+    const id = setTimeout(() => {
+      tourPending.current = !maybeAutoStartTour();
+    }, 600);
+    return () => clearTimeout(id);
+  }, [pathname]);
 
   let main;
   if (isPanel) {

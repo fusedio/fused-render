@@ -155,9 +155,12 @@ def _app_name_error(name) -> str | None:
     and the server agree; the server stays authoritative."""
     if not isinstance(name, str) or not name.strip():
         return "'name' must be a non-empty string"
-    if "/" in name or "\\" in name:
+    # The caller creates the folder from name.strip(), so the trimmed value is
+    # what reaches the filesystem — " .hidden" must be rejected like ".hidden".
+    trimmed = name.strip()
+    if "/" in trimmed or "\\" in trimmed:
         return "invalid app name: no '/' or '\\'"
-    if name.startswith("."):
+    if trimmed.startswith("."):
         return "invalid app name: no leading '.'"
     return None
 

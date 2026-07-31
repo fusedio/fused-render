@@ -5643,7 +5643,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .home-door-title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 650;
 }
 
@@ -6309,7 +6309,7 @@ select.field-control:has(option[value=""]:checked) {
 
 .app-pcard:hover {
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 18px var(--shadow-sm);
   transform: translateY(-1px);
 }
 
@@ -6327,7 +6327,7 @@ select.field-control:has(option[value=""]:checked) {
   top: 0;
   left: 0;
   border: none;
-  background: #fff;
+  background: var(--bg-panel);
   transform-origin: top left;
   pointer-events: none;
 }
