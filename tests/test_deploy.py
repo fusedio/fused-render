@@ -613,6 +613,58 @@ def test_deploy_persists_cache_max_age(tmp_path, monkeypatch):
     assert _has_flag(call["argv"], "--cache-max-age", "5m")
 
 
+def test_the_deploy_names_the_app_after_the_page_not_the_temp_bundle_dir(tmp_path, monkeypatch):
+    # `share create` derives the app name from the SOURCE DIRECTORY's name, and the source we
+    # hand it is a throwaway temp dir — so omitting --name published the page as
+    # `fused-render-deploy-pabxq903`. That name is what the deployments list shows, what the
+    # clone inventory reports, and so what a viewer's clone folder gets called.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    (call,) = h.calls()
+    argv = call["argv"]
+    name = argv[argv.index("--name") + 1]
+    assert name == "view"  # the page is view.html
+    assert "fused-render-deploy-" not in name
+
+
+def test_a_redeploy_restates_the_app_name(tmp_path, monkeypatch):
+    # repoint re-derives the name from the source it is handed too, so leaving it off would
+    # rename the app back to the temp dir on the next redeploy.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {"create": {"token": "abc123", "url": "https://serve.example/abc123", "status": "active"}}
+    )
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert resp.status_code == 200, resp.text
+    assert _has_flag(h.calls()[-1]["argv"], "--name", "view")
+
+
+@pytest.mark.parametrize(
+    "rel,expected",
+    [
+        ("sine.html", "sine"),
+        ("Solar Study.html", "Solar-Study"),  # a space would reach a URL/token derivation
+        ("index.html", "solar"),  # names nothing by itself — the folder does
+        ("INDEX.HTM", "solar"),
+        ("---.html", ""),  # sanitizes away; the CLI's own default stands
+    ],
+)
+def test_the_app_name_is_derived_from_the_page(tmp_path, rel, expected):
+    page = tmp_path / "solar" / rel
+    assert deploy_mod.app_name_for(str(page)) == expected
+
+
 def test_deploy_defaults_cache_max_age_off(tmp_path, monkeypatch):
     h = _harness(tmp_path, monkeypatch)
     h.set_scenario(

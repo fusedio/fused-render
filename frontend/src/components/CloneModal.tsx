@@ -135,7 +135,10 @@ export default function CloneModal({ onClose, onCloned, initialSrc = "" }: Clone
                 onClick={onClone}
                 disabled={busy !== null}
               >
-                {busy === "clone" ? "Cloning…" : `Clone to ${preview!.folder}`}
+                {/* Not "Clone to {folder}": the folder is a generated name that can be long
+                    and opaque, and the body right above already says where it lands. A button
+                    label should name the ACTION, not repeat the destination. */}
+                {busy === "clone" ? "Cloning…" : "Clone to local"}
               </button>
             ) : (
               <button

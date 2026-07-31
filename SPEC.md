@@ -1157,6 +1157,17 @@ the product gains network access.
   `infra teardown`) → fresh `create`. Deploying to a **different** env always
   creates fresh there and repoints the pointer — the old env's mount stays
   live, and the modal says so inline.
+- **DP-20** The deployed app is **named after the page**, stated explicitly as
+  `--name` on create *and* repoint (`deploy.app_name_for`: the page's stem, or its
+  folder's name when the stem names nothing by itself like `index.html`, sanitized
+  to the same conservative set a clone folder is; empty after that leaves the CLI's
+  own default). `share create`/`repoint` otherwise derive the name from the source
+  directory they are handed, and what this module hands them is a throwaway
+  `tempfile.mkdtemp(prefix="fused-render-deploy-")` — so pages published as
+  `fused-render-deploy-pabxq903`, which is the name the deployments list shows, the
+  name the clone inventory reports, and therefore the folder name a viewer's clone
+  inherits (§35 CL-1). Repoint restates it because repoint re-derives it too;
+  deriving from the page path keeps it stable across redeploys.
 - **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
   only): the managed backend returns the URL on create/repoint/recreate; an
   AWS env prints token+path only, so `url` may stay null — the last-known URL
@@ -1321,11 +1332,20 @@ working, not a second opinion about the format.
   name is tried. Running out of names is a stated refusal at both steps, not a 500.
   The preview's file list names the paths the clone will
   **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
-  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and writes
-  the manifest as the `BUNDLE_MANIFEST_NAME` dotfile — so echoing the inventory verbatim
-  listed `files/sine.py` and `manifest.json`, neither of which ever appears, under copy
-  promising otherwise. That name is one constant shared with the writer, since a preview
-  predicting a filename a second literal produces is how the promise drifts from the act.
+  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and keeps
+  nothing else — so echoing the inventory verbatim listed `files/sine.py` and `manifest.json`,
+  neither of which ever appears, under copy promising otherwise. The bundle's `manifest.json`
+  is read during the import (for `root`/`page`) and then **dropped with staging**: an earlier
+  build kept it in the page folder as a dotfile "so a re-export could reproduce the bundle",
+  but nothing read it back — `export_page` recomputes the manifest from the page's own files —
+  so it was write-only clutter, one more path the confirm step had to predict, and a second
+  move on the commit path that needed its own rollback. The commit is now a single rename.
+  The folder is named after the **deployed app's name** (the inventory's advisory `name`,
+  reduced to a conservative allow-list since it arrives from a host we do not control and
+  becomes a path) — which is why the publisher side states `--name` explicitly (DP-20)
+  instead of letting the export's temp directory name the app. The confirm button says
+  **Clone to local**, not "Clone to <folder>": the body above it already names the
+  destination, and a generated folder name in a button label is noise.
   **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
   `https://` link into the **path bar**, which previously answered "can't open https:// URLs
   in the explorer" — true and useless — and hands the link to the confirm step rather than

@@ -333,12 +333,12 @@ def _safe_folder_name(name: str | None) -> str:
     return cleaned or "cloned-page"
 
 
-#: The name the bundle's `manifest.json` is written under inside a cloned page. A DOTFILE, so
-#: it stays out of the way of the page's own files, and kept at all so a later `export` can
-#: reproduce the same bundle without the user having had to save it somewhere. Named here
-#: rather than inline at the move, because the confirm step has to predict the same name — a
-#: second literal is how a preview starts describing files the clone does not write.
-BUNDLE_MANIFEST_NAME = ".fused-render-bundle.json"
+# The bundle's own `manifest.json` is NOT kept in the clone. It is read during the import
+# (`_read_bundle` — for `root` and `page`) and then dropped with the rest of staging. An
+# earlier build wrote it into the page folder as a dotfile "so a later export could reproduce
+# the same bundle", but nothing ever read it back: `export_page` recomputes the manifest from
+# the page's own files, so the copy was write-only clutter in the user's folder — and one more
+# path the confirm step had to predict.
 
 # What this client can import (fused's spec/serve/clone-protocol.md), stated as ONE table so
 # the two places compatibility is checked cannot drift: the protocol version a host advertises
@@ -441,9 +441,10 @@ def _destination_files(files: list, root: object) -> list[dict]:
 
     The two are not the same thing, and showing the former is how a confirm step ends up
     describing files that never appear. A v2 archive holds `manifest.json` at its top plus
-    `<root>/<key>` for every page file; `clone` then makes the payload dir *become* the page
-    folder and renames the manifest to :data:`BUNDLE_MANIFEST_NAME`. So `files/sine.py` in the
-    archive lands at `sine.py` in the user's folder, and `manifest.json` lands as a dotfile.
+    `<root>/<key>` for every page file; `clone` makes the payload dir *become* the page folder
+    and keeps nothing else. So `files/sine.py` in the archive lands at `sine.py` in the user's
+    folder, and `manifest.json` — consumed during the import and then discarded — is omitted
+    here rather than listed as something the clone creates.
 
     `root` is advisory (a host may omit it), so a member that does not sit under it — or any
     shape not recognised — passes through unchanged rather than being guessed at: an honest
@@ -458,7 +459,7 @@ def _destination_files(files: list, root: object) -> list[dict]:
         if isinstance(path, str) and prefix and path.startswith(prefix):
             path = path[len(prefix) :]
         elif path == "manifest.json":
-            path = BUNDLE_MANIFEST_NAME
+            continue
         out.append({"path": path, "bytes": entry.get("bytes")})
     return out
 
@@ -572,14 +573,15 @@ def clone(src: str, folder: str | None = None) -> dict:
         name = _safe_folder_name(layout["name"])
         os.makedirs(fused_dir(), exist_ok=True)
         # The payload dir becomes the page folder: the manifest's `root` holds the files at
-        # their real page-relative paths, which is exactly the local layout. The manifest
-        # itself rides along as a dotfile so a re-export can reproduce the same bundle
-        # without the user having to keep it somewhere.
+        # their real page-relative paths, which is exactly the local layout. The manifest is
+        # left behind in staging (and swept with it) — it has done its job, and a copy in the
+        # user's folder would be a file nothing reads.
         #
-        # The move both CLAIMS the name and commits the payload, so there is no window
-        # between choosing a folder and filling it: `move_into_new_dir` renames (never
-        # nesting into a directory that appeared in the meantime) and walks on to the next
-        # name if the destination is taken.
+        # ONE move, which both CLAIMS the name and commits the payload, so there is no window
+        # between choosing a folder and filling it — and no second step that could fail with a
+        # clone already in the workspace: `move_into_new_dir` renames (never nesting into a
+        # directory that appeared in the meantime) and walks on to the next name if the
+        # destination is taken.
         try:
             dest = zip_import.move_into_new_dir(
                 layout["payload"],
@@ -591,16 +593,6 @@ def clone(src: str, folder: str | None = None) -> dict:
             raise CloneError(str(exc)) from None
         except OSError as exc:
             raise CloneError(f"could not write the clone: {exc}") from None
-        try:
-            shutil.move(
-                layout["manifest_path"], os.path.join(dest, BUNDLE_MANIFEST_NAME)
-            )
-        except OSError as exc:
-            # The commit is two moves, so the second one failing would otherwise leave a
-            # clone in the workspace that this call reports as failed — the one state the
-            # stage-then-move design exists to prevent. Roll the first move back.
-            shutil.rmtree(dest, ignore_errors=True)
-            raise CloneError(f"could not finish writing the clone: {exc}") from None
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
 
@@ -660,7 +652,6 @@ def _read_bundle(staging_dir: str) -> dict:
         "name": manifest.get("name") if isinstance(manifest.get("name"), str) else None,
         "payload": payload,
         "page": page.replace("\\", "/"),
-        "manifest_path": manifest_path,
         "count": count,
     }
 

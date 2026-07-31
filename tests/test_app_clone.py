@@ -16,6 +16,7 @@ import hashlib
 import io
 import json
 import os
+import pathlib
 import zipfile
 
 import pytest
@@ -406,11 +407,7 @@ def test_the_preview_describes_what_the_clone_will_do(h):
     assert body["name"] == "my-page"
     # DESTINATION paths, in the inventory's order — not the archive's member names, which is
     # what this asserted while the preview was describing files the clone never creates.
-    assert [f["path"] for f in body["files"]] == [
-        app_clone.BUNDLE_MANIFEST_NAME,
-        "page.html",
-        "sine.py",
-    ]
+    assert [f["path"] for f in body["files"]] == ["page.html", "sine.py"]
     assert body["bytes"] == 330
     assert body["download_bytes"] == 420
     assert body["folder"] == "my-page"
@@ -422,10 +419,9 @@ def test_the_preview_names_the_files_the_clone_will_actually_create(h):
     """Archive member names are NOT destination paths, and the confirm step promises the latter.
 
     A v2 archive holds `manifest.json` plus `<root>/<key>`; the clone makes the payload dir
-    *become* the page folder and renames the manifest to a dotfile. So a preview that echoed
-    the inventory verbatim listed `files/sine.py` and `manifest.json` — neither of which ever
-    appears — under copy that says "will be cloned to <folder>". This asserts the mapping, and
-    that the numbers still describe the same set.
+    *become* the page folder and keeps nothing else. So a preview that echoed the inventory
+    verbatim listed `files/sine.py` and `manifest.json` — neither of which ever appears — under
+    copy that says "will be cloned to <folder>". This asserts the mapping.
     """
     h.serve(meta=_meta())
     body = h.client.get(
@@ -434,16 +430,16 @@ def test_the_preview_names_the_files_the_clone_will_actually_create(h):
     listed = [f["path"] for f in body["files"]]
     # The payload root is stripped — these land at the top of the page folder...
     assert "page.html" in listed and "sine.py" in listed
-    # ...the manifest lands as the dotfile `clone()` actually writes...
-    assert app_clone.BUNDLE_MANIFEST_NAME in listed
-    # ...and nothing archive-internal leaks into a list the user reads as their folder.
+    # ...and nothing archive-internal leaks into a list the user reads as their folder: not the
+    # `files/` prefix, and not the manifest, which the import consumes and then discards.
     assert not any(p.startswith("files/") for p in listed)
     assert "manifest.json" not in listed
+    assert not any(p.startswith(".") for p in listed)
 
 
-def test_the_dotfile_name_is_one_constant_shared_with_the_writer(h):
-    # The preview PREDICTS a name the clone WRITES; two literals would let the promise drift
-    # from the act. Clone for real and compare the on-disk name against the previewed one.
+def test_the_preview_promises_exactly_the_files_the_clone_writes(h):
+    # The preview PREDICTS; the clone WRITES. Clone for real and compare both directions —
+    # every previewed path exists, and nothing else was created.
     h.serve(meta=_meta(), archive=_bundle_zip())
     preview = h.client.get(
         "/api/clone-app/info", params={"src": "https://open.fused.io/my-link"}
@@ -451,12 +447,9 @@ def test_the_dotfile_name_is_one_constant_shared_with_the_writer(h):
     resp = h.client.post(
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     )
-    dest = resp.json()["dest"]
-    on_disk = sorted(p.name for p in __import__("pathlib").Path(dest).iterdir())
-    assert app_clone.BUNDLE_MANIFEST_NAME in on_disk
-    # Every previewed path exists where the preview said it would.
-    for rel in [f["path"] for f in preview["files"]]:
-        assert (__import__("pathlib").Path(dest) / rel).exists(), f"previewed but absent: {rel}"
+    dest = pathlib.Path(resp.json()["dest"])
+    on_disk = sorted(p.name for p in dest.iterdir())
+    assert on_disk == sorted(f["path"] for f in preview["files"])
 
 
 def test_a_host_that_omits_root_leaves_member_names_alone(h):
@@ -525,8 +518,9 @@ def test_a_clone_lands_as_an_openable_local_page(h):
     assert os.path.isfile(os.path.join(dest, "page.html"))
     assert os.path.isfile(os.path.join(dest, "sine.py"))
     assert not os.path.exists(os.path.join(dest, "files"))
-    # The manifest rides along as a dotfile so a re-export can reproduce the same bundle.
-    assert os.path.isfile(os.path.join(dest, ".fused-render-bundle.json"))
+    # The bundle's manifest.json is consumed during the import and then dropped with staging —
+    # nothing reads it back (export recomputes it), so a copy here would be write-only clutter.
+    assert sorted(p.name for p in pathlib.Path(dest).iterdir()) == ["page.html", "sine.py"]
     assert body["page"] == os.path.join(dest, "page.html")
     assert body["view"].startswith("/view/")
     assert h.requests == ["https://open.fused.io/my-link/_clone"]
@@ -536,7 +530,7 @@ def test_the_clone_lands_in_the_folder_the_preview_promised(h, tmp_path):
     # CL-1: the preview writes nothing, so it cannot reserve the name — the client passes it
     # back instead. Without that, a page appearing in the workspace between the two calls
     # would silently move the clone: `my-page` is free at preview time, so the confirm button
-    # says "Clone to my-page", and it must still land there even though a LATER-created
+    # shows "will be cloned to my-page", and it must still land there even though a LATER-created
     # sibling would otherwise shift the derived name.
     h.serve(meta=_meta(), archive=_bundle_zip())
     preview = h.client.get(
@@ -866,10 +860,10 @@ def test_a_manifest_page_pointing_outside_the_payload_is_refused(h):
 
 @pytest.mark.parametrize("root", [".", "./", "files/.."])
 def test_a_manifest_root_naming_the_bundle_itself_is_refused(h, root):
-    # `root` is the directory `clone` MOVES, so accepting the staging dir itself broke the
-    # staged-then-move guarantee: the move vacated the path `manifest.json` was still
-    # expected at, raising an uncaught FileNotFoundError and leaving a half-built clone in
-    # the workspace. `root` must name a real child directory.
+    # `root` is the directory `clone` MOVES, so accepting the staging dir itself breaks the
+    # staged-then-move guarantee: the commit would move the *staging* dir into the workspace —
+    # manifest and all — leaving the `finally` sweep with nothing to clean and the bundle's
+    # internals in the user's folder. `root` must name a real child directory.
     h.serve(archive=_bundle_zip(manifest_over={"root": root}))
     resp = h.client.post(
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
@@ -882,25 +876,23 @@ def test_a_manifest_root_naming_the_bundle_itself_is_refused(h, root):
     assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
 
 
-def test_a_failed_manifest_move_rolls_the_payload_move_back(h, monkeypatch):
-    # The commit is two moves. The second one failing would otherwise leave a clone in the
-    # workspace that this call reports as failed — the one state stage-then-move exists to
-    # prevent.
-    # The payload is committed by rename (`move_into_new_dir`); the manifest is the one
-    # remaining `shutil.move`, so failing it is failing the second half of the commit.
-    def _manifest_move_fails(src, dst):
-        raise OSError("disk full")
+def test_the_commit_is_a_single_move(h, monkeypatch):
+    # The commit is ONE rename (`move_into_new_dir`), which both claims the folder and fills
+    # it. It was two while the manifest was copied in as a dotfile, and the second move needed
+    # a rollback so a failed call could not leave a clone behind. Dropping the dotfile dropped
+    # that whole failure mode: `shutil.move` is not on the commit path at all any more, so
+    # breaking it cannot break a clone.
+    def _no_shutil_move(src, dst):
+        raise AssertionError("the commit must not shutil.move — it renames, once")
 
-    monkeypatch.setattr(app_clone.shutil, "move", _manifest_move_fails)
+    monkeypatch.setattr(app_clone.shutil, "move", _no_shutil_move)
     h.serve(archive=_bundle_zip())
     resp = h.client.post(
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     )
-    assert resp.status_code == 400
-    assert "could not finish writing the clone" in resp.json()["error"]
-    # Rolled back: no page folder in the workspace, so a failed call leaves nothing that
-    # looks like a real clone.
-    assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
+    assert resp.status_code == 200, resp.text
+    dest = pathlib.Path(resp.json()["dest"])
+    assert sorted(p.name for p in dest.iterdir()) == ["page.html", "sine.py"]
 
 
 def test_an_absolute_manifest_root_is_refused(h):

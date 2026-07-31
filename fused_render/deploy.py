@@ -54,6 +54,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -296,8 +297,47 @@ def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
         ) from None
 
 
+#: Page stems that name nothing on their own. A workspace of `index.html` files would deploy
+#: as a wall of apps all called "index", so the containing folder's name is used instead.
+_GENERIC_PAGE_STEMS = frozenset({"index", "main", "app", "page"})
+#: Everything outside the conservative set a name may keep. Deliberately the same shape
+#: `app_clone._safe_folder_name` reduces a name to, because that is where this one ends up: the
+#: name we publish is what a viewer's clone folder is named after.
+_UNSAFE_APP_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def app_name_for(page: str) -> str:
+    """The deployed app's display name for `page`.
+
+    Passed EXPLICITLY (`share create --name` / `share repoint --name`) because the CLI's own
+    default is the name of the source directory it is handed — and what we hand it is a
+    throwaway temp dir (`tempfile.mkdtemp(prefix="fused-render-deploy-")`, below). So a deploy
+    that omitted the flag published the page under a name like `fused-render-deploy-pabxq903`:
+    the name the account page's deployments list shows, the name the clone inventory reports,
+    and therefore the name a viewer's clone folder inherited. The temp dir is an implementation
+    detail of the export step and has no business naming the user's app.
+
+    Derived from the page path so it is stable across redeploys of the same page (repoint's
+    `--name` is meant to restate the create-time one): the file's stem, or its folder's name
+    when the stem names nothing by itself (`index.html`). Sanitized, because a name with a
+    space or a slash in it would otherwise reach a URL/token derivation and a clone's folder
+    name; empty after that, and the CLI's default stands rather than a `--name ""`.
+    """
+    stem, _ext = os.path.splitext(os.path.basename(page))
+    if stem.lower() in _GENERIC_PAGE_STEMS:
+        folder = os.path.basename(os.path.dirname(os.path.abspath(page)))
+        stem = folder or stem
+    return _UNSAFE_APP_NAME.sub("-", stem).strip("-.")
+
+
+def _name_args(page: str) -> list[str]:
+    """`--name` for this page, or nothing when it sanitizes away (see `app_name_for`)."""
+    name = app_name_for(page)
+    return ["--name", name] if name else []
+
+
 def _create_args(
-    bundle: str, cache_max_age: str, allow_clone: bool, custom_token: str | None
+    bundle: str, page: str, cache_max_age: str, allow_clone: bool, custom_token: str | None
 ) -> list[str]:
     """`share create` argv for a fresh mount — the two create branches share it so a new
     knob can't reach one and miss the other (they diverged on nothing but `named` before).
@@ -306,6 +346,7 @@ def _create_args(
     `--no-allow-clone` on create, so "off" is the absence of the flag rather than a denial.
     """
     args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+    args += _name_args(page)
     if allow_clone:
         args.append("--allow-clone")
     if custom_token:
@@ -314,7 +355,7 @@ def _create_args(
 
 
 def _repoint_args(
-    token: str, bundle: str, cache_max_age: str, allow_clone: bool
+    token: str, bundle: str, page: str, cache_max_age: str, allow_clone: bool
 ) -> list[str]:
     """`share repoint` argv — always states the clone posture EXPLICITLY.
 
@@ -323,8 +364,13 @@ def _repoint_args(
     modal always shows a definite toggle, so the deploy it triggers is a full statement of
     intent. Sending `--no-allow-clone` when the toggle is off is what makes turning it off
     in the dialog actually turn it off, rather than inheriting whatever the mount had.
+
+    `--name` for the same reason it is on create: repoint re-derives the app name from the
+    source it is handed, so omitting it would rename the app back to the temp dir on every
+    redeploy (see `app_name_for`).
     """
     args = ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+    args += _name_args(page)
     args.append("--allow-clone" if allow_clone else "--no-allow-clone")
     return args
 
@@ -678,7 +724,7 @@ def deploy_page(
         named = bool(same_env.get("named")) if same_env else False
         if not token:
             named = bool(custom_token)
-            create_args = _create_args(bundle, cache_max_age, allow_clone, custom_token)
+            create_args = _create_args(bundle, page, cache_max_age, allow_clone, custom_token)
             raw = _run_share(env_name, create_args)
         else:
             live = _classify_mount(_list_mounts(env_name), token)
@@ -690,13 +736,13 @@ def deploy_page(
             # to change caching on a redeploy that reuses the token.
             if live == "active":
                 raw = _run_share(
-                    env_name, _repoint_args(token, bundle, cache_max_age, allow_clone)
+                    env_name, _repoint_args(token, bundle, page, cache_max_age, allow_clone)
                 )
             elif live == "revoked":
                 _run_share(env_name, ["recreate", token, "--same-token"])
                 try:
                     raw = _run_share(
-                        env_name, _repoint_args(token, bundle, cache_max_age, allow_clone)
+                        env_name, _repoint_args(token, bundle, page, cache_max_age, allow_clone)
                     )
                 except DeployError as repoint_err:
                     # The revive (recreate) succeeded but the republish
@@ -729,7 +775,7 @@ def deploy_page(
             else:  # absent — e.g. after an infra teardown; nothing to revive
                 named = bool(custom_token)  # a fresh create, like the first-deploy path
                 raw = _run_share(
-                    env_name, _create_args(bundle, cache_max_age, allow_clone, custom_token)
+                    env_name, _create_args(bundle, page, cache_max_age, allow_clone, custom_token)
                 )
 
         record = _record_from(
