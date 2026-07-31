@@ -5416,8 +5416,8 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 /* ---- New-app slide-over panel (views/Home.tsx) ---------------------------- */
-/* Notion-style panel: full-height, 60vw, pinned to the LEFT edge over a dim
-   scrim, sliding in from the left. Deliberately its own chassis (not
+/* Notion-style panel: full-height, 60vw, pinned to the RIGHT edge over a dim
+   scrim, sliding in from the right. Deliberately its own chassis (not
    the modal / deploy chrome) so the centred-dialog rules stay untouched for
    their other consumers. */
 .app-panel-overlay {
@@ -5436,15 +5436,15 @@ select.field-control:has(option[value=""]:checked) {
 .app-panel {
   position: absolute;
   top: 0;
-  left: 0;
+  right: 0;
   height: 100%;
   width: 60vw;
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   box-shadow: 0 0 40px var(--shadow-lg);
-  transform: translateX(-100%);
+  transform: translateX(100%);
   transition: transform 200ms ease-out;
 }
 
@@ -5455,7 +5455,7 @@ select.field-control:has(option[value=""]:checked) {
 @media (max-width: 800px) {
   .app-panel {
     width: 100vw;
-    border-right: none;
+    border-left: none;
   }
 }
 
