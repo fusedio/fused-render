@@ -233,6 +233,19 @@
   }
   .card button:hover { border-color: var(--accent); }
   .card.resolved { opacity: 0.6; }
+  /* Already handed to Claude — excluded from the next send, but not settled, so
+     it dims less than a resolved card. The "sent ↗" chip carries the meaning. */
+  .card.sent { opacity: 0.8; }
+  /* RESOLVED WINS. The two flags are independent, so a card can carry both, and
+     with only the two rules above the equal-specificity tie went to whichever
+     was written second — a resolved card then rendered at the weaker 0.8 and a
+     harmless CSS reorder silently flipped which state you were looking at.
+     Resolved is the terminal state, so it takes the stronger dim, and the
+     compound selector encodes that in SPECIFICITY rather than declaration
+     order. Matching rule in render(): a resolved card shows no "sent ↗" chip —
+     one state, one signal — and Reopen clears `sent` anyway, so the chip can
+     never come back stale. */
+  .card.resolved.sent { opacity: 0.6; }
   .card.active { background: var(--bg); border-left: 3px solid var(--accent); padding-left: 13px; }
   .card .lbl {
     display: inline-flex; align-items: center; justify-content: center;
@@ -575,27 +588,59 @@
         return [];
       }
     }
+    // A comment is handed to Claude ONCE: `sent: 1` (see the Send to Claude
+    // handler) marks the ones a previous handoff carried, `resolved` marks the
+    // settled ones, and only the remainder rides the next send. The flag is
+    // deliberately the shortest truthy value that survives JSON — the URL store
+    // has a hard byte BUDGET below, so a timestamp string would buy nothing the
+    // sidecar's own `updated_at` doesn't already record.
+    const sendable = (arr) => arr.filter((c) => !c.resolved && !c.sent);
     // The URL is the store, so it has a budget (~6 KB, matching the removed
-    // overlay): over it, evict oldest RESOLVED threads first — open comments
-    // are never dropped silently; if still over, keep the write (a long URL
-    // beats lost data) and say so in the bar.
+    // overlay): over it, evict the oldest RESOLVED thread first, then the oldest
+    // SENT one — a sent comment is already in the chat transcript, so it is the
+    // next-cheapest thing to lose, while an OPEN, UNSENT comment exists nowhere
+    // else and is never dropped silently; if still over, keep the write (a long
+    // URL beats lost data) and say so in the bar.
     const BUDGET = 6000;
     // Measure what actually lands on the URL — the encoded form (quotes and
     // braces percent-encode, roughly tripling), not the raw JSON.
     const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
-    function save(arr, deletedIds) {
+    // Oldest evictable comment, resolved tier before sent tier, or null when
+    // every remaining comment is open and unsent. `keep` is a Set of ids that
+    // are off-limits whatever their flags: the save that STAMPS `sent` is also
+    // the save that could evict on it, and a comment being handed to Claude
+    // right now must never be the victim. The stamp itself is what pushes the
+    // list over budget, so the payload IS the whole sent tier — one click would
+    // drop a live comment out of the review the user is in the middle of
+    // sending, and the "removed" note explaining it goes into a bar the
+    // navigation destroys milliseconds later. (Not annihilation: the same save
+    // mirrors every comment into the `<file>.json` log below, where absence
+    // never deletes, so an evicted comment is still recoverable through the
+    // history view. It leaves the LIVE store — the rail, the pins, the shared
+    // URL — which for a comment being sent right now is loss enough.) When that
+    // leaves nothing evictable we take the over-budget write: a long URL beats
+    // dropping a comment from the live review to make room for a flag, and the
+    // send proceeds either way.
+    function evictTarget(arr, keep) {
+      const pool0 = keep ? arr.filter((c) => !keep.has(c.id)) : arr;
+      for (const tier of [(c) => c.resolved, (c) => c.sent && !c.resolved]) {
+        const pool = pool0.filter(tier);
+        if (pool.length) return pool.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+      }
+      return null;
+    }
+    function save(arr, deletedIds, keep) {
       let dropped = 0;
       while (urlSize(arr) > BUDGET) {
-        const resolved = arr.filter((c) => c.resolved);
-        if (!resolved.length) break;
-        const oldest = resolved.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+        const oldest = evictTarget(arr, keep);
+        if (!oldest) break;
         arr = arr.filter((c) => c.id !== oldest.id);
         dropped++;
       }
       const over = urlSize(arr) > BUDGET;
       const note = document.getElementById("budgetnote");
       note.textContent = dropped
-        ? `${dropped} oldest resolved comment${dropped === 1 ? "" : "s"} removed — URL size limit`
+        ? `${dropped} oldest resolved/sent comment${dropped === 1 ? "" : "s"} removed — URL size limit`
         : over
           ? "comment list exceeds the URL budget — resolve or delete some"
           : "";
@@ -618,6 +663,11 @@
         // history write (this call is fire-and-forget, so no error would surface).
       }, { key: null }).catch(() => {});
       render();
+      // The list as PERSISTED (post-eviction) — the Send to Claude handler needs
+      // it to write `comments` into its own top-URL navigation, because set()
+      // above may only have written the coalesced overlay (D99) and not yet the
+      // real history entry the handler reads back.
+      return arr;
     }
 
     // --- anchors (tag:nth-of-type path inside the framed doc) ---------------
@@ -966,10 +1016,18 @@
                 ? chip(off.r.label(off.m, doc) || "off-page")
                 : "<span style='color:var(--error)'>detached</span>";
         const card = document.createElement("div");
-        card.className = "card" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+        card.className = "card" + (c.resolved ? " resolved" : "") + (c.sent ? " sent" : "") + (c.id === activeId ? " active" : "");
         card.setAttribute("data-id", c.id);
+        // A sent comment is excluded from the NEXT handoff (see `sendable`), so
+        // say so on the card — otherwise "Send to Claude" silently ignoring it
+        // reads as the button being broken. Reopen clears the flag.
+        // Not on a resolved card: resolved is the terminal state and already
+        // explains the exclusion (and owns the stronger dim, see .card.resolved
+        // .sent), so stacking a second "why this is skipped" chip on it is
+        // noise. The handoff still shows in the file's history log either way.
+        const sentTag = c.sent && !c.resolved ? chip("sent ↗") : "";
         card.innerHTML = `
-          <div class="when"><span class="lbl">${label}</span> ${new Date(c.createdAt).toLocaleString()} ${tag}</div>
+          <div class="when"><span class="lbl">${label}</span> ${new Date(c.createdAt).toLocaleString()} ${tag}${sentTag}</div>
           <div class="body"></div>
           <div class="acts">
             <button data-a="resolve">${c.resolved ? "Reopen" : "Resolve"}</button>
@@ -987,7 +1045,15 @@
           }
         };
         card.querySelector('[data-a="resolve"]').onclick = () => {
-          c.resolved = !c.resolved; save(comments);
+          c.resolved = !c.resolved;
+          // Reopen also un-sends: reopening says "this isn't done", and the only
+          // way to hand the same comment to Claude again is to clear the flag
+          // that excludes it. (Resolving does NOT set `sent` — the two flags are
+          // independent reasons to skip a comment.) `delete` rather than
+          // `sent = 0`, so the key leaves the URL entirely and the sidecar's
+          // None-guard merge (annotate.py) doesn't carry a falsy value forward.
+          if (!c.resolved) delete c.sent;
+          save(comments);
         };
         card.querySelector('[data-a="delete"]').onclick = () => {
           // Local delete is just absence from the URL array; the id also rides
@@ -1415,15 +1481,34 @@
       render();
       focusFromParam(); // consume a `comment` deep link once the frame is wired
     });
-    // Send to Claude: hand the whole review to the claude chat mode. Copies
-    // the current comments verbatim into a `claudeComments` param and flips
-    // the BROWSER URL (window.top — the address bar, not this iframe) to
-    // _mode=claude. `comments` stays untouched, so switching back to annotate
-    // shows the same review. The framed editor is flushed first (same contract
-    // as every other mode switch), and the `_layout=(…)` span — whose `&` is
-    // literal — is excised before URLSearchParams touches the query, then
-    // reattached last, byte-for-byte.
+    // Send to Claude: hand the NEW comments to the claude chat mode. Copies the
+    // comments that are neither resolved nor already `sent` (see `sendable`)
+    // verbatim into a `claudeComments` param and flips the BROWSER URL
+    // (window.top — the address bar, not this iframe) to _mode=claude.
+    // `comments` stays untouched apart from the `sent` stamp, so switching back
+    // to annotate shows the same review. The framed editor is flushed first
+    // (same contract as every other mode switch), and the `_layout=(…)` span —
+    // whose `&` is literal — is excised before URLSearchParams touches the
+    // query, then reattached last, byte-for-byte.
+    //
+    // ⚠️ DELIBERATE STANDARD-BREAK (mirror of clearTopClaudeComments in
+    // templates/claude/template.html): this writes window.top's URL directly
+    // instead of going through fused.params. `_mode` is a RESERVED param name —
+    // fused.params.set THROWS on it (runtime.js isReserved) — and in a pane the
+    // param boundary (D72) puts the shell URL out of fused.params' reach
+    // anyway, so a top-level URL write is the only way to switch mode. The
+    // handoff params (`claudeComments`, `claudeReturn`) ride the same write.
     document.getElementById("toclaude").addEventListener("click", async () => {
+      // Nothing new to hand over: say so in the bar (the same inline note the
+      // budget uses) and stay put — navigating to a chat with an empty
+      // attachment list would look like the review had been sent.
+      const all = load();
+      const payload = sendable(all);
+      if (!payload.length) {
+        document.getElementById("budgetnote").textContent =
+          all.length ? "nothing new to send — reopen a comment to send it again" : "no comments to send";
+        return;
+      }
       const flush = window.__fusedFlushEdits;
       try {
         const res = await Promise.race([
@@ -1434,6 +1519,20 @@
       } catch (e) {
         return;
       }
+      // Serialize the wire form BEFORE stamping: `sent` is an internal
+      // lifecycle flag of the URL store, and formatComments (claude template)
+      // hands the agent the raw JSON with every field intact — it has no
+      // business reading, explaining or reasoning about our bookkeeping.
+      const wire = JSON.stringify(payload);
+      // Stamp and persist BEFORE navigating: save() is what writes the `comments`
+      // URL param (and, via the verbatim field merge in annotate.py, the
+      // `<file>.json` sidecar), and this frame is about to be torn down by the
+      // mode switch — a stamp applied after the navigation would never land.
+      // The payload's ids are handed to save() as off-limits for eviction: the
+      // stamp is what can push the list over BUDGET, and the comments being sent
+      // are then the entire sent tier (see evictTarget).
+      for (const c of payload) c.sent = 1;
+      const persisted = save(all, undefined, new Set(payload.map((c) => c.id)));
       const top = window.top.location;
       const full = (top.search || "").replace(/^\?/, "");
       const rest = withoutLayoutSpan(top.search);
@@ -1451,8 +1550,36 @@
         span = full.slice(start, i);
       }
       const params = new URLSearchParams(rest);
+      // D99 staleness sweep. `rest` is a RAW read of window.top's search, but
+      // fused.params.set COALESCES its history write — so ANY param this page
+      // owns may still sit at its pre-click value in that string, and writing it
+      // back verbatim silently reverts it: the `sent` stamps (re-sending the
+      // whole review next visit), and `offset`/`sheet` written by a reveal
+      // within the coalescing window (returning to page 1 of a table/pdf).
+      // fused.params.getAll() reads through the pending overlay, so it is the
+      // live truth. Only keys the top URL ALREADY carries are touched — this
+      // must not push a pane-local param onto the shell URL.
+      const live = fused.params.getAll();
+      for (const k of [...params.keys()]) {
+        if (typeof live[k] === "string") params.set(k, live[k]);
+      }
       params.set("_mode", "claude");
-      params.set("claudeComments", JSON.stringify(load()));
+      params.set("claudeComments", wire);
+      // The review as save() actually PERSISTED it (post-eviction) — narrower
+      // than the sweep above, which cannot know that save may have dropped a
+      // comment, and correct even if `comments` was absent from the top URL.
+      params.set("comments", JSON.stringify(persisted));
+      // Return ticket: the chat has nothing else that would ever bring the user
+      // back (it turns auto-reload off and lives entirely inside its own frame),
+      // so the run that carries these comments navigates the shell back to this
+      // mode when it finishes. The value names the mode to return to, so the
+      // chat needs no knowledge of who sent it. `view` rides along explicitly —
+      // it is the annotate param that picks WHICH sibling view is framed, and
+      // re-asserting it here means the round trip can't land on the default
+      // view if the shell hadn't synced it yet.
+      params.set("claudeReturn", "annotate");
+      const view = fused.params.get("view");
+      if (view) params.set("view", view);
       let search = params.toString();
       if (span) search += (search ? "&" : "") + span;
       window.top.location.href = top.pathname + (search ? "?" + search : "");
@@ -1712,11 +1839,14 @@
       histToggle.textContent = histOpen
         ? "▾ History (" + rows + ")"
         : "▸ History";
-      histNote.className = "";
-      histNote.textContent = timeline.writable === false
+      // Through setNote like every other write to this element. renderHistory is
+      // the BASELINE painter and setNote/reportOutcome are the overrides, but
+      // "one function touches this node" is the invariant that stopped four
+      // ordering bugs, so it should not have an exception carved into it.
+      setNote(timeline.writable === false
         ? "This file cannot be reverted: " +
           (timeline.writable_reason || "it is not writable") + "."
-        : (timeline.note || "");
+        : (timeline.note || ""), false);
     }
 
     // Every history/revert failure arrives as an `{error}` DICT rather than a
