@@ -1628,6 +1628,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     try {
       await ensureKernel();
       for (const c of cells) {
+        if (!runningAll) break; // Interrupt aborts the rest of the batch
         if (c.model.cell_type !== "code") continue;
         syncEditor(c);
         const previousOutputs = clearOutputs(c);
@@ -1656,6 +1657,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   async function interruptKernel() {
     try {
       if (!kernelId) return;
+      runningAll = false; // stop a Run all batch from submitting more cells
       await dFetch("/kernel/interrupt", { kernel_id: kernelId });
     } catch (err) {
       toast("Interrupt failed: " + (err.message || err));
@@ -1882,8 +1884,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         // resolve server-side: the input may be a plain name, a relative
         // subpath, or an absolute path overriding the browsed folder — and
         // os.path knows the platform's separator rules
+        const src = location.origin + "/api/fs/raw?path=" + encodeURIComponent(modalCtx.dir || "");
         const r = await fused.runPython("./kernel.py",
-          { action: "resolve", path: modalCtx.dir, name: raw }, { key: null });
+          { action: "resolve", path: modalCtx.dir, name: raw, src }, { key: null });
         if (r.error) throw new Error(r.error);
         name = r.name;
         payload.path = r.path;

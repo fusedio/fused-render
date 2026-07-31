@@ -204,12 +204,14 @@ def _listdir(path, src):
             "dirs": dirs, "files": files}
 
 
-def _resolve_dest(directory, name):
+def _resolve_dest(directory, name, src=""):
     """Destination for the new-notebook / save-a-copy modal. `name` may be a
     plain name, a relative subpath, or an absolute path that overrides the
     browsed `directory`; os.path keeps the semantics platform-correct (both
     separators on Windows; a backslash stays an ordinary filename character
-    on POSIX). Appends .ipynb unless already present."""
+    on POSIX). Appends .ipynb unless already present. With `src` the parent
+    check rides /api/fs/stat — never a local probe that could wedge a mount
+    (same rule as _listdir)."""
     name = (name or "").strip()
     if not name:
         return {"error": "Enter a name."}
@@ -222,8 +224,18 @@ def _resolve_dest(directory, name):
     if not full.lower().endswith(".ipynb"):
         full += ".ipynb"
     parent = os.path.dirname(full)
-    if not os.path.isdir(parent):
-        return {"error": "Folder does not exist: " + parent.replace(os.sep, "/")}
+    missing = {"error": "Folder does not exist: " + parent.replace(os.sep, "/")}
+    if src:
+        try:
+            meta = _remote_meta(src, parent)
+        except OSError as e:
+            if getattr(e, "code", None) == 404:
+                return missing
+            raise
+        if not meta.get("is_dir"):
+            return missing
+    elif not os.path.isdir(parent):
+        return missing
     return {"path": full.replace(os.sep, "/"),
             "dir": parent.replace(os.sep, "/"),
             "name": os.path.basename(full)}
@@ -235,7 +247,7 @@ def main(action: str = "ensure", path: str = "", src: str = "", name: str = ""):
     if action == "listdir":
         return _listdir(path, src)
     if action == "resolve":
-        return _resolve_dest(path, name)
+        return _resolve_dest(path, name, src)
     version = _version()
     st = _read_state()
     if st and _alive(st.get("port"), version):
@@ -337,12 +349,18 @@ def _serve():
             env["MPLBACKEND"] = "Agg"
             kw = ({"creationflags": subprocess.CREATE_NO_WINDOW}
                   if os.name == "nt" else {})
+            kw.update(stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, env=env, text=True,
+                      encoding="utf-8", errors="replace", bufsize=1)
+            # no isdir probe on the notebook dir — it can hang on a wedged
+            # mount; a missing dir surfaces from Popen instead
             cwd = os.path.dirname(self.nb_path)
-            proc = subprocess.Popen(
-                [self.python, _body()],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                cwd=cwd if os.path.isdir(cwd) else None, env=env,
-                text=True, encoding="utf-8", errors="replace", bufsize=1, **kw)
+            try:
+                proc = subprocess.Popen([self.python, _body()], cwd=cwd or None, **kw)
+            except (FileNotFoundError, NotADirectoryError):
+                if not cwd:
+                    raise
+                proc = subprocess.Popen([self.python, _body()], cwd=None, **kw)
             self.proc = proc
             threading.Thread(target=self._read, args=(proc,), daemon=True).start()
 
@@ -655,8 +673,10 @@ def _serve():
             time.sleep(60)
             now = time.time()
             with klock:
+                # last_used only moves at submit time — a cell still executing
+                # past the idle window is busy, not idle
                 idle = [(kid, k) for kid, k in kernels.items()
-                        if now - k.last_used > KERNEL_IDLE_S]
+                        if now - k.last_used > KERNEL_IDLE_S and not k.pending]
                 for kid, _ in idle:
                     kernels.pop(kid, None)
                 empty = not kernels

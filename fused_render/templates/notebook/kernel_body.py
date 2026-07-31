@@ -7,10 +7,11 @@ requests on stdin ({"op":"execute","id","code"} / {"op":"interrupt"}),
 events on stdout (ready/stream/execute_result/display_data/error/done, one
 object per line). Nothing else may print to the real stdout — sys.stdout/
 stderr/stdin are swapped while user code runs. Cells execute serially on the
-main thread in one shared namespace; interrupt rides the stdin reader thread
-and raises KeyboardInterrupt in the running cell: pthread_kill(main_thread,
-SIGINT) on POSIX (only delivery to the main thread itself interrupts a
-C-blocked time.sleep there) and signal.raise_signal(SIGINT) on Windows, where
+main thread in one shared namespace; interrupt rides the stdin reader thread,
+drops every queued execute, and raises KeyboardInterrupt in the running cell:
+pthread_kill(main_thread, SIGINT) on POSIX (only delivery to the main thread
+itself interrupts a C-blocked time.sleep there) and signal.raise_signal(SIGINT)
+on Windows, where
 the C handler wakes sleeping threads and — unlike console CTRL events — needs
 no console, which neither the daemon nor this process has.
 """
@@ -29,6 +30,7 @@ import warnings
 
 REAL_STDOUT = sys.stdout
 EMIT_LOCK = threading.Lock()
+RUNNING = threading.Event()
 STREAM_CAP = 2 * 1024 * 1024
 FLUSH_BYTES = 8 * 1024
 FLUSH_S = 0.1
@@ -205,6 +207,23 @@ def read_requests(q):
             continue
         req = json.loads(line)
         if req.get("op") == "interrupt":
+            # Jupyter-style: interrupt aborts the queue too. Drain queued
+            # executes before signalling so none can start afterwards, and
+            # skip the signal entirely when nothing runs — a pending SIGINT
+            # with the main thread parked in q.get() would otherwise fire on
+            # the NEXT dequeue and swallow that execute (Windows lock waits
+            # are not signal-interruptible).
+            while True:
+                try:
+                    nxt = q.get_nowait()
+                except queue.Empty:
+                    break
+                emit({"type": "error", "id": nxt["id"],
+                      "ename": "KeyboardInterrupt", "evalue": "",
+                      "traceback": ["KeyboardInterrupt"]})
+                emit({"type": "done", "id": nxt["id"], "duration_ms": 0})
+            if not RUNNING.is_set():
+                continue
             if os.name == "nt":
                 signal.raise_signal(signal.SIGINT)
             else:
@@ -232,7 +251,11 @@ def main():
             if req is None:
                 return
             if req.get("op") == "execute":
-                execute(req["id"], req.get("code") or "")
+                RUNNING.set()
+                try:
+                    execute(req["id"], req.get("code") or "")
+                finally:
+                    RUNNING.clear()
         except KeyboardInterrupt:
             pass  # interrupt landed between cells — nothing to cancel
 

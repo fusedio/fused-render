@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 import pytest
@@ -174,6 +175,36 @@ def test_output_truncation(kernel):
     assert any("fresh" in e["text"] for e in _of_type(events, "stream"))
 
 
+def test_interrupt_aborts_queued_cells(kernel):
+    kernel.send({"op": "execute", "id": "e1", "code": "import time\ntime.sleep(60)"})
+    kernel.wait_for(lambda e: e.get("type") == "started" and e.get("id") == "e1")
+    # e2/e3 sit on the queue behind the sleeping cell; the stdin pipe is FIFO,
+    # so they are queued before the interrupt is processed
+    kernel.send({"op": "execute", "id": "e2", "code": "x = 'ran'"})
+    kernel.send({"op": "execute", "id": "e3", "code": "y = 'ran'"})
+    kernel.send({"op": "interrupt"})
+    for eid in ("e1", "e2", "e3"):
+        kernel.wait_for(lambda e, eid=eid: e.get("type") == "done" and e.get("id") == eid)
+    with kernel.lock:
+        started = {e["id"] for e in kernel.events if e.get("type") == "started"}
+        errs = {e["id"] for e in kernel.events if e.get("type") == "error"}
+    assert started == {"e1"}
+    assert {"e1", "e2", "e3"} <= errs
+    # the queued cells never executed
+    events = kernel.run("e4", "('x' in dir(), 'y' in dir())")
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "(False, False)"}
+
+
+def test_interrupt_while_idle_is_a_noop(kernel):
+    kernel.run("e1", "1")
+    # a stray interrupt with nothing running must not leave a pending SIGINT
+    # that swallows the next execute (Windows lock waits are uninterruptible)
+    kernel.send({"op": "interrupt"})
+    events = kernel.run("e2", "2 + 2")
+    assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "4"}
+    assert not _of_type(events, "error")
+
+
 def test_interrupt_running_cell(kernel):
     kernel.send({"op": "execute", "id": "e1", "code": "import time\ntime.sleep(60)"})
     time.sleep(0.5)  # let the cell reach the sleep
@@ -262,6 +293,43 @@ def test_resolve_empty_name_is_error(kernel_mod, tmp_path):
     assert "error" in kernel_mod._resolve_dest(str(tmp_path), "  ")
 
 
+def test_resolve_with_src_checks_parent_via_stat_not_local_probe(
+        kernel_mod, monkeypatch):
+    seen = []
+    monkeypatch.setattr(kernel_mod, "_remote_meta",
+                        lambda src, p: seen.append(p) or {"remote": True, "is_dir": True})
+    monkeypatch.setattr(kernel_mod.os.path, "isdir",
+                        lambda _: pytest.fail("must not probe a possibly mounted parent"))
+    r = kernel_mod._resolve_dest("/mnt/data", "sub/x", "http://127.0.0.1:1")
+    assert r["path"].endswith("/sub/x.ipynb")
+    assert seen and seen[0].replace(os.sep, "/").endswith("/sub")
+
+
+def test_resolve_remote_missing_parent_is_error(kernel_mod, monkeypatch):
+    def stat_404(src, p):
+        raise urllib.error.HTTPError(src, 404, "not found", {}, None)
+
+    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_404)
+    r = kernel_mod._resolve_dest("/mnt/data", "nope/x", "http://127.0.0.1:1")
+    assert "Folder does not exist" in r["error"]
+
+
+def test_resolve_remote_parent_that_is_a_file_is_error(kernel_mod, monkeypatch):
+    monkeypatch.setattr(kernel_mod, "_remote_meta",
+                        lambda src, p: {"remote": True, "is_dir": False})
+    r = kernel_mod._resolve_dest("/mnt/data", "file.txt/x", "http://127.0.0.1:1")
+    assert "Folder does not exist" in r["error"]
+
+
+def test_resolve_unresponsive_mount_stat_propagates(kernel_mod, monkeypatch):
+    def stat_503(src, p):
+        raise urllib.error.HTTPError(src, 503, "mount unresponsive", {}, None)
+
+    monkeypatch.setattr(kernel_mod, "_remote_meta", stat_503)
+    with pytest.raises(urllib.error.HTTPError):
+        kernel_mod._resolve_dest("/mnt/data", "x", "http://127.0.0.1:1")
+
+
 # ------------------------------------------------- daemon cache dir per home
 
 def test_cache_dir_prefers_resolved_home_dir(kernel_mod, monkeypatch, tmp_path):
@@ -306,56 +374,118 @@ def _daemon_request(state, path, body):
         return json.load(response)
 
 
-def test_daemon_serializes_restart_and_execute(tmp_path):
+@pytest.fixture()
+def daemon_state(tmp_path):
     home = tmp_path / "home"
     env = dict(os.environ, FUSED_RENDER_HOME=str(home))
     proc = subprocess.Popen(
         [sys.executable, KERNEL, "--serve"], env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     state_path = home / "cache" / "notebook-daemon" / "daemon.json"
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and not state_path.exists():
+        time.sleep(0.05)
+    assert state_path.exists(), "daemon did not write its state file"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    yield state
     try:
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and not state_path.exists():
-            time.sleep(0.05)
-        assert state_path.exists(), "daemon did not write its state file"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        kernel = _daemon_request(state, "/kernel/ensure", {
-            "nb_path": str(tmp_path / "test.ipynb"), "python": sys.executable})
-        for _ in range(10):
-            errors = []
-            barrier = threading.Barrier(2)
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{state['port']}/quit?t={state['token']}",
+            timeout=3).read()
+    except OSError:
+        pass
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=10)
 
-            def request(path, body):
-                try:
-                    barrier.wait()
-                    _daemon_request(state, path, body)
-                except BaseException as exc:  # communicate thread failures to pytest
-                    errors.append(exc)
 
-            threads = [
-                threading.Thread(target=lambda: request(
-                    "/kernel/restart", {"kernel_id": kernel["kernel_id"]}),
-                    daemon=True),
-                threading.Thread(target=lambda: request(
-                    "/kernel/execute", {"kernel_id": kernel["kernel_id"],
-                                        "cell_id": "c1", "code": "1 + 1"}),
-                    daemon=True),
-            ]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(30)
-                assert not thread.is_alive()
-            assert not errors
-    finally:
-        if state_path.exists():
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+def test_daemon_serializes_restart_and_execute(daemon_state, tmp_path):
+    kernel = _daemon_request(daemon_state, "/kernel/ensure", {
+        "nb_path": str(tmp_path / "test.ipynb"), "python": sys.executable})
+    for _ in range(10):
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def request(path, body):
             try:
-                urllib.request.urlopen(
-                    f"http://127.0.0.1:{state['port']}/quit?t={state['token']}",
-                    timeout=3).read()
-            except OSError:
-                pass
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=10)
+                barrier.wait()
+                _daemon_request(daemon_state, path, body)
+            except BaseException as exc:  # communicate thread failures to pytest
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=lambda: request(
+                "/kernel/restart", {"kernel_id": kernel["kernel_id"]}),
+                daemon=True),
+            threading.Thread(target=lambda: request(
+                "/kernel/execute", {"kernel_id": kernel["kernel_id"],
+                                    "cell_id": "c1", "code": "1 + 1"}),
+                daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+            assert not thread.is_alive()
+        assert not errors
+
+
+def test_daemon_shutdown_is_idempotent_and_ensure_recovers(daemon_state, tmp_path):
+    body = {"nb_path": str(tmp_path / "nb.ipynb"), "python": sys.executable}
+    k1 = _daemon_request(daemon_state, "/kernel/ensure", body)
+    _daemon_request(daemon_state, "/kernel/shutdown", {"kernel_id": k1["kernel_id"]})
+    _daemon_request(daemon_state, "/kernel/shutdown", {"kernel_id": k1["kernel_id"]})
+    _daemon_request(daemon_state, "/kernel/shutdown", {"kernel_id": "bogus"})
+    k2 = _daemon_request(daemon_state, "/kernel/ensure", body)
+    r = _daemon_request(daemon_state, "/kernel/execute", {
+        "kernel_id": k2["kernel_id"], "cell_id": "c1", "code": "1 + 1"})
+    assert r["exec_id"]
+
+
+def test_daemon_concurrent_shutdown_and_ensure_never_orphan(daemon_state, tmp_path):
+    # shutdown replaces the map entry pop with an atomic pop-then-kill; a
+    # concurrent ensure that re-inserts the same kernel_id must never have
+    # its fresh kernel evicted (the orphaned-subprocess race)
+    body = {"nb_path": str(tmp_path / "nb.ipynb"), "python": sys.executable}
+    kid = _daemon_request(daemon_state, "/kernel/ensure", body)["kernel_id"]
+    for _ in range(10):
+        errors = []
+        barrier = threading.Barrier(2)
+
+        def request(path, payload):
+            try:
+                barrier.wait()
+                _daemon_request(daemon_state, path, payload)
+            except urllib.error.HTTPError:
+                pass  # a raced ensure may lose its kernel and 500 — but never hang
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=lambda: request(
+                "/kernel/shutdown", {"kernel_id": kid}), daemon=True),
+            threading.Thread(target=lambda: request("/kernel/ensure", body),
+                             daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+            assert not thread.is_alive()
+        assert not errors
+    final = _daemon_request(daemon_state, "/kernel/ensure", body)
+    r = _daemon_request(daemon_state, "/kernel/execute", {
+        "kernel_id": final["kernel_id"], "cell_id": "c1", "code": "40 + 2"})
+    assert r["exec_id"]
+
+
+def test_daemon_ensure_with_missing_notebook_dir_still_starts(daemon_state, tmp_path):
+    # the notebook dir may be gone (unmounted, deleted) — the kernel falls
+    # back to no cwd instead of failing the spawn
+    body = {"nb_path": str(tmp_path / "gone" / "nb.ipynb"),
+            "python": sys.executable}
+    k = _daemon_request(daemon_state, "/kernel/ensure", body)
+    assert k["state"] in ("idle", "busy")
+    r = _daemon_request(daemon_state, "/kernel/execute", {
+        "kernel_id": k["kernel_id"], "cell_id": "c1", "code": "1 + 1"})
+    assert r["exec_id"]
