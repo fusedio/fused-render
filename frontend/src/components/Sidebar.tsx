@@ -1080,12 +1080,12 @@ export default function Sidebar({ config }: SidebarProps) {
             always one click away from anywhere. The collapse button stays its
             own control outside the link. */}
         <a
-          href="/view/_home"
+          href="/"
           className="brand-home-link"
           title="Home"
           onClick={(e) => {
             e.preventDefault();
-            navigateUrl("/view/_home");
+            navigateUrl("/");
           }}
         >
           {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
@@ -1116,12 +1116,12 @@ export default function Sidebar({ config }: SidebarProps) {
       </div>
       <div className="sidebar-section">
         <a
-          href="/view/_home"
+          href="/"
           id="home-link"
-          className={"sidebar-item" + (location.pathname === "/view/_home" ? " active" : "")}
+          className={"sidebar-item" + (location.pathname === "/" ? " active" : "")}
           onClick={(e) => {
             e.preventDefault();
-            navigateUrl("/view/_home");
+            navigateUrl("/");
           }}
         >
           <span className="icon">

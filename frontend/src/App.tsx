@@ -356,13 +356,12 @@ export default function App({ config }: { config: Config }) {
     return () => clearTimeout(id);
   }, []);
 
-  // Root redirect, exactly like the vanilla route(): replaceState so "/"
-  // never enters history. Render-time write is safe — it changes pathname,
-  // so the re-render (via fused:urlchange) derives the real route. Launch
-  // lands on the Home view (apps/templates/files), not the start dir —
-  // first-run seeding (seed.py showcase) still points where it always did.
-  if (location.pathname === "/") {
-    history.replaceState(null, "", "/view/_home");
+  // Home lives at "/" itself now (not a /view/_home sentinel) — old bookmarks
+  // and links to the sentinel redirect the same render-time way as _account
+  // below. Render-time write is safe — it changes pathname, so the re-render
+  // (via fused:urlchange) derives the real route.
+  if (location.pathname === "/view/_home") {
+    history.replaceState(null, "", "/");
   }
   // The old standalone Fused-account page folded into Preferences as a tab
   // (D125) — redirect its sentinel the same render-time way so existing
@@ -379,7 +378,7 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
-  const isHome = pathname === "/view/_home";
+  const isHome = pathname === "/";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
     isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isBookmark
@@ -473,9 +472,8 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else if (isHome) {
-    // Home (apps / templates / files) — the launch landing; a sentinel
-    // pathname like _prefs, entered from the sidebar footer or the "/"
-    // redirect above.
+    // Home (apps / templates / files) — the launch landing, lives at "/"
+    // itself (old /view/_home sentinel redirects here above).
     main = (
       <>
         <div id="breadcrumb">
@@ -518,7 +516,7 @@ export default function App({ config }: { config: Config }) {
 
   return (
     <div id="app">
-      {!IS_EMBED && <Sidebar config={config} />}
+      {!IS_EMBED && !isHome && <Sidebar config={config} />}
       <div id="main">{main}</div>
       <NotificationHost />
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}

@@ -1,5 +1,5 @@
-// Home view — the `/view/_home` sentinel route and the app's launch landing
-// ("/" redirects here). Structure, top to bottom:
+// Home view — lives at "/" itself (old /view/_home sentinel redirects here)
+// and is the app's launch landing. Structure, top to bottom:
 //   1. Hero card — headline + blurb with the page's two verbs as buttons:
 //      "New app" (create modal → POST /api/apps/new) and "Browse files".
 //   2. Doorways — three equal cards for the app's entry points: file
