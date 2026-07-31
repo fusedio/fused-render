@@ -305,6 +305,21 @@ body:has(.sidebar-resize-handle.resizing) {
   border-bottom: 1px solid var(--border);
 }
 
+/* Logo + name as one Home link: inherits the brand row's type, no underline;
+   min-width: 0 so brand-title's ellipsis keeps working inside the link. */
+.sidebar-brand .brand-home-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-brand .brand-home-link:hover .brand-title {
+  color: var(--accent-soft);
+}
+
 .sidebar-brand .logo {
   color: var(--accent);
   display: flex;
@@ -346,7 +361,8 @@ body:has(.sidebar-resize-handle.resizing) {
   font-size: 13.5px;
 }
 
-.sidebar-item:hover {
+.sidebar-item:hover,
+.sidebar-item.active {
   background: rgba(var(--tint), 0.06);
 }
 
@@ -5352,6 +5368,447 @@ select.field-control:has(option[value=""]:checked) {
   color: var(--fg);
 }
 
+/* ---- Home view (/view/_home) --------------------------------------------- */
+/* The front door. Direction: "workbench, not dashboard" — the hero is the
+   product's one magic verb (describe an app → Claude builds it) rendered as a
+   faux prompt bar with the page's single accent moment (a blinking caret).
+   Below it, three registers with deliberately different visual weights so the
+   eye ranks them without reading: apps are named rows with tinted monograms
+   (the hero content), templates are a quiet mono chip rail (one destination,
+   many labels), files is a single wide doorway. Section headings are mono
+   eyebrows on a hairline rule — the shell's code voice, not display chrome.
+   Every colour is a palette token or derived from one via color-mix, so light
+   mode repaints for free. */
+.home-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.home-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 40px 28px 72px;
+}
+
+/* Hero card: bordered panel with a faint accent wash drifting out of the top
+   corner — the page's one decorative moment; everything inside stays on
+   tokens so both themes hold. */
+.home-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 36px 36px 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 22px;
+}
+
+.home-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 130% at 100% 0%,
+    color-mix(in srgb, var(--accent) 12%, transparent),
+    transparent 55%
+  );
+}
+
+.home-hero > * {
+  position: relative;
+}
+
+.home-hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  margin-bottom: 18px;
+}
+
+.home-hero-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.home-hero-title {
+  margin: 0 0 14px;
+  font-size: 38px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+}
+
+.home-hero-accent {
+  color: var(--accent);
+}
+
+.home-hero-sub {
+  margin: 0 0 22px;
+  max-width: 520px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+/* The hero's prompt composer — the claude.ai/v0 "what do you want to build?"
+   box. One bordered surface holding the textarea (borderless inside it) and a
+   footer bar with the keyboard hint and the round send button. */
+.home-composer-wrap {
+  width: 100%;
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-composer {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--fg) 5%, transparent);
+  transition: border-color 120ms ease;
+}
+
+.home-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.home-composer.is-busy {
+  opacity: 0.75;
+}
+
+.home-composer .home-composer-input,
+.home-composer .home-composer-input:focus {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  resize: none;
+  padding: 14px 16px 6px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.home-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px 10px 16px;
+}
+
+.home-composer-hint {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.home-composer-hint kbd {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-alt);
+}
+
+.home-composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  /* Neutral filled, like .btn-primary — accent stays for focus/selection. */
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.home-composer-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.home-composer-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Starter-idea chips under the composer — click fills the box, never submits. */
+.home-composer-samples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.home-composer-sample {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.home-composer-sample:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.home-composer-sample:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.home-composer-sample-glyph {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+/* Icon-only round chip that advances to the next batch of ideas. */
+.home-composer-shuffle {
+  padding: 5px 8px;
+}
+
+/* Doorways: three equal cards, one per entry point. Glyph square repaints
+   from the inline per-card hue (file-icon palette). */
+.home-doors {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 760px) {
+  .home-doors {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-door {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 18px 18px 16px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.home-door:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.home-door-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  margin-bottom: 6px;
+}
+
+.home-door-title {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.home-door-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.home-door-arrow {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  color: var(--fg-muted);
+  opacity: 0;
+}
+
+.home-door:hover .home-door-arrow {
+  opacity: 1;
+}
+
+/* Section rule: mono label + count, hairline filling the middle. */
+.home-section {
+  margin-top: 36px;
+}
+
+.home-rule {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.home-rule-label {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.home-rule-line {
+  flex: 1 1 auto;
+  align-self: center;
+  height: 1px;
+  background: var(--border);
+}
+
+.home-rule-action {
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.home-rule-action:hover {
+  color: var(--fg);
+}
+
+/* Apps: two-column named rows. Rows, not tiles — names are the content, and a
+   row reads at a glance where a centered tile makes every app look identical.
+   The monogram square carries a deterministic hue from the file-icon palette
+   (set inline as `color`), washed to a fill via color-mix so it repaints in
+   light mode. */
+.home-apps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px;
+}
+
+@media (max-width: 760px) {
+  .home-apps {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-app {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  color: var(--fg);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-app:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.home-app-monogram {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.home-app-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.home-app-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-app-sub {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The app's tag (its parent folder name) — a quiet mono pill, right-aligned,
+   never competing with the title for attention. */
+.home-app-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 7px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Loading / empty voices. */
+.home-loading {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.home-empty {
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 18px 0;
+}
+
 /* ---- Reduced motion ------------------------------------------------------ */
 /* Honour prefers-reduced-motion: stop the infinite spinners (kept visible at a
    static opacity) and collapse transition/animation durations. */
@@ -5371,4 +5828,562 @@ select.field-control:has(option[value=""]:checked) {
     animation: none !important;
     opacity: 0.6;
   }
+}
+
+/* ---- New-app slide-over panel (views/Home.tsx) ---------------------------- */
+/* Notion-style panel: full-height, 60vw, pinned to the RIGHT edge over a dim
+   scrim, sliding in from the right. Deliberately its own chassis (not
+   the modal / deploy chrome) so the centred-dialog rules stay untouched for
+   their other consumers. */
+.app-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--scrim);
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+.app-panel-overlay.is-open {
+  opacity: 1;
+}
+
+.app-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 60vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  box-shadow: 0 0 40px var(--shadow-lg);
+  transform: translateX(100%);
+  transition: transform 200ms ease-out;
+}
+
+.app-panel-overlay.is-open .app-panel {
+  transform: translateX(0);
+}
+
+@media (max-width: 800px) {
+  .app-panel {
+    width: 100vw;
+    border-left: none;
+  }
+}
+
+.app-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 28px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.app-panel-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-panel-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.app-panel-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.app-panel-close {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 6px 8px;
+}
+
+.app-panel-close:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.app-panel-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 24px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  font-size: 13px;
+}
+
+.app-panel-lede {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+/* Section grouping: small uppercase label above each block of content. */
+.app-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.app-panel-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* Numbered "how it works" timeline: badge column with a connecting rail. */
+.app-panel-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-panel-step {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding: 0 0 18px 0;
+}
+
+.app-panel-step:last-child {
+  padding-bottom: 0;
+}
+
+/* Rail connecting the badges, drawn behind them. */
+.app-panel-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 26px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--border);
+}
+
+.app-panel-step-num {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  z-index: 1;
+}
+
+.app-panel-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 2px;
+  min-width: 0;
+}
+
+.app-panel-step-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.app-panel-step-desc {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  max-width: 58ch;
+}
+
+/* Three explainer cards in a row; they stack once the panel is narrow. */
+.app-panel-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 800px) {
+  .app-panel-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.app-panel-fact {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 120ms ease;
+}
+
+.app-panel-fact:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+.app-panel-fact-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  margin-bottom: 4px;
+}
+
+.app-panel-fact-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.app-panel-fact-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.app-panel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 620px;
+}
+
+.app-panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 14px 28px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  flex: 0 0 auto;
+}
+
+/* Shortcut hint sits left of the buttons, pushed apart by the margin. */
+.app-panel-hint {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.app-panel-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+}
+
+/* -- Apps hub (/apps) -------------------------------------------------------
+   Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
+   .home-app / .home-apps; the page adds its own header, search, and tag
+   chips. All colors via tokens so both themes hold. */
+.apps-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.apps-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+}
+
+.apps-head {
+  margin-bottom: 22px;
+}
+
+.apps-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  margin-left: -8px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.apps-back:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.apps-title {
+  margin: 14px 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.apps-sub {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
+.apps-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.apps-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  max-width: 340px;
+  padding: 0 12px;
+  height: 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-muted);
+}
+
+.apps-search:focus-within {
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.apps-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 13px;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.apps-search input::placeholder {
+  color: var(--fg-muted);
+}
+
+.apps-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.apps-tag-chip {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.apps-tag-chip:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+.apps-tag-chip.is-active {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.apps-count {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Sort: a small segmented control next to the search box. Neutral fill on the
+   active segment (accent stays reserved for focus/selection). */
+.apps-sort {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.apps-sort-btn {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.apps-sort-btn:hover {
+  color: var(--fg);
+}
+
+.apps-sort-btn.is-active {
+  color: var(--bg);
+  background: var(--fg);
+}
+
+/* -- Preview cards ------------------------------------------------------------
+   Big cards whose thumbnail IS the app: entry HTML in a lazily-loaded iframe
+   rendered at 4x the box and scaled down (see AppPreviewCard.tsx), with a
+   transparent shield on top so the preview never swallows a click. Grid
+   auto-fills; each card is roughly 340px wide with a 16:10 thumbnail. */
+.apps-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+.app-pcard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.app-pcard:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+  box-shadow: 0 4px 18px var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.app-pcard-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.app-pcard-thumb iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: var(--bg-panel);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+.app-pcard-shield {
+  position: absolute;
+  inset: 0;
+}
+
+.app-pcard-monogram {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 44px;
+  font-weight: 700;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.app-pcard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 14px 12px;
+  min-width: 0;
+}
+
+.app-pcard-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.app-pcard-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.app-pcard-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-ago {
+  flex: 0 0 auto;
+  margin-left: auto;
 }

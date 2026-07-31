@@ -1373,3 +1373,58 @@ export function createTemplate(name: string, extensions: string[]): Promise<NewT
 export function openTemplateInClaude(name: string): Promise<{ url: string }> {
   return postJson<{ url: string }>("/api/templates/open-in-claude", { name });
 }
+
+// -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
+// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
+// `tag` is just the top-level folder's name — any folder qualifies, there is
+// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
+// path), null when the folder has no single resolvable .html entry; `title`
+// comes from that file's <title>, null falls back to the folder name in the
+// UI.
+export interface AppInfo {
+  name: string;
+  tag: string;
+  path: string;
+  entry_html: string | null;
+  title: string | null;
+  // Last-modified time, epoch seconds. Optional/null for servers that don't
+  // report it (older backends) — those sort last in the Home grid.
+  updated_at?: number | null;
+}
+
+export function getApps(): Promise<{ apps: AppInfo[] }> {
+  return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// Scaffold a new app folder and (optionally) kick off a Claude session seeded
+// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
+// thrown HttpError's message for inline display.
+export interface NewAppResult {
+  path: string;
+  entry_html: string;
+  // Whether a Claude session was actually kicked off for the prompt.
+  session_started: boolean;
+  // The live run, for attaching to the session that was just started; null
+  // when no prompt was given or the spawn failed.
+  run_id: string | null;
+  // Why the session did not start (claude CLI missing, spawn failure). The
+  // app itself was created either way — surface this so a prompt that went
+  // nowhere isn't silent. Null when it started, or when there was no prompt.
+  session_error: string | null;
+}
+
+export function createApp(name: string, prompt: string): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+}
+
+// -- AI completion (POST /api/ai) ---------------------------------------------
+// The fused.ai relay: one non-streaming completion through the server's warm
+// Claude Code CLI instance (server/ai.py). Model defaults to haiku server-side;
+// the shell uses this for small utility completions (e.g. naming a new app
+// from its prompt on Home), not for anything conversational.
+export function aiComplete(prompt: string, system_prompt?: string): Promise<string> {
+  return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
+    prompt,
+    ...(system_prompt ? { system_prompt } : {}),
+  }).then((r) => r.result.text);
+}

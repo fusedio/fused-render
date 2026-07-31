@@ -33,7 +33,7 @@ export interface CloneModalProps {
   // never navigates itself (the shell owns routing).
   onCloned: (result: CloneResult) => void;
   // Prefilled URL. Used by the in-app entry when it already knows the URL; the
-  // `fused-render://open?app=…` deep link that would also supply it is DEFERRED (§33 CL-7),
+  // `fused-render://open?app=…` deep link that would also supply it is DEFERRED (§34 CL-7),
   // so nothing routes one today — this is the seam it will use, not a live entry point.
   initialSrc?: string;
 }

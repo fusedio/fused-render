@@ -245,7 +245,7 @@ packages = ["fused_render"]
 # gitignored, also shipped here.
 artifacts = [
     "fused_render/static/shell-dist/**",
-    "fused_render/template_starter/.claude/skills/**",
+    "fused_render/skills/**",
 ]
 
 # Builds frontend/ -> fused_render/static/shell-dist/ at package-build time
