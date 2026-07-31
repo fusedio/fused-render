@@ -97,9 +97,15 @@ MAX_DIFF_LINES = 3_000
 MAX_STATUS_BYTES = 4_000_000
 MAX_CHANGES = 500
 
-# One page of log, and the ceiling a hand-edited `limit=` is clamped to.
+# One page of log, and the ceiling on how many commits the view will hold for a
+# single path. The ceiling does two jobs that used to be conflated: it stops a
+# hand-edited `limit=1e9` from being unbounded, AND it is a real product limit
+# the UI has to be able to STATE ("showing the most recent N"), because the page
+# grows its window rather than paging — see `_log`'s `capped`. It is generous
+# enough that reaching it is a deliberate act: 500 rows is ~100 KB of payload and
+# 17 clicks of "load more".
 DEFAULT_LOG_LIMIT = 30
-MAX_LOG_LIMIT = 200
+MAX_LOG_LIMIT = 500
 
 # A hex object name, full or abbreviated. Anything else never becomes an argv
 # entry — this is what keeps an option-shaped `sha` out of the command line.
@@ -477,17 +483,36 @@ def _in_scope(path, rel, is_dir):
 
 
 def _log(root, rel, limit, page):
-    limit = max(1, min(int(limit or DEFAULT_LOG_LIMIT), MAX_LOG_LIMIT))
+    """One window of the scoped log.
+
+    Returns `(commits, has_more, capped, limit, page)`. The last two facts are
+    separate on purpose, and collapsing them is a bug in each direction:
+
+    * **`has_more`** — "git had more records than we are returning". Counted off
+      the records GIT emitted, NOT the ones we kept: counting kept records let one
+      dropped malformed record on a full page make `len(commits) == limit`, so the
+      UI said "End of history for this path" while more commits existed.
+    * **`capped`** — "we refused to widen the window any further", i.e. the
+      requested limit was reduced to MAX_LOG_LIMIT. The page grows its window
+      (`limit = PAGE_SIZE * pages`) instead of paging, so once the clamp bites,
+      `has_more` stays honestly True forever while every further request returns
+      the identical rows — an endless "Load more" that never advances. The clamp
+      has to be VISIBLE for the UI to stop offering it, so it is a field rather
+      than a silent `min()`.
+
+    Both signals are therefore needed: `has_more and not capped` is the only state
+    in which asking for more is worth a click, and `has_more and capped` is what
+    the UI renders as "showing the most recent N for this path".
+    """
+    wanted = max(1, int(limit or DEFAULT_LOG_LIMIT))
+    limit = min(wanted, MAX_LOG_LIMIT)
+    capped = wanted > limit
     page = max(0, int(page or 0))
     # limit + 1 is the has_more probe: one extra row proves another page exists
     # without a second count-everything call.
     raw = _git(root, "log", "--no-color", f"--format={_LOG_FORMAT}",
                f"--max-count={limit + 1}", f"--skip={page * limit}",
                *_pathspec(rel))
-    # `has_more` counts the records GIT emitted, not the ones we kept. Counting
-    # kept records instead let one dropped record on a full page make
-    # `len(commits) == limit`, so the UI said "End of history for this path" while
-    # more commits existed — a malformed record must not end pagination.
     records = [line for line in raw.decode("utf-8", "replace").split("\n") if line]
     has_more = len(records) > limit
     commits = []
@@ -496,7 +521,7 @@ def _log(root, rel, limit, page):
         if len(parts) != len(_LOG_FIELDS):
             continue  # a record we cannot trust is dropped, never half-read
         commits.append(dict(zip(_LOG_FIELDS, parts)))
-    return commits[:limit], has_more, limit, page
+    return commits[:limit], has_more, capped, limit, page
 
 
 def _commit(root, rel, sha):
@@ -641,15 +666,17 @@ def main(
         if op == "commit":
             return _commit(root, rel, sha)
         if op == "log":
-            commits, has_more, limit, page = _log(root, rel, limit, page)
+            commits, has_more, capped, limit, page = _log(root, rel, limit, page)
             return {"ok": True, "commits": commits, "has_more": has_more,
+                    "capped": capped, "max_commits": MAX_LOG_LIMIT,
                     "limit": limit, "page": page}
 
         branch, detached, head, has_commits = _head(root)
         changes, changes_truncated, dirty = _status(root, rel, is_dir)
-        commits, has_more, limit, page = (
+        commits, has_more, capped, limit, page = (
             _log(root, rel, limit, page) if has_commits
-            else ([], False, max(1, min(int(limit or DEFAULT_LOG_LIMIT), MAX_LOG_LIMIT)), 0))
+            else ([], False, False,
+                  min(max(1, int(limit or DEFAULT_LOG_LIMIT)), MAX_LOG_LIMIT), 0))
         return {
             "ok": True,
             "repo": {
@@ -667,6 +694,8 @@ def main(
             "changes_truncated": changes_truncated,
             "commits": commits,
             "has_more": has_more,
+            "capped": capped,
+            "max_commits": MAX_LOG_LIMIT,
             "limit": limit,
             "page": page,
         }

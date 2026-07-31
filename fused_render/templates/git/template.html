@@ -25,6 +25,9 @@
     --accent-dim: #b8cc36;
     --on-accent: #131417;
     --grid-dot: #1e2126;
+    /* clean vs dirty light in the header */
+    --clean: #7ec97e;
+    --dirty: #d9b34a;
     --skel-shine: #2f333c;
     /* status letters: added / modified / deleted / renamed / untracked */
     --st-add: #7ec97e;
@@ -32,9 +35,6 @@
     --st-del: #e08585;
     --st-ren: #7fb4e0;
     --st-new: #9aa0a6;
-    /* clean vs dirty light in the header */
-    --clean: #7ec97e;
-    --dirty: #d9b34a;
     /* diff gutter + hunk colours */
     --diff-add-bg: #16241a;
     --diff-add-fg: #a8dfa8;
@@ -65,14 +65,14 @@
     --accent-dim: #4e5f00;
     --on-accent: #ffffff;
     --grid-dot: #e8eaed;
+    --clean: #2f7d32;
+    --dirty: #8a6410;
     --skel-shine: #dfe2e7;
     --st-add: #2f7d32;
     --st-mod: #8a6410;
     --st-del: #a32828;
     --st-ren: #1f5f96;
     --st-new: #61656c;
-    --clean: #2f7d32;
-    --dirty: #8a6410;
     --diff-add-bg: #e8f6e8;
     --diff-add-fg: #1f5f22;
     --diff-del-bg: #fdecec;
@@ -678,13 +678,22 @@ function render(data, diff) {
   const changeRows = data.changes.map((c) => changeRow(c, c.path === wt));
   const commitRows = data.commits.map((c) => commitRow(c, c.sha === sel));
 
-  const loadMore = data.has_more
+  /* Three terminal states, not two. The page grows its WINDOW (`limit =
+     PAGE_SIZE * pages`) rather than paging, so the server's ceiling on that
+     window has to be visible here: `has_more` stays honestly true once the clamp
+     bites, and offering "load more" on it refetched the same rows forever. So
+     `capped` — not `has_more` — decides whether another click can do anything. */
+  const loadMore = (data.has_more && !data.capped)
     ? el("button", { className: "more", type: "button",
                      textContent: "Load " + PAGE_SIZE + " more commits" })
-    : (data.commits.length
-        ? el("button", { className: "more", type: "button", disabled: true,
-                         textContent: "End of history for this path" })
-        : null);
+    : (data.has_more && data.capped)
+      ? el("button", { className: "more", type: "button", disabled: true,
+                       textContent: "Showing the most recent " + data.commits.length
+                         + " commits for this path — use git for deeper history" })
+      : (data.commits.length
+          ? el("button", { className: "more", type: "button", disabled: true,
+                           textContent: "End of history for this path" })
+          : null);
   if (loadMore && !loadMore.disabled) {
     loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
   }

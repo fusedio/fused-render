@@ -765,3 +765,106 @@ def test_an_ordinary_entry_is_unaffected_by_the_containment_check(reader, repo):
     # untracked file both still diff.
     assert reader.main(repo, op="worktree", entry="pkg/core.py")["ok"] is True
     assert reader.main(repo, op="worktree", entry="pkg/fresh.txt")["ok"] is True
+
+
+# ----------------------------------------------- A: the log window's own ceiling
+#
+# The page grows its WINDOW (`limit = PAGE_SIZE * pages`) rather than paging, so
+# `has_more` alone cannot drive "load more": once the request is clamped to
+# MAX_LOG_LIMIT, `has_more` is honestly true and every further click returns the
+# identical rows. `capped` is the signal that separates the two.
+
+
+@pytest.fixture(scope="module")
+def deep_repo(tmp_path_factory):
+    """A repo with more commits than the reader will ever hand back at once."""
+    root = str(tmp_path_factory.mktemp("deep"))
+    git(root, "init", "-q")
+    write(root, "f.txt", "0\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "c0", when="2026-01-01T00:00:00+00:00")
+    # `git commit` per revision is far too slow at this depth; commit-tree builds
+    # the same linear history directly out of one unchanging tree.
+    tree = git(root, "rev-parse", "HEAD^{tree}").strip()
+    parent = git(root, "rev-parse", "HEAD").strip()
+    for i in range(1, 12):
+        parent = git(root, "commit-tree", tree, "-p", parent, "-m", f"c{i}",
+                     when="2026-01-01T00:00:00+00:00").strip()
+    git(root, "reset", "-q", "--hard", parent)
+    return root
+
+
+def test_a_small_window_is_not_reported_as_capped(reader, deep_repo):
+    got = reader.main(deep_repo, op="log", limit=4)
+    assert len(got["commits"]) == 4
+    assert got["has_more"] is True
+    assert got["capped"] is False, "a limit under the ceiling is not a clamp"
+
+
+def test_a_request_over_the_ceiling_is_capped_and_stops_offering_more(
+        reader, deep_repo, monkeypatch):
+    # The defect: clamped limit -> `--max-count=limit+1` -> more records than the
+    # clamp -> `has_more` true forever, so "Load more" never terminated.
+    monkeypatch.setattr(reader, "MAX_LOG_LIMIT", 5)
+    got = reader.main(deep_repo, op="log", limit=30)
+    assert len(got["commits"]) == 5
+    assert got["capped"] is True
+    assert got["max_commits"] == 5
+    # `has_more` stays HONEST — more commits do exist — and `capped` is what tells
+    # the UI another click cannot reach them. Conflating the two is the bug.
+    assert got["has_more"] is True
+
+
+def test_growing_the_window_terminates_at_the_ceiling(reader, deep_repo, monkeypatch):
+    # Walk the client's actual scheme (limit = page_size * pages, page 0) and
+    # assert it reaches a state where the button is no longer offered.
+    monkeypatch.setattr(reader, "MAX_LOG_LIMIT", 6)
+    page_size, seen = 3, []
+    for pages in range(1, 8):
+        got = reader.main(deep_repo, op="overview", limit=page_size * pages)
+        seen.append((len(got["commits"]), got["has_more"], got["capped"]))
+        if not (got["has_more"] and not got["capped"]):
+            break
+    else:
+        raise AssertionError(f"'load more' never terminated: {seen}")
+    rows, has_more, capped = seen[-1]
+    assert rows == 6 and has_more is True and capped is True, seen
+
+
+def test_the_ceiling_reached_exactly_reports_end_not_cap_pressure(reader, deep_repo,
+                                                                 monkeypatch):
+    # 12 commits, ceiling 12: the window is clamped, but there is genuinely
+    # nothing beyond it — so `has_more` must be False and the UI must say "end of
+    # history" rather than "showing the most recent 12".
+    monkeypatch.setattr(reader, "MAX_LOG_LIMIT", 12)
+    got = reader.main(deep_repo, op="log", limit=999)
+    assert len(got["commits"]) == 12
+    assert got["capped"] is True
+    assert got["has_more"] is False
+
+
+def test_the_two_has_more_defects_do_not_mask_each_other(reader, deep_repo, monkeypatch):
+    # One drop on a clamped page: the earlier fix (count raw records) must still
+    # keep `has_more` true, and the clamp must still be reported — neither signal
+    # may swallow the other.
+    monkeypatch.setattr(reader, "MAX_LOG_LIMIT", 5)
+    real = reader._git
+
+    def corrupt_one(root, *args, **kwargs):
+        out = real(root, *args, **kwargs)
+        if "log" in args:
+            lines = [line for line in out.split(b"\n") if line]
+            if lines:
+                lines[0] = b"not\x00enough\x00fields"
+            return b"\n".join(lines) + b"\n"
+        return out
+
+    monkeypatch.setattr(reader, "_git", corrupt_one)
+    got = reader.main(deep_repo, op="log", limit=30)
+    assert got["has_more"] is True and got["capped"] is True
+    # `--max-count=6` (clamp 5 + the probe row) minus the one dropped record fills
+    # the page exactly — the arrangement in which counting KEPT records would have
+    # computed `5 > 5` == False and reported the end of history at the clamp.
+    assert len(got["commits"]) == 5
+
+

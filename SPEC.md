@@ -3515,9 +3515,24 @@ that path. Offered for **both** directories and text-ish files, always as a
   descendant, and the scope is still dirty because of it. Entries carry the raw
   `XY` letters (`M`/`A`/`D`/`R`/`??`…) plus derived
   `staged`/`unstaged`/`untracked` flags and, for a rename, both paths.
-- **GT-8** **Nothing is unbounded.** The log is **paginated** — `limit + 1` per
-  page is the `has_more` probe, so "load more" needs no count-everything call —
-  with the URL's `limit` clamped. Diffs **stream** through a byte cap AND a line
+- **GT-8** **Nothing is unbounded, and every bound is VISIBLE.** The log grows a
+  **window** (`limit = PAGE_SIZE * pages`, one call, so a restored URL costs one
+  round trip) rather than paging with client-side accumulation, and `limit + 1` per
+  request is the `has_more` probe, so "load more" needs no count-everything call.
+  Because the window grows, the ceiling on it (`MAX_LOG_LIMIT`, 500 commits for one
+  path) is reported as its own field — **`capped`** — and never applied as a silent
+  `min()`: `has_more` answers "git had more records than we returned" and stays
+  honestly true once the clamp bites, so a UI driven by `has_more` alone offered a
+  "load more" that refetched the identical rows forever. `has_more and not capped`
+  is the only state in which another click can achieve anything; `has_more and
+  capped` is the terminal state the UI states as "showing the most recent N commits
+  for this path"; `not has_more` is the end of history. `capped` is also
+  independent of the malformed-record guard — `has_more` counts the records **git
+  emitted**, not the ones that survived parsing, because counting survivors let one
+  dropped record on a full page report the end of history one page early. The two
+  defects sit on one expression and are opposite in direction (premature "end of
+  history" vs endless "load more"), so both signals are needed and neither may be
+  derived from the other. Diffs **stream** through a byte cap AND a line
   cap, whichever hits first, with a watchdog that kills the process: streamed
   rather than captured because `subprocess.run` would buffer the whole
   hundred-megabyte diff into memory before it could be trimmed, and a manual read
