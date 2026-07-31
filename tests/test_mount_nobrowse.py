@@ -25,7 +25,7 @@ def home(tmp_path, monkeypatch):
 def test_nfs_mount_opt_includes_nobrowse():
     # "nobrowse" keeps the mount out of Finder and off Spotlight's auto-scan;
     # without it, browsing/indexing readdir's the S3-backed mount into a full
-    # prefix enumeration. It rides the same ExtraOptions list as timeo/retrans
+    # prefix enumeration. It rides the same ExtraOptions list as timeo/intr/nolocks
     # that rclone forwards verbatim to the macOS mount command.
     assert "nobrowse" in mounts_mod.NFS_MOUNT_OPT["ExtraOptions"]
     # Still carried through the per-mount option builder (alongside rdonly for
