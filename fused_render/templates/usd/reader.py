@@ -48,13 +48,16 @@ def _cache_dir(source):
 
 
 def _sidecar_writable(file):
-    """True iff the JS-side settings sidecar (`<file>.json`, SPEC §13.5 RO-6)
-    can be written: an existing sidecar needs W_OK on itself, a fresh one
-    needs W_OK on the directory the write would land in."""
-    path = os.path.abspath(file) + ".json"
+    """True iff the JS-side settings sidecar (home_dir()/sidecar/<mapped
+    path>.json, SPEC §13.5 RO-6, D83-reversal) can be written: an existing
+    sidecar needs W_OK on itself, a fresh one needs W_OK on its nearest
+    existing ancestor dir (the subtree under home_dir()/sidecar/ usually
+    doesn't exist yet)."""
+    from appenv import nearest_existing_dir, sidecar_path
+    path = sidecar_path(file)
     if os.path.exists(path):
         return os.access(path, os.W_OK)
-    return os.access(os.path.dirname(path), os.W_OK)
+    return os.access(nearest_existing_dir(os.path.dirname(path)), os.W_OK)
 
 
 def _read_json(path):

@@ -2201,12 +2201,12 @@ async function runPy(code, out) {
   }
 }
 
-// Scripts live in the shared `<file>.json` sidecar under the "excel" key, so
-// other templates' keys in the same sidecar round-trip untouched.
-function sidecarPath() { return currentFile() + ".json"; }
+// Scripts live in the shared sidecar (home_dir()/sidecar/<mapped path>.json,
+// D83-reversal) under the "excel" key, so other templates' keys in the same
+// sidecar round-trip untouched.
 async function loadSidecar() {
   try {
-    const data = JSON.parse(await fused.readFile(sidecarPath()));
+    const data = JSON.parse(await fused.readFile(await fused.sidecarPath(currentFile())));
     return data && typeof data === "object" ? data : {};
   } catch { return {}; }
 }
@@ -2218,7 +2218,7 @@ async function saveScripts(scripts) {
   const data = await loadSidecar();
   data.excel = { ...(data.excel || {}), scripts };
   try {
-    await fused.writeFile(sidecarPath(), JSON.stringify(data, null, 2));
+    await fused.writeFile(await fused.sidecarPath(currentFile()), JSON.stringify(data, null, 2));
   } catch (err) {
     // A read-only `<file>.json` sidecar 403s (SPEC RO-2); scripts still run,
     // they just won't persist — non-fatal.
@@ -2233,6 +2233,7 @@ async function saveScripts(scripts) {
 async function openScriptEditor() {
   if (!book) return;
   const scripts = await loadScripts();
+  const sidecarName = (await fused.sidecarPath(currentFile())).split("/").pop();
   openModal("Script editor", `
     <div class="srow">
       <select id="scriptSel"></select>
@@ -2244,7 +2245,7 @@ async function openScriptEditor() {
       <button class="action" id="closeModal2" style="margin-left:auto">Close</button>
     </div>
     <textarea id="scriptCode" spellcheck="false"></textarea>
-    <pre id="scriptOut">Output appears here. Scripts are saved in the workbook's sidecar, ${sidecarPath().split("/").pop()}</pre>
+    <pre id="scriptOut">Output appears here. Scripts are saved in the workbook's sidecar, ${sidecarName}</pre>
     <div class="help"><b>JS API</b>: <code>sheet.get(r,c)</code> · <code>sheet.set(r,c,v)</code> · <code>sheet.rows</code> raw 2D ·
       <code>sheet.values()</code> computed 2D · <code>book.sheet(name)</code> · <code>book.add(name)</code> · <code>log(...)</code> — 0-indexed.<br>
       <b>Python</b>: mutate <code>sheets</code> (list of <code>{"name", "rows"}</code>); anything you <code>print()</code> shows here.

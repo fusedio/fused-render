@@ -13,11 +13,11 @@ win32 route where the POSIX one is absent or destructive (_DETACH, _alive,
 _cancel).
 
 Sessions are per-file. Every conversation started from this template is
-recorded in a sidecar next to the target file — `<file>.json`, e.g.
-`my-folder/sample.html` -> `my-folder/sample.html.json` — and the template
-lists ONLY the sessions in that sidecar, never the user's global session
-history. Claude runs with cwd = the target file's directory and an appended
-system prompt that scopes it (softly) to the file.
+recorded in a sidecar under home_dir()/sidecar/ (see shared/appenv.py's
+sidecar_path, D83-reversal) keyed off the target file's absolute path, and
+the template lists ONLY the sessions in that sidecar, never the user's global
+session history. Claude runs with cwd = the target file's directory and an
+appended system prompt that scopes it (softly) to the file.
 
 Tool approvals are the browser's to give: claude is spawned with a
 `--permission-prompt-tool` pointing at `permission_server.py` (a one-tool stdio
@@ -238,27 +238,8 @@ def _system_prompt(file: str) -> str:
 # ------------------------------------------------------------- sidecar store
 
 def _sidecar_path(file: str) -> str:
-    return file + ".json"
-
-
-def _mount_read_only(file: str) -> bool:
-    """True when `file` sits under a read-only remote mount, where the sidecar
-    write can never be accepted — with CacheMode=full the doomed upload lands
-    in the VFS cache and 403-loops forever (the sidecar-write incident).
-
-    Answered through `shared/appenv` (FUSED_RENDER_RO_MOUNTS, which the shell
-    re-exports on every mount-store write) and NOT by importing fused_render:
-    this file runs as a child process, and under the fused engine a child has no
-    PYTHONPATH, so the old `from fused_render.shell.mounts import ...` failed on
-    every run there and a read-only mount looked writable. os.access(W_OK) is no
-    substitute — it cannot see a remote's read-only-ness — so only the shell's
-    flag can answer this. Still guarded: a copy of this folder taken without its
-    `shared/` sibling degrades to False, the pre-guard behavior."""
-    try:
-        from appenv import mount_read_only
-        return mount_read_only(file)
-    except Exception:
-        return False
+    from appenv import sidecar_path
+    return sidecar_path(file)
 
 
 def _load_sidecar(file: str) -> dict:
@@ -282,6 +263,7 @@ def _load_sidecar(file: str) -> dict:
 
 def _save_sidecar(file: str, data: dict) -> None:
     path = _sidecar_path(file)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -305,14 +287,11 @@ def _record_session(file: str, session_id: str, message: str,
     stays one row. `cwd` tracks where the transcript lives so a moved file
     can migrate it (see _migrate_session); refreshed every turn.
 
-    No-op when `file` is inside a read-only remote mount: the sidecar write
-    can't be accepted there (the sidecar-write incident). The chat and its
-    transcript (~/.claude/projects) are unaffected — only this file's session
-    list stays empty, so past conversations won't be listed/resumable from the
-    template UI for a mounted file.
+    No read-only-mount gate here anymore (D83-reversal): the sidecar lives
+    under home_dir()/sidecar/ now, never on `file`'s own mount, so the old
+    sidecar-write incident (CacheMode=full 403-looping a doomed PutObject)
+    structurally can't happen.
     """
-    if _mount_read_only(file):
-        return
     data = _load_sidecar(file)
     now = time.time()
     cwd = os.path.dirname(file)

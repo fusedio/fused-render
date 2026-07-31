@@ -29,6 +29,7 @@ The store schema stays behind in `shell/mounts.py` — nothing here reads
 mountpoints are read-only), so the on-disk format can change freely without
 breaking any template.
 """
+import ntpath
 import os
 
 # The mounts dir's basename under the home dir, and the separator for the
@@ -130,3 +131,48 @@ def origin() -> str | None:
     default port that is wrong under any `--port` override).
     """
     return os.environ.get("FUSED_RENDER_ORIGIN") or None
+
+
+def _sidecar_subpath(abs_path: str) -> str:
+    """Mirrors shell/storage.py:_sidecar_subpath; keep the two in step.
+
+    Pure classification of an absolute path (Windows or POSIX-shaped) into a
+    forward-slash-joined relative location under the sidecar subtree, built
+    on ntpath.splitdrive so it stays correct for Windows-shaped input on any
+    host. Case is preserved exactly — never fold it, that would collide two
+    distinct paths on a case-sensitive filesystem.
+    """
+    drive, tail = ntpath.splitdrive(abs_path)
+    tail = tail.replace("\\", "/").lstrip("/")
+    if not drive:
+        return tail
+    if drive.endswith(":"):
+        return "/".join(filter(None, [drive[0].upper(), tail]))
+    return "/".join(filter(None, ["unc", *drive.strip("\\").replace("\\", "/").split("/"), tail]))
+
+
+def nearest_existing_dir(path: str) -> str:
+    """Walk up from `path` to the nearest existing ancestor directory — the
+    dir an `os.makedirs(path)` would actually need write access to. A fresh
+    sidecar's subtree under home_dir()/sidecar/ usually doesn't exist yet, so
+    a writability check must not mkdir it just to answer a status query; it
+    answers against whatever ancestor is already there instead (worst case,
+    home_dir() itself). Never returns something that doesn't exist; stops at
+    the filesystem root if nothing along the way does."""
+    while not os.path.isdir(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return path
+        path = parent
+    return path
+
+
+def sidecar_path(file: str) -> str:
+    """Mirrors shell/storage.py:sidecar_path; keep the two in step.
+
+    The `<file>.json` sidecar's home: home_dir()/sidecar/<mapped path>. Uses
+    abspath (not realpath) so a symlink's own apparent location decides where
+    its sidecar lives, matching the prior co-located behavior exactly.
+    """
+    parts = [p for p in _sidecar_subpath(os.path.abspath(file)).split("/") if p]
+    return os.path.join(home_dir(), "sidecar", *parts) + ".json"

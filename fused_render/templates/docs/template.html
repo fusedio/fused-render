@@ -736,12 +736,12 @@
   // ================= sidecar (version metadata + author name) ======
   // The document itself lives in the .docx; version snapshot CONTENT lives as
   // content-addressed blobs in the cache (written by the save action). The
-  // sidecar (<file>.json, "docs" key, read-modify-write) holds only what's
-  // left: version metadata and the last-used author name for comments.
-  const SIDECAR = FILE + ".json";
+  // sidecar (home_dir()/sidecar/<mapped path>.json, "docs" key, read-modify-
+  // write, D83-reversal) holds only what's left: version metadata and the
+  // last-used author name for comments.
   async function loadSidecar() {
     let data;
-    try { data = JSON.parse(await fused.readFile(SIDECAR)); } catch (e) { data = null; }
+    try { data = JSON.parse(await fused.readFile(await fused.sidecarPath(FILE))); } catch (e) { data = null; }
     if (!data || typeof data !== "object") data = {};
     if (!data.docs || typeof data.docs !== "object") data.docs = {};
     const d = data.docs;
@@ -758,7 +758,7 @@
     sidecarChain = sidecarChain.then(async () => {
       const data = await loadSidecar();
       mutate(data.docs);
-      await fused.writeFile(SIDECAR, JSON.stringify(data));
+      await fused.writeFile(await fused.sidecarPath(FILE), JSON.stringify(data));
     }).catch((e) => console.warn("docs sidecar write failed:", e));
     return sidecarChain;
   }

@@ -14,6 +14,14 @@
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
+ *   fused.sidecarPath(file) -> Promise<string>
+ *     The `<file>.json` sidecar's location for an absolute `file` path, now
+ *     homed under ~/.fused-render/sidecar/ instead of beside the file
+ *     (D83-reversal). Async: mirrors shell/storage.py's sidecar_path, but the
+ *     mapping needs a server-provided root fetched once from /api/config.
+ *   fused.targetPathFromSidecarPath(path) -> Promise<string | null>
+ *     Inverse of sidecarPath — the target file a sidecar path belongs to, or
+ *     null if `path` isn't under the sidecar root.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -934,6 +942,65 @@
       });
   }
 
+  // ---- sidecar path mapping (D83-reversal) ---------------------------------
+  //
+  // Every per-file sidecar now lives under sidecarRoot (~/.fused-render/
+  // sidecar/<mapped path>.json) instead of beside the target file. Mirrors
+  // fused_render/shell/storage.py's _sidecar_subpath — keep the two in step.
+  // A drive letter becomes its own single-letter folder, a UNC share nests
+  // under "unc/<server>/<share>/...", and a POSIX path just drops its
+  // leading "/". Case is preserved exactly throughout.
+  function _sidecarSubpath(absPath) {
+    const drive = /^([A-Za-z]):[\\/](.*)$/.exec(absPath);
+    if (drive) {
+      const tail = drive[2].replace(/\\/g, "/").replace(/^\/+/, "");
+      return drive[1].toUpperCase() + (tail ? "/" + tail : "");
+    }
+    const unc = /^\\\\([^\\]+)\\([^\\]+)(\\.*)?$/.exec(absPath);
+    if (unc) {
+      const tail = (unc[3] || "").replace(/\\/g, "/").replace(/^\/+/, "");
+      return "unc/" + unc[1] + "/" + unc[2] + (tail ? "/" + tail : "");
+    }
+    return absPath.replace(/^\/+/, "");
+  }
+
+  // The `<file>.json` sidecar's location for an absolute `file` path. Async:
+  // the mapping needs sidecarRoot, which arrives from the server's one-time
+  // /api/config fetch (see loadConfig/sidecarRoot above) — every template
+  // that used to build `file + ".json"` synchronously now awaits this once.
+  function sidecarPath(file) {
+    return loadConfig().then(() => {
+      if (typeof sidecarRoot !== "string") {
+        throw new Error("sidecar root unavailable (no /api/config response)");
+      }
+      return sidecarRoot + "/" + _sidecarSubpath(file) + ".json";
+    });
+  }
+
+  // Inverse of sidecarPath, for the history/inspector view (HV-3): given a
+  // path that MAY be a sidecar location (a user can navigate to one
+  // directly), the target file it belongs to — or null if `path` isn't
+  // under sidecarRoot. Heuristic on this host's own path shape, same as the
+  // forward mapping: a leading single-letter segment is a drive, a leading
+  // "unc" segment is a share, anything else is POSIX — meaningful only for a
+  // path this same host's sidecarPath could have produced.
+  function targetPathFromSidecarPath(path) {
+    return loadConfig().then(() => {
+      if (typeof sidecarRoot !== "string") return null;
+      if (path.indexOf(sidecarRoot + "/") !== 0 || !/\.json$/i.test(path)) return null;
+      const rel = path.slice(sidecarRoot.length + 1, -".json".length);
+      const parts = rel.split("/");
+      if (parts[0] && parts[0].length === 1 && /[A-Za-z]/.test(parts[0])) {
+        return parts[0].toUpperCase() + ":\\" + parts.slice(1).join("\\");
+      }
+      if (parts[0] === "unc" && parts.length >= 3) {
+        return "\\\\" + parts[1] + "\\" + parts[2] +
+          (parts.length > 3 ? "\\" + parts.slice(3).join("\\") : "");
+      }
+      return "/" + parts.join("/");
+    });
+  }
+
   // Ask an AI model: the shell runs the claude (Claude Code) CLI locally
   // (server.py /api/ai). Resolves with {text, model, usage}; rejects with an
   // Error carrying `.type` ("bad_request" | "ai_unavailable" | "ai_error" |
@@ -1059,6 +1126,20 @@
     return !!(callsDir && p.indexOf(callsDir + "/") === 0);
   }
 
+  // Root of the per-file sidecar subtree (~/.fused-render/sidecar), fetched
+  // once from the SAME /api/config round trip as mountsRoot/callsDir above
+  // (see configPromise) rather than a second fetch. sidecarPath/
+  // targetPathFromSidecarPath below await this before answering, since there
+  // is no way to compute a sidecar's location without it.
+  let sidecarRoot = null;
+  let configPromise = null;
+  function loadConfig() {
+    if (!configPromise) {
+      configPromise = fetch("/api/config").then((res) => res.json()).catch(() => ({}));
+    }
+    return configPromise;
+  }
+
   function isUnwatchable(p) {
     return isMountBacked(p) || isCallLog(p);
   }
@@ -1153,12 +1234,12 @@
       if (file && !isUnwatchable(file)) watched.add(file);
       if (autoReloadEnabled) resubscribe();
     };
-    fetch("/api/config")
-      .then((res) => res.json())
+    loadConfig()
       .then((cfg) => {
         if (cfg && typeof cfg.mounts_root === "string") mountsRoot = cfg.mounts_root;
         if (cfg && typeof cfg.calls_dir === "string") callsDir = cfg.calls_dir;
         if (cfg && typeof cfg.calls_suffix === "string") callsSuffix = cfg.calls_suffix;
+        if (cfg && typeof cfg.sidecar_root === "string") sidecarRoot = cfg.sidecar_root;
       })
       .catch(() => {})
       .then(begin);
@@ -1173,6 +1254,8 @@
     stat,
     readFile,
     writeFile,
+    sidecarPath,
+    targetPathFromSidecarPath,
     ai,
     autoReload,
     params: { get, getAll, set, onChange },

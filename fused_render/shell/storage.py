@@ -10,6 +10,7 @@ holds bookmarks.json + templates/. server imports home_dir from here, never
 the reverse (no server <-> shell import cycle).
 """
 import json
+import ntpath
 import os
 import tempfile
 
@@ -55,3 +56,47 @@ def write_json(path: str, data) -> None:
         except OSError:
             pass
         raise
+
+
+# ----------------------------------------------------------- sidecar mapping
+#
+# Every per-file sidecar (`<file>.json` next to a claude session, bookmark
+# history, annotation log, ...) lives under home_dir()/sidecar/, mirroring the
+# source's absolute path into a subtree instead of writing beside the file.
+# This is what actually fixes the sidecar-write incident: a mount-backed
+# source path never touches the sidecar write path at all anymore, because
+# the sidecar isn't on the mount. Mirrored in templates/shared/appenv.py for
+# template subprocesses, which cannot import this module — keep the two in
+# step.
+
+def _sidecar_subpath(abs_path: str) -> str:
+    """Pure classification of an absolute path (Windows or POSIX-shaped) into
+    a forward-slash-joined relative location under the sidecar subtree.
+
+    Built on ntpath.splitdrive rather than os.path so this stays correct (and
+    testable) for Windows-shaped input on any host, the same discipline
+    _view_url_codec.py uses. A drive letter becomes its own single-letter
+    folder ("C:\\Users\\..." -> "C/Users/..."), a UNC share nests under
+    "unc/<server>/<share>/..." (a literal "\\\\server\\share" cannot be a
+    filesystem entry, backslash is always a separator), and a POSIX path just
+    drops its leading "/". Case is preserved exactly throughout: folding case
+    would collide two distinct paths on a case-sensitive filesystem.
+    """
+    drive, tail = ntpath.splitdrive(abs_path)
+    tail = tail.replace("\\", "/").lstrip("/")
+    if not drive:
+        return tail
+    if drive.endswith(":"):
+        return "/".join(filter(None, [drive[0].upper(), tail]))
+    return "/".join(filter(None, ["unc", *drive.strip("\\").replace("\\", "/").split("/"), tail]))
+
+
+def sidecar_path(file: str) -> str:
+    """The `<file>.json` sidecar's new home: home_dir()/sidecar/<mapped path>.
+
+    `file` is resolved with abspath (not realpath) so this matches the prior
+    co-located behavior exactly: a symlink's own apparent location decides
+    where its sidecar lives, not whatever it resolves to.
+    """
+    parts = [p for p in _sidecar_subpath(os.path.abspath(file)).split("/") if p]
+    return os.path.join(home_dir(), "sidecar", *parts) + ".json"
