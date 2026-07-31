@@ -730,6 +730,83 @@ hydration for a deep link whose id is absent from the live set, not a live-store
 sync back from the sidecar. An unreadable/unparseable sidecar or a missing id
 fails silently (no error UI, no focus).
 
+**Send to Claude is a ROUND TRIP, and each comment rides it once** (fixed
+2026-07-31; it was previously a one-way trip that re-sent the whole review every
+time). The handoff sends only the comments that are neither `resolved` nor
+`sent` — `sent: 1` is an ordinary per-comment field, stamped on exactly the
+comments in the payload and `save()`d *before* the mode switch so it lands in the
+`comments` URL param and, through annotate.py's verbatim field merge, in the
+`<file>.json` log. The flag is a bare truthy `1` because the URL store's ~6 KB
+budget is the binding constraint and the sidecar's own `updated_at` already dates
+the write. The flag is stripped from what the agent sees (the payload is
+serialized before stamping) — it is bookkeeping for the URL store, not something
+`formatComments` should hand the model to reason about. A comment **being sent
+right now is off-limits to eviction**: the save that stamps `sent` is the save that
+can evict on it, and since the stamp is what pushes the list over budget the
+payload is then the whole sent tier — so the payload's ids are passed to `save()`
+as protected, and an over-budget write is preferred over dropping a comment from
+the live review to make room for a flag (the "removed" bar note explaining it
+would be destroyed by the navigation milliseconds later, making that loss silent).
+Eviction is not annihilation — the same `save()` mirrors every comment into the
+`<file>.json` log, where absence never deletes, so an evicted comment stays
+recoverable through the history view (§24); what it leaves is the **live** store,
+the rail and pins and the shared URL, which for a comment mid-send is loss enough.
+A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
+resolved card, which is the terminal state, already explains the exclusion, and
+takes the stronger dim (`.card.resolved.sent` encodes that precedence in
+specificity, because the equal-specificity pair it replaced handed the win to
+whichever rule was written second). The
+**Reopen** action clears the flag, which is the one way to hand a comment over
+again; and when nothing is sendable the button writes the inline bar note instead
+of navigating. The URL budget's eviction order gains a second tier — oldest
+`resolved` first, then oldest `sent` (already in a chat transcript), never an
+open unsent comment. `sent` is deliberately **not** surfaced in the history
+timeline (§24): the sidecar is a write-only log where absence never deletes, so
+the un-send that Reopen performs (the key simply leaves the URL) cannot be
+represented there, and a label that can go stale is worse than no label.
+
+The return leg is the chat's: annotate sets `claudeReturn=<mode>` alongside
+`claudeComments` (and re-asserts `view`, the param naming which sibling view is
+framed), the claude template captures both into memory at boot and strips both
+from the shell URL in the same `replaceState` (a Back entry must not re-attach a
+review that was already sent), and the *one* run whose message actually carried
+attached comments navigates the shell back to that mode when it reports `done`
+without an error. The ticket is **threaded, not latched** — it travels as an
+argument from `composeAndSend` → `sendMessage` → `pollLoop`, so it is bound to one
+message and, past `start`, to one run id. A module-scoped flag was the first
+attempt and leaked: a failed `start` never reaches `pollLoop`, so the flag stayed
+armed and the user's next unrelated question navigated the shell away mid-thread,
+for a run that carried no comments. A later turn in the same session therefore
+stays in the chat, an errored or aborted run stays put (there is nothing new to
+look at, and leaving would hide the error), and a run re-attached on a fresh boot
+never returns. A `start` that fails **hands the comment chips back** (`attached`
+is restored and the user is told), because annotate has already stamped those
+comments `sent` and nothing else would ever offer them again; past `start` the
+agent has the message, so restoring would send them twice.
+This is necessary because the chat calls `fused.autoReload(false)`
+and owns the viewport — nothing else would ever bring the reviewer back to the
+edited file. Both directions are **deliberate standard-breaks** documented in the
+template comments: `_mode` is a reserved param name that `fused.params.set`
+refuses, and in a pane the shell URL sits above the param boundary (D72), so a
+top-level URL write is the only mechanism; the navigation reuses the history
+template's `navigateShell` idiom (pushState + a `fused:navigate` event, with a
+`location.href` fallback), and both sides excise and reattach the balanced
+`_layout=(…)` span byte-for-byte before `URLSearchParams` sees the query.
+
+Both legs read `window.top`'s search **raw**, so both must reckon with the
+runtime's coalesced history write (D99): a param this page just set may still be
+at its pre-click value in that string, and copying it forward silently reverts it.
+Annotate sweeps every key the top URL already carries against
+`fused.params.getAll()` (which reads through the pending overlay) before writing
+its own — that covers the `sent` stamps, and `offset`/`sheet` from a reveal inside
+the coalescing window, without pushing a pane-local param onto the shell URL; it
+then re-asserts `comments` from what `save()` actually persisted, which the sweep
+cannot know. The return leg fires `pagehide` — the runtime's own documented flush
+hook — before reading the URL and pushing its entry, so a pending write neither
+goes missing from the copy nor lands *after* the push and `replaceState` the
+pre-return search over it. Known gap: the return discards whatever the user had
+typed into the chat input when it fires.
+
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
 Goal: pack a renderable page into a portable *bundle* that a **separate** hosting
