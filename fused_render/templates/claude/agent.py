@@ -58,6 +58,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from appenv import workspace_dir as _workspace_dir
 from procutil import pid_alive as _pid_alive
 
 def _runs_root() -> str:
@@ -811,6 +812,57 @@ def _start(file: str, message: str, session_id: str, model: str,
     return {"run_id": run_id}
 
 
+def _app_dir_for(path: str) -> str:
+    """The app folder containing `path`, or "" when it is not inside one.
+    An app dir is exactly <workspace>/<tag>/<name> under the Fused workspace
+    (appenv.workspace_dir). Mirrors fused_render/app_git.py:app_dir_for —
+    keep the two in step (templates must not import fused_render, D166)."""
+    root = _workspace_dir()
+    ap = os.path.abspath(path)
+    if not ap.startswith(root + os.sep):
+        return ""
+    parts = os.path.relpath(ap, root).split(os.sep)
+    if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
+        return ""
+    return os.path.join(root, parts[0], parts[1])
+
+
+def _commit_turn(file: str, message: str) -> None:
+    """Commit whatever a finished turn left in the target's APP repo.
+
+    App folders are version-controlled from creation (fused_render/app_git.py)
+    and every Claude turn must land as its own small commit. Hard-scoped: a
+    target outside an app dir, or an app dir without a `.git`, commits nothing
+    — this template also chats about files in arbitrary folders, and silently
+    committing into a user's real repository is the one wrong move.
+
+    Best-effort throughout: no git, index.lock contention, nothing staged —
+    all mean "no commit", never a poll error. Identity rides per-invocation
+    (`-c user.*`) so a machine with no git config still commits, and `git -C`
+    replaces cwd= to keep Popen on the posix_spawn path (see apps.py)."""
+    app_dir = _app_dir_for(file)
+    if not app_dir or not os.path.isdir(os.path.join(app_dir, ".git")):
+        return
+    subject = " ".join((message or "").split())
+    subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
+        if subject else "Claude turn"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", app_dir, "-c", "user.name=Fused",
+             "-c", "user.email=apps@fused.io", *args],
+            capture_output=True, text=True, timeout=30, close_fds=False)
+
+    try:
+        if git("add", "-A").returncode != 0:
+            return
+        if git("diff", "--cached", "--quiet").returncode == 0:
+            return  # nothing to commit (turn changed no files)
+        git("commit", "-q", "-m", subject)
+    except Exception:
+        pass
+
+
 def _alive(run_dir: str) -> bool:
     """Whether this run's claude process is still going.
 
@@ -938,6 +990,20 @@ def _poll(run_id: str) -> dict:
             meta = {}
     except (OSError, json.JSONDecodeError):
         meta = {}
+
+    # First poll that sees the run finished commits its work into the app's
+    # repo (one-shot via a marker, like the sidecar record below). Errors
+    # commit too: a crashed turn may still have edited files, and history
+    # must hold every turn — the marker is claimed BEFORE the commit so a
+    # racing concurrent poll can't double-commit.
+    commit_marker = os.path.join(run_dir, "committed")
+    if done and "file" in meta and not os.path.exists(commit_marker):
+        try:
+            fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            _commit_turn(meta["file"], meta.get("message", ""))
+        except OSError:
+            pass  # another poll claimed it, or the run dir is going away
 
     # First poll that sees the session id writes it to the sidecar (marker
     # file keeps the write one-shot across the remaining polls).

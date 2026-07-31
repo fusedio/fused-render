@@ -91,10 +91,14 @@ def export_app_env() -> None:
     refreshed on every store write, not just at startup.
     """
     from fused_render.shell import mounts as shell_mounts
+    from fused_render.shell import seed as shell_seed
     from fused_render.shell import storage as shell_storage
 
     os.environ["FUSED_RENDER_HOME_DIR"] = shell_storage.home_dir()
     os.environ["FUSED_RENDER_MOUNTS_DIR"] = shell_mounts.mounts_dir()
+    # Where app folders live — the claude template commits a finished turn
+    # into the containing app's repo, and scopes that to this workspace.
+    os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
     _export_bundled_uv_path()
 

@@ -16,12 +16,36 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from fused_render import app_git
 from fused_render import calls as shell_calls
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mount_stat_payload, _mutation_result_payload, _probe_path, _stat_payload, _writable
 from fused_render.server.walk import _mount_list_error_response
 
 router = APIRouter()
+
+
+def _commit_mutation(result, verb: str, *paths) -> None:
+    """Record a successful mutation as a commit in the app repo it touched.
+
+    App folders (<workspace>/<tag>/<name>) are version-controlled from
+    creation (app_git); every editor-driven change to one becomes its own
+    small commit so manual edits get the same history as Claude turns. A
+    refused mutation (any JSONResponse error status) commits nothing.
+    app_git.commit is best-effort and hard-scoped to app dirs — everywhere
+    else on disk this is a no-op, and a git failure never fails the mutation
+    that already landed."""
+    if getattr(result, "status_code", 200) != 200:
+        return
+    done = set()
+    for p in paths:
+        if not isinstance(p, str) or not p:
+            continue
+        app_dir = app_git.app_dir_for(p)
+        if app_dir is None or app_dir in done:
+            continue
+        done.add(app_dir)
+        app_git.commit(p, f"{verb} {os.path.basename(p.rstrip(os.sep))}")
 
 
 
@@ -675,6 +699,7 @@ def api_fs_write(request: Request, body: dict = Body(...),
         # so there is still one rule (it allocates nothing when it passes).
         unauthorized=_require_fused(x_fused) is not None,
     )
+    _commit_mutation(result, "Edit", body.get("path"))
     return result
 
 @router.post("/api/fs/upload")
@@ -714,6 +739,7 @@ def api_fs_mkdir(body: dict = Body(...), x_fused: str | None = Header(default=No
 def api_fs_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     result = _fs_delete(body, x_fused)
     _invalidate_stat_cache(body.get("path"))
+    _commit_mutation(result, "Delete", body.get("path"))
     return result
 
 @router.post("/api/fs/rename")
@@ -721,6 +747,8 @@ def api_fs_rename(body: dict = Body(...), x_fused: str | None = Header(default=N
     result = _fs_rename(body, x_fused)
     # A move changes both ends: src disappears, dst appears.
     _invalidate_stat_cache(body.get("src"), body.get("dst"))
+    # Both ends: a cross-app move changes two repos (dedup'd when same app).
+    _commit_mutation(result, "Rename", body.get("dst"), body.get("src"))
     return result
 
 @router.post("/api/fs/copy")
@@ -728,4 +756,5 @@ def api_fs_copy(body: dict = Body(...), x_fused: str | None = Header(default=Non
     result = _fs_copy(body, x_fused)
     # A copy only writes dst; src is untouched, so its cached stat stays valid.
     _invalidate_stat_cache(body.get("dst"))
+    _commit_mutation(result, "Add", body.get("dst"))
     return result
