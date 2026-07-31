@@ -15,7 +15,7 @@ import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
-import { isMod } from "../lib/platform";
+import { isMod, MOD_LABEL } from "../lib/platform";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -88,6 +88,27 @@ const APP_FACTS: { hue: string; title: string; desc: string; glyph: ReactNode }[
         <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" />
       </svg>
     ),
+  },
+];
+
+// The "how it works" timeline under the fact cards: the path from prompt to
+// running app, numbered. Pure presentation — nothing here is interactive.
+const APP_STEPS: { title: string; desc: string }[] = [
+  {
+    title: "Start a project",
+    desc: "Give it a name and describe what you want it to do.",
+  },
+  {
+    title: "Claude Code builds it",
+    desc: "A session starts in the app's folder — you stay in control of what gets built.",
+  },
+  {
+    title: "Watch it take shape",
+    desc: "Switch the mode to View to see the app render right there as it's built.",
+  },
+  {
+    title: "Ready to use",
+    desc: "Your app lives on Home — open it any time, keep iterating whenever you like.",
   },
 ];
 
@@ -190,7 +211,10 @@ function NewAppPanel({ onClose }: { onClose: () => void }) {
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="app-panel-head">
-          <h2 id="new-app-title">New app</h2>
+          <div className="app-panel-head-text">
+            <span className="app-panel-eyebrow">Fused</span>
+            <h2 id="new-app-title">Create a new app</h2>
+          </div>
           <button
             type="button"
             className="app-panel-close"
@@ -221,7 +245,27 @@ function NewAppPanel({ onClose }: { onClose: () => void }) {
             ))}
           </div>
 
-          <div className="app-panel-form">
+          {/* The prompt-to-app path, numbered — presentation only. */}
+          <div className="app-panel-section">
+            <h3 className="app-panel-section-title">How it works</h3>
+            <ol className="app-panel-steps">
+              {APP_STEPS.map((s, i) => (
+                <li className="app-panel-step" key={s.title}>
+                  <span className="app-panel-step-num" aria-hidden="true">
+                    {i + 1}
+                  </span>
+                  <span className="app-panel-step-text">
+                    <span className="app-panel-step-title">{s.title}</span>
+                    <span className="app-panel-step-desc">{s.desc}</span>
+                  </span>
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          <div className="app-panel-section">
+            <h3 className="app-panel-section-title">Your app</h3>
+            <div className="app-panel-form">
             <div className="templates-field">
               <label htmlFor="new-app-name">Name</label>
               <TextInput
@@ -248,11 +292,15 @@ function NewAppPanel({ onClose }: { onClose: () => void }) {
                 onKeyDown={onKey}
               />
             </div>
-            {error && <ErrorBanner>{error}</ErrorBanner>}
+              {error && <ErrorBanner>{error}</ErrorBanner>}
+            </div>
           </div>
         </div>
 
         <div className="app-panel-foot">
+          <span className="app-panel-hint">
+            <kbd>{MOD_LABEL}</kbd> + <kbd>↵</kbd> to create
+          </span>
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
