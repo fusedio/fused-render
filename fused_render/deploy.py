@@ -842,10 +842,25 @@ def deployment_status(page: str, reconcile: bool) -> dict:
         mounts = _list_mounts(pointer["env"])
     except DeployError:
         return {"deployment": pointer, "reconciled": False, "live": None}
-    live = _classify_mount(mounts, pointer.get("token", ""))
+    token = pointer.get("token", "")
+    live = _classify_mount(mounts, token)
     status = "active" if live == "active" else "revoked"
+    fresh: dict = {}
     if status != pointer.get("status"):
-        pointer = {**pointer, "status": status, "updated_at": _now_iso()}
+        fresh["status"] = status
+    # The clone posture is reconciled on the same read, for the same reason as status: the
+    # MOUNT is the authority, so a posture flipped out of band (`fused share update`, the
+    # CLI on another machine) must show through instead of the modal seeding a stale local
+    # value and then re-sending it on the next deploy. Only when the mount is actually
+    # THERE: an absent mount carries no live value to reconcile against, and treating
+    # "absent" as "off" would silently rewrite the user's setting on an env outage.
+    mount = _find_mount(mounts, token)
+    if mount is not None:
+        live_clone = bool(mount.get("allow_clone") or False)
+        if live_clone != bool(pointer.get("allow_clone") or False):
+            fresh["allow_clone"] = live_clone
+    if fresh:
+        pointer = {**pointer, **fresh, "updated_at": _now_iso()}
         set_deployment(page, pointer)
     return {"deployment": pointer, "reconciled": True, "live": live}
 

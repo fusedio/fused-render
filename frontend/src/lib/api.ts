@@ -423,6 +423,13 @@ export interface Deployment {
   // Optional — records written before this feature omit them (read as []).
   include?: string[];
   exclude?: string[];
+  // Whether viewers may download this page's source bundle. Persisted like the
+  // caching choice, but the MOUNT is the authority — reopening the modal
+  // reconciles this against `share list` (ShareMount.allow_clone) so a posture
+  // changed elsewhere isn't masked by a stale local value. Optional: records
+  // written before the feature omit it and read as false (fail closed — a page's
+  // source must never look downloadable because a field was missing).
+  allow_clone?: boolean;
   // The caching choice this deployment was published with — "0s" (off) or a
   // duration like "5m"/"1h" (fused/agent_core/caching.py's cache_max_age format).
   // Reopening the modal reloads it, same as include/exclude. Optional — records
@@ -466,6 +473,8 @@ export interface ShareMount {
   status: string;
   type: string | null;
   url: string | null;
+  // The mount's LIVE clone posture — what the Deploy modal reconciles against.
+  allow_clone: boolean;
   page: string | null;
 }
 
@@ -528,6 +537,11 @@ export function deployPage(
   include: string[],
   exclude: string[],
   cacheMaxAge: string,
+  // May viewers download this page's source bundle? Always sent explicitly (the
+  // server states it to the CLI either way), because the toggle in the dialog is
+  // a definite statement — omitting it on a redeploy would silently preserve
+  // whatever the mount had, so unticking the box would not turn it off.
+  allowClone: boolean,
   forceNew?: boolean,
   // A chosen link name for a FRESH `share create` (see deploy.py's
   // deploy_page) — omit for the default auto-generated opaque token. Ignored
@@ -540,6 +554,7 @@ export function deployPage(
     include,
     exclude,
     cache_max_age: cacheMaxAge,
+    allow_clone: allowClone,
     force_new: forceNew ?? false,
     ...(token ? { token } : {}),
   });
@@ -555,6 +570,49 @@ export function revokeDeployment(fsPath: string): Promise<Deployment> {
 // setting.
 export function clearCacheDeployment(fsPath: string): Promise<CacheClearResult> {
   return postJson<CacheClearResult>("/api/deploy/clear-cache", { page: fsPath });
+}
+
+// -- cloning a DEPLOYED page (app_clone.py) ---------------------------------
+// Distinct from the GitHub deep-link clone (deeplink.py): no git, no identity, no
+// update-in-place — every clone lands in a fresh folder under ~/Documents/Fused.
+
+export interface ClonePreviewFile {
+  path: string;
+  bytes: number | null;
+}
+
+export interface ClonePreview {
+  // The canonical `…/<token>/_clone` URL derived from what the user pasted.
+  url: string;
+  name: string;
+  files: ClonePreviewFile[];
+  // Uncompressed total across the archive's members.
+  bytes: number | null;
+  // What the download actually costs (base64 of the compressed archive). Null on
+  // an older serve path that doesn't report it — show nothing rather than a guess.
+  download_bytes: number | null;
+  dest: string;
+  folder: string;
+  // True when `folder` had to be suffixed because something already occupies the
+  // page's own name — surfaced so the confirm step can say so up front.
+  renamed: boolean;
+}
+
+export interface CloneResult {
+  dest: string;
+  folder: string;
+  page: string;
+  // The /view path to open the cloned page at.
+  view: string;
+  files: number;
+}
+
+export function cloneAppInfo(src: string): Promise<ClonePreview> {
+  return getJson<ClonePreview>(`/api/clone-app/info?src=${encodeURIComponent(src)}`);
+}
+
+export function cloneApp(src: string): Promise<CloneResult> {
+  return postJson<CloneResult>("/api/clone-app", { src });
 }
 
 export function installFused(): Promise<void> {

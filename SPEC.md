@@ -1128,6 +1128,14 @@ the product gains network access.
   ends in its own token reveals the base for all the rest (`_serve_base_url`).
   With no recorded link to derive from (e.g. only AWS deploys so far), URLs
   stay null and the cell says why on hover.
+- **DP-19** *Cloning* (§33): the dialog's "Let viewers clone this app" toggle rides
+  `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
+  `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
+  like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
+  refreshes it from `share list` on the same read that reconciles `status`, so a posture
+  changed from a terminal shows through instead of being re-sent stale. Repoint states it
+  explicitly in both directions — the CLI preserves an omitted flag, which is right for a
+  CLI and wrong for a dialog whose toggle is always a definite statement.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
@@ -1136,6 +1144,50 @@ the product gains network access.
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 33. Open a Deployed App — Clone a Page Back from its URL (D185)
+
+The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
+Paste a deployed page's URL, and if its publisher allowed cloning, download its export
+bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
+
+- **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
+  (read-only — the file list, the download size, and the exact destination folder) and
+  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses,
+  so a collision can't invalidate what the user was shown. `CloneModal.tsx`; the sidebar
+  footer's "Open deployed app" entry opens it, and the modal navigates to the cloned page
+  on success.
+- **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
+  `.git` for identity, which is what lets it safely *update* an existing clone. An archive
+  carries no provenance we can verify, so there is no update branch here: every clone lands
+  in a fresh folder (`zip_import.unique_dir` → `name`, `name-2`, …) and can never overwrite
+  or merge into an existing one. `fused_render/app_clone.py` — a separate module and
+  separate routes (`/api/clone-app*`, not §26's `/api/clone`).
+- **CL-3** **URL contract.** HTTPS only (`http://` refused, never upgraded — silently
+  "fixing" it would hide that the user's link was insecure). The `_clone` URL is rebuilt
+  from parsed components, accepting the shapes a page is served at (`…/<token>`, `/`,
+  `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
+  stripped, since quietly removing it would clone from a different origin than the URL
+  appears to name. No credentials are ever sent (CL-6).
+- **CL-4** **The archive is hostile.** A public URL does not make its bytes trustworthy:
+  redirects are not followed (a followed redirect applies none of the other guards to where
+  the request lands); the host must resolve **entirely** to public addresses, checked on
+  every answer so a split public/private name is refused too — this process sits inside the
+  user's LAN and beside `169.254.169.254`; and the download is capped on bytes actually
+  received, never on `Content-Length`.
+- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`):
+  entry validation before any write, symlink refusal, path-escape refusal, per-entry and
+  total caps enforced on bytes actually decompressed (the declared sizes are attacker
+  controlled), staging-then-move. A second extractor "just for clones" is how a hardened
+  path and an unhardened one end up side by side. The manifest's own `root`/`page` get the
+  same containment check the entries do — the entries can all be safe while a manifest field
+  points outside the bundle, and `root` is what gets moved.
+- **CL-6** **Public pages only, for now.** A gated page needs a token whose audience
+  satisfies that mount's gate, and neither a query string nor a deep link is an acceptable
+  place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
+  `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
+  mount exists or whether cloning is on — so the message names both possibilities rather
+  than guessing one.
 
 ## 20. Preferences — Shell Settings Page (M12)
 

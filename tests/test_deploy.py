@@ -848,6 +848,46 @@ def test_shares_report_the_live_clone_posture(tmp_path, monkeypatch):
     assert by_token["def456"]["allow_clone"] is False
 
 
+def test_status_reconciles_a_posture_changed_out_of_band(tmp_path, monkeypatch):
+    # `fused share update --no-allow-clone` from a terminal, or the same page deployed from
+    # another machine: the modal must show what the MOUNT says, not what this machine last
+    # sent. Reconciled on the same read as status, so opening the dialog is enough.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": True},
+        headers=FUSED,
+    )
+    assert h.pointer()["allow_clone"] is True
+
+    h.set_scenario({"list": [{"token": "abc123", "status": "active", "allow_clone": False}]})
+    status = h.client.get(
+        "/api/deploy/status", params={"path": str(h.page), "reconcile": "1"}
+    ).json()
+    assert status["deployment"]["allow_clone"] is False
+    assert h.pointer()["allow_clone"] is False  # persisted, not just reported
+
+
+def test_status_leaves_the_posture_alone_when_the_mount_is_absent(tmp_path, monkeypatch):
+    # An absent mount carries no live value, so reconciling against it would rewrite the
+    # user's setting to false on an infra teardown or a mis-scoped env.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": True},
+        headers=FUSED,
+    )
+    h.set_scenario({"list": []})
+    status = h.client.get(
+        "/api/deploy/status", params={"path": str(h.page), "reconcile": "1"}
+    ).json()
+    assert status["live"] == "absent"
+    assert status["deployment"]["allow_clone"] is True
+    assert h.pointer()["allow_clone"] is True
+
+
 def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
     # AWS applies a redeploy's cache_max_age two ways: build_html_artifact re-reads
     # the bundle's own manifest on every repoint, AND deploy_page now also passes

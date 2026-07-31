@@ -28,6 +28,7 @@ import {
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
 import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
+import CloneModal from "./CloneModal";
 import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
@@ -422,6 +423,8 @@ export default function Sidebar({ config }: SidebarProps) {
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
+  // The "open a deployed app" clone dialog (footer entry, below).
+  const [cloneOpen, setCloneOpen] = useState(false);
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
   // Double-press-to-collapse is detected manually here: preventDefault on
@@ -1236,6 +1239,33 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Templates</span>
         </button>
+        {/* Open a deployed app (023 §8.3): paste a deployed page's URL and clone it into
+            the Fused folder. A modal rather than a view — it is a one-shot action with a
+            confirm step, not a place you navigate to and come back to. */}
+        <button
+          type="button"
+          title="Open a deployed app"
+          aria-label="Open a deployed app"
+          className="sidebar-item prefs-link"
+          onClick={() => setCloneOpen(true)}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </span>
+          <span className="prefs-label">Open deployed app</span>
+        </button>
+        {cloneOpen && (
+          <CloneModal
+            onClose={() => setCloneOpen(false)}
+            // Navigate to the cloned page once it lands, so the action ends somewhere
+            // useful instead of leaving the user to find the new folder themselves.
+            onCloned={(result) => navigateUrl(result.view)}
+          />
+        )}
         {/* PROTOTYPE: mounts entry — remote mounts, /view/_mounts. */}
         <button
           type="button"
