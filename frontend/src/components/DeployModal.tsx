@@ -1193,10 +1193,15 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             </div>
           )}
         </div>
-        {/* Cloning section (collapsible, like Caching) — its own section rather than a
+        {/* Source-code section (collapsible, like Caching) — its own section rather than a
             checkbox tucked under Caching: this is a DISCLOSURE choice, not a performance
             one, and the summary count has to state the current posture where a publisher
-            can see it without expanding anything. */}
+            can see it without expanding anything.
+            Headed "Source code", not "Cloning": the heading has to name what is at stake to
+            someone who has never used the viewer-side flow, and next to "Caching" and "Link"
+            it reads as the same kind of thing — a facet of the deployment. "Cloning" named
+            our mechanism instead, and a publisher skimming for "is my Python readable?" had
+            no reason to open it. */}
         <div className="deploy-files">
           <button
             type="button"
@@ -1207,7 +1212,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
             <span className="deploy-files-chevron" aria-hidden="true">
               {cloningOpen ? "▾" : "▸"}
             </span>
-            <span className="deploy-files-title">Cloning</span>
+            <span className="deploy-files-title">Source code</span>
             <span className="deploy-files-count">{allowClone ? "on" : "off"}</span>
           </button>
           {cloningOpen && (

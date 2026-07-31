@@ -102,8 +102,29 @@ class CloneError(Exception):
     """A clone could not be performed, with a message fit to show the user."""
 
 
+def _sentence(message: str) -> str:
+    """`message`, capitalized — it is about to be read as a sentence.
+
+    Applied HERE, at the single boundary where a refusal becomes text in the modal, rather
+    than at each of the two dozen `raise CloneError(...)` sites. Several of those messages are
+    not literals at all — an f-string, or a `zip_import` refusal passed through verbatim — so
+    capitalizing at the raise would fix the ones that are easy to see and leave exactly the
+    ones nobody thinks to check.
+
+    Only a lowercase ASCII letter is touched, and only when the first word is not a URL or a
+    path: those are verbatim tokens the user is meant to recognise, and "Https://…" would be
+    wrong in a way they would rightly blame on us.
+    """
+    if not message or not message[0].isascii() or not message[0].islower():
+        return message
+    first = message.split(" ", 1)[0]
+    if "://" in first or "/" in first:
+        return message
+    return message[0].upper() + message[1:]
+
+
 def _error(message: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status)
+    return JSONResponse({"error": _sentence(message)}, status_code=status)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:

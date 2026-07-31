@@ -1277,7 +1277,10 @@ the product gains network access.
   ends in its own token reveals the base for all the rest (`_serve_base_url`).
   With no recorded link to derive from (e.g. only AWS deploys so far), URLs
   stay null and the cell says why on hover.
-- **DP-19** *Cloning* (§35): the dialog's "Let viewers clone this app" toggle rides
+- **DP-19** *Source code* (§35): a collapsible section beside Caching and Link, headed
+  **Source code** — the heading names what is at stake ("is my Python readable?") to a
+  publisher who has never used the viewer-side flow, where "Cloning" named our mechanism and
+  gave them no reason to open it. Its "Let viewers clone this app" toggle rides
   `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
   `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
   like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
@@ -1413,7 +1416,12 @@ working, not a second opinion about the format.
   place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
   `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
   mount exists or whether cloning is on — so the message names both possibilities rather
-  than guessing one.
+  than guessing one. Every refusal is **shown verbatim in the modal**, so it reads as a
+  sentence: `app_clone._error` capitalizes at that one boundary rather than at each of the two
+  dozen raise sites, because most of those messages are f-strings or `zip_import` refusals
+  passed straight through — a per-raise fix covers the literals and misses the rest. A first
+  word that is a URL or a path is left alone: those are verbatim tokens the user is meant to
+  recognise, and "Https://…" would look like our mistake.
 - **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
   §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
   *params* on the same `open` action as the extension point), but it needs its own confirm

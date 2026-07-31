@@ -364,6 +364,49 @@ def test_a_404_says_both_possibilities(h):
     assert resp.status_code == 400
     body = resp.json()["error"]
     assert "not enabled cloning" in body and "URL is wrong" in body
+    assert body.startswith("This page does not offer a download.")
+
+
+def test_every_refusal_reads_as_a_sentence(h):
+    """The modal shows these messages verbatim, so they start with a capital.
+
+    Done at the response boundary, not at each raise: most of these messages are f-strings or
+    `zip_import` refusals passed straight through, so a per-raise fix would cover the literals
+    and miss the rest. Two of the three below are exactly those cases.
+    """
+    h.fail(404)
+    assert h.client.get(
+        "/api/clone-app/info", params={"src": "https://x.example/p"}
+    ).json()["error"][0].isupper()
+    # An f-string, built from a value only known at runtime.
+    h.fail(418)
+    assert h.client.get(
+        "/api/clone-app/info", params={"src": "https://x.example/p"}
+    ).json()["error"].startswith("The page's host returned HTTP 418")
+    # A `zip_import` refusal, passed through verbatim.
+    h.serve(archive=_bundle_zip(extra={"../../pwned.txt": b"x"}))
+    assert (
+        h.client.post("/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED)
+        .json()["error"][0]
+        .isupper()
+    )
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("this page offers no download", "This page offers no download"),
+        # Already a sentence, or not prose at all — left exactly as it is.
+        ("This page offers no download", "This page offers no download"),
+        ("", ""),
+        # A verbatim token the user is meant to recognise must not be reshaped: "Https://…"
+        # would look like our mistake, and a path is not ours to re-case either.
+        ("https://x.example/p is not a page", "https://x.example/p is not a page"),
+        ("files/sine.py is too large", "files/sine.py is too large"),
+    ],
+)
+def test_only_prose_is_capitalized(message, expected):
+    assert app_clone._sentence(message) == expected
 
 
 @pytest.mark.parametrize(
@@ -965,7 +1008,7 @@ def test_a_v1_bundle_is_refused_with_a_version_message(h):
     resp = h.client.post(
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     )
-    assert "unsupported bundle format" in resp.json()["error"]
+    assert "nsupported bundle format" in resp.json()["error"]  # capitalized at the boundary
 
 
 def test_a_bundle_without_a_manifest_is_refused(h):
