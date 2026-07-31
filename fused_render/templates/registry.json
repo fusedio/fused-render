@@ -6,20 +6,23 @@
     "claude",
     "annotate",
     "history",
-    "geometry_editor"
+    "geometry_editor",
+    "versions"
   ],
   ".csv": [
     "duckdb",
     "excel",
     "code",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".tsv": [
     "duckdb",
     "code",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".xlsx": [
     "xlsx",
@@ -47,7 +50,8 @@
     "duckdb",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".jsonl": [
     "code",
@@ -129,7 +133,8 @@
     "tree",
     "code",
     "annotate",
-    "geometry_editor"
+    "geometry_editor",
+    "versions"
   ],
   ".md": [
     "markdown",
@@ -137,7 +142,8 @@
     "claude",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".markdown": [
     "markdown",
@@ -145,7 +151,8 @@
     "claude",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".tex": [
     "latex",
@@ -171,25 +178,29 @@
   ".svg": [
     "image",
     "code",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".gif": [
     "image",
@@ -259,13 +270,15 @@
     "api",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".js": [
     "code",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".ts": [
     "code",
@@ -355,13 +368,15 @@
     "code",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".yml": [
     "code",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".toml": [
     "canvas",
@@ -404,14 +419,16 @@
     "code",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".txt": [
     "text",
     "code",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".log": [
     "log_studio",
@@ -428,7 +445,8 @@
     "git",
     "reader",
     "annotate",
-    "history"
+    "history",
+    "versions"
   ],
   ".htm": [
     "_render",
@@ -436,7 +454,8 @@
     "claude",
     "git",
     "reader",
-    "annotate"
+    "annotate",
+    "versions"
   ],
   ".tif": [
     "geotiff",
@@ -460,6 +479,7 @@
   "/": [
     "_listing",
     "git",
+    "versions",
     "graph",
     "zarr_aoi"
   ],
