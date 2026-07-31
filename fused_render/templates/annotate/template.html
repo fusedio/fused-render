@@ -33,6 +33,7 @@
     --shadow-pin: rgba(0, 0, 0, 0.4);
     --shadow-pin-active: rgba(0, 0, 0, 0.5);
     --shadow-pop: rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.55);   /* the revert confirm sheet's backdrop */
     --ghost-ring: rgba(0, 0, 0, 0.35);
     /* Accent washes. The pin/ghost/selection fills sit over an ARBITRARY
        framed document, so they are stated as explicit rgba rather than riding
@@ -68,6 +69,7 @@
     --shadow-pin: rgba(0, 0, 0, 0.18);
     --shadow-pin-active: rgba(0, 0, 0, 0.22);
     --shadow-pop: rgba(0, 0, 0, 0.18);
+    --scrim: rgba(32, 33, 36, 0.4);
     --ghost-ring: rgba(255, 255, 255, 0.7);
     --accent-wash: rgba(95, 115, 0, 0.10);
     --accent-wash-strong: rgba(95, 115, 0, 0.20);
@@ -250,6 +252,84 @@
   }
   #sidefoot button:hover { filter: brightness(1.06); }
   #sidefoot button:disabled { opacity: 0.4; cursor: default; }
+  /* Version history + revert (SPEC §33). Its own footer block rather than a
+     section of #sidefoot, because that one is display:none'd wherever the file
+     has no claude mode (Send to Claude would go nowhere) and reverting has
+     nothing to do with whether a chat view exists. */
+  #histfoot {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line);
+    padding: 8px 16px 10px;
+  }
+  #revertbtn {
+    width: 100%;
+    font: inherit; cursor: pointer;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 0;
+  }
+  #revertbtn:hover:enabled { border-color: var(--accent); }
+  #revertbtn:disabled { opacity: 0.4; cursor: default; }
+  #histtoggle {
+    font: inherit; font-size: 11px; cursor: pointer;
+    margin-top: 8px; padding: 0;
+    color: var(--fg-muted); background: none; border: none;
+  }
+  #histtoggle:hover { color: var(--fg); }
+  #histlist { max-height: 30vh; overflow-y: auto; margin-top: 4px; }
+  .hrow {
+    display: flex; gap: 8px; align-items: baseline;
+    padding: 4px 6px; border-radius: 6px; cursor: pointer;
+    font-size: 11px;
+  }
+  .hrow:hover { background: var(--bg); }
+  .hrow .hdot { color: var(--fg-muted); }
+  /* The one row a plain "Revert last change" would pick — marked so the two
+     affordances visibly agree instead of the list looking like a second,
+     unrelated mechanism. */
+  .hrow.next .hdot { color: var(--accent); }
+  .hrow .hv { font-weight: 600; min-width: 22px; }
+  .hrow .hwhen { color: var(--fg-muted); flex: 1 1 auto; }
+  .hrow .hd { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hrow .hplus { color: var(--accent); }
+  .hrow .hminus { color: var(--error); }
+  .hrow.same { opacity: 0.5; cursor: default; }
+  #histnote { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
+  #histnote.error { color: var(--error); }
+  /* Confirm sheet. A restore is the one destructive action in this view — the
+     bytes on disk are frequently in NO checkpoint (SPEC §33/FH-2), so this is
+     never a plain button press. */
+  #confirm {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: var(--scrim);
+  }
+  #confirm.open { display: flex; }
+  #confirmbox {
+    width: 420px; max-width: 90vw;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    box-shadow: 0 12px 40px var(--shadow-pop);
+  }
+  #confirmbox h2 { margin: 0 0 8px; font-size: 14px; }
+  #confirmbox dl {
+    margin: 10px 0; display: grid; grid-template-columns: auto 1fr;
+    gap: 3px 12px; font-size: 12px;
+  }
+  #confirmbox dt { color: var(--fg-muted); }
+  #confirmbox dd { margin: 0; font-variant-numeric: tabular-nums; }
+  #confirmwarn {
+    margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
+    border: 1px solid var(--error); border-radius: 8px; color: var(--error);
+  }
+  #confirmacts { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+  #confirmacts button {
+    font: inherit; cursor: pointer; border-radius: 8px; padding: 6px 12px;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  }
+  #confirmacts #confirmgo {
+    font-weight: 600; color: var(--on-accent);
+    background: var(--accent); border-color: var(--accent);
+  }
   #status { padding: 24px; color: var(--fg-muted); }
   #status.error { color: var(--error); }
 </style>
@@ -281,8 +361,26 @@
         <div class="skelcard"><div class="skelbar" style="width:22%"></div><div class="skelbar" style="width:70%"></div></div>
         <div class="skelcard"><div class="skelbar" style="width:35%"></div><div class="skelbar" style="width:92%"></div><div class="skelbar" style="width:40%"></div></div>
       </div>
+      <div id="histfoot" hidden>
+        <button id="revertbtn" disabled>⤺ Revert last change</button>
+        <button id="histtoggle" hidden>▸ History</button>
+        <div id="histlist" hidden></div>
+        <div id="histnote"></div>
+      </div>
       <div id="sidefoot">
         <button id="toclaude">Send to Claude</button>
+      </div>
+    </div>
+  </div>
+  <div id="confirm">
+    <div id="confirmbox" role="dialog" aria-modal="true">
+      <h2 id="confirmtitle">Revert this file?</h2>
+      <div id="confirmsub"></div>
+      <dl id="confirmfacts"></dl>
+      <p id="confirmwarn" hidden></p>
+      <div id="confirmacts">
+        <button id="confirmno">Cancel</button>
+        <button id="confirmgo">Revert</button>
       </div>
     </div>
   </div>
@@ -1333,6 +1431,309 @@
       if (span) search += (search ? "&" : "") + span;
       window.top.location.href = top.pathname + (search ? "?" + search : "");
     });
+
+    // --- version history + revert (SPEC §33) ---------------------------------
+    // Backed by Claude Code's OWN file-history store, not git: it answers "what
+    // did this file look like before the agent touched it", which is the
+    // question a reviewer sitting in this view actually asks, and it has an
+    // answer in a directory that is not a repository. All the store knowledge
+    // lives in ../shared/file_history.py behind annotate.py's three actions; the
+    // only rules encoded HERE are presentational, plus the one that matters:
+    // a restore never lands without a confirm sheet that states what it costs.
+    const histFoot = document.getElementById("histfoot");
+    const revertBtn = document.getElementById("revertbtn");
+    const histToggle = document.getElementById("histtoggle");
+    const histList = document.getElementById("histlist");
+    const histNote = document.getElementById("histnote");
+    const confirmEl = document.getElementById("confirm");
+
+    let timeline = null;    // last `history` payload
+    let histOpen = false;
+    // Transcript enrichment (the "file did not exist" checkpoints) is the
+    // expensive half — those .jsonl files reach 5 MB+ — so it is paid for
+    // exactly once, when the panel is first expanded, never on boot.
+    let enriched = false;
+    let busy = false;
+
+    function ago(sec) {
+      if (!sec) return "";
+      const d = Math.max(0, Date.now() / 1000 - sec);
+      if (d < 90) return "just now";
+      if (d < 3600) return Math.round(d / 60) + "m ago";
+      if (d < 86400) return Math.round(d / 3600) + "h ago";
+      if (d < 172800) return "yesterday";
+      if (d < 86400 * 30) return Math.round(d / 86400) + "d ago";
+      return new Date(sec * 1000).toLocaleDateString();
+    }
+
+    // The +N/−M a row shows is what RESTORING it would do to the file as it is
+    // now — lines it introduces, lines it takes away. `exact:false` means the
+    // helper refused to diff (too big, or not text) and only net counts are
+    // honest, so it says so with a tilde rather than implying a real diff.
+    function deltaNodes(v) {
+      const frag = document.createDocumentFragment();
+      if (!v.existed) {
+        const s = document.createElement("span");
+        s.className = "hminus";
+        s.textContent = "did not exist";
+        frag.appendChild(s);
+        return frag;
+      }
+      if (v.added == null || v.removed == null) {
+        frag.appendChild(document.createTextNode("binary"));
+        return frag;
+      }
+      if (!v.differs) {
+        frag.appendChild(document.createTextNode("on disk now"));
+        return frag;
+      }
+      const plus = document.createElement("span");
+      plus.className = "hplus";
+      plus.textContent = (v.exact ? "" : "~") + "+" + v.added;
+      const minus = document.createElement("span");
+      minus.className = "hminus";
+      minus.textContent = "−" + v.removed;
+      frag.appendChild(plus);
+      frag.appendChild(document.createTextNode(" "));
+      frag.appendChild(minus);
+      return frag;
+    }
+
+    function renderHistory() {
+      if (!timeline) return;
+      // No store at all means Claude Code has never run here — that is not an
+      // empty state worth a panel, it is "this feature does not apply", so the
+      // block stays out of the sidebar entirely. A store that exists but holds
+      // nothing for THIS file does get a line of text, because there the
+      // absence is a fact about the file and worth saying.
+      histFoot.hidden = !timeline.available;
+      revertBtn.hidden = !timeline.versions.length;
+      const target = timeline.revert;
+      revertBtn.disabled = busy || !target || timeline.writable === false;
+      histToggle.hidden = !timeline.versions.length;
+      histList.hidden = !histOpen;
+      histList.textContent = "";
+      let rows = 0;
+      if (histOpen) {
+        for (const v of timeline.versions) {
+          rows++;
+          const row = document.createElement("div");
+          row.className = "hrow" + (v.id === target ? " next" : "") +
+            (v.differs ? "" : " same");
+          const dot = document.createElement("span");
+          dot.className = "hdot";
+          dot.textContent = v.id === target ? "●" : "○";
+          const num = document.createElement("span");
+          num.className = "hv";
+          num.textContent = v.existed ? "v" + v.version : "—";
+          const when = document.createElement("span");
+          when.className = "hwhen";
+          // A content version's time is its backup file's mtime; a
+          // did-not-exist row's is the transcript record's own timestamp, never
+          // a neighbouring row's. When that stamp could not be parsed the
+          // helper reports 0 and BOTH the label and the tooltip fall silent —
+          // "1970" would be a confident lie about when the file was created.
+          when.textContent = v.mtime ? ago(v.mtime) : "time unknown";
+          // Sessions are why two rows can both say v2 (SPEC §33/FH-3), so the
+          // session's short id is the only thing that disambiguates them.
+          when.title = (v.mtime
+            ? new Date(v.mtime * 1000).toLocaleString() + " · "
+            : "") + "session " + v.session;
+          const d = document.createElement("span");
+          d.className = "hd";
+          d.appendChild(deltaNodes(v));
+          row.append(dot, num, when, d);
+          // A version identical to what is on disk is not an action: restoring
+          // it would write the same bytes back, so the row is inert.
+          if (v.differs) row.onclick = () => askRevert(v.id);
+          histList.appendChild(row);
+        }
+      }
+      // The count is the number of rows ACTUALLY RENDERED, and it only appears
+      // once the enriched timeline has landed. Both halves matter: reading it
+      // off `versions.length` while collapsed made the label say "(2)" and the
+      // expanded list show 3 rows, because the did-not-exist checkpoint only
+      // exists after enrichment — a number that contradicts the list it labels
+      // is worse than no number, and a number that jumps on expand reads as a
+      // bug even when both values are correct for their moment.
+      histToggle.textContent = histOpen
+        ? "▾ History (" + rows + ")"
+        : "▸ History";
+      histNote.className = "";
+      histNote.textContent = timeline.writable === false
+        ? "This file is read-only here — it cannot be reverted."
+        : (timeline.note || "");
+    }
+
+    // Every history/revert failure arrives as an `{error}` DICT rather than a
+    // rejection (annotate.py wraps them for exactly this reason): "no versions
+    // for this file" must never be a red traceback overlay. A rejection can
+    // still happen — the run itself failing — so both paths land in the note.
+    async function callHistory(params) {
+      try {
+        const out = await fused.runPython("./annotate.py",
+          Object.assign({ file }, params), { key: null });
+        if (out && out.error) return { error: out.error };
+        return out || { error: "no response" };
+      } catch (err) {
+        return { error: err.message || String(err) };
+      }
+    }
+
+    async function loadHistory(enrich) {
+      const out = await callHistory({ action: "history", enrich: !!enrich });
+      if (out.error) {
+        histFoot.hidden = false;
+        histNote.className = "error";
+        histNote.textContent = out.error;
+        revertBtn.disabled = true;
+        return;
+      }
+      if (enrich) enriched = true;
+      timeline = out;
+      renderHistory();
+    }
+
+    histToggle.addEventListener("click", async () => {
+      histOpen = !histOpen;
+      if (histOpen && !enriched) {
+        // Enrich BEFORE painting the open state, not after: rendering the
+        // unenriched list first and then replacing it shows the row count
+        // jumping, which reads as a bug even though both values were right for
+        // their moment.
+        histToggle.textContent = "▾ History…";
+        await loadHistory(true);
+      } else {
+        renderHistory();
+      }
+    });
+
+    let pending = null; // the plan awaiting confirmation
+
+    function closeConfirm() {
+      confirmEl.classList.remove("open");
+      pending = null;
+    }
+    document.getElementById("confirmno").addEventListener("click", closeConfirm);
+    confirmEl.addEventListener("click", (e) => {
+      if (e.target === confirmEl) closeConfirm();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && confirmEl.classList.contains("open")) closeConfirm();
+    });
+
+    // `versionId === null` means "the last change" — the helper picks the newest
+    // version whose content DIFFERS from disk, which is the only rule that is
+    // right whether a checkpoint is a pre- or post-image (SPEC §33/FH-1).
+    async function askRevert(versionId) {
+      if (busy) return;
+      const plan = await callHistory({
+        action: "revert_plan", version_id: versionId, enrich: enriched,
+      });
+      if (plan.error || plan.ok === false) {
+        histNote.className = "error";
+        histNote.textContent = plan.error || "Nothing to revert.";
+        return;
+      }
+      pending = plan;
+      const del = plan.action === "delete";
+      document.getElementById("confirmtitle").textContent =
+        del ? "Delete this file?" : "Revert this file?";
+      const sub = document.getElementById("confirmsub");
+      sub.textContent = del
+        ? "The file did not exist at this checkpoint — Claude created it. " +
+          "Reverting past that point DELETES it."
+        : "Restoring Claude's checkpoint v" + plan.version + " from " +
+          new Date(plan.mtime * 1000).toLocaleString() + ".";
+      const facts = document.getElementById("confirmfacts");
+      facts.textContent = "";
+      const rows = [
+        ["On disk now", plan.current.exists
+          ? plan.current.size + " bytes" +
+            (plan.current.lines == null ? "" : " · " + plan.current.lines + " lines")
+          : "(file does not exist)"],
+        [del ? "After delete" : "After revert", del
+          ? "(file removed)"
+          : plan.target.size + " bytes" +
+            (plan.target.lines == null ? "" : " · " + plan.target.lines + " lines")],
+        ["Line change", plan.added == null
+          ? "unknown (not text)"
+          : (plan.exact ? "" : "~") + "+" + plan.added + " / −" + plan.removed],
+      ];
+      for (const [k, v] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = k;
+        const dd = document.createElement("dd");
+        dd.textContent = v;
+        facts.append(dt, dd);
+      }
+      // The sharp hazard, stated plainly: current content is often in NO
+      // checkpoint (the file moved on after the last one), so this write can
+      // destroy the only copy. annotate.py stashes it into the sidecar as a
+      // backstop, but the user is told BEFORE the write either way.
+      const warn = document.getElementById("confirmwarn");
+      warn.hidden = !plan.unique_current;
+      warn.textContent = plan.unique_current
+        ? "What is on disk now matches no checkpoint, so this overwrites " +
+          "content that exists nowhere else. A copy is kept in the file's " +
+          ".json sidecar (revertStash) unless it is too large or not text. " +
+          "Unsaved edits in the framed view are not on disk and are not part " +
+          "of this comparison."
+        : "";
+      document.getElementById("confirmgo").textContent = del ? "Delete" : "Revert";
+      confirmEl.classList.add("open");
+      document.getElementById("confirmno").focus();
+    }
+
+    document.getElementById("confirmgo").addEventListener("click", async () => {
+      if (!pending || busy) return;
+      const plan = pending;
+      closeConfirm();
+      busy = true;
+      revertBtn.disabled = true;
+      const out = await callHistory({
+        action: "revert", version_id: plan.id, enrich: enriched,
+      });
+      busy = false;
+      if (out.error || out.ok === false) {
+        // renderHistory() REWRITES histNote from the timeline's own note, so it
+        // has to run BEFORE the message lands — the other order set the text and
+        // then wiped it, which turned every failed revert into a silent no-op
+        // (found by clicking Revert in the running app and watching nothing
+        // happen and nothing be said).
+        renderHistory();
+        histNote.className = "error";
+        histNote.textContent = out.error || "Revert failed.";
+        return;
+      }
+      // Reload the framed view: it read the file at load, and a code editor is
+      // holding a buffer that is now stale — leaving it would let its next save
+      // write the pre-revert content straight back over the restore. Only the
+      // frame, not this page — the frame's own load handler is per-document and
+      // re-runs cleanly. (The shell may still reload the whole preview off its
+      // own fs-event watch, since the target just changed on disk; that resets
+      // the panel to its collapsed boot state, which is why the outcome is also
+      // legible from the framed view itself rather than only from the note.)
+      try {
+        frame.contentWindow.location.reload();
+      } catch (e) {
+        frame.src = frame.src; // torn-down frame — force it through the src
+      }
+      await loadHistory(enriched);
+      histNote.className = "";
+      histNote.textContent = (out.action === "delete"
+        ? "File deleted."
+        : "Reverted to " + plan.id.split("@")[1] + ".") +
+        (out.stashed
+          ? " Previous content kept in the .json sidecar."
+          : " " + (out.stash_note || "No copy of the previous content was kept."));
+    });
+
+    revertBtn.addEventListener("click", () => askRevert(null));
+
+    // Boot the panel without enrichment: filesystem-only enumeration, so this
+    // is a directory listing and a few small reads, not a transcript parse.
+    loadHistory(false);
 
     window.addEventListener("resize", () => render());
 

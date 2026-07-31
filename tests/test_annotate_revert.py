@@ -345,6 +345,153 @@ def test_history_degrades_when_the_shared_helper_is_missing(claude_home,
             sys.modules["file_history"] = saved
 
 
+# ------------------------------------------------- template source contracts
+# The same idiom as test_annotate_template.py: these pin the handful of rules in
+# template.html whose breakage is SILENT — no error anywhere, just a slow render,
+# a destroyed file, or a panel that never appears.
+
+TEMPLATE = os.path.join(
+    os.path.dirname(__file__), "..", "fused_render", "templates", "annotate",
+    "template.html")
+
+
+@pytest.fixture(scope="module")
+def source():
+    with open(TEMPLATE, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def test_the_boot_history_call_does_not_enrich(source):
+    """Enrichment reads the session transcripts, which reach 5 MB+. Paying that
+    on every annotate boot is invisible — the panel still works, it just makes
+    opening any annotated file slower — so the boot call is pinned to
+    `loadHistory(false)` and enrichment is only ever reached from the toggle."""
+    assert "loadHistory(false);" in source
+    body = source[source.index("histToggle.addEventListener"):]
+    body = body[:body.index("let pending")]
+    assert "loadHistory(true)" in body
+    assert "!enriched" in body  # ...and only once
+
+
+def test_a_revert_can_only_be_issued_from_the_confirm_sheet(source):
+    """The one destructive action in this view. If a `revert` call ever grows a
+    second call site, the confirm sheet stops being a gate and becomes
+    decoration — which is exactly the failure the user would only discover by
+    losing a file."""
+    sites = source.count('action: "revert"')
+    assert sites == 1
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert 'action: "revert"' in handler[:handler.index("});")]
+
+
+def test_the_confirm_sheet_states_what_the_write_costs(source):
+    """`unique_current` means the bytes on disk are in no checkpoint at all, so
+    the restore destroys the only copy. The warning must be driven by that flag
+    rather than shown unconditionally, or it becomes noise people click past."""
+    body = source[source.index("async function askRevert"):]
+    body = body[:body.index('getElementById("confirmgo").addEventListener')]
+    assert "plan.unique_current" in body
+    assert "revertStash" in body           # says where the backstop lives
+    assert "current.size" in body and "target.size" in body  # byte counts
+    assert "plan.added" in body            # and the line delta
+
+
+def test_a_failed_revert_says_so(source):
+    """Caught by clicking Revert in the running app: `renderHistory()` rewrites
+    histNote from the timeline's own note, so setting the error text and THEN
+    re-rendering wiped it — every failed revert became a silent no-op, the worst
+    possible outcome for a destructive action's error path."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    branch = handler[handler.index("if (out.error"):handler.index("// Reload the framed")]
+    assert branch.index("renderHistory()") < branch.index('histNote.textContent')
+
+
+def test_the_framed_view_is_reloaded_after_a_revert(source):
+    """A code editor framed here is holding a buffer that the revert just made
+    stale; its next save would write the pre-revert content straight back."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert "location.reload()" in handler
+
+
+def test_the_history_block_is_not_inside_the_claude_footer(source):
+    """#sidefoot is display:none'd wherever the file has no claude mode (Send to
+    Claude would go nowhere). Reverting has nothing to do with that, so the
+    block is its own footer — nesting it would make revert vanish on every file
+    type without a chat view."""
+    assert 'id="histfoot"' in source
+    foot = source[source.index('<div id="sidefoot">'):]
+    assert 'id="histfoot"' not in foot[:foot.index("</div>")]
+
+
+def test_the_row_count_is_the_rows_actually_rendered(source):
+    """Found on screen: the collapsed label said "History (2)" while the expanded
+    list drew 3 rows. Both numbers were right for their moment — the
+    did-not-exist checkpoint only exists after enrichment — but a count that
+    contradicts the list it labels reads as a bug. So the label is derived from
+    the row loop's own counter, and the collapsed state claims no number at all.
+    """
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert "rows++" in body
+    assert '"▾ History (" + rows + ")"' in body
+    assert '"▸ History"' in body
+    assert "versions.length + \")\"" not in body  # the old, jumping form
+
+
+def test_expanding_enriches_before_it_paints(source):
+    """...and the same reason the count must not jump: the enriched list has to
+    land before the open state is drawn, not replace it a moment later."""
+    body = source[source.index("histToggle.addEventListener"):]
+    body = body[:body.index("let pending")]
+    assert body.index("loadHistory(true)") < body.index("renderHistory()")
+
+
+def test_an_unknown_timestamp_is_not_rendered_as_1970(source):
+    """`_epoch` returns 0 for a stamp it cannot parse, and `new Date(0)` is a
+    confident lie about when a file was created."""
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert 'v.mtime ? ago(v.mtime) : "time unknown"' in body
+    assert "v.mtime\n" in body or "(v.mtime" in body  # the title is gated too
+
+
+def test_the_did_not_exist_row_takes_its_time_from_its_own_record(claude_home,
+                                                                  tmp_path):
+    """Not from a neighbouring version — the two happen to coincide in a real
+    session (both come from the same turn), which is exactly what would hide a
+    fallback that copied the adjacent row's mtime."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z"),
+    ])
+    ghost = [v for v in ann.main(action="history", file=f, enrich=True)["versions"]
+             if not v["existed"]][0]
+    assert ghost["mtime"] != 1785479788          # not the neighbour's
+    assert abs(ghost["mtime"] - 1785477600) < 2  # its own record's 06:00:00Z
+
+
+def test_an_unparseable_timestamp_becomes_zero_not_a_guess(claude_home, tmp_path):
+    ann = _load_annotate()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 0, "not a timestamp"),
+    ])
+    ghost = [v for v in ann.main(action="history", file=f, enrich=True)["versions"]
+             if not v["existed"]][0]
+    assert ghost["mtime"] == 0.0  # the view renders "time unknown" for this
+
+
+def test_a_version_identical_to_disk_is_not_clickable(source):
+    """Restoring it would write the same bytes back — an action that looks like
+    it did nothing, which reads as a broken button."""
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert "if (v.differs) row.onclick" in body
+
+
 def test_the_comments_log_and_the_stash_coexist(claude_home, tmp_path):
     """Both writers go through the same read-merge-write, so recording a comment
     after a revert must not drop the stash, and vice versa."""
