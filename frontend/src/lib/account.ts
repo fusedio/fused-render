@@ -60,6 +60,15 @@ export function useAccountLoggedIn(): boolean {
 // a signed-out view.
 export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
   const [connecting, setConnecting] = useState(false);
+  // The credentials fingerprint as it was when this sign-in began. Completion is
+  // "the credentials CHANGED", not "credentials exist": `logged_in` is
+  // presence-only (account.py — a file on disk), so it is ALREADY true when the
+  // user is re-authenticating a stale login whose refresh token the IdP now
+  // rejects. Polling on presence alone would see true on the first tick and
+  // report success before the browser round-trip had even happened. `creds_stamp`
+  // is the file's mtime and exists for exactly this (AC-8: a re-login "even one
+  // that never flips logged_in false in this tab").
+  const stampAtBegin = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   // Latest-ref: the poll always calls the current callback, never a stale
@@ -84,6 +93,13 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
   const begin = async () => {
     setError(null);
     setConnecting(true);
+    // Captured BEFORE the child is spawned, so a login that completes unusually
+    // fast cannot land between the read and the baseline being recorded.
+    try {
+      stampAtBegin.current = (await getAccountStatus()).creds_stamp ?? null;
+    } catch {
+      stampAtBegin.current = null; // unreadable baseline → fall back to presence
+    }
     let url: string;
     try {
       ({ authorize_url: url } = await startAccountLogin(window.location.href));
@@ -101,7 +117,14 @@ export function useFusedLogin(onLoggedIn: (status: AccountStatus) => void) {
         return; // transient (server restart, network blip) — keep polling
       }
       if (timer.current === null) return; // canceled while the fetch was in flight
-      if (status.logged_in) {
+      // Fresh credentials = logged in AND the file is not the one we started with.
+      // With no baseline (the pre-flight read failed) this degrades to the old
+      // presence check, which is right for the signed-out case and merely eager
+      // for a re-auth — never the reverse.
+      const fresh =
+        status.logged_in &&
+        (stampAtBegin.current === null || status.creds_stamp !== stampAtBegin.current);
+      if (fresh) {
         finish(null);
         notifyAccountChanged(); // e.g. the sidebar's signed-in dot
         onLoggedInRef.current(status);

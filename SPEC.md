@@ -2265,7 +2265,13 @@ provisioning stays a documented terminal flow.
   signed out → sign-in (waiting + Cancel while connecting; a sign-in
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
-  not-admitted note), the environments management table (default marker,
+  not-admitted note, and — when the probe FAILED — a **Sign in again** action
+  inside that note, because `logged_in` is presence-only: stored credentials the
+  identity provider no longer accepts (an expired, revoked or rotated refresh
+  token, surfaced as the CLI's own `403 … invalid refresh token`) leave a state
+  that *looks* signed in and cannot be retried out of, so the remedy has to be
+  reachable from where the error appears rather than only from the CLI. It reuses
+  the one sign-in path — see AC-8b for why completion is not presence), the environments management table (default marker,
   with make-default and forget-with-confirm behind a per-row overflow
   ("⋯") menu — one quiet control per row instead of a button pair), and
   the setup panel — presented
@@ -2289,6 +2295,17 @@ provisioning stays a documented terminal flow.
   false in this tab — the cache must not show the prior account's orgs). All
   return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
   (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
+- **AC-8b** **A sign-in completes on FRESH CREDENTIALS, not on their presence.**
+  `useFusedLogin` captures `creds_stamp` before spawning the child and finishes
+  only once the poll reports `logged_in` **and** a stamp different from that
+  baseline. Presence alone is the wrong signal for a **re**-authentication: the
+  credentials file already exists, so `logged_in` is already true and the first
+  poll tick would declare success before the browser round-trip had happened —
+  reporting a fixed account while the probe still fails. For a signed-out start
+  the baseline is null and the condition collapses to the original presence
+  check, so that path is byte-for-byte unchanged. If the pre-flight read of the
+  baseline fails the hook degrades to presence — eager for a re-auth, correct for
+  a fresh sign-in — rather than refusing to complete at all.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local

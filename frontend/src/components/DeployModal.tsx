@@ -631,6 +631,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // expanded state from the previous page shouldn't carry over onto one
       // that hasn't been asked about yet.
       setCachingOpen(false);
+      setCloningOpen(false);
       setErrorsOpen(false);
       setLinkOpen(false);
       setChangingLink(false);

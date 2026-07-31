@@ -688,6 +688,35 @@ export function AccountPanel() {
           {probe && !probe.ok && (
             <div className="deploy-note">
               Couldn't verify the account with the Fused control plane: {probe.error}
+              {/* The stored credentials exist but do not work — the common cause is a
+                  refresh token the identity provider no longer accepts (expired, revoked,
+                  or rotated), which no amount of retrying fixes. Signing in again is the
+                  ONLY remedy, so offer it here rather than leaving the user to find the
+                  CLI: `logged_in` is presence-only, so this branch is otherwise a dead
+                  end that looks signed in. Same hook as the signed-out button — one
+                  sign-in path, and it completes on FRESH credentials rather than on
+                  presence (which is already true here). */}
+              <div className="deploy-note-actions">
+                {signin.connecting ? (
+                  <>
+                    <span className="deploy-muted">
+                      Waiting for the browser sign-in to finish…
+                    </span>
+                    <button type="button" onClick={() => void signin.cancel()}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void signin.begin()}
+                  >
+                    Sign in again
+                  </button>
+                )}
+              </div>
+              {signin.error && <div className="deploy-error">{signin.error}</div>}
             </div>
           )}
           {probe && probe.ok && probe.admitted === false && (
