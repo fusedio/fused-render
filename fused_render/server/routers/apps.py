@@ -12,13 +12,17 @@ the folder still lists, but opens as a directory instead of a view
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
-plus a ``CLAUDE.md``), copies the authoring skill in the same way the template
-scaffold does (templates_api._ensure_starter_skills), and — when the request
-carries a prompt — starts a detached Claude Code session in the new folder via
-the claude template's own backend (templates/claude/agent.py), so the session
-lands in the sidecar next to ``index.html`` and the existing claude template UI
-lists and resumes it with no new machinery. "local" is just this feature's own
-tag — nothing about the listing side treats it specially.
+plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
+detached Claude Code session in the new folder via the claude template's own
+backend (templates/claude/agent.py), so the session lands in the sidecar next
+to ``index.html`` and the existing claude template UI lists and resumes it
+with no new machinery. "local" is just this feature's own tag — nothing about
+the listing side treats it specially.
+
+An app folder carries no ``.claude/`` of its own (D185): the canonical skills
+are synced to Claude Code's user-level skills dir instead (user_skills.py) —
+once per machine, refreshed at server startup and again here at create time —
+and the starter ``CLAUDE.md`` references them by name.
 """
 import html
 import json
@@ -37,16 +41,11 @@ from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
 
-# The packaged app starter kit. Committed files (index.html, CLAUDE.md) ship
-# with the package; .claude/skills/ inside it is a build-time copy of the
-# repo-level skill (gitignored, shipped via pyproject's `artifacts` glob) —
-# the same pattern as template_starter (D106).
+# The packaged app starter kit: index.html + CLAUDE.md, both committed. No
+# .claude/ ships in it (D185) — skills live at the user level (user_skills.py).
 _APP_STARTER_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "app_starter"
 )
-# Apps get the authoring skill only: registering preview templates
-# (fused-render-custom-templates) is a template concern, not an app one.
-_APP_SKILLS = ("fused-render-authoring",)
 
 
 # ------------------------------------------------------------------- listing
@@ -311,7 +310,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     try:
-        shutil.copytree(_APP_STARTER_DIR, dest)
+        # ignore .claude: apps carry no skills of their own (D185), and a dev
+        # checkout may still hold a stale pre-D185 build copy in the starter.
+        shutil.copytree(
+            _APP_STARTER_DIR, dest, ignore=shutil.ignore_patterns(".claude")
+        )
     except FileExistsError:
         # TOCTOU: dest was created between the exists-check above and here.
         return _error(f"{name!r} already exists in the workspace", status=409)
@@ -321,12 +324,13 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
 
-    # Editable installs have no packaged skills in the starter kit; resolve
-    # them from the repo skills/ dir — same helper, same best-effort rule
-    # (a missing skill never fails creation) as the template scaffold.
-    from fused_render.templates_api import _ensure_starter_skills
+    # Refresh the user-level skills the starter CLAUDE.md references (D185).
+    # Startup already synced them; doing it again here repairs a deletion
+    # before the session below starts. Best-effort inside — never fails
+    # creation over a skill copy.
+    from fused_render.user_skills import sync_user_skills
 
-    _ensure_starter_skills(dest, _APP_SKILLS)
+    sync_user_skills()
 
     entry_html = os.path.join(dest, "index.html")
     run_id, session_error = None, None

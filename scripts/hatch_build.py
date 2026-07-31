@@ -42,13 +42,18 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
     )
 
 
-# The template starter kit ships the two canonical authoring skills so a
-# scaffolded template carries its own guidance. The skills live once at
-# skills/<name>/ (single source, D106); they are copied into the starter kit at
-# build time (see _copy_starter_skills), gitignored there, and shipped via the
-# `artifacts` glob in pyproject — the same not-committed-but-packaged pattern as
-# the Vite shell (D54).
-_STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
+# The three canonical skills ship ONLY as a package-level copy at
+# fused_render/skills/ — the wheel-install source for the user-level skill
+# sync (fused_render/user_skills.py, D185). The skills live once at
+# skills/<name>/ (single source, D106); the copy is gitignored and shipped via
+# the `artifacts` glob in pyproject — the same not-committed-but-packaged
+# pattern as the Vite shell (D54). Scaffolded folders (apps AND templates)
+# carry no .claude/skills/ of their own any more (D185).
+_ALL_SKILLS = (
+    "fused-render-authoring",
+    "fused-render-custom-templates",
+    "fused-render-usage",
+)
 
 
 class ShellBuildHook(BuildHookInterface):
@@ -88,28 +93,27 @@ class ShellBuildHook(BuildHookInterface):
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
 
     def _copy_starter_skills(self) -> None:
-        """Copy the canonical authoring skills into the starter kits'
-        .claude/skills/ so every scaffolded template/app carries them. Source
-        is the single repo-level skills/<name>/ (D106); the copies are
-        gitignored and shipped via pyproject's `artifacts` glob. Refresh each
-        time so a packaged build always reflects the current skill. The app
-        starter gets the authoring skill only — registering preview templates
-        is a template concern.
+        """Copy the canonical skills to fused_render/skills/ — the wheel-install
+        source for the user-level skill sync (user_skills.py, D185). Source is
+        the single repo-level skills/<name>/; the copy is gitignored and shipped
+        via pyproject's `artifacts` glob. Refresh each time so a packaged build
+        always reflects the current skill. Starter kits (app and template) carry
+        no .claude/ any more — scaffolded folders rely on the user-level sync —
+        so any stale pre-D185 build copy is deleted rather than shipped (or
+        copytree'd into new folders by a dev install).
         """
-        kits = (
-            ("template_starter", _STARTER_SKILLS),
-            ("app_starter", ("fused-render-authoring",)),
-        )
-        for kit, names in kits:
-            dest_root = os.path.join(
-                self.root, "fused_render", kit, ".claude", "skills"
+        for kit in ("app_starter", "template_starter"):
+            shutil.rmtree(
+                os.path.join(self.root, "fused_render", kit, ".claude"),
+                ignore_errors=True,
             )
-            for name in names:
-                src = os.path.join(self.root, "skills", name)
-                dest = os.path.join(dest_root, name)
-                if os.path.isdir(dest):
-                    shutil.rmtree(dest)
-                shutil.copytree(src, dest)
+        dest_root = os.path.join(self.root, "fused_render", "skills")
+        for name in _ALL_SKILLS:
+            src = os.path.join(self.root, "skills", name)
+            dest = os.path.join(dest_root, name)
+            if os.path.isdir(dest):
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
 
     def _bake_branch_ref(self, build_data: dict) -> None:
         """Resolve the ref from ``FUSED_RENDER_BRANCH`` and bake it into the

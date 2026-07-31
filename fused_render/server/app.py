@@ -23,6 +23,7 @@ from fused_render.deploy import router as deploy_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.user_skills import sync_user_skills
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -175,6 +176,15 @@ def create_app(start_dir: str) -> FastAPI:
     @app.on_event("startup")
     async def _startup_prewarm_ai():
         prewarm_ai()
+
+    # User-level skill sync (D185): install/refresh the canonical fused-render
+    # skills in Claude Code's skills dir so app/template sessions can invoke
+    # them by name. A startup event (not create_app body) on purpose — tests
+    # build the app without running lifespan, so they never write outside the
+    # redirected dirs.
+    @app.on_event("startup")
+    async def _startup_sync_user_skills():
+        sync_user_skills()
 
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():

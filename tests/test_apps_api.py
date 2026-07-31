@@ -191,11 +191,23 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     assert apps[0]["tag"] == "local"
 
 
-def test_new_app_carries_the_authoring_skill(client, workspace, monkeypatch):
+def test_new_app_has_no_dot_claude_and_syncs_user_skills(
+    client, workspace, tmp_path, monkeypatch
+):
+    """D185: the app folder itself carries no .claude/; creating an app
+    installs the canonical skills at Claude Code's user level instead."""
+    from fused_render import user_skills
+
+    claude_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
     monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
-    skill = workspace / "local" / "demo" / ".claude" / "skills" / "fused-render-authoring"
-    assert (skill / "SKILL.md").is_file()
+
+    assert not (workspace / "local" / "demo" / ".claude").exists()
+    for name in user_skills.SKILLS:
+        skill = claude_dir / "skills" / name
+        assert (skill / "SKILL.md").is_file()
+        assert (skill / user_skills._MARKER).is_file()
 
 
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):

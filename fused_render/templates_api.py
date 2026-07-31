@@ -1037,41 +1037,6 @@ def api_commit_import(
 # POST /api/templates/new.
 _STARTER_KIT_DIR = os.path.join(os.path.dirname(__file__), "template_starter")
 
-# The two canonical authoring skills copied into every new template's
-# .claude/skills/ so a scaffolded (or later exported) folder carries its own
-# guidance. Single source is the repo-level skills/<name>/ (D106).
-_STARTER_SKILLS = ("fused-render-authoring", "fused-render-custom-templates")
-_REPO_SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skills")
-
-
-def _ensure_starter_skills(dest: str, names: tuple = _STARTER_SKILLS) -> None:
-    """Make sure a freshly-scaffolded folder `dest` has the `names` skills
-    under .claude/skills/, refreshed from the live repo skills/ dir whenever
-    it's resolvable (editable/dev installs — this always wins, since the
-    starter kit's own .claude/skills/ is gitignored and may be a stale copy
-    left over from a previous local wheel build). Only a true wheel install,
-    where the repo skills/ dir isn't reachable at all, relies on whatever
-    copytree already brought in from the packaged starter kit. If neither
-    source exists, proceed without skills — a missing skill must never fail
-    scaffolding (D106). Also reused by the apps API (routers/apps.py), which
-    scaffolds app folders with the authoring skill only.
-    """
-    skills_dir = os.path.join(dest, ".claude", "skills")
-    for name in names:
-        target = os.path.join(skills_dir, name)
-        src = os.path.join(_REPO_SKILLS_DIR, name)
-        if os.path.isdir(src):
-            try:
-                shutil.rmtree(target, ignore_errors=True)
-                shutil.copytree(src, target)
-            except OSError:
-                pass  # best-effort; the template is still usable without the skill
-            continue
-        if os.path.isdir(target):
-            continue  # wheel install: copytree already brought the packaged skill
-        # neither packaged nor resolvable from source — skip, don't fail
-
-
 def _template_name_error(name) -> str | None:
     """Why `name` is not usable as a template folder/name, or None if it is.
     Matches _server_templates._resolve_name's rule (SPEC CT-6): one plain path segment, no
@@ -1136,7 +1101,12 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
 
     os.makedirs(_server_templates.USER_TEMPLATES_DIR, exist_ok=True)
     try:
-        shutil.copytree(_STARTER_KIT_DIR, dest)
+        # ignore .claude: scaffolded folders carry no skills of their own
+        # (D185 — skills live at the user level, synced below), and a dev
+        # checkout may still hold a stale pre-D185 build copy in the starter.
+        shutil.copytree(
+            _STARTER_KIT_DIR, dest, ignore=shutil.ignore_patterns(".claude")
+        )
     except FileExistsError:
         # TOCTOU: dest was created between the exists-check above and here.
         return _error(f"a user template named {name!r} already exists", status=409)
@@ -1146,9 +1116,11 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create template {name!r}: {exc}")
 
-    # Editable installs have no packaged skills in the starter kit; resolve them
-    # from the repo skills/ dir so the scaffolded folder still carries guidance.
-    _ensure_starter_skills(dest)
+    # Refresh the user-level skills the starter CLAUDE.md references (D185).
+    # Best-effort inside — a skill copy must never fail scaffolding.
+    from fused_render.user_skills import sync_user_skills
+
+    sync_user_skills()
 
     if keys:
         # Additive only: append the new template to whatever list a key
