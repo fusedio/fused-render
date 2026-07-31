@@ -5552,15 +5552,34 @@ select.field-control:has(option[value=""]:checked) {
   cursor: default;
 }
 
-.home-hero-actions {
+/* Starter-idea chips under the composer — click fills the box, never submits. */
+.home-composer-samples {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
 }
 
-.home-hero-cta {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
+.home-composer-sample {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.home-composer-sample:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.home-composer-sample:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Doorways: three equal cards, one per entry point. Glyph square repaints

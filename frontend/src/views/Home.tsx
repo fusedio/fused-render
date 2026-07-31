@@ -1,7 +1,8 @@
 // Home view — lives at "/" itself (old /view/_home sentinel redirects here)
 // and is the app's launch landing. Structure, top to bottom:
-//   1. Hero card — headline + blurb with the page's two verbs as buttons:
-//      "New app" (left slide-over panel → POST /api/apps/new) and "Browse files".
+//   1. Hero card — headline + blurb + the prompt composer (describe an app,
+//      haiku names it, POST /api/apps/new scaffolds it). The structured
+//      NewAppPanel is exported from here but opens from /apps.
 //   2. Doorways — three equal cards for the app's entry points: file
 //      explorer, apps hub (the Fused workspace dir), templates manager.
 //   3. Recent — the 9 most recently updated apps (GET /api/apps), sorted
@@ -107,6 +108,14 @@ async function createAppUnderFreeName(name: string, prompt: string) {
   }
 }
 
+// Starter ideas under the composer: clicking one fills the box (never
+// submits) so the user can edit before building.
+const SAMPLE_PROMPTS = [
+  "A habit tracker with streaks and a weekly heatmap",
+  "A markdown notes app with full-text search",
+  "A dashboard that charts my CSV files",
+];
+
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
 // composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
 // lands in the new folder's claude chat exactly like the New-app panel does.
@@ -198,6 +207,19 @@ function HeroComposer() {
           </button>
         </div>
       </div>
+      <div className="home-composer-samples">
+        {SAMPLE_PROMPTS.map((s) => (
+          <button
+            key={s}
+            type="button"
+            className="home-composer-sample"
+            disabled={busy}
+            onClick={() => setPrompt(s)}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );
@@ -265,7 +287,7 @@ const APP_STEPS: { title: string; desc: string }[] = [
 // NOT the shared Modal chassis — that centres a width-clamped dialog, which
 // fights an edge-anchored panel. Close behaviour matches the modal it replaces:
 // scrim click, Esc, or ✕, all gated by `busy`.
-function NewAppPanel({ onClose }: { onClose: () => void }) {
+export function NewAppPanel({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -519,7 +541,6 @@ function Doorway({
 
 export default function Home({ config }: { config: Config }) {
   const apps = useLoad(getApps);
-  const [creating, setCreating] = useState(false);
 
   return (
     <div className="home-page">
@@ -541,26 +562,11 @@ export default function Home({ config }: { config: Config }) {
             Describe an app and Claude builds it in your workspace — or explore your files
             with interactive templates. Everything lives as plain folders you own.
           </p>
-          {/* The primary verb, prompt-first: describe the app right here and a
-              named, scaffolded folder + claude session comes back. The buttons
-              below stay as the structured (name-it-yourself) path and the
-              everyday file doorway. */}
+          {/* The hero's only verb, prompt-first: describe the app right here
+              and a named, scaffolded folder + claude session comes back. The
+              structured (name-it-yourself) NewAppPanel lives on /apps now,
+              and file browsing has its doorway card below. */}
           <HeroComposer />
-          <div className="home-hero-actions">
-            <button type="button" className="btn btn-secondary home-hero-cta" onClick={() => setCreating(true)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              New app
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary home-hero-cta"
-              onClick={() => navigate(config.fused_dir, { isDir: true })}
-            >
-              Browse files
-            </button>
-          </div>
         </header>
 
         {/* Doorways: one card per entry point. */}
@@ -625,8 +631,8 @@ export default function Home({ config }: { config: Config }) {
           {apps.status === "loading" && <div className="home-loading">Loading…</div>}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
-              No apps yet. Hit “New app” above — it lands in {basename(config.fused_dir)}/local as
-              a folder you own.
+              No apps yet. Describe one in the box above — it lands in{" "}
+              {basename(config.fused_dir)}/local as a folder you own.
             </div>
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
@@ -649,8 +655,6 @@ export default function Home({ config }: { config: Config }) {
           )}
         </section>
       </div>
-
-      {creating && <NewAppPanel onClose={() => setCreating(false)} />}
     </div>
   );
 }

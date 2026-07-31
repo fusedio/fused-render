@@ -10,6 +10,7 @@ import type { AppInfo } from "../lib/api";
 import { navigateUrl } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppCard } from "../components/AppCard";
+import { NewAppPanel } from "./Home";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -17,6 +18,7 @@ export default function Apps() {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -79,6 +81,12 @@ export default function Apps() {
               autoFocus
             />
           </div>
+          <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            New app
+          </button>
           {tags.length > 0 && (
             <div className="apps-tags" role="group" aria-label="Filter by tag">
               <button
@@ -114,7 +122,7 @@ export default function Apps() {
             {shown.length === 0 ? (
               <div className="home-empty">
                 {all.length === 0
-                  ? "No apps yet. Head Home and hit “New app” to create one."
+                  ? "No apps yet. Hit “New app” above to create one."
                   : "No apps match — clear the search or tag filter."}
               </div>
             ) : (
@@ -127,6 +135,8 @@ export default function Apps() {
           </>
         )}
       </div>
+
+      {creating && <NewAppPanel onClose={() => setCreating(false)} />}
     </div>
   );
 }
