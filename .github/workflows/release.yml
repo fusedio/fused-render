@@ -271,7 +271,12 @@ jobs:
           # failure there must not withhold an otherwise-good link).
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
-          uv run scripts/windows/generate_update_manifest.py \
+          # --no-project --with cryptography: the script's only third-party
+          # import. Resolving the whole project here buys nothing and can fail
+          # for reasons unrelated to signing a manifest (see the same flag on
+          # the registry script in scripts/build_windows_installer.ps1).
+          uv run --no-project --with cryptography \
+            scripts/windows/generate_update_manifest.py \
             "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
           # no-cache: the updater polls this fixed name; a stale CDN copy
           # would mask a release.

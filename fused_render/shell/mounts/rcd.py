@@ -157,6 +157,9 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+_PS_TIMEOUT_S = 3.0
+
+
 def _pid_looks_like_rcd(pid: int) -> bool:
     """True only when pid's command line is recognisably an `rclone ... rcd`.
 
@@ -169,11 +172,14 @@ def _pid_looks_like_rcd(pid: int) -> bool:
     try:
         out = subprocess.run(
             ["ps", "-o", "command=", "-p", str(pid)],
-            capture_output=True, text=True, timeout=3,
+            capture_output=True, text=True, timeout=_PS_TIMEOUT_S,
         ).stdout.lower()
     except (OSError, subprocess.SubprocessError):
         return False
     return "rclone" in out and "rcd" in out
+
+
+_CONFIRM_RC_TIMEOUT_S = 3.0
 
 
 def _confirmed_our_rcd(entry: dict) -> bool:
@@ -186,7 +192,8 @@ def _confirmed_our_rcd(entry: dict) -> bool:
     port = entry.get("port")
     if port:
         try:
-            if _rc(int(port), "core/pid", timeout=3).get("pid") == pid:
+            if _rc(int(port), "core/pid",
+                   timeout=_CONFIRM_RC_TIMEOUT_S).get("pid") == pid:
                 return True
         except (RuntimeError, ValueError, TypeError):
             pass
@@ -447,6 +454,12 @@ def _rc_cancellable(port: int, method: str, params: dict | None = None,
     ) from TimeoutError()
 
 
+# Timeout of the core/pid probe _live_rcd_port makes. Named because it is not
+# only a latency knob: it is a term in RCD_REAP_WORST_CASE_S below, since the kill
+# poll can enter one probe just under its deadline.
+_LIVE_PORT_PROBE_TIMEOUT_S = 3.0
+
+
 _LIVE_PORT_TTL_S = 1.0
 
 
@@ -480,7 +493,7 @@ def _live_rcd_port(*, trust_dead_cache: bool = True) -> int | None:
             if c[1] is not None or trust_dead_cache:
                 return c[1]
     try:
-        _rc(state["port"], "core/pid", timeout=3)
+        _rc(state["port"], "core/pid", timeout=_LIVE_PORT_PROBE_TIMEOUT_S)
     except RuntimeError:
         with _live_port_lock:
             c = _mounts_pkg._live_port_cache
@@ -653,6 +666,26 @@ def _ensure_rcd_locked() -> int:
 _KILL_TIMEOUT_S = 5.0
 
 
+# Worst-case wall time of one _kill_current_rcd, DERIVED from the bounds it is
+# built out of: the identity proof (an rc core/pid that times out, then a `ps`
+# that times out — _confirmed_our_rcd tries both before it will signal anything)
+# plus each exit poll AND the one _live_rcd_port probe that poll can overrun by.
+# That last term is easy to miss and was: the loops test the clock BEFORE an
+# iteration, so an iteration entered just under the deadline still runs a full
+# probe timeout past it. Counting it per phase is the true upper bound (the
+# probe's dead-answer cache, _DEAD_PORT_TTL_S, is longer than a phase, so a phase
+# cannot pay for more than one).
+#
+# Exported because the caller that has to outlast this — app.py's quit deadline —
+# must not restate the arithmetic: tightening any constant above has to move that
+# deadline with it. Excludes the wait for _rcd_lock, which a concurrent spawn can
+# hold for its own 10s; a quit racing a mount attach is not a case worth padding
+# every deadline for, and the hard deadline terminates anyway.
+RCD_REAP_WORST_CASE_S = (
+    _CONFIRM_RC_TIMEOUT_S + _PS_TIMEOUT_S
+    + 2 * (_KILL_TIMEOUT_S + _LIVE_PORT_PROBE_TIMEOUT_S))
+
+
 def _kill_current_rcd() -> None:
     """Terminate the recorded rcd daemon, if there is one to terminate.
 
@@ -664,9 +697,17 @@ def _kill_current_rcd() -> None:
     process that inherited a recycled pid.
 
     No recorded daemon / a dead pid is a clean no-op: the caller's fresh spawn
-    just starts one. SIGTERM first (rcd unmounts cleanly on it), escalating to
-    SIGKILL only if it won't exit within _KILL_TIMEOUT_S; we poll until the
-    daemon's port stops answering AND the pid is gone."""
+    just starts one. SIGTERM first, escalating to SIGKILL only if it won't exit
+    within _KILL_TIMEOUT_S; we poll until the daemon's port stops answering AND
+    the pid is gone.
+
+    This does NOT unmount anything, and must not be trusted to: rclone's own
+    SIGTERM handler issues a PLAIN `umount`, which a busy macOS nfsmount rejects
+    (the state _force_unmount exists for), and the SIGKILL escalation skips even
+    that. Killing rcd while a kernel mount it serves is still attached is what
+    produced the "server connection interrupted / disks not ejected properly"
+    alerts on quit (INCIDENT 2026-07-29). Callers that own the mounts must run
+    the unmount ladder FIRST — see lifecycle.unmount_all_for_quit."""
     from fused_render.shell.mounts import _confirmed_our_rcd, _live_rcd_port, _pid_alive
     entry = storage.read_json(_rcd_state_path())
     if not isinstance(entry, dict):
@@ -694,10 +735,55 @@ def _kill_current_rcd() -> None:
             raise RuntimeError(f"failed to signal rcd pid {pid}: {e}") from e
         deadline = time.time() + _KILL_TIMEOUT_S
         while time.time() < deadline:
-            if _live_rcd_port() is None and not _pid_alive(pid):
+            # _pid_alive FIRST, and the short-circuit is the point: it is a free
+            # syscall and the authoritative "our daemon is gone", while
+            # _live_rcd_port makes a rc probe with its own multi-second timeout.
+            # Probing first ran that probe throughout the wait (dead-cached, but
+            # re-probed every _DEAD_PORT_TTL_S and able to overrun this deadline),
+            # which both slowed every reap and inflated the quit deadline that has
+            # to outlast it. The conjunction is unchanged — the port must also
+            # stop answering before we call the daemon gone.
+            if not _pid_alive(pid) and _live_rcd_port() is None:
                 return  # daemon gone
             time.sleep(0.1)
     raise RuntimeError(f"rcd pid {pid} did not exit after {sigs[-1].name}")
+
+
+def _rcd_is_ours_to_reap() -> bool:
+    """Whether THIS process may tear the recorded rcd down on quit — and, by
+    extension, the mounts it serves (unmount_all_for_quit asks the same
+    question: unmounting a daemon's mounts is as much a teardown of it as
+    signalling it, so the two rungs must never disagree about ownership).
+
+    Two gates, both "leave it alone":
+
+      persistence — FUSED_RENDER_RCLONE_PERSIST (dev, set by dev.sh) means the
+      detached daemon is DELIBERATELY meant to outlive this process, mounts and
+      warm VFS cache included, so a fresh server re-adopts them.
+
+      ownership — rcd is shared per-home, so the daemon on record may have been
+      spawned by ANOTHER process still using it (e.g. the app quitting while a
+      CLI `fused-render` server keeps serving mounts). A recorded spawner_pid
+      that is not us and is still alive is the spawner's to reap. A missing
+      spawner_pid (an rcd.json written before the field existed) preserves the
+      old behavior and reaps.
+
+    Does NOT take _rcd_lock — callers under the lock (stop_local_rcd) would
+    deadlock on a re-entrant acquire; this only reads rcd.json."""
+    from fused_render.shell.mounts import _pid_alive, _rclone_should_persist
+    if _rclone_should_persist():
+        return False
+    entry = storage.read_json(_rcd_state_path())
+    if isinstance(entry, dict):
+        spawner_pid = entry.get("spawner_pid") or 0
+        if spawner_pid and spawner_pid != os.getpid() and _pid_alive(spawner_pid):
+            logger.info(
+                "rcd was spawned by pid %s which is still alive; leaving the "
+                "shared daemon (and its mounts) to its owner",
+                spawner_pid,
+            )
+            return False
+    return True
 
 
 def stop_local_rcd() -> None:
@@ -708,37 +794,19 @@ def stop_local_rcd() -> None:
     On Linux/Windows the process-group killpg / Job Object already collect a
     non-detached rcd, so this is redundant there but harmless.
 
-    Gated on NOT persisting: when FUSED_RENDER_RCLONE_PERSIST is set (dev) the
-    detached daemon is meant to outlive the process, so we leave it running.
+    Gated on _rcd_is_ours_to_reap (persistence + shared-daemon ownership).
     Reuses _kill_current_rcd's safety gates (only ever signals a pid PROVEN to
     be our rclone rcd) and swallows every error — a reap failure must never
     block app quit.
 
-    Ownership gate: rcd is shared per-home, so the daemon on record may have
-    been spawned by ANOTHER process that is still using it (e.g. the app
-    quitting while a CLI `fused-render` server keeps serving mounts). When
-    rcd.json records a spawner_pid that is not us and that pid is still alive,
-    leave the daemon alone — it is the spawner's to reap. A missing
-    spawner_pid (an rcd.json written before the field existed) preserves the
-    old behavior and kills."""
-    from fused_render.shell.mounts import (
-        _kill_current_rcd,
-        _pid_alive,
-        _rclone_should_persist,
-    )
-    if _rclone_should_persist():
-        return
+    Reaps ONLY: it does not unmount, and rcd's own SIGTERM unmount cannot be
+    relied on (see _kill_current_rcd). The caller must have run
+    unmount_all_for_quit first, or the kernel mounts outlive their NFS server
+    and macOS raises the "disks not ejected properly" alerts."""
+    from fused_render.shell.mounts import _kill_current_rcd, _rcd_is_ours_to_reap
     with _rcd_lock:
-        entry = storage.read_json(_rcd_state_path())
-        if isinstance(entry, dict):
-            spawner_pid = entry.get("spawner_pid") or 0
-            if spawner_pid and spawner_pid != os.getpid() and _pid_alive(spawner_pid):
-                logger.info(
-                    "stop_local_rcd: rcd was spawned by pid %s which is still "
-                    "alive; leaving the shared daemon to its owner",
-                    spawner_pid,
-                )
-                return
+        if not _rcd_is_ours_to_reap():
+            return
         try:
             _kill_current_rcd()
         except Exception:
