@@ -741,11 +741,21 @@ budget is the binding constraint and the sidecar's own `updated_at` already date
 the write. The flag is stripped from what the agent sees (the payload is
 serialized before stamping) — it is bookkeeping for the URL store, not something
 `formatComments` should hand the model to reason about. A comment **being sent
-right now is off-limits to eviction**: the save that stamps `sent` is the save
-that can evict on it, so the payload's ids are passed to `save()` as protected and
-an over-budget write is preferred over trading a live comment for a flag (the
-"removed" bar note would be destroyed by the navigation milliseconds later, making
-that loss silent). A sent card shows a "sent ↗" chip so its exclusion is visible; the
+right now is off-limits to eviction**: the save that stamps `sent` is the save that
+can evict on it, and since the stamp is what pushes the list over budget the
+payload is then the whole sent tier — so the payload's ids are passed to `save()`
+as protected, and an over-budget write is preferred over dropping a comment from
+the live review to make room for a flag (the "removed" bar note explaining it
+would be destroyed by the navigation milliseconds later, making that loss silent).
+Eviction is not annihilation — the same `save()` mirrors every comment into the
+`<file>.json` log, where absence never deletes, so an evicted comment stays
+recoverable through the history view (§24); what it leaves is the **live** store,
+the rail and pins and the shared URL, which for a comment mid-send is loss enough.
+A sent card shows a "sent ↗" chip so its exclusion is visible — but **not** on a
+resolved card, which is the terminal state, already explains the exclusion, and
+takes the stronger dim (`.card.resolved.sent` encodes that precedence in
+specificity, because the equal-specificity pair it replaced handed the win to
+whichever rule was written second). The
 **Reopen** action clears the flag, which is the one way to hand a comment over
 again; and when nothing is sendable the button writes the inline bar note instead
 of navigating. The URL budget's eviction order gains a second tier — oldest

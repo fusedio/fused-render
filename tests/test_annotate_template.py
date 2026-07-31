@@ -24,6 +24,7 @@ The sidecar writer next door has its own behavioural tests
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -54,6 +55,30 @@ def _block(src, start, end):
     i = src.index(start)
     j = src.index(end, i) + len(end)
     return src[i:j]
+
+
+def _card_opacity(src, classes, reverse_order=False):
+    """Resolve the real CSS cascade for a card carrying `classes`.
+
+    Class-chain rules only (`.card.resolved` …), which is all the card styling
+    is. Winner = highest specificity (class count), then declaration order —
+    `reverse_order` flips that tie-break to prove a result does NOT depend on it.
+    """
+    style = src[src.index("<style>"):src.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    best = None
+    for order, m in enumerate(re.finditer(r"([^{}]+)\{([^{}]*)\}", style)):
+        sel = m.group(1).strip()
+        hit = re.search(r"(?:^|;)\s*opacity\s*:\s*([0-9.]+)", m.group(2))
+        if not hit or not re.fullmatch(r"(?:\.[A-Za-z0-9_-]+)+", sel):
+            continue
+        need = set(sel.split(".")[1:])
+        if not need <= set(classes):
+            continue
+        key = (len(need), -order if reverse_order else order)
+        if best is None or key > best[0]:
+            best = (key, float(hit.group(1)))
+    return None if best is None else best[1]
 
 
 def _node(script, tmp_path):
@@ -142,6 +167,31 @@ def test_the_send_handler_stamps_and_saves_before_it_navigates(source):
                                    "return arr;")
 
 
+def test_resolved_outranks_sent_on_a_card_that_is_both(source):
+    # The two flags are independent, so a card can carry both. `.card.resolved`
+    # and `.card.sent` are equal specificity, so the tie went to whichever was
+    # written second — `.sent` was, so a RESOLVED card rendered at the weaker 0.8
+    # and read as prominent as an open one. Resolved is the terminal state and
+    # takes the stronger dim; the point of this test is that the precedence holds
+    # on SPECIFICITY, so reordering the stylesheet cannot silently flip it.
+    both = {"card", "resolved", "sent"}
+    assert _card_opacity(source, {"card", "resolved"}) == 0.6
+    assert _card_opacity(source, {"card", "sent"}) == 0.8
+    assert _card_opacity(source, both) == 0.6
+    # Same answer with the declaration-order tie-break inverted.
+    assert _card_opacity(source, both, reverse_order=True) == 0.6
+    # An open card is undimmed by any of these rules.
+    assert _card_opacity(source, {"card"}) is None
+
+
+def test_a_resolved_card_does_not_also_claim_to_be_sent(source):
+    # One state, one signal: resolved already explains why the comment is skipped
+    # (and owns the dim), so the "sent ↗" chip would be a second, weaker reason
+    # stacked on the terminal one. Reopen clears `sent`, so the chip can never
+    # reappear stale on a reopened card either.
+    assert 'const sentTag = c.sent && !c.resolved ? chip("sent ↗") : "";' in source
+
+
 def test_the_agent_never_sees_the_internal_sent_flag(source):
     # `sent` is bookkeeping for the URL store. formatComments (claude template)
     # hands the agent the raw JSON with every field intact and enumerates the
@@ -192,7 +242,7 @@ def test_reopen_clears_sent_so_a_comment_can_be_sent_again(source):
 
 def test_a_sent_card_says_so(source):
     # Otherwise the exclusion is invisible and the button looks broken.
-    assert 'const sentTag = c.sent ? chip("sent ↗") : "";' in source
+    assert 'chip("sent ↗")' in source
     assert '(c.sent ? " sent" : "")' in source
     assert ".card.sent {" in source
 

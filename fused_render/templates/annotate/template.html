@@ -231,6 +231,16 @@
   /* Already handed to Claude — excluded from the next send, but not settled, so
      it dims less than a resolved card. The "sent ↗" chip carries the meaning. */
   .card.sent { opacity: 0.8; }
+  /* RESOLVED WINS. The two flags are independent, so a card can carry both, and
+     with only the two rules above the equal-specificity tie went to whichever
+     was written second — a resolved card then rendered at the weaker 0.8 and a
+     harmless CSS reorder silently flipped which state you were looking at.
+     Resolved is the terminal state, so it takes the stronger dim, and the
+     compound selector encodes that in SPECIFICITY rather than declaration
+     order. Matching rule in render(): a resolved card shows no "sent ↗" chip —
+     one state, one signal — and Reopen clears `sent` anyway, so the chip can
+     never come back stale. */
+  .card.resolved.sent { opacity: 0.6; }
   .card.active { background: var(--bg); border-left: 3px solid var(--accent); padding-left: 13px; }
   .card .lbl {
     display: inline-flex; align-items: center; justify-content: center;
@@ -475,13 +485,18 @@
     // every remaining comment is open and unsent. `keep` is a Set of ids that
     // are off-limits whatever their flags: the save that STAMPS `sent` is also
     // the save that could evict on it, and a comment being handed to Claude
-    // right now must never be the victim (the stamp itself is what pushed the
-    // list over budget, so the payload was the whole sent tier — one click
-    // could delete a live comment from the only store there is, with the
-    // "removed" note written into a bar the navigation destroys milliseconds
-    // later). When that leaves nothing evictable we take the over-budget write:
-    // a long URL beats trading a comment for a flag, and the send proceeds
-    // either way.
+    // right now must never be the victim. The stamp itself is what pushes the
+    // list over budget, so the payload IS the whole sent tier — one click would
+    // drop a live comment out of the review the user is in the middle of
+    // sending, and the "removed" note explaining it goes into a bar the
+    // navigation destroys milliseconds later. (Not annihilation: the same save
+    // mirrors every comment into the `<file>.json` log below, where absence
+    // never deletes, so an evicted comment is still recoverable through the
+    // history view. It leaves the LIVE store — the rail, the pins, the shared
+    // URL — which for a comment being sent right now is loss enough.) When that
+    // leaves nothing evictable we take the over-budget write: a long URL beats
+    // dropping a comment from the live review to make room for a flag, and the
+    // send proceeds either way.
     function evictTarget(arr, keep) {
       const pool0 = keep ? arr.filter((c) => !keep.has(c.id)) : arr;
       for (const tier of [(c) => c.resolved, (c) => c.sent && !c.resolved]) {
@@ -882,7 +897,11 @@
         // A sent comment is excluded from the NEXT handoff (see `sendable`), so
         // say so on the card — otherwise "Send to Claude" silently ignoring it
         // reads as the button being broken. Reopen clears the flag.
-        const sentTag = c.sent ? chip("sent ↗") : "";
+        // Not on a resolved card: resolved is the terminal state and already
+        // explains the exclusion (and owns the stronger dim, see .card.resolved
+        // .sent), so stacking a second "why this is skipped" chip on it is
+        // noise. The handoff still shows in the file's history log either way.
+        const sentTag = c.sent && !c.resolved ? chip("sent ↗") : "";
         card.innerHTML = `
           <div class="when"><span class="lbl">${label}</span> ${new Date(c.createdAt).toLocaleString()} ${tag}${sentTag}</div>
           <div class="body"></div>
