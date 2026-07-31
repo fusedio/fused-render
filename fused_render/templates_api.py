@@ -37,6 +37,7 @@ import zipfile
 from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from fused_render import zip_import
 from fused_render.server import templates as _server_templates
 from fused_render.shell import storage
 
@@ -612,10 +613,12 @@ _COPY_CHUNK = 64 * 1024  # bounded read size during extraction (zip-bomb guard)
 _IMPORT_ID_RE = re.compile(r"^[0-9a-f]{8,}$")  # secrets.token_hex output shape
 
 
-class _ImportTooLarge(Exception):
-    """Raised mid-extraction when a zip entry's ACTUAL decompressed bytes breach
-    a size cap. The declared ``file_size`` metadata is untrustworthy (a crafted
-    zip can understate it), so the caps are enforced on bytes actually written."""
+# The unpack guards live in `zip_import` — one implementation shared with app cloning
+# (fused_render/app_clone.py), which accepts an archive from a pasted URL and needs exactly
+# the same protections. Aliased here so this module's call sites (and its tests) keep their
+# existing names; the behaviour is unchanged.
+_ImportTooLarge = zip_import.ZipTooLarge
+_is_symlink_entry = zip_import.is_symlink_entry
 
 
 def _staging_root() -> str:
@@ -624,44 +627,14 @@ def _staging_root() -> str:
 
 def _sweep_stale_staging() -> None:
     """Remove staging dirs older than the TTL (opportunistic, best-effort)."""
-    root = _staging_root()
-    try:
-        names = os.listdir(root)
-    except OSError:
-        return
-    now = time.time()
-    for name in names:
-        path = os.path.join(root, name)
-        try:
-            if os.path.isdir(path) and (now - os.path.getmtime(path)) > IMPORT_TTL_SEC:
-                shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            continue
-
-
-def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
-    return stat_mod.S_ISLNK(info.external_attr >> 16)
+    zip_import.sweep_stale_staging(_staging_root(), IMPORT_TTL_SEC)
 
 
 def _reject_reason(info: zipfile.ZipInfo, staging_dir: str) -> str | None:
     """Why this zip entry is unsafe to extract, or None if it is safe. Guards
     zip-slip (absolute paths, `..` escapes, out-of-root targets) and symlink
     entries (SPEC §2.6)."""
-    name = info.filename
-    if _is_symlink_entry(info):
-        return f"symlink entry not allowed: {name!r}"
-    normalized = name.replace("\\", "/")
-    if normalized.startswith("/") or os.path.isabs(name):
-        return f"absolute path not allowed: {name!r}"
-    parts = normalized.split("/")
-    if any(p == ".." for p in parts):
-        return f"path escape ('..') not allowed: {name!r}"
-    # Defence in depth: the resolved target must stay under the staging root.
-    target = os.path.normpath(os.path.join(staging_dir, normalized))
-    root = os.path.normpath(staging_dir)
-    if target != root and not target.startswith(root + os.sep):
-        return f"path escapes the staging directory: {name!r}"
-    return None
+    return zip_import.reject_reason(info, staging_dir)
 
 
 def _parse_recommendations(staging_dir: str, warnings: list) -> dict:
@@ -737,62 +710,26 @@ async def api_import_templates(
     except zipfile.BadZipFile:
         return _error("the uploaded file is not a valid .zip")
 
-    infos = zf.infolist()
-    if len(infos) > MAX_ENTRIES:
-        return _error(f"zip has too many entries ({len(infos)} > {MAX_ENTRIES})")
-    # NOTE: the per-entry (25 MB) and total (50 MB) size caps are NOT enforced
-    # from each entry's declared `file_size` here — that metadata is attacker
-    # controlled and a crafted zip can understate it. The caps are enforced
-    # below on the bytes ACTUALLY decompressed during extraction.
-
     import_id = secrets.token_hex(16)
     staging_dir = os.path.join(_staging_root(), import_id)
 
-    # Validate EVERY entry before writing anything, so a rejected zip never
-    # leaves a partial staging dir behind.
-    for info in infos:
-        reason = _reject_reason(info, staging_dir)
-        if reason is not None:
-            return _error(f"rejected zip: {reason}")
-
-    os.makedirs(staging_dir, exist_ok=True)
-    total_written = 0
+    # Validate + extract through the shared guards (zip_import): every entry is checked
+    # before anything is written, the size caps are enforced on bytes ACTUALLY
+    # decompressed (the declared `file_size` is attacker-controlled), and a failure
+    # removes the whole staging dir rather than leaving a partial one.
     try:
-        for info in infos:
-            normalized = info.filename.replace("\\", "/")
-            target = os.path.normpath(os.path.join(staging_dir, normalized))
-            if info.is_dir():
-                os.makedirs(target, exist_ok=True)
-                continue
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            # Bounded, chunked copy: enforce the caps on the bytes ACTUALLY
-            # decompressed (per-entry, then cumulative-total), so a crafted zip
-            # that understates file_size cannot expand past the caps. On the
-            # first breach we abort and clean up the whole staging dir.
-            entry_written = 0
-            with zf.open(info) as src, open(target, "wb") as dst:
-                while True:
-                    chunk = src.read(_COPY_CHUNK)
-                    if not chunk:
-                        break
-                    entry_written += len(chunk)
-                    total_written += len(chunk)
-                    if entry_written > MAX_ENTRY_UNCOMPRESSED:
-                        raise _ImportTooLarge(
-                            f"entry {info.filename!r} is too large "
-                            f"(> {MAX_ENTRY_UNCOMPRESSED} bytes uncompressed)"
-                        )
-                    if total_written > MAX_TOTAL_UNCOMPRESSED:
-                        raise _ImportTooLarge(
-                            f"zip uncompressed size too large "
-                            f"(> {MAX_TOTAL_UNCOMPRESSED} bytes)"
-                        )
-                    dst.write(chunk)
-    except _ImportTooLarge as e:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        zip_import.extract_to_staging(
+            zf,
+            staging_dir,
+            max_entries=MAX_ENTRIES,
+            max_entry_bytes=MAX_ENTRY_UNCOMPRESSED,
+            max_total_bytes=MAX_TOTAL_UNCOMPRESSED,
+        )
+    except zip_import.ZipRejected as e:
+        return _error(str(e))
+    except zip_import.ZipTooLarge as e:
         return _error(str(e))
     except (OSError, zipfile.BadZipFile) as e:
-        shutil.rmtree(staging_dir, ignore_errors=True)
         return _error(f"could not unpack the zip: {e}")
 
     # A candidate template = a top-level directory; valid iff it holds a

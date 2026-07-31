@@ -126,6 +126,17 @@ class Harness:
         return json.loads(path.read_text(encoding="utf-8")).get(str(self.page))
 
 
+def _has_flag(argv: list[str], flag: str, value: str) -> bool:
+    """Is `flag value` present as an adjacent pair anywhere in argv?
+
+    Position-independent on purpose: asserting `argv[-2:]` froze "and nothing follows it"
+    into every caching test, so appending an unrelated flag (the clone posture) broke four
+    of them without any behaviour changing. The property these tests care about is that the
+    value was passed, not where.
+    """
+    return any(a == flag and b == value for a, b in zip(argv, argv[1:]))
+
+
 def _harness(tmp_path, monkeypatch) -> Harness:
     return Harness(tmp_path, monkeypatch)
 
@@ -599,7 +610,7 @@ def test_deploy_persists_cache_max_age(tmp_path, monkeypatch):
     # manifest — since a managed Fused environment reads only the flag (021
     # spec's mount-level cache_settings, independent of the bundle).
     (call,) = h.calls()
-    assert call["argv"][-2:] == ["--cache-max-age", "5m"]
+    assert _has_flag(call["argv"], "--cache-max-age", "5m")
 
 
 def test_deploy_defaults_cache_max_age_off(tmp_path, monkeypatch):
@@ -655,7 +666,7 @@ def test_repoint_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkey
     assert h.pointer()["cache_max_age"] == "1h"
     repoint_call = h.calls()[-1]
     assert repoint_call["argv"][1] == "repoint"
-    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
+    assert _has_flag(repoint_call["argv"], "--cache-max-age", "1h")
 
 
 def test_recreate_revive_on_fused_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
@@ -690,6 +701,153 @@ def test_recreate_revive_on_fused_backend_applies_the_new_cache_max_age(tmp_path
     assert verbs_and_flags == [("recreate", False), ("repoint", True)]
 
 
+# -- clone posture (the "let viewers clone this app" toggle) -------------------
+
+
+def test_deploy_defaults_allow_clone_off(tmp_path, monkeypatch):
+    # A page's .py sources ship in the artifact but are not otherwise web-readable, so
+    # enabling downloads is a disclosure and must never be acquired by omission.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    resp = h.client.post(
+        "/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_clone"] is False
+    assert h.pointer()["allow_clone"] is False
+    assert "--allow-clone" not in h.calls()[-1]["argv"]
+
+
+def test_deploy_enables_cloning_on_create(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_clone"] is True
+    assert h.pointer()["allow_clone"] is True
+    argv = h.calls()[-1]["argv"]
+    assert argv[1] == "create"
+    assert "--allow-clone" in argv
+
+
+def test_redeploy_turns_cloning_off_explicitly(tmp_path, monkeypatch):
+    # The CLI PRESERVES the posture when the flag is omitted on repoint — correct for a
+    # CLI, wrong for this dialog, whose toggle is always a definite statement. Without the
+    # explicit --no-allow-clone, unticking the box in the modal would silently leave the
+    # source downloadable.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": True},
+        headers=FUSED,
+    )
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": False},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_clone"] is False
+    assert h.pointer()["allow_clone"] is False
+    argv = h.calls()[-1]["argv"]
+    assert argv[1] == "repoint"
+    assert "--no-allow-clone" in argv
+    assert "--allow-clone" not in argv
+
+
+def test_reviving_a_revoked_mount_restates_the_posture(tmp_path, monkeypatch):
+    # recreate --same-token carries the old posture forward, so the follow-up repoint is
+    # the only place this deploy's intent gets stated — it must not be skipped there.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED
+    )
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "revoked"}],
+            "recreate": {"token": "abc123", "status": "active"},
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": True},
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_clone"] is True
+    verbs = [c["argv"][1] for c in h.calls()]
+    assert verbs[-2:] == ["recreate", "repoint"]
+    assert "--allow-clone" in h.calls()[-1]["argv"]
+
+
+def test_force_new_carries_the_posture_onto_the_fresh_mount(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario({"create": {"token": "abc123", "status": "active"}})
+    h.client.post(
+        "/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED
+    )
+    h.set_scenario({"create": {"token": "def456", "status": "active"}})
+    resp = h.client.post(
+        "/api/deploy",
+        json={
+            "page": str(h.page),
+            "env": "cloud",
+            "allow_clone": True,
+            "force_new": True,
+        },
+        headers=FUSED,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["token"] == "def456"
+    assert resp.json()["allow_clone"] is True
+    create = [c for c in h.calls() if c["argv"][1] == "create"][-1]
+    assert "--allow-clone" in create["argv"]
+
+
+def test_deploy_rejects_non_boolean_allow_clone(tmp_path, monkeypatch):
+    h = _harness(tmp_path, monkeypatch)
+    resp = h.client.post(
+        "/api/deploy",
+        json={"page": str(h.page), "env": "cloud", "allow_clone": "yes"},
+        headers=FUSED,
+    )
+    assert resp.status_code == 400
+    assert "allow_clone" in resp.json()["error"]
+
+
+def test_shares_report_the_live_clone_posture(tmp_path, monkeypatch):
+    # The mount is the authority, not the pointer record: the modal reconciles against
+    # this on open, so a posture changed outside the app (the CLI, another machine) shows
+    # up rather than being masked by a stale local value. A mount that reports nothing
+    # reads False — the fail-closed direction.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(
+        {
+            "list": [
+                {"token": "abc123", "status": "active", "allow_clone": True},
+                {"token": "def456", "status": "active"},
+            ]
+        }
+    )
+    mounts = h.client.get("/api/deploy/shares", params={"env": "cloud"}).json()["mounts"]
+    by_token = {m["token"]: m for m in mounts}
+    assert by_token["abc123"]["allow_clone"] is True
+    assert by_token["def456"]["allow_clone"] is False
+
+
 def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypatch):
     # AWS applies a redeploy's cache_max_age two ways: build_html_artifact re-reads
     # the bundle's own manifest on every repoint, AND deploy_page now also passes
@@ -718,7 +876,7 @@ def test_repoint_on_aws_backend_applies_the_new_cache_max_age(tmp_path, monkeypa
     assert resp.status_code == 200, resp.text
     assert resp.json()["cache_max_age"] == "1h"
     repoint_call = h.calls()[-1]
-    assert repoint_call["argv"][-2:] == ["--cache-max-age", "1h"]
+    assert _has_flag(repoint_call["argv"], "--cache-max-age", "1h")
 
 
 def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, monkeypatch):
@@ -763,7 +921,7 @@ def test_force_new_replaces_the_deployment_and_revokes_the_old_mount(tmp_path, m
     calls = h.calls()
     assert [c["argv"][1] for c in calls] == ["create", "create", "revoke"]
     create_call = calls[1]
-    assert create_call["argv"][-2:] == ["--cache-max-age", "1h"]
+    assert _has_flag(create_call["argv"], "--cache-max-age", "1h")
     revoke_call = calls[2]
     assert revoke_call["argv"][1:3] == ["revoke", "abc123"]  # the superseded mount
 
@@ -939,7 +1097,7 @@ def test_redeploy_absent_mount_falls_back_to_fresh_create(tmp_path, monkeypatch)
     assert h.pointer()["url"] == "https://serve.example/new456"
     # The fresh-create fallback also carries the explicit CLI flag (not just the
     # export manifest), same as the first-deploy path.
-    assert h.calls()[-1]["argv"][-2:] == ["--cache-max-age", "1h"]
+    assert _has_flag(h.calls()[-1]["argv"], "--cache-max-age", "1h")
 
 
 def test_redeploy_absent_mount_honors_a_custom_token(tmp_path, monkeypatch):

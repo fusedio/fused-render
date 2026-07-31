@@ -254,6 +254,14 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
+    # Cloning a DEPLOYED page (app_clone.py) — GET /api/clone-app/info previews a pasted
+    # page URL, POST /api/clone-app downloads + validates + unpacks it into
+    # ~/Documents/Fused. Distinct from deeplink's git clone above: no `.git`, no identity,
+    # no update-in-place — every clone lands in a fresh folder. Like shell/*, it imports no
+    # server module, so the include stays acyclic.
+    from fused_render.app_clone import router as app_clone_router
+
+    app.include_router(app_clone_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)
