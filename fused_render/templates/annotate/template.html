@@ -287,6 +287,12 @@
      affordances visibly agree instead of the list looking like a second,
      unrelated mechanism. */
   .hrow.next .hdot { color: var(--accent); }
+  /* Where disk sits in the chain. Without it the list gives no clue why the
+     target is the row it is — the rule is positional, not "the newest that
+     differs" (SPEC §33/FH-3). */
+  .hrow.here { color: var(--fg); }
+  .hrow.here .hdot { color: var(--fg); }
+  .hrow.here .hwhen { color: var(--fg); }
   .hrow .hv { font-weight: 600; min-width: 22px; }
   .hrow .hwhen { color: var(--fg-muted); flex: 1 1 auto; }
   .hrow .hd { font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -321,7 +327,15 @@
     margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
     border: 1px solid var(--error); border-radius: 8px; color: var(--error);
   }
+  /* Shown only when the write is genuinely unrecoverable — content in no
+     checkpoint AND no sidecar stash — so the extra gesture stays meaningful. */
+  #confirmack {
+    display: flex; align-items: flex-start; gap: 8px;
+    margin: 10px 0 0; font-size: 12px; color: var(--error);
+  }
+  #confirmack input { margin: 2px 0 0; accent-color: var(--error); }
   #confirmacts { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+  #confirmacts #confirmgo:disabled { opacity: 0.4; cursor: default; }
   #confirmacts button {
     font: inherit; cursor: pointer; border-radius: 8px; padding: 6px 12px;
     color: var(--fg); background: var(--bg); border: 1px solid var(--line);
@@ -378,6 +392,10 @@
       <div id="confirmsub"></div>
       <dl id="confirmfacts"></dl>
       <p id="confirmwarn" hidden></p>
+      <label id="confirmack" hidden>
+        <input type="checkbox" />
+        <span>I understand this content cannot be recovered.</span>
+      </label>
       <div id="confirmacts">
         <button id="confirmno">Cancel</button>
         <button id="confirmgo">Revert</button>
@@ -1509,7 +1527,22 @@
       histFoot.hidden = !timeline.available;
       revertBtn.hidden = !timeline.versions.length;
       const target = timeline.revert;
-      revertBtn.disabled = busy || !target || timeline.writable === false;
+      // `at_earliest` is a terminal state, not a failure: the walk has reached
+      // the start of the chain and there is nothing older. The button goes dead
+      // and the note says why, because the alternative — falling back to
+      // something NEWER — is exactly what made the old rule oscillate.
+      //
+      // But ONLY an enriched timeline may claim it. The boot timeline skips the
+      // transcripts (they reach 5 MB+), so it cannot see the did-not-exist
+      // boundary and reports at_earliest one step early — and believing it
+      // disabled the button on a file whose remaining step back was a delete
+      // that `revert_plan`, which always enriches, would have offered. Found by
+      // pressing the button four times in the running app. So while unenriched,
+      // a missing target leaves the button LIVE and the click asks the plan,
+      // which is the authority.
+      const terminal = timeline.at_earliest && timeline.enriched;
+      revertBtn.disabled = busy || timeline.writable === false ||
+        (!target && (terminal || !timeline.versions.length));
       histToggle.hidden = !timeline.versions.length;
       histList.hidden = !histOpen;
       histList.textContent = "";
@@ -1518,11 +1551,17 @@
         for (const v of timeline.versions) {
           rows++;
           const row = document.createElement("div");
+          const here = v.id === timeline.position;
           row.className = "hrow" + (v.id === target ? " next" : "") +
-            (v.differs ? "" : " same");
+            (here ? " here" : "") + (v.differs ? "" : " same");
           const dot = document.createElement("span");
           dot.className = "hdot";
-          dot.textContent = v.id === target ? "●" : "○";
+          // Three states, because the rule is positional (SPEC §33/FH-3): where
+          // disk sits now, the one step back the button takes, and everything
+          // else. Without the position marker the list gives no clue why the
+          // target is the row it is.
+          dot.textContent = here ? "◉" : v.id === target ? "●" : "○";
+          if (here) row.title = "what is on disk now";
           const num = document.createElement("span");
           num.className = "hv";
           // A did-not-exist checkpoint IS a numbered version of the chain — in a
@@ -1586,6 +1625,11 @@
       }
     }
 
+    // Returns "" on success and the error string otherwise, so a CALLER can
+    // decide what to say. Returning nothing was the same write-order bug as
+    // below, one path over: the post-revert reload set histNote to its error and
+    // the success message then overwrote it, so a revert that landed but whose
+    // timeline could not be re-read reported unqualified success.
     async function loadHistory(enrich) {
       const out = await callHistory({ action: "history", enrich: !!enrich });
       if (out.error) {
@@ -1593,11 +1637,12 @@
         histNote.className = "error";
         histNote.textContent = out.error;
         revertBtn.disabled = true;
-        return;
+        return out.error;
       }
       if (enrich) enriched = true;
       timeline = out;
       renderHistory();
+      return "";
     }
 
     histToggle.addEventListener("click", async () => {
@@ -1615,6 +1660,11 @@
     });
 
     let pending = null; // the plan awaiting confirmation
+    const ackRow = document.getElementById("confirmack");
+    const ack = ackRow.querySelector("input");
+    ack.addEventListener("change", () => {
+      document.getElementById("confirmgo").disabled = !ack.checked;
+    });
 
     function closeConfirm() {
       confirmEl.classList.remove("open");
@@ -1628,13 +1678,16 @@
       if (e.key === "Escape" && confirmEl.classList.contains("open")) closeConfirm();
     });
 
-    // `versionId === null` means "the last change" — the helper picks the newest
-    // version whose content DIFFERS from disk, which is the only rule that is
-    // right whether a checkpoint is a pre- or post-image (SPEC §33/FH-1).
+    // `versionId === null` means "the last change", resolved by the POSITIONAL
+    // rule (SPEC §33/FH-3): where disk sits in the chain, then one step back.
+    // No `enrich` is passed — deliberately. It used to be `enrich: enriched`,
+    // which made the same button perform a restore before History was expanded
+    // and a delete after; the plan and the write now always enrich, so only the
+    // panel's own display is affected by the disclosure widget.
     async function askRevert(versionId) {
       if (busy) return;
       const plan = await callHistory({
-        action: "revert_plan", version_id: versionId, enrich: enriched,
+        action: "revert_plan", version_id: versionId,
       });
       if (plan.error || plan.ok === false) {
         histNote.className = "error";
@@ -1646,11 +1699,16 @@
       document.getElementById("confirmtitle").textContent =
         del ? "Delete this file?" : "Revert this file?";
       const sub = document.getElementById("confirmsub");
+      // `_epoch` reports 0 for a transcript stamp it could not parse, and
+      // "1/1/1970" on a destructive confirm is a confident lie — the row list
+      // already refuses to tell it, so the sheet must too.
+      const when = plan.mtime
+        ? " from " + new Date(plan.mtime * 1000).toLocaleString()
+        : " (recorded at an unknown time)";
       sub.textContent = del
-        ? "The file did not exist at this checkpoint — Claude created it. " +
-          "Reverting past that point DELETES it."
-        : "Restoring Claude's checkpoint v" + plan.version + " from " +
-          new Date(plan.mtime * 1000).toLocaleString() + ".";
+        ? "The file did not exist at this checkpoint — Claude created it" +
+          when + ". Reverting past that point DELETES it."
+        : "Restoring Claude's checkpoint v" + plan.version + when + ".";
       const facts = document.getElementById("confirmfacts");
       facts.textContent = "";
       const rows = [
@@ -1673,20 +1731,35 @@
         dd.textContent = v;
         facts.append(dt, dd);
       }
-      // The sharp hazard, stated plainly: current content is often in NO
-      // checkpoint (the file moved on after the last one), so this write can
-      // destroy the only copy. annotate.py stashes it into the sidecar as a
-      // backstop, but the user is told BEFORE the write either way.
+      // The sharp hazard, stated plainly — and the SHEET NOW KNOWS whether a
+      // copy will actually be kept, rather than hedging. `plan.stash` is the
+      // same predicate the write itself runs, so the two cannot disagree. The
+      // hedge was the bug: "a copy is kept unless too large or not text" made
+      // the one genuinely unrecoverable case (content in no checkpoint AND no
+      // stash) read exactly like the safe one, and the user found out in the
+      // past tense, beside "Reverted to v3."
+      const irreversible = !!plan.unique_current && plan.stash === false;
       const warn = document.getElementById("confirmwarn");
       warn.hidden = !plan.unique_current;
-      warn.textContent = plan.unique_current
-        ? "What is on disk now matches no checkpoint, so this overwrites " +
-          "content that exists nowhere else. A copy is kept in the file's " +
-          ".json sidecar (revertStash) unless it is too large or not text. " +
-          "Unsaved edits in the framed view are not on disk and are not part " +
-          "of this comparison."
-        : "";
-      document.getElementById("confirmgo").textContent = del ? "Delete" : "Revert";
+      warn.textContent = !plan.unique_current ? "" : (irreversible
+        ? "What is on disk now matches no checkpoint, and NO copy of it will " +
+          "be kept — " + (plan.stash_note || "the sidecar backstop is " +
+          "unavailable") + ". This content will be gone permanently and " +
+          "cannot be recovered from anywhere."
+        : "What is on disk now matches no checkpoint, so this overwrites " +
+          "content that exists nowhere else. A copy will be kept in the " +
+          "file's .json sidecar (revertStash). Unsaved edits in the framed " +
+          "view are not on disk and are not part of this comparison.");
+      // An irreversible write gets a second, deliberate gesture rather than the
+      // same one-click Revert: the ordinary case loses nothing unrecorded, so
+      // gating both would train the tick away.
+      ack.checked = false;
+      ackRow.hidden = !irreversible;
+      const go = document.getElementById("confirmgo");
+      go.textContent = irreversible
+        ? (del ? "Delete permanently" : "Overwrite permanently")
+        : (del ? "Delete" : "Revert");
+      go.disabled = irreversible;
       confirmEl.classList.add("open");
       document.getElementById("confirmno").focus();
     }
@@ -1697,8 +1770,14 @@
       closeConfirm();
       busy = true;
       revertBtn.disabled = true;
+      // The plan's own id is echoed back — this action never picks a target —
+      // and `confirm_unique` is the token the bridge demands before it will
+      // destroy content that is in no checkpoint. Both are enforced in
+      // annotate.py, not only here, so a second caller cannot inherit an
+      // unguarded write.
       const out = await callHistory({
-        action: "revert", version_id: plan.id, enrich: enriched,
+        action: "revert", version_id: plan.id,
+        confirm_unique: !!plan.unique_current,
       });
       busy = false;
       if (out.error || out.ok === false) {
@@ -1725,14 +1804,26 @@
       } catch (e) {
         frame.src = frame.src; // torn-down frame — force it through the src
       }
-      await loadHistory(enriched);
-      histNote.className = "";
-      histNote.textContent = (out.action === "delete"
+      const reloadErr = await loadHistory(enriched);
+      const outcome = (out.action === "delete"
         ? "File deleted."
         : "Reverted to " + plan.id.split("@")[1] + ".") +
         (out.stashed
           ? " Previous content kept in the .json sidecar."
           : " " + (out.stash_note || "No copy of the previous content was kept."));
+      // loadHistory may itself have failed and written an error here. Reporting
+      // plain success over it is the SAME write-order bug as the failure branch
+      // above — fixed as a class this time, not one instance: the outcome is
+      // real and must be said, but it cannot erase the fact that the panel is
+      // now stale.
+      if (reloadErr) {
+        histNote.className = "error";
+        histNote.textContent = outcome +
+          " The timeline could not be reloaded — " + reloadErr;
+      } else {
+        histNote.className = "";
+        histNote.textContent = outcome;
+      }
     });
 
     revertBtn.addEventListener("click", () => askRevert(null));
