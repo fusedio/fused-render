@@ -24,6 +24,18 @@ fused_render/_baked_branch.py
 .coverage.*
 coverage.xml
 htmlcov/
-# Runtime sidecar written next to an opened *.html (bookmark/session state,
-# e.g. learn/index.html.json); it's per-machine state, never source.
+# Runtime sidecar written next to an opened file: the server writes `<file>.json`
+# beside ANY file you open, whatever its extension (bookmark/session/comment
+# state — e.g. learn/index.html.json, ARCHITECTURE.md.json). It is per-machine
+# state and never source: a committed one hijacks the default view for everyone,
+# because an empty-query open restores its `lastSession` (ARCHITECTURE.md.json
+# was committed by accident and pinned the doc to one machine's git-mode
+# session). The rule was `*.html.json` only, so every other extension slipped
+# through. Listed per extension rather than as a `*.*.json` wildcard, which would
+# also swallow genuine configs (tsconfig.build.json, settings.local.json, …) —
+# add extensions here as they come up; nothing tracked has ever matched these.
 *.html.json
+*.md.json
+*.markdown.json
+*.py.json
+*.txt.json
