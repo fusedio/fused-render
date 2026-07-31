@@ -540,17 +540,52 @@ def _check_op(op, sha, entry):
         rel = (entry or "").replace("\\", "/").strip("/")
         if not rel:
             raise _Refused("missing", "No change was selected.")
-        # Containment is checked on the STRING: `..` is not a pathspec error we
-        # want to surface as a raw git failure, and an absolute path would
-        # silently resolve outside the repository.
+        # First pass, on the STRING and before any I/O: `..` is not a pathspec
+        # error we want to surface as a raw git failure, and an absolute path
+        # would silently resolve outside the repository. This is NOT the whole
+        # containment check — see `_contain` for the half that needs the root.
         if os.path.isabs(entry) or any(part == ".." for part in rel.split("/")):
             raise _Refused("outside-repo", "That path is outside the repository.")
 
+
+def _contain(root, rel, full):
+    """The half of the containment check that needs the filesystem (GT-6).
+
+    `_check_op`'s string test is necessary and not sufficient: it proves the
+    entry NAMES nothing outside the repository, but every consumer of that name
+    FOLLOWS symlinks. `os.path.isfile` follows them, and so does
+    `git diff --no-index -- /dev/null <rel>`, which renders the target's bytes —
+    so an untracked `link -> /etc/shadow` sitting inside the repo passes a string
+    test made of nothing but repo-relative segments and then puts that file in
+    the diff pane. The check plainly means "inside the repository", so it is made
+    to mean that:
+
+    * the REALPATH must still be under the root — which also covers a symlinked
+      parent directory, where the final component is not a link at all;
+    * and a symlinked entry is refused outright even when its target stays
+      inside, because `--no-index` would show the target's content under the
+      link's name, which is a different file than the row claims.
+
+    Only the working-tree op needs this. A TRACKED symlink goes through
+    `git diff HEAD -- <rel>`, where git handles it as a symlink (it diffs the
+    link's target path text, it does not read through it) — the `--no-index`
+    branch is the one that reads bytes off whatever the name resolves to.
+    """
+    real_root = os.path.realpath(root)
+    real = os.path.realpath(full)
+    if real != real_root and not real.startswith(real_root + os.sep):
+        raise _Refused("outside-repo",
+                       f"{rel} resolves outside the repository.")
+    if os.path.islink(full):
+        raise _Refused("symlink",
+                       f"{rel} is a symbolic link. Open its target directly — "
+                       "this view will not read through a link.")
 
 
 def _worktree(root, entry, has_commits):
     rel = (entry or "").replace("\\", "/").strip("/")
     full = os.path.join(root, *rel.split("/"))
+    _contain(root, rel, full)
     tracked = _git(root, "ls-files", "--error-unmatch", "-z", *_pathspec(rel),
                    allow=(0, 1, 128)).strip(b"\0")
     untracked = not tracked

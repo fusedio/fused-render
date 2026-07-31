@@ -703,3 +703,65 @@ def test_the_last_page_still_reports_no_more_when_a_record_drops(reader, repo, m
     assert got["has_more"] is False
 
 
+# ---------------------------------------------------------- symlink containment
+
+
+def test_an_untracked_symlink_escaping_the_repository_is_refused(reader, tmp_path):
+    # `_check_op`'s string check passes — every segment is repo-relative — but
+    # `git diff --no-index` follows the link and would render the target's bytes.
+    root = str(tmp_path / "linky")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "seed.txt", "seed\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-06-01T10:00:00+00:00")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SENSITIVE\n", encoding="utf-8")
+    os.symlink(str(outside), os.path.join(root, "leak.txt"))
+
+    got = reader.main(root, op="worktree", entry="leak.txt")
+    assert got["ok"] is False
+    assert got["reason"] in ("outside-repo", "symlink")
+    assert "SENSITIVE" not in str(got)
+
+
+def test_a_symlink_whose_target_stays_inside_is_still_refused(reader, tmp_path):
+    # Containment passes here, so `islink` is the check that catches it: the diff
+    # would show the target's content under the link's name — a different file
+    # than the row claims.
+    root = str(tmp_path / "inside")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "real.txt", "real\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-06-02T10:00:00+00:00")
+    os.symlink(os.path.join(root, "real.txt"), os.path.join(root, "alias.txt"))
+
+    got = reader.main(root, op="worktree", entry="alias.txt")
+    assert got["ok"] is False and got["reason"] == "symlink"
+
+
+def test_a_symlinked_parent_directory_is_refused(reader, tmp_path):
+    # The case `os.path.islink` on the final component misses entirely: the entry
+    # itself is an ordinary file, reached through a linked directory.
+    root = str(tmp_path / "viadir")
+    os.makedirs(root)
+    git(root, "init", "-q")
+    write(root, "seed.txt", "seed\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "seed", when="2026-06-03T10:00:00+00:00")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "file.txt").write_text("OUTSIDE\n", encoding="utf-8")
+    os.symlink(str(elsewhere), os.path.join(root, "hop"))
+
+    got = reader.main(root, op="worktree", entry="hop/file.txt")
+    assert got["ok"] is False and got["reason"] == "outside-repo"
+    assert "OUTSIDE" not in str(got)
+
+
+def test_an_ordinary_entry_is_unaffected_by_the_containment_check(reader, repo):
+    # The guard must not cost the happy path: a plain tracked file and a plain
+    # untracked file both still diff.
+    assert reader.main(repo, op="worktree", entry="pkg/core.py")["ok"] is True
+    assert reader.main(repo, op="worktree", entry="pkg/fresh.txt")["ok"] is True
