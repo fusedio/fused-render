@@ -5467,7 +5467,7 @@ select.field-control:has(option[value=""]:checked) {
    box. One bordered surface holding the textarea (borderless inside it) and a
    footer bar with the keyboard hint and the round send button. */
 .home-composer-wrap {
-  max-width: 620px;
+  width: 100%;
   margin-bottom: 18px;
   display: flex;
   flex-direction: column;
@@ -5561,6 +5561,9 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .home-composer-sample {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 5px 12px;
   font: inherit;
   font-size: 12.5px;
@@ -5580,6 +5583,16 @@ select.field-control:has(option[value=""]:checked) {
 .home-composer-sample:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.home-composer-sample-glyph {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+/* Icon-only round chip that advances to the next batch of ideas. */
+.home-composer-shuffle {
+  padding: 5px 8px;
 }
 
 /* Doorways: three equal cards, one per entry point. Glyph square repaints

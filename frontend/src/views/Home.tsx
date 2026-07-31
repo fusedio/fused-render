@@ -108,12 +108,18 @@ async function createAppUnderFreeName(name: string, prompt: string) {
   }
 }
 
-// Starter ideas under the composer: a short chip label on the UI, and the
-// verbose brief that actually lands in the box on click (never submits) —
-// detailed enough that Claude builds the right thing on the first pass.
-const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
+// Starter ideas under the composer (v0-style): an icon + short label on the
+// chip, and the verbose brief that actually lands in the box on click (never
+// submits) — detailed enough that Claude builds the right thing first pass.
+// A shuffle button cycles through the pool three at a time.
+const SAMPLE_PROMPTS: { label: string; prompt: string; glyph: ReactNode }[] = [
   {
     label: "Habit tracker",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M20 6L9 17l-5-5" />
+      </svg>
+    ),
     prompt:
       "A habit tracker. Let me define habits with a name and a target cadence " +
       "(daily or specific weekdays), check them off for today, and edit or delete them. " +
@@ -122,6 +128,11 @@ const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
   },
   {
     label: "Markdown notes",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+      </svg>
+    ),
     prompt:
       "A markdown notes app. A sidebar lists my notes sorted by last edited; " +
       "I can create, rename, and delete notes, and edit them with a live markdown preview. " +
@@ -130,11 +141,56 @@ const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
   },
   {
     label: "CSV dashboard",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 3v18h18M8 17V9M13 17V5M18 17v-6" />
+      </svg>
+    ),
     prompt:
       "A CSV dashboard. Let me drop or pick a CSV file, then show a sortable, filterable " +
       "table of its rows plus summary stats per numeric column (min, max, mean, nulls). " +
       "Let me pick columns to chart as a bar, line, or scatter plot. " +
       "Handle large-ish files gracefully and remember the last file I opened.",
+  },
+  {
+    label: "Mini game",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6 12h4M8 10v4M15 11h.01M18 13h.01M17.3 5H6.7a4.7 4.7 0 0 0-4.6 5.6l1 5A3 3 0 0 0 8 17.4l.6-1.4h6.8l.6 1.4a3 3 0 0 0 4.9-1.8l1-5A4.7 4.7 0 0 0 17.3 5z" />
+      </svg>
+    ),
+    prompt:
+      "A 2048-style sliding tile game. Arrow keys (and touch swipes) slide and merge " +
+      "tiles on a 4x4 grid, with smooth animations and a score counter. " +
+      "Detect game over and win states with a restart button, " +
+      "and keep the best score locally so it survives restarts.",
+  },
+  {
+    label: "Finance calculator",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </svg>
+    ),
+    prompt:
+      "A compound-interest and loan calculator. Inputs for principal, rate, term, and " +
+      "monthly contribution or payment; show the resulting balance or amortization " +
+      "schedule as both a table and a line chart. " +
+      "Update results live as inputs change and format all amounts as currency.",
+  },
+  {
+    label: "Pomodoro timer",
+    glyph: (
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="13" r="8" />
+        <path d="M12 9v4l2.5 2.5M9 2h6" />
+      </svg>
+    ),
+    prompt:
+      "A pomodoro focus timer. Configurable work/short-break/long-break durations, " +
+      "a large countdown with start/pause/reset, and an automatic cycle through " +
+      "sessions with a chime between them. " +
+      "Log completed pomodoros per day and show a simple daily history.",
   },
 ];
 
@@ -145,6 +201,8 @@ function HeroComposer() {
   const [prompt, setPrompt] = useState("");
   const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
   const [error, setError] = useState<string | null>(null);
+  // Which window of three starter chips is showing; shuffle advances it.
+  const [sampleOffset, setSampleOffset] = useState(0);
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -230,18 +288,36 @@ function HeroComposer() {
         </div>
       </div>
       <div className="home-composer-samples">
-        {SAMPLE_PROMPTS.map((s) => (
-          <button
-            key={s.label}
-            type="button"
-            className="home-composer-sample"
-            title={s.prompt}
-            disabled={busy}
-            onClick={() => setPrompt(s.prompt)}
-          >
-            {s.label}
-          </button>
-        ))}
+        {[0, 1, 2].map((i) => {
+          const s = SAMPLE_PROMPTS[(sampleOffset + i) % SAMPLE_PROMPTS.length];
+          return (
+            <button
+              key={s.label}
+              type="button"
+              className="home-composer-sample"
+              title={s.prompt}
+              disabled={busy}
+              onClick={() => setPrompt(s.prompt)}
+            >
+              <span className="home-composer-sample-glyph" aria-hidden="true">
+                {s.glyph}
+              </span>
+              {s.label}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          className="home-composer-sample home-composer-shuffle"
+          aria-label="More ideas"
+          title="More ideas"
+          disabled={busy}
+          onClick={() => setSampleOffset((o) => (o + 3) % SAMPLE_PROMPTS.length)}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" />
+          </svg>
+        </button>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
