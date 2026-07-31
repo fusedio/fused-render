@@ -25,6 +25,16 @@ detect a read-only remote mount, degrading to pure os.access when appenv isn't
 reachable (a copy of this folder taken without its `shared/` sibling). See
 _sidecar_writable.
 
+It ALSO serves the view's revert surface (SPEC §33, D193), which is a different
+job on the same file: the version timeline and the restore itself live in
+`../shared/file_history.py` (Claude Code's own checkpoint store, deliberately not
+git), and this module is the bridge that (a) turns every failure into an
+`{"error": ...}` dict, because anything raised out of `main` becomes the red
+traceback overlay and "this file has no history" is not an error, and (b) stashes
+the pre-restore content into the sidecar it already owns. That stash exists
+because the current bytes on disk are frequently in NO checkpoint — the file
+moved on after the last one — so a restore can vaporize work with no other copy.
+
 Actions:
   main(action="record", file=..., comments=[...], deleted_ids=[...])
     -> {"recorded": True, "count": N, "deleted": M}
@@ -32,6 +42,13 @@ Actions:
     -> {"writable": bool}  # can the sidecar be written? Commenting still
        # works read-only (the URL is the live store); the template just warns
        # that history won't be recorded.
+  main(action="history", file=..., enrich=False)
+    -> file_history.timeline(...) — versions + current + revert selector + note
+  main(action="revert_plan", file=..., version_id=None, enrich=False)
+    -> what the write would do, for the confirm step (version_id=None means
+       "the last change")
+  main(action="revert", file=..., version_id=None, enrich=False)
+    -> {"ok": True, "action": "restore"|"delete", "stashed": bool, ...}
 """
 import json
 import os
@@ -196,7 +213,92 @@ def _sidecar_writable(file: str) -> bool:
     return os.access(os.path.dirname(path), os.W_OK)
 
 
-def main(action: str = "record", file: str = "", comments=None, deleted_ids=None) -> dict:
+# ------------------------------------------------------------- revert (§33)
+
+#: Stash entries kept in the sidecar. Small on purpose: this is an "oh no, undo
+#: the undo" buffer, not a version store — `file_history` already is one — and
+#: the sidecar is a small JSON file the claude template rewrites constantly.
+STASH_KEEP = 3
+#: Content above this is NOT copied into the sidecar. Better a revert with no
+#: stash (and the caller told, so the UI can make its confirm step firmer) than a
+#: multi-megabyte sidecar that every other writer of it then has to round-trip.
+STASH_BYTE_CAP = 256 * 1024
+
+
+def _file_history():
+    """The shared reader, or None when this folder was copied without its
+    `shared/` sibling — the same degradation `_sidecar_writable` has for appenv.
+    Revert is simply not offered; nothing else in the view changes."""
+    try:
+        import file_history
+        return file_history
+    except Exception:
+        return None
+
+
+def _stash(file: str, version_id: str) -> tuple:
+    """Copy the CURRENT content into the sidecar's `revertStash`, newest last.
+
+    Called before the write lands, because after it there is nothing left to
+    copy. Returns (stashed, note) rather than raising: a revert that the user
+    confirmed must not be blocked by a sidecar we could not write — losing the
+    safety net is worth reporting, not worth refusing over.
+
+    Skipped for content that is too large (see STASH_BYTE_CAP) or not UTF-8
+    text: the sidecar is JSON, so binary would have to be base64'd, which is the
+    same size problem with worse ergonomics.
+    """
+    try:
+        size = os.path.getsize(file)
+    except OSError:
+        return False, "nothing on disk to stash"
+    if size > STASH_BYTE_CAP:
+        return False, (f"previous content ({size} bytes) is too large to stash "
+                       f"in the sidecar — it is not recoverable from here")
+    try:
+        with open(file, encoding="utf-8") as fh:
+            content = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return False, ("previous content is not UTF-8 text — not stashed, and "
+                       "not recoverable from here")
+    if not _sidecar_writable(file):
+        return False, f"{_sidecar_path(file)!r} is read-only — nothing stashed"
+    data = _load_sidecar(file)
+    stash = data.get("revertStash")
+    if not isinstance(stash, list):
+        stash = []
+    stash.append({
+        "version_id": version_id,
+        "at": time.time(),          # server seconds, like recorded_at/updated_at
+        "size": size,
+        "lines": len(content.splitlines()),
+        "content": content,
+    })
+    data["revertStash"] = stash[-STASH_KEEP:]
+    try:
+        _save_sidecar(file, data)
+    except OSError as exc:
+        return False, f"could not write the stash: {exc}"
+    return True, ""
+
+
+def _revert(file: str, version_id, enrich: bool) -> dict:
+    fh = _file_history()
+    if fh is None:
+        return {"error": "file history helper (../shared/file_history.py) "
+                         "is not available"}
+    plan = fh.revert_plan(file, version_id, enrich=enrich)
+    if not plan.get("ok"):
+        return plan
+    stashed, note = _stash(file, plan["id"])
+    res = fh.apply_revert(file, plan["id"], enrich=enrich)
+    res["stashed"] = stashed
+    res["stash_note"] = note
+    return res
+
+
+def main(action: str = "record", file: str = "", comments=None,
+         deleted_ids=None, version_id=None, enrich: bool = False) -> dict:
     if action == "status":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -209,4 +311,23 @@ def main(action: str = "record", file: str = "", comments=None, deleted_ids=None
         if not isinstance(deleted_ids, list):
             deleted_ids = []
         return _record(file, comments, deleted_ids)
+    # Every revert action answers with data, never an exception: a raised error
+    # here reaches the page as the red traceback overlay, and "no history for
+    # this file" / "read-only mount" / "stale version id" are all ordinary
+    # states of this surface that the panel renders as text.
+    if action in ("history", "revert_plan", "revert"):
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        try:
+            if action == "revert":
+                return _revert(file, version_id, bool(enrich))
+            fh = _file_history()
+            if fh is None:
+                return {"error": "file history helper "
+                                 "(../shared/file_history.py) is not available"}
+            if action == "history":
+                return fh.timeline(file, enrich=bool(enrich))
+            return fh.revert_plan(file, version_id, enrich=bool(enrich))
+        except Exception as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
     return {"error": f"unknown action: {action}"}
