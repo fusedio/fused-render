@@ -1640,6 +1640,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         await dFetch("/kernel/execute", { kernel_id: kernelId, cell_id: c.id, code: c.model.source });
         markDirty();
         active = null;
+        // ensureKernel's poller may have exited on an idle kernel before any
+        // cell was marked running — outputs must stream during the batch
+        startPolling();
       }
     } catch (err) {
       if (active) {
