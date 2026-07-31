@@ -77,7 +77,6 @@ DEFERRED_TEMPLATES = (
     "pdf",
     "photos",
     "pmtiles",
-    "preview",
     "reader",
     "tar",
     "zarr_aoi",

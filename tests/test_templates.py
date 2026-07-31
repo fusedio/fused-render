@@ -91,7 +91,7 @@ def test_reader_present_on_text_keys_before_annotate():
     # Reader sits immediately before annotate on representative text formats,
     # and never as the default (first entry stays the real content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "reader", "annotate"],
+        "/x/notes.md": ["markdown", "code", "claude", "reader", "annotate"],
         "/x/data.csv": ["duckdb", "excel", "code", "reader", "annotate"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader", "annotate"],
         "/x/log.txt": ["text", "code", "reader", "annotate"],
@@ -146,14 +146,14 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
     # every directory resolves the universal `/` key (D81): the built-in
-    # listing (default), the switchable preview (folder browser) view, and two
+    # listing (default) plus two
     # offered-but-gated candidates — `graph` (the link graph, SPEC §32) and
     # `zarr_aoi` — for a plain folder, a dotted folder and the filesystem root
     # alike. Each gated mode is dropped unless its condition.py says otherwise;
     # see tests/test_graph_condition.py and the zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
-    assert modes("/", is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
+    assert modes("/", is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -584,7 +584,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "graph", "preview", "zarr_aoi"]
+    assert registry["/"] == ["_listing", "graph", "zarr_aoi"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -609,7 +609,7 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"graph": False, "zarr_aoi": True} and err is None
@@ -621,7 +621,7 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"graph": False, "zarr_aoi": True} and err is None
@@ -668,11 +668,11 @@ def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
 
 def test_plain_dir_without_markers_gates_false(tmp_path):
     # A plain directory with none of the markers: zarr_aoi is offered but the
-    # gate drops it, while _listing / preview stay unconditional and resolve.
+    # gate drops it, while _listing stays unconditional and resolves.
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "graph", "preview", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
     assert cond == {"graph": False, "zarr_aoi": False} and err is None
@@ -680,8 +680,7 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
     assert entries[1]["mode"] == "graph" and entries[1].get("conditional") is True
-    assert entries[2]["mode"] == "preview" and "conditional" not in entries[2]
-    assert entries[3]["mode"] == "zarr_aoi" and entries[3].get("conditional") is True
+    assert entries[2]["mode"] == "zarr_aoi" and entries[2].get("conditional") is True
 
 
 def test_zarr_condition_fail_closed(tmp_path):

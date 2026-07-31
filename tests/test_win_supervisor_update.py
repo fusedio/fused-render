@@ -5,9 +5,11 @@ import base64
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
+import types
 
 import pytest
 
@@ -61,6 +63,34 @@ def _install_key(monkeypatch) -> Ed25519PrivateKey:
 )
 def test_is_newer(candidate, current, expected):
     assert update._is_newer(candidate, current) is expected
+
+
+def test_launch_installer_uses_directory_outside_installed_payload(monkeypatch, tmp_path):
+    calls = []
+    shell = types.SimpleNamespace(
+        ShellExecuteEx=lambda **kwargs: calls.append(kwargs) or {"hProcess": object()}
+    )
+    shellcon = types.SimpleNamespace(SEE_MASK_NOCLOSEPROCESS=0x40)
+    shell_module = types.ModuleType("win32com.shell")
+    shell_module.shell = shell
+    shell_module.shellcon = shellcon
+    pywintypes = types.ModuleType("pywintypes")
+    pywintypes.error = OSError
+
+    monkeypatch.setitem(sys.modules, "pywintypes", pywintypes)
+    monkeypatch.setitem(sys.modules, "win32event", types.ModuleType("win32event"))
+    monkeypatch.setitem(sys.modules, "win32com.shell", shell_module)
+
+    installer = tmp_path / "FusedRenderPy-update.exe"
+    handle = update._launch_installer(str(installer))
+
+    assert handle is not None
+    assert calls == [{
+        "fMask": shellcon.SEE_MASK_NOCLOSEPROCESS,
+        "lpFile": str(installer),
+        "lpDirectory": str(tmp_path),
+        "nShow": 1,
+    }]
 
 
 def test_fetch_manifest_rejects_malformed(monkeypatch):

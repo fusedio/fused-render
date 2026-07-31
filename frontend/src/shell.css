@@ -1028,12 +1028,312 @@ a.bookmark-name::after {
   overflow: auto;
 }
 
+/* FS-12's floor is on the LIST, not the pane: with the pane on, flexbox must
+   refuse to shrink the table below 220 px however wide the pane is. The drag
+   clamps to the same number (clampPaneWidth), so this only backstops a window
+   resize that narrows the container under an already-sized pane. Scoped to the
+   split-with-pane case — a paneless listing in a narrow panel/tab keeps
+   shrinking as it always did. */
+.listing-split:has(.listing-pane-slot) > .listing-scroll {
+  min-width: 220px;
+}
+
+/* Split body when the preview pane is on: table on the left, a draggable
+   divider, the pane on the right. Without the pane the split holds just the
+   scroller, so the plain listing is untouched. */
+.listing-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.listing-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  margin: 0 -2px;
+  z-index: 2;
+  /* The drag is pointer-captured; without this, touch scrolling fights it. */
+  touch-action: none;
+}
+
+.listing-divider:hover,
+.listing-divider.dragging {
+  background: var(--border);
+}
+
+/* While the divider drags, the pane's iframe must not swallow the captured
+   pointer stream (capture keeps events flowing, but an iframe is a separate
+   document — inert it for the drag's duration). */
+.listing-split:has(.listing-divider.dragging) .pane-frame {
+  pointer-events: none;
+}
+
+/* Fixed-width slot the pane renders into; width set inline (flex-basis) from
+   the drag, clamped by clampPaneWidth() to at least 220px and at most
+   min(65%, container - 220px) so the LIST keeps its own 220px floor. The
+   min-width here is the pane's floor, not the list's — see .listing-scroll. */
+.listing-pane-slot {
+  flex: 0 0 auto;
+  min-width: 220px;
+  max-width: 65%;
+  min-height: 0;
+  display: flex;
+}
+
+/* The pane itself: header bar + iframe / mini list / placeholder card. */
+.listing-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: var(--bg-alt);
+  border-left: 1px solid var(--border);
+}
+
+/* Fills whatever the pane has left — the whole pane for a file preview, the
+   space under the header bar for a folder's embedded app. flex (not
+   height:100%) so the header can't push it past the pane's bottom edge. */
+.listing-pane .pane-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  display: block;
+  background: var(--bg);
+}
+
+/* Placeholder / metadata card centered in the pane. */
+.listing-pane .pane-center {
+  margin: auto;
+  text-align: center;
+  color: var(--fg-muted);
+  padding: 32px;
+}
+
+.listing-pane .pane-big-icon {
+  display: inline-flex;
+  margin-bottom: 12px;
+}
+
+.listing-pane .pane-big-icon .file-icon {
+  width: 48px;
+  height: 48px;
+  stroke-width: 1.5;
+}
+
+.listing-pane .pane-title {
+  color: var(--fg);
+  font-size: 15px;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+
+.listing-pane .pane-hint {
+  font-size: 12.5px;
+}
+
+.listing-pane .pane-open-btn {
+  margin-top: 14px;
+  font: inherit;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.listing-pane .pane-open-btn:hover {
+  background: var(--bg-alt);
+}
+
+/* Folder preview: a slim bar above the embedded app / mini list carrying its
+   name and the Open action. */
+.listing-pane .pane-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.listing-pane .pane-header-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.listing-pane .pane-header-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.listing-pane .pane-header-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.listing-pane .pane-header-btn:hover {
+  background: var(--sel);
+}
+
+/* Folder preview fallback: the folder's own entries, read-only. Narrower
+   padding than the main table since it lives in the smaller pane. */
+.listing-pane .pane-mini-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+table.pane-mini-list {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.pane-mini-list td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.pane-mini-list tr.row {
+  cursor: pointer;
+}
+
+table.pane-mini-list tr.row:hover {
+  background: var(--sel);
+}
+
+table.pane-mini-list tr.row.ignored td.name {
+  opacity: 0.5;
+}
+
+table.pane-mini-list td.name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+table.pane-mini-list td.name .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+table.pane-mini-list td.size {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  width: 1%;
+}
+
+table.pane-mini-list td.status-message {
+  padding: 14px 10px;
+}
+
+/* Pane toggle in the search row: small icon button, accent when active. */
+.listing-pane-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.listing-pane-toggle:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.listing-pane-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Skeleton loading state: shimmering bars shaped like the real listing rows
+   (icon + name + size + mtime), plus a full-pane placeholder while a preview
+   loads. Token-derived (--bg-alt/--border) so it reads as part of the UI. */
+.skel-bar {
+  display: inline-block;
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.skel-bar.icon-skel {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+@keyframes skel-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+table.listing-table tr.skel-row td {
+  cursor: default;
+}
+
+table.listing-table tr.skel-row:hover {
+  background: transparent;
+}
+
+.listing-pane .pane-skel {
+  flex: 1 1 auto;
+  margin: 14px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
 .listing-search {
   flex: 0 0 auto;
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+}
+
+/* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
+   toggle can sit beside them without disturbing the inside-the-input pin. */
+.listing-search-box {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .listing-search .listing-search-input {

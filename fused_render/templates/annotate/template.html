@@ -705,7 +705,24 @@
       }
       return null;
     }
-    const isCmDoc = (doc) => !!doc.querySelector(".cm-editor");
+    // The line-number strategy is available only where the lineNumbers gutter is
+    // actually LAID OUT — it is the sole source of the line number, and
+    // cmVisibleLines only pairs a gutter element that has real height, so the
+    // test has to be the same one. `.cm-editor` alone was the probe and it was
+    // wrong for the markdown notes view: that view ships basicSetup (so
+    // `.cm-lineNumbers` exists in the DOM, and merely querying for it proves
+    // nothing) but hides `.cm-gutters` outright, being prose (MD-18a). Every
+    // gesture there took a path where cmVisibleLines() is permanently empty —
+    // clicks swallowed by the `!hit` bail after preventDefault, selections
+    // dropped, stored comments never painted, nothing logged. A gutterless
+    // editor falls through to the ordinary structural/quote anchors instead —
+    // the right model for prose anyway, since quotes survive the remounting
+    // .cm-line divs that make structural paths unreliable in a viewport.
+    const isCmDoc = (doc) => {
+      if (!doc.querySelector(".cm-editor")) return false;
+      const gutter = doc.querySelector(".cm-lineNumbers");
+      return !!gutter && gutter.getBoundingClientRect().height > 0;
+    };
 
     // Stage coords of an element inside the iframe = iframe offset + element
     // viewport rect within the frame (rects already account for frame scroll).
@@ -1162,6 +1179,15 @@
             let cont = selRange.commonAncestorContainer;
             if (cont.nodeType !== 1) cont = cont.parentElement;
             if (!cont) return;
+            // Inside a gutterless editor (the markdown notes view) the natural
+            // container is a `.cm-line` div, whose nth-of-type index shifts as
+            // lines mount/unmount on scroll — a path that drifts onto the wrong
+            // line. Hoist to `.cm-content`, which is structurally stable, and
+            // let the quote+qn do the locating within it. Off-screen text isn't
+            // in the DOM, so such a quote simply has no pin until it scrolls
+            // back in — the same "not detached" behaviour code anchors have.
+            const content = cont.closest ? cont.closest(".cm-content") : null;
+            if (content) cont = content;
             const base = cont.id ? { anchorId: cont.id } : { anchorPath: pathOf(cont, doc) };
             if (!base.anchorId && !base.anchorPath) return;
             // Occurrence index: how many times the quote appears before the
