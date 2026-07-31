@@ -5698,3 +5698,131 @@ select.field-control:has(option[value=""]:checked) {
   border-bottom-width: 2px;
   border-radius: 5px;
 }
+
+/* -- Apps hub (/apps) -------------------------------------------------------
+   Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
+   .home-app / .home-apps; the page adds its own header, search, and tag
+   chips. All colors via tokens so both themes hold. */
+.apps-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.apps-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+}
+
+.apps-head {
+  margin-bottom: 22px;
+}
+
+.apps-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  margin-left: -8px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.apps-back:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+.apps-title {
+  margin: 14px 0 6px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.apps-sub {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
+.apps-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.apps-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  max-width: 340px;
+  padding: 0 12px;
+  height: 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-muted);
+}
+
+.apps-search:focus-within {
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.apps-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 13px;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.apps-search input::placeholder {
+  color: var(--fg-muted);
+}
+
+.apps-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.apps-tag-chip {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.apps-tag-chip:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+.apps-tag-chip.is-active {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.apps-count {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}

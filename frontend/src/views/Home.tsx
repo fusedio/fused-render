@@ -10,12 +10,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { createApp, getApps } from "../lib/api";
-import type { AppInfo, Config } from "../lib/api";
+import type { Config } from "../lib/api";
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
 import { isMod, MOD_LABEL } from "../lib/platform";
+import { AppCard } from "../components/AppCard";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -314,51 +315,6 @@ function NewAppPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-// Each app tile carries a tinted monogram (the app's initial) whose hue is
-// picked deterministically from the shell's file-icon palette — stable per
-// name, so a tile never changes colour across visits, and the hues are the
-// same family the listing already paints file icons with.
-const APP_HUES = [
-  "var(--icon-folder)",
-  "var(--icon-code)",
-  "var(--icon-data)",
-  "var(--icon-json)",
-  "var(--icon-image)",
-  "var(--icon-geo)",
-  "var(--icon-db)",
-  "var(--icon-media)",
-];
-
-function hueFor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  return APP_HUES[Math.abs(h) % APP_HUES.length];
-}
-
-function AppCard({ app }: { app: AppInfo }) {
-  const open = () => {
-    // An app with an entry opens straight into its "/" route view; a manifest
-    // without one falls back to the folder listing so the card is never dead.
-    if (app.entry_html) navigate(app.entry_html, { isDir: false });
-    else navigate(app.path, { isDir: true });
-  };
-  const title = app.title || app.name;
-  return (
-    <button type="button" className="home-app" onClick={open} title={app.path}>
-      <span className="home-app-monogram" aria-hidden="true" style={{ color: hueFor(app.name) }}>
-        {title.charAt(0).toUpperCase()}
-      </span>
-      <span className="home-app-text">
-        <span className="home-app-title">{title}</span>
-        {/* The folder name only earns a line when the manifest title differs
-            from it — "application / application" is noise. */}
-        {title !== app.name && <span className="home-app-sub">{app.name}</span>}
-      </span>
-      <span className="home-app-tag">{app.tag}</span>
-    </button>
-  );
-}
-
 // Section heading: mono eyebrow + count, hairline rule filling the middle,
 // optional trailing action link. The mono face is the shell's existing code
 // voice (listings, paths), so the labels read as part of the tool, not chrome.
@@ -474,7 +430,7 @@ export default function Home({ config }: { config: Config }) {
             title="Apps"
             desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
             titleAttr={config.fused_dir}
-            onClick={() => navigate(config.fused_dir, { isDir: true })}
+            onClick={() => navigateUrl("/apps")}
             glyph={
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="7" height="7" rx="1.5" />
@@ -506,7 +462,7 @@ export default function Home({ config }: { config: Config }) {
                 <button
                   type="button"
                   className="home-rule-action"
-                  onClick={() => navigate(config.fused_dir, { isDir: true })}
+                  onClick={() => navigateUrl("/apps")}
                 >
                   View all →
                 </button>

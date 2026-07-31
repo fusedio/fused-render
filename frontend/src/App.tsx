@@ -31,6 +31,7 @@ import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
 import Home from "./views/Home";
+import Apps from "./views/Apps";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -379,9 +380,12 @@ export default function App({ config }: { config: Config }) {
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
   const isHome = pathname === "/";
+  // Apps hub — chrome-free like Home (no sidebar/breadcrumb), all detected
+  // apps with search + tag filters.
+  const isApps = pathname === "/apps";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isApps || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -402,6 +406,8 @@ export default function App({ config }: { config: Config }) {
               ? "Mounts"
               : isHome
                 ? "Home"
+                : isApps
+                ? "Apps"
                 : isBookmark || bookmarkFile
                 ? "Bookmark"
                 : fsPath
@@ -480,6 +486,14 @@ export default function App({ config }: { config: Config }) {
         <Home key={epoch} config={config} />
       </div>
     );
+  } else if (isApps) {
+    // Apps hub — same chrome-free treatment as Home: no breadcrumb bar, no
+    // sidebar (excluded below), the page owns its own header and back link.
+    main = (
+      <div id="content">
+        <Apps key={epoch} />
+      </div>
+    );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
     // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
@@ -512,7 +526,7 @@ export default function App({ config }: { config: Config }) {
 
   return (
     <div id="app">
-      {!IS_EMBED && !isHome && <Sidebar config={config} />}
+      {!IS_EMBED && !isHome && !isApps && <Sidebar config={config} />}
       <div id="main">{main}</div>
       <NotificationHost />
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
