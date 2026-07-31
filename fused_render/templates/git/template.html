@@ -651,6 +651,10 @@ function announce(text) {
 }
 
 function renderRefusal(payload) {
+  /* Whole-VIEW refusals only — the reasons `_locate` can produce. A per-entry
+     refusal (`symlink`, `outside-repo` from the worktree op) never reaches here:
+     it comes back from `loadDiff` and is rendered inside the pane as its own
+     message, next to the row that caused it, which is where it belongs. */
   const titles = {
     "not-a-repo": "Not a git repository",
     "missing": "Nothing to show",
@@ -658,7 +662,6 @@ function renderRefusal(payload) {
     "no-git": "git is not available",
     "timeout": "git did not answer in time",
     "git-failed": "git could not read this repository",
-    "symlink": "That entry is a symbolic link",
     "bad-op": "Unsupported request",
   };
   show(el("div", null,
