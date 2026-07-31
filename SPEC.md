@@ -3679,9 +3679,28 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   when a skip sits at or newer than the chosen target (or its own time is unknown,
   so its place in the chain is unknowable), `revert_plan` **refuses** rather than
   walking to a different point in history and presenting it as "the last change".
-  Older skips are deliberately harmless: one unreadable ancient checkpoint must
-  not cost the user their undo. An **explicitly chosen** row is never blocked —
-  the user named that version, so there is nothing to guess.
+  Older skips are deliberately harmless *when a target exists*: one unreadable
+  ancient checkpoint must not cost the user their undo. An **explicitly chosen**
+  row is never blocked — the user named that version, so there is nothing to guess.
+
+  When there is **no** target, every skip blocks, and that is not the same
+  situation wearing the same message. "No target" means the walk found nothing
+  older that differs — and a version it could not read is precisely a candidate for
+  the older differing entry it did not find, so there is no subset of skips that
+  could not matter. Claiming `at_earliest` from a scan with a hole in it would
+  assert terminality that cannot be proved, the same class of error as the
+  oscillating rule: a confident answer from an incomplete read. So the state is
+  reported as **`unconfirmed`**, distinct from `at_earliest` and mutually exclusive
+  with it — the first is a fact ("there is nothing older"), the second an admission
+  ("whether there is anything older is unknown") — and it gets its own wording
+  rather than the misleading "the last change cannot be identified", which
+  describes the target-exists case. Both are equally terminal for the button:
+  `unconfirmed` is a STABLE state that would refuse identically on every press, so
+  the panel disables the button and shows the reason instead of leaving a live
+  control whose only behaviour is to reproduce the same error. One `_selection`
+  helper computes position, target, `at_earliest`, `unconfirmed` and the blocking
+  set for both `timeline` and `revert_plan`, so the panel and the plan cannot
+  disagree about what the button will do.
 - **FH-15** **The panel's disclosure state and the last outcome survive the
   post-revert reload, through `sessionStorage` keyed by the target path.** A
   successful revert changes the file, so the shell's own fs-event watch reboots the
@@ -3691,10 +3710,23 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   so a review can be shared, whereas whether a disclosure widget is open is a
   workspace habit (the same argument that kept pane geometry out of the URL in
   D185), and a transient "Reverted to v2" carried in a bookmark would be a lie the
-  moment it was opened. The outcome is **read-and-clear** so it cannot replay on
-  every later reload of the file; the disclosure state is sticky. It is written
-  BEFORE the refresh, because the fs event is already racing by then — written
-  after, it is lost exactly when the reload is fastest. A restored-expanded panel
+  moment it was opened.
+
+  The disclosure state is sticky; the outcome is a **carry slot** with exactly one
+  writer and two readers that both clear it — `carryOutcome` (called once, before
+  the refresh, because the fs event is already racing by then: written after, it is
+  lost exactly when the reload is fastest), `takeCarriedOutcome` (boot:
+  read-and-clear) and `dropCarriedOutcome` (in-page: spent, because it was
+  displayed here). **Nothing writes after a read**, which is the entire lifetime
+  rule and the thing the earlier version could not express: clearing only on boot
+  meant a reload that never arrived — an unwatched mount-backed file, the user
+  navigating away, the race simply lost — left the note behind for the NEXT open of
+  the file to present as fresh news, and a failing refresh on a dying page could
+  write a composed message back after a newer boot had already consumed it. Only a
+  SUCCESSFUL revert is carried: a failure changed nothing on disk, so there is no
+  reload to bridge and no reason to greet a later visit with it. This mechanism
+  produced three separate defects (ordering, the count/enrich jump, lifetime), so
+  the third fix was a restructure rather than a fourth guard. A restored-expanded panel
   boots ENRICHED, or its row count would disagree with the list it labels; the
   refresh observes the post-revert file (the write completed before the call
   resolved), so the position marker points at the version just restored; and the
@@ -3703,3 +3735,17 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   A hostile `sessionStorage` (private mode throwing on `setItem`, a corrupt value)
   degrades to "the panel does not persist" — persistence is a nicety here, never a
   dependency.
+- **FH-16** **An unwritable target never reaches the confirm sheet, and the
+  reason travels with the verdict.** `writable` is a FIELD on a perfectly
+  successful plan, not an error — so gating only on `plan.ok` let a read-only file
+  open a destructive confirm sheet that could then fail only server-side, while the
+  main button had already gone correctly dead. Both layers are closed: rows are
+  inert when the target is unwritable, AND `revert_plan`'s verdict is checked
+  before the sheet is shown. The plan-level check is the one that matters, because
+  it closes the class rather than one entry point — the same reasoning that made
+  the bridge, not the page, the authority for the confirm token. The payload also
+  carries `writable_reason`, because "it cannot be reverted" with no cause is a
+  dead end across three genuinely different situations the module already
+  distinguishes in order to reach its answer: a read-only MOUNT (nothing local to
+  fix — the remote rejects the write, and `os.access` cannot see it), a `chmod -w`
+  FILE (fixable), and an unwritable DIRECTORY (fixable, and a different fix).

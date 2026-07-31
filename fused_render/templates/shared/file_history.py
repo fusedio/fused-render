@@ -174,6 +174,21 @@ def file_writable(file: str) -> bool:
     the lie, report `ok: True`, and surface the 403 later at an async upload
     where this UI will never see it.
     """
+    return writable_reason(file) == ""
+
+
+def writable_reason(file: str) -> str:
+    """"" when `file` is writable, else WHY it is not, in a sentence a user can
+    act on.
+
+    The reason has to travel with the verdict. The view disables its revert
+    controls on the bool, and "it cannot be reverted" with no cause is a dead end
+    for the three genuinely different situations here: a read-only mount (nothing
+    local to fix — the remote rejects writes), a `chmod -w` file (fixable), and an
+    unwritable directory (fixable, and a different thing to fix). This module
+    already distinguishes all three to reach its answer; throwing that away and
+    letting the UI guess was the actual defect.
+    """
     file = os.path.abspath(file)
     try:
         from appenv import mount_read_only
@@ -182,12 +197,19 @@ def file_writable(file: str) -> bool:
     if mount_read_only is not None:
         try:
             if mount_read_only(file):
-                return False
-        except Exception:
-            return False  # unanswerable => not writable; see the docstring
-    if not os.access(os.path.dirname(file) or ".", os.W_OK):
-        return False
-    return os.access(file, os.W_OK) if os.path.exists(file) else True
+                return ("this file is on a read-only mount, so the remote would "
+                        "reject the write (os.access cannot see that)")
+        except Exception as exc:
+            # Unanswerable => not writable; see the docstring.
+            return ("the read-only-mount check failed (%s: %s), so writing here "
+                    "cannot be shown to be safe"
+                    % (type(exc).__name__, exc))
+    parent = os.path.dirname(file) or "."
+    if not os.access(parent, os.W_OK):
+        return "its directory (%s) is not writable" % parent
+    if os.path.exists(file) and not os.access(file, os.W_OK):
+        return "the file itself is read-only"
+    return ""
 
 
 # ----------------------------------------------------------------- content
@@ -554,12 +576,38 @@ def _unsafe_skips(skipped, target):
     A skip corrupts POSITION, not merely the target: an unread version might have
     been the entry that equals disk, or a nearer step back. So anything at or
     newer than the chosen target disqualifies the automatic choice, as does a
-    skip whose own time is unknown. Older skips are harmless and must not disable
-    the feature — one unreadable ancient checkpoint should not cost the user
-    their undo.
+    skip whose own time is unknown. Older skips are harmless WHEN THERE IS A
+    TARGET — one unreadable ancient checkpoint must not cost the user their undo.
+
+    When there is NO target the floor is `-inf`, so every skip counts, and that
+    is deliberate rather than the bug it looks like: "no target" means the walk
+    found nothing older that differs, and a version we failed to read is exactly
+    a candidate for the older differing entry we did not find. There is no
+    subset of skips that could not matter here. Claiming terminality from a scan
+    with a hole in it would be asserting something unprovable — the same class of
+    error as the oscillating rule, a confident answer from an incomplete read —
+    so `_selection` reports it as `unconfirmed` instead.
     """
     floor = target["mtime"] if target else float("-inf")
     return [s for s in skipped if s["mtime"] is None or s["mtime"] >= floor]
+
+
+def _selection(entries, cur_bytes, skipped):
+    """(position, target, at_earliest, unconfirmed, blocking) — one computation.
+
+    `timeline` and `revert_plan` both route through here so they cannot disagree
+    about what the button will do, which is how the first version of this ended up
+    with a panel claiming one thing and a plan doing another.
+
+    `at_earliest` and `unconfirmed` are mutually exclusive and both terminal for
+    the button, but they are DIFFERENT states and the user needs to be told which:
+    the first is "there is nothing older" (a fact), the second is "a version could
+    not be read, so whether there is anything older is unknown" (an admission).
+    """
+    position, target, terminal = _locate(entries, cur_bytes)
+    blocking = _unsafe_skips(skipped, target)
+    unconfirmed = bool(blocking) and target is None
+    return position, target, terminal and not unconfirmed, unconfirmed, blocking
 
 
 # ----------------------------------------------------------------- the payload
@@ -576,8 +624,10 @@ def timeline(file, enrich: bool = False) -> dict:
     file = os.path.abspath(file)
     cur, cur_bytes, _cl = _current(file)
     versions, skipped, store_error = _scan(file, enrich)
-    position, target, at_earliest = _locate(versions, cur_bytes)
+    position, target, at_earliest, unconfirmed, blocking = _selection(
+        versions, cur_bytes, skipped)
     root = history_root()
+    why_not = writable_reason(file)
 
     notes = []
     if store_error is not None:
@@ -591,6 +641,13 @@ def timeline(file, enrich: bool = False) -> dict:
                          % root)
         elif not versions:
             notes.append("Claude has no recorded versions of this file.")
+        elif unconfirmed:
+            # A STATE, not an error to be discovered by clicking: it will refuse
+            # identically on every press, so the panel disables the button and
+            # shows the reason, exactly as it does for at_earliest.
+            notes.append("A version could not be read, so this cannot be "
+                         "confirmed as the earliest checkpoint — refusing to "
+                         "guess.")
         elif at_earliest and enrich:
             # Only claimable from an ENRICHED scan. Without the transcripts the
             # did-not-exist boundary is invisible, so an unenriched scan reports
@@ -609,7 +666,11 @@ def timeline(file, enrich: bool = False) -> dict:
         "file": file,
         "hash": path_hash(file),
         "available": available,
-        "writable": file_writable(file),
+        "writable": why_not == "",
+        # Travels WITH the verdict: "it cannot be reverted" with no cause is a
+        # dead end, and a read-only mount, a chmod'd file and an unwritable
+        # directory are three different things to do about it.
+        "writable_reason": why_not,
         "current": cur,
         "versions": versions,
         "position": versions[position]["id"] if position >= 0 else None,
@@ -619,6 +680,11 @@ def timeline(file, enrich: bool = False) -> dict:
         # short of the truth and must never be used to decide that there is
         # nothing left to revert — see the note above.
         "at_earliest": at_earliest,
+        # Terminality could NOT be established because the scan had a hole in it.
+        # Distinct from at_earliest on purpose (see `_selection`) and equally
+        # terminal for the button — but it is an admission, not a fact.
+        "unconfirmed": unconfirmed,
+        "blocking": blocking,
         "enriched": bool(enrich),
         "unique_current": cur_bytes is not None and position == -1,
         "skipped": skipped,
@@ -670,20 +736,28 @@ def revert_plan(file, entry_id=None) -> dict:
     file = os.path.abspath(file)
     cur, cur_bytes, _cl = _current(file)
     versions, skipped, store_error = _scan(file, enrich=True)
-    position, auto_target, at_earliest = _locate(versions, cur_bytes)
+    position, auto_target, at_earliest, unconfirmed, blocking = _selection(
+        versions, cur_bytes, skipped)
 
     if entry_id is None:
-        unsafe = _unsafe_skips(skipped, auto_target)
-        if unsafe:
-            # Refuse rather than walk to a different point in history: the user
-            # asked for "the last change" and we cannot say which one that is.
-            return {"ok": False, "at_earliest": False, "skipped": skipped,
-                    "current": cur,
-                    "error": ("%d version(s) could not be read, so the last "
-                              "change cannot be identified — reverting would "
-                              "guess. %s"
-                              % (len(unsafe),
-                                 " ".join(s["reason"] for s in unsafe)))}
+        if blocking:
+            # Refuse rather than walk to a different point in history — but say
+            # WHICH refusal it is. The two read very differently to a user: one
+            # means "I found candidates and cannot tell which is right", the
+            # other means "I found none and cannot promise there are none".
+            reasons = " ".join(s["reason"] for s in blocking)
+            if unconfirmed:
+                err = ("%d version(s) could not be read, so this cannot be "
+                       "confirmed as the earliest checkpoint — there may be an "
+                       "older change to revert to, and guessing that there is "
+                       "not would be wrong. %s" % (len(blocking), reasons))
+            else:
+                err = ("%d version(s) could not be read, so the last change "
+                       "cannot be identified — reverting would guess. %s"
+                       % (len(blocking), reasons))
+            return {"ok": False, "at_earliest": False,
+                    "unconfirmed": unconfirmed, "blocking": blocking,
+                    "skipped": skipped, "current": cur, "error": err}
         entry = auto_target
         if entry is None:
             if store_error is not None:
@@ -695,6 +769,7 @@ def revert_plan(file, entry_id=None) -> dict:
                 err = ("Already at the earliest checkpoint Claude recorded — "
                        "nothing older to revert to.")
             return {"ok": False, "at_earliest": at_earliest,
+                    "unconfirmed": False, "blocking": [],
                     "skipped": skipped, "current": cur, "error": err}
     else:
         entry = _resolve(file, entry_id)
@@ -715,8 +790,11 @@ def revert_plan(file, entry_id=None) -> dict:
                    "existed": entry["existed"]},
         "unique_current": cur_bytes is not None and position == -1,
         "at_earliest": False,
+        "unconfirmed": False,
+        "blocking": [],
         "skipped": skipped,
-        "writable": file_writable(file),
+        "writable": writable_reason(file) == "",
+        "writable_reason": writable_reason(file),
     }
 
 

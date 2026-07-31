@@ -476,7 +476,11 @@ def test_a_stale_panel_after_a_revert_is_not_reported_as_plain_success(source):
     assert "return out.error;" in source
     handler = source[source.index('getElementById("confirmgo").addEventListener'):]
     assert "const reloadErr = await loadHistory" in handler
-    assert "if (reloadErr)" in handler
+    assert "reportOutcome(outcome, false, reloadErr)" in handler
+    # ...and reporting it must not write the composed message back into the carry
+    # slot: a dying page would then resurrect a note a later boot had consumed.
+    tail = handler[handler.index("reportOutcome(outcome"):]
+    assert "carryOutcome" not in tail
 
 
 def test_a_failed_revert_says_so(source):
@@ -602,7 +606,7 @@ def test_a_version_identical_to_disk_is_not_clickable(source):
     it did nothing, which reads as a broken button."""
     body = source[source.index("function renderHistory"):]
     body = body[:body.index("async function callHistory")]
-    assert "if (v.differs) row.onclick" in body
+    assert 'if (v.differs && timeline.writable !== false) {' in body
 
 
 def test_the_comments_log_and_the_stash_coexist(claude_home, tmp_path):
@@ -1017,9 +1021,12 @@ def _persist_prelude(source):
         "};\n"
         "const file = '/tmp/target.md';\n"
         'const HIST_KEY = "fusedAnnotateHist:" + file;\n'
+        "let histOpen = false;\n"
         + _js_block(source, "function histState()") + "\n"
         + _js_block(source, "function saveHistState(patch)") + "\n"
+        + _js_block(source, "function carryOutcome(text)") + "\n"
         + _js_block(source, "function takeCarriedOutcome()") + "\n"
+        + _js_block(source, "function dropCarriedOutcome()") + "\n"
     )
 
 
@@ -1031,7 +1038,8 @@ def test_the_disclosure_state_and_outcome_survive_a_reload(source, tmp_path):
     got = _run("""
       // ...the user expands the panel and reverts
       saveHistState({ open: true });
-      saveHistState({ open: true, note: "Reverted to v2.", noteError: false });
+      histOpen = true;
+      carryOutcome("Reverted to v2.");
       // ...the shell tears the page down and boots it again: same file, fresh
       // module scope, only sessionStorage in common.
       const booted = histState();
@@ -1049,12 +1057,28 @@ def test_the_disclosure_state_and_outcome_survive_a_reload(source, tmp_path):
     assert got["stillOpen"] is True
 
 
-def test_a_failed_revert_message_also_survives(source, tmp_path):
+def test_a_failed_revert_is_not_carried_across_a_reload(source, tmp_path):
+    """Only a SUCCESSFUL revert is carried. A failure changed nothing on disk, so
+    there is no fs event, no reload to bridge, and no reason to greet a later
+    visit to the file with a stale error — which is what persisting it did."""
     got = _run("""
-      saveHistState({ note: "read-only mount", noteError: true });
-      console.log(JSON.stringify(takeCarriedOutcome()));
+      const out = {};
+      out.writers = 1;                 // carryOutcome is the only one
+      carryOutcome("Reverted to v2.");
+      out.afterTake = takeCarriedOutcome();
+      out.spent = takeCarriedOutcome();
+      carryOutcome("Reverted to v3.");
+      dropCarriedOutcome();            // displayed in-page => spent
+      out.afterDrop = takeCarriedOutcome();
+      console.log(JSON.stringify(out));
     """, tmp_path, _persist_prelude(source))
-    assert got == {"text": "read-only mount", "error": True}
+    assert got["afterTake"]["text"] == "Reverted to v2."
+    assert got["spent"] is None          # read-and-clear
+    assert got["afterDrop"] is None      # in-page display also spends it
+    # ...and the failure branch does not write to the slot at all.
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    branch = handler[handler.index("if (out.error"):handler.index("// Reload the framed")]
+    assert "carryOutcome" not in branch and "saveHistState" not in branch
 
 
 def test_a_hostile_sessionStorage_never_breaks_the_panel(source, tmp_path):
@@ -1080,7 +1104,7 @@ def test_the_outcome_is_persisted_before_the_refresh_can_race_it(source):
     survives, written after it is lost exactly when the reload is fastest."""
     handler = source[source.index('getElementById("confirmgo").addEventListener'):]
     body = handler[handler.index("const outcome ="):]
-    assert body.index("saveHistState(") < body.index("await loadHistory")
+    assert body.index("carryOutcome(") < body.index("await loadHistory")
 
 
 def test_an_expanded_restore_is_enriched(source):
@@ -1100,7 +1124,7 @@ def test_the_carried_outcome_is_applied_after_the_refresh(source):
     boot = source[source.index("const saved = histState();"):]
     boot = boot[:boot.index("})();")]
     assert boot.index("await loadHistory(histOpen)") < boot.index("if (carried)")
-    assert "reportOutcome(carried.text, carried.error, reloadErr)" in boot
+    assert "reportOutcome(carried.text, false, reloadErr)" in boot
 
 
 def test_the_disclosure_state_is_not_written_to_the_url(source):
@@ -1110,3 +1134,170 @@ def test_the_disclosure_state_is_not_written_to_the_url(source):
     moment it was opened."""
     for key in ("hist", "histOpen", "revertNote"):
         assert 'fused.params.set("' + key not in source
+
+
+# ============================================== review round 3 (Bugbot findings)
+
+# --- B1: a read-only target must not reach a destructive confirm ----------
+
+def test_the_plan_carries_the_reason_it_is_not_writable(claude_home, ro_mount):
+    """The bool alone is a dead end: a read-only mount, a chmod'd file and an
+    unwritable directory are three different things for the user to do."""
+    ann = _load_annotate()
+    write_version(claude_home, "s", ro_mount, "wanted\n")
+    plan = ann.main(action="revert_plan", file=ro_mount)
+    assert plan["ok"] is True          # a PLAN is still legitimate...
+    assert plan["writable"] is False   # ...but it says the write would not land
+    assert "read-only mount" in plan["writable_reason"]
+    assert ann.main(action="history", file=ro_mount)["writable_reason"]
+
+
+@skip_root
+def test_the_reason_distinguishes_a_chmod_from_a_mount(claude_home, tmp_path):
+    ann = _load_annotate()
+    f = _target(tmp_path, "keep\n")
+    write_version(claude_home, "s", f, "other\n")
+    os.chmod(f, 0o444)
+    try:
+        plan = ann.main(action="revert_plan", file=f)
+        assert plan["writable"] is False
+        assert "the file itself is read-only" in plan["writable_reason"]
+        assert "mount" not in plan["writable_reason"]
+    finally:
+        os.chmod(f, 0o644)
+
+
+def test_ask_revert_refuses_an_unwritable_target_before_the_sheet_opens(source):
+    """`writable` is a FIELD on a SUCCESSFUL plan, not an error, so nothing in the
+    old bail conditions caught it: the sheet opened, the user confirmed a
+    destructive act, and it could only fail server-side. Checked at the plan level
+    because that closes the class rather than one entry point — the same reasoning
+    as making the bridge the authority for the confirm token."""
+    body = source[source.index("async function askRevert"):]
+    body = body[:body.index('getElementById("confirmgo").addEventListener')]
+    assert "plan.writable === false" in body
+    assert "plan.writable_reason" in body
+    # ...and it happens BEFORE the sheet is ever shown.
+    assert body.index("plan.writable === false") < body.index('classList.add("open")')
+
+
+def test_rows_are_inert_on_an_unwritable_target(source, tmp_path):
+    """The other layer. The main button already went dead on `writable === false`
+    while every differing row stayed clickable."""
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert "timeline.writable !== false" in body
+    assert 'row.style.cursor = "default"' in body
+
+
+def test_the_note_says_why_it_is_not_writable(source):
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert "timeline.writable_reason" in body
+
+
+# --- B2: the toggle label follows the fetch's outcome ---------------------
+
+def test_the_toggle_flips_only_after_a_successful_fetch(source):
+    """Flipping first and awaiting second left an open "▾" label above an empty
+    list whenever the enrich failed. Third instance of the optimistic-then-await
+    trap in this panel."""
+    body = source[source.index("histToggle.addEventListener"):]
+    body = body[:body.index("let pending")]
+    assert body.index("await loadHistory(true)") < body.index("histOpen = !histOpen")
+    assert "if (await loadHistory(true)) return;" in body
+
+
+def test_a_failed_fetch_repaints_from_the_last_good_timeline(source):
+    """...which is what makes the label resync rather than needing the toggle
+    handler to undo itself."""
+    body = source[source.index("async function loadHistory(enrich)"):]
+    body = body[:body.index("histToggle.addEventListener")]
+    assert "if (timeline) renderHistory();" in body
+    assert body.index("renderHistory()") < body.index("setNote(")
+
+
+# --- B3: unconfirmed terminality is a STATE, not a click-refuse loop -----
+
+def test_an_unreadable_version_with_no_target_is_reported_as_unconfirmed(
+        claude_home, tmp_path, monkeypatch):
+    """The refusal itself is CORRECT and stays: with no target, a version we
+    failed to read is exactly a candidate for the older differing entry we did not
+    find, so claiming "you are at the earliest checkpoint" would assert
+    terminality from a scan with a hole in it. What was wrong was the wording (it
+    blamed an unidentifiable last change, when the problem is unprovable
+    terminality) and the fact that the only way to discover it was to click."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "unreadable\n", mtime=500)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    tl = ann.main(action="history", file=f, enrich=True)
+    assert tl["unconfirmed"] is True
+    assert tl["at_earliest"] is False   # cannot be claimed
+    assert tl["revert"] is None
+    assert "cannot be confirmed as the earliest" in tl["note"]
+
+    plan = ann.main(action="revert_plan", file=f)
+    assert plan["ok"] is False
+    assert plan["unconfirmed"] is True
+    assert "earliest checkpoint" in plan["error"]
+    # ...and NOT the wrong sentence it used to give.
+    assert "last change cannot be identified" not in plan["error"]
+
+
+def test_a_skip_with_a_target_keeps_the_other_wording(claude_home, tmp_path,
+                                                      monkeypatch):
+    """The distinction the docstring describes survives: with a target, the
+    problem really is that the last change cannot be identified."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "older\n", mtime=1000)
+    write_version(claude_home, "s", f, "newest\n", mtime=2000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    plan = ann.main(action="revert_plan", file=f)
+    assert plan["ok"] is False
+    assert plan["unconfirmed"] is False
+    assert "last change cannot be identified" in plan["error"]
+
+
+def test_the_unconfirmed_state_disables_the_button(source):
+    """A stable refusal must not be a loop the user discovers by pressing."""
+    body = source[source.index("function renderHistory"):]
+    body = body[:body.index("async function callHistory")]
+    assert "timeline.unconfirmed && timeline.enriched" in body
+    assert "|| stuck ||" in body
+
+
+def test_a_refusal_settles_the_panel_instead_of_looping(source):
+    """...and any refusal that arrives anyway refreshes the panel into its real
+    state, so the second press cannot produce the same dead end."""
+    body = source[source.index("async function askRevert"):]
+    body = body[:body.index("// `writable` is a FIELD")]
+    assert "await loadHistory(true)" in body
+    assert "reportOutcome(plan.error" in body
+
+
+def test_the_two_terminal_states_are_never_both_claimed(claude_home, tmp_path,
+                                                        monkeypatch):
+    """They are different sentences — one a fact, one an admission — and asserting
+    both would be incoherent."""
+    fh_mod = _load_annotate()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    tl = fh_mod.main(action="history", file=f, enrich=True)
+    assert (tl["at_earliest"], tl["unconfirmed"]) == (True, False)
