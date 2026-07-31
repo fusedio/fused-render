@@ -547,7 +547,17 @@ def _serve():
         envs = [{"label": "App environment", "path": ""}]
         seen = {os.path.normcase(_canon_python(sys.executable))}
         nb = q1(q, "nb_path", "")
+        src = q1(q, "src", "")
         d = os.path.dirname(os.path.abspath(os.path.expanduser(nb))) if nb else ""
+        if d and src:
+            # a mount-backed notebook gets no .venv walk: kernel-side isfile
+            # probes can wedge the mount, and a remote .venv is not a runnable
+            # interpreter; an unverifiable dir is skipped the same way
+            try:
+                if _remote_meta(src, d).get("remote"):
+                    d = ""
+            except OSError:
+                d = ""
         for _ in range(4):
             if not d:
                 break

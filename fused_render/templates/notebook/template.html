@@ -1706,7 +1706,8 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   envEl.addEventListener("pointerdown", async () => {
     if (envsLoaded) return;
     try {
-      const r = await dFetch("/envs?nb_path=" + encodeURIComponent(file));
+      const r = await dFetch("/envs?nb_path=" + encodeURIComponent(file) +
+                             "&src=" + encodeURIComponent(location.origin));
       envsLoaded = true;
       fillEnvSelect(r.envs);
     } catch (err) {

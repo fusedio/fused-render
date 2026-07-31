@@ -3,13 +3,16 @@ spawn it with this interpreter, feed execute ops over stdin, and assert the
 JSON-lines events — streams, last-expression display, state persistence
 across cells, error shape, and the stdin interrupt path."""
 
+import contextlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -477,6 +480,81 @@ def test_daemon_concurrent_shutdown_and_ensure_never_orphan(daemon_state, tmp_pa
     r = _daemon_request(daemon_state, "/kernel/execute", {
         "kernel_id": final["kernel_id"], "cell_id": "c1", "code": "40 + 2"})
     assert r["exec_id"]
+
+
+def _daemon_get(state, path_and_query):
+    url = f"http://127.0.0.1:{state['port']}{path_and_query}&t={state['token']}"
+    with urllib.request.urlopen(url, timeout=20) as response:
+        return json.load(response)
+
+
+@contextlib.contextmanager
+def _stat_stub(payload):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{srv.server_address[1]}"
+    finally:
+        srv.shutdown()
+
+
+def _fake_venv(root):
+    py = (root / ".venv" / "Scripts" / "python.exe" if os.name == "nt"
+          else root / ".venv" / "bin" / "python")
+    py.parent.mkdir(parents=True)
+    py.write_bytes(b"")
+
+
+def _envs_query(nb, src=None):
+    q = "/envs?nb_path=" + urllib.parse.quote(str(nb))
+    if src is not None:
+        q += "&src=" + urllib.parse.quote(src)
+    return q
+
+
+def test_envs_lists_local_venv(daemon_state, tmp_path):
+    _fake_venv(tmp_path)
+    r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb"))
+    assert any(e["label"].startswith(".venv") for e in r["envs"])
+
+
+def test_envs_walks_when_stat_says_local(daemon_state, tmp_path):
+    _fake_venv(tmp_path)
+    with _stat_stub({"remote": False, "is_dir": True}) as src:
+        r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb", src))
+    assert any(e["label"].startswith(".venv") for e in r["envs"])
+
+
+def test_envs_skips_venv_walk_on_mount_backed_paths(daemon_state, tmp_path):
+    _fake_venv(tmp_path)
+    with _stat_stub({"remote": True, "is_dir": True}) as src:
+        r = _daemon_get(daemon_state, _envs_query(tmp_path / "nb.ipynb", src))
+    assert r["envs"] == [{"label": "App environment", "path": ""}]
+
+
+def test_envs_skips_venv_walk_when_stat_unreachable(daemon_state, tmp_path):
+    _fake_venv(tmp_path)
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    r = _daemon_get(daemon_state,
+                    _envs_query(tmp_path / "nb.ipynb", f"http://127.0.0.1:{port}"))
+    assert r["envs"] == [{"label": "App environment", "path": ""}]
 
 
 def test_daemon_ensure_with_missing_notebook_dir_still_starts(daemon_state, tmp_path):
