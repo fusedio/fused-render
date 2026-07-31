@@ -21,7 +21,8 @@ from fused_render.shell import pathops
 
 # A mount path is any absolute path; the tests always stub is_mount_backed so no
 # real mounts dir is needed. This is a plausible mountpoint-relative path.
-MOUNT_PATH = "/home/u/.fused-render/mounts/open/some/dir"
+MOUNTS_DIR = "/home/u/.fused-render/mounts"
+MOUNT_PATH = MOUNTS_DIR + "/open/some/dir"
 
 
 def _entry(name, *, is_dir=False, size=1, modtime="2024-01-02T03:04:05Z"):
@@ -38,14 +39,38 @@ def as_mount(monkeypatch):
 
 @pytest.fixture
 def no_kernel_fs(monkeypatch):
-    """Make any kernel directory/stat syscall explode, so a test can prove a
-    mount-backed path never reaches the kernel (the mount-wedge guarantee)."""
-    def boom(*a, **k):
-        raise AssertionError(f"kernel fs call on a mount path: {a!r}")
+    """Make a kernel directory/stat syscall on a MOUNT path explode, so a test can
+    prove a mount-backed path never reaches the kernel (the mount-wedge guarantee).
 
-    monkeypatch.setattr(os, "scandir", boom)
-    monkeypatch.setattr(os, "stat", boom)
-    monkeypatch.setattr(os, "lstat", boom)
+    Scoped to paths under MOUNTS_DIR rather than tripping on every path. `os.stat`
+    and friends are process-wide, so an unconditional trap also fires for fs calls
+    this test knows nothing about — including Python's own linecache/traceback
+    machinery running on a background thread, where the AssertionError cannot fail
+    the test and instead crashes the xdist worker (an INTERNALERROR, with the whole
+    session's exit status lost). The guarantee under test is about the mount path, so
+    that is exactly what the trap watches; everything else passes through.
+    """
+    real_scandir, real_stat, real_lstat = os.scandir, os.stat, os.lstat
+
+    def _is_mount_arg(a):
+        if not a:
+            return False
+        try:
+            return str(os.fspath(a[0])).startswith(MOUNTS_DIR)
+        except TypeError:
+            return False  # a file descriptor — never a mount path
+
+    def trap(real):
+        def call(*a, **k):
+            if _is_mount_arg(a):
+                raise AssertionError(f"kernel fs call on a mount path: {a!r}")
+            return real(*a, **k)
+
+        return call
+
+    monkeypatch.setattr(os, "scandir", trap(real_scandir))
+    monkeypatch.setattr(os, "stat", trap(real_stat))
+    monkeypatch.setattr(os, "lstat", trap(real_lstat))
 
 
 # --------------------------------------------------------------- list_mount_dir

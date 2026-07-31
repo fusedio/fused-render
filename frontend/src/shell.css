@@ -2896,6 +2896,17 @@ select.field-control:has(option[value=""]:checked) {
   background: rgba(var(--tint), 0.02);
 }
 
+/* A note that carries its own remedy (e.g. the account page's "sign in again"
+   when stored credentials no longer work). Separated from the message text so
+   the action reads as an action, not as a run-on sentence. */
+.deploy-note-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
 /* ---- Unified button vocabulary + modal chassis -------------------------- */
 /* One .btn base and four variants for every modal/form action, with ONE
    disabled treatment and ONE focus-visible ring. The selectors are grouped for

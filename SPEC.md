@@ -1157,6 +1157,17 @@ the product gains network access.
   `infra teardown`) → fresh `create`. Deploying to a **different** env always
   creates fresh there and repoints the pointer — the old env's mount stays
   live, and the modal says so inline.
+- **DP-20** The deployed app is **named after the page**, stated explicitly as
+  `--name` on create *and* repoint (`deploy.app_name_for`: the page's stem, or its
+  folder's name when the stem names nothing by itself like `index.html`, sanitized
+  to the same conservative set a clone folder is; empty after that leaves the CLI's
+  own default). `share create`/`repoint` otherwise derive the name from the source
+  directory they are handed, and what this module hands them is a throwaway
+  `tempfile.mkdtemp(prefix="fused-render-deploy-")` — so pages published as
+  `fused-render-deploy-pabxq903`, which is the name the deployments list shows, the
+  name the clone inventory reports, and therefore the folder name a viewer's clone
+  inherits (§35 CL-1). Repoint restates it because repoint re-derives it too;
+  deriving from the page path keeps it stable across redeploys.
 - **DP-11** CLI output is parsed defensively (`token`/`id`/`url`/`status`
   only): the managed backend returns the URL on create/repoint/recreate; an
   AWS env prints token+path only, so `url` may stay null — the last-known URL
@@ -1266,6 +1277,21 @@ the product gains network access.
   ends in its own token reveals the base for all the rest (`_serve_base_url`).
   With no recorded link to derive from (e.g. only AWS deploys so far), URLs
   stay null and the cell says why on hover.
+- **DP-19** *Source code* (§35): a collapsible section beside Caching and Link, headed
+  **Source code** — the heading names what is at stake ("is my Python readable?") to a
+  publisher who has never used the viewer-side flow, where "Cloning" named our mechanism and
+  gave them no reason to open it. Its "Let viewers clone this app" toggle rides
+  `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
+  `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
+  like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
+  refreshes it from `share list` on the same read that reconciles `status`, so a posture
+  changed from a terminal shows through instead of being re-sent stale. Repoint states it
+  explicitly in both directions — the CLI preserves an omitted flag, which is right for a
+  CLI and wrong for a dialog whose toggle is always a definite statement.
+  The posture is only ever read from **deployment metadata** — the mount record, or our pointer
+  record as its cache — and never inferred from what happens to be on disk or from which route
+  the user came in through. That is what makes create / repoint / recreate predictable: the
+  decision is carried, not recomputed, so the same source published twice cannot flip it.
 - **DP-14** Endpoints (`fused_render/deploy.py`, an APIRouter like
   shell/bookmarks): `GET /api/deploy/config`, `GET /api/deploy/status`,
   `GET /api/deploy/preview`, `GET /api/deploy/shares`, `POST /api/deploy`,
@@ -1274,6 +1300,141 @@ the product gains network access.
   `X-Fused` guard (D36). CLI failures surface their last stderr line verbatim
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
+
+## 35. Open a Deployed App — Clone a Page Back from its URL (D196)
+
+The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
+Paste a deployed page's URL, and if its publisher allowed cloning, download its export
+bundle and unpack it into `~/Documents/Fused` as an ordinary local page.
+
+**Our side of a three-party boundary.** The contract is `fused`'s
+`spec/serve/clone-protocol.md`: *a deployed app may expose an authorized, versioned clone
+artifact; importing it is deterministic and does not require reconstructing deployment state.*
+`fused` owns the artifact — its layout, path rules, byte assembly, size limits, and the
+`protocol` version that states compatibility. The host serving it owns **authorization** only.
+**This repo owns safe local import**, and nothing else: fetch, verify, unpack, atomically claim
+a destination. So we read the protocol fields, use the advisory hints to place files and to
+describe the download, and treat the archive's interior as opaque — a second copy of the bundle
+schema on this side of the boundary would only drift from the one that defines it. What we do
+*not* delegate is validating the two manifest path fields we consume (CL-5): they arrive over
+the network and become paths on the user's machine, so checking them here is the trust boundary
+working, not a second opinion about the format.
+
+- **CL-1** Two steps, mirroring §26's confirm page: `GET /api/clone-app/info` previews
+  (read-only — the file list, the size, and the exact destination folder, all of it advisory
+  metadata the host may omit, in which case the confirm step simply shows less) and
+  `POST /api/clone-app` performs it. The preview names the folder the clone actually uses:
+  the client passes that folder back on the second call and the clone honours it while it is
+  free, so a page appearing in the workspace in between can't invalidate what the user was
+  shown. Carry-through rather than a lock — reserving the name would mean creating a
+  directory during a preview the user has not confirmed — so in the race the clone's own
+  response names where it landed, which is what the success view shows. The commit **claims
+  the name by renaming** (`zip_import.move_into_new_dir`), never `shutil.move`: move onto an
+  existing directory moves the payload *inside* it, which would report success with the page
+  a level below where `view` points, so a taken destination fails the rename and the next
+  name is tried. Running out of names is a stated refusal at both steps, not a 500.
+  The preview's file list names the paths the clone will
+  **create**, not the archive's member names: a v2 archive holds `manifest.json` plus
+  `<root>/<key>`, while the clone makes the payload dir *become* the page folder and keeps
+  nothing else — so echoing the inventory verbatim listed `files/sine.py` and `manifest.json`,
+  neither of which ever appears, under copy promising otherwise. The bundle's `manifest.json`
+  is read during the import (for `root`/`page`) and then **dropped with staging**: an earlier
+  build kept it in the page folder as a dotfile "so a re-export could reproduce the bundle",
+  but nothing read it back — `export_page` recomputes the manifest from the page's own files —
+  so it was write-only clutter, one more path the confirm step had to predict, and a second
+  move on the commit path that needed its own rollback. The commit is now a single rename.
+  The folder is named after the **link**, falling back to the **app name**: a deployed page's
+  URL ends in its token, which is either a name the publisher chose (`share create --token
+  my-solar-map`) or a random opaque one, and a chosen name is the best name available — it is
+  what the link the user followed says, what the publisher calls the deployment, and it is
+  stable across redeploys (a repoint keeps the token). An opaque token (lowercased base32, 26+
+  chars — `app_clone._OPAQUE_TOKEN`, mirroring fused's `mounts.is_opaque_token`; a shape check
+  used for naming only, never as a gate) names nothing, so the app name wins there — which is
+  why the publisher side states `--name` explicitly (DP-20) instead of letting the export's
+  temp directory name the app. Both are reduced to a conservative allow-list before becoming a
+  path, since both arrive from outside. The app name still heads the confirm step; only the
+  folder prefers the link. The same order applies on the commit path, which may run with no
+  preview at all. The confirm button says
+  **Clone to local**, not "Clone to <folder>": the body above it already names the
+  destination, and a generated folder name in a button label is noise. The modal is
+  **undismissable during the write** (`Modal`'s `busy`, so Esc / backdrop / ✕ are all
+  shut off, not just the Cancel button): the request keeps running, so an exit taken
+  mid-clone lands files in the workspace while dropping the only delivery of the
+  result — no success state, no navigation, and a folder the user has to find for
+  themselves. The preview step stays dismissable, since it writes nothing. Opposite
+  call from DeployModal, which stays closeable because its action completes
+  server-side and the dialog reports on it afterwards.
+  **Two triggers, one flow** (`CloneAppHost` at the shell, `CloneModal.tsx`): pasting an
+  `https://` link into the **path bar**, which previously answered "can't open https:// URLs
+  in the explorer" — true and useless — and hands the link to the confirm step rather than
+  pre-judging it; and an **Open deployed app** entry on the **Apps page**, shown only while
+  the PF-8 Deploy-apps toggle is on, since with deploying off the surface that produces
+  these links is hidden and an import entry would advertise a feature the user has turned
+  away from. The path-bar route is deliberately NOT gated: refusing a URL the user
+  explicitly pasted is a worse failure than one extra button. It is mounted at the shell
+  rather than in the sidebar — where it briefly lived — because Home and Apps render without
+  a sidebar, so an entry there is unreachable from the page that should host it. The modal
+  navigates to the cloned page on success.
+- **CL-2** **Not §26's git flow, and deliberately not folded into it.** That flow relies on
+  `.git` for identity, which is what lets it safely *update* an existing clone. An archive
+  carries no provenance we can verify, so there is no update branch here: every clone lands
+  in a fresh folder (`zip_import.unique_dir` → `name`, `name-2`, …) and can never overwrite
+  or merge into an existing one. `fused_render/app_clone.py` — a separate module and
+  separate routes (`/api/clone-app*`, not §26's `/api/clone`).
+- **CL-3** **URL contract.** HTTPS only (`http://` refused, never upgraded — silently
+  "fixing" it would hide that the user's link was insecure). The `_clone` URL is rebuilt
+  from parsed components, accepting the shapes a page is served at (`…/<token>`, `/`,
+  `_shell`, `_clone`) while dropping query and fragment; userinfo is **refused**, not
+  stripped, since quietly removing it would clone from a different origin than the URL
+  appears to name. No credentials are ever sent (CL-6).
+- **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
+  things, in order of importance. The *archive* is untrusted regardless of where it came from
+  (CL-5), and the download is verified. Compatibility is checked **twice, from one table**
+  (`_PROTOCOL_BUNDLE_VERSION`): the inventory's `protocol` gives an early refusal before
+  megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
+  bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
+  gate at all. The bytes are then checked against the digest the host published as the
+  download's **quoted** `ETag` (`"sha256:<hex>"`, RFC 9110 §8.8.3) — parsed, not string-matched,
+  because matching the bare form against a compliant quoted value reads as "no digest" and skips
+  the check silently; an unparseable tag (a proxy's opaque rewrite) means *cannot verify* rather
+  than *failed*, so it does not block valid clones — bytes that arrive complete but wrong are the one failure a length check
+  cannot see, and this makes "importing is deterministic" something we confirm instead of
+  assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
+  *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
+  process sits inside the user's LAN beside `169.254.169.254`: one seam
+  (`_validated_address` + `_get`) resolves the host, refuses it unless **every** answer is
+  public, dials the validated address while keeping the hostname for `Host`/SNI (so the check
+  cannot be undone by re-resolution), follows no redirects, and caps on bytes actually
+  received rather than on `Content-Length`. Deliberately centralized and small — it is a
+  boundary control on a local app, not the architecture of this feature.
+- **CL-5** **One unpacker, shared with §23's template import** (`fused_render/zip_import.py`).
+  Shared *within this repo* — `fused`'s own validators cannot be reused here because the viewer
+  must work with no `fused` installed at all (the deploy feature installs it as a pinned wheel
+  into a separate environment and drives it as a CLI, so there is nothing importable in
+  process). What crosses the boundary is therefore the **format contract**, not the code:
+  entry validation before any write, symlink refusal, path-escape refusal, per-entry and
+  total caps enforced on bytes actually decompressed (the declared sizes are attacker
+  controlled), staging-then-move. A second extractor "just for clones" is how a hardened
+  path and an unhardened one end up side by side. The manifest's own `root`/`page` get the
+  same containment check the entries do — the entries can all be safe while a manifest field
+  points outside the bundle, and `root` is what gets moved.
+- **CL-6** **Public pages only, for now.** A gated page needs a token whose audience
+  satisfies that mount's gate, and neither a query string nor a deep link is an acceptable
+  place to carry one (both leak through history and logs). A `401`/`403` says so plainly. A
+  `404` is deliberately ambiguous at the source — the serve gate must not confirm whether a
+  mount exists or whether cloning is on — so the message names both possibilities rather
+  than guessing one. Every refusal is **shown verbatim in the modal**, so it reads as a
+  sentence: `app_clone._error` capitalizes at that one boundary rather than at each of the two
+  dozen raise sites, because most of those messages are f-strings or `zip_import` refusals
+  passed straight through — a per-raise fix covers the literals and misses the rest. A first
+  word that is a URL or a path is left alone: those are verbatim tokens the user is meant to
+  recognise, and "Https://…" would look like our mistake.
+- **CL-7** **A `fused-render://open?app=<page URL>` deep link is DEFERRED to its own change.**
+  §26's `?app=` sibling is the natural entry (`deeplink.py` already reserves new payload
+  *params* on the same `open` action as the extension point), but it needs its own confirm
+  surface and supervisor dispatch, and nothing routes one today. `CloneModal` takes an
+  `initialSrc` and auto-previews it, which is the seam that entry will use — it is not
+  evidence the link works.
 
 ## 20. Preferences — Shell Settings Page (M12)
 
@@ -2177,7 +2338,13 @@ provisioning stays a documented terminal flow.
   signed out → sign-in (waiting + Cancel while connecting; a sign-in
   started elsewhere — Deploy modal, another tab — is adopted read-only with
   its own Cancel); signed in → account summary (probe orgs/roles table,
-  not-admitted note), the environments management table (default marker,
+  not-admitted note, and — when the probe FAILED — a **Sign in again** action
+  inside that note, because `logged_in` is presence-only: stored credentials the
+  identity provider no longer accepts (an expired, revoked or rotated refresh
+  token, surfaced as the CLI's own `403 … invalid refresh token`) leave a state
+  that *looks* signed in and cannot be retried out of, so the remedy has to be
+  reachable from where the error appears rather than only from the CLI. It reuses
+  the one sign-in path — see AC-8b for why completion is not presence), the environments management table (default marker,
   with make-default and forget-with-confirm behind a per-row overflow
   ("⋯") menu — one quiet control per row instead of a button pair), and
   the setup panel — presented
@@ -2201,6 +2368,23 @@ provisioning stays a documented terminal flow.
   false in this tab — the cache must not show the prior account's orgs). All
   return-to-tab refreshes ride the shared `useRefreshOnReturn` hook
   (lib/hooks.ts), which coalesces the double focus+visibilitychange firing.
+- **AC-8b** **A sign-in completes on FRESH CREDENTIALS, not on their presence.**
+  `useFusedLogin` captures `creds_stamp` before spawning the child and finishes
+  only once the poll reports `logged_in` **and** a stamp different from that
+  baseline. Presence alone is the wrong signal for a **re**-authentication: the
+  credentials file already exists, so `logged_in` is already true and the first
+  poll tick would declare success before the browser round-trip had happened —
+  reporting a fixed account while the probe still fails. For a signed-out start
+  the baseline is null and the condition collapses to the original presence
+  check, so that path is byte-for-byte unchanged. If the pre-flight read of the
+  baseline fails the hook degrades to presence — eager for a re-auth, correct for
+  a fresh sign-in — rather than refusing to complete at all.
+  **Cancel's reconcile applies the same test** (one shared `isFreshLogin`, not two
+  copies of the rule). Cancel re-reads the status because the sign-in may have landed
+  in the gap before the cancel took effect, and that read must ask the same question
+  the poll asks: testing presence there meant that on the re-auth path — credentials
+  present, merely rejected — pressing Cancel announced a completed sign-in that never
+  happened and dismissed the note that had asked the user to sign in again.
 - **AC-11** The page also hosts the **Deployments** section — the env-wide
   `fused share list` view with per-mount Revoke that PF-6 previously placed
   on Preferences (semantics unchanged: `/api/deploy/shares` joined to local
@@ -2328,6 +2512,21 @@ lists the last files opened in the app, each carrying the params it last had.
   so 3 valid rows survive RC-7 filtering.
 - **RC-7** Entries whose file no longer exists are **hidden silently** from
   the GET response — never deleted from disk (the file may come back).
+- **RC-12** A **delete or Move-to-Bin drops the row immediately**, without
+  waiting for RC-7. RC-7 only bites on a GET, and deleting a file triggers none —
+  so the row used to sit in the sidebar pointing at a file that no longer existed
+  until the user's next navigation happened to refresh the cache. Every delete /
+  trash site instead calls **one** function with the path that went away
+  (`fs-actions.notePathDeleted`, which also prunes the clipboard — one call so the
+  next thing that needs to hear about a delete is added there rather than hunted
+  for across the views), and `recents.dropRecentsFor` drops that path plus
+  anything under it (prefix + `/`, since deleting a folder takes its contents).
+  **Local, no request**: the store runs deeper than the three displayed rows
+  (RC-6's buffer), so the freed slot refills from the cache already held, by the
+  same RC-11 arithmetic a vanished-on-refresh entry gets. A re-GET would be the
+  wrong tool — RC-7's existence check fails *open* on an indeterminate answer, so
+  a row the user just deleted could come straight back. Nothing is written to the
+  store, so a file restored from the Bin reappears in Recents as RC-7 intends.
 - **RC-8** API (`fused_render/shell/recents.py`): `GET /api/recents`
   (unguarded read, filtered per RC-7), `POST /api/recents/open {url}` and
   `PUT /api/recents/collapsed {collapsed}` (both X-Fused-guarded, D36). The

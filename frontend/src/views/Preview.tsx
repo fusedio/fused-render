@@ -23,7 +23,7 @@ import {
   join,
   freeDuplicatePath,
   copyToClipboard,
-  clearClipboardIfDeleted,
+  notePathDeleted,
   remapClipboardPath,
   trashEntry,
   buildOpenWithItems,
@@ -137,7 +137,7 @@ function usePreviewFileMenu(
       onConfirm: () => {
         deleteEntry(fsPath, stat.is_dir).then(
           () => {
-            clearClipboardIfDeleted(fsPath);
+            notePathDeleted(fsPath);
             navigate(parent, { isDir: true }); // the open file is gone — leave for the parent listing
           },
           (e: Error) => pushToast({ msg: friendlyFsError(e, { verb: "delete", name: stat.name }), tone: "error" })
@@ -148,7 +148,7 @@ function usePreviewFileMenu(
   const doTrash = () => {
     trashEntry(fsPath, stat.is_dir).then((r) => {
       if (r.status === "trashed") {
-        clearClipboardIfDeleted(fsPath);
+        notePathDeleted(fsPath);
         navigate(parent, { isDir: true });
       } else if (r.status === "unsupported") {
         startDelete();

@@ -54,6 +54,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -139,7 +140,17 @@ def _now_iso() -> str:
 # extra (metadata only refreshes on reinstall) — all of which disabled the
 # install button exactly when it mattered. The constant ships in the same
 # file as the code that uses it, so it is always as current as the server.
-PINNED_FUSED_REQUIREMENT = "fused==2.9.3b2"
+# Pinned to a direct wheel URL, not a PyPI version: the clone flags this module sends
+# (`--allow-clone` / `--no-allow-clone`, see `_create_args`/`_repoint_args`) land in
+# `fusedio/fused` #351, which has no PyPI release yet. `fused==2.9.3b2` exposes NEITHER
+# flag, so a deploy with cloning on failed and — worse — EVERY repoint failed, since the
+# repoint states the posture explicitly in both directions. Same artifact the managed
+# control plane pins (`openfused_server`), so the two planes agree on the CLI surface.
+# Move this to a released version once one carries the flags; the string is duplicated in
+# pyproject's `[fused]` extra and its bundled-deps list, and tests hold all three equal.
+PINNED_FUSED_REQUIREMENT = (
+    "fused @ https://fused-magic.s3.us-west-2.amazonaws.com/fused-2.9.3.post13-py3-none-any.whl"
+)
 # The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
 FUSED_MIN_PYTHON = (3, 11)
@@ -286,6 +297,84 @@ def _run_share(env_name: str, args: list[str], timeout: float = SHARE_TIMEOUT):
         ) from None
 
 
+#: Page stems that name nothing on their own. A workspace of `index.html` files would deploy
+#: as a wall of apps all called "index", so the containing folder's name is used instead.
+_GENERIC_PAGE_STEMS = frozenset({"index", "main", "app", "page"})
+#: Everything outside the conservative set a name may keep. Deliberately the same shape
+#: `app_clone._safe_folder_name` reduces a name to, because that is where this one ends up: the
+#: name we publish is what a viewer's clone folder is named after.
+_UNSAFE_APP_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def app_name_for(page: str) -> str:
+    """The deployed app's display name for `page`.
+
+    Passed EXPLICITLY (`share create --name` / `share repoint --name`) because the CLI's own
+    default is the name of the source directory it is handed — and what we hand it is a
+    throwaway temp dir (`tempfile.mkdtemp(prefix="fused-render-deploy-")`, below). So a deploy
+    that omitted the flag published the page under a name like `fused-render-deploy-pabxq903`:
+    the name the account page's deployments list shows, the name the clone inventory reports,
+    and therefore the name a viewer's clone folder inherited. The temp dir is an implementation
+    detail of the export step and has no business naming the user's app.
+
+    Derived from the page path so it is stable across redeploys of the same page (repoint's
+    `--name` is meant to restate the create-time one): the file's stem, or its folder's name
+    when the stem names nothing by itself (`index.html`). Sanitized, because a name with a
+    space or a slash in it would otherwise reach a URL/token derivation and a clone's folder
+    name; empty after that, and the CLI's default stands rather than a `--name ""`.
+    """
+    stem, _ext = os.path.splitext(os.path.basename(page))
+    if stem.lower() in _GENERIC_PAGE_STEMS:
+        folder = os.path.basename(os.path.dirname(os.path.abspath(page)))
+        stem = folder or stem
+    return _UNSAFE_APP_NAME.sub("-", stem).strip("-.")
+
+
+def _name_args(page: str) -> list[str]:
+    """`--name` for this page, or nothing when it sanitizes away (see `app_name_for`)."""
+    name = app_name_for(page)
+    return ["--name", name] if name else []
+
+
+def _create_args(
+    bundle: str, page: str, cache_max_age: str, allow_clone: bool, custom_token: str | None
+) -> list[str]:
+    """`share create` argv for a fresh mount — the two create branches share it so a new
+    knob can't reach one and miss the other (they diverged on nothing but `named` before).
+
+    `--allow-clone` is passed only when enabling: the CLI defaults it off and offers no
+    `--no-allow-clone` on create, so "off" is the absence of the flag rather than a denial.
+    """
+    args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
+    args += _name_args(page)
+    if allow_clone:
+        args.append("--allow-clone")
+    if custom_token:
+        args += ["--token", custom_token]
+    return args
+
+
+def _repoint_args(
+    token: str, bundle: str, page: str, cache_max_age: str, allow_clone: bool
+) -> list[str]:
+    """`share repoint` argv — always states the clone posture EXPLICITLY.
+
+    `repoint` preserves the flag when it is omitted, which is right for a CLI (an
+    omitted-flags redeploy must not silently widen access) and wrong for this dialog: the
+    modal always shows a definite toggle, so the deploy it triggers is a full statement of
+    intent. Sending `--no-allow-clone` when the toggle is off is what makes turning it off
+    in the dialog actually turn it off, rather than inheriting whatever the mount had.
+
+    `--name` for the same reason it is on create: repoint re-derives the app name from the
+    source it is handed, so omitting it would rename the app back to the temp dir on every
+    redeploy (see `app_name_for`).
+    """
+    args = ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+    args += _name_args(page)
+    args.append("--allow-clone" if allow_clone else "--no-allow-clone")
+    return args
+
+
 def _list_mounts(env_name: str) -> list[dict]:
     """`share list --all` on env — the authoritative record of what is live.
 
@@ -396,7 +485,8 @@ def set_deployment(page: str, record: dict) -> None:
 
 def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
                  entrypoints: list[str], include: list[str], exclude: list[str],
-                 cache_max_age: str, named: bool, fallback: dict | None) -> dict:
+                 cache_max_age: str, allow_clone: bool, named: bool,
+                 fallback: dict | None) -> dict:
     # `cache_max_age` here is simply what the caller requested this deploy — every
     # branch in deploy_page (create, repoint, recreate+repoint) now actually applies
     # it (`application` repo spec 021 §3.1, amended: a managed Fused mount's
@@ -433,6 +523,14 @@ def _record_from(raw: dict, *, page: str, env_name: str, backend: str,
         # redeploy that doesn't touch it re-sends the same value (the fused CLI has no
         # "preserve on omit" for this — every deploy is an explicit, full statement).
         "cache_max_age": cache_max_age,
+        # Whether viewers may download this page's source bundle (the `_clone`
+        # sub-path). Persisted like cache_max_age so a reopened modal shows the
+        # current setting — but unlike cache_max_age this is only the value we
+        # last SENT: the mount is the authority, so the modal reconciles it
+        # against `share list` on open (list_shares carries it per mount).
+        # Deploying a page's source is a disclosure, so it is never inferred:
+        # every deploy states it explicitly and an old record reads False.
+        "allow_clone": bool(allow_clone),
         # Whether this mount's token is a user-chosen name (a deliberately
         # guessable public URL) vs the default crypto-random opaque one. Set at
         # the fresh-create that minted the token and carried forward unchanged
@@ -494,6 +592,7 @@ def deploy_page(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     cache_max_age: str = "0s",
+    allow_clone: bool = False,
     force_new: bool = False,
     custom_token: str | None = None,
 ) -> dict:
@@ -503,6 +602,20 @@ def deploy_page(
     `include`/`exclude` are the user's file selection (see export.plan_export):
     extra files bundled beyond the auto-scan, and files dropped from it. They are
     persisted on the record so a reopened modal reloads the same selection.
+
+    `allow_clone` (off by default) is the Deploy dialog's "let viewers clone this
+    app" choice: may someone who can reach the deployed URL also **download the
+    page's source bundle** from the mount's `_clone` sub-path? It is a
+    disclosure, not a convenience — a deployed page's `.py` sources ship in the
+    artifact but are otherwise not web-readable, so a public link plus this flag
+    publishes them to anyone holding the URL, which is why it defaults off,
+    is never inherited, and is stated explicitly on every deploy
+    (`_create_args`/`_repoint_args`). Only a v2 export bundle can honour it
+    (`export.export_page` emits v2, so every page this app deploys qualifies);
+    the `fused` CLI refuses the flag otherwise and that refusal passes through
+    verbatim. Because the mount — not this record — is the authority, the
+    modal reconciles the stored value against `share list` (`list_shares`
+    reports each mount's live posture) when it opens.
 
     `cache_max_age` (`"0s"` off by default, e.g. `"5m"`/`"1h"`) is the Deploy
     dialog's caching choice: how long a page's result may be served from cache
@@ -611,9 +724,7 @@ def deploy_page(
         named = bool(same_env.get("named")) if same_env else False
         if not token:
             named = bool(custom_token)
-            create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-            if custom_token:
-                create_args += ["--token", custom_token]
+            create_args = _create_args(bundle, page, cache_max_age, allow_clone, custom_token)
             raw = _run_share(env_name, create_args)
         else:
             live = _classify_mount(_list_mounts(env_name), token)
@@ -625,13 +736,13 @@ def deploy_page(
             # to change caching on a redeploy that reuses the token.
             if live == "active":
                 raw = _run_share(
-                    env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                    env_name, _repoint_args(token, bundle, page, cache_max_age, allow_clone)
                 )
             elif live == "revoked":
                 _run_share(env_name, ["recreate", token, "--same-token"])
                 try:
                     raw = _run_share(
-                        env_name, ["repoint", token, bundle, "--cache-max-age", cache_max_age]
+                        env_name, _repoint_args(token, bundle, page, cache_max_age, allow_clone)
                     )
                 except DeployError as repoint_err:
                     # The revive (recreate) succeeded but the republish
@@ -663,15 +774,15 @@ def deploy_page(
                     raise
             else:  # absent — e.g. after an infra teardown; nothing to revive
                 named = bool(custom_token)  # a fresh create, like the first-deploy path
-                create_args = ["create", bundle, "--public", "--cache-max-age", cache_max_age]
-                if custom_token:
-                    create_args += ["--token", custom_token]
-                raw = _run_share(env_name, create_args)
+                raw = _run_share(
+                    env_name, _create_args(bundle, page, cache_max_age, allow_clone, custom_token)
+                )
 
         record = _record_from(
             raw, page=page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
-            cache_max_age=cache_max_age, named=named, fallback=same_env,
+            cache_max_age=cache_max_age, allow_clone=allow_clone, named=named,
+            fallback=same_env,
         )
         set_deployment(page, record)
         # force_new replace: the new mount is live and the pointer now tracks it,
@@ -787,10 +898,25 @@ def deployment_status(page: str, reconcile: bool) -> dict:
         mounts = _list_mounts(pointer["env"])
     except DeployError:
         return {"deployment": pointer, "reconciled": False, "live": None}
-    live = _classify_mount(mounts, pointer.get("token", ""))
+    token = pointer.get("token", "")
+    live = _classify_mount(mounts, token)
     status = "active" if live == "active" else "revoked"
+    fresh: dict = {}
     if status != pointer.get("status"):
-        pointer = {**pointer, "status": status, "updated_at": _now_iso()}
+        fresh["status"] = status
+    # The clone posture is reconciled on the same read, for the same reason as status: the
+    # MOUNT is the authority, so a posture flipped out of band (`fused share update`, the
+    # CLI on another machine) must show through instead of the modal seeding a stale local
+    # value and then re-sending it on the next deploy. Only when the mount is actually
+    # THERE: an absent mount carries no live value to reconcile against, and treating
+    # "absent" as "off" would silently rewrite the user's setting on an env outage.
+    mount = _find_mount(mounts, token)
+    if mount is not None:
+        live_clone = bool(mount.get("allow_clone") or False)
+        if live_clone != bool(pointer.get("allow_clone") or False):
+            fresh["allow_clone"] = live_clone
+    if fresh:
+        pointer = {**pointer, **fresh, "updated_at": _now_iso()}
         set_deployment(page, pointer)
     return {"deployment": pointer, "reconciled": True, "live": live}
 
@@ -848,6 +974,12 @@ def list_shares(env_name: str) -> dict:
                 "status": m.get("status") or "active",
                 "type": m.get("type"),
                 "url": url if isinstance(url, str) else None,
+                # The LIVE clone posture, straight off the mount record — what the Deploy
+                # modal reconciles its stored value against on open. `share list` omits it
+                # on a control plane that predates the field, which reads False: the
+                # fail-closed direction, since the alternative is showing a page's source
+                # as downloadable when nothing says it is.
+                "allow_clone": bool(m.get("allow_clone") or False),
                 "page": hit["page"] if hit else None,
             }
         )
@@ -1057,6 +1189,9 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
     cache_max_age = body.get("cache_max_age", "0s")
     if not isinstance(cache_max_age, str):
         return _error("'cache_max_age' must be a string, e.g. '0s'/'5m'/'1h'")
+    allow_clone = body.get("allow_clone", False)
+    if not isinstance(allow_clone, bool):
+        return _error("'allow_clone' must be a boolean")
     force_new = body.get("force_new", False)
     if not isinstance(force_new, bool):
         return _error("'force_new' must be a boolean")
@@ -1081,6 +1216,7 @@ def api_deploy(body: dict = Body(...), x_fused: str | None = Header(default=None
             include,
             exclude,
             cache_max_age=cache_max_age,
+            allow_clone=allow_clone,
             force_new=force_new,
             custom_token=custom_token,
         )

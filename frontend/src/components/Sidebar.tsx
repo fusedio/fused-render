@@ -422,6 +422,7 @@ export default function Sidebar({ config }: SidebarProps) {
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
+  // The "open a deployed app" clone dialog (footer entry, below).
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
   // Double-press-to-collapse is detected manually here: preventDefault on
@@ -1267,6 +1268,9 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Templates</span>
         </button>
+        {/* Open a deployed app (023 §8.3): paste a deployed page's URL and clone it into
+            the Fused folder. A modal rather than a view — it is a one-shot action with a
+            confirm step, not a place you navigate to and come back to. */}
         {/* PROTOTYPE: mounts entry — remote mounts, /view/_mounts. */}
         <button
           type="button"

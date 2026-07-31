@@ -2,6 +2,7 @@
 // Rendered by every view: path crumbs for listing/preview, a static label for
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useRef, useState } from "react";
+import { requestCloneApp } from "../lib/cloneApp";
 import { navigate, navigateUrl, urlForFsPath, currentUrl, IS_EMBED } from "../lib/router";
 import { basename } from "../lib/format";
 import { isMod } from "../lib/platform";
@@ -242,6 +243,15 @@ async function openUrl(url: string, scheme: string): Promise<void> {
       // s3://<bucket> — add one from the Mounts page in the sidebar").
       pushToast({ msg: (e as Error).message, tone: "error" });
     }
+    return;
+  }
+  if (scheme === "https") {
+    // A deployed Fused Render page (SPEC §35). The path bar is where a user naturally
+    // pastes a link someone sent them, and "Can't open https:// URLs in the explorer" was
+    // both true and useless. The flow's own confirm step vets the URL and reports why if it
+    // is not a clonable page, so this hands the link over rather than pre-judging it here —
+    // one place decides what a clone URL is.
+    requestCloneApp(url);
     return;
   }
   pushToast({ msg: `Can't open ${scheme}:// URLs in the explorer`, tone: "error" });
