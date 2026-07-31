@@ -5686,12 +5686,6 @@ select.field-control:has(option[value=""]:checked) {
   font-weight: 600;
 }
 
-.home-rule-count {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
 .home-rule-line {
   flex: 1 1 auto;
   align-self: center;

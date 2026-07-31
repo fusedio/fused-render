@@ -5,7 +5,7 @@
 //      NewAppPanel is exported from here but opens from /apps.
 //   2. Doorways — three equal cards for the app's entry points: file
 //      explorer, apps hub (the Fused workspace dir), templates manager.
-//   3. Recent — the 9 most recently updated apps (GET /api/apps), sorted
+//   3. Recent — the 10 most recently updated apps (GET /api/apps), sorted
 //      once per fetch so the grid never reorders under interaction; keys
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -604,17 +604,14 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
 // voice (listings, paths), so the labels read as part of the tool, not chrome.
 function SectionRule({
   label,
-  count,
   action,
 }: {
   label: string;
-  count?: number;
   action?: ReactNode;
 }) {
   return (
     <div className="home-rule">
       <span className="home-rule-label">{label}</span>
-      {typeof count === "number" && <span className="home-rule-count">{count}</span>}
       <span className="home-rule-line" aria-hidden="true" />
       {action}
     </div>
@@ -729,9 +726,8 @@ export default function Home({ config }: { config: Config }) {
         <section className="home-section">
           <SectionRule
             label="recent"
-            count={apps.status === "ok" ? apps.data.apps.length : undefined}
             action={
-              apps.status === "ok" && apps.data.apps.length > 9 ? (
+              apps.status === "ok" && apps.data.apps.length > 10 ? (
                 <button
                   type="button"
                   className="home-rule-action"
@@ -752,7 +748,7 @@ export default function Home({ config }: { config: Config }) {
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
             <div className="home-apps">
-              {/* The 9 most recently updated apps. Sort is computed once per
+              {/* The 10 most recently updated apps. Sort is computed once per
                   fetch: recency (updated_at epoch seconds, missing → last;
                   name breaks ties) — stable under interaction since nothing
                   re-sorts after load. */}
@@ -762,7 +758,7 @@ export default function Home({ config }: { config: Config }) {
                   (a, b) =>
                     (b.updated_at ?? 0) - (a.updated_at ?? 0) || a.name.localeCompare(b.name),
                 )
-                .slice(0, 9)
+                .slice(0, 10)
                 .map((app) => (
                   <AppCard key={app.path} app={app} />
                 ))}
