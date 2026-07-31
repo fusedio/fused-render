@@ -205,6 +205,7 @@ function AppCard({ app }: { app: AppInfo }) {
             from it — "application / application" is noise. */}
         {title !== app.name && <span className="home-app-sub">{app.name}</span>}
       </span>
+      <span className="home-app-tag">{app.tag}</span>
     </button>
   );
 }
@@ -322,7 +323,7 @@ export default function Home({ config }: { config: Config }) {
           <Doorway
             hue="var(--icon-code)"
             title="Apps"
-            desc={`Every folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
+            desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
             titleAttr={config.fused_dir}
             onClick={() => navigate(config.fused_dir, { isDir: true })}
             glyph={
@@ -367,8 +368,8 @@ export default function Home({ config }: { config: Config }) {
           {apps.status === "loading" && <div className="home-loading">Loading…</div>}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
-              No apps yet. Hit “New app” above — it lands in {basename(config.fused_dir)} as a
-              folder you own.
+              No apps yet. Hit “New app” above — it lands in {basename(config.fused_dir)}/local as
+              a folder you own.
             </div>
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (

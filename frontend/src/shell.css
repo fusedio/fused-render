@@ -5367,6 +5367,21 @@ select.field-control:has(option[value=""]:checked) {
   white-space: nowrap;
 }
 
+/* The app's tag (its parent folder name) — a quiet mono pill, right-aligned,
+   never competing with the title for attention. */
+.home-app-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 7px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 /* Loading / empty voices. */
 .home-loading {
   color: var(--fg-muted);

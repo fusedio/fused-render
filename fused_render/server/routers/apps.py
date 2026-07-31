@@ -1,19 +1,24 @@
 """The Home view's apps backend: list the app folders in the Fused workspace
 and scaffold new ones.
 
-An "app" is simply a non-hidden top-level directory inside the workspace
-(``fused_dir()``, ~/Documents/Fused). Its entry is the single direct-child
-``.html`` file when there is exactly one — zero or several means the folder
-still lists, but opens as a directory instead of a view (``entry_html: null``).
+Apps live two levels under the workspace (``fused_dir()``, ~/Documents/Fused):
+``<workspace>/<tag>/<name>/``. A "tag" is simply any non-hidden top-level
+directory in the workspace — there is no registry or whitelist, so a new tag
+is just a new folder, discovered on the next listing. An "app" is any
+non-hidden directory directly inside a tag dir. Its entry is the single
+direct-child ``.html`` file when there is exactly one — zero or several means
+the folder still lists, but opens as a directory instead of a view
+(``entry_html: null``).
 
-POST /api/apps/new scaffolds ``<workspace>/<name>/`` from the packaged app
-starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view plus
-a ``CLAUDE.md``), copies the authoring skill in the same way the template
+POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
+app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
+plus a ``CLAUDE.md``), copies the authoring skill in the same way the template
 scaffold does (templates_api._ensure_starter_skills), and — when the request
 carries a prompt — starts a detached Claude Code session in the new folder via
 the claude template's own backend (templates/claude/agent.py), so the session
 lands in the sidecar next to ``index.html`` and the existing claude template UI
-lists and resumes it with no new machinery.
+lists and resumes it with no new machinery. "local" is just this feature's own
+tag — nothing about the listing side treats it specially.
 """
 import html
 import json
@@ -107,28 +112,39 @@ def api_apps():
     root = fused_dir()
     apps = []
     try:
-        names = os.listdir(root)
+        tag_names = os.listdir(root)
     except OSError:
         # No workspace yet (first run before seeding) — an empty Home, not a 500.
         return {"apps": []}
-    for name in names:
-        if name.startswith("."):
+    for tag in tag_names:
+        if tag.startswith("."):
             continue
-        path = os.path.join(root, name)
+        tag_path = os.path.join(root, tag)
         try:
-            if not os.path.isdir(path):
+            if not os.path.isdir(tag_path):
                 continue
-            entry_html = _app_entry(path)
+            names = os.listdir(tag_path)
         except OSError:
-            continue  # unreadable/racing entry: skip, never fail the listing
-        apps.append({
-            "name": name,
-            "path": os.path.abspath(path),
-            "entry_html": entry_html,
-            "title": _entry_title(entry_html) if entry_html else None,
-            "updated_at": _updated_at(path),
-        })
-    apps.sort(key=lambda a: a["name"].lower())
+            continue  # unreadable/racing tag dir: skip, never fail the listing
+        for name in names:
+            if name.startswith("."):
+                continue
+            path = os.path.join(tag_path, name)
+            try:
+                if not os.path.isdir(path):
+                    continue
+                entry_html = _app_entry(path)
+            except OSError:
+                continue  # unreadable/racing entry: skip, never fail the listing
+            apps.append({
+                "name": name,
+                "tag": tag,
+                "path": os.path.abspath(path),
+                "entry_html": entry_html,
+                "title": _entry_title(entry_html) if entry_html else None,
+                "updated_at": _updated_at(path),
+            })
+    apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
 
@@ -289,11 +305,11 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         return _error("'prompt' must be a string")
 
     root = fused_dir()
-    dest = os.path.join(root, name)
+    dest = os.path.join(root, "local", name)
     if os.path.exists(dest):
         return _error(f"{name!r} already exists in the workspace", status=409)
 
-    os.makedirs(root, exist_ok=True)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
     try:
         shutil.copytree(_APP_STARTER_DIR, dest)
     except FileExistsError:

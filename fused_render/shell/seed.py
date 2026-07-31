@@ -46,10 +46,15 @@ PACKAGE_SEED_DIR = (
 # first-launch landing page (see ensure_fused_dir_and_landing). Sine ships in
 # its own subfolder (sine/sine.html + sine/sine.py) so nothing lands loose at
 # the workspace root and sine.py's __pycache__ stays inside the subfolder.
-_SHOWCASE_HTML = os.path.join("showcase", "index.html")
-_TUTORIAL_HTML = os.path.join("tutorial", "index.html")
-_SINE_HTML = os.path.join("sine", "sine.html")
-_EXPLAINER_HTML = os.path.join("how_it_works", "explainer.html")
+#
+# All seeded under "examples/" (not the workspace root) so they carry the
+# "examples" tag in the Home apps grid (root/<tag>/<project> — apps.py scans
+# any top-level dir as a tag, any dir directly inside it as a project).
+_EXAMPLES_SUBDIR = "examples"
+_SHOWCASE_HTML = os.path.join(_EXAMPLES_SUBDIR, "showcase", "index.html")
+_TUTORIAL_HTML = os.path.join(_EXAMPLES_SUBDIR, "tutorial", "index.html")
+_SINE_HTML = os.path.join(_EXAMPLES_SUBDIR, "sine", "sine.html")
+_EXPLAINER_HTML = os.path.join(_EXAMPLES_SUBDIR, "how_it_works", "explainer.html")
 
 
 def fused_dir() -> str:
@@ -154,14 +159,17 @@ def _clear_partials(fdir: str) -> None:
 
 
 def _seed_examples(fdir: str) -> bool:
-    """Copy the packaged seed set into fdir iff it is empty. Returns True when it
-    copied, False when the dir already had content (never re-seed).
+    """Copy the packaged seed set into fdir/examples/ iff fdir is empty. Returns
+    True when it copied, False when the dir already had content (never
+    re-seed).
 
-    Each example is materialized atomically: fully copied under a hidden
-    ".<name>.partial" sibling inside fdir, then os.rename'd into place. A crash
-    mid-copy therefore leaves only a hidden ".*.partial" (cleaned on the next
-    run), never a half-written example dir that would make fdir look non-empty
-    and wedge seeding off forever."""
+    The whole examples/ tree is materialized atomically: every packaged entry
+    is copied into a single hidden ".examples.partial" staging dir directly
+    under fdir, then one os.rename publishes it as "examples". A crash
+    mid-copy therefore leaves only the hidden ".examples.partial" (cleared on
+    the next run's retry, which redoes the whole copy), never a half-written
+    "examples" dir that would make fdir look non-empty and wedge seeding off
+    forever."""
     # Clear stale partials FIRST, before the emptiness check, so an interrupted
     # prior run can be retried instead of being skipped as "already seeded".
     _clear_partials(fdir)
@@ -173,19 +181,20 @@ def _seed_examples(fdir: str) -> bool:
         nonempty = False
     if nonempty:
         return False
+    partial = os.path.join(fdir, "." + _EXAMPLES_SUBDIR + ".partial")
+    _remove(partial)  # defensive: no residue from this same run
+    os.makedirs(partial)
     for entry in os.scandir(PACKAGE_SEED_DIR):
         # Hidden metadata (.DS_Store a dev machine dropped into the package
         # dir) is not seed content — mirror the emptiness check above.
         if entry.name.startswith("."):
             continue
-        dest = os.path.join(fdir, entry.name)
-        partial = os.path.join(fdir, "." + entry.name + ".partial")
-        _remove(partial)  # defensive: no residue from this same run
+        dest = os.path.join(partial, entry.name)
         if entry.is_dir():
-            shutil.copytree(entry.path, partial)
+            shutil.copytree(entry.path, dest)
         else:
-            shutil.copy2(entry.path, partial)
-        os.rename(partial, dest)
+            shutil.copy2(entry.path, dest)
+    os.rename(partial, os.path.join(fdir, _EXAMPLES_SUBDIR))
     return True
 
 

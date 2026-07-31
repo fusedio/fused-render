@@ -3,6 +3,10 @@ the workspace's app folders (entry = the single direct-child .html), and
 POST /api/apps/new scaffolds a folder from the app starter kit and optionally
 starts a detached Claude session on its index.html.
 
+Apps live two levels under the workspace: <workspace>/<tag>/<name>/. A tag is
+any non-hidden top-level folder — there is no registry, so these tests cover
+arbitrary tag names alongside "local" (where POST /api/apps/new always lands).
+
 The spawn is stubbed at the module seam (_start_app_session) — no test here
 launches a real claude.
 """
@@ -31,9 +35,9 @@ def client(tmp_path, workspace):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-def _app_dir(workspace, name, htmls=("index.html",), title=None):
-    d = workspace / name
-    d.mkdir()
+def _app_dir(workspace, name, htmls=("index.html",), title=None, tag="local"):
+    d = workspace / tag / name
+    d.mkdir(parents=True)
     for i, h in enumerate(htmls):
         body = "<html><body>hi</body></html>"
         if title is not None and i == 0:
@@ -48,24 +52,49 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     _app_dir(workspace, "one")                                # exactly one html
     _app_dir(workspace, "none", htmls=())                     # zero htmls
     _app_dir(workspace, "many", htmls=("a.html", "b.html"))   # ambiguous
-    (workspace / "loose.html").write_text("<html></html>")    # a file, not an app
+    (workspace / "loose.html").write_text("<html></html>")    # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     assert set(apps) == {"one", "none", "many"}
-    assert apps["one"]["entry_html"] == str(workspace / "one" / "index.html")
+    assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
     assert apps["none"]["entry_html"] is None
     assert apps["many"]["entry_html"] is None
-    assert apps["one"]["path"] == str(workspace / "one")
+    assert apps["one"]["path"] == str(workspace / "local" / "one")
+    assert apps["one"]["tag"] == "local"
+
+
+def test_tag_is_the_parent_folder_name(client, workspace):
+    _app_dir(workspace, "widget", tag="examples")
+    _app_dir(workspace, "widget2", tag="local")
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert apps["widget"]["tag"] == "examples"
+    assert apps["widget2"]["tag"] == "local"
+
+
+def test_any_top_level_folder_is_a_tag_no_registry(client, workspace):
+    _app_dir(workspace, "proj", tag="whatever-i-want")
+    apps = client.get("/api/apps").json()["apps"]
+    assert apps[0]["tag"] == "whatever-i-want"
+
+
+def test_sorted_by_tag_then_name(client, workspace):
+    _app_dir(workspace, "b", tag="zzz")
+    _app_dir(workspace, "a", tag="aaa")
+    apps = client.get("/api/apps").json()["apps"]
+    assert [(a["tag"], a["name"]) for a in apps] == [("aaa", "a"), ("zzz", "b")]
 
 
 def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
-    _app_dir(workspace, ".hidden")
-    d = _app_dir(workspace, "app", htmls=("view.html",))
-    (d / ".draft.html").write_text("<html></html>")  # hidden: doesn't make it ambiguous
+    hidden_tag_app = workspace / ".hidden-tag" / "app"
+    hidden_tag_app.mkdir(parents=True)
+    (hidden_tag_app / "index.html").write_text("<html></html>")
+    _app_dir(workspace, ".hidden-app")  # hidden project dir inside a real tag
+    v = _app_dir(workspace, "app", htmls=("view.html",))
+    (v / ".draft.html").write_text("<html></html>")  # hidden: doesn't make it ambiguous
 
     apps = client.get("/api/apps").json()["apps"]
     assert [a["name"] for a in apps] == ["app"]
-    assert apps[0]["entry_html"] == str(d / "view.html")
+    assert apps[0]["entry_html"] == str(v / "view.html")
 
 
 def test_entry_match_is_non_recursive(client, workspace):
@@ -92,8 +121,8 @@ def test_title_parsed_from_entry_head(client, workspace):
 
 
 def test_title_beyond_first_4kb_is_null_not_an_error(client, workspace):
-    d = workspace / "big"
-    d.mkdir()
+    d = workspace / "local" / "big"
+    d.mkdir(parents=True)
     (d / "index.html").write_text("<!--" + "x" * 5000 + "--><title>late</title>")
     apps = client.get("/api/apps").json()["apps"]
     assert apps[0]["title"] is None
@@ -101,7 +130,7 @@ def test_title_beyond_first_4kb_is_null_not_an_error(client, workspace):
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
                     reason="chmod-based unreadable dir needs POSIX non-root")
-def test_unreadable_dir_is_skipped_not_fatal(client, workspace):
+def test_unreadable_tag_dir_is_skipped_not_fatal(client, workspace):
     _app_dir(workspace, "ok")
     locked = workspace / "locked"
     locked.mkdir()
@@ -110,7 +139,21 @@ def test_unreadable_dir_is_skipped_not_fatal(client, workspace):
         apps = client.get("/api/apps").json()["apps"]
     finally:
         os.chmod(locked, stat.S_IRWXU)
-    assert [a["name"] for a in apps] == ["ok"]  # unreadable dir skipped, no 500
+    assert [a["name"] for a in apps] == ["ok"]  # unreadable tag dir skipped, no 500
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="chmod-based unreadable dir needs POSIX non-root")
+def test_unreadable_project_dir_is_skipped_not_fatal(client, workspace):
+    _app_dir(workspace, "ok")
+    locked = workspace / "local" / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0)
+    try:
+        apps = client.get("/api/apps").json()["apps"]
+    finally:
+        os.chmod(locked, stat.S_IRWXU)
+    assert [a["name"] for a in apps] == ["ok"]  # unreadable project dir skipped, no 500
 
 
 def test_missing_workspace_lists_empty(client, workspace):
@@ -135,7 +178,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 200
     body = r.json()
-    dest = workspace / "demo"
+    dest = workspace / "local" / "demo"
     assert body["path"] == str(dest)
     assert body["entry_html"] == str(dest / "index.html")
     assert body["session_started"] is False
@@ -145,12 +188,13 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     # the starter kit's entry is a valid single-entry app: it lists back
     apps = client.get("/api/apps").json()["apps"]
     assert apps[0]["entry_html"] == body["entry_html"]
+    assert apps[0]["tag"] == "local"
 
 
 def test_new_app_carries_the_authoring_skill(client, workspace, monkeypatch):
     monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
-    skill = workspace / "demo" / ".claude" / "skills" / "fused-render-authoring"
+    skill = workspace / "local" / "demo" / ".claude" / "skills" / "fused-render-authoring"
     assert (skill / "SKILL.md").is_file()
 
 
@@ -169,7 +213,7 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_started"] is True
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    assert seen["entry"] == str(workspace / "demo" / "index.html")
+    assert seen["entry"] == str(workspace / "local" / "demo" / "index.html")
     assert seen["prompt"] == "build a todo app"
 
 
@@ -181,7 +225,7 @@ def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, mo
     assert r.json()["session_started"] is False
     assert r.json()["run_id"] is None
     assert r.json()["session_error"] == "claude CLI not found"
-    assert (workspace / "demo" / "index.html").is_file()
+    assert (workspace / "local" / "demo" / "index.html").is_file()
 
 
 @pytest.mark.parametrize("bad", ["", "  ", "a/b", "a\\b", ".hidden", None, 7])
@@ -193,7 +237,7 @@ def test_bad_names_are_rejected(client, workspace, bad):
 
 def test_collision_is_409_for_dirs_and_files(client, workspace):
     _app_dir(workspace, "taken")
-    (workspace / "afile").write_text("x")
+    (workspace / "local" / "afile").write_text("x")
     for name in ("taken", "afile"):
         r = client.post("/api/apps/new", json={"name": name, "prompt": ""}, headers=HDRS)
         assert r.status_code == 409, name
@@ -202,13 +246,13 @@ def test_collision_is_409_for_dirs_and_files(client, workspace):
 def test_partial_copy_is_cleaned_up(client, workspace, monkeypatch):
     def boom(src, dst, **kw):
         os.makedirs(dst)
-        (workspace / "demo" / "index.html").write_text("partial")
+        (workspace / "local" / "demo" / "index.html").write_text("partial")
         raise OSError("disk full")
 
     monkeypatch.setattr(apps_mod.shutil, "copytree", boom)
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 400
-    assert not (workspace / "demo").exists()
+    assert not (workspace / "local" / "demo").exists()
 
 
 # ------------------------------------------------------------------ updated_at

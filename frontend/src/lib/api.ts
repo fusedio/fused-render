@@ -1314,12 +1314,15 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 }
 
 // -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
-// A fused_app folder (PR #326 manifest) under the workspace. `entry_html` is
-// the app's "/" route entry file (absolute path), null when the manifest has
-// no resolvable entry; `title` comes from the manifest, null falls back to the
-// folder name in the UI.
+// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
+// `tag` is just the top-level folder's name — any folder qualifies, there is
+// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
+// path), null when the folder has no single resolvable .html entry; `title`
+// comes from that file's <title>, null falls back to the folder name in the
+// UI.
 export interface AppInfo {
   name: string;
+  tag: string;
   path: string;
   entry_html: string | null;
   title: string | null;
