@@ -378,7 +378,12 @@ def test_the_boot_history_call_does_not_enrich(source):
     on every annotate boot is invisible — the panel still works, it just makes
     opening any annotated file slower — so the boot call is pinned to
     `loadHistory(false)` and enrichment is only ever reached from the toggle."""
-    assert "loadHistory(false);" in source
+    # The boot call passes the RESTORED disclosure state, whose default is false,
+    # so a fresh boot still never touches a transcript.
+    boot = source[source.index("const saved = histState();"):]
+    boot = boot[:boot.index("})();")]
+    assert "histOpen = !!saved.open" in boot
+    assert "loadHistory(histOpen)" in boot
     body = source[source.index("histToggle.addEventListener"):]
     body = body[:body.index("let pending")]
     assert "loadHistory(true)" in body
@@ -418,18 +423,6 @@ def test_the_sheet_knows_whether_a_copy_will_be_kept(source):
     assert "plan.stash === false" in body
     assert "plan.stash_note" in body
     assert "unless it is too large" not in source  # the old hedge is gone
-
-
-def test_an_unrecoverable_write_needs_a_second_gesture(source):
-    """...and it must be gated on the irreversible case only. Gating the ordinary
-    step-back too would train the tick away, which is worse than not having it."""
-    body = source[source.index("async function askRevert"):]
-    body = body[:body.index('getElementById("confirmgo").addEventListener')]
-    assert "ackRow.hidden = !irreversible" in body
-    assert "go.disabled = irreversible" in body
-    assert 'id="confirmack"' in source
-    # ...and ticking it is what enables the button.
-    assert "disabled = !ack.checked" in source
 
 
 def test_an_unknown_plan_timestamp_is_not_rendered_as_1970_in_the_sheet(source):
@@ -493,7 +486,7 @@ def test_a_failed_revert_says_so(source):
     possible outcome for a destructive action's error path."""
     handler = source[source.index('getElementById("confirmgo").addEventListener'):]
     branch = handler[handler.index("if (out.error"):handler.index("// Reload the framed")]
-    assert branch.index("renderHistory()") < branch.index('histNote.textContent')
+    assert branch.index("renderHistory()") < branch.index("setNote(")
 
 
 def test_the_framed_view_is_reloaded_after_a_revert(source):
@@ -877,3 +870,243 @@ def test_a_broken_helper_reports_its_own_error_not_a_missing_folder(claude_home,
     finally:
         if saved is not None:
             sys.modules["file_history"] = saved
+
+
+# ==================================================== the panel, driven for real
+# `rowMarks` and the sessionStorage persistence are pure enough to run under node
+# straight out of the shipping template — the `_js_block` approach
+# test_log_studio_detail.py and test_graph_canvas.py use, for the same reason: a
+# copy of the logic here would keep passing after the real code regressed.
+
+def _js_block(src, header):
+    """`header` plus its brace-balanced body, verbatim from the template."""
+    start = src.index(header)
+    open_brace = src.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+    raise AssertionError(f"unbalanced braces after {header!r}")
+
+
+def _run(body, tmp_path, prelude=""):
+    import json as _json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - node is preinstalled on the CI runners
+        pytest.skip("node is required to drive the template's JS")
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(prelude + body, encoding="utf-8")
+    out = subprocess.run([node, str(harness)], capture_output=True, text=True,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr
+    return _json.loads(out.stdout)
+
+
+# --- item 1: two dot states, target expressed as row treatment ------------
+
+def _marks_prelude(source):
+    return _js_block(source, "function rowMarks(v, positionId, targetId)") + "\n"
+
+
+def test_the_dot_answers_one_question_and_has_two_states(source, tmp_path):
+    """Three glyphs over three colours read as noise, and at 11px `◉` and `●` are
+    barely distinguishable — while meaning unrelated things. The dot now says only
+    "you are here"; the revert target is row treatment."""
+    got = _run("""
+      const rows = [
+        { id: "s@v3", differs: false },
+        { id: "s@v2", differs: true },
+        { id: "s@v1", differs: true },
+      ].map((v) => rowMarks(v, "s@v3", "s@v2"));
+      console.log(JSON.stringify(rows));
+    """, tmp_path, _marks_prelude(source))
+    assert [r["dot"] for r in got] == ["●", "○", "○"]  # two states only
+    # The target is NOT a third glyph...
+    assert got[1]["dot"] == "○"
+    # ...it is the row.
+    assert "next" in got[1]["cls"]
+    assert "next" not in got[0]["cls"] and "next" not in got[2]["cls"]
+    assert "here" in got[0]["cls"] and "here" not in got[1]["cls"]
+
+
+def test_no_third_dot_glyph_is_emitted(source):
+    """Scoped to the code rather than the file: the comment above `rowMarks` names
+    the rejected glyph on purpose, and that is the one place it should appear."""
+    marks = _js_block(source, "function rowMarks(v, positionId, targetId)")
+    assert "◉" not in marks
+    # ...and `rowMarks` is the only source of a dot's text.
+    assert source.count("dot.textContent") == 1
+    assert "dot.textContent = marks.dot;" in source
+
+
+def test_the_position_row_is_not_dimmed_as_an_inert_duplicate(source, tmp_path):
+    """The current position always has `differs: false`, so the `.same` dimming
+    would grey out the one row the marker exists to emphasise."""
+    got = _run("""
+      console.log(JSON.stringify(rowMarks({ id: "a", differs: false }, "a", "b")));
+    """, tmp_path, _marks_prelude(source))
+    assert "same" in got["cls"] and "here" in got["cls"]
+    # ...which the stylesheet exempts rather than the JS special-casing it.
+    assert ".hrow.same:not(.here) { opacity: 0.5; }" in source
+
+
+def test_the_target_stripe_reserves_its_width_on_every_row(source):
+    """Otherwise marking the target reflows the whole list by 2px."""
+    assert "border-left: 2px solid transparent" in source
+    assert ".hrow.next { border-left-color: var(--accent);" in source
+
+
+def test_nothing_to_revert_to_is_simply_no_accent_row(source, tmp_path):
+    """The at_earliest state needs no fourth marker: `revert` is null, so no row
+    is striped, and "no accent anywhere" already reads as "nothing to go back
+    to"."""
+    got = _run("""
+      const rows = [{ id: "s@v1", differs: false }]
+        .map((v) => rowMarks(v, "s@v1", null));
+      console.log(JSON.stringify(rows));
+    """, tmp_path, _marks_prelude(source))
+    assert "next" not in got[0]["cls"]
+    assert "here" in got[0]["cls"]
+
+
+# --- item 2: the acknowledgement checkbox is gone -------------------------
+
+def test_the_confirm_button_is_never_disabled(source):
+    """Removed as friction by the owner. This is a real reduction in gating, so
+    the assertions below are about what MUST remain."""
+    assert "confirmack" not in source
+    assert "go.disabled" not in source
+    assert "ack.checked" not in source
+
+
+def test_the_irreversible_warning_is_what_remains_and_carries_weight(source):
+    """It is now the only thing between a click and unrecoverable loss."""
+    body = source[source.index("async function askRevert"):]
+    body = body[:body.index('getElementById("confirmgo").addEventListener')]
+    assert "cannot be recovered from anywhere" in body
+    assert 'warn.classList.toggle("hard", irreversible)' in body
+    assert "#confirmwarn.hard" in source
+    # ...and the button says what it does, since its label is the last word.
+    assert "Overwrite permanently" in body and "Delete permanently" in body
+
+
+def test_the_bridge_token_is_unrelated_to_any_ui_gate(source):
+    """`confirm_unique` is the BRIDGE's guard (I4) and is derived from the plan,
+    never from a widget — removing the checkbox must not have touched it."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    call = handler[handler.index('action: "revert"'):]
+    call = call[:call.index("}")]
+    assert "confirm_unique: !!plan.unique_current" in call
+
+
+# --- item 3: the panel survives the post-revert reload -------------------
+
+def _persist_prelude(source):
+    return (
+        "const store = {};\n"
+        "globalThis.sessionStorage = {\n"
+        "  getItem: (k) => (k in store ? store[k] : null),\n"
+        "  setItem: (k, v) => { store[k] = String(v); },\n"
+        "};\n"
+        "const file = '/tmp/target.md';\n"
+        'const HIST_KEY = "fusedAnnotateHist:" + file;\n'
+        + _js_block(source, "function histState()") + "\n"
+        + _js_block(source, "function saveHistState(patch)") + "\n"
+        + _js_block(source, "function takeCarriedOutcome()") + "\n"
+    )
+
+
+def test_the_disclosure_state_and_outcome_survive_a_reload(source, tmp_path):
+    """The behaviour the user asked for: after a revert the shell reboots the
+    whole preview off its fs-event watch, and the panel used to come back
+    collapsed with the outcome gone — so a successful revert looked like nothing
+    had happened."""
+    got = _run("""
+      // ...the user expands the panel and reverts
+      saveHistState({ open: true });
+      saveHistState({ open: true, note: "Reverted to v2.", noteError: false });
+      // ...the shell tears the page down and boots it again: same file, fresh
+      // module scope, only sessionStorage in common.
+      const booted = histState();
+      const carried = takeCarriedOutcome();
+      console.log(JSON.stringify({
+        open: !!booted.open,
+        carried,
+        again: takeCarriedOutcome(),   // read-and-clear
+        stillOpen: !!histState().open, // ...but the disclosure state is sticky
+      }));
+    """, tmp_path, _persist_prelude(source))
+    assert got["open"] is True
+    assert got["carried"] == {"text": "Reverted to v2.", "error": False}
+    assert got["again"] is None
+    assert got["stillOpen"] is True
+
+
+def test_a_failed_revert_message_also_survives(source, tmp_path):
+    got = _run("""
+      saveHistState({ note: "read-only mount", noteError: true });
+      console.log(JSON.stringify(takeCarriedOutcome()));
+    """, tmp_path, _persist_prelude(source))
+    assert got == {"text": "read-only mount", "error": True}
+
+
+def test_a_hostile_sessionStorage_never_breaks_the_panel(source, tmp_path):
+    """Private mode throws on setItem, and a corrupt value must not take the
+    panel down with it — persistence is a nicety, never a dependency."""
+    got = _run("""
+      const out = {};
+      globalThis.sessionStorage = {
+        getItem: () => "{not json",
+        setItem: () => { throw new Error("quota"); },
+      };
+      out.corrupt = histState();
+      saveHistState({ open: true });   // must not throw
+      out.survived = true;
+      console.log(JSON.stringify(out));
+    """, tmp_path, _persist_prelude(source))
+    assert got["corrupt"] == {}
+    assert got["survived"] is True
+
+
+def test_the_outcome_is_persisted_before_the_refresh_can_race_it(source):
+    """The fs-event reload is already in flight by then: written first the outcome
+    survives, written after it is lost exactly when the reload is fastest."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    body = handler[handler.index("const outcome ="):]
+    assert body.index("saveHistState(") < body.index("await loadHistory")
+
+
+def test_an_expanded_restore_is_enriched(source):
+    """An expanded panel must be enriched or its row count disagrees with the list
+    it labels — so the boot call passes the restored disclosure state, not a
+    literal false."""
+    boot = source[source.index("const saved = histState();"):]
+    boot = boot[:boot.index("})();")]
+    assert "histOpen = !!saved.open" in boot
+    assert "await loadHistory(histOpen)" in boot
+
+
+def test_the_carried_outcome_is_applied_after_the_refresh(source):
+    """loadHistory rewrites the note element from the timeline's own note, so a
+    carried message applied first would be wiped — and it goes through the shared
+    reporter, so a failed refresh is not hidden behind a carried success."""
+    boot = source[source.index("const saved = histState();"):]
+    boot = boot[:boot.index("})();")]
+    assert boot.index("await loadHistory(histOpen)") < boot.index("if (carried)")
+    assert "reportOutcome(carried.text, carried.error, reloadErr)" in boot
+
+
+def test_the_disclosure_state_is_not_written_to_the_url(source):
+    """`comments` lives in the URL precisely so a review can be SHARED; whether a
+    disclosure widget is open is a workspace habit (the D185 argument for pane
+    geometry), and a transient outcome message in a bookmark would be a lie the
+    moment it was opened."""
+    for key in ("hist", "histOpen", "revertNote"):
+        assert 'fused.params.set("' + key not in source

@@ -41,6 +41,8 @@
     --accent-wash: rgba(229, 255, 68, 0.08);
     --accent-wash-strong: rgba(229, 255, 68, 0.18);
     --accent-glow: rgba(229, 255, 68, 0.35);
+    /* Fill behind the revert sheet's irreversible-loss warning. */
+    --error-wash: rgba(255, 107, 107, 0.12);
     /* Highlight-API tints. Read through getComputedStyle and injected INTO the
        framed document (the API paints there), so these are the one pair that
        cannot ride var() at the point of use — see the load handler. */
@@ -74,6 +76,7 @@
     --accent-wash: rgba(95, 115, 0, 0.10);
     --accent-wash-strong: rgba(95, 115, 0, 0.20);
     --accent-glow: rgba(95, 115, 0, 0.30);
+    --error-wash: rgba(198, 40, 40, 0.08);
     /* The active tint composites to a mid olive over a light page, so the
        label on it goes DARK here rather than white. */
     --hl-sel: rgba(95, 115, 0, 0.22);
@@ -278,27 +281,37 @@
   #histlist { max-height: 30vh; overflow-y: auto; margin-top: 4px; }
   .hrow {
     display: flex; gap: 8px; align-items: baseline;
-    padding: 4px 6px; border-radius: 6px; cursor: pointer;
+    /* The transparent border reserves the accent stripe's width on every row, so
+       marking the target below shifts nothing. */
+    padding: 4px 6px 4px 4px; border-left: 2px solid transparent;
+    border-radius: 6px; cursor: pointer;
     font-size: 11px;
   }
   .hrow:hover { background: var(--bg); }
   .hrow .hdot { color: var(--fg-muted); }
-  /* The one row a plain "Revert last change" would pick — marked so the two
-     affordances visibly agree instead of the list looking like a second,
-     unrelated mechanism. */
-  .hrow.next .hdot { color: var(--accent); }
-  /* Where disk sits in the chain. Without it the list gives no clue why the
-     target is the row it is — the rule is positional, not "the newest that
-     differs" (SPEC §33/FH-3). */
-  .hrow.here { color: var(--fg); }
-  .hrow.here .hdot { color: var(--fg); }
-  .hrow.here .hwhen { color: var(--fg); }
+  /* The one row a plain "Revert last change" would pick, expressed as ROW
+     treatment rather than a third dot glyph. Three markers in one column read as
+     noise — and the two facts are unrelated: the dot says "you are here" (where
+     disk sits), the stripe says "this is what the button does". Putting them in
+     different visual channels is what makes each legible. The stripe also only
+     reinforces: the row already carries its delta and its action on the right.
+     `--accent-wash` rather than a new token — it is already in both palette
+     blocks, and inventing a second accent tint for one row would be two names
+     for one colour. */
+  .hrow.next { border-left-color: var(--accent); background: var(--accent-wash); }
+  /* Where disk sits in the chain — one shape family, two colours, one meaning.
+     Without it the list gives no clue why the target is the row it is: the rule
+     is positional, not "the newest that differs" (SPEC §33/FH-3). */
+  .hrow.here .hdot, .hrow.here .hwhen { color: var(--fg); }
   .hrow .hv { font-weight: 600; min-width: 22px; }
   .hrow .hwhen { color: var(--fg-muted); flex: 1 1 auto; }
   .hrow .hd { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .hrow .hplus { color: var(--accent); }
   .hrow .hminus { color: var(--error); }
-  .hrow.same { opacity: 0.5; cursor: default; }
+  /* A version identical to disk is inert — but the CURRENT position is one of
+     those, and dimming "you are here" fights the whole point of marking it. */
+  .hrow.same { cursor: default; }
+  .hrow.same:not(.here) { opacity: 0.5; }
   #histnote { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
   #histnote.error { color: var(--error); }
   /* Confirm sheet. A restore is the one destructive action in this view — the
@@ -323,19 +336,18 @@
   }
   #confirmbox dt { color: var(--fg-muted); }
   #confirmbox dd { margin: 0; font-variant-numeric: tabular-nums; }
+  /* The sole thing standing between a click and unrecoverable loss (the
+     tick-to-confirm that used to back it up was removed as friction), so in the
+     irreversible case it carries real weight rather than being a footnote. */
   #confirmwarn {
     margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
     border: 1px solid var(--error); border-radius: 8px; color: var(--error);
   }
-  /* Shown only when the write is genuinely unrecoverable — content in no
-     checkpoint AND no sidecar stash — so the extra gesture stays meaningful. */
-  #confirmack {
-    display: flex; align-items: flex-start; gap: 8px;
-    margin: 10px 0 0; font-size: 12px; color: var(--error);
+  #confirmwarn.hard {
+    border-width: 2px; font-weight: 600;
+    background: var(--error-wash);
   }
-  #confirmack input { margin: 2px 0 0; accent-color: var(--error); }
   #confirmacts { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
-  #confirmacts #confirmgo:disabled { opacity: 0.4; cursor: default; }
   #confirmacts button {
     font: inherit; cursor: pointer; border-radius: 8px; padding: 6px 12px;
     color: var(--fg); background: var(--bg); border: 1px solid var(--line);
@@ -392,10 +404,6 @@
       <div id="confirmsub"></div>
       <dl id="confirmfacts"></dl>
       <p id="confirmwarn" hidden></p>
-      <label id="confirmack" hidden>
-        <input type="checkbox" />
-        <span>I understand this content cannot be recovered.</span>
-      </label>
       <div id="confirmacts">
         <button id="confirmno">Cancel</button>
         <button id="confirmgo">Revert</button>
@@ -1517,6 +1525,75 @@
       return frag;
     }
 
+    // TWO dot states, not three. `◉`/`●`/`○` over three colours put three
+    // competing markers in one column, and at 11px the first two are barely
+    // distinguishable — while carrying unrelated meanings. So the dot answers
+    // exactly one question ("where is disk now") and the revert target moves to
+    // row treatment (`.next`: accent stripe + wash). Pure function of the two
+    // ids so it can be driven directly under node.
+    function rowMarks(v, positionId, targetId) {
+      const here = v.id === positionId;
+      return {
+        dot: here ? "●" : "○",
+        cls: "hrow" + (v.id === targetId ? " next" : "") +
+          (here ? " here" : "") + (v.differs ? "" : " same"),
+      };
+    }
+
+    // --- panel state that must survive a reload -----------------------------
+    // A successful revert changes the target on disk, so the shell's own
+    // fs-event watch reloads the whole preview — which used to collapse the
+    // panel and throw the outcome away, leaving the user staring at a fresh
+    // boot state wondering whether anything happened.
+    //
+    // sessionStorage keyed by the target path, NOT a URL param, and the reason is
+    // this template's own contract: `comments` lives in the URL precisely so the
+    // review can be shared ("share it to share the review"), and the same
+    // argument that kept pane geometry out of the URL in D185 applies here —
+    // whether a disclosure widget is open is a workspace habit, not a fact about
+    // the view worth reproducing in someone else's browser. The outcome message
+    // is even less shareable: it is a transient result of one click, and a
+    // bookmark carrying "Reverted to v2" forever would be a lie the moment it
+    // was opened.
+    const HIST_KEY = "fusedAnnotateHist:" + file;
+    function histState() {
+      try {
+        const o = JSON.parse(sessionStorage.getItem(HIST_KEY) || "null");
+        return o && typeof o === "object" ? o : {};
+      } catch (e) {
+        return {}; // private mode, quota, corrupt value — just don't persist
+      }
+    }
+    function saveHistState(patch) {
+      try {
+        sessionStorage.setItem(HIST_KEY,
+          JSON.stringify(Object.assign(histState(), patch)));
+      } catch (e) { /* see above — persistence is a nicety, never a dependency */ }
+    }
+    // Read-and-clear. The disclosure state is sticky, but an outcome describes
+    // one write: leaving it in place would replay "Reverted to v2" on every
+    // later reload of the file, long after it stopped being true.
+    function takeCarriedOutcome() {
+      const s = histState();
+      if (!s.note) return null;
+      saveHistState({ note: "", noteError: false });
+      return { text: s.note, error: !!s.noteError };
+    }
+
+    function setNote(text, isError) {
+      histNote.className = isError ? "error" : "";
+      histNote.textContent = text;
+    }
+    // One composer for both the in-page path and the post-reload path. `reloadErr`
+    // is the M1 lesson generalized: a refresh that failed has already written its
+    // own error here, and reporting plain success over it hides that the list
+    // being shown is stale.
+    function reportOutcome(text, isError, reloadErr) {
+      if (reloadErr) setNote(text + " The timeline could not be reloaded — "
+        + reloadErr, true);
+      else setNote(text, isError);
+    }
+
     function renderHistory() {
       if (!timeline) return;
       // No store at all means Claude Code has never run here — that is not an
@@ -1551,16 +1628,12 @@
         for (const v of timeline.versions) {
           rows++;
           const row = document.createElement("div");
+          const marks = rowMarks(v, timeline.position, target);
           const here = v.id === timeline.position;
-          row.className = "hrow" + (v.id === target ? " next" : "") +
-            (here ? " here" : "") + (v.differs ? "" : " same");
+          row.className = marks.cls;
           const dot = document.createElement("span");
           dot.className = "hdot";
-          // Three states, because the rule is positional (SPEC §33/FH-3): where
-          // disk sits now, the one step back the button takes, and everything
-          // else. Without the position marker the list gives no clue why the
-          // target is the row it is.
-          dot.textContent = here ? "◉" : v.id === target ? "●" : "○";
+          dot.textContent = marks.dot;
           if (here) row.title = "what is on disk now";
           const num = document.createElement("span");
           num.className = "hv";
@@ -1647,6 +1720,7 @@
 
     histToggle.addEventListener("click", async () => {
       histOpen = !histOpen;
+      saveHistState({ open: histOpen });
       if (histOpen && !enriched) {
         // Enrich BEFORE painting the open state, not after: rendering the
         // unenriched list first and then replacing it shows the row count
@@ -1660,12 +1734,6 @@
     });
 
     let pending = null; // the plan awaiting confirmation
-    const ackRow = document.getElementById("confirmack");
-    const ack = ackRow.querySelector("input");
-    ack.addEventListener("change", () => {
-      document.getElementById("confirmgo").disabled = !ack.checked;
-    });
-
     function closeConfirm() {
       confirmEl.classList.remove("open");
       pending = null;
@@ -1750,16 +1818,16 @@
           "content that exists nowhere else. A copy will be kept in the " +
           "file's .json sidecar (revertStash). Unsaved edits in the framed " +
           "view are not on disk and are not part of this comparison.");
-      // An irreversible write gets a second, deliberate gesture rather than the
-      // same one-click Revert: the ordinary case loses nothing unrecorded, so
-      // gating both would train the tick away.
-      ack.checked = false;
-      ackRow.hidden = !irreversible;
+      // No tick-to-confirm: the owner removed it as friction, so the warning
+      // above plus this button's own wording are the entire signal. The button
+      // is therefore enabled unconditionally, and the irreversible case says
+      // "permanently" on the button itself so the label is not merely "Revert"
+      // for an action that cannot be undone.
+      warn.classList.toggle("hard", irreversible);
       const go = document.getElementById("confirmgo");
       go.textContent = irreversible
         ? (del ? "Delete permanently" : "Overwrite permanently")
         : (del ? "Delete" : "Revert");
-      go.disabled = irreversible;
       confirmEl.classList.add("open");
       document.getElementById("confirmno").focus();
     }
@@ -1787,8 +1855,11 @@
         // (found by clicking Revert in the running app and watching nothing
         // happen and nothing be said).
         renderHistory();
-        histNote.className = "error";
-        histNote.textContent = out.error || "Revert failed.";
+        setNote(out.error || "Revert failed.", true);
+        // A failed revert did not change the file, so no fs event and no reload
+        // — but persist it anyway: if the page goes away for any other reason,
+        // silence is the one outcome this must never leave behind.
+        saveHistState({ note: out.error || "Revert failed.", noteError: true });
         return;
       }
       // Reload the framed view: it read the file at load, and a code editor is
@@ -1804,33 +1875,54 @@
       } catch (e) {
         frame.src = frame.src; // torn-down frame — force it through the src
       }
-      const reloadErr = await loadHistory(enriched);
       const outcome = (out.action === "delete"
         ? "File deleted."
         : "Reverted to " + plan.id.split("@")[1] + ".") +
         (out.stashed
           ? " Previous content kept in the .json sidecar."
           : " " + (out.stash_note || "No copy of the previous content was kept."));
+      // Persisted BEFORE the refresh, because the shell's fs-event watch is
+      // already racing us: the target changed on disk, and the whole preview can
+      // be torn down and rebooted at any moment from here on. Written first, the
+      // outcome survives that; written after, it is lost exactly when the reload
+      // is fastest.
+      saveHistState({ open: histOpen, note: outcome, noteError: false });
+      // The refresh must observe the POST-revert file, which it does because the
+      // write completed before `callHistory` resolved — so the position marker
+      // now points at the version just restored.
+      const reloadErr = await loadHistory(enriched);
       // loadHistory may itself have failed and written an error here. Reporting
       // plain success over it is the SAME write-order bug as the failure branch
-      // above — fixed as a class this time, not one instance: the outcome is
-      // real and must be said, but it cannot erase the fact that the panel is
-      // now stale.
+      // above — fixed as a class, not as one instance: the outcome is real and
+      // must be said, but it cannot erase the fact that the panel is now stale.
+      reportOutcome(outcome, false, reloadErr);
       if (reloadErr) {
-        histNote.className = "error";
-        histNote.textContent = outcome +
-          " The timeline could not be reloaded — " + reloadErr;
-      } else {
-        histNote.className = "";
-        histNote.textContent = outcome;
+        saveHistState({ note: outcome + " The timeline could not be reloaded — "
+          + reloadErr, noteError: true });
       }
     });
 
     revertBtn.addEventListener("click", () => askRevert(null));
 
-    // Boot the panel without enrichment: filesystem-only enumeration, so this
-    // is a directory listing and a few small reads, not a transcript parse.
-    loadHistory(false);
+    // Boot. Without enrichment normally — filesystem-only enumeration, so this is
+    // a directory listing and a few small reads, not a transcript parse — but an
+    // EXPANDED panel restores expanded, and an expanded panel must be enriched or
+    // its row count would disagree with the list it labels.
+    //
+    // This is also the far side of a revert: the shell reboots the whole preview
+    // off its fs-event watch, and before this the panel came back collapsed with
+    // the outcome gone, so a successful revert looked like nothing had happened.
+    (async () => {
+      const saved = histState();
+      histOpen = !!saved.open;
+      const carried = takeCarriedOutcome();
+      const reloadErr = await loadHistory(histOpen);
+      // Applied AFTER loadHistory, which rewrites this element from the
+      // timeline's own note — the same ordering trap as everywhere else in this
+      // panel, and composed through the same reporter so a failed refresh cannot
+      // be hidden behind a carried success message.
+      if (carried) reportOutcome(carried.text, carried.error, reloadErr);
+    })();
 
     window.addEventListener("resize", () => render());
 

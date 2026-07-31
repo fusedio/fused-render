@@ -3468,6 +3468,20 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   making a did-not-exist boundary MATCH, so the walk terminates there instead of
   offering a delete that would do nothing.
 
+  Presentation follows the rule but does not duplicate it: the dot column has
+  exactly **two** states — `●` in the neutral foreground for the current position,
+  `○` muted for everything else — and the revert target is **row treatment** (an
+  accent left-stripe plus wash, with the stripe's width reserved as a transparent
+  border on every row so marking nothing reflows nothing). Three glyphs over three
+  colours was the first attempt and read as noise: `◉` and `●` are barely
+  distinguishable at 11px, and the two facts are unrelated — the dot answers
+  "where are you", the stripe answers "what does the button do", so they belong in
+  different visual channels. It also means `at_earliest` needs no fourth marker:
+  `revert` is null, so no row is striped, and "no accent anywhere" already reads
+  as "nothing to go back to". The position row is exempted from the
+  identical-to-disk dimming, since dimming the one row the marker exists to
+  emphasise defeats it.
+
   `at_earliest` may only be claimed by an **enriched** scan (FH-5). The boot
   timeline skips the transcripts, cannot see the creation boundary, and so reports
   it one step early; a view that believed it disabled the button on a file whose
@@ -3572,10 +3586,16 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   text"), which made the one genuinely unrecoverable combination —
   `unique_current` AND no stash — read exactly like the safe case; the write then
   destroyed the only copy and the user learned about it in the past tense, beside
-  "Reverted to v3". That combination now gets stronger wording and a **second,
-  explicit gesture** (an acknowledgement that must be ticked before the button
-  enables), gated on the irreversible case only: demanding it for an ordinary step
-  back, which loses nothing unrecorded, would train the tick away.
+  "Reverted to v3". That combination now gets **stronger wording plus a button that
+  says what it does** ("Overwrite permanently" / "Delete permanently") rather than
+  merely "Revert". It briefly also required a tick-to-confirm before the button
+  enabled; the owner removed that as friction, so the confirm button is enabled
+  unconditionally and the escalated warning is the **only** thing between the
+  click and unrecoverable loss — which is why it carries real visual weight in
+  that case instead of reading as a footnote. Note this is a UI-side signal only:
+  the bridge's `confirm_unique` token below is a separate mechanism, derived from
+  the plan and never from any widget state, so removing the tick did not weaken
+  the programmatic guard at all.
 
   **The bridge enforces the gate too, not just the page.** `revert` requires the
   plan's `id` echoed back (also a freshness check — a plan built against one disk
@@ -3662,3 +3682,24 @@ and restores from it. Wired into `annotate` first (§17); the reader is shared s
   Older skips are deliberately harmless: one unreadable ancient checkpoint must
   not cost the user their undo. An **explicitly chosen** row is never blocked —
   the user named that version, so there is nothing to guess.
+- **FH-15** **The panel's disclosure state and the last outcome survive the
+  post-revert reload, through `sessionStorage` keyed by the target path.** A
+  successful revert changes the file, so the shell's own fs-event watch reboots the
+  whole preview — which left the panel collapsed with the outcome discarded, so a
+  revert that worked looked like nothing had happened. Not a URL param, and the
+  reason is this template's own contract: `comments` lives in the URL *precisely*
+  so a review can be shared, whereas whether a disclosure widget is open is a
+  workspace habit (the same argument that kept pane geometry out of the URL in
+  D185), and a transient "Reverted to v2" carried in a bookmark would be a lie the
+  moment it was opened. The outcome is **read-and-clear** so it cannot replay on
+  every later reload of the file; the disclosure state is sticky. It is written
+  BEFORE the refresh, because the fs event is already racing by then — written
+  after, it is lost exactly when the reload is fastest. A restored-expanded panel
+  boots ENRICHED, or its row count would disagree with the list it labels; the
+  refresh observes the post-revert file (the write completed before the call
+  resolved), so the position marker points at the version just restored; and the
+  carried message is applied *after* the refresh and through the same composer as
+  everywhere else, so a failed refresh is never hidden behind a carried success.
+  A hostile `sessionStorage` (private mode throwing on `setItem`, a corrupt value)
+  degrades to "the panel does not persist" — persistence is a nicety here, never a
+  dependency.
