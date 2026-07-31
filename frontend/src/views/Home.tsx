@@ -89,9 +89,16 @@ const NAME_SYSTEM_PROMPT =
 // prompt's own words when the relay is unavailable or answers garbage.
 async function suggestAppName(prompt: string): Promise<string> {
   try {
-    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT);
-    const name = kebabName(text.trim().split(/\s+/)[0] ?? "");
-    if (name !== "my-app") return name;
+    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) => t.trim());
+    // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
+    // prose instead (common even with "no prose" in the ask), `text` won't be
+    // pure lowercase-and-hyphens. Taking the first token then would name the
+    // folder after whatever word led the prose (e.g. "sure") instead of
+    // falling through to the actual prompt slug below.
+    if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(text)) {
+      const name = kebabName(text);
+      if (name !== "my-app") return name;
+    }
   } catch {
     // relay down / claude missing: the slug fallback below still works
   }
