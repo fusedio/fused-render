@@ -1348,8 +1348,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       pop.classList.add("open");
       rail.classList.add("open");
     });
-    if (aiBtn) rail.append(runBtn, aiBtn, menuBtn, pop);
-    else rail.append(runBtn, menuBtn, pop);
+    // every ⋯ action restructures the notebook — dead weight when read-only
+    const withMenu = writable ? [menuBtn, pop] : [];
+    if (aiBtn) rail.append(runBtn, aiBtn, ...withMenu);
+    else rail.append(runBtn, ...withMenu);
 
     c.el.append(gutter, main, rail);
     c.el.addEventListener("click", () => selectCell(c));
@@ -1415,6 +1417,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
   function gapEl() {
     const gap = document.createElement("div");
     gap.className = "gap";
+    if (!writable) return gap; // inserting cells needs a writable notebook
     const add = (label, type) => {
       const b = document.createElement("button");
       b.textContent = label;
@@ -1529,7 +1532,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
              redo: () => applyInsert(index, model) });
     return c;
   }
+  // Every structural op gates on writable here — the gap buttons, cell menu
+  // and Shift+Enter reach these without going through the command-mode keys
   function insertCell(index, type, focus = true) {
+    if (!writable) return null;
     const model = { cell_type: type, id: newId(), metadata: {}, source: "" };
     if (type === "code") { model.outputs = []; model.execution_count = null; }
     const c = insertModelCell(index, model);
@@ -1540,6 +1546,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     return c;
   }
   function deleteCell(c) {
+    if (!writable) return;
     const i = cells.indexOf(c);
     if (i < 0) return;
     const model = applyDelete(i);
@@ -1547,6 +1554,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
              redo: () => applyDelete(i) });
   }
   function moveCell(c, delta) {
+    if (!writable) return;
     const i = cells.indexOf(c);
     const j = i + delta;
     if (j < 0 || j >= cells.length) return;
@@ -1555,6 +1563,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
              redo: () => applyMove(i, delta) });
   }
   function convertCell(c) {
+    if (!writable) return;
     const i = cells.indexOf(c);
     const m = c.model;
     const was = { type: m.cell_type, outputs: m.outputs, count: m.execution_count };
@@ -1564,6 +1573,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
              redo: () => applyConvert(i, to) });
   }
   function clearOutputAction(c) {
+    if (!writable) return;
     const i = cells.indexOf(c);
     const was = { outputs: c.model.outputs, count: c.model.execution_count };
     applyOutputs(i, [], null);

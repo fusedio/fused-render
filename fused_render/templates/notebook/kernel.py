@@ -330,7 +330,6 @@ def _serve():
             self.pending = []
             self.last_used = time.time()
             self.lock = threading.Lock()
-            self._spawn()
 
         def _spawn(self):
             env = {k: v for k, v in os.environ.items()
@@ -483,9 +482,19 @@ def _serve():
         kid = kernel_id(nb_path, python)
         with klock:
             k = kernels.get(kid)
-            if k is None or k.state == "dead":
+            fresh = k is None or k.state == "dead"
+            if fresh:
                 k = Kernel(nb_path, python)
                 kernels[kid] = k
+        if fresh:
+            # spawn outside klock: Popen and the cwd isdir probe can hang on a
+            # wedged mount, and that must not stall every other kernel request
+            try:
+                k._spawn()
+            except OSError as e:
+                with klock:
+                    kernels.pop(kid, None)
+                raise RuntimeError(f"could not start {python}: {e}")
         if not k.ready.wait(timeout=20) or k.state == "dead":
             k.shutdown()
             with klock:
