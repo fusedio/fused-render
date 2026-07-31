@@ -230,6 +230,7 @@
   }
   .truths p { margin: 0; color: var(--muted); font-size: 15.5px; text-wrap: pretty; }
   @media (min-width: 900px) {
+    .truths { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .truths p + p { border-left: 1px solid var(--border); padding-left: clamp(24px, 3vw, 48px); }
   }
   @media (max-width: 899px) {
