@@ -1,6 +1,6 @@
 """Read Claude Code's own file-history store, and restore a file from it.
 
-SPEC §33 / DECISIONS D193.
+SPEC §33 / DECISIONS D193, D194.
 
 This is the undo the editor templates never had: Claude Code checkpoints a full
 copy of every file it is about to change, and that store — not git — is the
@@ -20,22 +20,28 @@ the session transcripts (`<config>/projects/<slug>/<sessionId>.jsonl`) reach
 only under `enrich=True`, only line-prefiltered, and never allowed to fail
 loudly (see `_ghosts`).
 
-Three semantics that are each easy to get wrong, all verified against a real
-session, and each the subject of its own test:
+Four semantics that are each easy to get wrong, all verified against real
+sessions, and each the subject of its own test:
 
   1. **Versions are checkpoints, not per-edit pre-images.** For roughly half of
      real files the highest `@vN` equals what is on disk; for the other half it
      does not, because the file moved on after the last checkpoint (6 of 13
      matched, 7 did not). So "revert the last change" is NOT "restore the
-     highest N" — it is *restore the most recent version whose content DIFFERS
-     from disk*, a rule that is correct under either reading and sidesteps the
-     pre/post-image ambiguity entirely.
-  2. **A null `backupFileName` means the file did not exist** at that
+     highest N".
+  2. **...but it is not "the newest version that differs from disk" either, and
+     that near-miss is the sharpest lesson in this module.** That rule reads as
+     obviously fine and oscillates on the SECOND press: with disk == v3, v3 does
+     not differ so the target is v2; once disk == v2, v3 differs and is newest,
+     so the target is v3 again — a two-state ping-pong in which v1 is
+     unreachable forever. Undo is POSITIONAL: locate where disk sits in the
+     chain, then step backwards. See `_locate`.
+  3. **A null `backupFileName` means the file did not exist** at that
      checkpoint — Claude created it. Reverting across that boundary is a DELETE,
      not a restore of empty content. The filesystem cannot represent "no
-     content", so this fact lives only in the transcript and only arrives with
-     `enrich=True`.
-  3. **Chains are per-session.** One path edited across several sessions has a
+     content", so this fact lives only in the transcript, and it is attributed by
+     the record's ABSOLUTE `realParentDir`, never by a path suffix (see
+     `_ghost_from` for the cross-project delete that taught us).
+  4. **Chains are per-session.** One path edited across several sessions has a
      separate chain under each `<sessionId>/`, and the numbers RESTART: two
      sessions both holding a `@v2` is ordinary. A global timeline therefore
      merges every session dir and orders by TIME (the backup file's mtime),
@@ -60,6 +66,7 @@ traverse: every path this module opens it built itself out of a directory it
 listed and a hash it derived.
 """
 import difflib
+import glob as _glob
 import hashlib
 import json
 import os
@@ -75,9 +82,9 @@ if _HERE not in sys.path:
 #: `exact: False`. difflib is quadratic in the worst case and a timeline renders
 #: every version, so an unbounded diff is a way for one big file to hang a view.
 DIFF_BYTE_CAP = 2 * 1024 * 1024
-#: Above this a transcript is not read at all. Enrichment is already opt-in;
-#: this is the second guard, so a pathological transcript cannot cost a render
-#: even when something asks for enrichment.
+#: Above this a transcript is not read at all. Enrichment is already opt-in for
+#: the timeline; this is the second guard, so a pathological transcript cannot
+#: cost a render even when something asks for enrichment.
 TRANSCRIPT_BYTE_CAP = 64 * 1024 * 1024
 
 _HISTORY_SUBDIR = "file-history"
@@ -120,6 +127,20 @@ def path_hash(file: str) -> str:
     return hashlib.sha256(os.path.abspath(file).encode()).hexdigest()[:16]
 
 
+def _why(exc, path) -> str:
+    """A failure a user can act on: the path, the reason, and the errno.
+
+    "no versions for this file" is a fact about the FILE; a permissions problem
+    is a fact about the machine, and collapsing the second into the first sends
+    the user looking in the wrong place. `chmod` is actionable; "no versions" is
+    not.
+    """
+    errno = getattr(exc, "errno", None)
+    reason = getattr(exc, "strerror", None) or str(exc) or type(exc).__name__
+    return "%s: %s%s" % (path, reason,
+                         "" if errno is None else " (errno %d)" % errno)
+
+
 # ----------------------------------------------------------------- writability
 
 def file_writable(file: str) -> bool:
@@ -134,39 +155,56 @@ def file_writable(file: str) -> bool:
         os.access would wave a doomed write through. Only the shell's persisted
         `read_only` flag knows, and it arrives through `appenv`'s env contract
         (`FUSED_RENDER_RO_MOUNTS`) rather than a `fused_render` import, which a
-        template child can never do. A copy of this folder taken without its
-        `shared/` sibling has no `appenv` at all and keeps the pure os.access
-        behaviour.
+        template child can never do.
       * an EXISTING file needs W_OK on itself, not merely on its directory: the
         `os.replace` below goes through the directory and would otherwise
         silently blow past a `chmod -w` file.
-      * a file that does not exist yet (restoring one Claude deleted) needs W_OK
-        on the directory, where mkstemp+replace both land.
+      * the DIRECTORY needs W_OK either way, because mkstemp and the replace
+        both land there. (This half `_sidecar_writable` does not need and a
+        replace does.)
+
+    The two ways the mount probe can be unavailable are handled DIFFERENTLY on
+    purpose, and the difference is the whole point of the first bullet. A MISSING
+    `appenv` — a copy of this folder taken without its `shared/` sibling —
+    degrades to the pure os.access rule, because there is no flag to consult and
+    refusing every local file would break the feature outright. But a probe that
+    RAISES fails CLOSED: one blanket `except Exception` around the call re-opens
+    exactly the incident the probe exists for, letting a malformed
+    `FUSED_RENDER_RO_MOUNTS` (or any OSError normalizing a path) fall through to
+    the lie, report `ok: True`, and surface the 403 later at an async upload
+    where this UI will never see it.
     """
     file = os.path.abspath(file)
     try:
         from appenv import mount_read_only
-        if mount_read_only(file):
-            return False
-    except Exception:
-        pass
+    except ImportError:
+        mount_read_only = None
+    if mount_read_only is not None:
+        try:
+            if mount_read_only(file):
+                return False
+        except Exception:
+            return False  # unanswerable => not writable; see the docstring
     if not os.access(os.path.dirname(file) or ".", os.W_OK):
-        return False  # mkstemp AND the replace both land in the directory
+        return False
     return os.access(file, os.W_OK) if os.path.exists(file) else True
 
 
 # ----------------------------------------------------------------- content
 
 def _read(path):
-    """Bytes, or None when unreadable. None is a real answer here, not an
-    error: a version whose bytes cannot be read is not restorable and not
-    comparable, so it is dropped from the timeline rather than shown as an
-    option that would fail on click."""
+    """(bytes, None) or (None, exception).
+
+    The exception comes back rather than being swallowed because a version that
+    cannot be read is DROPPED from the timeline, and a drop moves where the
+    backward walk starts and lands (`_locate`) — so the reason has to reach the
+    user instead of dying here.
+    """
     try:
         with open(path, "rb") as fh:
-            return fh.read()
-    except OSError:
-        return None
+            return fh.read(), None
+    except OSError as exc:
+        return None, exc
 
 
 def _lines(data):
@@ -213,11 +251,13 @@ def _current(file):
 
     An ABSENT file reads as empty content for diff purposes (`[]` lines) but
     keeps `bytes = None`, and the two are used for different questions: absence
-    is what makes every version `differ` (so "Claude deleted my file" has an
-    undo), while `[]` is what makes its delta a plain "+N added" instead of an
-    unknown. Binary content is the opposite pair — bytes present, lines None.
+    is what makes every content version `differ` (so "Claude deleted my file"
+    has an undo) while making a did-not-exist boundary MATCH — which is what
+    makes the backward walk terminate there instead of offering a delete that
+    would do nothing. `[]` is what makes a delta a plain "+N added" instead of
+    an unknown. Binary content is the opposite pair — bytes present, lines None.
     """
-    data = _read(file) if os.path.isfile(file) else None
+    data = _read(file)[0] if os.path.isfile(file) else None
     lines = [] if data is None else _lines(data)
     return {
         "exists": data is not None,
@@ -229,31 +269,33 @@ def _current(file):
 # ----------------------------------------------------------------- enumeration
 
 def _session_dirs():
-    """Every `<sessionId>/` under the history root, or [] when there is no store.
+    """(list of (sessionId, dir), error-or-None) under the history root.
 
-    A missing root, an unreadable one, and a root full of stray files
-    (`.DS_Store`) are all the same non-event: return what can be listed. This
-    module is a guest in someone else's directory and has no standing to fail
-    the caller over its shape.
+    A missing root is NOT an error — it means Claude Code has never run here.
+    An unreadable one is, and it comes back as the exception rather than as an
+    empty list, because "no versions for this file" and "I could not look" are
+    different sentences and only one of them is actionable.
     """
     root = history_root()
     try:
         names = os.listdir(root)
-    except OSError:
-        return []
+    except (FileNotFoundError, NotADirectoryError):
+        return [], None
+    except OSError as exc:
+        return [], exc
     out = []
     for n in sorted(names):
         p = os.path.join(root, n)
         if os.path.isdir(p):
             out.append((n, p))
-    return out
+    return out, None
 
 
 def _ghosts(file, sessions):
     """Did-not-exist checkpoints, read from the session transcripts.
 
-    The one fact the filesystem cannot carry (semantic 2), hence the only reason
-    to open a transcript at all — and it is opt-in for the caller because these
+    The one fact the filesystem cannot carry (semantic 3), hence the only reason
+    to open a transcript at all — and it is opt-in for the timeline because these
     files reach 5 MB+. Three things keep the cost bounded and the failure modes
     quiet:
 
@@ -266,19 +308,18 @@ def _ghosts(file, sessions):
         ghost entries", never to an error in the view. The filesystem truth is
         already complete without them.
 
-    `trackingPath` is repo-relative, and this module does not know the repo
-    root, so it is matched as a path-boundary SUFFIX of the target's absolute
-    path (or accepted outright when the transcript recorded an absolute path).
-    Ambiguity is bounded by the fact that we only consult transcripts of
-    sessions that exist in the store at all.
+    A GLOB over `projects/*/<session>.jsonl` rather than a slug cross-product:
+    the slug is the cwd with separators replaced, which is lossy (a directory
+    name containing `-` is indistinguishable from a separator), so it was never
+    evidence of anything anyway. Attribution is `_ghost_from`'s job, and it uses
+    a fact that is not lossy.
     """
     ap = os.path.abspath(file)
-    want = ap.replace("\\", "/")
     out = []
     projects = os.path.join(config_dir(), _PROJECTS_SUBDIR)
     for session, _dir in sessions:
-        for slug in _project_slugs(projects):
-            path = os.path.join(projects, slug, session + ".jsonl")
+        for path in _glob.glob(os.path.join(projects, "*",
+                                            _glob.escape(session) + ".jsonl")):
             try:
                 if os.path.getsize(path) > TRANSCRIPT_BYTE_CAP:
                     continue
@@ -288,8 +329,7 @@ def _ghosts(file, sessions):
                             continue
                         if "backupFileName" not in line or "null" not in line:
                             continue
-                        rec = json.loads(line)
-                        entry = _ghost_from(rec, session, want)
+                        entry = _ghost_from(json.loads(line), session, ap)
                         if entry is not None:
                             out.append(entry)
             except Exception:
@@ -299,14 +339,29 @@ def _ghosts(file, sessions):
     return out
 
 
-def _project_slugs(projects):
-    try:
-        return sorted(os.listdir(projects))
-    except OSError:
-        return []
+def _ghost_from(rec, session, ap):
+    """One did-not-exist entry, or None when the record is not about `ap`.
 
+    ATTRIBUTION IS AN IDENTITY TEST, and this is the sharpest correctness rule in
+    the module. The first version matched on nothing but `trackingPath` being a
+    path-boundary suffix of the target — and `trackingPath` is repo-relative,
+    with this module having no idea what the repo root is. `src/main.py`,
+    `README.md` and `index.ts` recur across every checkout on the disk, so an
+    unrelated project that CREATED its own `src/main.py` injected a ghost into
+    this file's timeline; because ghosts sort by the transcript's own timestamp
+    it was typically the NEWEST entry, so it became the revert target and turned
+    "Revert last change" into a DELETE of a file Claude never created, behind a
+    confirm sheet asserting "Claude created it" about a file it had never seen.
 
-def _ghost_from(rec, session, want):
+    The record already carries `realParentDir` — an ABSOLUTE directory, present
+    on null-backup records — so the rule is
+    `join(realParentDir, basename(trackingPath)) == abspath(target)`. No suffix
+    heuristic, no cwd guess, no cross-project collision possible.
+
+    A record with no usable `realParentDir` is REFUSED rather than falling back
+    to the suffix match: guessing here means offering to delete the wrong file,
+    and the cost of refusing is only that one boundary row does not appear.
+    """
     if not isinstance(rec, dict) or rec.get("type") != "file-history-delta":
         return None
     backup = rec.get("backup")
@@ -315,23 +370,23 @@ def _ghost_from(rec, session, want):
     tracking = rec.get("trackingPath")
     if not isinstance(tracking, str) or not tracking:
         return None
-    rel = tracking.replace("\\", "/").lstrip("/")
-    if not (want == rel or want.endswith("/" + rel)):
+    parent = backup.get("realParentDir") if isinstance(backup, dict) else None
+    if not isinstance(parent, str) or not parent:
+        return None  # unattributable => refused, never guessed
+    name = os.path.basename(tracking.replace("\\", "/").rstrip("/"))
+    if not name or os.path.abspath(os.path.join(parent, name)) != ap:
         return None
     version = 0
     if isinstance(backup, dict) and isinstance(backup.get("version"), int):
         version = backup["version"]
-    when = None
-    if isinstance(backup, dict):
-        when = backup.get("backupTime")
-    when = when or rec.get("timestamp")
+    when = backup.get("backupTime") if isinstance(backup, dict) else None
     return {
         "id": "%s@none%d" % (session, version),
         "session": session,
         "version": version,
         "existed": False,
         "path": None,
-        "mtime": _epoch(when),
+        "mtime": _epoch(when or rec.get("timestamp")),
         "size": 0,
         "lines": 0,
     }
@@ -340,7 +395,8 @@ def _ghost_from(rec, session, want):
 def _epoch(stamp):
     """ISO-8601 (with the store's trailing `Z`) to epoch seconds; 0.0 when it
     cannot be read, which sorts the entry to the very start of the timeline —
-    the right place for a "before anything" marker whose time is unknown."""
+    the right place for a "before anything" marker whose time is unknown. The
+    view renders 0 as "time unknown" rather than as 1970."""
     if not isinstance(stamp, str):
         return 0.0
     import datetime
@@ -351,52 +407,51 @@ def _epoch(stamp):
         return 0.0
 
 
-def list_versions(file, enrich: bool = False) -> list:
-    """Every version of `file` across every session, NEWEST FIRST.
+def _scan(file, enrich):
+    """(entries newest-first, skipped, store_error).
 
-    Newest-first because every consumer wants that end: the revert rule takes
-    the first entry that differs, and the timeline renders top-down from the
-    most recent. One order, so no caller has to remember which way round it is.
-
-    Ordering is by the backup file's mtime, with the version number only as a
-    tiebreak WITHIN a session — never across (semantic 3). Entries:
-
-        {id, session, version, existed, path, mtime, size, lines,
-         differs, added, removed, exact}
-
-    `differs` compares content against what is on disk right now, which is the
-    whole basis of the revert rule (semantic 1). `enrich=True` additionally
-    reads the transcripts to surface did-not-exist checkpoints (semantic 2).
+    `skipped` is not bookkeeping. A dropped version moves where the backward walk
+    starts and where it lands (`_locate`), so every drop is recorded with a reason
+    and a time, and the automatic revert refuses rather than silently walking to
+    a different point in history.
     """
     file = os.path.abspath(file)
     key = path_hash(file)
     _, cur_bytes, cur_lines = _current(file)
 
     entries = []
-    sessions = _session_dirs()
+    skipped = []
+    sessions, store_error = _session_dirs()
     for session, sdir in sessions:
         try:
             names = os.listdir(sdir)
-        except OSError:
-            continue  # unreadable session dir: skipped, never fatal
+        except OSError as exc:
+            skipped.append({"session": session, "version": None, "mtime": None,
+                            "reason": _why(exc, sdir)})
+            continue
         for name in names:
             m = _VERSION_RE.match(name)
             if not m or m.group(1) != key:
                 continue
+            version = int(m.group(2))
             p = os.path.join(sdir, name)
-            data = _read(p)
-            if data is None:
-                continue  # vanished or unreadable mid-scan — not an option
-            lines = _lines(data)
-            added, removed, exact = _delta(cur_lines, lines, cur_bytes, data)
             try:
                 mtime = os.path.getmtime(p)
-            except OSError:
+            except OSError as exc:
+                skipped.append({"session": session, "version": version,
+                                "mtime": None, "reason": _why(exc, p)})
                 continue
+            data, exc = _read(p)
+            if data is None:
+                skipped.append({"session": session, "version": version,
+                                "mtime": mtime, "reason": _why(exc, p)})
+                continue
+            lines = _lines(data)
+            added, removed, exact = _delta(cur_lines, lines, cur_bytes, data)
             entries.append({
-                "id": "%s@v%s" % (session, m.group(2)),
+                "id": "%s@v%d" % (session, version),
                 "session": session,
-                "version": int(m.group(2)),
+                "version": version,
                 "existed": True,
                 "path": p,
                 "mtime": mtime,
@@ -415,9 +470,6 @@ def list_versions(file, enrich: bool = False) -> list:
     if enrich:
         for g in _ghosts(file, sessions):
             g = dict(g)
-            # Deleting is a no-op once the file is already gone, so an absent
-            # target makes the boundary NOT differ — the timeline must not offer
-            # a revert that would do nothing.
             g["differs"] = cur_bytes is not None
             g["added"] = 0
             g["removed"] = len(cur_lines) if cur_lines is not None else None
@@ -425,7 +477,89 @@ def list_versions(file, enrich: bool = False) -> list:
             entries.append(g)
 
     entries.sort(key=lambda e: (e["mtime"], e["version"]), reverse=True)
-    return entries
+    return entries, skipped, store_error
+
+
+def list_versions(file, enrich: bool = False) -> list:
+    """Every version of `file` across every session, NEWEST FIRST.
+
+    Newest-first because every consumer wants that end: the positional walk
+    counts forward from index 0 into the past, and the timeline renders top-down
+    from the most recent. One order, so no caller has to remember which way round
+    it is.
+
+    Ordering is by the backup file's mtime, with the version number only as a
+    tiebreak WITHIN a session — never across (semantic 4). Entries:
+
+        {id, session, version, existed, path, mtime, size, lines,
+         differs, added, removed, exact}
+    """
+    return _scan(file, enrich)[0]
+
+
+# ------------------------------------------------------- the revert selection
+
+def _locate(entries, cur_bytes):
+    """(position index, target entry, at_earliest) — the revert rule.
+
+    Undo is POSITIONAL. The rule this replaced — "the newest version whose
+    content differs from disk" — is a near-miss that reads as obviously correct
+    and oscillates on the second press:
+
+        disk == v3  ->  v3 differs=False, v2 differs=True  ->  target v2
+        disk == v2  ->  v3 differs=True and is newest      ->  target v3
+
+    ...for ever, with v1 unreachable at any point. It answers "which checkpoint
+    is most recent and isn't what I have", which is not what undo means.
+
+    So: find where disk SITS in the chain, then step backwards.
+
+      1. position = index of the NEWEST entry whose content equals disk. Newest,
+         not oldest: with duplicate content on both sides of a real checkpoint,
+         walking from the oldest match would step straight over that checkpoint.
+      2. target = the first entry OLDER than position (a higher index) that still
+         DIFFERS from disk. The differs-check stays inside the walk — it is
+         deliberately not "the entry at position+1" — because identical adjacent
+         versions are common and restoring one would write the same bytes back,
+         an action that looks like a broken button.
+      3. position == -1 (disk is in no checkpoint at all — the `unique_current`
+         case, derived from this same index so the two can never disagree) means
+         the first step back is "discard to the most recent checkpoint":
+         target = entry 0.
+      4. no such older entry => at_earliest. A distinct terminal state that
+         DISABLES the button, rather than falling back to something newer —
+         falling back is precisely what made the old rule a two-state toggle.
+
+    Consequence, and it is intended: the chain is walked in one direction only.
+    "Redo" needs no new UI, because the timeline already lets the user click a
+    newer row explicitly — and that asymmetry is right for a button labelled
+    "Revert last change".
+    """
+    position = -1
+    for i, v in enumerate(entries):
+        if not v["differs"]:
+            position = i
+            break
+    if position == -1:
+        return -1, (entries[0] if entries else None), not entries
+    for v in entries[position + 1:]:
+        if v["differs"]:
+            return position, v, False
+    return position, None, True
+
+
+def _unsafe_skips(skipped, target):
+    """The skips that make the positional walk unsafe.
+
+    A skip corrupts POSITION, not merely the target: an unread version might have
+    been the entry that equals disk, or a nearer step back. So anything at or
+    newer than the chosen target disqualifies the automatic choice, as does a
+    skip whose own time is unknown. Older skips are harmless and must not disable
+    the feature — one unreadable ancient checkpoint should not cost the user
+    their undo.
+    """
+    floor = target["mtime"] if target else float("-inf")
+    return [s for s in skipped if s["mtime"] is None or s["mtime"] >= floor]
 
 
 # ----------------------------------------------------------------- the payload
@@ -434,26 +568,42 @@ def timeline(file, enrich: bool = False) -> dict:
     """Everything the view needs in one call, including its own empty states.
 
     `note` is the degradation channel: a human sentence for "no store", "no
-    versions for this file", "nothing to revert". Each of those is an ordinary,
-    expected state — the whole point of returning them as data is that the view
-    renders an informative panel instead of a traceback overlay.
+    versions for this file", "already at the earliest checkpoint", "a version
+    could not be read". Each of those is an ordinary, expected state — the whole
+    point of returning them as data is that the view renders an informative panel
+    instead of a traceback overlay.
     """
     file = os.path.abspath(file)
-    cur, _bytes, _lines_ = _current(file)
-    versions = list_versions(file, enrich=enrich)
+    cur, cur_bytes, _cl = _current(file)
+    versions, skipped, store_error = _scan(file, enrich)
+    position, target, at_earliest = _locate(versions, cur_bytes)
     root = history_root()
-    available = os.path.isdir(root)
-    target = next((v for v in versions if v["differs"]), None)
 
-    if not available:
-        note = ("No Claude Code file history on this machine (%s)."
-                % root)
-    elif not versions:
-        note = "Claude has no recorded versions of this file."
-    elif target is None:
-        note = "This file already matches its most recent checkpoint."
+    notes = []
+    if store_error is not None:
+        available = True  # it is THERE; we could not read it
+        notes.append("Cannot read the file-history store — "
+                     + _why(store_error, root))
     else:
-        note = ""
+        available = os.path.isdir(root)
+        if not available:
+            notes.append("No Claude Code file history on this machine (%s)."
+                         % root)
+        elif not versions:
+            notes.append("Claude has no recorded versions of this file.")
+        elif at_earliest and enrich:
+            # Only claimable from an ENRICHED scan. Without the transcripts the
+            # did-not-exist boundary is invisible, so an unenriched scan reports
+            # at_earliest one step early — which, when the view believed it,
+            # disabled the button on a file whose remaining step back was a
+            # delete the plan would happily have offered. Found by pressing the
+            # button four times in the running app.
+            notes.append("Already at the earliest checkpoint Claude recorded — "
+                         "nothing older to revert to.")
+    for s in skipped:
+        notes.append("A version could not be read (%s) — %s"
+                     % ("v%d" % s["version"] if s["version"] else "session",
+                        s["reason"]))
 
     return {
         "file": file,
@@ -462,12 +612,21 @@ def timeline(file, enrich: bool = False) -> dict:
         "writable": file_writable(file),
         "current": cur,
         "versions": versions,
+        "position": versions[position]["id"] if position >= 0 else None,
         "revert": target["id"] if target else None,
-        "note": note,
+        # PROVISIONAL unless `enriched`. `revert_plan` always enriches (it has no
+        # `enrich` parameter at all), so an unenriched timeline can be one step
+        # short of the truth and must never be used to decide that there is
+        # nothing left to revert — see the note above.
+        "at_earliest": at_earliest,
+        "enriched": bool(enrich),
+        "unique_current": cur_bytes is not None and position == -1,
+        "skipped": skipped,
+        "note": " ".join(notes),
     }
 
 
-def _resolve(file, entry_id, enrich):
+def _resolve(file, entry_id):
     """Match an opaque selector against the enumerated timeline.
 
     This is the whole path-confinement story, and it is a matching problem
@@ -478,46 +637,68 @@ def _resolve(file, entry_id, enrich):
     """
     if not isinstance(entry_id, str) or not _ID_RE.match(entry_id):
         raise ValueError("bad version selector: %r" % (entry_id,))
-    for v in list_versions(file, enrich=enrich):
+    for v in list_versions(file, enrich=True):
         if v["id"] == entry_id:
             return v
     raise ValueError("no such version for this file: %r" % (entry_id,))
 
 
-def revert_plan(file, entry_id=None, enrich: bool = False) -> dict:
+def revert_plan(file, entry_id=None) -> dict:
     """What a revert would do — the payload the confirm step renders.
 
-    `entry_id=None` means "the last change", i.e. the newest version whose
-    content differs from disk (semantic 1).
+    `entry_id=None` means "the last change", resolved by the positional rule in
+    `_locate`.
 
-    `unique_current` is the sharp one. Current on-disk content is frequently in
-    NO checkpoint — the file moved on after the last one — so a naive restore
-    vaporizes work that exists nowhere else, with no undo. When it is True the
-    UI must not let the write land without an explicit confirmation that shows
-    the loss. A "no version to revert to" answer is returned as data
-    (`ok: False` + `error`), never raised: it is an ordinary state of a file
-    Claude has not touched, not a failure.
+    There is deliberately NO `enrich` parameter. It used to be one, the view
+    passed its History-panel state into it, and so the same button performed a
+    RESTORE before the panel had been expanded and a DELETE after — one click,
+    two different destructive outcomes, decided by whether a disclosure widget
+    was open. Enrichment is unconditional here: it is paid once, on an explicit
+    click, and only the boot timeline stays unenriched for the documented perf
+    reason.
+
+    `unique_current` is the sharp one, and it is the same index that drives case
+    3 of the walk: current on-disk content is in NO checkpoint, so a restore
+    destroys the only copy. When it is True the UI must not let the write land
+    without an explicit confirmation showing the loss — and `annotate.py`
+    additionally refuses the write unless that confirmation is echoed back.
+
+    Every "nothing to revert to" answer is returned as data (`ok: False` +
+    `error`, with `at_earliest` distinguishing the terminal state from an empty
+    store), never raised: they are ordinary states of a file, not failures.
     """
     file = os.path.abspath(file)
     cur, cur_bytes, _cl = _current(file)
-    versions = list_versions(file, enrich=enrich)
+    versions, skipped, store_error = _scan(file, enrich=True)
+    position, auto_target, at_earliest = _locate(versions, cur_bytes)
 
     if entry_id is None:
-        entry = next((v for v in versions if v["differs"]), None)
+        unsafe = _unsafe_skips(skipped, auto_target)
+        if unsafe:
+            # Refuse rather than walk to a different point in history: the user
+            # asked for "the last change" and we cannot say which one that is.
+            return {"ok": False, "at_earliest": False, "skipped": skipped,
+                    "current": cur,
+                    "error": ("%d version(s) could not be read, so the last "
+                              "change cannot be identified — reverting would "
+                              "guess. %s"
+                              % (len(unsafe),
+                                 " ".join(s["reason"] for s in unsafe)))}
+        entry = auto_target
         if entry is None:
-            return {"ok": False, "current": cur,
-                    "error": ("Claude has no recorded versions of this file."
-                              if not versions else
-                              "This file already matches its most recent "
-                              "checkpoint — nothing to revert.")}
+            if store_error is not None:
+                err = ("Cannot read the file-history store — "
+                       + _why(store_error, history_root()))
+            elif not versions:
+                err = "Claude has no recorded versions of this file."
+            else:
+                err = ("Already at the earliest checkpoint Claude recorded — "
+                       "nothing older to revert to.")
+            return {"ok": False, "at_earliest": at_earliest,
+                    "skipped": skipped, "current": cur, "error": err}
     else:
-        entry = _resolve(file, entry_id, enrich)
+        entry = _resolve(file, entry_id)
 
-    # `differs` already IS "this version's bytes are not what is on disk", so
-    # "no version holds the current content" is just "all of them differ" — no
-    # second pass over the version files.
-    unique = bool(cur_bytes is not None
-                  and all(v["differs"] for v in versions if v["existed"]))
     return {
         "ok": True,
         "id": entry["id"],
@@ -529,14 +710,17 @@ def revert_plan(file, entry_id=None, enrich: bool = False) -> dict:
         "exact": entry["exact"],
         "mtime": entry["mtime"],
         "current": cur,
+        "position": versions[position]["id"] if position >= 0 else None,
         "target": {"size": entry["size"], "lines": entry["lines"],
                    "existed": entry["existed"]},
-        "unique_current": unique,
+        "unique_current": cur_bytes is not None and position == -1,
+        "at_earliest": False,
+        "skipped": skipped,
         "writable": file_writable(file),
     }
 
 
-def apply_revert(file, entry_id, enrich: bool = False) -> dict:
+def apply_revert(file, entry_id) -> dict:
     """Put `entry_id`'s content back on disk (or delete the file).
 
     Refuses rather than degrades, because every refusal here is a case where
@@ -547,8 +731,19 @@ def apply_revert(file, entry_id, enrich: bool = False) -> dict:
         offer. A crafted `file` param therefore reaches nothing Claude never
         edited;
       * a directory target;
+      * a SYMLINK target. `os.replace` swaps the LINK for a regular file rather
+        than writing through it, so the real file kept its pre-revert content
+        while the call reported success — and the sidecar stash captured a file
+        that was never overwritten. Refusing is chosen over `realpath`-ing first,
+        deliberately: the store's key is the sha256 of the path the VIEW opened,
+        so following the link would revert a path whose own timeline is a
+        different chain, and silently editing a file the user did not name is
+        worse than declining to.
       * an unwritable target (`file_writable`, which includes the read-only
         mount that `os.access` lies about).
+
+    Like `revert_plan`, this takes no `enrich` parameter — the selector must mean
+    the same thing to the plan and to the write.
 
     The write is mkstemp + `os.replace` in the target's OWN directory — atomic,
     never cross-device, and no reader ever sees a half-written file. The mode of
@@ -558,7 +753,10 @@ def apply_revert(file, entry_id, enrich: bool = False) -> dict:
     file = os.path.abspath(file)
     if os.path.isdir(file):
         raise ValueError("target is a directory: %r" % (file,))
-    entry = _resolve(file, entry_id, enrich)
+    if os.path.islink(file):
+        raise ValueError("target is a symlink, which os.replace would replace "
+                         "rather than write through: %r" % (file,))
+    entry = _resolve(file, entry_id)
     if not file_writable(file):
         raise PermissionError("%r is not writable" % (file,))
 
@@ -572,9 +770,10 @@ def apply_revert(file, entry_id, enrich: bool = False) -> dict:
             pass
         return {"ok": True, "action": "delete", "id": entry["id"], "bytes": 0}
 
-    data = _read(entry["path"])
+    data, exc = _read(entry["path"])
     if data is None:
-        raise ValueError("version content is unreadable: %r" % (entry_id,))
+        raise ValueError("version content is unreadable: %s"
+                         % _why(exc, entry["path"]))
     parent = os.path.dirname(file) or "."
     fd, tmp = tempfile.mkstemp(dir=parent, suffix=".fh-tmp")
     try:

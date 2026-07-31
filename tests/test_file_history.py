@@ -231,9 +231,11 @@ def test_a_null_backup_becomes_a_file_did_not_exist_entry(claude_home, tmp_path)
     f = _target(tmp_path, "written by claude\n")
     write_version(claude_home, "s", f, "written by claude\n", mtime=1785479788)
     write_transcript(claude_home, "s", str(tmp_path), [
-        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z"),
+        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
         delta_record(os.path.basename(f), path_hash(f) + "@v1", 1,
-                     "2026-07-31T06:36:28.180Z"),
+                     "2026-07-31T06:36:28.180Z",
+                     real_parent_dir=str(tmp_path)),
     ])
 
     plain = fh.list_versions(f)
@@ -253,19 +255,21 @@ def test_reverting_across_a_null_backup_is_a_delete(claude_home, tmp_path):
     f = _target(tmp_path, "written by claude\n")
     write_version(claude_home, "s", f, "written by claude\n", mtime=1785479788)
     write_transcript(claude_home, "s", str(tmp_path), [
-        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z"),
+        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
         delta_record(os.path.basename(f), path_hash(f) + "@v1", 1,
-                     "2026-07-31T06:36:28.180Z"),
+                     "2026-07-31T06:36:28.180Z",
+                     real_parent_dir=str(tmp_path)),
     ])
     ghost = [v for v in fh.list_versions(f, enrich=True) if not v["existed"]][0]
 
-    plan = fh.revert_plan(f, ghost["id"], enrich=True)
+    plan = fh.revert_plan(f, ghost["id"])
     assert plan["ok"] is True
     assert plan["action"] == "delete"  # not an empty restore
     assert plan["removed"] == 1        # the one line currently on disk
     assert plan["added"] == 0
 
-    fh.apply_revert(f, ghost["id"], enrich=True)
+    fh.apply_revert(f, ghost["id"])
     assert not os.path.exists(f)
 
 
@@ -275,9 +279,11 @@ def test_a_null_backup_entry_differs_only_while_the_file_exists(claude_home,
     f = _target(tmp_path, "x\n")
     write_version(claude_home, "s", f, "x\n", mtime=1785479788)
     write_transcript(claude_home, "s", str(tmp_path), [
-        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z"),
+        delta_record(os.path.basename(f), None, 0, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
         delta_record(os.path.basename(f), path_hash(f) + "@v1", 1,
-                     "2026-07-31T06:36:28.180Z"),
+                     "2026-07-31T06:36:28.180Z",
+                     real_parent_dir=str(tmp_path)),
     ])
     ghost = [v for v in fh.list_versions(f, enrich=True) if not v["existed"]][0]
     assert ghost["differs"] is True
@@ -733,3 +739,485 @@ def test_the_timeline_is_the_whole_payload_the_view_needs(claude_home, tmp_path)
     assert [v["version"] for v in tl["versions"]] == [2, 1]
     assert tl["revert"] == "s@v2"  # the opaque selector, ready to send back
     assert tl["note"] == ""
+
+
+# ============================================================ review findings
+# Each of the following pins a defect a reviewer reproduced against this module.
+# They are grouped here rather than merged above so the reason each rule exists
+# stays legible.
+
+# --- C1: ghost attribution ------------------------------------------------
+# A did-not-exist row used to be accepted on nothing but a repo-relative
+# path-boundary SUFFIX match, with no project attribution at all. `src/main.py`,
+# `README.md` and `index.ts` recur across repositories, so an unrelated project
+# that created its own `src/main.py` injected a ghost into THIS file's timeline —
+# and since it sorts by that transcript's timestamp it was typically newest, so
+# it became the revert target and turned "Revert last change" into a DELETE of a
+# file Claude never created. The record already carries `realParentDir`, an
+# ABSOLUTE directory, so the rule is now an identity test.
+
+def test_a_ghost_from_another_project_with_the_same_relative_path_is_ignored(
+        claude_home, tmp_path):
+    fh = _load()
+    mine = tmp_path / "mine"
+    theirs = tmp_path / "theirs"
+    mine.mkdir()
+    theirs.mkdir()
+    target = _target(mine, "edited by the human\n", name="main.py")
+    write_version(claude_home, "s-mine", target, "my content\n", mtime=1785479788)
+    # A DIFFERENT project created its own src/main.py. Same relative path, same
+    # basename, different tree — and its record is NEWER, which is what made it
+    # win the revert selection.
+    write_transcript(claude_home, "s-theirs", str(theirs), [
+        delta_record("main.py", None, 1, "2026-07-31T23:00:00.000Z",
+                     real_parent_dir=str(theirs)),
+    ])
+    # ...and its session is in the store too, which is how the scan reached it.
+    write_version(claude_home, "s-theirs", str(theirs / "main.py"), "theirs\n")
+
+    vs = fh.list_versions(target, enrich=True)
+    assert all(v["existed"] for v in vs), "a foreign project's ghost leaked in"
+    plan = fh.revert_plan(target)
+    assert plan["action"] == "restore"  # NOT delete
+
+
+def test_a_ghost_is_accepted_on_an_exact_real_parent_dir_identity(claude_home,
+                                                                  tmp_path):
+    fh = _load()
+    f = _target(tmp_path, "made by claude\n")
+    write_version(claude_home, "s", f, "made by claude\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    ghosts = [v for v in fh.list_versions(f, enrich=True) if not v["existed"]]
+    assert len(ghosts) == 1
+
+
+def test_a_ghost_with_a_matching_dir_but_another_basename_is_ignored(claude_home,
+                                                                     tmp_path):
+    fh = _load()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record("sibling.md", None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    assert all(v["existed"] for v in fh.list_versions(f, enrich=True))
+
+
+def test_a_ghost_without_a_real_parent_dir_is_REFUSED_not_guessed(claude_home,
+                                                                  tmp_path):
+    """The fallback refuses rather than falling back to the suffix heuristic:
+    guessing here means offering a delete of the wrong file."""
+    fh = _load()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=""),
+    ])
+    assert all(v["existed"] for v in fh.list_versions(f, enrich=True))
+
+
+def test_the_transcript_is_found_without_iterating_every_project_slug(claude_home,
+                                                                     tmp_path):
+    """A glob on `projects/*/<session>.jsonl` replaces the slug cross-product —
+    the identity test makes the slug irrelevant, so a transcript filed under a
+    slug that does not match the target's cwd still enriches correctly."""
+    fh = _load()
+    f = _target(tmp_path, "x\n")
+    write_version(claude_home, "s", f, "x\n", mtime=1785479788)
+    write_transcript(claude_home, "s", "/some/other/-slug", [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    assert any(not v["existed"] for v in fh.list_versions(f, enrich=True))
+
+
+# --- I1: a skipped version must not silently retarget the revert ----------
+
+def test_an_unreadable_version_is_reported_not_swallowed(claude_home, tmp_path,
+                                                          monkeypatch):
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "older\n", mtime=1000)
+    write_version(claude_home, "s", f, "newest\n", mtime=2000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    tl = fh.timeline(f)
+    assert len(tl["skipped"]) == 1
+    assert tl["skipped"][0]["version"] == 2
+    assert "13" in tl["note"] or "Permission" in tl["note"]
+
+
+def test_revert_refuses_rather_than_retargeting_past_a_skipped_version(
+        claude_home, tmp_path, monkeypatch):
+    """The user presses "Revert last change" and would otherwise get a
+    possibly-much-older checkpoint, presented by the confirm sheet as the
+    newest."""
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "much older\n", mtime=1000)
+    write_version(claude_home, "s", f, "the real newest\n", mtime=2000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    plan = fh.revert_plan(f)
+    assert plan["ok"] is False
+    assert plan["skipped"]
+    assert "could not be read" in plan["error"]
+
+
+def test_an_older_skipped_version_does_not_block_the_revert(claude_home,
+                                                            tmp_path,
+                                                            monkeypatch):
+    """Refusing on ANY skip would make one unreadable ancient checkpoint disable
+    the feature. Only a skip that could have been the target matters."""
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "ancient\n", mtime=1000)
+    write_version(claude_home, "s", f, "newest\n", mtime=2000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v1" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    plan = fh.revert_plan(f)
+    assert plan["ok"] is True
+    assert plan["version"] == 2
+
+
+def test_an_explicit_version_id_is_not_blocked_by_a_skip(claude_home, tmp_path,
+                                                          monkeypatch):
+    """The refusal is about the AUTOMATIC choice. A user who clicked a specific
+    row named the version themselves; there is nothing to guess."""
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "wanted\n", mtime=1000)
+    write_version(claude_home, "s", f, "unreadable\n", mtime=2000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v2" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    assert fh.revert_plan(f, "s@v1")["ok"] is True
+
+
+# --- I2: symlinked targets -------------------------------------------------
+
+def test_a_symlinked_target_is_refused(claude_home, tmp_path):
+    """`os.replace` swaps the LINK for a regular file instead of writing through
+    it, so the real file keeps its pre-revert content while the call reports
+    success — and the stash captured a file that was never overwritten."""
+    fh = _load()
+    real = tmp_path / "real.txt"
+    real.write_text("real content\n")
+    link = tmp_path / "link.txt"
+    os.symlink(str(real), str(link))
+    write_version(claude_home, "s", str(link), "wanted\n")
+
+    with pytest.raises(ValueError):
+        fh.apply_revert(str(link), "s@v1")
+    assert os.path.islink(str(link))
+    with open(str(real), encoding="utf-8") as h:
+        assert h.read() == "real content\n"
+
+
+# --- I3: enrichment must not change what a revert DOES --------------------
+
+def test_the_plan_and_the_write_always_see_the_did_not_exist_rows(claude_home,
+                                                                  tmp_path):
+    """`enrich` used to be a parameter of revert_plan/apply_revert, and the view
+    passed its disclosure-widget state — so the SAME button performed a restore
+    before History was expanded and a delete after. One click, two different
+    destructive outcomes, decided by whether a panel was open. There is now no
+    parameter to get wrong."""
+    import inspect
+
+    fh = _load()
+    assert "enrich" not in inspect.signature(fh.revert_plan).parameters
+    assert "enrich" not in inspect.signature(fh.apply_revert).parameters
+
+    f = _target(tmp_path, "made by claude\n")
+    write_version(claude_home, "s", f, "made by claude\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    # Nobody asked for enrichment, and the answer is still the delete.
+    plan = fh.revert_plan(f)
+    assert plan["action"] == "delete"
+    fh.apply_revert(f, plan["id"])
+    assert not os.path.exists(f)
+
+
+# --- I6: the read-only-mount probe must fail CLOSED ----------------------
+
+def test_a_failing_mount_probe_is_treated_as_not_writable(claude_home, tmp_path,
+                                                           monkeypatch):
+    """The blanket `except Exception` used to wrap the probe CALL as well as the
+    import, so any failure inside it fell through to os.access — which lies under
+    a read-only mount with CacheMode=full. A doomed revert then reported ok:True
+    and the 403 arrived later at the async upload, never reaching this UI."""
+    fh = _load()
+    f = _target(tmp_path)
+    import appenv
+
+    def boom(_path):
+        raise TypeError("malformed FUSED_RENDER_RO_MOUNTS")
+
+    monkeypatch.setattr(appenv, "mount_read_only", boom)
+    assert fh.file_writable(f) is False
+
+
+# --- M2: an unreadable store is not a fact about the file ----------------
+
+@skip_root
+def test_an_unlistable_history_root_is_named_not_reported_as_no_versions(
+        claude_home, tmp_path):
+    fh = _load()
+    f = _target(tmp_path)
+    root = os.path.join(str(claude_home), "file-history")
+    os.makedirs(root)
+    os.chmod(root, 0o000)
+    try:
+        tl = fh.timeline(f)
+        assert tl["available"] is True      # it EXISTS; we just cannot read it
+        assert "13" in tl["note"] or "Permission" in tl["note"]
+        assert root in tl["note"]
+        assert "no recorded versions" not in tl["note"]
+    finally:
+        os.chmod(root, 0o755)
+
+
+@skip_root
+def test_an_unlistable_session_dir_names_the_path_and_errno(claude_home,
+                                                             tmp_path):
+    fh = _load()
+    f = _target(tmp_path)
+    write_version(claude_home, "good", f, "readable\n", mtime=1000)
+    bad = os.path.join(str(claude_home), "file-history", "bad")
+    os.makedirs(bad)
+    os.chmod(bad, 0o000)
+    try:
+        tl = fh.timeline(f)
+        assert [v["session"] for v in tl["versions"]] == ["good"]
+        assert len(tl["skipped"]) == 1
+        note = tl["skipped"][0]["reason"]
+        assert bad in note
+        assert "13" in note or "Permission" in note
+    finally:
+        os.chmod(bad, 0o755)
+
+
+# --- the revert rule is POSITIONAL, not "newest that differs" --------------
+# The user pressed the button twice and it oscillated. "Newest version whose
+# content differs from disk" answers "which checkpoint is most recent and isn't
+# what I have", which is not what undo means:
+#
+#   disk == v3 -> v3 differs=False, v2 differs=True -> target v2
+#   disk == v2 -> v3 differs=True  (newest in list) -> target v3
+#
+# ...forever, with v1 unreachable at any point. Undo is positional: find where
+# disk sits in the chain, then step BACKWARDS. The differs-check survives inside
+# the backward walk so a duplicate-content version cannot be chosen as a no-op.
+
+def _chain(claude_home, tmp_path):
+    f = _target(tmp_path, "v3\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+    write_version(claude_home, "s", f, "v3\n", mtime=3000)
+    return f
+
+
+def test_revert_steps_backwards_from_the_current_position(claude_home, tmp_path):
+    fh = _load()
+    f = _chain(claude_home, tmp_path)
+    plan = fh.revert_plan(f)
+    assert (plan["version"], plan["action"]) == (2, "restore")
+
+
+def test_pressing_revert_again_keeps_going_back_instead_of_oscillating(
+        claude_home, tmp_path):
+    """The whole bug, as a sequence. Each step must be strictly older than the
+    last — the old rule went v3 -> v2 -> v3 -> v2 for ever."""
+    fh = _load()
+    f = _chain(claude_home, tmp_path)
+    seen = []
+    for _ in range(2):
+        plan = fh.revert_plan(f)
+        assert plan["ok"] is True
+        seen.append(plan["version"])
+        fh.apply_revert(f, plan["id"])
+    assert seen == [2, 1]
+    with open(f, encoding="utf-8") as h:
+        assert h.read() == "v1\n"
+
+
+def test_the_earliest_checkpoint_is_a_distinct_terminal_state(claude_home,
+                                                              tmp_path):
+    """...and at the bottom of the chain it STOPS, rather than falling back to
+    something newer (which is what made it a two-state toggle)."""
+    fh = _load()
+    f = _chain(claude_home, tmp_path)
+    for _ in range(2):
+        fh.apply_revert(f, fh.revert_plan(f)["id"])
+    plan = fh.revert_plan(f)
+    assert plan["ok"] is False
+    assert plan["at_earliest"] is True
+    assert "earliest" in plan["error"]
+    # Only an ENRICHED timeline may claim the terminal state — an unenriched one
+    # cannot see a did-not-exist boundary and would claim it a step early.
+    tl = fh.timeline(f, enrich=True)
+    assert tl["revert"] is None
+    assert tl["at_earliest"] is True
+    assert "earliest" in tl["note"]
+
+
+def test_the_target_is_never_newer_than_the_current_position(claude_home,
+                                                              tmp_path):
+    fh = _load()
+    f = _chain(claude_home, tmp_path)
+    for _ in range(2):
+        tl = fh.timeline(f)
+        pos = next(v for v in tl["versions"] if v["id"] == tl["position"])
+        target = next(v for v in tl["versions"] if v["id"] == tl["revert"])
+        assert target["mtime"] < pos["mtime"]
+        fh.apply_revert(f, tl["revert"])
+
+
+def test_a_duplicate_content_version_is_skipped_by_the_backward_walk(
+        claude_home, tmp_path):
+    """v3 and v2 hold identical bytes, so disk matches both; position resolves to
+    v3 and the target must step PAST v2 (restoring it would write the same bytes
+    back) to v1. This is why step 2 keeps a differs-check instead of taking the
+    entry at i+1."""
+    fh = _load()
+    f = _target(tmp_path, "same\n")
+    write_version(claude_home, "s", f, "older\n", mtime=1000)
+    write_version(claude_home, "s", f, "same\n", mtime=2000)
+    write_version(claude_home, "s", f, "same\n", mtime=3000)
+    plan = fh.revert_plan(f)
+    assert plan["version"] == 1
+    assert plan["ok"] is True
+
+
+def test_content_in_no_checkpoint_steps_back_to_the_newest_one(claude_home,
+                                                               tmp_path):
+    """Position is nowhere in the chain, so the first step back is "discard to
+    the most recent checkpoint" — and that is the same condition as
+    `unique_current`, derived once so the two cannot disagree."""
+    fh = _load()
+    f = _target(tmp_path, "typed by the human, in no checkpoint\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+    plan = fh.revert_plan(f)
+    assert plan["version"] == 2          # the newest, not the oldest
+    assert plan["unique_current"] is True
+    assert fh.timeline(f)["position"] is None
+
+
+def test_position_is_the_newest_matching_entry(claude_home, tmp_path):
+    fh = _load()
+    f = _target(tmp_path, "dup\n")
+    write_version(claude_home, "s", f, "dup\n", mtime=1000)
+    write_version(claude_home, "s", f, "other\n", mtime=2000)
+    write_version(claude_home, "s", f, "dup\n", mtime=3000)
+    assert fh.timeline(f)["position"] == "s@v3"
+    # ...so the step back is v2, not v1 — walking from the OLDEST match would
+    # have skipped a real checkpoint.
+    assert fh.revert_plan(f)["version"] == 2
+
+
+def test_the_walk_can_terminate_in_the_creation_boundary(claude_home, tmp_path):
+    """With enrichment forced on the plan (I3), a did-not-exist boundary is
+    always present, so the chain genuinely ends in a delete rather than in a
+    refusal one step early."""
+    fh = _load()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    plan = fh.revert_plan(f)
+    assert plan["action"] == "delete"
+    fh.apply_revert(f, plan["id"])
+    assert not os.path.exists(f)
+    # And once the file is gone the boundary IS the position, so there is
+    # nothing older to step to.
+    assert fh.revert_plan(f)["at_earliest"] is True
+
+
+def test_a_skip_that_could_have_established_position_refuses(claude_home,
+                                                             tmp_path,
+                                                             monkeypatch):
+    """A dropped version now corrupts POSITION, not just the target — so a skip
+    anywhere newer than the chosen target makes the whole walk unsafe."""
+    fh = _load()
+    f = _target(tmp_path, "v3\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+    write_version(claude_home, "s", f, "v3\n", mtime=3000)
+    real_open = open
+
+    def flaky(path, *a, **kw):
+        if "@v3" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    plan = fh.revert_plan(f)
+    assert plan["ok"] is False
+    assert "could not be read" in plan["error"]
+
+
+def test_at_earliest_is_only_claimed_from_an_enriched_scan(claude_home,
+                                                            tmp_path):
+    """Found by pressing the button four times in the running app. The boot
+    timeline skips the transcripts, so it cannot see the did-not-exist boundary
+    and would report at_earliest one step early — and the view believed it and
+    disabled the button on a file whose remaining step back was a delete that
+    `revert_plan` (which always enriches) offers happily."""
+    fh = _load()
+    f = _target(tmp_path, "made by claude\n")
+    write_version(claude_home, "s", f, "made by claude\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    boot = fh.timeline(f)
+    assert boot["enriched"] is False
+    assert "earliest" not in boot["note"]   # must not claim it
+    rich = fh.timeline(f, enrich=True)
+    assert rich["enriched"] is True
+    assert rich["revert"].endswith("@none1")  # the delete IS available
+    # ...and the plan agrees with the enriched view, never with the boot one.
+    assert fh.revert_plan(f)["action"] == "delete"
+
+
+def test_at_earliest_is_still_claimed_once_enriched(claude_home, tmp_path):
+    fh = _load()
+    f = _target(tmp_path, "v1\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    tl = fh.timeline(f, enrich=True)
+    assert tl["at_earliest"] is True and tl["enriched"] is True
+    assert "earliest" in tl["note"]
