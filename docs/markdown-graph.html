@@ -165,7 +165,7 @@
 <div class="cols">
   <div class="card">
     <h3>Note view <span class="tag">.md</span></h3>
-    <p>A Live Preview editor: always editable, markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
+    <p>A Live Preview editor that <strong>opens read-only</strong> — one click on the corner padlock unlocks it, and the choice rides in the URL. Markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
   </div>
   <div class="card">
     <h3>Local graph <span class="tag">.md</span></h3>
@@ -199,7 +199,7 @@
   <tr><td>Click an image, table or tag</td><td>Puts the caret inside: the source appears, which is how the content is edited.</td></tr>
   <tr><td>Click a checkbox</td><td>Toggles and writes back. It stays a control even under the caret, as in Obsidian.</td></tr>
   <tr><td>Read-only file</td><td>Same decorations over a locked buffer — this is the reading view.</td></tr>
-  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, asked for by the user (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
+  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, and now the state a note <em>opens</em> in (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
 </table>
 
 <p>Frontmatter is the one place the grammar cannot be trusted: it has no frontmatter rule, and <code>---\ntitle: x\n---</code> parses as a <code>HorizontalRule</code> followed by a <code>SetextHeading2</code>, so YAML rendered as a rule plus a large heading. The block is found by a line scan, dimmed, and every tree decoration inside it suppressed.</p>

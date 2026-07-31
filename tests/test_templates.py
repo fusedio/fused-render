@@ -91,7 +91,7 @@ def test_reader_present_on_text_keys_before_annotate():
     # Reader sits immediately before annotate on representative text formats,
     # and never as the default (first entry stays the real content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "reader", "annotate"],
+        "/x/notes.md": ["markdown", "code", "claude", "reader", "annotate"],
         "/x/data.csv": ["duckdb", "excel", "code", "reader", "annotate"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader", "annotate"],
         "/x/log.txt": ["text", "code", "reader", "annotate"],

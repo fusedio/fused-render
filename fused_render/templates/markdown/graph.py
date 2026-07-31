@@ -502,6 +502,26 @@ def _candidate_index(paths):
     return index
 
 
+def _suffix_index(index):
+    """`{path suffix: [relpath, …]}` — `resolve_link`'s third tier, memoised.
+
+    Purely a cost fix, and it must stay one: a key's suffixes taken at every `/`
+    boundary are *exactly* the keys the `key.endswith("/" + target)` scan it
+    replaces would match, so the two answers are identical by construction and
+    pinned by an equivalence test. It exists because that scan is O(index) per
+    resolution, and `_candidates_payload` resolves once per candidate FORM over
+    up to 5000 notes plus 5000 assets: measured on a deep tree at both caps, the
+    `endswith` scan cost ~1.9s for the note and asset passes alone, where the
+    memoised index answers the whole payload in ~40ms (D191).
+    """
+    out = {}
+    for key, rels in index.items():
+        parts = key.split("/")
+        for cut in range(1, len(parts)):
+            out.setdefault("/".join(parts[cut:]), []).extend(rels)
+    return out
+
+
 def _only(hits):
     """The single match, or None when a link is ambiguous.
 
@@ -514,14 +534,16 @@ def _only(hits):
     return unique[0] if len(unique) == 1 else None
 
 
-def resolve_link(target: str, from_rel: str, paths, index=None):
+def resolve_link(target: str, from_rel: str, paths, index=None, suffixes=None):
     """Resolve a raw link target to a vault-relative path, or None.
 
     **Shortest path that is unambiguous** (MD-4), tried in order: relative to
     the linking note's own folder, then from the vault root, then as a path
     suffix. Case-insensitive, as Obsidian is. `paths` is the candidate set that
     exists *now*; `index` is the memoised `_candidate_index` of it when a caller
-    resolves many links at once.
+    resolves many links at once, and `suffixes` the memoised `_suffix_index` of
+    that index when it resolves *thousands* of them — the third tier is the only
+    step that is not a dict lookup.
 
     Three steps, not four. A fourth ("then as a bare basename") was documented
     and written but could never run: it sat behind an `if "/" in lowered: return
@@ -546,6 +568,8 @@ def resolve_link(target: str, from_rel: str, paths, index=None):
         if hit is not None:
             return hit
 
+    if suffixes is not None:
+        return _only(suffixes.get(lowered))
     suffix = "/" + lowered
     return _only([rel for key, rels in index.items() if key.endswith(suffix)
                   for rel in rels])
@@ -953,47 +977,94 @@ def _note_payload(root: str, rel: str, scan: dict) -> dict:
     }
 
 
-def _link_form(rel: str, paths, index) -> str:
-    """The shortest form of `rel` that still resolves to `rel` — what the `[[`
-    popup inserts (MD-14).
+def _link_form(rel: str, paths, index, from_rel: str = "", suffixes=None):
+    """The shortest form of `rel` that resolves back to `rel` **from the note
+    that is about to contain it**, or None when no form does (MD-14).
 
     Obsidian's "new link format: shortest path when possible", made honest by
     construction: each candidate form is run through `resolve_link` itself, so
     the popup can never insert a link the resolver would read as a ghost or as
-    somebody else's note.
+    somebody else's file.
+
+    `from_rel` is that containing note, and it is load-bearing rather than
+    cosmetic: tier 1 of resolution is *relative to the linking note's own
+    folder*, so a form validated from the root is not validated at all for a note
+    in `docs/` — `![[img/a.png]]` written there binds to `docs/img/a.png` the
+    moment that file exists. Validating from `""` (the default, for a caller with
+    no open note) reproduces the old root-only guarantee.
+
+    Two consequences of validating honestly:
+
+    * a **`../` escape** is the last form tried. Where the containing note's own
+      folder shadows every suffix of the target, tier 1 wins every time and no
+      plain form can reach it; `../`-prefixed, tier 1 lands back on the root path
+      and resolves. It is a form MD-14's `](` completion already writes, so the
+      resolver and the reader both know it.
+    * **None is a real answer.** A stem-key collision (an asset `img/a.png`
+      beside a note `img/a.png.md`) makes `_only` ambiguous for every form of
+      both, and the shortest-form ladder used to end by returning the full path
+      regardless — a target the resolver reads as a ghost. Saying "no form" lets
+      the popup drop the row instead of inserting a lie.
     """
     segments = _stem(rel).split("/")
-    for depth in range(1, len(segments)):
-        form = "/".join(segments[-depth:])
-        if resolve_link(form, "", paths, index) == rel:
+    forms = ["/".join(segments[-depth:]) for depth in range(1, len(segments) + 1)]
+    here = from_rel.rsplit("/", 1)[0] if "/" in (from_rel or "") else ""
+    if here:
+        forms.append("../" * len(here.split("/")) + forms[-1])
+    for form in forms:
+        if resolve_link(form, from_rel, paths, index, suffixes) == rel:
             return form
-    return "/".join(segments)
+    return None
 
 
-def _candidates_payload(root: str, scan: dict) -> dict:
-    """Everything the `[[` and `[[note#` popups offer (MD-14).
+def _candidates_payload(root: str, scan: dict, rel: str = "") -> dict:
+    """Everything the `[[`, `![[`, `[[note#` and `](` popups offer (MD-14).
 
     Comes off the same scan the graph reads, so the popup is free once the walk
     has happened and can never suggest a note the graph does not know about.
+
+    Two validated forms per row, not one, because `[[…]]` and `![[…]]` do not
+    resolve through the same index: `_resolved_links` sends a non-note embed
+    target through notes **plus** assets, and everything else through notes
+    alone. `link` is validated against the note index and `embed` against the
+    asset index, so each popup inserts a form checked against the index its own
+    resolution will use. Assets carry `embed` only — an asset outside an embed is
+    not a wikilink target at all. Either may be **None**: no form resolves back,
+    so there is nothing honest to insert (see `_link_form`).
+
+    `rel` is the open note, when there is one, and every form is validated from
+    there rather than from the root.
     """
     notes = scan["notes"]
     paths = list(notes)
     index = _candidate_index(paths)
+    suffixes = _suffix_index(index)
+    # Exactly `_note_payload`/`_graph_nodes_and_edges`' asset index — the same
+    # expression, on the same scan — because a form validated against a
+    # different candidate set is not validated (MD-3: one resolution rule).
+    asset_paths = list(notes) + scan["assets"]
+    asset_index = _candidate_index(asset_paths)
+    asset_suffixes = _suffix_index(asset_index)
     rows = []
-    for rel in sorted(notes):
-        row = notes[rel]
+    for note_rel in sorted(notes):
+        row = notes[note_rel]
         rows.append({
-            "rel": rel,
-            "path": _client_join(root, rel),
-            "title": _display_title(rel),
-            "link": _link_form(rel, paths, index),
+            "rel": note_rel,
+            "path": _client_join(root, note_rel),
+            "title": _display_title(note_rel),
+            "link": _link_form(note_rel, paths, index, rel, suffixes),
+            "embed": _link_form(note_rel, asset_paths, asset_index, rel, asset_suffixes),
             "headings": row["headings"],
         })
+    assets = [{
+        "rel": asset_rel,
+        "embed": _link_form(asset_rel, asset_paths, asset_index, rel, asset_suffixes),
+    } for asset_rel in scan["assets"]]
     return {
         "error": None,
         "root": _client_path(root),
         "notes": rows,
-        "assets": scan["assets"],
+        "assets": assets,
         "truncated": scan["truncated"],
         "parser_version": PARSER_VERSION,
     }
@@ -1137,7 +1208,9 @@ ACTIONS = ("note", "candidates", "graph")
 def main(action: str = "note", file: str = "", root: str = "", depth=1):
     """The template's one entry point.
 
-    `note` answers the note view, `candidates` the `[[` autocomplete, and
+    `note` answers the note view, `candidates` the `[[` autocomplete (`file` is
+    optional there and names the note the completions will be inserted INTO, so
+    the forms can be validated from it), and
     `graph` both graph surfaces — the local panel (with `file` + `depth`) and
     the folder-level mode (root only). Every one of them refuses a mount-backed
     root (MD-11); reading and writing a single file is not affected, because
@@ -1182,7 +1255,10 @@ def main(action: str = "note", file: str = "", root: str = "", depth=1):
     except MountUnsupported as exc:
         return _error("mount_unsupported", str(exc))
     if action == "candidates":
-        return _candidates_payload(root, scan)
+        # `file` is optional here and stays optional: without it every form is
+        # validated from the root, which is all a caller with no open note can
+        # ask for (MD-14).
+        return _candidates_payload(root, scan, rel or "")
     if action == "graph":
         return _graph_payload(root, scan, rel, depth)
     # `note` is the only action that can reach here, and its two early returns

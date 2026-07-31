@@ -384,7 +384,7 @@ const page = await fused.runPython("./reader.py",
 | `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
-| `.md` | `markdown`, `code` | rendered markdown |
+| `.md` | `markdown`, `code`, `claude` | notes editor (§32) + raw source + chat about the note |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
 | `.pdf` | `pdf` | browser-native embed |
@@ -683,6 +683,25 @@ controls write). An earlier iteration had each paged view expose a
 put annotation-aware code inside view templates. Accepted trade-off: annotate
 cannot ask a view whether a row is truly gone from the data, so a comment
 past the data's end keeps its "row N" chip instead of turning "detached".
+
+**Which anchor strategy a view gets** is decided inside the annotate template
+alone (the containment invariant above), and the rule is **a lineNumbers gutter
+that is actually laid out** (`getBoundingClientRect().height > 0`), not "is this
+CodeMirror" and not merely "does `.cm-lineNumbers` exist": the gutter is the only
+place the line number can be read from, and `cmVisibleLines` pairs only gutter
+elements with real height, so the probe must make the same measurement. The
+markdown notes view ships `basicSetup` — the gutter element is there — but hides
+`.cm-gutters` outright, being prose (MD-18a), so it takes the ordinary
+element-path/quote anchors instead. Getting that wrong is silent by construction:
+both gesture handlers `preventDefault()` before resolving and bail on an
+unresolvable anchor, so the mis-detected view swallowed every click, dropped
+every selection and painted no stored comment, with nothing logged anywhere
+(fixed 2026-07-31). In a gutterless editor a quote anchor's container is hoisted
+to `.cm-content`, because the `.cm-line` div the selection actually sits in is
+remounted on scroll and its structural path drifts onto another line; the quote
+plus its occurrence index locates the span within the stable content element, and
+off-screen text simply has no pin until it scrolls back in — off-screen, not
+detached, as with code anchors.
 
 **Comment focus deep link:** an ordinary `comment` template param carries an
 id-only deep link (the history→annotate contract, HV-8; mirrors the claude
@@ -2784,10 +2803,19 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   in `selectedLines`, because a browser text selection inside a non-editable view
   still reaches the state's selection and would un-render whatever was swiped
   over; the guard makes the mode deterministic rather than dependent on that.
-  **Editing is the default** — Obsidian's default, and a note must never silently
-  open read-only. The preference lives in `fused.params` under `edit`
-  (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh and
-  travels in a shared URL. It is layered **on top of** the file's real
+  **A note opens READ-ONLY** (owner call 2026-07-31, reversing the earlier
+  Obsidian-matching "editing is the default"): opening a file in an explorer is a
+  read, and on the always-editable surface a stray keystroke on a note you opened
+  to look at rewrites it — editing is one click away and, once asked for, stays
+  in the URL. It also makes the view a better annotate stage (§17): the framed
+  document takes no edits and reveals no markers under the reviewer's clicks.
+  The preference lives in `fused.params` under
+  `edit` (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh
+  and travels in a shared URL; an absent param is read-only, and only an explicit
+  `"1"` grants editing. `aria-pressed` on the corner button therefore tracks
+  **editing** — the non-default state, so the accent marks the surface you can
+  change — while the glyph names the current mode (padlock read-only, pencil
+  editing). It is layered **on top of** the file's real
   writability and can never override it: for a genuinely unwritable file (MD-15)
   the toggle is *disabled* with a title saying why. Switching to read-only
   flushes pending edits first (`await save()`), for the same reason navigation
@@ -2806,9 +2834,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
   The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
   the graph together, and its accessible name says so.
-- **MD-2** **Registry.** `.md`/`.markdown` keep `["markdown", "code", "reader",
-  "annotate"]` — `markdown` now supersedes `code` for notes, and `code` stays
-  **unchanged** as the raw-source escape hatch. Two editors for one extension
+- **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code", "claude",
+  "reader", "annotate"]` — `markdown` now supersedes `code` for notes, and `code`
+  stays **unchanged** as the raw-source escape hatch. `claude` sits where it sits
+  on `.html` (after the editors, before the trailing meta-modes): the chat
+  template is file-type agnostic — it works off `_file` and its own `<file>.json`
+  sidecar — and binding it here is what gives a note the chat mode AND turns on
+  annotate's **Send to Claude** handoff, which hides itself wherever the target's
+  mode list has no `claude` to hand the review to (§17, owner call 2026-07-31). Two editors for one extension
   with two save models is accepted rather than reconciled: `code` is the
   generic text editor and keeps AS-1 (250 ms autosave, Save button), `markdown`
   is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
@@ -3004,17 +3037,97 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   `@codemirror/lang-markdown` (GFM base), `@codemirror/autocomplete` and
   `@codemirror/commands`, and re-exports `WidgetType`/`ViewPlugin`/
   `MatchDecorator`/`keymap`, `EditorSelection`/`RangeSetBuilder`/`Prec`,
-  `syntaxTree`, `autocompletion`, `indentMore`/`indentLess` and
+  `syntaxTree`, `autocompletion`/`acceptCompletion`, `indentMore`/`indentLess` and
   `markdown`/`markdownLanguage`/`markdownKeymap`. Anything not re-exported is
   tree-shaken, so `entry.js` is the whole gate on what the template can reach.
-- **MD-14** **Link authoring.** `[[`, `![[`, `[[#` and `[[note#` complete from a
-  `candidates` action off the **same scan the graph reads**, so
-  the popup is free once the index exists and can never offer a note the graph
-  disagrees about; cached ~5 s so a fast typist does not spawn a run per
-  keystroke. What it inserts is the **shortest form that `resolve_link` itself
-  resolves back to that note** (each candidate form is run through the resolver
-  to pick it) — Obsidian's "shortest path when possible", made correct by
-  construction rather than by a parallel rule, and pinned by a property test.
+- **MD-14** **Link authoring: every place a target can be typed completes.** All
+  of it comes from one `candidates` action off the **same scan the graph reads**,
+  so the popups are free once the index exists and can never offer a note the
+  graph disagrees about; cached ~5 s so a fast typist does not spawn a run per
+  keystroke. Six contexts, registered as **separate sources** in one
+  `autocompletion({ override })` (CM runs them all and merges, so each is a
+  single trigger with a single answer instead of one function branching through a
+  chain of regexes):
+  * `[[` — notes. What it inserts is the **shortest form that `resolve_link`
+    itself resolves back to that note** (each candidate form is run through the
+    resolver to pick it) — Obsidian's "shortest path when possible", made correct
+    by construction rather than by a parallel rule, and pinned by a property
+    test.
+  * `![[` — the same notes **plus every asset**, because `![[image.png]]` is the
+    common Obsidian embed and an embed resolves through the asset index (MD-4).
+    An asset carries **the same run-it-through-the-resolver guarantee a note
+    does** (D191), which takes three things the earlier root-relative-and-
+    unshortened form did not have. **The index has to be the embed resolver's**:
+    `_resolved_links` sends a non-note embed target through notes *plus* assets
+    and everything else through notes alone, so a row carries **two** validated
+    forms — `link` for `[[`, `embed` for `![[` — and one field could only ever be
+    right for one of the two popups. **The note it will be inserted into has to
+    be known**: tier 1 of resolution is the linking note's own folder, so
+    `![[img/a.png]]` written in `docs/` binds to `docs/img/a.png` the moment that
+    exists, and a form validated from the root is not validated at all for a note
+    in a subfolder — the `candidates` action therefore takes the open `file` and
+    validates every form from it (which fixes the same hole for `[[` notes), with
+    a **`../` form** as the last one tried, for the case where the note's own
+    folder shadows every suffix of the target. **And "no form" has to be
+    sayable**: on a stem-key collision (an asset `img/a.png` beside a note
+    `img/a.png.md`) nothing resolves back to either, so `_link_form` returns
+    `None`, the payload ships `null`, and the popup **drops that row** instead of
+    inserting a path the resolver reads as a ghost or as another file. The page
+    still invents no form of its own — a shortening rule reimplemented in JS is
+    exactly the divergence MD-3 and this rule exist to prevent. The per-candidate
+    resolver work is bounded by memoising resolution's third tier
+    (`_suffix_index`): ~1.9s of `endswith` at both caps became a ~40ms payload,
+    with an equivalence test pinning the memo to the scan's own answers.
+  * `[[#` and `[[note#` — headings, of this note or of the named one.
+  * `](` — **path completion**, the same list of notes and assets, each written
+    **relative to the open note's own folder** (a sibling as `img.png`, a child
+    as `sub/img.png`, `../` only where the target really is above the note).
+    Relative-to-own-folder is `resolve_link`'s first tier, so that form resolves
+    back to that exact file with no basename ambiguity to lose to, and it is also
+    a real relative path — which is what the shell navigates by (MD-4a) even
+    where nothing was scanned. The target is **percent-encoded on insert**
+    (spaces, and parentheses, which close the target early): `[x](my file.png)`
+    is not a link to the GFM parser at all, so the readable path is *displayed*
+    (`displayLabel`) while the encoded one lands in the document, where MD-4a's
+    widget decodes it again. This is pure string work — no filesystem call, and
+    no path rebuilt from segments, so the Windows drive form `C:/…` never gains
+    the leading slash `resolvePath` warns about.
+  * `![](` — the same, filtered to **image extensions**, because only an image
+    renders there.
+  * `](#` — this note's own headings, mirroring `[[#`, encoded the same way.
+
+  Each source sets `validFor`, so keystrokes filter the list locally instead of
+  re-running the source. **Two structural caveats, stated rather than absorbed:**
+  on a **mount-backed root** the `candidates` action refuses by design (MD-11),
+  so path completion is *structurally absent* there — and a **truncated walk**
+  (MD-10) yields a partial candidate list, so a target past the cap is simply not
+  offered. Neither may look like an empty vault: a failed or absent scan shows
+  **one non-selectable informational row** carrying graph.py's own reason, so a
+  mount refusal, a note outside its root and a crashed scan each read as
+  themselves — the popup's version of MD-11a's rule that unknown is not missing.
+  The failure is cached exactly as hard as a success, so a root that can never
+  answer costs one run per TTL rather than one per keystroke.
+
+  **What a row shows.** The **label is the readable form and the inserted form is
+  the encoded one** — `displayLabel` for the eye, `label` for the document — which
+  is a correctness rule, not a nicety: an un-encoded space is not a link to the
+  GFM parser at all. Beside it, a **dimmed right-hand `detail` column** carries
+  only what the label does not already say: a note's title, `embed` for an asset,
+  `H2` for a heading. Nothing repeats the label (the path source used to set the
+  root-relative path as its detail, which for a target under the note's own
+  folder is the label verbatim). A heading row says its nesting by **indentation
+  plus that level marker**, matching the sidebar outline (MD-19b) rather than
+  printing `### ` into the label. **No icon column**: CM's glyph for these `type`
+  values is the literal `abc`, and the row already names its kind (D192). The
+  whole popup is styled through **the editor's own `theme` extension**, so it
+  survives the appearance flip's `StateEffect.reconfigure`, in this view's tokens
+  and at the sidebar's density — with the selected row marked by weight and an
+  accent edge as well as fill. The typed substring is emphasised, since the list
+  is every note plus every asset: that takes each result's **`getMatch`**, because
+  CM matches the label and will not guess where those characters sit in a
+  `displayLabel` — it hands such a row an empty match, so without the mapping
+  every row that displays its own form (which is all of them here) drew no
+  emphasis at all.
 - **MD-15** **Read-only comes from the shell's persisted flag**, read off
   `stat.writable` (`server._writable`, which consults `mounts.mount_read_only`),
   never `os.access`: on an rclone mount with `CacheMode=full` a doomed write
@@ -3047,9 +3160,32 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   continuation are `markdownKeymap` — the same code Obsidian's own editor runs —
   not a hand-rolled copy; auto-pairing comes from `basicSetup`'s
   `closeBrackets`. On top: `Tab`/`⇧Tab` indent and outdent list items, `⌘B`/`⌘I`/
-  `⌘K` as **toggles**, `⌘⏎` cycling a line through task states, pasting a URL
+  `⌘⇧X` (strikethrough) / `⌘⇧E` (inline code) / `⌘K` as **toggles**, `⌘⏎` cycling
+  a line through task states, pasting a URL
   over a selection making a link of it, and the caret position remembered per
-  file. There is no `⌘E`: with one surface there is nothing to toggle to (MD-1).
+  file. The four wrapping toggles are one marker-agnostic function, and the
+  markers stop there: `==` highlight is **deliberately absent**, because the
+  vendored grammar has no rule for it and Live Preview would leave the `==` bare
+  on the page (D189). Obsidian ships no default hotkey for strikethrough or
+  inline code, so `⌘⇧X`/`⌘⇧E` match nothing and were chosen for being free of
+  `markdownKeymap`, `basicSetup`'s default/search/close-brackets keymaps and the
+  completion keymap. `⌘E` specifically is left unbound: the read-only↔editing
+  mode (MD-1a) is the corner button only, by owner call.
+  Two behaviours are Obsidian's rather than the naive form. A toggle with **no
+  selection wraps the word under the caret** — `state.wordAt`, so there is no
+  second definition of a word here — and toggles it off again from the same bare
+  caret; only where there is no word (whitespace, an empty line) does it fall
+  back to an empty pair of markers with the caret between them. And `⌘K` with the
+  caret **inside an existing `[label](target)` selects the target**, so it edits
+  that link instead of nesting a second one; the enclosing node comes from
+  `syntaxTree` and must *also* parse as a plain inline link, because the grammar
+  wraps a `[[wikilink]]`'s brackets in `Link`/`Image` nodes too (MD-18a, D189).
+  `Tab` **accepts an open completion** before it indents (MD-14's popups), since
+  CM's own `completionKeymap` binds only `⏎` to `acceptCompletion`; with no popup
+  open it is `indentMore` as before. Every one of these commands builds its own
+  dispatch, and neither read-only facet filters a dispatch, so each checks
+  `state.readOnly` and swallows the key rather than relying on `editable=false`
+  keeping the key away from the view (MD-1a/MD-15).
   A **rendered checkbox** is clickable and writes back, disabled on a read-only
   file; its position comes from `posAtDOM` at click time rather than from a
   count of markers in the source, so an edit between render and click cannot
@@ -3108,6 +3244,48 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   URL should reproduce (MD-20), and how wide someone dragged their panel is
   window furniture that a link must not carry. Each resize `nudge()`s the canvas,
   which is a fixed-size bitmap and does not otherwise learn that its box moved.
+- **MD-19b** **The outline is the sidebar's TOP section, and it reads the live
+  document** (D190). The open note's headings get a nested, click-to-scroll list —
+  the navigation aid a long note needs, which the panel had headings for
+  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is a **section of
+  the one right sidebar**, not a panel and not a second toggle: MD-19a allows
+  exactly one right sidebar behind one 26px toggle and MD-2a forbids the toolbar
+  row a second control would want. It sits **above** backlinks because the
+  ordering is by subject rather than by size — the outline is about the note in
+  front of you, backlinks and the graph are about the rest of the vault, so the
+  section describing the open document is nearest it, as in Obsidian. Being first
+  it is also the section that clears the floating corner cluster. Sized like the
+  backlinks list (content-sized, scrolling, capped) so neither list can starve
+  the canvas.
+  **It reads `view.state.doc`, never the payload.** `notes.headings` re-parses
+  only on save (MD-9), so a payload-fed outline would lag every heading typed by
+  up to one autosave interval, and a stale outline sends you to the wrong place —
+  worse than none. Reading the document is the same move MD-4b already makes.
+  **No timer**: the editor's existing `docChanged` listener is the only trigger,
+  and this template stays poll-free (MD-17). The heading scan mirrors graph.py's
+  `_mask_code` — frontmatter and fenced code masked, ATX only — so a
+  `# not a heading` inside a fenced block is as absent here as it is from every
+  other heading surface. Mirroring it includes the case that bites while typing:
+  an **unclosed** `---` is not frontmatter (`_frontmatter_span` returns no span,
+  and MD-18a's decoration scan finds the end before it dims anything), so the
+  closer is found before any line is skipped. A standing "in frontmatter" flag
+  emptied the whole outline from the keystroke that opened the block to the one
+  that closed it, while the other two surfaces kept those headings — caught in
+  review. Indentation is **nesting depth over the levels present**, and the
+  `[[#` popup calls the same function rather than a matching copy (MD-14), since
+  a note that starts at `##` or skips a level is where two copies diverge. Not the syntax tree, tempting though it is: it is parsed
+  only as far as CM has got, so a long note would silently lose its tail
+  headings. Rows scroll by **line**, not by heading text (they were built from
+  that line; matching by text hands the second `## Notes` to the first one), and
+  MD-4b's caret rule lives in the one `scrollToLine` both paths call. Indent is by
+  **nesting depth over the levels present**, so a note that starts at `##` is not
+  an indented note. **No state, therefore no param** (MD-20 carries what a shared
+  URL must reproduce; a section that is always drawn with its panel has nothing
+  to carry), and an unchanged heading list is not redrawn — which is what keeps
+  the list's own scroll position while you type inside a heading. Empty says
+  so, in the backlinks list's voice. Fully functional read-only (MD-1a): an
+  outline is a reading affordance first, its rows are buttons outside the editor
+  on the one delegated click handler, and a scroll is not an edit.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
@@ -3146,9 +3324,13 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   folders are different places), ordered by depth then name, with the
   folderless ghost nodes in a trailing `unresolved` band rather than lumped
   into the root's. Band names are drawn in **screen space** at the left edge, so
-  the legend stays readable and on-screen at any zoom or pan; the name is drawn
-  even for a single band, because "these are all in `x/`" is the answer the
-  layout exists to give; alternate bands carry a whisper of foreground fill,
+  the legend stays readable and on-screen at any zoom or pan; **names (and the
+  left gutter they reserve) appear only where there is more than one band** —
+  with a single band the vertical axis distinguishes nothing, so the legend is
+  one folder name repeated down the edge of a panel it labels in whole, which
+  the breadcrumb already does; dropping it hands the gutter's width back to the
+  lane layout (owner call 2026-07-31, reversing the earlier "draw it even for one
+  band"); alternate bands carry a whisper of foreground fill,
   because a fill says "this strip is one folder" everywhere the strip is where
   a lone separator hairline read as a stray edge. `y` belongs to the layout,
   except for a node the user dragged, which keeps the position they chose.
