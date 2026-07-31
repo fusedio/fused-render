@@ -3478,7 +3478,37 @@ that path. Offered for **both** directories and text-ish files, always as a
 - **GT-7** **One unscoped `git status`, filtered to the scope in Python.** The
   header's clean/dirty light describes the **repository** (that is what the word
   means) while the list below it describes the **scope**, and both facts come out
-  of the same walk of the index this way rather than out of two calls. The filter
+  of the same walk of the index this way rather than out of two calls.
+  **Measured, not assumed** (2026-07-31, this machine, the exact argv the reader
+  uses; first run then warm median of five):
+
+  | repo | tracked | worktree files | first | warm |
+  |---|---|---|---|---|
+  | superset | 6,535 | 6,558 | **254 ms** | 111 ms |
+  | fusedudfs | 5,331 | 5,759 | 72 ms | 31 ms |
+  | application | 4,096 | **572,320** | 36 ms | 8 ms |
+  | fused-render | 651 | 126,373 | 2 ms | 1 ms |
+  | synthetic, 100k tracked, clean | 100,000 | 100,000 | 38 ms | 38 ms |
+  | synthetic, 100k tracked, ALL modified | 100,000 | 100,000 | **160 ms** | 160 ms |
+  | synthetic, 40k untracked non-ignored | 1 | 40,001 | 9 ms | 7 ms |
+
+  Three things that table settles. **Cost tracks TRACKED files, not worktree
+  size** — the 572k-file checkout is the second *fastest*, because a
+  directory-ignored `node_modules` is pruned without descending, and 40k untracked
+  files collapse to 400 `dir/` entries under `--untracked-files=normal` (which is
+  precisely the ancestor case `_in_scope` handles). **The worst number here is
+  254 ms against `TIMEOUT_S = 12.0`** — a 47x margin, and the view paints its
+  skeleton first regardless, so this is not on any critical path a user perceives.
+  **And the two-call alternative is measurably worse, not better:** on superset a
+  scoped status is 2.1 ms but the cheapest repo-wide dirty probe,
+  `git diff --quiet HEAD`, is 100.2 ms — 102 ms total against 111 ms for the single
+  unscoped call, an ~8% saving — while on the 100k-all-modified synthetic that
+  probe (171 ms) is *slower* than the whole status (160 ms). It is also less
+  correct: `diff --quiet HEAD` cannot see untracked files, so a repo dirty only by
+  untracked files would report clean. So one unscoped call stands, on evidence.
+  Revisit only if a repository an order of magnitude past 100k tracked files shows
+  up; the bound that catches it is already there (`TIMEOUT_S`, refused as a calm
+  empty state, GT-9). The filter
   reproduces git's own pathspec semantics including the case a naive prefix test
   gets wrong: with `--untracked-files=normal` git collapses a wholly-untracked
   directory to `dir/`, so an entry can be an *ancestor* of the scope rather than a
@@ -3504,11 +3534,15 @@ that path. Offered for **both** directories and text-ish files, always as a
   which is a debugging affordance for a view's own bug.
 - **GT-10** **The view.** `data-fused-theme="shell"` with both palettes defining
   the same token set and no colour literal in any rule (AP-9, tier 1). The header
-  is **one compact status line**, not a display title (owner call 2026-07-31): the
-  shell's breadcrumb directly above this iframe already states the path in large
-  type, so a second heading repeating it was the loudest thing on a page whose
-  subject is the lists below — the header still owes every fact (repo name,
-  branch, clean/dirty, scope) and states them at the weight of a status line. All UI
+  is **one compact status line, not a display title**. A template renders inside
+  the preview iframe, directly below the shell's own breadcrumb, which already
+  states the path in large type — so a 26px heading naming the same thing is the
+  page's loudest element spent restating its chrome, and it pushes the lists that
+  ARE the subject below the fold. The rule generalizes: a template's header states
+  what the shell does not already say. Here that is four facts — repo name, branch,
+  clean/dirty, and the scope the lists are filtered to — none of which is on the
+  breadcrumb, and all of which read fine at status-line weight because they are
+  read once on arrival and then ignored. All UI
   state in URL-synced params — `pages` (how much log is loaded), `sel` (selected
   commit) and `wt` (selected uncommitted entry), the last two **mutually
   exclusive** so there is at most one diff target — hence a refresh or a bookmark
