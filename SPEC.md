@@ -1198,8 +1198,11 @@ working, not a second opinion about the format.
   appears to name. No credentials are ever sent (CL-6).
 - **CL-4** **The archive is hostile, and the fetch is boundary-hardened.** Two separate
   things, in order of importance. The *archive* is untrusted regardless of where it came from
-  (CL-5), and the download is verified: an unrecognised `protocol` version is refused rather
-  than guessed at, and the bytes are checked against the digest the host published as the
+  (CL-5), and the download is verified. Compatibility is checked **twice, from one table**
+  (`_PROTOCOL_BUNDLE_VERSION`): the inventory's `protocol` gives an early refusal before
+  megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
+  bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
+  gate at all. The bytes are then checked against the digest the host published as the
   download's `ETag` — bytes that arrive complete but wrong are the one failure a length check
   cannot see, and this makes "importing is deterministic" something we confirm instead of
   assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the

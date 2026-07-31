@@ -333,29 +333,52 @@ def _safe_folder_name(name: str | None) -> str:
     return cleaned or "cloned-page"
 
 
-# The clone protocol versions this client can import (fused's spec/serve/clone-protocol.md).
-# A SET, not a floor: the version is a compatibility axis, not a ratchet, and a host speaking
-# something outside it must be refused rather than guessed at. Absent means an older host that
-# predates the field, which is the one case that falls back to trusting the archive's own
-# declared shape.
-SUPPORTED_CLONE_PROTOCOLS = frozenset({1})
+# What this client can import (fused's spec/serve/clone-protocol.md), stated as ONE table so
+# the two places compatibility is checked cannot drift: the protocol version a host advertises
+# in its inventory, and the bundle version the archive itself declares. A mapping, not two
+# lists, because they are the same fact seen from either side.
+#
+# Sets/keys rather than a floor: the version is a compatibility axis, not a ratchet, so
+# something outside the table is refused rather than guessed at.
+_PROTOCOL_BUNDLE_VERSION = {1: 2}
+SUPPORTED_CLONE_PROTOCOLS = frozenset(_PROTOCOL_BUNDLE_VERSION)
+SUPPORTED_BUNDLE_VERSIONS = frozenset(_PROTOCOL_BUNDLE_VERSION.values())
+
+_UNSUPPORTED = (
+    "this page was published with a newer clone format ({what} {version!r}) than this version "
+    "of fused-render can import — update fused-render and try again"
+)
 
 
 def _require_supported_protocol(meta: dict) -> None:
-    """Refuse an inventory this client cannot import.
+    """Refuse — **early** — an inventory this client cannot import.
 
-    The archive's layout is defined by `fused`, not here, so compatibility is read from the
-    stated `protocol` rather than sniffed out of the zip. Refusing an unknown version is the
-    point: a client that instead unpacked a format it does not understand would either write a
-    broken page or, worse, write one that looks fine.
+    The value of checking here is that it costs nothing: a preview refuses before megabytes
+    move. It is not the enforcing gate, because a caller can `POST /api/clone-app` without ever
+    fetching an inventory, and a host predating the field advertises no version at all. What
+    the import path enforces instead is the archive's OWN declared version
+    (`_require_supported_bundle`) — the thing it actually has in hand — and both decisions read
+    the same table.
     """
     version = meta.get("protocol")
-    if version is None:
-        return  # a host predating the field; the bundle's own version check still applies
-    if version not in SUPPORTED_CLONE_PROTOCOLS:
+    if version is not None and version not in SUPPORTED_CLONE_PROTOCOLS:
+        raise CloneError(_UNSUPPORTED.format(what="protocol", version=version))
+
+
+def _require_supported_bundle(version: object) -> None:
+    """Refuse an archive whose declared bundle version this client cannot import.
+
+    The enforcing gate, on every import path including a bare `POST` with no preview: this reads
+    the version out of the bytes actually downloaded, so nothing upstream has to be trusted or
+    even present for it to hold. A client that unpacked a format it does not understand would
+    write either a broken page or — worse — one that looks fine.
+    """
+    if version not in SUPPORTED_BUNDLE_VERSIONS:
         raise CloneError(
-            f"this page was published with a newer clone format (protocol {version!r}) than "
-            "this version of fused-render can import — update fused-render and try again"
+            _UNSUPPORTED.format(what="bundle format", version=version)
+            if isinstance(version, int) and version > max(SUPPORTED_BUNDLE_VERSIONS)
+            else f"unsupported bundle format ({version!r}); this version of fused-render can "
+            f"only clone v{max(SUPPORTED_BUNDLE_VERSIONS)} export bundles"
         )
 
 
@@ -554,17 +577,13 @@ def _read_bundle(staging_dir: str) -> dict:
         raise CloneError("the download's manifest.json could not be read") from None
     if not isinstance(manifest, dict):
         raise CloneError("the download's manifest.json is not an object")
-    # The archive's *shape* is `fused`'s to define, and `_require_supported_protocol` is where
-    # compatibility is decided from the inventory's stated version. This is the fallback for a
-    # host that predates that field, and the one bundle-schema fact this client needs: which
-    # layout the two path fields below describe. Everything else in the manifest is opaque —
-    # entrypoints, assets, resources are read by fused-render's own loader later, not here.
-    version = manifest.get("fused_render_bundle")
-    if version != 2:
-        raise CloneError(
-            f"unsupported bundle format ({version!r}); this version of fused-render "
-            "can only clone v2 export bundles"
-        )
+    # The archive's *shape* is `fused`'s to define; this is the **enforcing** compatibility gate,
+    # on the version the downloaded archive itself declares, so it holds on every import path
+    # including a `POST` that never fetched an inventory. It is also the one bundle-schema fact
+    # this client needs: which layout the two path fields below describe. Everything else in the
+    # manifest is opaque — entrypoints, assets and resources are read by fused-render's own
+    # loader later, not here.
+    _require_supported_bundle(manifest.get("fused_render_bundle"))
     root = manifest.get("root")
     page = manifest.get("page")
     if not isinstance(root, str) or not root or not isinstance(page, str) or not page:

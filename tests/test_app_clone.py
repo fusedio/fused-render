@@ -614,6 +614,35 @@ def test_a_newer_clone_protocol_is_refused_with_an_upgrade_message(h):
     assert "newer clone format" in resp.json()["error"]
 
 
+def test_a_bare_post_still_refuses_an_unimportable_archive(h):
+    """The enforcing gate is on the ARCHIVE, so it holds with no preview at all.
+
+    `POST /api/clone-app` can be called directly — a programmatic client, or the modal after a
+    preview the user has since edited away from — so a compatibility check that lived only in
+    the inventory path would be no gate at all. This reads the version out of the bytes actually
+    downloaded, which needs nothing upstream to be present or trusted.
+    """
+    h.serve(archive=_bundle_zip(version=3))
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 400
+    assert "newer clone format" in resp.json()["error"]
+    # `?meta=1` was never fetched: the refusal came from the archive, not from an inventory.
+    assert not any(u.endswith("?meta=1") for u in h.requests)
+    assert sorted(p.name for p in h.workspace.iterdir() if not p.name.startswith(".")) == []
+
+
+def test_the_two_compatibility_checks_read_one_table(h):
+    # The inventory check is an early refusal (before megabytes move) and the archive check is
+    # the enforcing one. They must agree, so they resolve the same mapping rather than each
+    # carrying its own list.
+    assert app_clone.SUPPORTED_CLONE_PROTOCOLS == frozenset(app_clone._PROTOCOL_BUNDLE_VERSION)
+    assert app_clone.SUPPORTED_BUNDLE_VERSIONS == frozenset(
+        app_clone._PROTOCOL_BUNDLE_VERSION.values()
+    )
+
+
 def test_the_current_protocol_and_a_host_that_states_none_both_import(h):
     # Protocol 1 is what this client speaks; a host predating the field is an older plane, and
     # a weaker guarantee is not an error — the bundle's own version check still applies there.
