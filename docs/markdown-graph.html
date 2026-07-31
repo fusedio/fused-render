@@ -179,7 +179,7 @@
 
 <p>Registry changes are small:</p>
 <pre><code>".md":       ["markdown", "code", "reader", "annotate"]   <span class="k">// markdown now = read+write+links</span>
-"/":         ["_listing", "graph", "preview", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
+"/":         ["_listing", "graph", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
 
 <p>The folder mode gets a <code>condition.py</code> (SPEC CT-12) so it only offers itself where a notes <em>vault</em> is — as built, where <code>index.md</code> exists (<code>Index.md</code> probed alongside it, for a case-sensitive filesystem), since telling "this is a vault" from anything else needs the listing this rule forbids. The first cut probed a wider list of "entry-point" notes (<code>README.md</code>, <code>Home.md</code>, <code>notes.md</code>, …) and that was wrong in one direction that matters: <code>README.md</code> is in essentially every code repository, so the mode was offered on every checkout on the disk. The remaining cost is one-directional and is discoverability, not capability: a vault with no <code>index.md</code> is not <em>offered</em> the mode, while <code>_mode=graph</code> still reaches it by hand and the local graph panel in the note view is untouched. That gate must <strong>never</strong> list or walk the directory — same rule <code>zarr_aoi/condition.py</code> documents. Cheap bounded probes only (two <code>os.path.isfile</code> checks), fail closed.</p>
 
