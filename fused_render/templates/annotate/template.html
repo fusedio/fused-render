@@ -472,18 +472,28 @@
     // braces percent-encode, roughly tripling), not the raw JSON.
     const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
     // Oldest evictable comment, resolved tier before sent tier, or null when
-    // every remaining comment is open and unsent.
-    function evictTarget(arr) {
+    // every remaining comment is open and unsent. `keep` is a Set of ids that
+    // are off-limits whatever their flags: the save that STAMPS `sent` is also
+    // the save that could evict on it, and a comment being handed to Claude
+    // right now must never be the victim (the stamp itself is what pushed the
+    // list over budget, so the payload was the whole sent tier — one click
+    // could delete a live comment from the only store there is, with the
+    // "removed" note written into a bar the navigation destroys milliseconds
+    // later). When that leaves nothing evictable we take the over-budget write:
+    // a long URL beats trading a comment for a flag, and the send proceeds
+    // either way.
+    function evictTarget(arr, keep) {
+      const pool0 = keep ? arr.filter((c) => !keep.has(c.id)) : arr;
       for (const tier of [(c) => c.resolved, (c) => c.sent && !c.resolved]) {
-        const pool = arr.filter(tier);
+        const pool = pool0.filter(tier);
         if (pool.length) return pool.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
       }
       return null;
     }
-    function save(arr, deletedIds) {
+    function save(arr, deletedIds, keep) {
       let dropped = 0;
       while (urlSize(arr) > BUDGET) {
-        const oldest = evictTarget(arr);
+        const oldest = evictTarget(arr, keep);
         if (!oldest) break;
         arr = arr.filter((c) => c.id !== oldest.id);
         dropped++;
@@ -1366,12 +1376,20 @@
       } catch (e) {
         return;
       }
+      // Serialize the wire form BEFORE stamping: `sent` is an internal
+      // lifecycle flag of the URL store, and formatComments (claude template)
+      // hands the agent the raw JSON with every field intact — it has no
+      // business reading, explaining or reasoning about our bookkeeping.
+      const wire = JSON.stringify(payload);
       // Stamp and persist BEFORE navigating: save() is what writes the `comments`
       // URL param (and, via the verbatim field merge in annotate.py, the
       // `<file>.json` sidecar), and this frame is about to be torn down by the
       // mode switch — a stamp applied after the navigation would never land.
+      // The payload's ids are handed to save() as off-limits for eviction: the
+      // stamp is what can push the list over BUDGET, and the comments being sent
+      // are then the entire sent tier (see evictTarget).
       for (const c of payload) c.sent = 1;
-      const persisted = save(all);
+      const persisted = save(all, undefined, new Set(payload.map((c) => c.id)));
       const top = window.top.location;
       const full = (top.search || "").replace(/^\?/, "");
       const rest = withoutLayoutSpan(top.search);
@@ -1389,13 +1407,24 @@
         span = full.slice(start, i);
       }
       const params = new URLSearchParams(rest);
+      // D99 staleness sweep. `rest` is a RAW read of window.top's search, but
+      // fused.params.set COALESCES its history write — so ANY param this page
+      // owns may still sit at its pre-click value in that string, and writing it
+      // back verbatim silently reverts it: the `sent` stamps (re-sending the
+      // whole review next visit), and `offset`/`sheet` written by a reveal
+      // within the coalescing window (returning to page 1 of a table/pdf).
+      // fused.params.getAll() reads through the pending overlay, so it is the
+      // live truth. Only keys the top URL ALREADY carries are touched — this
+      // must not push a pane-local param onto the shell URL.
+      const live = fused.params.getAll();
+      for (const k of [...params.keys()]) {
+        if (typeof live[k] === "string") params.set(k, live[k]);
+      }
       params.set("_mode", "claude");
-      params.set("claudeComments", JSON.stringify(payload));
-      // Re-assert the review from what save() actually persisted. This URL is
-      // built from a raw read of window.top's search, and fused.params.set
-      // COALESCES its history write (D99) — so the `sent` stamps may not be in
-      // that string yet, and writing it back verbatim would silently undo them
-      // and re-send the same comments on the next visit.
+      params.set("claudeComments", wire);
+      // The review as save() actually PERSISTED it (post-eviction) — narrower
+      // than the sweep above, which cannot know that save may have dropped a
+      // comment, and correct even if `comments` was absent from the top URL.
       params.set("comments", JSON.stringify(persisted));
       // Return ticket: the chat has nothing else that would ever bring the user
       // back (it turns auto-reload off and lives entirely inside its own frame),

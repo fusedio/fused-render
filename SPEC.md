@@ -738,7 +738,14 @@ comments in the payload and `save()`d *before* the mode switch so it lands in th
 `comments` URL param and, through annotate.py's verbatim field merge, in the
 `<file>.json` log. The flag is a bare truthy `1` because the URL store's ~6 KB
 budget is the binding constraint and the sidecar's own `updated_at` already dates
-the write. A sent card shows a "sent ↗" chip so its exclusion is visible; the
+the write. The flag is stripped from what the agent sees (the payload is
+serialized before stamping) — it is bookkeeping for the URL store, not something
+`formatComments` should hand the model to reason about. A comment **being sent
+right now is off-limits to eviction**: the save that stamps `sent` is the save
+that can evict on it, so the payload's ids are passed to `save()` as protected and
+an over-budget write is preferred over trading a live comment for a flag (the
+"removed" bar note would be destroyed by the navigation milliseconds later, making
+that loss silent). A sent card shows a "sent ↗" chip so its exclusion is visible; the
 **Reopen** action clears the flag, which is the one way to hand a comment over
 again; and when nothing is sendable the button writes the inline bar note instead
 of navigating. The URL budget's eviction order gains a second tier — oldest
@@ -754,10 +761,19 @@ framed), the claude template captures both into memory at boot and strips both
 from the shell URL in the same `replaceState` (a Back entry must not re-attach a
 review that was already sent), and the *one* run whose message actually carried
 attached comments navigates the shell back to that mode when it reports `done`
-without an error. It is an in-memory one-shot: a later turn in the same session
+without an error. The ticket is **threaded, not latched** — it travels as an
+argument from `composeAndSend` → `sendMessage` → `pollLoop`, so it is bound to one
+message and, past `start`, to one run id. A module-scoped flag was the first
+attempt and leaked: a failed `start` never reaches `pollLoop`, so the flag stayed
+armed and the user's next unrelated question navigated the shell away mid-thread,
+for a run that carried no comments. A later turn in the same session therefore
 stays in the chat, an errored or aborted run stays put (there is nothing new to
 look at, and leaving would hide the error), and a run re-attached on a fresh boot
-never returns. This is necessary because the chat calls `fused.autoReload(false)`
+never returns. A `start` that fails **hands the comment chips back** (`attached`
+is restored and the user is told), because annotate has already stamped those
+comments `sent` and nothing else would ever offer them again; past `start` the
+agent has the message, so restoring would send them twice.
+This is necessary because the chat calls `fused.autoReload(false)`
 and owns the viewport — nothing else would ever bring the reviewer back to the
 edited file. Both directions are **deliberate standard-breaks** documented in the
 template comments: `_mode` is a reserved param name that `fused.params.set`
@@ -766,6 +782,20 @@ top-level URL write is the only mechanism; the navigation reuses the history
 template's `navigateShell` idiom (pushState + a `fused:navigate` event, with a
 `location.href` fallback), and both sides excise and reattach the balanced
 `_layout=(…)` span byte-for-byte before `URLSearchParams` sees the query.
+
+Both legs read `window.top`'s search **raw**, so both must reckon with the
+runtime's coalesced history write (D99): a param this page just set may still be
+at its pre-click value in that string, and copying it forward silently reverts it.
+Annotate sweeps every key the top URL already carries against
+`fused.params.getAll()` (which reads through the pending overlay) before writing
+its own — that covers the `sent` stamps, and `offset`/`sheet` from a reveal inside
+the coalescing window, without pushing a pane-local param onto the shell URL; it
+then re-asserts `comments` from what `save()` actually persisted, which the sweep
+cannot know. The return leg fires `pagehide` — the runtime's own documented flush
+hook — before reading the URL and pushing its entry, so a pending write neither
+goes missing from the copy nor lands *after* the push and `replaceState` the
+pre-return search over it. Known gap: the return discards whatever the user had
+typed into the chat input when it fires.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 

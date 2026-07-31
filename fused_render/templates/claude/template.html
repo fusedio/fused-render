@@ -664,10 +664,13 @@ let attached = parseComments();
 // immediately, so the URL cannot be consulted later. Empty when this chat was
 // opened normally — then nothing ever navigates away.
 const returnMode = fused.params.get("claudeReturn") || "";
-// Armed only by the send that actually carries comments (composeAndSend), and
-// consumed by that run's completion (pollLoop). A plain chat turn afterwards
-// must not teleport the user out of the conversation.
-let pendingReturn = false;
+// The ticket is deliberately NOT a module-scoped latch. It travels as a
+// `handoff` argument from composeAndSend → sendMessage → pollLoop, so it is
+// bound to ONE message and, past the start, to one run id. A latch leaked: a
+// `start` that failed left it armed with no run to consume it, and the user's
+// next unrelated question then navigated the shell away mid-thread — for a run
+// that carried no comments, while annotate had already stamped those comments
+// `sent`. Threading it makes that unrepresentable.
 
 function buildChip(c, i) {
   const chip = document.createElement("div");
@@ -789,6 +792,16 @@ function clearTopClaudeComments() {
 function returnToMode(mode) {
   let top;
   try { top = window.top; void top.location.href; } catch (e) { return; }  // cross-origin
+  // Land any history write the runtime is still coalescing (D99) BEFORE reading
+  // the URL, and before pushing our own entry. Two ways it bites otherwise:
+  // this function reads `location.search` RAW, so a pending `session_id`/`run`
+  // write would not be in the string it copies forward; and the trailing timer
+  // would fire after our pushState and replaceState the PRE-return search
+  // (`_mode=claude`, stale `run=`) straight over the entry we just created.
+  // `pagehide` is the runtime's own documented flush hook (runtime.js), and
+  // this document is about to be replaced by the re-route anyway, so firing it
+  // early is exactly what it is for.
+  try { window.dispatchEvent(new Event("pagehide")); } catch (e) { /* best-effort */ }
   const full = (top.location.search || "").replace(/^\?/, "");
   const m = /(^|&)_layout=\(/.exec(full);
   let span = null;
@@ -826,17 +839,19 @@ function returnToMode(mode) {
 // clearTopClaudeComments); the comments live only in `attached` from here on.
 function composeAndSend(typed) {
   let message = typed;
+  // Non-null only for the ONE send that actually carries comments: it holds the
+  // return ticket (empty `mode` when this chat was opened normally, i.e. no
+  // ticket, so nothing navigates) and the comments themselves, so a `start`
+  // that never ran can hand them back instead of swallowing them.
+  let handoff = null;
   if (attached.length) {
     const block = formatComments(attached);
     message = typed ? block + "\n\n" + typed : block;
+    handoff = { mode: returnMode, comments: attached };
     attached = [];
     renderAttachments();
-    // Arm the return trip for THIS run only (consumed in pollLoop). Set here,
-    // not at boot, because the user may never send: an unsent handoff must
-    // leave them wherever they are.
-    if (returnMode) pendingReturn = true;
   }
-  sendMessage(message);
+  sendMessage(message, handoff);
 }
 
 // ── log rendering ──
@@ -1280,7 +1295,10 @@ let sending = false;
 // if this frame dies mid-loop (mode switch, reload), the subprocess keeps
 // going and the next boot re-attaches via resumeRun. Cleared only when a
 // poll reports the run finished.
-async function pollLoop(run_id) {
+async function pollLoop(run_id, handoff) {
+  // The return ticket for THIS run only (see composeAndSend). Undefined for a
+  // plain turn and for a run re-attached at boot (resumeRun) — neither returns.
+  const returnTo = (handoff && handoff.mode) || "";
   const w = addWorking();
   let reply = null;
   let typer = null;
@@ -1314,12 +1332,12 @@ async function pollLoop(run_id) {
         }
         // The comment-carrying run finished cleanly: hand the shell back to the
         // mode that sent it, so the reviewer sees the edited file instead of
-        // sitting in a chat that never reloads. Consumed either way — one send,
-        // one return, so a follow-up turn in this session stays in the chat.
-        // Deliberately NOT on the error path (nor in the catch below): a run
-        // that failed or was aborted has changed nothing to go back and look
-        // at, and navigating away would hide the error message.
-        if (pendingReturn && !data.error) returnToMode(returnMode);
+        // sitting in a chat that never reloads. `returnTo` is this call's own
+        // argument, so a follow-up turn in this session has none and stays in
+        // the chat. Deliberately NOT on the error path (nor in the catch below):
+        // a run that failed or was aborted has changed nothing to go back and
+        // look at, and navigating away would hide the error message.
+        if (returnTo && !data.error) returnToMode(returnTo);
         break;
       }
       await sleep(400);
@@ -1333,18 +1351,17 @@ async function pollLoop(run_id) {
     if (reply) reply.remove();
     addError(err.message);
   } finally {
-    // One send, one return: cleared however this run ended (done, errored, or
-    // the poll itself threw) so a later turn in the same session can never
-    // inherit the ticket and teleport the user out of the conversation.
-    pendingReturn = false;
     if (w.el.isConnected) { w.stop(); w.el.remove(); }
   }
 }
 
-async function sendMessage(message) {
+async function sendMessage(message, handoff) {
   if (sending) return;
   sending = true;
   addUser(message);
+  // Until `start` hands back a run id, nothing has received the message — so a
+  // failure up to that point must not consume the attached comments.
+  let started = false;
   try {
     const { run_id, error } = await fused.runPython("./agent.py", {
       action: "start",
@@ -1360,9 +1377,21 @@ async function sendMessage(message) {
     }, { key: null });
     if (error) throw new Error(error);
     fused.params.set("run", run_id);
-    await pollLoop(run_id);
+    // The agent has the message; from here the handoff belongs to this run id.
+    started = true;
+    await pollLoop(run_id, handoff);
   } catch (err) {
     addError(err.message);
+    // The run never started (bad model, agent.py raised, …) and the composed
+    // message died with it — so put the comment chips back rather than silently
+    // eating a review that annotate has already stamped `sent`. Only on the
+    // pre-start path: once the agent has the message, restoring the chips would
+    // send the same comments twice.
+    if (!started && handoff) {
+      attached = handoff.comments;
+      renderAttachments();
+      addError("Those comments were not sent — they are attached again, ready to retry.");
+    }
   } finally {
     sending = false;
   }

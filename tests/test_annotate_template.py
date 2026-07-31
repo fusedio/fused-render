@@ -129,17 +129,43 @@ def test_the_send_handler_stamps_and_saves_before_it_navigates(source):
                   "window.top.location.href = top.pathname")
     assert "const payload = sendable(all);" in body
     assert "for (const c of payload) c.sent = 1;" in body
-    assert body.index("const persisted = save(all);") < body.index(
+    assert body.index("const persisted = save(all,") < body.index(
         "window.top.location.href")
     # And the payload is what crosses over — not the whole store.
-    assert 'params.set("claudeComments", JSON.stringify(payload));' in body
+    assert 'params.set("claudeComments", wire);' in body
     # The navigation URL is built from a RAW read of window.top's search, but
     # fused.params.set coalesces its history write (D99) — so the stamps may not
     # be in that string yet. Writing it back verbatim would undo them and
     # re-send the same comments next time; the persisted list is re-asserted.
     assert 'params.set("comments", JSON.stringify(persisted));' in body
-    assert "return arr;" in _block(source, "function save(arr, deletedIds) {",
+    assert "return arr;" in _block(source, "function save(arr, deletedIds, keep) {",
                                    "return arr;")
+
+
+def test_the_agent_never_sees_the_internal_sent_flag(source):
+    # `sent` is bookkeeping for the URL store. formatComments (claude template)
+    # hands the agent the raw JSON with every field intact and enumerates the
+    # fields by name, so a stamp serialized into the payload would show up as a
+    # mystery key for the model to reason about.
+    body = _block(source, 'document.getElementById("toclaude").addEventListener',
+                  "window.top.location.href = top.pathname")
+    assert body.index("const wire = JSON.stringify(payload);") < body.index(
+        "for (const c of payload) c.sent = 1;")
+
+
+def test_the_staleness_sweep_covers_every_param_the_top_url_carries(source):
+    # Re-asserting `comments` and `view` by hand missed offset/sheet: a reveal
+    # inside the 400 ms coalescing window would return the user to page 1 of a
+    # table/pdf. The sweep is the general fix — and it must only touch keys the
+    # top URL already has, so a pane-local param is never pushed onto the shell.
+    body = _block(source, 'document.getElementById("toclaude").addEventListener',
+                  "window.top.location.href = top.pathname")
+    assert "const live = fused.params.getAll();" in body
+    assert "for (const k of [...params.keys()]) {" in body
+    assert 'if (typeof live[k] === "string") params.set(k, live[k]);' in body
+    # Before the handoff params are written, so the sweep cannot revert them.
+    assert body.index("const live = fused.params.getAll();") < body.index(
+        'params.set("_mode", "claude");')
 
 
 def test_nothing_new_to_send_reports_in_the_bar_instead_of_navigating(source):
@@ -176,7 +202,7 @@ def test_a_sent_card_says_so(source):
 
 def test_eviction_drops_resolved_before_sent_and_never_an_open_comment(
         source, tmp_path):
-    fn = _block(source, "function evictTarget(arr) {", "\n    }")
+    fn = _block(source, "function evictTarget(arr, keep) {", "\n    }")
     pool = json.dumps([
         {"id": "open-oldest", "createdAt": 1},
         {"id": "sent-old", "createdAt": 2, "sent": 1},
@@ -197,9 +223,47 @@ def test_eviction_drops_resolved_before_sent_and_never_an_open_comment(
     assert got["left"] == ["open-oldest"]
 
 
+def test_a_comment_being_sent_is_never_the_eviction_victim(source, tmp_path):
+    # The save that STAMPS `sent` is also the save that can evict on it. With
+    # nothing resolved and the list sitting just under BUDGET, the stamp pushes
+    # it over, the sent tier is then the ENTIRE payload, and the oldest comment
+    # in the review gets deleted from the only store there is — silently, since
+    # the "removed" note lands in a bar the navigation destroys milliseconds
+    # later. Ids being sent right now are off-limits.
+    fn = _block(source, "function evictTarget(arr, keep) {", "\n    }")
+    arr = json.dumps([
+        {"id": "a", "createdAt": 1, "sent": 1},
+        {"id": "b", "createdAt": 2, "sent": 1},
+        {"id": "c", "createdAt": 3},
+    ])
+    got = _node(
+        fn.strip() + "\nconst arr = " + arr + ";\n"
+        # The whole sent tier is the payload being handed over right now.
+        "const sending = evictTarget(arr, new Set(['a', 'b']));\n"
+        # Same list, but 'a' rode an EARLIER handoff — then it is fair game.
+        "const earlier = evictTarget(arr, new Set(['b']));\n"
+        "console.log(JSON.stringify({ sending: sending && sending.id,"
+        " earlier: earlier && earlier.id, none: evictTarget(arr, new Set()) }));\n",
+        tmp_path)
+    assert got["sending"] is None  # nothing evictable → over-budget write kept
+    assert got["earlier"] == "a"
+    assert got["none"] == {"id": "a", "createdAt": 1, "sent": 1}
+
+
+def test_the_send_protects_its_own_payload_from_eviction(source):
+    body = _block(source, 'document.getElementById("toclaude").addEventListener',
+                  "window.top.location.href = top.pathname")
+    assert ("const persisted = save(all, undefined, "
+            "new Set(payload.map((c) => c.id)));") in body
+    # An over-budget write that keeps every comment is the accepted outcome —
+    # trading a live comment for a flag is not — and the send still proceeds.
+    assert body.index("const persisted = save(all,") < body.index(
+        'params.set("_mode", "claude")')
+
+
 def test_the_budget_loop_uses_that_order_and_still_stops(source):
-    body = _block(source, "function save(arr, deletedIds) {", "URL size limit")
-    assert "const oldest = evictTarget(arr);" in body
+    body = _block(source, "function save(arr, deletedIds, keep) {", "URL size limit")
+    assert "const oldest = evictTarget(arr, keep);" in body
     assert "if (!oldest) break;" in body  # an all-open list must not spin forever
     assert "resolved/sent" in body  # the bar note names both tiers now
 
@@ -226,6 +290,8 @@ const window = { top: {
              pushState: (s, t, u) => { seen.push(["pushState", u]); } },
   dispatchEvent: (e) => { seen.push(["event", e.type]); },
 } };
+// The pane's own window: `pagehide` is the runtime's documented flush hook.
+window.dispatchEvent = (e) => { seen.push(["self", e.type]); };
 """
 
 
@@ -276,11 +342,13 @@ def test_the_return_navigation_flips_the_mode_and_keeps_the_review(
         "_mode=claude&comments=%5B%7B%22id%22%3A%22c1%22%2C%22sent%22%3A1%7D%5D"
         "&view=markdown&session_id=abc&run=r-42&" + _LAYOUT,
         'returnToMode("annotate");'), tmp_path)
-    # navigateShell's idiom (history/template.html): pushState + fused:navigate,
-    # so the React shell re-routes in place instead of reloading the world.
-    assert [k for k, _ in seen] == ["pushState", "event"]
-    assert seen[1][1] == "fused:navigate"
-    url = seen[0][1]
+    # The runtime's coalesced history write is flushed first, then navigateShell's
+    # idiom (history/template.html): pushState + fused:navigate, so the React
+    # shell re-routes in place instead of reloading the world.
+    assert [k for k, _ in seen] == ["self", "pushState", "event"]
+    assert seen[0][1] == "pagehide"
+    assert seen[2][1] == "fused:navigate"
+    url = seen[1][1]
     assert url.startswith("/view/tmp/note.md?")
     assert "_mode=annotate" in url and "_mode=claude" not in url
     # The review survives verbatim — same comments, same sent stamps — and so do
@@ -296,25 +364,62 @@ def test_the_return_navigation_flips_the_mode_and_keeps_the_review(
 
 def test_only_the_comment_carrying_run_returns_and_only_when_it_succeeded(
         claude_source):
-    # An in-memory one-shot. A plain follow-up turn must stay in the chat, a
-    # failed/aborted run must stay put (nothing to go back and look at, and
-    # leaving would hide the error), and a run re-attached on a fresh boot has
-    # no ticket at all.
+    # The ticket is threaded, not latched. A plain follow-up turn must stay in
+    # the chat, a failed/aborted run must stay put (nothing to go back and look
+    # at, and leaving would hide the error), and a run re-attached on a fresh
+    # boot has no ticket at all.
     compose = _block(claude_source, "function composeAndSend(typed) {", "\n}")
-    assert "if (returnMode) pendingReturn = true;" in compose
-    # Armed inside the `attached.length` branch — never for a bare turn.
-    assert compose.index("if (attached.length)") < compose.index("pendingReturn = true")
+    assert "handoff = { mode: returnMode, comments: attached };" in compose
+    # Built inside the `attached.length` branch — a bare turn passes null.
+    assert compose.index("if (attached.length)") < compose.index("handoff = {")
+    assert "sendMessage(message, handoff);" in compose
 
-    poll = _block(claude_source, "async function pollLoop(run_id) {", "\n}")
-    assert "if (pendingReturn && !data.error) returnToMode(returnMode);" in poll
-    # Cleared however the run ended — including the catch path, which is why the
-    # reset lives in `finally` rather than next to the navigation.
-    tail = poll[poll.index("} finally {"):]
-    assert "pendingReturn = false;" in tail
-    assert poll.count("pendingReturn = false;") == 1
+    poll = _block(claude_source, "async function pollLoop(run_id, handoff) {", "\n}")
+    assert 'const returnTo = (handoff && handoff.mode) || "";' in poll
+    assert "if (returnTo && !data.error) returnToMode(returnTo);" in poll
 
     boot = _block(claude_source, "const returnMode =", ";")
     assert 'fused.params.get("claudeReturn")' in boot
+
+
+def test_a_run_that_never_started_leaves_no_ticket_and_hands_the_chips_back(
+        claude_source):
+    # The regression this replaces: the ticket was a module-scoped latch armed
+    # BEFORE sendMessage, and `if (error) throw` on a failed `agent.py start`
+    # never reaches pollLoop — the only place that cleared it. The user's next,
+    # unrelated question then navigated the shell away mid-thread, for a run that
+    # carried no comments, while annotate had already stamped them `sent`.
+    assert "pendingReturn" not in claude_source, (
+        "the return ticket must stay an argument — a module-scoped latch "
+        "outlives the send that armed it")
+    send = _block(claude_source, "async function sendMessage(message, handoff) {",
+                  "\n}")
+    # Bound to a run id: armed only once `start` handed one back.
+    assert "let started = false;" in send
+    assert send.index("started = true;") > send.index('if (error) throw')
+    assert send.index("started = true;") < send.index("await pollLoop(run_id, handoff)")
+    # And the comments are not silently consumed by a run that never ran.
+    assert "if (!started && handoff) {" in send
+    assert "attached = handoff.comments;" in send
+    assert "renderAttachments();" in send
+    assert "were not sent" in send  # the user is told, rather than left guessing
+
+    # A resumed run gets no second argument, so it can never return.
+    resume = _block(claude_source, "async function resumeRun(run_id) {", "\n}")
+    assert "pollLoop(run_id)" in resume
+    assert "handoff" not in resume
+
+
+def test_the_return_flushes_the_runtimes_pending_history_write_first(
+        claude_source):
+    # returnToMode reads location.search RAW and then pushState()s. A history
+    # write the runtime is still coalescing (D99) would both be missing from the
+    # string it copies forward (a pending session_id) and, worse, land AFTER our
+    # push — replaceState-ing the pre-return search over the entry we just made.
+    fn = _block(claude_source, "function returnToMode(mode) {", "\n}")
+    flush = fn.index('dispatchEvent(new Event("pagehide"))')
+    assert flush < fn.index("top.location.search")
+    assert flush < fn.index("top.history.pushState")
 
 
 def test_annotate_is_what_sets_the_ticket(source):
