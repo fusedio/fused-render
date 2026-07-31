@@ -382,18 +382,47 @@ def _require_supported_bundle(version: object) -> None:
         )
 
 
-def _verify_digest(payload: bytes, expected: str | None) -> None:
-    """Check downloaded bytes against the digest the inventory stated.
+def _digest_from_etag(etag: str | None) -> str | None:
+    """The `sha256:<hex>` digest an `ETag` header carries, or None if it carries none.
+
+    Parsed, not string-matched, because the header's own grammar is not the JSON spelling: RFC
+    9110 §8.8.3 defines an entity-tag as a **quoted** opaque string, optionally prefixed `W/`
+    for a weak validator. So the compliant value is `"sha256:<hex>"` — with the quotes — and a
+    client matching on a bare `sha256:` prefix silently accepts every archive from a
+    standards-compliant host, which is the exact bug this function exists to make impossible.
+    Both spellings are accepted: the quotes are what a correct emitter (and any intermediary
+    that normalises the header) sends, and the bare form is what an early build of the serve
+    path sent.
+
+    A weak validator is unwrapped too rather than refused: if a proxy transformed the body, the
+    digest simply will not match and the caller refuses — the safe direction — whereas ignoring
+    `W/` would skip the check entirely on a value that is very likely still exact.
+
+    Anything else — an opaque tag a CDN substituted, a digest algorithm this build does not
+    know — returns None, which the caller treats as "cannot verify" rather than "verification
+    failed". That asymmetry is deliberate: refusing on an unparseable header would make a
+    proxy's ETag rewrite look like an attack and block valid clones.
+    """
+    if not etag:
+        return None
+    value = etag.strip()
+    if value.startswith(("W/", "w/")):
+        value = value[2:].strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        value = value[1:-1]
+    return value if value.startswith("sha256:") else None
+
+
+def _verify_digest(payload: bytes, etag: str | None) -> None:
+    """Check downloaded bytes against the digest the host published in its `ETag`.
 
     Cheap, and it converts the one failure mode a size check cannot catch — bytes that arrived
-    complete but wrong — into a clear refusal instead of a corrupt page in the workspace. Only
-    `sha256:` is understood; an unrecognised algorithm is treated as no digest rather than as a
-    failure, so a future algorithm cannot make this client reject valid clones.
+    complete but wrong — into a clear refusal instead of a corrupt page in the workspace.
     """
-    if not expected or not expected.startswith("sha256:"):
+    expected = _digest_from_etag(etag)
+    if expected is None:
         return
-    actual = f"sha256:{hashlib.sha256(payload).hexdigest()}"
-    if actual != expected:
+    if f"sha256:{hashlib.sha256(payload).hexdigest()}" != expected:
         raise CloneError(
             "the download did not match the checksum the page published — it may have been "
             "corrupted or altered in transit; try again"

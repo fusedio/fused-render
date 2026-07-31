@@ -678,7 +678,7 @@ def test_a_download_matching_its_checksum_imports(h):
     assert os.path.isfile(resp.json()["page"])
 
 
-@pytest.mark.parametrize("etag", [None, '"opaque-etag"', "md5:abc"])
+@pytest.mark.parametrize("etag", [None, '"opaque-etag"', "md5:abc", '""', '"'])
 def test_an_absent_or_unrecognised_digest_does_not_block_an_import(h, etag):
     # An older host sends no ETag, and a proxy may send an opaque one. Treating either as a
     # failure would make this client reject valid clones — the digest strengthens the import
@@ -688,6 +688,52 @@ def test_an_absent_or_unrecognised_digest_does_not_block_an_import(h, etag):
         "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
     )
     assert resp.status_code == 200, resp.json()
+
+
+@pytest.mark.parametrize(
+    "etag",
+    [
+        '"sha256:{d}"',  # the compliant spelling: RFC 9110 §8.8.3 entity-tags are quoted
+        "W/\"sha256:{d}\"",  # weak validator — unwrapped, since the digest still decides
+        'w/"sha256:{d}"',  # ...case-insensitively, per the grammar's tolerance in the wild
+        "sha256:{d}",  # the bare form an early build of the serve path emitted
+        '  "sha256:{d}"  ',  # header whitespace
+    ],
+)
+def test_every_spelling_of_a_published_digest_is_actually_checked(h, etag):
+    """The bug this guards: a QUOTED tag matched against a BARE prefix parses as "no digest",
+    so verification is skipped and a mismatched archive imports while reporting success.
+
+    Each spelling is asserted to reach a *verdict* — a wrong digest must be refused — because
+    "the import succeeded" proves nothing here: it is exactly what a skipped check looks like.
+    """
+    wrong = "0" * 64
+    h.serve(archive=_bundle_zip(), etag=etag.format(d=wrong))
+    resp = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert resp.status_code == 400, f"verification skipped on {etag!r}"
+    assert "did not match the checksum" in resp.json()["error"]
+
+    # ...and the same spelling with the RIGHT digest imports.
+    archive = _bundle_zip()
+    h.serve(archive=archive, etag=etag.format(d=hashlib.sha256(archive).hexdigest()))
+    ok = h.client.post(
+        "/api/clone-app", json={"src": "https://open.fused.io/my-link"}, headers=FUSED
+    )
+    assert ok.status_code == 200, ok.json()
+
+
+def test_the_compliant_etag_the_serve_path_emits_is_the_one_we_parse():
+    """Pins the exact wire spelling `fused`'s `clone_etag` produces (its own suite asserts the
+    same literal), since this repo cannot import it — the viewer runs with no `fused` installed.
+    A drift on either side silently disables verification rather than failing loudly."""
+    payload = b"archive-bytes"
+    emitted = f'"sha256:{hashlib.sha256(payload).hexdigest()}"'
+    assert app_clone._digest_from_etag(emitted) == f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    app_clone._verify_digest(payload, emitted)  # no raise
+    with pytest.raises(app_clone.CloneError, match="did not match the checksum"):
+        app_clone._verify_digest(payload + b"x", emitted)
 
 
 def test_a_download_that_is_not_a_zip_is_refused(h):

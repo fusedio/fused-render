@@ -1203,7 +1203,10 @@ working, not a second opinion about the format.
   megabytes move, and the archive's own declared bundle version is the **enforcing** gate — a
   bare `POST /api/clone-app` fetches no inventory, so a check that lived only there would be no
   gate at all. The bytes are then checked against the digest the host published as the
-  download's `ETag` — bytes that arrive complete but wrong are the one failure a length check
+  download's **quoted** `ETag` (`"sha256:<hex>"`, RFC 9110 §8.8.3) — parsed, not string-matched,
+  because matching the bare form against a compliant quoted value reads as "no digest" and skips
+  the check silently; an unparseable tag (a proxy's opaque rewrite) means *cannot verify* rather
+  than *failed*, so it does not block valid clones — bytes that arrive complete but wrong are the one failure a length check
   cannot see, and this makes "importing is deterministic" something we confirm instead of
   assume. An absent or unrecognised digest is a weaker guarantee, not an error. Separately, the
   *fetch* gets modest hardening because only a URL the user pasted is ever fetched and this
