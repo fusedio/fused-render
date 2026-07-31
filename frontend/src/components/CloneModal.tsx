@@ -32,9 +32,9 @@ export interface CloneModalProps {
   // Called with the cloned page's /view path so the caller can navigate to it — the modal
   // never navigates itself (the shell owns routing).
   onCloned: (result: CloneResult) => void;
-  // Prefilled URL — the path bar passes the link the user pasted (§34 CL-1), and it is
+  // Prefilled URL — the path bar passes the link the user pasted (§35 CL-1), and it is
   // auto-previewed below. The `fused-render://open?app=…` deep link that would also supply
-  // it is DEFERRED (§34 CL-7), so no OS-level link routes here today.
+  // it is DEFERRED (§35 CL-7), so no OS-level link routes here today.
   initialSrc?: string;
 }
 

@@ -372,6 +372,17 @@ def test_calls_effective_state_matches_the_stored_prefs_when_unforced(tmp_path, 
     the effective pair diverge from the writer when no override is present."""
     monkeypatch.delenv("FUSED_RENDER_CALLS", raising=False)
     monkeypatch.delenv("FUSED_RENDER_CALLS_RETENTION_DAYS", raising=False)
+    # `calls._prefs_cache` is a module-global with a TTL, so deleting the env vars
+    # above is not enough: a warm entry a test earlier in this xdist worker left
+    # behind (populated WHILE an override was set — and `store`'s monkeypatched
+    # reset restores the pre-test value on teardown, so it can even be
+    # resurrected) answers here from the old verdict and `effective_enabled`
+    # diverges from the stored pref. The sibling test below already invalidates
+    # for exactly this reason; this one did not, which made it fail only on
+    # whichever worker happened to schedule a calls test before it. Found while
+    # merging — it is an order-dependent flake in the suite, not a merge defect.
+    from fused_render import calls as call_log
+    call_log.invalidate_prefs_cache()
     client, _ = _client(tmp_path, monkeypatch)
 
     calls = client.get("/api/prefs").json()["calls"]

@@ -539,7 +539,7 @@ export default function App({ config }: { config: Config }) {
       <NotificationHost />
       {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
           from the Apps page; the modal is mounted HERE so both reach one flow — Home and
-          Apps render without the sidebar, so it cannot live there (SPEC §34 CL-1). */}
+          Apps render without the sidebar, so it cannot live there (SPEC §35 CL-1). */}
       {!IS_EMBED && <CloneAppHost />}
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>

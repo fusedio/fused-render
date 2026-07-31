@@ -1,4 +1,4 @@
-// Opening a deployed app (SPEC §34) is requested from several places and rendered in ONE:
+// Opening a deployed app (SPEC §35) is requested from several places and rendered in ONE:
 // the path bar (a pasted https:// link) and the Apps page both fire this event, and
 // `CloneAppHost` — mounted at the shell, beside NotificationHost — owns the modal.
 //

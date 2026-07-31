@@ -532,7 +532,7 @@ Write surfaces are decentralized (the code editor via `/api/fs/write`; the sqlit
 
 - **RO-1** `/api/fs/stat` (and `/api/fs/write`'s stat-shaped response) carries `writable`: an existing path needs `W_OK` on itself, a not-yet-existing file needs `W_OK` on its parent. The flag means exactly "`/api/fs/write` would accept this path" — the two must never disagree.
 - **RO-2** `/api/fs/write` refuses a non-writable target with `403 {"error": "readonly"}`. This closes the atomic-write loophole: temp-file + `os.replace` goes through the parent directory and would otherwise silently overwrite a `chmod -w` file. `runtime.js` `writeFile` surfaces the refusal as a typed error (`err.type === "readonly"`), mirroring the 409 `"conflict"` case — the backstop for a template that never checked the flag.
-- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error.
+- **RO-3** Any template-side Python **writer** applies the same gate itself (`os.access(file, W_OK)` → `PermissionError`) before writing, for the same reason: writers that rewrite via `os.replace` (duckdb, annotate's sidecar, `shared/file_history.py`'s revert — §34/FH-7) bypass the read-only bit, and ones that don't (sqlite) fail late with an unhelpful mid-transaction error. The two `os.replace` writers that also consult the mount flag through `shared/appenv` (annotate's `_sidecar_writable`, `file_history.file_writable`) are the exception RO-8's known gap notes; `file_writable` additionally requires `W_OK` on the **directory**, since that is where mkstemp and the replace both land.
 - **RO-4** Template **readers** fold fs writability into the editability verdict they already return — `editable` + `readonly_message` (short badge text) + `readonly_tooltip` (hover explanation). Filesystem read-onlyness is just one more reason alongside content-level ones ("View", "No rowid", "JSON"); the fs gate wins over a content-level "editable".
 - **RO-5** UI treatment is shared: `/template-shared/ro-badge.js` (`fusedRoBadge.update(el, message, tooltip)`) renders the identical badge in every template with an edit surface. The code editor derives its verdict from `stat.writable` (no Python reader) and locks the CodeMirror buffer; the grids disable editing per their reader's verdict.
 - **RO-6** Read-only never blocks *viewing*, and a template whose write target differs from the viewed file gates on ITS target: annotate checks the `<file>.json` sidecar (a `status` action), keeps commenting fully functional (the URL is the live store), and only warns that history won't be recorded.
@@ -806,6 +806,21 @@ hook — before reading the URL and pushing its entry, so a pending write neithe
 goes missing from the copy nor lands *after* the push and `replaceState` the
 pre-return search over it. Known gap: the return discards whatever the user had
 typed into the chat input when it fires.
+
+**Revert + version timeline** (§34, D194) is the one surface in this template
+that is not about comments: a footer block in the sidebar offering "Revert last
+change" plus an expandable list of every checkpoint Claude Code holds for the
+target, each individually restorable behind a confirm sheet. It is its own footer
+rather than part of `#sidefoot`, which is hidden wherever the file has no
+`claude` mode — reverting has nothing to do with whether a chat view exists.
+`annotate.py` gains three actions (`history`, `revert_plan`, `revert`) over
+`../shared/file_history.py`; all the store semantics, the safety gates and the
+degradation rules live in §34, and everything there is deliberately
+annotate-agnostic so `claude` and `history` can adopt the same reader. Its own
+panel state (disclosure, last outcome) deliberately stays OUT of the URL
+(§34/FH-15), which is also why the round-trip's D99 staleness sweep above has
+nothing of the revert panel's to carry forward or revert: the two features share
+this template's sidebar but not one byte of its param surface.
 
 ## 18. Export — Portable Bundles for Hosted Serving (M10)
 
@@ -1251,7 +1266,7 @@ the product gains network access.
   ends in its own token reveals the base for all the rest (`_serve_base_url`).
   With no recorded link to derive from (e.g. only AWS deploys so far), URLs
   stay null and the cell says why on hover.
-- **DP-19** *Cloning* (§34): the dialog's "Let viewers clone this app" toggle rides
+- **DP-19** *Cloning* (§35): the dialog's "Let viewers clone this app" toggle rides
   `POST /api/deploy` as `allow_clone` and becomes `--allow-clone` on `share create` /
   `--allow-clone`/`--no-allow-clone` on `share repoint`. Persisted on the pointer record
   like `cache_max_age`, but the MOUNT is the authority: `GET /api/deploy/status?reconcile=1`
@@ -1272,7 +1287,7 @@ the product gains network access.
   (click's `Error: ` prefix stripped) — the fused CLI's messages already name
   the fix (`fused cloud login`, `fused infra serve`, …).
 
-## 34. Open a Deployed App — Clone a Page Back from its URL (D194)
+## 35. Open a Deployed App — Clone a Page Back from its URL (D196)
 
 The viewer half of app cloning; the publisher half is the Deploy dialog's toggle (DP-19).
 Paste a deployed page's URL, and if its publisher allowed cloning, download its export
@@ -3844,3 +3859,412 @@ that path. Offered for **both** directories and text-ish files, always as a
   fetches or writes anything. `GIT_OPTIONAL_LOCKS=0` says so to git as well: it
   will not even take a lock to answer a question. Anything that mutates a
   repository belongs to a terminal.
+
+**See also §34** (`file_history`), the other history view. It is complementary
+rather than an alternative: this one reads the repository's commit graph and never
+writes; that one reads Claude Code's per-edit checkpoints — which exist for files
+in no repository at all, and for edits made since the last commit — and can put
+content back. FH-1 states the split from the other side.
+
+## 34. File History — Revert from Claude Code's Checkpoints (D194, D195)
+
+Goal: give a template view an **undo for the agent's edits**, with no version
+control involved. Claude Code already writes a full copy of every file it is
+about to change; this reads that store, presents the file's version timeline,
+and restores from it. Wired into `annotate` first (§17); the reader is shared so
+`claude` and `history` can adopt it.
+
+**Two history views, and which one answers your question.** §33's `git` view and
+this one sit next to each other in the mode list and are **complementary, not
+alternatives** — the distinction is *whose* history you are asking about. `git`
+answers "what happened to this path in this repository": commits, uncommitted
+changes, diffs, everything a human or a tool ever committed, over the whole
+recorded life of the file — and it is read-only, by design (GT-11). This one
+answers "what did this file look like before the agent last touched it", which is
+a strictly narrower and much younger window, and it is the only one of the two
+that can put content BACK. So they differ on both axes: scope (a repository's
+commit graph vs one agent's per-edit checkpoints) and capability (read vs
+restore). Two consequences worth stating, because they are the reason neither
+subsumes the other: `git` has nothing to say about a directory that is not a
+repository, or about edits made since the last commit — which is exactly the
+window this feature exists for; and this one has nothing to say about anything
+Claude Code did not do, including the user's own saves (FH-6), which is exactly
+what `git` is for. A reviewer wanting "undo the agent" wants this; a reviewer
+wanting "what has this file been through" wants §33.
+
+- **FH-1** **The store, and why it is the authority instead of git.** Content
+  lives at
+  `<claude-config-dir>/file-history/<sessionId>/<sha256(abspath)[:16]>@v<N>`,
+  where each `@vN` is a **full copy** of the file at a checkpoint, never a diff.
+  `<claude-config-dir>` is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`,
+  resolved through `expanduser` on a `join` rather than a literal `"~/.claude"`
+  (this package ships a `windows/` dir, and a hardcoded forward slash survives
+  `expanduser` unchanged there and then never matches a normalized path). Git
+  answers "what did the last commit say"; this answers "what did this file look
+  like before the agent touched it", which is the question a reviewer sitting in
+  a view actually asks — and it has an answer in a directory that is not a
+  repository at all, which git does not. The two are complementary, not
+  alternatives; a separate git-backed template is its own work.
+- **FH-2** **Enumeration is filesystem-only, because the filename key is a pure
+  function of the path.** The hash is verified as `sha256` of the **absolute**
+  path truncated to 16 hex chars (13/13 files of a real session), so one file's
+  entire timeline is `<history-root>/*/<hash>@v*` — no transcript parsing on the
+  render path. That is the whole reason this is cheap enough to call on a view
+  boot: the session transcripts reach **5 MB+** each and reading one per render
+  would be a performance trap. `abspath` is load-bearing, not cosmetic: a
+  relative path hashes to something the store never heard of, so the lookup
+  would silently find nothing rather than fail.
+- **FH-3** **Versions are checkpoints, not per-edit pre-images, and undo is
+  POSITIONAL: find where disk sits in the chain, then step backwards.** Two
+  wrong rules were ruled out, in order, and both matter.
+
+  *"Restore the highest `@vN`"* is wrong roughly half the time. Measured on a
+  real session: 6 of 13 files matched their highest version, 7 did not, because
+  the file moved on after the last checkpoint. Restoring the highest N would
+  frequently be a no-op that reads as a broken button.
+
+  *"The newest version whose content differs from disk"* replaced it, and is the
+  sharper lesson: it reads as obviously correct, survived two reviews, and
+  **oscillates on the second press**.
+
+      disk == v3  ->  v3 differs=False, v2 differs=True  ->  target v2
+      disk == v2  ->  v3 differs=True and is newest      ->  target v3
+
+  ...for ever, with v1 unreachable at any point. It answers "which checkpoint is
+  most recent and isn't what I have", which is not what undo means.
+
+  The rule is therefore positional-then-differs, over the newest-first list:
+  **(1)** `position` = index of the **newest** entry whose content equals disk
+  (newest, not oldest: with duplicate content on both sides of a real checkpoint,
+  walking from the oldest match steps straight over it). **(2)** target = the
+  first entry **older** than `position` that still **differs** from disk — the
+  differs-check stays inside the walk rather than taking `position + 1`, because
+  identical adjacent versions are common and restoring one writes the same bytes
+  back. **(3)** `position == -1` (disk is in no checkpoint at all) means the first
+  step back is "discard to the most recent checkpoint": target = entry 0. This is
+  the same index that yields `unique_current`, derived once so the two can never
+  disagree. **(4)** no such older entry ⇒ `at_earliest`, a distinct terminal state
+  that DISABLES the button and says why — falling back to something newer is
+  exactly what made the previous rule a toggle. Result: `v3 → v2 → v1 → delete →
+  disabled`, monotonic, whole chain reachable. "Redo" needs no new UI, because
+  the timeline already lets the user click a newer row explicitly; that asymmetry
+  is right for a button labelled "Revert last change".
+
+  `differs` is a byte comparison per version. An ABSENT file makes every content
+  version differ — which is what gives "the agent deleted my file" an undo — while
+  making a did-not-exist boundary MATCH, so the walk terminates there instead of
+  offering a delete that would do nothing.
+
+  Presentation follows the rule but does not duplicate it: the dot column has
+  exactly **two** states — `●` in the neutral foreground for the current position,
+  `○` muted for everything else — and the revert target is **row treatment** (an
+  accent left-stripe plus wash, with the stripe's width reserved as a transparent
+  border on every row so marking nothing reflows nothing). Three glyphs over three
+  colours was the first attempt and read as noise: `◉` and `●` are barely
+  distinguishable at 11px, and the two facts are unrelated — the dot answers
+  "where are you", the stripe answers "what does the button do", so they belong in
+  different visual channels. It also means `at_earliest` needs no fourth marker:
+  `revert` is null, so no row is striped, and "no accent anywhere" already reads
+  as "nothing to go back to". The position row is exempted from the
+  identical-to-disk dimming, since dimming the one row the marker exists to
+  emphasise defeats it.
+
+  `at_earliest` may only be claimed by an **enriched** scan (FH-5). The boot
+  timeline skips the transcripts, cannot see the creation boundary, and so reports
+  it one step early; a view that believed it disabled the button on a file whose
+  remaining step back was a delete the plan would have offered. The unenriched
+  answer is provisional (`enriched: false` on the payload) and the click asks
+  `revert_plan`, which always enriches and is the authority.
+- **FH-4** **Chains are per-session and version numbers collide, so the timeline
+  merges on TIME.** A path edited across several sessions has a separate chain
+  under each `<sessionId>/`, and N **restarts**: two sessions both holding a
+  `@v2` for one path is ordinary, not an edge case. Order is the backup file's
+  mtime, with N only as a tiebreak *within* a session, never across. A version is
+  therefore identified by the **pair**, surfaced as one opaque id
+  (`"<session>@v<N>"`), and the row's tooltip names the session because that is
+  the only thing distinguishing two rows that both say `v2`.
+- **FH-5** **A null `backupFileName` means the file did not exist, so reverting
+  across it is a DELETE.** Not a restore of empty content, which would leave a
+  zero-byte file the agent never created. The filesystem cannot represent "no
+  content", so this fact lives only in the transcript
+  (`<config>/projects/<cwd with / -> ->/<sessionId>.jsonl`, records of type
+  `file-history-delta` / `file-history-snapshot`) and arrives only through
+  **opt-in enrichment**: the view's boot call does not read transcripts, and only
+  an expanded History panel pays for one. Three guards keep that affordable and
+  quiet — a byte cap checked by `stat` before anything opens; a per-line
+  **substring prefilter** so `json.loads` runs on the handful of candidate lines
+  rather than the file (a 5 MB transcript becomes a 5 MB `in` scan); and a
+  blanket except per transcript, so corrupt/truncated/half-written degrades to
+  "no extra rows", never to an error. Transcripts are reached by a **glob** on
+  `projects/*/<sessionId>.jsonl`, not by deriving the slug: the slug is the cwd
+  with separators replaced, which is lossy (a directory name containing `-` is
+  indistinguishable from a separator) and was never evidence of anything.
+
+  **Attribution is an identity test on the record's absolute `realParentDir`, not
+  a path suffix** — `join(realParentDir, basename(trackingPath)) ==
+  abspath(target)` — and this is the sharpest correctness rule in the feature.
+  `trackingPath` is repo-relative and this code has no idea what the repo root is,
+  so the original suffix match had no project attribution at all: `src/main.py`,
+  `README.md` and `index.ts` recur across every checkout on the disk, so an
+  unrelated project that CREATED its own `src/main.py` injected a boundary row
+  into this file's timeline — and since boundary rows sort by the transcript's own
+  timestamp it was typically the newest entry, hence the revert target, turning
+  "Revert last change" into a **DELETE of a file the agent never created**, behind
+  a confirm sheet asserting "Claude created it" about a file it had never seen. A
+  record with no usable `realParentDir` is **refused**, never guessed: the cost of
+  refusing is one missing row, the cost of guessing is deleting the wrong file.
+  Such a row carries its own record's timestamp —
+  never a neighbouring row's; verified on a real chain where the creation
+  boundary's `backupTime` is nine minutes before the next checkpoint's and only
+  *looked* duplicated at display granularity — and when that stamp will not parse
+  the view renders "time unknown" rather than 1970. It also wears its own version
+  number (the creation boundary is `version: 1` in a real store), so it is
+  numbered like every row below it with "did not exist" as the annotation
+  explaining what restoring it does; a dash appears only for a record with no
+  usable number, since `v0` would invent a version the store never wrote. Its id
+  is `"<session>@none<N>"`, which keeps it distinct from a content `@vN` that
+  shares the number.
+- **FH-6** **Strictly read-only with respect to the Claude config dir.** Nothing
+  writes, moves or unlinks anything under it, ever: it is the user's live edit
+  history and this is a guest in it. Asserted as a **whole-tree byte snapshot**
+  across every action rather than per call, so a write added anywhere later trips
+  the test. A corollary accepted deliberately: the user's own annotate saves are
+  not checkpointed by anyone, so they are **not revertible** — this reverts the
+  agent's edits, and only those.
+- **FH-7** **The one write is to the target, gated and atomic.** `file_writable`
+  is the same three-part gate as `annotate.py::_sidecar_writable` (RO-3, RO-6):
+  the read-only-mount check FIRST, through `shared/appenv`'s env contract, because
+  `os.access(W_OK)` **lies** under a read-only mount with CacheMode=full — the
+  write lands in the local VFS cache and only 403s at the async upload; then W_OK
+  on the **directory** (mkstemp and the replace both land there — this half the
+  sidecar's gate does not need and a replace does); then W_OK on the file itself
+  when it exists, since `os.replace` goes through the directory and would
+  otherwise blow past a `chmod -w`. The write is mkstemp + `os.replace` in the
+  target's own directory — atomic, never cross-device — and carries an existing
+  file's mode onto the replacement, because a fresh mkstemp is 0600 and a revert
+  has no business changing permissions.
+- **FH-8** **Path confinement is a matching problem, not a sanitizing one.** The
+  selector a client sends is an **opaque id matched against the enumerated
+  timeline** and never joined into a path, so an id carrying `..`, separators or
+  an absolute prefix has nothing to traverse — it simply resolves to no entry.
+  Every path opened is one this code built itself from (history root, a session
+  dir it listed, a hash it derived). And a restore may only touch a path the
+  store **already has a version for**, which is the only target guard available
+  to a module that cannot see the view: a crafted `file` param reaches nothing
+  the agent never edited. Directory targets are refused outright, and so are
+  **symlinks**: `os.replace` swaps the LINK for a regular file rather than
+  writing through it, so a "successful" revert left the real file untouched with
+  its pre-revert content while the stash captured a file that was never
+  overwritten. Refusing is chosen over `realpath`-ing first, deliberately — the
+  store's key is the sha256 of the path the VIEW opened, so following a link
+  would revert a path whose own timeline is a different chain, and silently
+  editing a file the user did not name is worse than declining to.
+- **FH-9** **A confirm step is mandatory, because the content it overwrites is
+  often the only copy.** Current on-disk bytes are frequently in NO checkpoint
+  (FH-3), so a naive restore vaporizes work with no undo — the sharpest hazard in
+  the feature. The plan payload reports `unique_current` (no version holds what is
+  on disk) and the view gates an explicit warning on it, alongside byte counts,
+  line counts and the line delta, before any write.
+
+  **The plan also reports whether a stash will actually be kept** (`stash`,
+  `stash_note`), computed by the same predicate the write runs — a stat, a decode
+  and an access, so there is no reason for the sheet not to know. Without it the
+  sheet carried a permanent hedge ("a copy is kept ... unless too large or not
+  text"), which made the one genuinely unrecoverable combination —
+  `unique_current` AND no stash — read exactly like the safe case; the write then
+  destroyed the only copy and the user learned about it in the past tense, beside
+  "Reverted to v3". That combination now gets **stronger wording plus a button that
+  says what it does** ("Overwrite permanently" / "Delete permanently") rather than
+  merely "Revert". It briefly also required a tick-to-confirm before the button
+  enabled; the owner removed that as friction, so the confirm button is enabled
+  unconditionally and the escalated warning is the **only** thing between the
+  click and unrecoverable loss — which is why it carries real visual weight in
+  that case instead of reading as a footnote. Note this is a UI-side signal only:
+  the bridge's `confirm_unique` token below is a separate mechanism, derived from
+  the plan and never from any widget state, so removing the tick did not weaken
+  the programmatic guard at all.
+
+  **The bridge enforces the gate too, not just the page.** `revert` requires the
+  plan's `id` echoed back (also a freshness check — a plan built against one disk
+  state and applied against another is how a user confirms one diff and gets
+  another) and an explicit `confirm_unique` when the plan set `unique_current`,
+  refusing as data otherwise. The previous guard was a source grep asserting one
+  `action: "revert"` call site, which pins today's template rather than the bridge,
+  so any future second caller inherited an unguarded file-destroying entry point.
+
+  The delta is stated as **what
+  the restore does** — lines it introduces, lines it takes away — because that is
+  the number a confirm step has to show; the reverse framing reads identically on
+  symmetric edits and lies on every asymmetric one. Above a byte cap, or for
+  content that is not UTF-8, the delta degrades to net counts (or none) and
+  **says it is inexact** rather than implying a diff nobody computed: difflib is
+  quadratic in the worst case and a timeline renders every version.
+- **FH-10** **Second line of defence: the pre-restore content is stashed in the
+  target's own `<file>.json` sidecar**, under `revertStash`, through the same
+  read-merge-write `annotate.py` already uses — so `claudeSessions`,
+  `bookmarkHistory`, `comments` and every other unowned key round-trip. Never
+  into the Claude dir (FH-6). Bounded to a few entries and skipped above a byte
+  cap or for non-text content, because the sidecar is a small JSON file three
+  other writers rewrite constantly, not a version store — `file_history` already
+  is one. A skip is **reported** (FH-9) so the confirm step can escalate rather
+  than silently losing the net, and a revert the user confirmed — having been told
+  whether a copy would be kept — is never then blocked by a sidecar that could
+  not be written.
+
+  The stash is **byte-faithful**: the target is read in BINARY and decoded
+  explicitly, and the recorded `size` is the byte count. Text mode applied
+  universal-newline translation, so a CRLF file stashed as LF — the recovered
+  content was not the bytes that were destroyed, and it disagreed with the `size`
+  stored beside it. This package ships a `windows/` dir, so CRLF is a live case,
+  not a hypothetical. Each of the three refusals (too large, unreadable, not
+  UTF-8) is reported separately and truthfully; folding an EACCES into "not UTF-8
+  text", or a `getsize` failure into "nothing on disk to stash" (which reads as
+  "the file is absent"), describes a fixable machine problem as a fact about the
+  content.
+- **FH-11** **Every failure crosses the bridge as data.** Anything raised out of
+  a template's `main` becomes the red traceback overlay, and "no store on this
+  machine", "no versions for this file", "already matches the latest checkpoint",
+  "read-only mount", "stale version id" are all ordinary states of this surface.
+  So each is an `{"error": ...}` or `{"ok": false, "error": ...}` dict, and the
+  timeline payload carries its own `note` for the empty states. A missing store
+  entirely hides the panel — that is "this feature does not apply here", not an
+  empty state worth chrome — while a store that exists and holds nothing for
+  *this* file gets a line of text, because there the absence is a fact about the
+  file. Unreadable session dirs, stray non-directories in the history root and
+  malformed `@vN` filenames are skipped, never fatal; only the exact decimal form
+  the store writes is accepted, so `@v01` stays invisible rather than becoming a
+  second, ambiguous "version 1".
+
+  Two distinctions inside that, both of which were collapsed at first. An
+  **unreadable** store or session dir is NOT the same as an empty one: it is
+  reported with its path and errno, because `chmod` is actionable and "no versions
+  for this file" sends the user looking at the wrong thing. And a **missing**
+  `appenv` degrades to the pure `os.access` rule (there is no flag to consult),
+  while a read-only-mount probe that RAISES fails **closed** — a blanket
+  `except Exception` around the call re-opened exactly the incident the probe
+  exists for, letting a malformed `FUSED_RENDER_RO_MOUNTS` fall through to the lie,
+  report `ok: true`, and surface the 403 later at an async upload this UI never
+  sees.
+- **FH-12** **It lives in `templates/shared/file_history.py`, stdlib-only, and
+  is reached by `sys.path`, not by importing the package.** Same reason
+  `appenv.py` sits beside it: a template child under the fused engine has **no
+  PYTHONPATH**, so `import fused_render...` always fails there — which is exactly
+  why `annotate.py` reaches appenv this way. A `fused_render/file_history.py`
+  would be unreachable from the only place that needs it. A copy of a template
+  folder taken without its `shared/` sibling degrades to "revert not offered",
+  the same shape appenv already has.
+- **FH-13** **Non-goals.** No writing to the store, no restoring the store
+  itself, no per-hunk revert, and no reconstruction of what an individual edit
+  changed — the store holds checkpoints, not edits (FH-3), so a per-edit undo is
+  not derivable from it. The `claude` and `history` templates adopting the reader
+  is later work; nothing here is annotate-specific except the UI.
+- **FH-14** **A dropped version is surfaced, and it BLOCKS the automatic choice.**
+  A version that cannot be read (or stat'd) is excluded from the timeline, and
+  under the positional rule an exclusion moves both where the walk starts and
+  where it lands — so it cannot be a silent `continue`. Every drop is recorded in
+  `skipped` with its path, reason and errno and named in the payload's `note`; and
+  when a skip sits at or newer than the chosen target (or its own time is unknown,
+  so its place in the chain is unknowable), `revert_plan` **refuses** rather than
+  walking to a different point in history and presenting it as "the last change".
+  Older skips are deliberately harmless *when a target exists*: one unreadable
+  ancient checkpoint must not cost the user their undo. An **explicitly chosen**
+  row is never blocked — the user named that version, so there is nothing to guess.
+
+  When there is **no** target, every skip blocks, and that is not the same
+  situation wearing the same message. "No target" means the walk found nothing
+  older that differs — and a version it could not read is precisely a candidate for
+  the older differing entry it did not find, so there is no subset of skips that
+  could not matter. Claiming `at_earliest` from a scan with a hole in it would
+  assert terminality that cannot be proved, the same class of error as the
+  oscillating rule: a confident answer from an incomplete read. So the state is
+  reported as **`unconfirmed`**, distinct from `at_earliest` and mutually exclusive
+  with it — the first is a fact ("there is nothing older"), the second an admission
+  ("whether there is anything older is unknown") — and it gets its own wording
+  rather than the misleading "the last change cannot be identified", which
+  describes the target-exists case. Both are equally terminal for the button:
+  `unconfirmed` is a STABLE state that would refuse identically on every press, so
+  the panel disables the button and shows the reason instead of leaving a live
+  control whose only behaviour is to reproduce the same error. One `_selection`
+  helper computes position, target, `at_earliest`, `unconfirmed` and the blocking
+  set for both `timeline` and `revert_plan`, so the panel and the plan cannot
+  disagree about what the button will do.
+- **FH-15** **The panel's disclosure state and the last outcome survive the
+  post-revert reload, through `sessionStorage` keyed by the target path.** A
+  successful revert changes the file, so the shell's own fs-event watch reboots the
+  whole preview — which left the panel collapsed with the outcome discarded, so a
+  revert that worked looked like nothing had happened. Not a URL param, and the
+  reason is this template's own contract: `comments` lives in the URL *precisely*
+  so a review can be shared, whereas whether a disclosure widget is open is a
+  workspace habit (the same argument that kept pane geometry out of the URL in
+  D185), and a transient "Reverted to v2" carried in a bookmark would be a lie the
+  moment it was opened.
+
+  The disclosure state is sticky; the outcome is a **carry slot** with exactly one
+  writer and two readers that both clear it — `carryOutcome` (called once, before
+  the refresh, because the fs event is already racing by then: written after, it is
+  lost exactly when the reload is fastest), `takeCarriedOutcome` (boot:
+  read-and-clear) and `dropCarriedOutcome` (in-page: spent, because it was
+  displayed here). **Nothing writes after a read**, which is the entire lifetime
+  rule and the thing the earlier version could not express: clearing only on boot
+  meant a reload that never arrived — an unwatched mount-backed file, the user
+  navigating away, the race simply lost — left the note behind for the NEXT open of
+  the file to present as fresh news, and a failing refresh on a dying page could
+  write a composed message back after a newer boot had already consumed it. Only a
+  SUCCESSFUL revert is carried: a failure changed nothing on disk, so there is no
+  reload to bridge and no reason to greet a later visit with it. This mechanism
+  produced three separate defects (ordering, the count/enrich jump, lifetime), so
+  the third fix was a restructure rather than a fourth guard. A restored-expanded panel
+  boots ENRICHED, or its row count would disagree with the list it labels; the
+  refresh observes the post-revert file (the write completed before the call
+  resolved), so the position marker points at the version just restored; and the
+  carried message is applied *after* the refresh and through the same composer as
+  everywhere else, so a failed refresh is never hidden behind a carried success.
+  A hostile `sessionStorage` (private mode throwing on `setItem`, a corrupt value)
+  degrades to "the panel does not persist" — persistence is a nicety here, never a
+  dependency.
+- **FH-16** **An unwritable target never reaches the confirm sheet, and the
+  reason travels with the verdict.** `writable` is a FIELD on a perfectly
+  successful plan, not an error — so gating only on `plan.ok` let a read-only file
+  open a destructive confirm sheet that could then fail only server-side, while the
+  main button had already gone correctly dead. Both layers are closed: rows are
+  inert when the target is unwritable, AND `revert_plan`'s verdict is checked
+  before the sheet is shown. The plan-level check is the one that matters, because
+  it closes the class rather than one entry point — the same reasoning that made
+  the bridge, not the page, the authority for the confirm token. The payload also
+  carries `writable_reason`, because "it cannot be reverted" with no cause is a
+  dead end across three genuinely different situations the module already
+  distinguishes in order to reach its answer: a read-only MOUNT (nothing local to
+  fix — the remote rejects the write, and `os.access` cannot see it), a `chmod -w`
+  FILE (fixable), and an unwritable DIRECTORY (fixable, and a different fix).
+- **FH-17** **ONE authority answers "may this action be offered, and if not
+  why" — `offer_reason` — and the panel, the rows, the confirm sheet and the
+  bridge all read it.** This exists because THREE findings had a single root
+  cause: a guard living below the layer that decides whether to offer the action.
+  The read-only verdict was enforced in `apply_revert` but invisible to the plan,
+  so the sheet opened on a doomed target (FH-16). A symlink was refused the same
+  way and one layer lower still, so the sidecar stash ran first — and read
+  *through* the link, leaving the wrong file's content in `revertStash` for a
+  revert that then failed. And the blocking-skips refusal was computed inside
+  `revert_plan` while the timeline went on publishing a striped target and an
+  enabled button whose only possible outcome was that refusal. Each was a
+  different symptom of the same missing seam, so the fix is the seam: `timeline`
+  publishes `offer` (may the button be pressed) and `offer_reason` (the sentence
+  the plan would refuse with, already on screen so no press is needed to discover
+  it), `revert` names a row only when that row is genuinely actionable, and the
+  bridge re-reads the verdict *before* `_stash` — which must be gated rather than
+  merely followed by a raise, because it runs first by design and there is nothing
+  left to copy afterwards. `writable_reason` absorbs the directory and symlink
+  refusals for the same reason: they are answers to "can this be reverted", and
+  keeping them somewhere else is precisely what made them invisible to the caller
+  that needed them.
+
+  Two deliberate asymmetries inside it. **An explicitly chosen version is not
+  subject to the automatic refusals** — "revert the last change" is a question
+  this module answers and may decline to answer from an incomplete scan, whereas
+  "revert to THIS version" is the user naming the target, where nothing is left to
+  guess; it is still gated on writability, which no amount of naming fixes. And a
+  refusal is **provisional** in exactly one case: FH-3's unenriched terminality,
+  where the scan cannot see the creation boundary, so the button stays live and the
+  click asks the always-enriched plan. That case is why `offer` is a field of its
+  own rather than being inferred from `revert` — there is no target to name there,
+  and the click is still the right thing to allow.

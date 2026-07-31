@@ -246,7 +246,7 @@ async function openUrl(url: string, scheme: string): Promise<void> {
     return;
   }
   if (scheme === "https") {
-    // A deployed Fused Render page (SPEC §34). The path bar is where a user naturally
+    // A deployed Fused Render page (SPEC §35). The path bar is where a user naturally
     // pastes a link someone sent them, and "Can't open https:// URLs in the explorer" was
     // both true and useless. The flow's own confirm step vets the URL and reports why if it
     // is not a clonable page, so this hands the link over rather than pre-judging it here —

@@ -124,7 +124,7 @@ export default function Apps() {
             </svg>
             New app
           </button>
-          {/* Gated on the Deploy-apps preference (SPEC §34 CL-1): with deploying switched
+          {/* Gated on the Deploy-apps preference (SPEC §35 CL-1): with deploying switched
               off the whole surface that produces these links is hidden, so an entry for
               importing one would advertise a feature the user has turned away from. The
               path bar's pasted-link route stays available regardless — refusing a URL the

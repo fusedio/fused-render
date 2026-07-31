@@ -1,4 +1,4 @@
-// The single mount for the "Open a deployed app" modal (SPEC §34 CL-1). Lives at the shell
+// The single mount for the "Open a deployed app" modal (SPEC §35 CL-1). Lives at the shell
 // so every trigger reaches the same flow — including the Apps page and Home, which render
 // WITHOUT the sidebar, so the entry cannot live there.
 import { useEffect, useState } from "react";
