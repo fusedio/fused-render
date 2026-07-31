@@ -25,9 +25,6 @@
     --accent-dim: #b8cc36;
     --on-accent: #131417;
     --grid-dot: #1e2126;
-    /* clean vs dirty light in the header */
-    --clean: #7ec97e;
-    --dirty: #d9b34a;
     --skel-shine: #2f333c;
     /* status letters: added / modified / deleted / renamed / untracked */
     --st-add: #7ec97e;
@@ -65,8 +62,6 @@
     --accent-dim: #4e5f00;
     --on-accent: #ffffff;
     --grid-dot: #e8eaed;
-    --clean: #2f7d32;
-    --dirty: #8a6410;
     --skel-shine: #dfe2e7;
     --st-add: #2f7d32;
     --st-mod: #8a6410;
@@ -107,34 +102,6 @@
   }
   a { color: var(--accent-dim); }
 
-  /* ================= header =================
-     One compact vitals line, deliberately NOT a big display title: the shell's
-     breadcrumb above this iframe already says where you are in 24px type, so a
-     second heading of the same path was the loudest thing on a page whose
-     subject is the lists below it. Every fact the header owes (repo, branch,
-     clean/dirty, scope — GT-10) is still here, at the weight of a status line. */
-  .head { margin-bottom: 4px; }
-  .vitals {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 14px;
-    color: var(--ink-2);
-    font-size: 12px;
-  }
-  .vitals .repo { color: var(--ink); font-weight: 700; }
-  .vitals .branch { color: var(--accent-dim); }
-  .vitals .state { display: inline-flex; align-items: center; gap: 6px; }
-  .vitals .light { width: 7px; height: 7px; border-radius: 50%; background: var(--clean); }
-  .vitals .light.is-dirty { background: var(--dirty); }
-  .vitals .scope { color: var(--ink); word-break: break-all; }
-  .vitals .detached {
-    padding: 1px 7px;
-    border: 1px solid var(--line-strong);
-    border-radius: 999px;
-    color: var(--ink-2);
-  }
-
   /* ================= panes ================= */
   .cols {
     display: grid;
@@ -168,6 +135,20 @@
     color: var(--ink-3);
   }
   section > h2 .n { color: var(--ink-2); font-weight: 400; letter-spacing: 0; }
+  /* The branch (and an unborn/detached HEAD) rides the section label rather than a
+     header band: it is DATA, and the one fact the shell's chrome cannot supply.
+     Normal case, letter-spacing reset because a path is not a label. */
+  section > h2 .state {
+    color: var(--accent-dim);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  section > h2 .sep { color: var(--ink-3); font-weight: 400; }
 
   /* ================= rows ================= */
   .rows {
@@ -370,7 +351,6 @@
     .skel-bar { animation: none; }
     .row, .more, .close { transition: none; }
   }
-  .skel-vitals { height: 12px; width: 300px; max-width: 80%; }
   .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
   .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
   .skel-row:first-child { border-top: 0; }
@@ -385,9 +365,6 @@
 <body>
 <div id="root">
   <div id="skeleton">
-    <div class="head">
-      <div class="skel-bar skel-vitals"></div>
-    </div>
     <div class="cols no-diff">
       <div class="col">
         <section>
@@ -497,27 +474,29 @@ function emptyState(title, message) {
     el("p", { textContent: message }));
 }
 
-/* ------------------------------------------------------------------ header */
+/* ------------------------------------------------------- repository state text
 
-function header(repo) {
-  const branch = repo.detached
-    ? (repo.head || "detached")
-    : (repo.branch || "no branch");
-  const scope = repo.rel || "the whole repository";
+ * A template renders INSIDE the shell's chrome — breadcrumb, preview header, mode
+ * switcher — so it does not own a header of its own (owner ruling: "a template is
+ * not the same as app, it does not require any headers"). Anything the shell
+ * already says (the repo's name, the path this view is scoped to) is therefore not
+ * repeated at all, and the one fact the shell CANNOT supply — which branch these
+ * commits are on — rides the section label, which is content rather than chrome.
+ *
+ * Dirty state needs no separate light: `UNCOMMITTED n` already carries it, and a
+ * count is a strictly better signal than a lamp. The one case a count cannot
+ * carry honestly is a truncated read (item 1's byte cap), where `n` is a floor
+ * rather than a total — that is what `+` says, with the list's own note below it.
+ */
 
-  return el("div", { className: "head" },
-    el("div", { className: "vitals" },
-      el("span", null,
-        el("span", { className: "repo", textContent: repo.name }),
-        "  ",
-        el("span", { className: "branch", textContent: branch })),
-      el("span", { className: "state" },
-        el("span", { className: "light" + (repo.dirty ? " is-dirty" : "") }),
-        el("span", { textContent: repo.dirty ? "uncommitted changes" : "clean" })),
-      repo.detached && el("span", { className: "detached", textContent: "detached HEAD" }),
-      !repo.has_commits && el("span", { textContent: "no commits yet" }),
-      el("span", null, "scoped to ",
-        el("span", { className: "scope", textContent: scope }))));
+function branchState(repo) {
+  const parts = [repo.detached
+    ? "detached at " + (repo.head || "unknown commit")
+    : (repo.branch || "no branch")];
+  // An unborn branch has a name but no commits; that is a property of the HEAD we
+  // are naming, so it belongs beside it rather than in a band of its own.
+  if (!repo.has_commits) parts.push("no commits yet");
+  return parts.join(" · ");
 }
 
 /* ------------------------------------------------- uncommitted + commit lists */
@@ -568,7 +547,7 @@ function commitRow(commit, selected) {
   return row;
 }
 
-function listSection(title, count, rows, emptyText, footer) {
+function listSection(title, count, rows, emptyText, footer, state) {
   const body = el("div", { className: "rows" });
   if (rows.length) {
     for (const row of rows) body.append(row);
@@ -577,8 +556,10 @@ function listSection(title, count, rows, emptyText, footer) {
   }
   if (footer) body.append(footer);
   return el("section", null,
-    el("h2", null, title, count !== null
-      ? el("span", { className: "n", textContent: String(count) }) : null),
+    el("h2", null, title,
+      count !== null ? el("span", { className: "n", textContent: count }) : null,
+      state ? el("span", { className: "sep", textContent: "·" }) : null,
+      state ? el("span", { className: "state", textContent: state }) : null),
     body);
 }
 
@@ -739,8 +720,12 @@ function render(data, diff) {
     loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
   }
 
+  /* `n+` rather than `n` when the read was truncated: the count is then a floor,
+     not a total, which is the one thing a bare count cannot say honestly. */
+  const changeCount = String(data.changes.length) + (data.changes_truncated ? "+" : "");
+
   const left = el("div", { className: "col" },
-    listSection("Uncommitted", data.changes.length, changeRows,
+    listSection("Uncommitted", changeCount, changeRows,
       data.repo.dirty
         ? "No uncommitted changes under this path."
         : "Working tree is clean.",
@@ -751,8 +736,11 @@ function render(data, diff) {
         ? el("p", { className: "note", textContent:
             "This list is truncated: the repository has more uncommitted "
             + "changes than this view will read." })
-        : null),
-    listSection("History", data.commits.length, commitRows,
+        : null,
+      /* The branch lives here — see branchState(): the shell supplies identity,
+         so the only header-ish fact left is the one it cannot. */
+      branchState(data.repo)),
+    listSection("History", String(data.commits.length), commitRows,
       data.repo.has_commits
         ? "No commits have touched this path yet."
         : "This repository has no commits yet.",
@@ -761,7 +749,7 @@ function render(data, diff) {
   const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
   if (diff) cols.append(el("div", { className: "col" }, diff));
 
-  show(el("div", null, header(data.repo), cols));
+  show(cols);
 }
 
 /* ------------------------------------------------------------------ loading */

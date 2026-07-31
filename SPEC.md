@@ -3571,16 +3571,37 @@ that path. Offered for **both** directories and text-ish files, always as a
   reader crash is caught into that state rather than the red traceback overlay,
   which is a debugging affordance for a view's own bug.
 - **GT-10** **The view.** `data-fused-theme="shell"` with both palettes defining
-  the same token set and no colour literal in any rule (AP-9, tier 1). The header
-  is **one compact status line, not a display title**. A template renders inside
-  the preview iframe, directly below the shell's own breadcrumb, which already
-  states the path in large type — so a 26px heading naming the same thing is the
-  page's loudest element spent restating its chrome, and it pushes the lists that
-  ARE the subject below the fold. The rule generalizes: a template's header states
-  what the shell does not already say. Here that is four facts — repo name, branch,
-  clean/dirty, and the scope the lists are filtered to — none of which is on the
-  breadcrumb, and all of which read fine at status-line weight because they are
-  read once on arrival and then ignored. All UI
+  the same token set and no colour literal in any rule (AP-9, tier 1).
+
+  **A template has NO header of its own** — owner ruling 2026-07-31: *"a template
+  is not the same as app, it does not require any headers."* A template renders
+  inside the shell's chrome — breadcrumb, preview header, mode switcher — so
+  app-like furniture of its own is duplication at best and competing chrome at
+  worst: a heading naming the path is the page's loudest element spent restating
+  what sits directly above it, and it pushes the lists that ARE the subject below
+  the fold. The general rule is therefore stronger than "state it smaller": the
+  shell owns identity, and a template ships content. (This supersedes an earlier
+  one-line-status-header compromise, which was the same argument stopped halfway.)
+
+  What survives is the facts that are **data rather than chrome**, folded onto the
+  **section labels** — labels being content:
+
+  ```
+  UNCOMMITTED 2 · main
+  HISTORY 30
+  ```
+
+  Nothing here repeats the shell: no repo-name title (the breadcrumb has it) and no
+  scope line (the breadcrumb is the scope). The **branch** stays because it is the
+  one fact the shell cannot supply, and it rides the `UNCOMMITTED` label. A
+  **detached HEAD** reads `detached at <short sha>` in the branch's place, and an
+  **unborn branch** appends `· no commits yet` — both are properties of the HEAD
+  being named, so they belong beside it rather than in a band of their own. There is
+  **no clean/dirty light**: `UNCOMMITTED n` already carries that, and a count is a
+  strictly better signal than a lamp. The one case a count cannot carry honestly is
+  a truncated read (GT-8's status byte cap, where `dirty` is forced true and `n` is
+  a floor rather than a total) — which the label states as **`n+`**, with the list's
+  own truncation note below it, rather than by reintroducing a light. All UI
   state in URL-synced params — `pages` (how much log is loaded), `sel` (selected
   commit) and `wt` (selected uncommitted entry), the last two **mutually
   exclusive** so there is at most one diff target — hence a refresh or a bookmark
