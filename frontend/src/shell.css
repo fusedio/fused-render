@@ -6131,7 +6131,7 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .apps-inner {
-  max-width: 880px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 36px 28px 72px;
 }
@@ -6246,4 +6246,150 @@ select.field-control:has(option[value=""]:checked) {
   margin-bottom: 12px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+/* Sort: a small segmented control next to the search box. Neutral fill on the
+   active segment (accent stays reserved for focus/selection). */
+.apps-sort {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.apps-sort-btn {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.apps-sort-btn:hover {
+  color: var(--fg);
+}
+
+.apps-sort-btn.is-active {
+  color: var(--bg);
+  background: var(--fg);
+}
+
+/* -- Preview cards ------------------------------------------------------------
+   Big cards whose thumbnail IS the app: entry HTML in a lazily-loaded iframe
+   rendered at 4x the box and scaled down (see AppPreviewCard.tsx), with a
+   transparent shield on top so the preview never swallows a click. Grid
+   auto-fills; each card is roughly 340px wide with a 16:10 thumbnail. */
+.apps-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+.app-pcard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.app-pcard:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.app-pcard-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.app-pcard-thumb iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: #fff;
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+.app-pcard-shield {
+  position: absolute;
+  inset: 0;
+}
+
+.app-pcard-monogram {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 44px;
+  font-weight: 700;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.app-pcard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 14px 12px;
+  min-width: 0;
+}
+
+.app-pcard-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.app-pcard-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.app-pcard-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-ago {
+  flex: 0 0 auto;
+  margin-left: auto;
 }

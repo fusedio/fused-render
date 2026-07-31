@@ -1,37 +1,49 @@
 // Apps hub — lives at "/apps", chrome-free like Home (no sidebar, no
-// breadcrumb). Every detected app in the workspace (GET /api/apps) as a tile
-// grid, narrowed by a search box (name/title, case-insensitive) and tag
-// filter chips derived from the apps themselves. The full list is sorted
-// once per fetch (recency, name breaks ties) and filtering only ever hides
-// tiles — nothing reorders under interaction.
+// breadcrumb). Every detected app in the workspace (GET /api/apps) as a grid
+// of big preview cards — each thumbnail is the app itself rendered in a
+// scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
+// search box (name/title/tag, case-insensitive) and tag chips derived from
+// the apps themselves, and ordered by an explicit sort control (recently
+// modified / name). Sorting is a deliberate user action — filtering alone
+// never reorders cards under interaction.
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "../lib/api";
 import type { AppInfo } from "../lib/api";
 import { navigateUrl } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
-import { AppCard } from "../components/AppCard";
+import { AppPreviewCard } from "../components/AppPreviewCard";
 import { NewAppPanel } from "./Home";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
+
+type SortKey = "recent" | "name";
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "recent", label: "Recent" },
+  { key: "name", label: "Name" },
+];
+
+function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
+  const byName = (a: AppInfo, b: AppInfo) =>
+    (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
+  const sorted = apps.slice();
+  if (sort === "name") sorted.sort(byName);
+  // "recent" = last-modified desc; apps without a timestamp sink to the end.
+  else sorted.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
+  return sorted;
+}
 
 export default function Apps() {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortKey>("recent");
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     let alive = true;
     getApps().then(
-      ({ apps }) =>
-        alive &&
-        setApps({
-          status: "ok",
-          // Sorted once at load — see header comment.
-          data: apps
-            .slice()
-            .sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || a.name.localeCompare(b.name)),
-        }),
+      ({ apps }) => alive && setApps({ status: "ok", data: apps }),
       (e: Error) => alive && setApps({ status: "error", message: e.message }),
     );
     return () => {
@@ -42,13 +54,20 @@ export default function Apps() {
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
   const q = query.trim().toLowerCase();
-  const shown = all.filter(
-    (a) =>
-      (tag === null || a.tag === tag) &&
-      (q === "" ||
-        a.name.toLowerCase().includes(q) ||
-        (a.title ?? "").toLowerCase().includes(q) ||
-        a.tag.toLowerCase().includes(q)),
+  const shown = useMemo(
+    () =>
+      sortApps(
+        all.filter(
+          (a) =>
+            (tag === null || a.tag === tag) &&
+            (q === "" ||
+              a.name.toLowerCase().includes(q) ||
+              (a.title ?? "").toLowerCase().includes(q) ||
+              a.tag.toLowerCase().includes(q)),
+        ),
+        sort,
+      ),
+    [all, tag, q, sort],
   );
 
   return (
@@ -80,6 +99,18 @@ export default function Apps() {
               onChange={(e) => setQuery(e.target.value)}
               autoFocus
             />
+          </div>
+          <div className="apps-sort" role="group" aria-label="Sort apps">
+            {SORTS.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                className={"apps-sort-btn" + (sort === s.key ? " is-active" : "")}
+                onClick={() => setSort(s.key)}
+              >
+                {s.label}
+              </button>
+            ))}
           </div>
           <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
@@ -126,9 +157,9 @@ export default function Apps() {
                   : "No apps match — clear the search or tag filter."}
               </div>
             ) : (
-              <div className="home-apps apps-grid">
+              <div className="apps-cards">
                 {shown.map((app) => (
-                  <AppCard key={app.path} app={app} />
+                  <AppPreviewCard key={app.path} app={app} />
                 ))}
               </div>
             )}
