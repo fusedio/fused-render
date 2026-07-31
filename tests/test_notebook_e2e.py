@@ -809,3 +809,52 @@ def test_reaped_kernel_recovers_transparently(page_and_nb, server):
     _wait_for(lambda: "shut down while idle" in frame.locator("#toast").inner_text(), 60)
     _wait_for(lambda: "back" in _cell_text(frame, "h1", ".console"), 90)
     assert "unknown kernel_id" not in frame.locator("body").inner_text()
+
+
+def test_run_all_streams_and_interrupt_aborts_batch(page_and_nb, server):
+    nb_path = os.path.join(str(server["work"]), "batch.ipynb")
+    nb = {"cells": [
+        {"cell_type": "markdown", "id": "bm", "metadata": {}, "source": "# batch"},
+        {"cell_type": "code", "id": "b1", "metadata": {}, "execution_count": None,
+         "source": "print('first done')", "outputs": []},
+        {"cell_type": "code", "id": "b2", "metadata": {}, "execution_count": None,
+         "source": "import time\nprint('second started', flush=True)\ntime.sleep(120)",
+         "outputs": []},
+        {"cell_type": "code", "id": "b3", "metadata": {}, "execution_count": 1,
+         "source": "print('third')",
+         "outputs": [{"output_type": "stream", "name": "stdout", "text": "keep me\n"}]},
+    ], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    with open(nb_path, "w", encoding="utf-8") as f:
+        json.dump(nb, f, indent=1)
+    page, _frame, _nb = page_and_nb
+    page.goto(f"http://127.0.0.1:{server['port']}" + _view_url(nb_path))
+    frame = _find_frame(page, containing="batch.ipynb")
+    _wait_for(lambda: frame.locator(".cell").count() == 4, 30)
+
+    # running a markdown cell is a pure re-render — never dirties the notebook
+    frame.locator('.cell[data-id="bm"] .gutter').dispatch_event("click")
+    frame.locator("body").dispatch_event("keydown", {"key": "Enter", "shiftKey": True})
+    time.sleep(0.5)
+    assert frame.locator("#status-text").inner_text() == "Saved"
+
+    frame.locator("#run-all").dispatch_event("click")
+    # outputs stream while the batch is still running (b2 sleeps 120s)
+    _wait_for(lambda: "first done" in _cell_text(frame, "b1", ".console"), 90)
+    _wait_for(lambda: "second started" in _cell_text(frame, "b2", ".console"), 30)
+    # the queued cell keeps its saved output until it actually starts
+    assert "keep me" in _cell_text(frame, "b3", ".console")
+
+    frame.locator("#interrupt").dispatch_event("click")
+    _wait_for(lambda: "KeyboardInterrupt"
+              in _cell_text(frame, "b2", ".outputs .err-out"), 30)
+    # the queued cell was aborted: KeyboardInterrupt, never executed,
+    # saved output intact
+    _wait_for(lambda: "KeyboardInterrupt"
+              in _cell_text(frame, "b3", ".outputs .err-out"), 30)
+    assert "third" not in _cell_text(frame, "b3", ".console")
+    assert "keep me" in _cell_text(frame, "b3", ".console")
+
+    # the kernel still serves after the aborted batch
+    _run_cell(frame, "b3")
+    _wait_for(lambda: "third" in _cell_text(frame, "b3", ".console"), 60)
+    assert "keep me" not in _cell_text(frame, "b3", ".console")  # cleared on run

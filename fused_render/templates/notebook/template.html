@@ -925,8 +925,11 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
     if (ev.type === "ready") return;
     const c = cells.find((x) => x.id === ev.cell_id);
-    if (!c) return;
+    // deleted or converted-to-markdown while its run was in flight — a
+    // markdown model has no outputs to append to
+    if (!c || c.model.cell_type !== "code") return;
     if (ev.type === "started") {
+      if (c.clearOnRun) { clearOutputs(c); c.clearOnRun = false; }
       c.runStart = performance.now();
       if (!tickTimer) tickTimer = setInterval(tick, 100);
     } else if (ev.type === "stream") {
@@ -942,6 +945,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     } else if (ev.type === "done") {
       c.running = false;
       c.runStart = null;
+      c.clearOnRun = false;
       if (ev.duration_ms != null) c.timeEl.textContent = fmtDuration(ev.duration_ms);
       c.model.execution_count = ev.execution_count;
       c.countEl.textContent = "[" + ev.execution_count + "]";
@@ -958,6 +962,7 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     if (c.model.cell_type !== "code") return;
     c.running = false;
     c.runStart = null;
+    c.clearOnRun = false; // the queued run died — keep the previous outputs
     setDot(c, "");
   }
   function clearOutputs(c) {
@@ -1630,9 +1635,12 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
         if (!runningAll) break; // Interrupt aborts the rest of the batch
         if (c.model.cell_type !== "code") continue;
         syncEditor(c);
-        const previousOutputs = clearOutputs(c);
+        // outputs clear on the cell's `started` event, not at submit: a
+        // reconnect mid-batch voids queued executes, and those cells must
+        // keep their previous results
+        c.clearOnRun = true;
         c.running = true;
-        active = { cell: c, outputs: previousOutputs };
+        active = c;
         c.runStart = null;
         c.timeEl.textContent = "";
         setDot(c, "run");
@@ -1645,10 +1653,10 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       }
     } catch (err) {
       if (active) {
-        restoreOutputs(active.cell, active.outputs);
-        active.cell.running = false;
-        active.cell.runStart = null;
-        setDot(active.cell, "err");
+        active.clearOnRun = false;
+        active.running = false;
+        active.runStart = null;
+        setDot(active, "err");
       }
       toast("Run all failed: " + (err.message || err));
     } finally {
@@ -1657,15 +1665,16 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
   }
   async function interruptKernel() {
+    runningAll = false; // stop a Run all batch from submitting more cells
     try {
       if (!kernelId) return;
-      runningAll = false; // stop a Run all batch from submitting more cells
       await dFetch("/kernel/interrupt", { kernel_id: kernelId });
     } catch (err) {
       toast("Interrupt failed: " + (err.message || err));
     }
   }
   async function restartKernel() {
+    runningAll = false; // a mid-batch restart aborts the rest of the batch
     try {
       if (!kernelId) { await ensureKernel(); return; }
       setKState("starting");
