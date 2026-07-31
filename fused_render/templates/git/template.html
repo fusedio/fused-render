@@ -107,26 +107,23 @@
   }
   a { color: var(--accent-dim); }
 
-  /* ================= header ================= */
+  /* ================= header =================
+     One compact vitals line, deliberately NOT a big display title: the shell's
+     breadcrumb above this iframe already says where you are in 24px type, so a
+     second heading of the same path was the loudest thing on a page whose
+     subject is the lists below it. Every fact the header owes (repo, branch,
+     clean/dirty, scope — GT-10) is still here, at the weight of a status line. */
   .head { margin-bottom: 4px; }
-  .head h1 {
-    margin: 0;
-    font-size: 26px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    line-height: 1.2;
-    word-break: break-all;
-  }
-  .head h1 .branch { color: var(--ink-3); font-weight: 400; }
   .vitals {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px 14px;
-    margin-top: 10px;
     color: var(--ink-2);
     font-size: 12px;
   }
+  .vitals .repo { color: var(--ink); font-weight: 700; }
+  .vitals .branch { color: var(--accent-dim); }
   .vitals .state { display: inline-flex; align-items: center; gap: 6px; }
   .vitals .light { width: 7px; height: 7px; border-radius: 50%; background: var(--clean); }
   .vitals .light.is-dirty { background: var(--dirty); }
@@ -141,7 +138,7 @@
   /* ================= panes ================= */
   .cols {
     display: grid;
-    grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
     gap: 20px;
     margin-top: 24px;
     align-items: start;
@@ -149,6 +146,12 @@
   .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
   @media (max-width: 900px) {
     .cols, .cols.no-diff { grid-template-columns: minmax(0, 1fr); }
+    /* Stacked, the diff goes ABOVE the lists. Otherwise clicking a commit
+       appends a pane thirty rows below the fold and reads as "nothing
+       happened" — the response to a click has to be where the eye already is. */
+    .cols > .col:last-child:not(:first-child) { order: -1; }
+    .pane { position: static; }
+    .diff { max-height: 50vh; }
   }
   .col { min-width: 0; }
 
@@ -208,13 +211,23 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .row .meta {
+  /* Two trailing columns rather than one "author · date" string: in a 420px
+     list the single string truncated from the RIGHT, which ate the date — the
+     one field you actually scan a log by. So the date is `flex: none` and never
+     truncates, and the author is the field that gives way. */
+  .row .who {
+    flex: none;
+    max-width: 12ch;
+    color: var(--ink-3);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .row .when {
     flex: none;
     color: var(--ink-3);
     font-size: 11px;
-    max-width: 40%;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
   .row .code {
@@ -356,8 +369,7 @@
     .skel-bar { animation: none; }
     .row, .more, .close { transition: none; }
   }
-  .skel-title { height: 26px; width: 42%; }
-  .skel-vitals { height: 12px; width: 280px; max-width: 70%; margin-top: 14px; }
+  .skel-vitals { height: 12px; width: 300px; max-width: 80%; }
   .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
   .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
   .skel-row:first-child { border-top: 0; }
@@ -373,7 +385,6 @@
 <div id="root">
   <div id="skeleton">
     <div class="head">
-      <div class="skel-bar skel-title"></div>
       <div class="skel-bar skel-vitals"></div>
     </div>
     <div class="cols no-diff">
@@ -388,10 +399,10 @@
         <section>
           <div class="skel-bar skel-h2" style="width:90px"></div>
           <div class="rows">
-            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:48%"></span><span class="skel-bar skel-cell" style="width:70px;margin-left:auto"></span></div>
-            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:36%"></span><span class="skel-bar skel-cell" style="width:70px;margin-left:auto"></span></div>
-            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:54%"></span><span class="skel-bar skel-cell" style="width:70px;margin-left:auto"></span></div>
-            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:41%"></span><span class="skel-bar skel-cell" style="width:70px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:48%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:36%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:54%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
+            <div class="skel-row"><span class="skel-bar skel-cell" style="width:7ch"></span><span class="skel-bar skel-cell" style="width:41%"></span><span class="skel-bar skel-cell" style="width:76px;margin-left:auto"></span></div>
           </div>
         </section>
       </div>
@@ -434,9 +445,16 @@ const num = (key, fallback) => {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 };
 
+/* `fused.params` has no delete — an empty string is how a param is cleared, and
+ * it leaves `key=` behind in the URL. So a no-op write is SKIPPED: clearing `wt`
+ * while selecting a commit is the common case, and writing it would stamp a bare
+ * `&wt=` onto every URL the view produces. It also keeps `onChange` (hence
+ * `draw`) from firing for a write that changed nothing. */
 function setParams(patch) {
   for (const [key, value] of Object.entries(patch)) {
-    fused.params.set(key, value === null ? "" : String(value));
+    const next = value === null ? "" : String(value);
+    if ((fused.params.get(key) || "") === next) continue;
+    fused.params.set(key, next);
   }
 }
 
@@ -486,19 +504,19 @@ function header(repo) {
     : (repo.branch || "no branch");
   const scope = repo.rel || "the whole repository";
 
-  const vitals = el("div", { className: "vitals" },
-    el("span", { className: "state" },
-      el("span", { className: "light" + (repo.dirty ? " is-dirty" : "") }),
-      el("span", { textContent: repo.dirty ? "uncommitted changes" : "clean" })),
-    repo.detached && el("span", { className: "detached", textContent: "detached HEAD" }),
-    !repo.has_commits && el("span", { textContent: "no commits yet" }),
-    el("span", null, "scoped to ", el("span", { className: "scope", textContent: scope })));
-
   return el("div", { className: "head" },
-    el("h1", null,
-      repo.name,
-      el("span", { className: "branch", textContent: "  " + branch })),
-    vitals);
+    el("div", { className: "vitals" },
+      el("span", null,
+        el("span", { className: "repo", textContent: repo.name }),
+        "  ",
+        el("span", { className: "branch", textContent: branch })),
+      el("span", { className: "state" },
+        el("span", { className: "light" + (repo.dirty ? " is-dirty" : "") }),
+        el("span", { textContent: repo.dirty ? "uncommitted changes" : "clean" })),
+      repo.detached && el("span", { className: "detached", textContent: "detached HEAD" }),
+      !repo.has_commits && el("span", { textContent: "no commits yet" }),
+      el("span", null, "scoped to ",
+        el("span", { className: "scope", textContent: scope }))));
 }
 
 /* ------------------------------------------------- uncommitted + commit lists */
@@ -532,7 +550,8 @@ function commitRow(commit, selected) {
   },
     el("span", { className: "sha", textContent: commit.short }),
     el("span", { className: "subject", textContent: commit.subject || "(no subject)" }),
-    el("span", { className: "meta", textContent: commit.author + " · " + commit.relative }));
+    el("span", { className: "who", textContent: commit.author }),
+    el("span", { className: "when", textContent: commit.relative }));
   if (selected) row.setAttribute("aria-current", "true");
   row.addEventListener("click", () => setParams({ sel: commit.sha, wt: null }));
   return row;

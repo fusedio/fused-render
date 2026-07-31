@@ -539,3 +539,13 @@ def test_an_empty_diff_reports_zero_shown_lines(reader, repo):
                if c["subject"] == "add a logo")
     got = reader.main(os.path.join(repo, "pkg"), op="commit", sha=sha)
     assert got["empty"] is True and got["shown_lines"] == 0
+
+
+def test_an_untracked_diff_header_is_repository_relative(reader, repo):
+    # `--no-index` echoes its arguments into the `a/…` / `b/…` header verbatim, so
+    # passing the absolute path printed the reader's whole filesystem layout above
+    # every untracked diff.
+    got = reader.main(repo, op="worktree", entry="pkg/fresh.txt")
+    assert got["ok"] is True
+    assert "a/pkg/fresh.txt" in got["diff"]
+    assert repo not in got["diff"]

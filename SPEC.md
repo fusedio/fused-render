@@ -384,7 +384,7 @@ const page = await fused.runPython("./reader.py",
 | `.csv .tsv` | `duckdb`, `code` | paged table + SQL over the file |
 | `.xlsx` | `xlsx` | sheet select + paged table |
 | `.json .geojson` | `tree`, `code` | collapsible tree |
-| `.md` | `markdown`, `code`, `claude` | notes editor (§32) + raw source + chat about the note |
+| `.md` | `markdown`, `code`, `claude`, `git` | notes editor (§32) + raw source + chat about the note + this note's git history (§33) |
 | `.svg` | `image`, `code` | `<img>` via raw endpoint; svg source is text |
 | `.png .jpg .jpeg .gif .webp` | `image` | `<img>` via raw endpoint |
 | `.pdf` | `pdf` | browser-native embed |
@@ -395,7 +395,7 @@ const page = await fused.runPython("./reader.py",
 | `.tif .tiff` | `geotiff` | GeoTIFF/COG via vendored geotiff (in-browser decode, no reader.py); full metadata + dump, photometric routing (RGB/palette/YCbCr), band select + RGB stretch + colormaps, histogram, hover. Small files full-fetched; >32 MiB range-request `fromUrl` |
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
-| `/` (any directory) | `_listing`, `graph`, `zarr_aoi` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). `graph` (MD-2) and `zarr_aoi` are both `condition.py`-gated peers (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each joins the switcher only where its background gate allows. The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
+| `/` (any directory) | `_listing`, `git`, `graph`, `zarr_aoi` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). `git` (§33), `graph` (MD-2) and `zarr_aoi` are all `condition.py`-gated peers (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — so `_listing` stays the immediate default and each joins the switcher only where its background gate allows. `git` is listed FIRST among the gated peers because the switcher reads left to right and its gate is the one that says yes most often (GT-2). The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
 | `.html .htm` | `_render`, `code` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
@@ -408,7 +408,7 @@ const page = await fused.runPython("./reader.py",
   - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4, plus the optional split preview pane, FS-9..FS-15) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
   Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "graph", "zarr_aoi"]` (D185 removed `preview`; `graph` per MD-2) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
+- **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["_listing", "git", "graph", "zarr_aoi"]` (D185 removed `preview`; `graph` per MD-2; `git` per §33/D193) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
 ---
@@ -2847,7 +2847,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   is the notes editor and keeps MD-16 (2 s idle, no button). A user who picks
   `code` for a `.md` asked for code behaviour. The universal `/` directory key
   gains `graph`:
-  `["_listing", "graph", "zarr_aoi"]` (as of D185, which removed `preview`).
+  `["_listing", "git", "graph", "zarr_aoi"]` (as of D185, which removed
+  `preview`, and D193, which added `git` — §33).
   `graph` ships a `condition.py`
   (CT-12), so `_listing` remains the immediate default and the graph joins the
   switcher only where the background gate allows it (PT-8).
@@ -3385,3 +3386,142 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
+
+## 33. Git View — Repository History Scoped to the Open Path (D193)
+
+A `git` view template answers one question for whatever the user currently has
+open: **what happened here?** Not "what happened in this repository" — a repo-wide
+log is what a terminal is for — but what happened to *this folder* or *this file*:
+its uncommitted changes, its commits, and the diff of any of them restricted to
+that path. Offered for **both** directories and text-ish files, always as a
+`condition.py`-gated companion mode, never as a default.
+
+- **GT-1** An ordinary view template (`fused_render/templates/git/`) —
+  `template.html`, `log.py` (the reader), `condition.py` (the gate) and
+  `icon.svg`. No shell or server code: everything is the ordinary template
+  contract (`_file`, `fused.runPython`, params-as-state).
+- **GT-2** **Registry bindings.** The universal `/` directory key becomes
+  `["_listing", "git", "graph", "zarr_aoi"]` — `_listing` stays the default (it is
+  the only unconditional entry, PT-8), and `git` is listed **first among the gated
+  peers** because the switcher reads left to right and its gate is the one that
+  says yes most often on a working machine. On the file side `git` is appended,
+  **before the trailing meta-modes** (`reader`, `annotate`, `history`, so RD's
+  `reader`-immediately-before-`annotate` invariant is untouched), to the
+  hand-authored source / config / prose / log keys: code (`.py .js .ts .tsx .jsx
+  .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .css .html .htm`),
+  config (`.yaml .yml .toml .ini .cfg .conf .tf .hcl .json .plist`), prose (`.md
+  .markdown .tex .ltx .latex`) and text/logs (`.txt .log`). It is deliberately
+  **absent** from record streams (`.jsonl`/`.ndjson`), tabular data, geo data,
+  images, media, 3D, archives, PDFs and generated tool files: a scoped commit log
+  over a data blob says nothing a diff can render, and those lists are left alone
+  rather than churned. `.json` in / `.jsonl` out is the same line drawn twice —
+  `.json` is the dominant hand-authored config format, `.jsonl` is an append-only
+  stream.
+- **GT-3** **The gate (`condition.py`, CT-12) is `git rev-parse
+  --is-inside-work-tree`, one bounded subprocess — never a search of the tree.**
+  A directory asks about itself; a file asks from its parent (handing git a file
+  as `-C` is an ENOTDIR, not an answer). It **never enumerates** (`os.listdir`,
+  `os.scandir`, `glob`, recursion) and never walks, the CT-12 rule
+  `zarr_aoi/condition.py` documents and doubly binding here because this gate runs
+  on every directory AND every text-ish file the user opens; the tests make
+  enumeration **fatal**, so a listing added later fails rather than ships. A
+  `.git` stat fast path was considered and **dropped**: `.git` exists only at the
+  repository ROOT, so a probe would have to ascend to answer a nested path
+  (`repo/pkg/` has no `.git` of its own), and the two shapes it would then need to
+  know about — a `.git` *directory* in a clone, a `.git` *file* in a linked
+  worktree or submodule — are exactly what a hand-rolled probe gets wrong.
+  `rev-parse` answers all of them from any depth in one fork, and git's own ascent
+  is O(depth) stats, never a descent. True for an **empty** repository
+  (initialized, no commits — it IS a repo, and GT-9 gives it a real state);
+  **False** for a bare repository and for anything under `.git`, where there is no
+  work tree, hence no `git status` and no path to scope history to — not offered
+  beats offered-then-broken. Fails closed on a missing binary, a timeout, a
+  non-zero exit, stdout that is not literally `true`, or any exception.
+- **GT-4** **Mount-backed → refused, before any subprocess.** The same refusal
+  `graph/condition.py` makes and for the same shape of reason, worse here: the
+  reader runs `git status` / `git log` on the path, and git over an rclone-NFS
+  mount stats and lists its way through the work tree — the pattern that wedges a
+  flat million-key prefix. The detector is the app's own rule via
+  `shared/appenv.is_mount_backed` (PY-15), not a second copy; an unavailable
+  detector means "cannot tell", which reads as "refuse". The ORDER is part of the
+  requirement: a refusal that still forked git at the mount would have paid the
+  cost the refusal exists to avoid. And the refusal is repeated in **`log.py`**,
+  because a hand-written `?_mode=git` URL bypasses the switcher entirely — the
+  gate is the UX, the module is the guarantee (MD-11).
+- **GT-5** **The reader (`log.py`) shells out to git and parses machine formats;
+  it reimplements nothing.** Not what a repository is, not what "dirty" means, not
+  rename detection, not "3 months ago" (that is `%ar`, a human string passed
+  through verbatim rather than re-derived). Four ops: `overview` (header +
+  scoped uncommitted changes + the first page of the scoped log, one round trip),
+  `log` (a later page), `commit` (metadata + a diff restricted to the scope) and
+  `worktree` (working tree vs HEAD for one uncommitted entry).
+- **GT-6** **Every invocation is pinned, hardened and bounded.** `-C <repo root>`
+  and `--no-pager` on all of them — the root is resolved **once** by `rev-parse
+  --show-toplevel`, the single call deliberately pinned to the target rather than
+  the root, and everything after is pinned to the root so a relative pathspec
+  means one thing. **argv lists only, never a shell string**, and `--` before
+  every pathspec, wrapped in `:(literal)` so a filename holding `*`, `?`, `[` or a
+  leading `:` matches itself instead of becoming a glob or pathspec magic. A `sha`
+  arrives from a URL param and is validated as a hex object name **before any argv
+  is built**, so an option-shaped value cannot cause even one fork. Log records
+  are `%x00`-delimited fields, one commit per line (every field in the format is
+  single-line by construction, so the newline is an unambiguous record separator);
+  status is `--porcelain=v1 -z`, whose rename form puts the NEW path first.
+  Non-interactive by environment (`GIT_TERMINAL_PROMPT=0`,
+  `GIT_OPTIONAL_LOCKS=0`, no pager, no askpass, no LFS smudge) with a timeout on
+  every call. The user's git config is **left alone** — no
+  `GIT_CONFIG_GLOBAL=/dev/null` — because `safe.directory` lives there and a repo
+  the user marked safe must keep working; only the knobs that could corrupt
+  parsing are overridden per command with `-c`, plus `--no-ext-diff` as a **flag**
+  (clearing `diff.external` tells git to run the empty program, which is a hard
+  failure).
+- **GT-7** **One unscoped `git status`, filtered to the scope in Python.** The
+  header's clean/dirty light describes the **repository** (that is what the word
+  means) while the list below it describes the **scope**, and both facts come out
+  of the same walk of the index this way rather than out of two calls. The filter
+  reproduces git's own pathspec semantics including the case a naive prefix test
+  gets wrong: with `--untracked-files=normal` git collapses a wholly-untracked
+  directory to `dir/`, so an entry can be an *ancestor* of the scope rather than a
+  descendant, and the scope is still dirty because of it. Entries carry the raw
+  `XY` letters (`M`/`A`/`D`/`R`/`??`…) plus derived
+  `staged`/`unstaged`/`untracked` flags and, for a rename, both paths.
+- **GT-8** **Nothing is unbounded.** The log is **paginated** — `limit + 1` per
+  page is the `has_more` probe, so "load more" needs no count-everything call —
+  with the URL's `limit` clamped. Diffs **stream** through a byte cap AND a line
+  cap, whichever hits first, with a watchdog that kills the process: streamed
+  rather than captured because `subprocess.run` would buffer the whole
+  hundred-megabyte diff into memory before it could be trimmed, and a manual read
+  loop has no `timeout=`. Truncation is **reported in the UI**, never silent. The
+  change list is capped too (a build tree can hold 100k untracked files).
+- **GT-9** **Every awkward state is a first-class state, and refusal is a
+  PAYLOAD** (`{ok: false, reason, message}`) rather than an exception: not a
+  repository, missing path, mount-backed, no git binary, timeout, empty repository
+  (no commits yet), detached HEAD (reported by short sha, `branch: null`), a path
+  with no history, a path outside the repository, binary files (git's own "Binary
+  files … differ", never dumped), renames. The view renders a calm empty state
+  from the payload — a folder without git is an ordinary situation, so even a
+  reader crash is caught into that state rather than the red traceback overlay,
+  which is a debugging affordance for a view's own bug.
+- **GT-10** **The view.** `data-fused-theme="shell"` with both palettes defining
+  the same token set and no colour literal in any rule (AP-9, tier 1). The header
+  is **one compact status line**, not a display title (owner call 2026-07-31): the
+  shell's breadcrumb directly above this iframe already states the path in large
+  type, so a second heading repeating it was the loudest thing on a page whose
+  subject is the lists below — the header still owes every fact (repo name,
+  branch, clean/dirty, scope) and states them at the weight of a status line. All UI
+  state in URL-synced params — `pages` (how much log is loaded), `sel` (selected
+  commit) and `wt` (selected uncommitted entry), the last two **mutually
+  exclusive** so there is at most one diff target — hence a refresh or a bookmark
+  reproduces the view with its diff pane already open. Every row is a real
+  `<button>`, so tab/enter work natively; Escape closes the pane. The skeleton is
+  laid out at the real thing's dimensions and a selection change repaints from the
+  last good snapshot, so nothing jumps and the lists never blank while a diff
+  loads (a serial guard drops a stale response). The diff is the one wide thing on
+  the page, so it scrolls inside its **own** container and the page body never
+  scrolls horizontally. Stacked (narrow) the diff pane sits **above** the lists,
+  because appending it below thirty commit rows puts the response to a click below
+  the fold, which reads as nothing having happened.
+- **GT-11** **Read-only, always.** The view never stages, commits, checks out,
+  fetches or writes anything. `GIT_OPTIONAL_LOCKS=0` says so to git as well: it
+  will not even take a lock to answer a question. Anything that mutates a
+  repository belongs to a terminal.

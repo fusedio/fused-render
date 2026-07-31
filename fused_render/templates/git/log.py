@@ -515,8 +515,14 @@ def _worktree(root, entry, has_commits):
         # An untracked file has nothing in the index to diff against, so the
         # whole file IS the change. `--no-index` is git's own way to say that,
         # and it exits 1 for "there were differences" — an answer, not a failure.
+        #
+        # The RELATIVE path is passed even though the file was just located
+        # absolutely: `--no-index` echoes its arguments into the `a/…` / `b/…`
+        # header verbatim, so an absolute path would print the reader's whole
+        # filesystem layout above every untracked diff. `-C root` already put
+        # git in the work tree, so the relative form resolves identically.
         diff, truncated, shown = _git_capped(
-            root, "diff", "--no-color", _NO_EXT_DIFF, "--no-index", "--", os.devnull, full,
+            root, "diff", "--no-color", _NO_EXT_DIFF, "--no-index", "--", os.devnull, rel,
             cap_bytes=MAX_DIFF_BYTES, cap_lines=MAX_DIFF_LINES)
     else:
         # vs HEAD, not vs the index: a staged-but-uncommitted change is part of
