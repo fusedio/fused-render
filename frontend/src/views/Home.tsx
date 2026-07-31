@@ -1,17 +1,17 @@
 // Home view — lives at "/" itself (old /view/_home sentinel redirects here)
 // and is the app's launch landing. Structure, top to bottom:
 //   1. Hero card — headline + blurb with the page's two verbs as buttons:
-//      "New app" (create modal → POST /api/apps/new) and "Browse files".
+//      "New app" (left slide-over panel → POST /api/apps/new) and "Browse files".
 //   2. Doorways — three equal cards for the app's entry points: file
 //      explorer, apps hub (the Fused workspace dir), templates manager.
 //   3. Recent — the 9 most recently updated apps (GET /api/apps), sorted
 //      once per fetch so the grid never reorders under interaction; keys
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { createApp, getApps } from "../lib/api";
 import type { AppInfo, Config } from "../lib/api";
 import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
-import { Modal } from "../components/modal/Modal";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
@@ -55,11 +55,55 @@ export function claudeChatUrl(fsPath: string, runId: string): string {
   return urlForFsPath(fsPath, "?" + params.toString());
 }
 
-function NewAppModal({ onClose }: { onClose: () => void }) {
+// The three explainer cards above the form: what a fused app is, in one glance.
+// Pure CSS visuals (inline SVG glyph tinted from the file-icon palette, same
+// grammar as the Doorway cards on the page behind the panel).
+const APP_FACTS: { hue: string; title: string; desc: string; glyph: ReactNode }[] = [
+  {
+    hue: "var(--icon-html)",
+    title: "Describe it",
+    desc: "Write a prompt; Claude builds the app in its own folder.",
+    glyph: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3l2.2 5.3L20 10l-5.8 1.7L12 17l-2.2-5.3L4 10l5.8-1.7z" />
+      </svg>
+    ),
+  },
+  {
+    hue: "var(--icon-code)",
+    title: "Python-powered",
+    desc: "Views are HTML rendered by python — live data, no build step.",
+    glyph: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+      </svg>
+    ),
+  },
+  {
+    hue: "var(--icon-folder)",
+    title: "Instant routes",
+    desc: "A folder is the app; each page is a route you navigate between.",
+    glyph: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 6h16M4 12h10M4 18h6" />
+      </svg>
+    ),
+  },
+];
+
+// "New app" opens as a Notion-style slide-over: a full-height panel pinned to
+// the left edge (60vw, full width under 800px) over a dim scrim. Deliberately
+// NOT the shared Modal chassis — that centres a width-clamped dialog, which
+// fights an edge-anchored panel. Close behaviour matches the modal it replaces:
+// scrim click, Esc, or ✕, all gated by `busy`.
+function NewAppPanel({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Mounts off-screen, then flips to `is-open` on the next frame so the CSS
+  // translate actually animates (a class present on first paint does not).
+  const [open, setOpen] = useState(false);
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -67,6 +111,10 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
     },
     [],
   );
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setOpen(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   const trimmedName = name.trim();
   const nameError = appNameError(trimmedName);
@@ -108,6 +156,16 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
     }
   };
 
+  // Esc closes (document-level, so it works wherever focus sits), gated by busy
+  // exactly like the modal chassis this panel replaced.
+  useEffect(() => {
+    const onDocKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    document.addEventListener("keydown", onDocKey);
+    return () => document.removeEventListener("keydown", onDocKey);
+  }, [busy, onClose]);
+
   // Cmd/Ctrl+Enter submits from either field (plain Enter in the textarea
   // inserts a newline as usual).
   const onKey = (e: React.KeyboardEvent) => {
@@ -117,51 +175,94 @@ function NewAppModal({ onClose }: { onClose: () => void }) {
     }
   };
 
-  return (
-    <Modal
-      title="New app"
-      onClose={onClose}
-      busy={busy}
-      dirty={trimmedName.length > 0 || prompt.trim().length > 0}
-      footer={
-        <>
+  return createPortal(
+    <div
+      className={"app-panel-overlay" + (open ? " is-open" : "")}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose();
+      }}
+    >
+      <div
+        className="app-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-app-title"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="app-panel-head">
+          <h2 id="new-app-title">New app</h2>
+          <button
+            type="button"
+            className="app-panel-close"
+            aria-label="Close"
+            title="Close"
+            disabled={busy}
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="app-panel-body">
+          {/* Explainer: what a fused app is, before the two fields that make one. */}
+          <p className="app-panel-lede">
+            A fused app is a folder in your workspace rendered as python-powered HTML pages —
+            describe it here and Claude scaffolds it for you.
+          </p>
+          <div className="app-panel-facts">
+            {APP_FACTS.map((f) => (
+              <div className="app-panel-fact" key={f.title}>
+                <span className="app-panel-fact-glyph" aria-hidden="true" style={{ color: f.hue }}>
+                  {f.glyph}
+                </span>
+                <span className="app-panel-fact-title">{f.title}</span>
+                <span className="app-panel-fact-desc">{f.desc}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="app-panel-form">
+            <div className="templates-field">
+              <label htmlFor="new-app-name">Name</label>
+              <TextInput
+                id="new-app-name"
+                type="text"
+                placeholder="my-app"
+                value={name}
+                autoFocus
+                disabled={busy}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={onKey}
+              />
+              {nameError && <div className="templates-key-error">{nameError}</div>}
+            </div>
+            <div className="templates-field">
+              <label htmlFor="new-app-prompt">What should this app do?</label>
+              <TextArea
+                id="new-app-prompt"
+                placeholder="Describe the app — a Claude session starts in its folder with this prompt."
+                value={prompt}
+                rows={5}
+                disabled={busy}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={onKey}
+              />
+            </div>
+            {error && <ErrorBanner>{error}</ErrorBanner>}
+          </div>
+        </div>
+
+        <div className="app-panel-foot">
           <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
             {busy ? "Creating…" : "Create app"}
           </button>
-        </>
-      }
-    >
-      <div className="templates-field">
-        <label htmlFor="new-app-name">Name</label>
-        <TextInput
-          id="new-app-name"
-          type="text"
-          placeholder="my-app"
-          value={name}
-          autoFocus
-          disabled={busy}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={onKey}
-        />
-        {nameError && <div className="templates-key-error">{nameError}</div>}
+        </div>
       </div>
-      <div className="templates-field">
-        <label htmlFor="new-app-prompt">What should this app do?</label>
-        <TextArea
-          id="new-app-prompt"
-          placeholder="Describe the app — a Claude session starts in its folder with this prompt."
-          value={prompt}
-          rows={5}
-          disabled={busy}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={onKey}
-        />
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </Modal>
+    </div>,
+    document.body,
   );
 }
 
@@ -393,7 +494,7 @@ export default function Home({ config }: { config: Config }) {
         </section>
       </div>
 
-      {creating && <NewAppModal onClose={() => setCreating(false)} />}
+      {creating && <NewAppPanel onClose={() => setCreating(false)} />}
     </div>
   );
 }

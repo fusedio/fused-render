@@ -5414,3 +5414,160 @@ select.field-control:has(option[value=""]:checked) {
     opacity: 0.6;
   }
 }
+
+/* ---- New-app slide-over panel (views/Home.tsx) ---------------------------- */
+/* Notion-style panel: full-height, 60vw, pinned to the LEFT edge over a dim
+   scrim, sliding in from the left. Deliberately its own chassis (not
+   the modal / deploy chrome) so the centred-dialog rules stay untouched for
+   their other consumers. */
+.app-panel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--scrim);
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+.app-panel-overlay.is-open {
+  opacity: 1;
+}
+
+.app-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 60vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  box-shadow: 0 0 40px var(--shadow-lg);
+  transform: translateX(-100%);
+  transition: transform 200ms ease-out;
+}
+
+.app-panel-overlay.is-open .app-panel {
+  transform: translateX(0);
+}
+
+@media (max-width: 800px) {
+  .app-panel {
+    width: 100vw;
+    border-right: none;
+  }
+}
+
+.app-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.app-panel-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.app-panel-close {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+
+.app-panel-close:hover {
+  color: var(--fg);
+}
+
+.app-panel-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  font-size: 13px;
+}
+
+.app-panel-lede {
+  margin: 0;
+  max-width: 60ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+}
+
+/* Three explainer cards in a row; they stack once the panel is narrow. */
+.app-panel-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 800px) {
+  .app-panel-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.app-panel-fact {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.app-panel-fact-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  margin-bottom: 4px;
+}
+
+.app-panel-fact-title {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.app-panel-fact-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.app-panel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 620px;
+}
+
+.app-panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 12px 22px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
