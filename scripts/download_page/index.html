@@ -159,33 +159,27 @@
   .url span {
     position: absolute; inset: 6px 10px;
     opacity: 0;
-    animation: urlslot 20s steps(1, end) infinite;
-    animation-delay: var(--d, 0s);
+    transition: opacity 0.3s ease-out;
   }
-  @keyframes urlslot {
-    0%   { opacity: 1; }
-    25%  { opacity: 0; }
-    100% { opacity: 0; }
-  }
+  .url span.active { opacity: 1; }
   .shots { position: relative; aspect-ratio: 1400 / 813; }
-  .shots img {
+  .shots a {
     position: absolute; inset: 0;
-    width: 100%; height: 100%; object-fit: cover;
     opacity: 0;
-    animation: slot 20s infinite;
-    animation-delay: var(--d, 0s);
+    pointer-events: none;
+    transition: opacity 0.5s ease-out;
   }
-  .s1 { --d: 0s; }
-  .s2 { --d: 5s; }
-  .s3 { --d: 10s; }
-  .s4 { --d: 15s; }
-  @keyframes slot {
-    0%      { opacity: 0; }
-    3%      { opacity: 1; }
-    25%     { opacity: 1; }
-    28%     { opacity: 0; }
-    100%    { opacity: 0; }
+  .shots a.active { opacity: 1; pointer-events: auto; }
+  .shots img { width: 100%; height: 100%; object-fit: cover; }
+  .hero-dots { display: flex; gap: 10px; justify-content: center; padding-top: 16px; }
+  .nav-dot {
+    appearance: none; border: none; padding: 0; cursor: pointer;
+    width: 9px; height: 9px; border-radius: 50%;
+    background: #3a3a3e;
+    transition: background 0.2s ease-out, transform 0.2s ease-out;
   }
+  .nav-dot:hover { background: var(--muted); }
+  .nav-dot.active { background: var(--accent); transform: scale(1.25); }
 
   /* ---------- format ticker ---------- */
   .ticker-block { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
@@ -350,8 +344,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
-    .shots img, .url span { animation: none; opacity: 0; }
-    .shots img.s1, .url span.s1 { opacity: 1; }
+    .shots a, .url span, .nav-dot { transition: none; }
     .ticker-inner { animation: none; flex-wrap: wrap; width: auto; }
     .ticker-run { flex-wrap: wrap; }
     .ticker-run + .ticker-run { display: none; }
@@ -388,21 +381,37 @@
         <a class="btn-ghost" href="#gallery">See it in action</a>
       </div>
     </div>
-    <div class="window" aria-label="Fused Render screenshots">
-      <div class="window-bar">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="url">
-          <span class="s1">127.0.0.1:8765/data/buildings.parquet</span>
-          <span class="s2">127.0.0.1:8765/maps/storm_response.html</span>
-          <span class="s3">127.0.0.1:8765/rasters/satellite.tif</span>
-          <span class="s4">127.0.0.1:8765/notes/tasks.parquet</span>
-        </span>
+    <div class="hero-media">
+      <div class="window" aria-label="Fused Render example screenshots">
+        <div class="window-bar">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="url">
+            <span>127.0.0.1:8765/data/buildings.parquet</span>
+            <span>127.0.0.1:8765/maps/storm_response.html</span>
+            <span>127.0.0.1:8765/rasters/satellite.tif</span>
+            <span>127.0.0.1:8765/notes/tasks.parquet</span>
+          </span>
+        </div>
+        <div class="shots">
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/hexagon_lab" target="_blank" rel="noopener">
+            <img src="assets/hexagon_lab.jpg" alt="Interactive 3D hexagon map rendered from a parquet file — open the Hexagon lab example on GitHub" fetchpriority="high">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/disaster_response_dashboard" target="_blank" rel="noopener">
+            <img src="assets/disaster_response_dashboard.jpg" alt="Disaster response dashboard fusing satellite imagery and building footprints — open the example on GitHub">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener">
+            <img src="assets/cog_overview_pyramid.jpg" alt="Satellite GeoTIFF resolution pyramid in 3D — open the example on GitHub">
+          </a>
+          <a href="https://github.com/fusedio/fused-render-examples/tree/main/local-tools/notion_db" target="_blank" rel="noopener">
+            <img src="assets/notion_db.jpg" alt="Task tracker rendered from local parquet files — open the example on GitHub">
+          </a>
+        </div>
       </div>
-      <div class="shots">
-        <img class="s1" src="assets/hexagon_lab.jpg" alt="Interactive 3D hexagon map rendered from a parquet file" fetchpriority="high">
-        <img class="s2" src="assets/disaster_response_dashboard.jpg" alt="Disaster response dashboard fusing satellite imagery and building footprints">
-        <img class="s3" src="assets/cog_overview_pyramid.jpg" alt="Satellite GeoTIFF resolution pyramid in 3D">
-        <img class="s4" src="assets/notion_db.jpg" alt="Task tracker rendered from local parquet files">
+      <div class="hero-dots">
+        <button class="nav-dot" type="button" aria-label="Show Hexagon lab screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show disaster response dashboard screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show satellite GeoTIFF pyramid screenshot"></button>
+        <button class="nav-dot" type="button" aria-label="Show task tracker screenshot"></button>
       </div>
     </div>
   </section>
@@ -569,6 +578,30 @@
       if (m.linux_url) document.getElementById("linux-appimage").href = m.linux_url;
     })
     .catch(() => { /* buttons + footer already point at the releases page */ });
+
+  // Hero rotator: auto-shuffle by default; a dot click jumps to that
+  // screenshot and stops the shuffle. Slides link to their example on GitHub.
+  (function () {
+    const slides = document.querySelectorAll(".shots a");
+    const urls = document.querySelectorAll(".url span");
+    const dots = document.querySelectorAll(".nav-dot");
+    let idx = 0;
+    let timer = null;
+    function show(i) {
+      idx = i;
+      slides.forEach((el, n) => el.classList.toggle("active", n === i));
+      urls.forEach((el, n) => el.classList.toggle("active", n === i));
+      dots.forEach((el, n) => el.classList.toggle("active", n === i));
+    }
+    dots.forEach((d, i) => d.addEventListener("click", () => {
+      if (timer) { clearInterval(timer); timer = null; }
+      show(i);
+    }));
+    show(0);
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      timer = setInterval(() => show((idx + 1) % slides.length), 5000);
+    }
+  })();
 
   // Download tabs: click to switch; auto-select the visitor's OS.
   (function () {
