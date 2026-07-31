@@ -186,7 +186,10 @@ def _launch_installer(installer: str):
 
     try:
         info = shell.ShellExecuteEx(
-            fMask=shellcon.SEE_MASK_NOCLOSEPROCESS, lpFile=installer, nShow=1
+            fMask=shellcon.SEE_MASK_NOCLOSEPROCESS,
+            lpFile=installer,
+            lpDirectory=os.path.dirname(installer),
+            nShow=1,
         )
     except pywintypes.error as error:
         raise OSError(str(error)) from error
