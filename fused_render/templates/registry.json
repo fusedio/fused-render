@@ -62,6 +62,10 @@
     "docs",
     "reader"
   ],
+  ".odt": [
+    "docs",
+    "reader"
+  ],
   ".ndjson": [
     "code",
     "duckdb",

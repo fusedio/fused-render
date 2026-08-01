@@ -366,8 +366,8 @@
     return;
   }
   const BASENAME = FILE.split(/[\\/]/).pop();
-  const WORD_EXT = /\.docx$/i;
-  const IS_DOCX = WORD_EXT.test(BASENAME);
+  const DOC_EXT = /\.(docx|odt)$/i;
+  const IS_DOC = DOC_EXT.test(BASENAME);
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
@@ -1500,9 +1500,9 @@
 
   // ---- boot: load the file + its sidecar, mount the editor ----
   $("boot").classList.add("hidden");
-  if (!IS_DOCX) {
+  if (!IS_DOC) {
     $("nofile").classList.remove("hidden");
-    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx files.";
+    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx and .odt files.";
     return;
   }
   let res;

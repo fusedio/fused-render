@@ -60,7 +60,7 @@ _ICON_VARIANT_FOR_TOKEN = {
     ),
     # documents / prose
     **dict.fromkeys(
-        "pdf md markdown txt log docx pptx tex ltx latex".split(), "doc"
+        "pdf md markdown txt log docx odt pptx tex ltx latex".split(), "doc"
     ),
     # audio / video
     **dict.fromkeys("mp4 mov m4v webm mp3 wav m4a ogg flac".split(), "media"),
@@ -125,6 +125,7 @@ _STANDARD_MIME_FOR_TOKEN = {
     "txt": "text/plain",
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "odt": "application/vnd.oasis.opendocument.text",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     # images
