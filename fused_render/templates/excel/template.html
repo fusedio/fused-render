@@ -122,6 +122,7 @@
     cursor: col-resize; z-index: 7;
   }
   .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
+  #colResizeGuide { border-left: 2px dashed var(--anchor); }
   .funnel {
     position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
     width: 18px; height: 16px; display: flex; align-items: center; justify-content: center;
@@ -1445,9 +1446,10 @@ function renderGrid() {
     grip.addEventListener("mousedown", (e) => {
       e.preventDefault(); e.stopPropagation();
       const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
-      colResizing = { c, colEl, table, startX: e.clientX,
+      colResizing = { c, colEl, table, startX: e.clientX, pendingX: e.clientX,
                       startW: parseFloat(colEl.style.width) || 90, grip };
       grip.classList.add("on");
+      showResizeGuide(e.clientX);
     });
     grip.addEventListener("click", (e) => e.stopPropagation());
     grip.addEventListener("dblclick", (e) => {
@@ -2572,6 +2574,28 @@ $("gridWrap").addEventListener("mousemove", (e) => {
   if (!dragging) return;
   if (td) { sel.r2 = +td.dataset.r; sel.c2 = +td.dataset.c; paintSel(); }
 });
+// Column widths aren't applied live while dragging: on a big/scrolled sheet
+// the grid's DOM can hold tens of thousands of rows, and table-layout:fixed
+// with sticky headers means every width write reflows the WHOLE table — one
+// such reflow can blow past a frame budget by 50-100x, so even rAF-batched
+// writes stall the drag. Instead we drag a cheap position:fixed guide line
+// (no table involved, so no reflow) and pay the one expensive reflow only
+// once, on mouseup.
+let resizeGuide = null;
+function showResizeGuide(x) {
+  if (!resizeGuide) {
+    resizeGuide = document.createElement("div");
+    resizeGuide.id = "colResizeGuide";
+    document.body.appendChild(resizeGuide);
+  }
+  const wrapRect = $("gridWrap").getBoundingClientRect();
+  resizeGuide.style.cssText =
+    `position:fixed; top:${wrapRect.top}px; height:${wrapRect.height}px; ` +
+    `left:${x}px; z-index:50; pointer-events:none;`;
+}
+function hideResizeGuide() {
+  if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
+}
 function applyColResize(x) {
   const w = Math.max(40, Math.round(colResizing.startW + x - colResizing.startX));
   colResizing.colEl.style.width = w + "px";
@@ -2584,13 +2608,14 @@ document.addEventListener("mousemove", (e) => {
   colResizing.raf = requestAnimationFrame(() => {
     if (!colResizing) return;
     colResizing.raf = null;
-    applyColResize(colResizing.pendingX);
+    showResizeGuide(colResizing.pendingX);
   });
 });
 document.addEventListener("mouseup", () => {
   if (colResizing) {
     if (colResizing.raf) { cancelAnimationFrame(colResizing.raf); colResizing.raf = null; }
-    if (colResizing.pendingX !== undefined) applyColResize(colResizing.pendingX);
+    applyColResize(colResizing.pendingX);
+    hideResizeGuide();
     const { c, colEl, grip } = colResizing;
     grip.classList.remove("on");
     S().colw = S().colw || {};
