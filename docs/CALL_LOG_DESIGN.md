@@ -79,6 +79,7 @@ Not everything is worth a record. The taxonomy, with the value of logging each:
 |---|---|---|---|
 | `POST /api/run` | `fused.runPython` | **yes, full detail** | The interesting one: params in, duration, result size, stdout, stderr, traceback. This *is* the feature. |
 | `POST /api/fs/write` | `fused.writeFile` | **yes** | Mutating, low volume, and "what did my app overwrite" is a real question. Log path + bytes + conflict outcome, never content. |
+| `POST /api/fs/upload` | `fused.uploadFile` | **yes** | The binary write (a pasted or dropped image/video, SPEC MD-23). Same rule as `/api/fs/write` — path + byte count, never the payload — so pasted media is not the one mutation that leaves no trace. |
 | `GET /api/fs/stat` | `fused.stat` | yes, thin | Cheap, but a page that stats in a loop is a real bug and only a log shows it. |
 | `GET /api/fs/raw` | `fused.readFile`, `fused.rawUrl` | yes, thin | High volume (every `<img>`, every ranged read). Log status/bytes/range — and see the sampling note in §6.3. |
 | `GET /api/fs/list`, `/walk`, `/conditions` | shell, not the app | no | Shell chrome, not the app's own calls. Attribution (§4.3) excludes them naturally. |

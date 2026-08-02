@@ -979,7 +979,11 @@
     // as literal text in every other markdown tool. So the ELEMENT is chosen
     // off the extension here: without this a clip renders as an <img> with a
     // source no browser can decode, i.e. a broken-image icon.
-    const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv)$/i;
+    // Every extension MEDIA_EXT can produce for a `video/*` blob must be in
+    // here, or a pasted clip renders as a broken <img>. A container the
+    // browser cannot decode (mkv) still belongs: a player reporting it cannot
+    // play the file says far more than a broken-image icon.
+    const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv|mkv)$/i;
 
     function imageWidget(alt, src) {
       const key = "im:" + alt + "|" + src;
@@ -1609,12 +1613,17 @@
     // else falls back to the file's own name, then to the MIME subtype, so an
     // unusual-but-valid type still lands on disk with a plausible extension
     // instead of none.
+    // Every `video/*` value here MUST also satisfy VIDEO_EXT, or the widget
+    // renders the clip as an <img> and the user gets a broken-image icon —
+    // which is exactly what `video/x-m4v` did before it was mapped, falling
+    // through to the subtype and producing `pasted-….x-m4v`. A source test
+    // pins that agreement for every entry rather than trusting this comment.
     const MEDIA_EXT = {
       "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
       "image/webp": "webp", "image/svg+xml": "svg", "image/avif": "avif",
-      "image/bmp": "bmp", "image/tiff": "tif",
+      "image/bmp": "bmp", "image/tiff": "tif", "image/x-icon": "ico",
       "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
-      "video/ogg": "ogv",
+      "video/ogg": "ogv", "video/x-m4v": "m4v", "video/x-matroska": "mkv",
     };
 
     // Images and video only. A drag from Finder can carry anything, and a paste
@@ -1625,19 +1634,70 @@
         list || [], (f) => /^(image|video)\//.test(f.type || ""));
     }
 
-    // pasted-YYYYMMDD-HHMMSS.ext, in local time. Timestamps never collide, so a
-    // paste needs neither a directory scan nor a prompt; `index` disambiguates
-    // the one case they would — several files in a single gesture, which all
-    // share the same second.
-    function mediaName(file, index) {
+    // Did this drag carry FILES, as opposed to text being dragged within the
+    // note? `dataTransfer.files` is empty during a dragover, so the type list
+    // is the only thing askable that early — and `drop` has to ask the SAME
+    // question, or the two disagree about which events the browser still owns.
+    function dragHasFiles(event) {
+      const types = (event.dataTransfer || {}).types;
+      return !!types && Array.prototype.indexOf.call(types, "Files") !== -1;
+    }
+
+    // pasted-YYYYMMDD-HHMMSS.ext, in local time — the name before it is checked
+    // for collisions (freeMediaName does that). The extension comes from the
+    // MIME type first because a pasted screenshot has no filename at all; the
+    // `x-` strip keeps an unmapped vendor type (`image/x-foo`) from producing
+    // a literal `.x-foo`.
+    function mediaName(file) {
       const pad = (n) => String(n).padStart(2, "0");
       const d = new Date();
       const stamp = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate())
         + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
       const named = /\.([a-z0-9]+)$/i.exec(file.name || "");
       const ext = MEDIA_EXT[file.type] || (named && named[1].toLowerCase())
-        || (file.type || "").split("/")[1] || "bin";
-      return "pasted-" + stamp + (index ? "-" + (index + 1) : "") + "." + ext;
+        || (file.type || "").split("/")[1].replace(/^x-/, "") || "bin";
+      return "pasted-" + stamp + "." + ext;
+    }
+
+    async function mediaExists(path) {
+      try {
+        await fused.stat(path);
+        return true;
+      } catch (err) {
+        // stat rejects for a path that is not there, which is the answer we
+        // want rather than a failure. Any other cause (the server being down)
+        // also reads as "not there" — and the upload right behind this will
+        // fail loudly on its own, so nothing is hidden by being optimistic.
+        return false;
+      }
+    }
+
+    // The first free `pasted-…` name in `assets`.
+    //
+    // The timestamp alone is NOT unique: two pastes inside the same second
+    // produce the same name and the upload does an unconditional replace, so
+    // the first file would be silently destroyed. Probing and bumping also
+    // covers several files in one gesture — each upload is awaited, so file 1
+    // is already on disk by the time file 2 is named.
+    async function freeMediaName(assets, file) {
+      const base = mediaName(file);
+      const dot = base.lastIndexOf(".");
+      const stem = base.slice(0, dot);
+      const ext = base.slice(dot);
+      let name = base;
+      // Bounded: a stat that answers "yes" to everything must not spin.
+      for (let n = 2; n < 100; n++) {
+        if (!(await mediaExists(assets + "/" + name))) return name;
+        name = stem + "-" + n + ext;
+      }
+      return name;
+    }
+
+    // One place says why a paste or a drop did not land — the same status
+    // element a failed save writes to, so there is a single error surface.
+    function mediaNotice(message) {
+      saveStateEl.textContent = message;
+      saveStateEl.classList.add("error");
     }
 
     // Write the blobs beside the note and link them in at `pos`.
@@ -1656,7 +1716,7 @@
           if (err.type !== "exists") throw err;
         }
         for (let i = 0; i < files.length; i++) {
-          const name = mediaName(files[i], i);
+          const name = await freeMediaName(assets, files[i]);
           // Awaited BEFORE the insert, deliberately: a link inserted first
           // could end up pointing at a file that never made it to disk. The
           // cost is that a very large video briefly stalls the editor.
@@ -1673,10 +1733,9 @@
           pos += insert.length;
         }
       } catch (err) {
-        // The same surface a failed save uses. Never swallowed: a paste that
-        // silently did nothing is indistinguishable from a broken editor.
-        saveStateEl.textContent = "Could not add the file: " + (err.message || "");
-        saveStateEl.classList.add("error");
+        // Never swallowed: a paste that silently did nothing is
+        // indistinguishable from a broken editor.
+        mediaNotice("Could not add the file: " + (err.message || ""));
       }
     }
 
@@ -1711,23 +1770,39 @@
       // Not optional and easy to miss: without preventDefault here the browser
       // never fires `drop` at all and instead NAVIGATES the webview to the
       // dropped file, which looks like the whole editor vanishing. Gated to a
-      // drag carrying files (`Files` is what the OS puts in `types` for a
-      // Finder drag) so CodeMirror's own text drag-and-drop is untouched —
-      // `dataTransfer.files` is empty during dragover, so the type list is the
-      // only thing that can be asked this early.
-      dragover(event, target) {
-        const types = (event.dataTransfer || {}).types;
-        if (!types || Array.prototype.indexOf.call(types, "Files") === -1) return false;
-        if (target.state.readOnly) return false;
+      // drag carrying files so CodeMirror's own text drag-and-drop is
+      // untouched. It deliberately does NOT check readOnly: refusing here
+      // would hand a file drop on a read-only note straight back to the
+      // browser, and navigating away is not what "read-only" should mean.
+      dragover(event) {
+        if (!dragHasFiles(event)) return false;
         event.preventDefault();
         return false;   // not "handled": CM still draws its own drop cursor
       },
 
       drop(event, target) {
-        const media = mediaFiles(event.dataTransfer && event.dataTransfer.files);
-        if (!media.length) return false;    // a text drag: CM's own behaviour
-        if (target.state.readOnly) return false;
+        // A text drag stays CodeMirror's — it moves the text, and this handler
+        // must not touch it. The question is whether the drag carried FILES,
+        // never whether media matched: dragover already committed to owning
+        // every file drag (per-file MIME is not readable that early), so drop
+        // has to honour that for all of them.
+        if (!dragHasFiles(event)) return false;
+        // Prevent FIRST, ask questions after. CM only calls preventDefault for
+        // a handler that returns true, so any `return false` below this line
+        // would hand the event back to the browser, whose default action for a
+        // file drop is to navigate the webview to the dropped file — the
+        // editor disappears, taking every edit since the last autosave with it
+        // (pagehide fires a best-effort save that may not land).
         event.preventDefault();
+        if (target.state.readOnly) {
+          mediaNotice("This note is read-only, so files can't be added to it.");
+          return true;
+        }
+        const media = mediaFiles(event.dataTransfer.files);
+        if (!media.length) {
+          mediaNotice("Only images and video can be added to a note.");
+          return true;
+        }
         // The one real difference from paste: dropping into the middle of a
         // note lands where the POINTER is, not where the caret happens to be.
         // posAtCoords answers null for a drop past the last line, which falls

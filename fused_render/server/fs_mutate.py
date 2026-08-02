@@ -678,14 +678,30 @@ def api_fs_write(request: Request, body: dict = Body(...),
     return result
 
 @router.post("/api/fs/upload")
-async def api_fs_upload(file: UploadFile = File(...), path: str = Form(...),
+async def api_fs_upload(request: Request, file: UploadFile = File(...),
+                        path: str = Form(...),
                         x_fused: str | None = Header(default=None)):
     # Multipart rather than base64-in-JSON: base64 inflates a payload by a
     # third, which is irrelevant for a screenshot and very relevant for a
     # pasted video. python-multipart is already a core dependency and
     # templates_api.api_import_templates is the existing UploadFile precedent.
-    result = _fs_upload(path, await file.read(), x_fused)
+    data = await file.read()
+    result = _fs_upload(path, data, x_fused)
     _invalidate_stat_cache(path)
+    # A binary write is a write: it belongs in the call log for the same reason
+    # /api/fs/write does — "what did my page put on disk" is a real question,
+    # and a pasted screenshot would otherwise be the one mutation that leaves
+    # no trace. Path and byte count only, never the bytes (calls.py). Refusals
+    # are read off the response object, since the helper answers a stat payload
+    # on success and a JSONResponse on every refusal.
+    shell_calls.enrich_write(
+        getattr(request.state, "fused_call", None),
+        path=path if isinstance(path, str) else "",
+        content=data,
+        status=getattr(result, "status_code", 200),
+        # Both refusals are 403; only a read-only target is `readonly`.
+        unauthorized=_require_fused(x_fused) is not None,
+    )
     return result
 
 @router.post("/api/fs/mkdir")

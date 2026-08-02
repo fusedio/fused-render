@@ -3687,11 +3687,17 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   (`fused.mkdir`, whose `exists` 409 from the second paste onwards is the
   expected case), upload each blob, insert `![](assets/<name>)`. The insert is
   an ordinary dispatch, so **undo removes it in one step**.
-  - **Names are timestamps**, `pasted-YYYYMMDD-HHMMSS.<ext>` in local time,
-    with a `-N` suffix for the second and later file of one gesture (they share
-    the second). Timestamps never collide, so a paste needs neither a directory
-    scan nor a prompt. The extension comes from the blob's MIME type, since a
-    pasted screenshot has no filename at all.
+  - **Names are timestamps**, `pasted-YYYYMMDD-HHMMSS.<ext>` in local time.
+    A timestamp is not by itself unique — two pastes inside one second, and
+    every file of a multi-file gesture, produce the same name, and the upload
+    replaces unconditionally — so the name is **probed with `fused.stat` and
+    bumped** (`-2`, `-3`, bounded) until it is free. Losing the first file to a
+    silent overwrite is not an acceptable cost for a tidy name. The extension
+    comes from the blob's MIME type, since a pasted screenshot has no filename
+    at all; an unmapped vendor type has its `x-` prefix stripped, and every
+    `video/*` mapping is pinned to produce an extension the video widget
+    recognises (`video/x-m4v` once produced `.x-m4v`, which rendered as a
+    broken image).
   - **A drop lands at the POINTER**, `posAtCoords` at the drop coordinates,
     falling back to the caret where that answers null (a drop past the last
     line). A paste lands at the caret. That difference is the only one, which
@@ -3702,9 +3708,21 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     file — indistinguishable from the editor vanishing. Gated on
     `dataTransfer.types` containing `Files`, which is the only thing askable
     that early (`dataTransfer.files` is empty during a dragover).
-  - **A read-only note is a no-op for both gestures**: the handler returns
-    false and the event falls through untouched, the same posture `whenWritable`
-    takes for every writing key (MD-1a/MD-15).
+  - **`drop` therefore prevents the default for EVERY file drag**, before it
+    filters for media and before it checks read-only. CodeMirror only calls
+    `preventDefault` for a handler that returns **true**, so returning false
+    for a dropped PDF would hand the event back to the browser — which
+    navigates the webview to the file, losing every edit since the last
+    autosave (`pagehide`'s save is best-effort and may not land). `dragover`
+    committed to owning file drags; `drop` honours that for all of them, and a
+    drop it cannot use **says so** ("Only images and video can be added to a
+    note") rather than doing nothing. Only a genuine *text* drag falls through
+    to CodeMirror — the test is whether the drag carried files, never whether
+    media matched.
+  - **A read-only note never gains media.** A *paste* falls through untouched,
+    the same posture `whenWritable` takes for every writing key (MD-1a/MD-15).
+    A *drop* still prevents the default — the editor must not navigate away —
+    and reports that the note is read-only.
   - **The upload is awaited before the link is inserted**, so a link can never
     point at a file that failed to write; a failure surfaces through the same
     status element a failed save uses, never silently. The cost is that a very
@@ -3719,7 +3737,9 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     `fused.uploadFile(path, blob)` — `/api/fs/write` takes a string only. It
     reuses `_fs_write`'s guard sequence exactly (X-Fused, the mount-backed /
     `mount_read_only` branch before any kernel probe, `_writable`, the `readonly`
-    403 of RO-2) and, like it, never creates intermediate directories.
+    403 of RO-2) and, like it, never creates intermediate directories. It is
+    logged like `/api/fs/write` — path and byte count, never the payload — so
+    pasted media is not the one mutation that leaves no trace (CL-*).
 
 ## 33. Git View — Repository History Scoped to the Open Path (D193)
 

@@ -1295,10 +1295,9 @@ def test_the_file_name_is_a_timestamp_so_pastes_never_collide(source, media_help
     name = source[source.index("function mediaName("):]
     name = name[:name.index("\n    }")]
     assert '"pasted-" + stamp' in name
-    # Several files in ONE gesture share the second, which is the one case a
-    # timestamp alone would collide on.
-    assert "index" in name
-    assert "mediaName(files[i], i)" in media_helper
+    # The stamp is only the STARTING point — see the collision test below for
+    # what makes it actually unique.
+    assert "freeMediaName(" in media_helper
 
 
 def test_the_upload_is_awaited_before_the_link_is_inserted(media_helper):
@@ -1310,10 +1309,9 @@ def test_the_upload_is_awaited_before_the_link_is_inserted(media_helper):
 
 
 def test_a_failed_upload_surfaces_instead_of_vanishing(media_helper):
-    # The template's existing error surface (the same one a failed save uses),
-    # never a silently swallowed catch.
-    assert "saveStateEl.textContent" in media_helper
-    assert 'saveStateEl.classList.add("error")' in media_helper
+    # Reported through mediaNotice — the template's existing error surface,
+    # the same one a failed save uses — never a silently swallowed catch.
+    assert "mediaNotice(" in media_helper
 
 
 def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_helper):
@@ -1325,7 +1323,7 @@ def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_help
     # point. Reading the selection in here would silently ignore it.
     assert "function insertMediaFiles(view, files, pos)" in media_helper
     assert "state.selection" not in media_helper
-def test_dragover_prevents_default_or_the_drop_never_happens(paste_handler):
+def test_dragover_prevents_default_or_the_drop_never_happens(source, paste_handler):
     """Without preventDefault on dragover the browser refuses the drop.
 
     It then navigates the webview to the dropped file instead, which looks
@@ -1335,7 +1333,13 @@ def test_dragover_prevents_default_or_the_drop_never_happens(paste_handler):
     dragover = paste_handler[paste_handler.index("dragover("):]
     dragover = dragover[:dragover.index("\n      }")]
     assert "preventDefault()" in dragover
-    assert "dataTransfer" in dragover
+    assert "dragHasFiles(event)" in dragover
+    # `Files` in the type list is the only thing askable this early —
+    # dataTransfer.files is empty during a dragover — and drop asks the SAME
+    # question, so the two cannot disagree about which drags are ours.
+    helper = source[source.index("function dragHasFiles("):]
+    helper = helper[:helper.index("\n    }")]
+    assert '"Files"' in helper and "dataTransfer" in helper
 
 
 def test_drop_reads_the_files_and_reuses_the_paste_pipeline(paste_handler):
@@ -1359,3 +1363,90 @@ def test_a_drop_lands_at_the_pointer_not_at_the_caret(paste_handler):
 def test_dropping_media_is_a_no_op_on_a_read_only_note(paste_handler):
     drop = paste_handler[paste_handler.index("\n      drop("):]
     assert "state.readOnly" in drop
+
+
+def test_every_file_drop_prevents_default_whatever_it_carried(paste_handler):
+    """A PDF dropped on a note must not navigate the webview away.
+
+    `dragover` commits to owning EVERY drag carrying files — per-file MIME is
+    not readable that early, so it cannot be choosier. CodeMirror only calls
+    preventDefault for a handler returning true, so a `return false` in `drop`
+    hands the event back to the browser, whose default action for a file drop
+    is to navigate to the file: the editor vanishes, taking any edits since the
+    last autosave with it. So `drop` prevents FIRST and asks questions after.
+    """
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    prevent = drop.index("event.preventDefault()")
+    # Nothing is allowed to return before the preventDefault except the
+    # not-a-file-drag fall-through.
+    before = drop[:prevent]
+    assert "dragHasFiles(event)" in before
+    assert "mediaFiles(" not in before, "the media filter must come AFTER"
+    assert "readOnly" not in before, "the read-only bail must come AFTER"
+
+
+def test_a_text_drag_still_falls_through_to_codemirror(paste_handler):
+    # Dragging selected text within the note is CM's own behaviour and must be
+    # untouched — the question is whether the drag carried FILES, never whether
+    # media matched.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    head = drop[:drop.index("event.preventDefault()")]
+    assert "if (!dragHasFiles(event)) return false;" in head
+
+
+def test_a_non_media_file_drop_says_so_instead_of_doing_nothing(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    tail = drop[drop.index("event.preventDefault()"):]
+    assert tail.count("mediaNotice(") >= 2, (
+        "both refusals — read-only, and nothing droppable in the drag — report")
+    assert "Only images and video" in tail
+
+
+def test_the_notice_is_the_same_surface_a_failed_save_uses(source):
+    notice = source[source.index("function mediaNotice("):]
+    notice = notice[:notice.index("\n    }")]
+    assert "saveStateEl.textContent" in notice
+    assert 'saveStateEl.classList.add("error")' in notice
+
+
+def test_two_pastes_in_the_same_second_do_not_overwrite_each_other(source, media_helper):
+    """The timestamp alone is not unique.
+
+    Two pastes within one second produce the same name, and the upload does an
+    unconditional os.replace — so the first file would be silently destroyed.
+    The name is probed for existence and bumped until it is free, which covers
+    the several-files-in-one-gesture case as well (each upload is awaited, so
+    file 1 is already on disk when file 2 is named).
+    """
+    assert "await freeMediaName(" in media_helper
+    free = source[source.index("async function freeMediaName("):]
+    free = free[:free.index("\n    }")]
+    assert "mediaExists(" in free
+    # Bounded: a stat that always answers "yes" must not spin forever.
+    assert "n < 100" in free
+    exists = source[source.index("async function mediaExists("):]
+    exists = exists[:exists.index("\n    }")]
+    assert "fused.stat(" in exists
+
+
+def test_every_video_mime_maps_to_an_extension_the_widget_plays(source):
+    """The trap: `video/x-m4v` fell through to the MIME subtype and produced
+    `pasted-….x-m4v`, which VIDEO_EXT does not match — so the clip rendered as
+    a broken <img>. The two tables have to agree, for every entry."""
+    table = source[source.index("const MEDIA_EXT = {"):]
+    table = table[:table.index("};")]
+    video_ext = re.search(r"const VIDEO_EXT = /\\\.\(([a-z0-9|]+)\)\$/i", source)
+    assert video_ext, "VIDEO_EXT should still be an extension alternation"
+    playable = set(video_ext.group(1).split("|"))
+    mapped = re.findall(r'"video/[^"]+": "([a-z0-9]+)"', table)
+    assert mapped
+    assert set(mapped) <= playable, set(mapped) - playable
+    assert '"video/x-m4v"' in table
+
+
+def test_an_unmapped_x_prefixed_mime_does_not_become_the_extension(source):
+    # `image/x-foo` must not produce `name.x-foo`; the fallback strips the
+    # `x-` vendor prefix so an unmapped type still lands with a usable name.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert 'replace(/^x-/, "")' in name
