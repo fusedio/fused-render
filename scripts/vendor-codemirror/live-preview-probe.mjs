@@ -202,6 +202,12 @@ for (const iter = set.iter(); iter.value; iter.next()) {
     cls: spec.class || (spec.widget ? spec.widget.key : null),
     text: doc.slice(iter.from, iter.to),
     dom: spec.widget ? widgetDom(spec.widget) : null,
+    // A mark can carry its own element and attributes (`tagName`/`attributes`),
+    // which is how a range becomes an actual anchor without replacing the text
+    // under it. Reported for the same reason a widget's DOM is: what a mark
+    // renders AS is the behaviour, and the range alone does not say.
+    tag: spec.tagName || null,
+    attrs: spec.attributes || null,
   });
 }
 process.stdout.write(JSON.stringify(
