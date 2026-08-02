@@ -1124,6 +1124,28 @@
       }
       const isBlocked = (from, to) => blocked.some(([a, b]) => from < b && to > a);
 
+      // A bare `https://…` or the inside of an angle `<https://…>` (MD-24).
+      // A MARK carrying its own `<a>`, not a replacement widget: the range's
+      // display text ALREADY equals its target, so a widget would replace those
+      // characters with an element rendering the identical characters — no
+      // visible gain, and the caret loses the ability to sit inside the URL and
+      // edit it. Nothing is rewritten on disk either (D200), which is what makes
+      // this repair URLs in notes that were written long before it existed.
+      function pushUrl(from, to) {
+        const raw = state.doc.sliceString(from, to);
+        // GFM's autolink extension matches three shapes, and only one of them
+        // is already a URL: `www.x.com` and `me@x.com` are URL nodes too, and
+        // an href of "www.x.com" resolves against this page rather than the web.
+        const href = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw
+          : raw.includes("@") ? "mailto:" + raw
+          : "https://" + raw;
+        out.push(CM.Decoration.mark({
+          class: "lp-link",
+          tagName: "a",
+          attributes: { href, target: "_blank", rel: "noopener" },
+        }).range(from, to));
+      }
+
       // Frontmatter is not part of the vendored grammar, and what the grammar
       // makes of it instead is actively wrong: `---` opens as a HorizontalRule
       // and `title: x\n---` closes as a SetextHeading2, so a YAML block would
@@ -1240,6 +1262,40 @@
             pushWidget(node.from, node.to, match[1]
               ? imageWidget(match[2], match[3])
               : markdownLinkWidget(match[2], match[3]));
+            return false;
+          }
+          if (name === "URL") {
+            // A `[lbl](target)` link's URL is markup INSIDE a node the branch
+            // above owns — either replaced whole by the link widget (and then
+            // never reached, since that branch returns false) or deliberately
+            // left as source, as for a titled or reference link. Decorating it
+            // here would be asserting a second time about the same range.
+            const parent = node.node.parent;
+            if (parent && (parent.name === "Link" || parent.name === "Image")) {
+              return false;
+            }
+            // The grammar does not emit a URL node inside a fence or a code
+            // span, so this guard is belt-and-braces — but it is the SAME
+            // narrow code-node set the wikilink pass uses (MD-3), rather than a
+            // new "is this code?" rule, because the last one of those silently
+            // stopped every wikilink from rendering.
+            if (within(tree, node.from + 1, CODE_NODES)) return false;
+            // No `open` check: a bare URL hides nothing, so there is nothing for
+            // the caret to reveal. Its own text stays exactly as typed either
+            // way, and un-styling it under the caret would only make the line
+            // flicker. An Autolink's brackets DO hide, and they reveal below.
+            pushUrl(node.from, node.to);
+            return false;
+          }
+          if (name === "LinkMark") {
+            // Only an angle autolink's `<`/`>` vanish. A `[lbl](target)` link's
+            // marks belong to a node already replaced whole, and a wikilink's
+            // inner brackets belong to the regex pass — hiding either here would
+            // put a replacement inside a replacement.
+            const parent = node.node.parent;
+            if (!parent || parent.name !== "Autolink") return false;
+            if (open) pushMark(node.from, node.to, "lp-mark");
+            else pushHide(node.from, node.to);
             return false;
           }
           return true;

@@ -64,8 +64,15 @@ A [[Wiki Link|label]], a ![[embed.png]] and a [[Ghost]] here.
 
 Back up to [[#Heading one]] in this same note.
 
+Bare https://example.com/a here.
+
+Angle <https://example.com/b> here.
+
+An inline `https://example.com/d` stays code.
+
 ```python
 x = "[[not a link]]"
+y = "https://example.com/e"
 ```
 """
 
@@ -315,6 +322,76 @@ def test_the_two_states_are_told_apart_by_the_widget_key(note_file):
     assert unknown["cls"] != scanned["cls"]
 
 
+# ------------------------------------------- bare and angle autolinks (MD-24)
+#
+# The grammar has parsed these all along — a bare `https://…` is a `URL` node
+# and `<https://…>` an `Autolink` — and the builder simply ignored both node
+# names, so a URL someone typed or pasted rendered as unclickable grey prose
+# next to an explicit `[lbl](url)` that rendered as a link. The fix is
+# display-only (D200): no document text changes, so it also repairs the URLs in
+# notes people already wrote.
+
+
+def test_a_bare_url_renders_as_a_link_without_rewriting_it(note_file):
+    plain = decorate(note_file, caret=0)
+    link = at(plain, "https://example.com/a", "mark")
+    assert link, "a bare URL should be decorated"
+    assert link[0]["cls"] == "lp-link", link
+    # A MARK, not a widget: the text under it is untouched, so the document
+    # still says exactly what the user typed and the caret can still sit in it.
+    assert link[0]["tag"] == "a"
+    assert link[0]["attrs"]["href"] == "https://example.com/a"
+    assert link[0]["attrs"]["target"] == "_blank"
+
+
+def test_an_angle_autolink_hides_its_brackets_and_gives_them_back(note_file):
+    plain = decorate(note_file, caret=0)
+    # Unlike a bare URL, `<…>` HAS markup worth hiding, so the reveal rule
+    # applies to it exactly as it does to `**` or `# `.
+    assert at(plain, "<", "hide"), "the opening angle bracket should be hidden"
+    assert at(plain, ">", "hide")
+    assert at(plain, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+
+    caret = NOTE.index("<https://example.com/b>") + 4
+    revealed = decorate(note_file, caret=caret, params=EDITING)
+    assert not at(revealed, "<", "hide")
+    assert at(revealed, "<", "mark")[0]["cls"] == "lp-mark"
+    # Still a link while revealed: showing the source must not un-style it.
+    assert at(revealed, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+
+
+def test_a_schemeless_autolink_gets_an_href_that_leaves_this_page(tmp_path):
+    """GFM autolinks three shapes, and two of them are not URLs yet.
+
+    `www.x.com` and `me@x.com` are `URL` nodes just like `https://…` is, so
+    using the matched text as the href verbatim would produce a relative link
+    that resolves against /render?path=… — the same trap MD-4a records.
+    """
+    path = tmp_path / "u.md"
+    # The caret sits on line 1, away from the content: see the note in
+    # test_a_hashtag_is_left_as_prose.
+    path.write_text("top\n\nSee www.example.com or me@example.com.\n",
+                    encoding="utf-8")
+    plain = decorate(str(path), caret=0)
+    assert at(plain, "www.example.com", "mark")[0]["attrs"]["href"] \
+        == "https://www.example.com"
+    assert at(plain, "me@example.com", "mark")[0]["attrs"]["href"] \
+        == "mailto:me@example.com"
+
+
+def test_an_explicit_link_is_still_one_widget_and_not_also_a_url_mark(note_file):
+    """The URL inside `[lbl](url)` is markup the Link widget already replaced.
+
+    Decorating it a second time as a bare URL would be both wrong (it is not
+    shown) and a collision risk, so the URL pass has to leave a Link's own
+    children alone.
+    """
+    plain = decorate(note_file, caret=0)
+    assert at(plain, "[ext](https://x.com)", "widget")
+    assert not at(plain, "https://x.com")
+    assert not at(plain, "../CONTRIBUTING.md#Install")
+
+
 # --------------------------------------------------- what must NOT render
 
 
@@ -323,6 +400,8 @@ def test_a_fenced_block_is_never_a_link_or_a_tag(note_file):
     # MD-3's code-masking rule, holding on this side too: graph.py would not
     # call these edges, so the page must not draw them.
     assert not at(plain, "[[not a link]]")
+    # And a URL in that fence is a string literal, not a link (MD-24).
+    assert not at(plain, "https://example.com/e")
     # The fence itself is styled as code, and keeps its own markers visible.
     assert [d for d in plain if d["cls"] == "lp-fence-line"]
     assert not at(plain, "```", "hide")
@@ -337,6 +416,20 @@ def test_frontmatter_is_dimmed_and_never_a_rule_or_a_heading(note_file):
     assert inside == [], inside
     fm = [d for d in plain if d["cls"] == "lp-fm-line"]
     assert len(fm) == 4, fm  # ---, title, tags, ---
+
+
+def test_a_url_in_inline_code_is_code_not_a_link(note_file):
+    """Same line as MD-3's code masking, on the inline side.
+
+    Read the module docstring before touching the guard that makes this pass:
+    an over-broad "is this code?" list once silently stopped every wikilink
+    from rendering, and that regression is invisible in a diff.
+    """
+    plain = decorate(note_file, caret=0)
+    assert not at(plain, "https://example.com/d")
+    # The span is still rendered as code, so this is the absence of a link
+    # rather than the absence of any decoration at all.
+    assert at(plain, "`https://example.com/d`", "mark")[0]["cls"] == "lp-code"
 
 
 def test_a_hashtag_is_left_as_prose(tmp_path):
