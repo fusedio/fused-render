@@ -1446,10 +1446,11 @@ function renderGrid() {
     grip.addEventListener("mousedown", (e) => {
       e.preventDefault(); e.stopPropagation();
       const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
+      const wrapRect = $("gridWrap").getBoundingClientRect();
       colResizing = { c, colEl, table, startX: e.clientX, pendingX: e.clientX,
-                      startW: parseFloat(colEl.style.width) || 90, grip };
+                      startW: parseFloat(colEl.style.width) || 90, grip, wrapRect };
       grip.classList.add("on");
-      showResizeGuide(e.clientX);
+      showResizeGuide(e.clientX, wrapRect);
     });
     grip.addEventListener("click", (e) => e.stopPropagation());
     grip.addEventListener("dblclick", (e) => {
@@ -2582,16 +2583,20 @@ $("gridWrap").addEventListener("mousemove", (e) => {
 // (no table involved, so no reflow) and pay the one expensive reflow only
 // once, on mouseup.
 let resizeGuide = null;
-function showResizeGuide(x) {
+function showResizeGuide(x, wrapRect) {
   if (!resizeGuide) {
     resizeGuide = document.createElement("div");
     resizeGuide.id = "colResizeGuide";
+    resizeGuide.style.cssText =
+      `position:fixed; top:${wrapRect.top}px; height:${wrapRect.height}px; ` +
+      `z-index:50; pointer-events:none;`;
     document.body.appendChild(resizeGuide);
   }
-  const wrapRect = $("gridWrap").getBoundingClientRect();
-  resizeGuide.style.cssText =
-    `position:fixed; top:${wrapRect.top}px; height:${wrapRect.height}px; ` +
-    `left:${x}px; z-index:50; pointer-events:none;`;
+  // left is the only thing that changes per frame — a plain style write, no
+  // getBoundingClientRect() here: that call forces a layout flush, and doing
+  // it every rAF frame for a slow multi-second drag reintroduces a per-frame
+  // reflow cost on a big table, exactly what this guide line exists to avoid.
+  resizeGuide.style.left = x + "px";
 }
 function hideResizeGuide() {
   if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
@@ -2608,7 +2613,7 @@ document.addEventListener("mousemove", (e) => {
   colResizing.raf = requestAnimationFrame(() => {
     if (!colResizing) return;
     colResizing.raf = null;
-    showResizeGuide(colResizing.pendingX);
+    showResizeGuide(colResizing.pendingX, colResizing.wrapRect);
   });
 });
 document.addEventListener("mouseup", () => {
