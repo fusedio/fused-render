@@ -366,8 +366,14 @@
     return;
   }
   const BASENAME = FILE.split(/[\\/]/).pop();
-  const WORD_EXT = /\.docx$/i;
-  const IS_DOCX = WORD_EXT.test(BASENAME);
+  const DOC_EXT = /\.(docx|odt)$/i;
+  const IS_DOC = DOC_EXT.test(BASENAME);
+  // Pandoc's docx writer turns comment-start/comment-end spans into native
+  // Word comments; its odt writer has no such support and would inline the
+  // comment text as visible body content instead. Only docx gets the
+  // comment-preserving serialization — odt saves drop comments the same way
+  // non-docx export downloads already do.
+  const IS_DOCX = /\.docx$/i.test(BASENAME);
   document.title = "Docs — " + BASENAME;
 
   // ---- vendored asset loading (relative src 404s inside the render iframe) ----
@@ -1258,7 +1264,7 @@
     S.saving = true; updateSavedTag();
     try {
       const doc = S.view.state.doc;
-      const html = docToSaveHtml(doc);
+      const html = IS_DOCX ? docToSaveHtml(doc) : docToHtml(doc);
       const keep = (await loadSidecar()).docs.versions.map((v) => v.sha);
       const res = await py({ action: "save", file: FILE, html, keep: JSON.stringify(keep),
         expected_mtime: String(fileMtime ?? "") });
@@ -1332,7 +1338,7 @@
     try {
       // A Word download keeps native comments; other formats get content only.
       const html = fmt === "docx" ? docToSaveHtml(S.view.state.doc) : docToHtml(S.view.state.doc);
-      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(WORD_EXT, ""), html, fmt });
+      const res = await py({ action: "export", file: FILE, title: BASENAME.replace(DOC_EXT, ""), html, fmt });
       if (res.error) { toast("Export failed: " + res.error, 5000); return; }
       const a = document.createElement("a"); a.href = fused.rawUrl(res.path); a.download = res.name; a.click();
       toast("Downloaded " + res.name);
@@ -1362,13 +1368,13 @@
       const dirAt = (i) => { const q = segs.slice(0, i + 1).join("/"); return winRoot ? (i ? q : q + "/") : "/" + q; };
       const crumb = (winRoot ? "" : `<span data-dir="/" style="cursor:pointer">/</span>`) + segs.map((s, i) =>
         `${i || !winRoot ? " › " : ""}<span data-dir="${esc(dirAt(i))}" style="cursor:pointer">${esc(s)}</span>`).join("");
-      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(WORD_EXT, "");
+      const prevName = card.querySelector("#fbName") ? card.querySelector("#fbName").value : BASENAME.replace(DOC_EXT, "");
       card.innerHTML = `<div style="font-weight:700;font-size:15px;margin-bottom:10px">Save a copy</div>
         <div style="font-size:12px;color:var(--ink-2);margin-bottom:8px;word-break:break-all">${crumb}</div>
         <div style="border:1px solid var(--hair);border-radius:6px;max-height:240px;overflow-y:auto;font-size:13px">
           ${d.path !== d.parent ? `<div data-dir="${esc(d.parent)}" style="padding:7px 10px;cursor:pointer">⬆ ..</div>` : ""}
           ${d.dirs.map((n) => `<div data-dir="${esc(d.path.replace(/\/$/, "") + "/" + n)}" style="padding:7px 10px;cursor:pointer">📁 ${esc(n)}</div>`).join("")}
-          ${d.files.map((n) => `<div class="fb-file" data-name="${esc(n.replace(/\.docx$/i, ""))}" style="padding:7px 10px;cursor:pointer;color:var(--ink-2)">📄 ${esc(n)}</div>`).join("")}
+          ${d.files.map((n) => `<div class="fb-file" data-name="${esc(n.replace(DOC_EXT, ""))}" style="padding:7px 10px;cursor:pointer;color:var(--ink-2)">📄 ${esc(n)}</div>`).join("")}
           ${!d.dirs.length && !d.files.length ? `<div style="padding:10px;color:var(--ink-3)">Empty folder</div>` : ""}
         </div>
         <label style="display:block;margin-top:12px;font-size:12px;color:var(--ink-2)">File name
@@ -1500,9 +1506,9 @@
 
   // ---- boot: load the file + its sidecar, mount the editor ----
   $("boot").classList.add("hidden");
-  if (!IS_DOCX) {
+  if (!IS_DOC) {
     $("nofile").classList.remove("hidden");
-    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx files.";
+    $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx and .odt files.";
     return;
   }
   let res;
