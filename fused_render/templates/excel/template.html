@@ -102,7 +102,8 @@
   }
   /* ---- grid ---- */
   #gridWrap { flex: 1; overflow: auto; margin: 0 8px; border: 1px solid var(--border);
-    border-radius: 8px 8px 0 0; background: var(--panel2); outline: none; position: relative; }
+    border-radius: 8px 8px 0 0; background: var(--panel2); outline: none; position: relative;
+    overflow-anchor: none; }
   table { border-collapse: separate; border-spacing: 0; font-size: 12px;
     font-variant-numeric: tabular-nums; user-select: none; table-layout: fixed; }
   td, th { border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid); padding: 0; }
@@ -1314,8 +1315,8 @@ function cellClassAndStyle(td, r, c) {
   }
 }
 
-function frozenTop(dIdx) {   // sticky offset: letters row (23px) + rows above
-  return 23 + dIdx * 25;
+function frozenTop(dIdx) {   // sticky offset: letters row + rows above
+  return HEAD_H + dIdx * ROW_H;
 }
 function makeRowTr(r, cols, dIdx) {
   const sh = S();
@@ -1472,11 +1473,16 @@ function renderGrid() {
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  vis.forEach((r, dIdx) => tbody.appendChild(makeRowTr(r, cols, dIdx)));
+  const freeze = Math.min(sh.freeze || 0, vis.length);
+  for (let d = 0; d < freeze; d++) tbody.appendChild(makeRowTr(vis[d], cols, d));
+  const padTop = makePadRow(cols), padBot = makePadRow(cols);
+  tbody.append(padTop, padBot);
   table.appendChild(tbody);
   wrap.innerHTML = "";
   wrap.appendChild(table);
   wrap._tbody = tbody;
+  vgrid = { vis, cols, freeze, tbody, padTop, padBot, pos: null, start: freeze, end: freeze, raf: null };
+  updateViewport(true);
 
   if (sh.big) {
     const bar = document.createElement("div"); bar.id = "moreBar";
@@ -1493,12 +1499,80 @@ function renderGrid() {
   paintSel();
 }
 
+// ---- row virtualization ----------------------------------------------------
+// The tbody only ever holds the rows near the viewport (plus frozen rows),
+// between two spacer rows sized to stand in for everything unmounted. Every
+// layout/paint the grid triggers — scrolling, a column resize, a repaint —
+// stays proportional to the viewport instead of to the loaded row count.
+const ROW_H = 24, HEAD_H = 23, OVERSCAN = 40;   // td.cell is 24px tall incl. border (border-box)
+let vgrid = null;
+function makePadRow(cols) {
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = Math.min(cols + 1, 1000);
+  td.style.cssText = "padding:0;border:0;height:0";
+  tr.appendChild(td);
+  tr._pad = td;
+  return tr;
+}
+function updateViewport(force) {
+  if (!vgrid) return;
+  if (editing && editing.input.isConnected) return;   // never recycle the row hosting the editor
+  const wrap = $("gridWrap");
+  const { vis, cols, freeze, tbody, padTop, padBot } = vgrid;
+  const total = vis.length;
+  const first = Math.max(freeze, Math.floor((wrap.scrollTop - HEAD_H) / ROW_H));
+  const last = Math.min(total, Math.ceil((wrap.scrollTop - HEAD_H + wrap.clientHeight) / ROW_H) + 1);
+  if (!force && first >= vgrid.start && last <= vgrid.end) return;
+  const start = Math.max(freeze, first - OVERSCAN);
+  const end = Math.min(total, Math.max(start, last) + OVERSCAN);
+  for (let tr = padTop.nextSibling; tr && tr !== padBot; ) {
+    const next = tr.nextSibling;
+    if (tr._vr !== undefined) for (let c = 0; c < cols; c++) tds.delete(tr._vr + "," + c);
+    tr.remove();
+    tr = next;
+  }
+  padTop._pad.style.height = (start - freeze) * ROW_H + "px";
+  padBot._pad.style.height = (total - end) * ROW_H + "px";
+  const frag = document.createDocumentFragment();
+  for (let d = start; d < end; d++) {
+    const tr = makeRowTr(vis[d], cols, d);
+    tr._vr = vis[d];
+    frag.appendChild(tr);
+  }
+  tbody.insertBefore(frag, padBot);
+  vgrid.start = start; vgrid.end = end;
+  paintSelCells();
+}
+function displayIdx(r) {   // sheet row index -> position among rendered rows
+  if (!vgrid) return -1;
+  if (!vgrid.pos) { vgrid.pos = new Map(); vgrid.vis.forEach((rr, i) => vgrid.pos.set(rr, i)); }
+  const d = vgrid.pos.get(r);
+  return d === undefined ? -1 : d;
+}
+function scrollCellIntoView(r, c) {
+  let td = tdAt(r, c);
+  if (!td && vgrid) {
+    const d = displayIdx(r);
+    if (d >= vgrid.freeze) {
+      const wrap = $("gridWrap");
+      const band = HEAD_H + vgrid.freeze * ROW_H;   // sticky header + frozen rows
+      const y = HEAD_H + d * ROW_H;
+      if (y < wrap.scrollTop + band) wrap.scrollTop = y - band;
+      else if (y + ROW_H > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = y + ROW_H - wrap.clientHeight;
+      updateViewport(false);
+      td = tdAt(r, c);
+    }
+  }
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 function appendRows(from) {
   const sh = S();
-  const wrap = $("gridWrap");
-  if (!wrap._tbody) { renderGrid(); return; }
-  const cols = nCols();
-  for (let r = from; r < sh.loaded.length; r++) wrap._tbody.appendChild(makeRowTr(r, cols, r));
+  if (!$("gridWrap")._tbody || !vgrid) { renderGrid(); return; }
+  for (let r = from; r < sh.loaded.length; r++) vgrid.vis.push(r);
+  vgrid.pos = null;
+  updateViewport(true);
   updateMoreBar();
   updateChip();
 }
@@ -1547,7 +1621,7 @@ function paint() {
   paintSel();
 }
 
-function paintSel() {
+function paintSelCells() {   // the DOM half of paintSel — rerun after a remount
   if (!book) return;
   const { r1, c1, r2, c2, ar, ac } = normSel();
   document.querySelectorAll("td.sel, td.anchor").forEach((td) => td.classList.remove("sel", "anchor"));
@@ -1568,6 +1642,12 @@ function paintSel() {
   document.querySelectorAll(`th[data-col]`).forEach((th) => {
     const c = +th.dataset.col; if (c >= c1 && c <= c2) th.classList.add("hl");
   });
+}
+
+function paintSel() {
+  if (!book) return;
+  paintSelCells();
+  const { r1, c1, r2, c2, ar, ac } = normSel();
   $("nameBox").value = r1 === r2 && c1 === c2 ? refName(ar, ac) : `${refName(r1, c1)}:${refName(r2, c2)}`;
   if (!editing) $("fxInput").value = raw(ar, ac);
   const sh = S();
@@ -1619,8 +1699,7 @@ function setSel(r1, c1, r2 = r1, c2 = c1, ar = r1, ac = c1) {
   commitEdit();
   sel = { ar, ac, r1, c1, r2, c2 };
   paintSel();
-  const td = tds.get(ar + "," + ac);
-  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+  scrollCellIntoView(ar, ac);
 }
 
 function renderTabs() {
@@ -1708,6 +1787,11 @@ function fetchRows(reset) {
 }
 
 $("gridWrap").addEventListener("scroll", () => {
+  if (vgrid && !vgrid.raf) {
+    vgrid.raf = requestAnimationFrame(() => {
+      if (vgrid) { vgrid.raf = null; updateViewport(false); }
+    });
+  }
   if (!book || !isBig()) return;
   const w = $("gridWrap");
   if (w.scrollTop + w.clientHeight > w.scrollHeight - 500) {
@@ -1762,6 +1846,7 @@ function commitEdit() {
     setCell(r, c, input.value);
     markDirty();
   }
+  updateViewport(false);   // catch up on any scrolling deferred while editing
   paint();
   $("gridWrap").focus();
 }
@@ -1769,6 +1854,7 @@ function cancelEdit() {
   if (!editing) return;
   acClose();
   editing = null;
+  updateViewport(false);
   paint();
   $("gridWrap").focus();
 }
@@ -1777,8 +1863,7 @@ function move(dr, dc, extend = false) {
   const C = Math.max(0, Math.min(nCols() - 1, (extend ? sel.c2 : sel.ac) + dc));
   if (extend) { sel.r2 = R; sel.c2 = C; paintSel(); }
   else setSel(R, C);
-  const td = tdAt(R, C);
-  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+  scrollCellIntoView(R, C);
 }
 
 // ================= drag-fill (fill handle) =================
@@ -1881,10 +1966,10 @@ function finishColResize(x) {
   if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
   colResizing = null;
 }
-// Column widths aren't applied live while dragging: on a big/scrolled sheet the
-// grid's DOM can hold tens of thousands of rows, and table-layout:fixed with
-// sticky headers means every width write reflows the WHOLE table. So during
-// the drag we only move a cheap position:fixed guide line (outside the table,
+// Column widths aren't applied live while dragging: table-layout:fixed with
+// sticky headers means every width write reflows the whole table (cheap now
+// that the tbody is virtualized, but still pointless work per frame). During
+// the drag we only move a position:fixed guide line (outside the table,
 // so no reflow); its geometry is captured once at drag start and never
 // re-read mid-drag (a getBoundingClientRect() read forces the same layout
 // flush a write would). The real width, and the one expensive reflow, happen
