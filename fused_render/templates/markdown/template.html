@@ -1655,6 +1655,162 @@
       { key: "Mod-Enter", run: whenWritable(toggleCheckbox) },
     ];
 
+    // ---- ordered-list renumbering (MD-25) ----------------------------------
+    // `markdownKeymap` renumbers on Enter only — `insertNewlineContinueMarkup`
+    // calls the grammar package's own `renumberList`, which is not exported, so
+    // it cannot be reused. Every OTHER way of changing a list leaves the numbers
+    // stale: Backspace (`deleteMarkupBackward` does not renumber), selecting a
+    // row and deleting it, ⌘X, ⌘⇧K, a paste in the middle. That is most of them,
+    // which is why this hangs off a transactionFilter rather than more keys —
+    // one place that sees every edit, whatever produced it.
+    //
+    // Text, not the syntax tree. A filter runs before the new state exists and
+    // `tr.state` would force one to be built and then possibly discarded; the
+    // shape being matched here (marker at the start of a line) is one the tree
+    // adds nothing to. Fenced code is the one place digits-then-dot is not a
+    // list, so fences are tracked explicitly below.
+    const ORDERED_ITEM = /^([ \t]*)(\d{1,9})([.)])([ \t]|$)/;
+    const BULLET_ITEM = /^([ \t]*)[-*+]([ \t]|$)/;
+    const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/;
+    const BLANK_LINE = /^[ \t]*$/;
+
+    // Which lines sit inside a fenced block, by line number. One pass over the
+    // document, because a region can start anywhere and "am I in a fence?" is
+    // only answerable from the top.
+    function fencedLines(doc) {
+      const fenced = new Set();
+      let open = null;
+      for (let n = 1; n <= doc.lines; n++) {
+        const text = doc.line(n).text;
+        const match = FENCE_LINE.exec(text);
+        if (open === null) {
+          if (match) { open = match[1][0]; fenced.add(n); }
+        } else {
+          fenced.add(n);
+          // A fence closes only on its OWN character: ``` does not close ~~~.
+          if (match && match[1][0] === open) open = null;
+        }
+      }
+      return fenced;
+    }
+
+    // A line belongs to the list around it if it is an item, an indented
+    // continuation of one, or a blank line between two of those. Anything at
+    // column zero that is not a marker ends the list, which is also CommonMark's
+    // rule for a paragraph interrupting one.
+    function listLine(text) {
+      if (BLANK_LINE.test(text)) return "blank";
+      if (ORDERED_ITEM.test(text) || BULLET_ITEM.test(text)) return "item";
+      return /^[ \t]/.test(text) ? "continuation" : "other";
+    }
+
+    // Walk out from the edited lines to the whole list they sit in, so that
+    // renumbering starts from the list's real first item — the number that item
+    // carries is the start of the sequence and is deliberately preserved (a list
+    // written `3.` `4.` `5.` stays that way).
+    function listRegion(doc, fromLine, toLine, fenced) {
+      const partOfList = (n) => {
+        if (n < 1 || n > doc.lines || fenced.has(n)) return false;
+        return listLine(doc.line(n).text) !== "other";
+      };
+      // A trailing blank line is not part of the list, so a blank only extends
+      // the region when a list line follows it.
+      const extend = (n, step) => {
+        let last = n;
+        for (let i = n + step; partOfList(i); i += step) {
+          if (listLine(doc.line(i).text) !== "blank") last = i;
+        }
+        return last;
+      };
+      let start = fromLine;
+      let end = Math.min(toLine, doc.lines);
+      if (!partOfList(start)) start = Math.min(start + 1, doc.lines);
+      if (!partOfList(end)) end = Math.max(end - 1, 1);
+      if (!partOfList(start) && !partOfList(end)) return null;
+      if (!partOfList(start)) start = end;
+      if (!partOfList(end)) end = start;
+      return { start: extend(start, -1), end: extend(end, 1) };
+    }
+
+    // The whole feature, as a pure function of the document: the changes that
+    // make every ordered list overlapping [fromLine, toLine] count correctly.
+    // Returns [] when they already do, which is the common case and the reason
+    // this can run on every keystroke.
+    function renumberOrderedLists(doc, fromLine, toLine) {
+      const fenced = fencedLines(doc);
+      const region = listRegion(doc, fromLine, toLine, fenced);
+      if (!region) return [];
+      const changes = [];
+      // One counter per indent depth. A deeper item pushes, a shallower one pops
+      // — so `1.` `1.` `2.` nested under it restarts at the outer level's next.
+      const levels = [];
+      for (let n = region.start; n <= region.end; n++) {
+        const line = doc.line(n);
+        const bullet = BULLET_ITEM.exec(line.text);
+        if (bullet) {
+          // A bullet at this depth ends any ordered run at or below it: the two
+          // are different lists even when they touch.
+          while (levels.length && levels[levels.length - 1].indent >= bullet[1].length) levels.pop();
+          continue;
+        }
+        const item = ORDERED_ITEM.exec(line.text);
+        if (!item) continue;
+        const [, indentText, digits, delim] = item;
+        const indent = indentText.length;
+        const number = Number(digits);
+        while (levels.length && levels[levels.length - 1].indent > indent) levels.pop();
+        const top = levels[levels.length - 1];
+        let expected;
+        if (top && top.indent === indent && top.delim === delim) {
+          expected = top.next;
+          top.next += 1;
+        } else {
+          // A new list — either a deeper level, or the same level with the other
+          // delimiter, which CommonMark also treats as a new list. Its first
+          // item's own number is the start, so it is never rewritten.
+          if (top && top.indent === indent) levels.pop();
+          levels.push({ indent, delim, next: number + 1 });
+          expected = number;
+        }
+        if (expected !== number) {
+          changes.push({
+            from: line.from + indent,
+            to: line.from + indent + digits.length,
+            insert: String(expected),
+          });
+        }
+      }
+      return changes;
+    }
+
+    // Only edits the user made. Undo and redo are excluded on purpose — undoing
+    // back to a deliberately odd numbering must not be corrected right back —
+    // and so is every programmatic dispatch (a reload, a lock rebuild), which
+    // carries no user event at all.
+    const renumberFilter = CM.EditorState.transactionFilter.of((tr) => {
+      if (!tr.docChanged) return tr;
+      if (!(tr.isUserEvent("input") || tr.isUserEvent("delete")
+        || tr.isUserEvent("move"))) return tr;
+      const doc = tr.newDoc;
+      let low = Infinity;
+      let high = -1;
+      tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+        low = Math.min(low, fromB);
+        high = Math.max(high, toB);
+      });
+      if (high < 0) return tr;
+      const changes = renumberOrderedLists(
+        doc,
+        doc.lineAt(Math.min(low, doc.length)).number,
+        doc.lineAt(Math.min(high, doc.length)).number,
+      );
+      if (!changes.length) return tr;
+      // Appended to the same transaction, not dispatched after it: one undo step
+      // takes the edit and its renumbering back together, and the selection maps
+      // through the digit rewrites for free.
+      return [tr, { changes, sequential: true }];
+    });
+
     // ---- pasted and dropped media (MD-23) ----------------------------------
     // "Copy image" in a browser puts the image BYTES on the clipboard, not a
     // path, so a paste and a drag from Finder arrive the same way: a FileList,
@@ -2266,6 +2422,7 @@
         // Above basicSetup's default keymap: Enter must continue the list
         // marker rather than plain-indent, and Tab must indent the list item.
         CM.Prec.high(CM.keymap.of(CM.markdownKeymap.concat(editorKeymap))),
+        renumberFilter,
         // One source per context, not one function with a chain of regexes: CM
         // runs every source and merges what they return, so each stays a single
         // trigger with a single answer. `override` still replaces the default

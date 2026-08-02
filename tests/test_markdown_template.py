@@ -1450,3 +1450,28 @@ def test_an_unmapped_x_prefixed_mime_does_not_become_the_extension(source):
     name = source[source.index("function mediaName("):]
     name = name[:name.index("\n    }")]
     assert 'replace(/^x-/, "")' in name
+
+
+# ---- ordered-list renumbering (MD-25) --------------------------------------
+# The behaviour itself is tested by running it, in tests/test_markdown_renumber.py.
+# What only the source can say is that the filter is actually installed in the
+# editor the page builds — the probe there constructs its own extension list, so
+# it would happily pass on a filter that no real editor ever sees.
+
+
+def test_the_renumber_filter_is_installed_in_the_editor(source):
+    extensions = source[source.index("function editorExtensions()"):]
+    extensions = extensions[:extensions.index("\n    }")]
+    assert "renumberFilter," in extensions
+
+
+def test_renumbering_excludes_undo_so_it_cannot_fight_the_history(source):
+    # Undoing back to a deliberately odd numbering must not be corrected right
+    # back. The filter opts IN to the user events it handles rather than
+    # excluding undo by name, so this pins the allow-list.
+    body = source[source.index("const renumberFilter ="):]
+    body = body[:body.index("\n    });")]
+    assert re.findall(r'isUserEvent\("(\w+)"\)', body) == ["input", "delete", "move"]
+    # Appended to the same transaction, not dispatched after it, so one undo
+    # takes back the edit and its renumbering together.
+    assert "sequential: true" in body
