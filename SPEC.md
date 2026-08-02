@@ -3822,7 +3822,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     as a stack of separated tinted rows, and a list's rows get spaced apart from
     each other rather than the list being spaced from its surroundings. A nested
     list is skipped, since it lies inside its parent's range.
-  - **Bottom margins stay small.** Markdown's own blank separator line is
+  - **Padding, never margin.** CodeMirror keeps its own height map and measures
+    each line from its bounding rect — padding is inside it, margin is outside
+    it and collapses besides. A margin makes CM believe a line is shorter than
+    the space it occupies, so `posAtCoords` (mouse clicks *and* arrow up/down)
+    lands on the wrong line, drifting further with each spaced block above it.
+    The first draft of this used margins and made the editor unusable below the
+    first heading; a source guard now refuses one.
+  - **The bottom side stays small.** Markdown's own blank separator line is
     already a full line-height of space; these rules add what markdown cannot
     express — the space *above* a heading, and the gap around a block.
 

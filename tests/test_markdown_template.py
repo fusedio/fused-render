@@ -1497,3 +1497,25 @@ def test_renumbering_excludes_undo_so_it_cannot_fight_the_history(source):
     # Appended to the same transaction, not dispatched after it, so one undo
     # takes back the edit and its renumbering together.
     assert "sequential: true" in body
+
+
+def test_no_line_decoration_ever_carries_a_vertical_margin(source):
+    """Margin on a `.cm-line` desynchronises CodeMirror's height map.
+
+    CM measures each line from its bounding rect. Padding is inside that rect;
+    margin is outside it, and adjacent margins collapse besides. A margin
+    therefore makes CM believe a line is shorter than the space it occupies, and
+    every coordinate-based operation reading that map — `posAtCoords`, so mouse
+    clicks and arrow up/down both — lands on the wrong line, drifting further
+    with each spaced block above it.
+
+    This shipped once, in the first draft of MD-26, and the editor became
+    unusable below the first heading. It is invisible in a screenshot and no
+    probe can see it (the probe has no layout), so the guard is here.
+    """
+    css = source[source.index("/* ---- vertical rhythm (MD-26)"):]
+    css = css[:css.index("/* Faint (--text-faint)")]
+    offenders = re.findall(r"^\s*[^/*\n]*\bmargin[-a-z]*\s*:.*$", css, re.M)
+    assert offenders == [], offenders
+    # And the rules are really there — an empty block would pass the above.
+    assert "padding-top" in css

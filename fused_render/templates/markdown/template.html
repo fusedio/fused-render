@@ -250,39 +250,54 @@
      cursor on every arrow-down.
 
      The other constraint is that markdown's own blank separator line is already
-     a full line-height of space. So bottom margins are small or absent — the
+     a full line-height of space. So the bottom side is small or absent — the
      blank line after a heading does that job — and these rules mostly add the
      space markdown has no way to express: above a heading, and around a block.
 
+     PADDING, NEVER MARGIN. This is not a style preference, it is the one way
+     these rules can be written at all. CodeMirror keeps its own height map and
+     measures each line from the element's bounding rect, which padding is
+     inside of and margin is outside of — and adjacent margins additionally
+     collapse into each other. A margin therefore makes CM believe a line is
+     shorter than the space it occupies, and every coordinate-based operation
+     built on that map (`posAtCoords`, so mouse clicks AND arrow up/down) lands
+     on the wrong line, further off with each heading further down the note.
+     That is exactly what shipped in the first draft of MD-26 and had to be
+     reverted to padding.
+
      Specificity is deliberate: `.cm-editor .cm-line` sets `padding: 0 2px`, and
-     a bare `.lp-*` class would lose to it. */
+     a bare `.lp-*` class would lose to it. The longhands used here leave that
+     horizontal padding alone. */
   /* On the block's EDGES, not on every line of it: a Setext heading is two
-     lines (its text and its `===` underline), and a top margin on the second
+     lines (its text and its `===` underline), and top space on the second
      would split the underline away from what it underlines. */
-  .cm-editor .lp-h1-line-top, .cm-editor .lp-h2-line-top { margin-top: 1.6em; }
-  .cm-editor .lp-h3-line-top, .cm-editor .lp-h4-line-top { margin-top: 1.3em; }
-  .cm-editor .lp-h5-line-top, .cm-editor .lp-h6-line-top { margin-top: 1.1em; }
+  .cm-editor .lp-h1-line-top, .cm-editor .lp-h2-line-top { padding-top: 1.6em; }
+  .cm-editor .lp-h3-line-top, .cm-editor .lp-h4-line-top { padding-top: 1.3em; }
+  .cm-editor .lp-h5-line-top, .cm-editor .lp-h6-line-top { padding-top: 1.1em; }
   .cm-editor .lp-h1-line-bot, .cm-editor .lp-h2-line-bot,
   .cm-editor .lp-h3-line-bot, .cm-editor .lp-h4-line-bot,
   .cm-editor .lp-h5-line-bot, .cm-editor .lp-h6-line-bot {
-    margin-bottom: 0.15em;
+    padding-bottom: 0.15em;
   }
   /* A note that opens on a heading should not open with a gap above it. */
-  .cm-editor .cm-content > .cm-line:first-child { margin-top: 0; }
+  .cm-editor .cm-content > .cm-line:first-child { padding-top: 0; }
 
   /* Padding only where the block starts and ends, so the tint is one panel
-     rather than a stack of tinted rows with gaps. */
+     rather than a stack of tinted rows with gaps. Note that for the fence this
+     also means the space is INSIDE the tint — which is the panel look wanted
+     here, and the separation from the prose above comes from the blank line
+     markdown already requires before a fence. */
   .cm-editor .lp-fence-line-top {
-    margin-top: 0.7em; padding-top: 0.5em; border-radius: 6px 6px 0 0;
+    padding-top: 0.5em; border-radius: 6px 6px 0 0;
   }
   .cm-editor .lp-fence-line-bot {
-    margin-bottom: 0.7em; padding-bottom: 0.5em; border-radius: 0 0 6px 6px;
+    padding-bottom: 0.5em; border-radius: 0 0 6px 6px;
   }
-  .cm-editor .lp-quote-line-top { margin-top: 0.7em; padding-top: 0.25em; }
-  .cm-editor .lp-quote-line-bot { margin-bottom: 0.7em; padding-bottom: 0.25em; }
+  .cm-editor .lp-quote-line-top { padding-top: 0.35em; }
+  .cm-editor .lp-quote-line-bot { padding-bottom: 0.35em; }
   /* The list is spaced as a block; the rows stay tight against each other. */
-  .cm-editor .lp-list-line-top { margin-top: 0.6em; }
-  .cm-editor .lp-list-line-bot { margin-bottom: 0.6em; }
+  .cm-editor .lp-list-line-top { padding-top: 0.6em; }
+  .cm-editor .lp-list-line-bot { padding-bottom: 0.6em; }
   /* Faint (--text-faint), not a dimmed muted grey: at 0.6 opacity on top of a
      muted grey these were all but invisible in the dark, and a marker you cannot
      see is a marker you cannot tell you are about to edit. */
