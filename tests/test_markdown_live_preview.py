@@ -58,6 +58,8 @@ Some **bold** and *ital* and ~~strike~~ and `inline` text.
 
 ![alt](./img.png) and [lbl](../CONTRIBUTING.md#Install) and [ext](https://x.com)
 
+![](assets/pasted-20260802-143022.mp4)
+
 A [[Wiki Link|label]], a ![[embed.png]] and a [[Ghost]] here.
 
 Back up to [[#Heading one]] in this same note.
@@ -199,6 +201,7 @@ def test_links_images_tables_rules_and_tasks_all_render(note_file):
     assert at(plain, "[lbl](../CONTRIBUTING.md#Install)", "widget")
     assert at(plain, "[ext](https://x.com)", "widget")
     assert at(plain, "![alt](./img.png)", "widget")
+    assert at(plain, "![](assets/pasted-20260802-143022.mp4)", "widget")
     assert at(plain, "---", "widget"), "the horizontal rule"
     assert at(plain, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     assert at(plain, "[ ]", "widget") and at(plain, "[x]", "widget")
@@ -350,3 +353,23 @@ def test_a_hashtag_is_left_as_prose(tmp_path):
     plain = decorate(str(path), caret=0)
     assert at(plain, "[docs](https://x.com/a#section)", "widget")
     assert not at(plain, "#real")
+
+
+def test_a_pasted_video_renders_as_a_player_not_a_broken_image(note_file):
+    """Markdown has no video syntax, so a dropped clip is written as `![](…)`
+    (MD-21) — the same markup Obsidian writes. The widget therefore has to
+    choose its element off the extension, or every pasted video would render as
+    an <img> with a source no browser can decode: a broken-image icon.
+    """
+    plain = decorate(note_file, caret=0)
+    video = dom(plain, "![](assets/pasted-20260802-143022.mp4)")
+    assert video["tag"] == "video"
+    # Resolved against the note's folder, exactly as the image branch does.
+    assert "assets/pasted-20260802-143022.mp4" in video["src"]
+    # Its own class beside lp-img, so the stylesheet can size a player.
+    assert video["cls"] == "lp-video"
+
+
+def test_an_image_is_still_an_image(note_file):
+    plain = decorate(note_file, caret=0)
+    assert dom(plain, "![alt](./img.png)")["tag"] == "img"

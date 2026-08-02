@@ -256,6 +256,10 @@
     vertical-align: middle;
   }
   .lp-img { max-width: 100%; border-radius: 4px; vertical-align: middle; }
+  /* A player, not a poster: it needs a floor height or an unloaded clip
+     collapses to nothing, and a ceiling so it cannot fill the note. */
+  .lp-video { max-width: 100%; max-height: 60vh; min-height: 3rem;
+    border-radius: 4px; vertical-align: middle; }
   .lp-task { vertical-align: middle; margin: 0 6px 0 0; accent-color: var(--accent); }
   .lp-table {
     border-collapse: collapse;
@@ -970,16 +974,36 @@
     // `![alt](src)`. Click-to-edit rather than opaque: the caret lands in the
     // source so the path can be fixed, which is the only way to edit it now
     // that there is no separate source mode.
+    // A dropped or pasted video is written as `![](clip.mp4)` too (MD-21) —
+    // markdown has no video syntax, and emitting a raw <video> tag would show
+    // as literal text in every other markdown tool. So the ELEMENT is chosen
+    // off the extension here: without this a clip renders as an <img> with a
+    // source no browser can decode, i.e. a broken-image icon.
+    const VIDEO_EXT = /\.(mp4|webm|mov|m4v|ogv)$/i;
+
     function imageWidget(alt, src) {
       const key = "im:" + alt + "|" + src;
       return new DomWidget(key, () => {
-        const img = document.createElement("img");
-        img.className = "lp-img";
-        img.alt = alt;
-        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) img.src = src;   // http:, data:, file:
-        else if (src.startsWith("/")) img.src = fused.rawUrl(src);
-        else img.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
-        return img;
+        // The extension is read off the source BEFORE the scheme/absolute
+        // branching below, so a `file:` URL or an absolute path to a clip
+        // picks the player just as a relative one does.
+        const isVideo = VIDEO_EXT.test(src.split(/[?#]/)[0]);
+        const el = document.createElement(isVideo ? "video" : "img");
+        if (isVideo) {
+          el.className = "lp-video";
+          // controls so it is playable in place; preload="metadata" so a note
+          // full of clips fetches poster frames, not whole videos.
+          el.controls = true;
+          el.muted = true;
+          el.preload = "metadata";
+        } else {
+          el.className = "lp-img";
+          el.alt = alt;
+        }
+        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) el.src = src;   // http:, data:, file:
+        else if (src.startsWith("/")) el.src = fused.rawUrl(src);
+        else el.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        return el;
       }, false);
     }
 
