@@ -1683,6 +1683,37 @@
         });
         return true;
       },
+
+      // Not optional and easy to miss: without preventDefault here the browser
+      // never fires `drop` at all and instead NAVIGATES the webview to the
+      // dropped file, which looks like the whole editor vanishing. Gated to a
+      // drag carrying files (`Files` is what the OS puts in `types` for a
+      // Finder drag) so CodeMirror's own text drag-and-drop is untouched —
+      // `dataTransfer.files` is empty during dragover, so the type list is the
+      // only thing that can be asked this early.
+      dragover(event, target) {
+        const types = (event.dataTransfer || {}).types;
+        if (!types || Array.prototype.indexOf.call(types, "Files") === -1) return false;
+        if (target.state.readOnly) return false;
+        event.preventDefault();
+        return false;   // not "handled": CM still draws its own drop cursor
+      },
+
+      drop(event, target) {
+        const media = mediaFiles(event.dataTransfer && event.dataTransfer.files);
+        if (!media.length) return false;    // a text drag: CM's own behaviour
+        if (target.state.readOnly) return false;
+        event.preventDefault();
+        // The one real difference from paste: dropping into the middle of a
+        // note lands where the POINTER is, not where the caret happens to be.
+        // posAtCoords answers null for a drop past the last line, which falls
+        // back to the caret.
+        const at = target.posAtCoords({ x: event.clientX, y: event.clientY });
+        const pos = at === null || at === undefined
+          ? target.state.selection.main.head : at;
+        void insertMediaFiles(target, media, pos);
+        return true;
+      },
     });
 
     // ---- the completion popups (MD-14) -------------------------------------

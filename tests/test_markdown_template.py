@@ -1325,3 +1325,37 @@ def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_help
     # point. Reading the selection in here would silently ignore it.
     assert "function insertMediaFiles(view, files, pos)" in media_helper
     assert "state.selection" not in media_helper
+def test_dragover_prevents_default_or_the_drop_never_happens(paste_handler):
+    """Without preventDefault on dragover the browser refuses the drop.
+
+    It then navigates the webview to the dropped file instead, which looks
+    exactly like the editor vanishing. Gated to a drag CARRYING FILES so
+    CodeMirror's own text drag-and-drop is untouched.
+    """
+    dragover = paste_handler[paste_handler.index("dragover("):]
+    dragover = dragover[:dragover.index("\n      }")]
+    assert "preventDefault()" in dragover
+    assert "dataTransfer" in dragover
+
+
+def test_drop_reads_the_files_and_reuses_the_paste_pipeline(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "event.dataTransfer" in drop
+    assert "insertMediaFiles(" in drop
+    # No second copy of the ensure-dir/upload/insert work.
+    assert "fused.uploadFile(" not in drop
+
+
+def test_a_drop_lands_at_the_pointer_not_at_the_caret(paste_handler):
+    # Dropping into the middle of a note should insert where the pointer is;
+    # posAtCoords returns null for a drop outside any line, which falls back
+    # to the caret.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "posAtCoords(" in drop
+    assert "clientX" in drop and "clientY" in drop
+    assert "state.selection.main.head" in drop
+
+
+def test_dropping_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "state.readOnly" in drop
