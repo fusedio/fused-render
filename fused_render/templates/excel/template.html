@@ -2572,6 +2572,11 @@ $("gridWrap").addEventListener("mousemove", (e) => {
   if (!dragging) return;
   if (td) { sel.r2 = +td.dataset.r; sel.c2 = +td.dataset.c; paintSel(); }
 });
+function applyColResize(x) {
+  const w = Math.max(40, Math.round(colResizing.startW + x - colResizing.startX));
+  colResizing.colEl.style.width = w + "px";
+  colResizing.table._syncWidth();
+}
 document.addEventListener("mousemove", (e) => {
   if (!colResizing) return;
   colResizing.pendingX = e.clientX;
@@ -2579,14 +2584,13 @@ document.addEventListener("mousemove", (e) => {
   colResizing.raf = requestAnimationFrame(() => {
     if (!colResizing) return;
     colResizing.raf = null;
-    const w = Math.max(40, Math.round(colResizing.startW + colResizing.pendingX - colResizing.startX));
-    colResizing.colEl.style.width = w + "px";
-    colResizing.table._syncWidth();
+    applyColResize(colResizing.pendingX);
   });
 });
 document.addEventListener("mouseup", () => {
   if (colResizing) {
-    if (colResizing.raf) cancelAnimationFrame(colResizing.raf);
+    if (colResizing.raf) { cancelAnimationFrame(colResizing.raf); colResizing.raf = null; }
+    if (colResizing.pendingX !== undefined) applyColResize(colResizing.pendingX);
     const { c, colEl, grip } = colResizing;
     grip.classList.remove("on");
     S().colw = S().colw || {};
