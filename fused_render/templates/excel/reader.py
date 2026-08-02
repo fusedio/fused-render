@@ -247,16 +247,23 @@ def _cache_dir(file):
 def _clean_stale(keep_dir):
     if not os.path.isdir(CACHE_ROOT):
         return
+    import shutil
+    import time
+
     prefix = os.path.basename(keep_dir).split("-")[0]
     for n in os.listdir(CACHE_ROOT):
         p = os.path.join(CACHE_ROOT, n)
         # Skip in-flight builds (_TMP_PREFIX): another process may be writing
         # one right now, and wiping it would break its atomic-rename claim.
+        # Old ones (a builder killed mid-run) are safe to sweep by age.
         if n.startswith(_TMP_PREFIX):
+            try:
+                if time.time() - os.path.getmtime(p) > 3600:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
             continue
         if n.startswith(prefix + "-") and p != keep_dir:
-            import shutil
-
             shutil.rmtree(p, ignore_errors=True)
 
 
@@ -318,23 +325,44 @@ def _ensure_cache(file):
         meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
         with open(os.path.join(tmp_d, "meta.json"), "w") as f:
             json.dump(meta, f)
-        try:
-            os.rename(tmp_d, d)
-        except OSError:
-            # `d` already exists. Two very different reasons, and only the
-            # first means someone else finished the same work:
+        # Claim `d` with one atomic rename. If it fails, `d` already exists:
+        # either a concurrent builder won (meta.json present — use theirs), or
+        # it's a half-built leftover from an interrupted earlier run, which we
+        # must clear or every future open keeps failing on the same debris.
+        # Debris is never deleted in place: between the meta.json check and the
+        # cleanup another process could publish a complete cache into `d`, and
+        # an rmtree there would destroy it (possibly under a live reader).
+        # Instead the leftover is renamed aside to a _TMP_PREFIX name — atomic,
+        # and if it turns out we moved a just-published winner, our own
+        # equivalent build claims `d` on the next pass so readers still find a
+        # complete cache there. On Windows the rename-aside also fails while
+        # any process holds files inside `d` open, so a cache in active use
+        # can't be yanked away; we just retry and end up adopting it.
+        import time
+        import uuid as _uuid
+
+        for _ in range(10):
+            try:
+                os.rename(tmp_d, d)
+                return meta
+            except OSError:
+                pass
             if os.path.exists(meta_path):
-                # A concurrent builder won the race. Drop ours, use theirs.
                 shutil.rmtree(tmp_d, ignore_errors=True)
                 with open(meta_path) as f:
                     return json.load(f)
-            # `d` is there but has no meta.json: a half-built leftover from an
-            # interrupted earlier run. Clear it and claim it with our complete
-            # build — otherwise every future open keeps failing on the same
-            # debris until the cache is cleared by hand.
-            shutil.rmtree(d, ignore_errors=True)
-            os.rename(tmp_d, d)
-        return meta
+            junk = os.path.join(CACHE_ROOT, f"{_TMP_PREFIX}junk-{os.getpid()}-{_uuid.uuid4().hex[:8]}")
+            try:
+                os.rename(d, junk)
+            except OSError:
+                time.sleep(0.1)
+                continue
+            shutil.rmtree(junk, ignore_errors=True)
+        if os.path.exists(meta_path):
+            shutil.rmtree(tmp_d, ignore_errors=True)
+            with open(meta_path) as f:
+                return json.load(f)
+        raise RuntimeError(f"could not claim cache dir {d!r}")
     except BaseException:
         shutil.rmtree(tmp_d, ignore_errors=True)
         raise
