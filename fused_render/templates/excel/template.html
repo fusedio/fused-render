@@ -2574,12 +2574,19 @@ $("gridWrap").addEventListener("mousemove", (e) => {
 });
 document.addEventListener("mousemove", (e) => {
   if (!colResizing) return;
-  const w = Math.max(40, Math.round(colResizing.startW + e.clientX - colResizing.startX));
-  colResizing.colEl.style.width = w + "px";
-  colResizing.table._syncWidth();
+  colResizing.pendingX = e.clientX;
+  if (colResizing.raf) return;
+  colResizing.raf = requestAnimationFrame(() => {
+    if (!colResizing) return;
+    colResizing.raf = null;
+    const w = Math.max(40, Math.round(colResizing.startW + colResizing.pendingX - colResizing.startX));
+    colResizing.colEl.style.width = w + "px";
+    colResizing.table._syncWidth();
+  });
 });
 document.addEventListener("mouseup", () => {
   if (colResizing) {
+    if (colResizing.raf) cancelAnimationFrame(colResizing.raf);
     const { c, colEl, grip } = colResizing;
     grip.classList.remove("on");
     S().colw = S().colw || {};
