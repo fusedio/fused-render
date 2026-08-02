@@ -3522,9 +3522,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   embedded note renders as a link, which avoids a second parse and a
   recursion); inline markup **inside a table cell**, which a decoration cannot
   reach because it cannot span into a widget's DOM (clicking the table shows the
-  source, which is where a cell is edited); and paste-or-drop of an image —
-  `fused.writeFile` takes UTF-8 text only, so a binary attachment write needs a
-  runtime change first.
+  source, which is where a cell is edited). Paste-or-drop of an image *was*
+  listed here as blocked on a binary write; it is now built (MD-23).
 - **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
   document, which a full-height editor has no room for. Backlinks scroll in the
@@ -3677,6 +3676,50 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
+- **MD-23** **Pasting or dropping an image or a video writes it beside the note
+  and links it in** (D198). Two entry points, one pipeline. "Copy image" in a
+  browser puts the image *bytes* on the clipboard rather than a file reference,
+  so ⌘V is the ordinary `paste` event's `clipboardData.files`; a drag from
+  Finder is the same `FileList` on `dataTransfer.files`. Both filter to
+  `image/*` and `video/*` — a plain-text paste and a drag carrying no media
+  fall through untouched, so CodeMirror's own text drag-and-drop still moves
+  text — and both then run the *same* helper: ensure `assets/` next to the note
+  (`fused.mkdir`, whose `exists` 409 from the second paste onwards is the
+  expected case), upload each blob, insert `![](assets/<name>)`. The insert is
+  an ordinary dispatch, so **undo removes it in one step**.
+  - **Names are timestamps**, `pasted-YYYYMMDD-HHMMSS.<ext>` in local time,
+    with a `-N` suffix for the second and later file of one gesture (they share
+    the second). Timestamps never collide, so a paste needs neither a directory
+    scan nor a prompt. The extension comes from the blob's MIME type, since a
+    pasted screenshot has no filename at all.
+  - **A drop lands at the POINTER**, `posAtCoords` at the drop coordinates,
+    falling back to the caret where that answers null (a drop past the last
+    line). A paste lands at the caret. That difference is the only one, which
+    is why the shared helper takes the position as a parameter rather than
+    reading the selection.
+  - `dragover` **must** `preventDefault` for a drag carrying files, or the
+    browser never fires `drop` and instead navigates the webview to the dropped
+    file — indistinguishable from the editor vanishing. Gated on
+    `dataTransfer.types` containing `Files`, which is the only thing askable
+    that early (`dataTransfer.files` is empty during a dragover).
+  - **A read-only note is a no-op for both gestures**: the handler returns
+    false and the event falls through untouched, the same posture `whenWritable`
+    takes for every writing key (MD-1a/MD-15).
+  - **The upload is awaited before the link is inserted**, so a link can never
+    point at a file that failed to write; a failure surfaces through the same
+    status element a failed save uses, never silently. The cost is that a very
+    large video briefly stalls the editor — accepted for a first cut.
+  - **Video renders as a player.** Markdown has no video syntax, so a clip is
+    written as `![](…)` too (what Obsidian writes, and it degrades to a
+    recognisable broken image elsewhere) and the live-preview widget picks
+    `<video controls muted preload="metadata">` over `<img>` off the
+    extension. Removing the link does **not** delete the file: unreferenced-media
+    collection is its own feature, and Obsidian behaves the same way.
+  - The binary write itself is **`POST /api/fs/upload`** (multipart) behind
+    `fused.uploadFile(path, blob)` — `/api/fs/write` takes a string only. It
+    reuses `_fs_write`'s guard sequence exactly (X-Fused, the mount-backed /
+    `mount_read_only` branch before any kernel probe, `_writable`, the `readonly`
+    403 of RO-2) and, like it, never creates intermediate directories.
 
 ## 33. Git View — Repository History Scoped to the Open Path (D193)
 

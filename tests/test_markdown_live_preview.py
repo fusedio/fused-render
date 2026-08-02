@@ -357,7 +357,7 @@ def test_a_hashtag_is_left_as_prose(tmp_path):
 
 def test_a_pasted_video_renders_as_a_player_not_a_broken_image(note_file):
     """Markdown has no video syntax, so a dropped clip is written as `![](…)`
-    (MD-21) — the same markup Obsidian writes. The widget therefore has to
+    (MD-23) — the same markup Obsidian writes. The widget therefore has to
     choose its element off the extension, or every pasted video would render as
     an <img> with a source no browser can decode: a broken-image icon.
     """

@@ -1250,7 +1250,7 @@ def test_an_arriving_heading_scrolls_without_moving_the_caret(source):
     assert "selection" not in body + jump
 
 
-# --------------------------------------------- pasted and dropped media (MD-21)
+# --------------------------------------------- pasted and dropped media (MD-23)
 
 
 @pytest.fixture(scope="module")

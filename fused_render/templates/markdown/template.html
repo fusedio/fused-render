@@ -974,7 +974,7 @@
     // `![alt](src)`. Click-to-edit rather than opaque: the caret lands in the
     // source so the path can be fixed, which is the only way to edit it now
     // that there is no separate source mode.
-    // A dropped or pasted video is written as `![](clip.mp4)` too (MD-21) —
+    // A dropped or pasted video is written as `![](clip.mp4)` too (MD-23) —
     // markdown has no video syntax, and emitting a raw <video> tag would show
     // as literal text in every other markdown tool. So the ELEMENT is chosen
     // off the extension here: without this a clip renders as an <img> with a
@@ -1595,7 +1595,7 @@
       { key: "Mod-Enter", run: whenWritable(toggleCheckbox) },
     ];
 
-    // ---- pasted and dropped media (MD-21) ----------------------------------
+    // ---- pasted and dropped media (MD-23) ----------------------------------
     // "Copy image" in a browser puts the image BYTES on the clipboard, not a
     // path, so a paste and a drag from Finder arrive the same way: a FileList,
     // on `clipboardData.files` or `dataTransfer.files`. The only difference is
@@ -1682,7 +1682,7 @@
 
     // Pasting a URL over a selection makes a link out of it, rather than
     // replacing the words the user just chose. Pasting or dropping an image or
-    // a video writes it into assets/ and links it in (MD-21).
+    // a video writes it into assets/ and links it in (MD-23).
     const pasteHandler = CM.EditorView.domEventHandlers({
       paste(event, target) {
         const media = mediaFiles(event.clipboardData && event.clipboardData.files);
