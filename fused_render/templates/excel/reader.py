@@ -287,6 +287,7 @@ def _ensure_cache(file):
             return json.load(f)
     _clean_stale(d)
     import shutil
+    import time
     import uuid
 
     tmp_d = os.path.join(
@@ -338,9 +339,6 @@ def _ensure_cache(file):
         # complete cache there. On Windows the rename-aside also fails while
         # any process holds files inside `d` open, so a cache in active use
         # can't be yanked away; we just retry and end up adopting it.
-        import time
-        import uuid as _uuid
-
         for _ in range(10):
             try:
                 os.rename(tmp_d, d)
@@ -351,7 +349,7 @@ def _ensure_cache(file):
                 shutil.rmtree(tmp_d, ignore_errors=True)
                 with open(meta_path) as f:
                     return json.load(f)
-            junk = os.path.join(CACHE_ROOT, f"{_TMP_PREFIX}junk-{os.getpid()}-{_uuid.uuid4().hex[:8]}")
+            junk = os.path.join(CACHE_ROOT, f"{_TMP_PREFIX}junk-{os.getpid()}-{uuid.uuid4().hex[:8]}")
             try:
                 os.rename(d, junk)
             except OSError:
