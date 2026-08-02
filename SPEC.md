@@ -3677,7 +3677,7 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
 - **MD-23** **Pasting or dropping an image or a video writes it beside the note
-  and links it in** (D198). Two entry points, one pipeline. "Copy image" in a
+  and links it in** (D199). Two entry points, one pipeline. "Copy image" in a
   browser puts the image *bytes* on the clipboard rather than a file reference,
   so ⌘V is the ordinary `paste` event's `clipboardData.files`; a drag from
   Finder is the same `FileList` on `dataTransfer.files`. Both filter to
