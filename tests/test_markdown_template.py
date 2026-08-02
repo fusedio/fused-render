@@ -1248,3 +1248,80 @@ def test_an_arriving_heading_scrolls_without_moving_the_caret(source):
     jump = jump[:jump.index("\n    }")]
     assert "CM.EditorView.scrollIntoView(" in jump
     assert "selection" not in body + jump
+
+
+# --------------------------------------------- pasted and dropped media (MD-21)
+
+
+@pytest.fixture(scope="module")
+def media_helper(source):
+    """`insertMediaFiles`, the one path both paste and drop go through."""
+    body = source[source.index("async function insertMediaFiles("):]
+    return body[:body.index("\n    }\n")]
+
+
+@pytest.fixture(scope="module")
+def paste_handler(source):
+    body = source[source.index("const pasteHandler = CM.EditorView.domEventHandlers("):]
+    return body[:body.index("\n    });")]
+
+
+def test_paste_takes_the_bytes_off_the_clipboard(paste_handler):
+    # Browser "Copy image" puts image BYTES on the clipboard, not a file
+    # reference, so this is the ordinary paste event's `files` list — there is
+    # nothing to read off a path and no file picker involved.
+    assert "event.clipboardData" in paste_handler
+    assert ".files" in paste_handler
+    assert "insertMediaFiles(" in paste_handler
+
+
+def test_pasting_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    # Same posture as whenWritable (MD-1a/MD-15): bail and return false so the
+    # paste falls through to the browser default untouched, rather than
+    # half-running and failing at the write.
+    assert "state.readOnly" in paste_handler
+
+
+def test_media_lands_in_an_assets_folder_beside_the_note(media_helper):
+    # A shared assets/ next to the note, created on demand. The 409 "exists"
+    # from the second paste onwards is the expected case, not an error.
+    assert '"/assets"' in media_helper
+    assert "fused.mkdir(" in media_helper
+    assert 'err.type !== "exists"' in media_helper
+
+
+def test_the_file_name_is_a_timestamp_so_pastes_never_collide(source, media_helper):
+    # Timestamps mean no directory scan and no prompt before a paste lands.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert '"pasted-" + stamp' in name
+    # Several files in ONE gesture share the second, which is the one case a
+    # timestamp alone would collide on.
+    assert "index" in name
+    assert "mediaName(files[i], i)" in media_helper
+
+
+def test_the_upload_is_awaited_before_the_link_is_inserted(media_helper):
+    # Order is the contract: inserting first would leave a link pointing at a
+    # file that failed to write.
+    upload_at = media_helper.index("await fused.uploadFile(")
+    assert "dispatch(" not in media_helper[:upload_at]
+    assert "dispatch(" in media_helper[upload_at:]
+
+
+def test_a_failed_upload_surfaces_instead_of_vanishing(media_helper):
+    # The template's existing error surface (the same one a failed save uses),
+    # never a silently swallowed catch.
+    assert "saveStateEl.textContent" in media_helper
+    assert 'saveStateEl.classList.add("error")' in media_helper
+
+
+def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_helper):
+    # `![](…)` and a normal dispatch, so undo removes it in one step and every
+    # other markdown tool can still read the note.
+    assert "![](" in media_helper
+    assert "dispatch(" in media_helper
+    # The position is a PARAMETER, not the selection: drop passes the drop
+    # point. Reading the selection in here would silently ignore it.
+    assert "function insertMediaFiles(view, files, pos)" in media_helper
+    assert "state.selection" not in media_helper

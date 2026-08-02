@@ -1571,10 +1571,105 @@
       { key: "Mod-Enter", run: whenWritable(toggleCheckbox) },
     ];
 
+    // ---- pasted and dropped media (MD-21) ----------------------------------
+    // "Copy image" in a browser puts the image BYTES on the clipboard, not a
+    // path, so a paste and a drag from Finder arrive the same way: a FileList,
+    // on `clipboardData.files` or `dataTransfer.files`. The only difference is
+    // where the link lands — the caret for a paste, the pointer for a drop —
+    // which is why the helper below takes `pos` as a parameter rather than
+    // reading the selection itself.
+
+    // A blob's own MIME type is what the clipboard gives us (a pasted
+    // screenshot has no filename at all), so the extension is derived from it.
+    // Only the formats a browser can actually display are mapped; anything
+    // else falls back to the file's own name, then to the MIME subtype, so an
+    // unusual-but-valid type still lands on disk with a plausible extension
+    // instead of none.
+    const MEDIA_EXT = {
+      "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+      "image/webp": "webp", "image/svg+xml": "svg", "image/avif": "avif",
+      "image/bmp": "bmp", "image/tiff": "tif",
+      "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov",
+      "video/ogg": "ogv",
+    };
+
+    // Images and video only. A drag from Finder can carry anything, and a paste
+    // from another app often carries an `image/*` blob ALONGSIDE the text
+    // flavour — filtering here is what keeps a plain-text paste plain.
+    function mediaFiles(list) {
+      return Array.prototype.filter.call(
+        list || [], (f) => /^(image|video)\//.test(f.type || ""));
+    }
+
+    // pasted-YYYYMMDD-HHMMSS.ext, in local time. Timestamps never collide, so a
+    // paste needs neither a directory scan nor a prompt; `index` disambiguates
+    // the one case they would — several files in a single gesture, which all
+    // share the same second.
+    function mediaName(file, index) {
+      const pad = (n) => String(n).padStart(2, "0");
+      const d = new Date();
+      const stamp = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate())
+        + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+      const named = /\.([a-z0-9]+)$/i.exec(file.name || "");
+      const ext = MEDIA_EXT[file.type] || (named && named[1].toLowerCase())
+        || (file.type || "").split("/")[1] || "bin";
+      return "pasted-" + stamp + (index ? "-" + (index + 1) : "") + "." + ext;
+    }
+
+    // Write the blobs beside the note and link them in at `pos`.
+    async function insertMediaFiles(view, files, pos) {
+      const dir = noteDir();
+      if (!dir) return;
+      // A shared assets/ next to the note, created on demand: the endpoint
+      // deliberately never creates intermediate directories (same contract as
+      // /api/fs/write), so the second paste onwards gets a typed "exists" back,
+      // which is the expected case rather than a failure.
+      const assets = dir + "/assets";
+      try {
+        try {
+          await fused.mkdir(assets);
+        } catch (err) {
+          if (err.type !== "exists") throw err;
+        }
+        for (let i = 0; i < files.length; i++) {
+          const name = mediaName(files[i], i);
+          // Awaited BEFORE the insert, deliberately: a link inserted first
+          // could end up pointing at a file that never made it to disk. The
+          // cost is that a very large video briefly stalls the editor.
+          await fused.uploadFile(assets + "/" + name, files[i]);
+          // Ordinary markdown through an ordinary dispatch, so undo removes it
+          // in one step and every other markdown tool can still read the note.
+          // Video gets the same `![](…)` — markdown has no video syntax, and
+          // the live-preview widget picks the element off the extension.
+          const insert = "![](assets/" + name + ")" + (files.length > 1 ? "\n" : "");
+          view.dispatch({
+            changes: { from: pos, insert },
+            selection: { anchor: pos + insert.length },
+          });
+          pos += insert.length;
+        }
+      } catch (err) {
+        // The same surface a failed save uses. Never swallowed: a paste that
+        // silently did nothing is indistinguishable from a broken editor.
+        saveStateEl.textContent = "Could not add the file: " + (err.message || "");
+        saveStateEl.classList.add("error");
+      }
+    }
+
     // Pasting a URL over a selection makes a link out of it, rather than
-    // replacing the words the user just chose.
+    // replacing the words the user just chose. Pasting or dropping an image or
+    // a video writes it into assets/ and links it in (MD-21).
     const pasteHandler = CM.EditorView.domEventHandlers({
       paste(event, target) {
+        const media = mediaFiles(event.clipboardData && event.clipboardData.files);
+        if (media.length) {
+          // Read-only: fall through untouched, the same posture whenWritable
+          // takes for every writing key (MD-1a/MD-15).
+          if (target.state.readOnly) return false;
+          event.preventDefault();
+          void insertMediaFiles(target, media, target.state.selection.main.head);
+          return true;
+        }
         const url = ((event.clipboardData || {}).getData
           ? event.clipboardData.getData("text/plain") : "").trim();
         if (!/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(url)) return false;
