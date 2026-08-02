@@ -3783,9 +3783,12 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   - **It hangs off a transaction filter, not more key bindings.** One place sees
     every edit whatever produced it, which is the only way the list of gestures
     above stops needing to be enumerated.
-  - **Only the list the edit landed in.** A deliberately odd list elsewhere in
-    the note is not this edit's business, and rewriting it would put changes
-    into an undo step the user never made.
+  - **Only the list the edit landed in** — and the edit has to have landed *on*
+    it. A blank line may extend a list's region (it separates the items of a
+    loose list) but may not anchor one, because a blank line is also what
+    separates a list from the prose beside it. Otherwise typing in a paragraph
+    next to a list renumbers that list, and puts those changes into an undo step
+    the user never made.
   - **The first item's number anchors the sequence.** A list written `3.` `4.`
     `5.` stays that way, and deleting the head of `1.` `2.` `3.` leaves `2.`
     `3.` — the two cases are identical text, and anchoring is what
@@ -3813,7 +3816,9 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     would shift everything below it on every arrow-down. The heading *size* mark
     is already caret-independent for the same reason, and the spacing matches it.
   - **A block is padded at its two edges, not per line**, via `-top`/`-bot`
-    classes on the first and last line of the range — otherwise a fence renders
+    classes on the first and last line of the range — which headings need too,
+    since a Setext heading spans its text *and* its `===` underline and a top
+    margin on both would split the two apart — otherwise a fence renders
     as a stack of separated tinted rows, and a list's rows get spaced apart from
     each other rather than the list being spaced from its surroundings. A nested
     list is skipped, since it lies inside its parent's range.

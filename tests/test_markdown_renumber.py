@@ -207,3 +207,39 @@ def test_an_already_correct_list_produces_no_changes(tmp_path):
                   userEvent="input.type")
     assert result["doc"] == "1. one!\n2. two\n3. three\n4. four\n"
     assert result["pureChanges"] == []
+
+
+# ---- review findings --------------------------------------------------------
+
+
+def test_editing_prose_next_to_a_list_does_not_renumber_it(tmp_path):
+    # Found in review. `listRegion` used to walk to the neighbouring line when
+    # the edit was not on a list line, so typing a character in the paragraph
+    # directly above a list rewrote that list's numbers — and put those changes
+    # in the same undo step as the keystroke. MD-25 says only the list the edit
+    # landed in.
+    doc = "prose\n1. one\n5. two\n"
+    result = edit(tmp_path, doc,
+                  changes=[{"from": 5, "to": 5, "insert": "!"}],
+                  userEvent="input.type")
+    assert result["doc"] == "prose!\n1. one\n5. two\n"
+
+
+def test_editing_prose_after_a_list_does_not_renumber_it_either(tmp_path):
+    doc = "1. one\n5. two\nprose\n"
+    at = doc.index("prose") + len("prose")
+    result = edit(tmp_path, doc,
+                  changes=[{"from": at, "to": at, "insert": "!"}],
+                  userEvent="input.type")
+    assert result["doc"] == "1. one\n5. two\nprose!\n"
+
+
+def test_editing_the_blank_line_between_prose_and_a_list_leaves_it_alone(tmp_path):
+    # The narrower half of the same fix: a blank line may EXTEND a region (it
+    # sits between two items of a loose list) but may not ANCHOR one, because a
+    # blank line is also exactly what separates a list from the prose beside it.
+    doc = "prose\n\n1. one\n5. two\n"
+    result = edit(tmp_path, doc,
+                  changes=[{"from": 6, "to": 6, "insert": " "}],
+                  userEvent="input.type")
+    assert result["doc"] == "prose\n \n1. one\n5. two\n"

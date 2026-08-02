@@ -1320,9 +1320,31 @@ def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_help
     assert "![](" in media_helper
     assert "dispatch(" in media_helper
     # The position is a PARAMETER, not the selection: drop passes the drop
-    # point. Reading the selection in here would silently ignore it.
-    assert "function insertMediaFiles(view, files, pos)" in media_helper
+    # point. Reading the selection in here would silently ignore it. `to` is a
+    # parameter for the same reason — a paste replaces the selection, a drop
+    # must not, and only the caller knows which gesture it is.
+    assert "function insertMediaFiles(view, files, pos, to)" in media_helper
     assert "state.selection" not in media_helper
+
+
+def test_a_media_paste_replaces_the_selection_but_a_drop_does_not(source, media_helper):
+    # Found in review. The dispatch set only `from`, so a media paste over a
+    # selection left the selected text sitting beside the new image link —
+    # unlike every other paste, including the URL-over-a-selection branch in the
+    # same handler.
+    assert "changes: { from: pos, to: replaceTo, insert }" in media_helper
+    # The paste hands over the selection's whole range…
+    paste = source[source.index("if (media.length)"):]
+    assert "insertMediaFiles(target, media, sel.from, sel.to)" in paste[:400]
+    # …and the drop hands over one point, so `to` defaults to it and nothing is
+    # replaced. Both call sites are checked, since the whole bug was one of them
+    # passing the wrong thing.
+    calls = re.findall(r"insertMediaFiles\([^)]*\)", source)
+    assert calls == [
+        "insertMediaFiles(view, files, pos, to)",   # the definition
+        "insertMediaFiles(target, media, sel.from, sel.to)",   # paste
+        "insertMediaFiles(target, media, pos)",   # drop
+    ], calls
 def test_dragover_prevents_default_or_the_drop_never_happens(source, paste_handler):
     """Without preventDefault on dragover the browser refuses the drop.
 

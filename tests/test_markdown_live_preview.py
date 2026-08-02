@@ -480,9 +480,18 @@ def line_classes(decorations):
     return [d["cls"] for d in decorations if d["kind"] == "line"]
 
 
+def has_line_class(decorations, name):
+    """True if any line carries `name`, whether or not it also carries an edge.
+
+    A block's first and last line get `name-top`/`name-bot` alongside it, so the
+    class string is not always the bare name.
+    """
+    return any(name in c.split() for c in line_classes(decorations))
+
+
 def test_a_heading_line_carries_its_own_spacing_class(note_file):
     plain = decorate(note_file, caret=0)
-    assert "lp-h1-line" in line_classes(plain)
+    assert has_line_class(plain, "lp-h1-line")
 
 
 def test_heading_spacing_does_not_move_when_the_caret_lands_on_it(note_file):
@@ -491,7 +500,7 @@ def test_heading_spacing_does_not_move_when_the_caret_lands_on_it(note_file):
     # everything below the caret jump by the heading's margin.
     heading = NOTE.index("# Heading one") + 3
     revealed = decorate(note_file, caret=heading, params=EDITING)
-    assert "lp-h1-line" in line_classes(revealed)
+    assert has_line_class(revealed, "lp-h1-line")
     # The markers ARE revealed on that line, so this is genuinely the revealed
     # state and not a caret that missed.
     assert at(revealed, "#", "mark")
@@ -531,3 +540,25 @@ def test_a_nested_list_does_not_add_a_second_gap(tmp_path):
     assert classes.count("lp-list-line lp-list-line-bot") == 1
     assert not any(c == "lp-list-line lp-list-line-top lp-list-line-bot"
                    for c in classes)
+
+
+def test_an_at_sign_in_a_www_autolink_is_not_an_email_address(tmp_path):
+    # Found in review. Any schemeless autolink containing `@` was treated as an
+    # address, but a GFM `www.` autolink may carry an `@` in its path — and a
+    # `mailto:` href hands it to a mail client instead of a browser.
+    path = tmp_path / "at.md"
+    path.write_text("See www.example.com/u@h/x here.\n", encoding="utf-8")
+    marks = [d for d in decorate(str(path), caret=0) if d["cls"] == "lp-link"]
+    assert marks, "the www autolink was not decorated at all"
+    assert marks[0]["attrs"]["href"] == "https://www.example.com/u@h/x"
+
+
+def test_a_setext_heading_does_not_split_from_its_underline(tmp_path):
+    # Found in review. The spacing class went on every line of the heading node,
+    # and a Setext heading is two lines — so the `===` underline got the same
+    # large top margin as the title and drifted away from it. The margin now
+    # rides on the block's edges, so only the first line carries a top one.
+    path = tmp_path / "setext.md"
+    path.write_text("Title\n=====\n\nbody\n", encoding="utf-8")
+    classes = line_classes(decorate(str(path), caret=0))
+    assert classes == ["lp-h1-line lp-h1-line-top", "lp-h1-line lp-h1-line-bot"]
