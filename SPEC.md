@@ -3740,6 +3740,39 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     403 of RO-2) and, like it, never creates intermediate directories. It is
     logged like `/api/fs/write` — path and byte count, never the payload — so
     pasted media is not the one mutation that leaves no trace (CL-*).
+- **MD-24** **A bare URL is a link in Live Preview, and the document is not
+  rewritten to make it one** (D200). The vendored GFM grammar already parses
+  `https://example.com` as a `URL` node and `<https://example.com>` as an
+  `Autolink`; the decoration builder simply named neither, so a typed or pasted
+  URL rendered as unclickable grey prose beside an explicit `[lbl](url)` that
+  rendered as a link.
+  - **A bare URL gets a MARK, not a replacement widget.** The mark carries
+    `tagName: "a"` plus `href`/`target`/`rel`, so the range *becomes* an anchor
+    with the existing `lp-link` styling — bare and explicit links look and
+    behave alike. A widget would replace the URL's characters with an element
+    rendering the identical characters (its display text already equals its
+    target), buying nothing while taking away the caret's ability to sit inside
+    the URL and edit it.
+  - **An angle autolink hides its brackets** under the ordinary reveal rule:
+    `<` and `>` are markup, so they are replaced away and come back dimmed as
+    `lp-mark` on the caret's line, exactly as `**` and `# ` do. A bare URL
+    hides nothing and therefore has nothing to reveal — it stays marked
+    wherever the caret is, rather than flickering when a line is entered.
+  - **Nothing is written.** No paste or edit converts a URL into `[url](url)`,
+    so the note on disk still says what its author typed — which is also what
+    makes this repair every URL in notes written before the rule existed. The
+    ⌘K and paste-over-a-selection behaviours (`[selected](url)`) are unchanged.
+  - **A URL inside a fence or a code span stays plain text**, the same line MD-3
+    draws for what counts as an edge. The grammar does not emit a `URL` node
+    inside code at all, so the guard is the narrow `CODE_NODES` set the wikilink
+    pass already uses rather than a new "is this code?" rule — an over-broad one
+    of those once silently stopped every wikilink from rendering.
+  - **A `[lbl](target)` link's own `URL` child is left alone**, since it belongs
+    to a node the link branch already replaced whole (or deliberately left as
+    source, as for a titled or reference link).
+  - GFM autolinks three shapes, and two are not URLs yet: `www.x.com` gets an
+    `https://` scheme and `me@x.com` a `mailto:` one, or the href would resolve
+    against `/render?path=…` (MD-4a's trap).
 
 ## 33. Git View — Repository History Scoped to the Open Path (D193)
 
