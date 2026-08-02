@@ -43,7 +43,12 @@ export function setLastSeenOsToken(token: string): void {
   lastSeenOsToken = token;
 }
 
-export function setClipboard(next: Clipboard | null): void {
+// `mirrorToOs: false` stores the clipboard WITHOUT publishing it back to the
+// system — used by the focus-time reconcile (os-clipboard.ts), which is
+// adopting paths that are already on the OS clipboard. Echoing them back
+// would be a pointless round-trip, and on Linux it would also steal selection
+// ownership from the file manager that legitimately holds it.
+export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   clipboard = next;
   for (const l of listeners) l();
 
@@ -58,7 +63,7 @@ export function setClipboard(next: Clipboard | null): void {
   // flag on read, so publishing one would invite another app to act on a
   // guess. All four Copy call sites (Listing, Preview) route through here, so
   // this one hook covers every one of them.
-  if (next && next.op === "copy" && next.paths.length > 0) {
+  if (mirrorToOs && next && next.op === "copy" && next.paths.length > 0) {
     writeOsClipboard(next.paths)
       .then((res) => {
         // Only a real write is worth remembering: an unsupported bridge
