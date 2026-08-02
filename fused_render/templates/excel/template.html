@@ -1443,16 +1443,7 @@ function renderGrid() {
     const grip = document.createElement("div");
     grip.className = "colResize";
     grip.title = "Drag to resize · double-click to auto-fit";
-    grip.addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
-      const wrapRect = $("gridWrap").getBoundingClientRect();
-      colResizing = { c, colEl, table, startX: e.clientX, pendingX: e.clientX,
-                      startW: parseFloat(colEl.style.width) || 90, grip, wrapRect };
-      grip.classList.add("on");
-      showResizeGuide(e.clientX, wrapRect);
-    });
-    grip.addEventListener("click", (e) => e.stopPropagation());
+    attachColResizeGrip(grip, c, colgroup, table);
     grip.addEventListener("dblclick", (e) => {
       e.preventDefault(); e.stopPropagation();
       let maxLen = 4;
@@ -1860,7 +1851,90 @@ function performFill(base, tgt) {
   paint();
 }
 let fillDrag = null;   // { base, tgt|null }
-let colResizing = null; // { c, colEl, startX, startW, grip }
+let colResizing = null; // { c, colEl, table, grip, startX, startW, wrapRect, raf, pendingX }
+let resizeGuide = null;
+function showResizeGuide(x) {
+  if (!resizeGuide) {
+    resizeGuide = document.createElement("div");
+    resizeGuide.id = "colResizeGuide";
+    resizeGuide.style.cssText =
+      `position:fixed; top:${colResizing.wrapRect.top}px; height:${colResizing.wrapRect.height}px; ` +
+      `z-index:50; pointer-events:none;`;
+    document.body.appendChild(resizeGuide);
+  }
+  resizeGuide.style.left = x + "px";
+}
+function hideResizeGuide() {
+  if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
+}
+function finishColResize(x) {
+  const { c, colEl, table, startX, startW, grip } = colResizing;
+  const w = Math.max(40, Math.round(startW + x - startX));
+  colEl.style.width = w + "px";
+  table._syncWidth();
+  hideResizeGuide();
+  grip.classList.remove("on");
+  S().colw = S().colw || {};
+  S().colw[c] = w;
+  // Resizing stays available read-only (viewing convenience), but must not
+  // flip the dirty flag — widths only persist via a save that can't happen.
+  if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
+  colResizing = null;
+}
+// Column widths aren't applied live while dragging: on a big/scrolled sheet the
+// grid's DOM can hold tens of thousands of rows, and table-layout:fixed with
+// sticky headers means every width write reflows the WHOLE table. So during
+// the drag we only move a cheap position:fixed guide line (outside the table,
+// so no reflow); its geometry is captured once at drag start and never
+// re-read mid-drag (a getBoundingClientRect() read forces the same layout
+// flush a write would). The real width, and the one expensive reflow, happen
+// exactly once, when the pointer is released.
+//
+// Pointer Events (not Mouse Events) so touch/pen drags work too, but
+// listened for on `document` rather than relying on grip.setPointerCapture():
+// capture only redirects events for a pointer the browser considers
+// "active" (real hardware input) — there is no reliable way to verify its
+// failure mode without a real device, and a silent capture failure would
+// mean losing every event once the cursor leaves the 7px-wide grip strip,
+// breaking the drag outright. Document-level listeners keep receiving
+// events regardless of what's under the cursor, exactly like the mouse-
+// event version this replaces, so there's no such failure mode to worry
+// about.
+function attachColResizeGrip(grip, c, colgroup, table) {
+  function currentColEl() { return colgroup.querySelector(`col[data-col="${c}"]`); }
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const colEl = currentColEl();
+    colResizing = {
+      c, colEl, table, grip,
+      startX: e.clientX, pendingX: e.clientX,
+      startW: parseFloat(colEl.style.width) || 90,
+      wrapRect: $("gridWrap").getBoundingClientRect(),
+      raf: null,
+    };
+    grip.classList.add("on");
+    showResizeGuide(e.clientX);
+  });
+  grip.addEventListener("click", (e) => e.stopPropagation());
+}
+document.addEventListener("pointermove", (e) => {
+  if (!colResizing) return;
+  colResizing.pendingX = e.clientX;
+  if (colResizing.raf) return;
+  colResizing.raf = requestAnimationFrame(() => {
+    if (!colResizing) return;
+    colResizing.raf = null;
+    showResizeGuide(colResizing.pendingX);
+  });
+});
+function endColResize(e) {
+  if (!colResizing) return;
+  if (colResizing.raf) { cancelAnimationFrame(colResizing.raf); colResizing.raf = null; }
+  finishColResize(e.clientX);
+}
+document.addEventListener("pointerup", endColResize);
+document.addEventListener("pointercancel", endColResize);
 function fillPreview(r, c) {
   const b = fillDrag.base;
   const rowOut = r > b.r2 ? r - b.r2 : r < b.r1 ? r - b.r1 : 0;
@@ -2575,61 +2649,7 @@ $("gridWrap").addEventListener("mousemove", (e) => {
   if (!dragging) return;
   if (td) { sel.r2 = +td.dataset.r; sel.c2 = +td.dataset.c; paintSel(); }
 });
-// Column widths aren't applied live while dragging: on a big/scrolled sheet
-// the grid's DOM can hold tens of thousands of rows, and table-layout:fixed
-// with sticky headers means every width write reflows the WHOLE table — one
-// such reflow can blow past a frame budget by 50-100x, so even rAF-batched
-// writes stall the drag. Instead we drag a cheap position:fixed guide line
-// (no table involved, so no reflow) and pay the one expensive reflow only
-// once, on mouseup.
-let resizeGuide = null;
-function showResizeGuide(x, wrapRect) {
-  if (!resizeGuide) {
-    resizeGuide = document.createElement("div");
-    resizeGuide.id = "colResizeGuide";
-    resizeGuide.style.cssText =
-      `position:fixed; top:${wrapRect.top}px; height:${wrapRect.height}px; ` +
-      `z-index:50; pointer-events:none;`;
-    document.body.appendChild(resizeGuide);
-  }
-  // left is the only thing that changes per frame — a plain style write, no
-  // getBoundingClientRect() here: that call forces a layout flush, and doing
-  // it every rAF frame for a slow multi-second drag reintroduces a per-frame
-  // reflow cost on a big table, exactly what this guide line exists to avoid.
-  resizeGuide.style.left = x + "px";
-}
-function hideResizeGuide() {
-  if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
-}
-function applyColResize(x) {
-  const w = Math.max(40, Math.round(colResizing.startW + x - colResizing.startX));
-  colResizing.colEl.style.width = w + "px";
-  colResizing.table._syncWidth();
-}
-document.addEventListener("mousemove", (e) => {
-  if (!colResizing) return;
-  colResizing.pendingX = e.clientX;
-  if (colResizing.raf) return;
-  colResizing.raf = requestAnimationFrame(() => {
-    if (!colResizing) return;
-    colResizing.raf = null;
-    showResizeGuide(colResizing.pendingX, colResizing.wrapRect);
-  });
-});
 document.addEventListener("mouseup", () => {
-  if (colResizing) {
-    if (colResizing.raf) { cancelAnimationFrame(colResizing.raf); colResizing.raf = null; }
-    applyColResize(colResizing.pendingX);
-    hideResizeGuide();
-    const { c, colEl, grip } = colResizing;
-    grip.classList.remove("on");
-    S().colw = S().colw || {};
-    S().colw[c] = parseFloat(colEl.style.width) || 90;
-    // Resizing stays available read-only (viewing convenience), but must not
-    // flip the dirty flag — widths only persist via a save that can't happen.
-    if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
-    colResizing = null;
-  }
   dragging = false;
   if (fillDrag) {
     const { base, tgt } = fillDrag;
