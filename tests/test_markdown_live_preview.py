@@ -466,3 +466,68 @@ def test_a_pasted_video_renders_as_a_player_not_a_broken_image(note_file):
 def test_an_image_is_still_an_image(note_file):
     plain = decorate(note_file, caret=0)
     assert dom(plain, "![alt](./img.png)")["tag"] == "img"
+
+
+# ---- vertical rhythm (MD-26) -----------------------------------------------
+# Spacing is carried by line decorations because an inline mark cannot hold a
+# vertical margin. The property that matters is not which margin — CSS decides
+# that — but that the decoration is there at all, and that it does NOT depend on
+# where the caret is: this editor un-renders the caret's line, and spacing that
+# came and went with the caret would shift the document under the cursor.
+
+
+def line_classes(decorations):
+    return [d["cls"] for d in decorations if d["kind"] == "line"]
+
+
+def test_a_heading_line_carries_its_own_spacing_class(note_file):
+    plain = decorate(note_file, caret=0)
+    assert "lp-h1-line" in line_classes(plain)
+
+
+def test_heading_spacing_does_not_move_when_the_caret_lands_on_it(note_file):
+    # The regression this guards is visible, not logical: if the class went away
+    # with the caret on the line, arrowing down through a note would make
+    # everything below the caret jump by the heading's margin.
+    heading = NOTE.index("# Heading one") + 3
+    revealed = decorate(note_file, caret=heading, params=EDITING)
+    assert "lp-h1-line" in line_classes(revealed)
+    # The markers ARE revealed on that line, so this is genuinely the revealed
+    # state and not a caret that missed.
+    assert at(revealed, "#", "mark")
+
+
+def test_a_fenced_block_is_padded_only_at_its_two_edges(note_file):
+    classes = line_classes(decorate(note_file, caret=0))
+    assert classes.count("lp-fence-line lp-fence-line-top") == 1
+    assert classes.count("lp-fence-line lp-fence-line-bot") == 1
+    # …and the rows between carry the tint without the padding, or the block
+    # would render as a stack of separated panels.
+    assert "lp-fence-line" in classes
+
+
+def test_a_blockquote_is_spaced_as_one_block(note_file):
+    classes = line_classes(decorate(note_file, caret=0))
+    # One line long here, so the same line is both edges.
+    assert any("lp-quote-line-top" in c and "lp-quote-line-bot" in c
+               for c in classes)
+
+
+def test_a_list_is_spaced_as_a_block_and_not_row_by_row(note_file):
+    # The rows in between must NOT be tagged: a margin per row would space the
+    # items apart from each other, which is the opposite of how a list reads.
+    classes = line_classes(decorate(note_file, caret=0))
+    assert classes.count("lp-list-line lp-list-line-top") == 1
+    assert classes.count("lp-list-line lp-list-line-bot") == 1
+
+
+def test_a_nested_list_does_not_add_a_second_gap(tmp_path):
+    path = tmp_path / "nested.md"
+    path.write_text("- one\n  - deep\n  - deeper\n- two\n", encoding="utf-8")
+    classes = line_classes(decorate(str(path), caret=0))
+    # Only the outer list is tagged. The inner list lies inside the outer one's
+    # range, so tagging it too would put a margin in the middle of the block.
+    assert classes.count("lp-list-line lp-list-line-top") == 1
+    assert classes.count("lp-list-line lp-list-line-bot") == 1
+    assert not any(c == "lp-list-line lp-list-line-top lp-list-line-bot"
+                   for c in classes)

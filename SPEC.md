@@ -3774,6 +3774,53 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     `https://` scheme and `me@x.com` a `mailto:` one, or the href would resolve
     against `/render?path=…` (MD-4a's trap).
 
+- **MD-25** **Editing an ordered list renumbers it — every way of editing it,
+  not just Enter** (D201). `markdownKeymap`'s `insertNewlineContinueMarkup`
+  already renumbered on Enter, and nothing else did: Backspace
+  (`deleteMarkupBackward`), selecting a row and deleting it, ⌘X, ⌘⇧K, and a
+  paste in the middle all left the numbers below the edit stale. The grammar
+  package's `renumberList` is internal and unexported, so this is our own pass.
+  - **It hangs off a transaction filter, not more key bindings.** One place sees
+    every edit whatever produced it, which is the only way the list of gestures
+    above stops needing to be enumerated.
+  - **Only the list the edit landed in.** A deliberately odd list elsewhere in
+    the note is not this edit's business, and rewriting it would put changes
+    into an undo step the user never made.
+  - **The first item's number anchors the sequence.** A list written `3.` `4.`
+    `5.` stays that way, and deleting the head of `1.` `2.` `3.` leaves `2.`
+    `3.` — the two cases are identical text, and anchoring is what
+    `markdownKeymap`'s own Enter renumbering does, so Enter and Backspace agree.
+  - **Undo and redo are excluded**, along with every programmatic dispatch (a
+    reload, a read-only rebuild): the filter opts in to `input`, `delete` and
+    `move` user events. Undoing back to a deliberately odd numbering must not be
+    corrected straight back.
+  - **The renumbering rides in the same transaction** as the edit that caused
+    it, so one undo takes back both and the selection maps through the digit
+    rewrites for free.
+  - **Digits inside a fenced block are left alone** — the one place
+    digits-then-dot at the start of a line is not a list item.
+
+- **MD-26** **Vertical spacing is a line decoration, and it does not change when
+  the caret arrives** (D202). Headings had a size and a weight but no space
+  around them, because `.lp-h1`…`.lp-h6` are *inline marks* and an inline mark
+  cannot carry a vertical margin. Blocks — fences, quotes, lists — ran flush
+  against the prose above and below them.
+  - **Spacing lives on `Decoration.line`**, the same mechanism `lp-fence-line`
+    already used, applied to headings (`lp-h1-line`…), fences, blockquotes and
+    lists.
+  - **Every spacing decoration is unconditional.** This editor un-renders the
+    line the caret is on, so a margin that appeared or vanished with the caret
+    would shift everything below it on every arrow-down. The heading *size* mark
+    is already caret-independent for the same reason, and the spacing matches it.
+  - **A block is padded at its two edges, not per line**, via `-top`/`-bot`
+    classes on the first and last line of the range — otherwise a fence renders
+    as a stack of separated tinted rows, and a list's rows get spaced apart from
+    each other rather than the list being spaced from its surroundings. A nested
+    list is skipped, since it lies inside its parent's range.
+  - **Bottom margins stay small.** Markdown's own blank separator line is
+    already a full line-height of space; these rules add what markdown cannot
+    express — the space *above* a heading, and the gap around a block.
+
 ## 33. Git View — Repository History Scoped to the Open Path (D193)
 
 A `git` view template answers one question for whatever the user currently has
