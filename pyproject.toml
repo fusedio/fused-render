@@ -57,7 +57,12 @@ dev = [
     # suite is xdist-safe via process isolation: conftest re-points
     # FUSED_RENDER_HOME/DIR per worker, tests use tmp_path + monkeypatch, and
     # servers bind 127.0.0.1:0. Process-based only — os.chdir / importlib.reload
-    # would race under a threaded runner.
+    # would race under a threaded runner. ONE documented exception, which
+    # process isolation cannot cover because the resource is machine-global:
+    # the macOS pasteboard round-trips in tests/test_pasteboard_darwin.py.
+    # There is a single NSPasteboard per login session, so those four tests
+    # serialise themselves on a cross-process file lock — see the comment
+    # there before adding any other test that drives a system-wide resource.
     "pytest-xdist",
     # Coverage reporting (pytest --cov=fused_render). Combines per-worker data
     # under -n auto (xdist) automatically — no extra config needed there.
@@ -203,7 +208,10 @@ fused-render-open = "fused_render.winopen:main"
 
 # Run the suite in parallel by default (needs pytest-xdist, in the dev extra).
 # -n auto spawns one worker per CPU; the suite is xdist-safe (see the dev-extra
-# comment). To debug a single test serially, override: `pytest -n0 -x path::test`.
+# comment, including its one machine-global exception, which self-serialises
+# rather than needing a scheduling flag here — addopts stays a plain `-n auto`
+# and no test needs --dist loadgroup).
+# To debug a single test serially, override: `pytest -n0 -x path::test`.
 [tool.pytest.ini_options]
 addopts = "-n auto"
 

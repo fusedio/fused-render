@@ -106,7 +106,17 @@ def test_round_trip_file_and_directory_with_spaces(tmp_path):
 
 @win_only
 def test_read_of_a_text_clipboard_yields_no_files():
+    """Text on the clipboard is not a file reference — reading it must give an
+    empty list (supported, nothing to paste), never a bogus path."""
+    import ctypes
+
     from fused_render.shell import pasteboard
 
-    _win32._set_text_only("just some text")
+    # Put plain text and nothing else on the clipboard. Assembled here rather
+    # than as a helper in the backend: production code should carry no
+    # test-only entry points, and this is the only caller.
+    with _win32._Clipboard():
+        ctypes.windll.user32.EmptyClipboard()
+        _win32._set(_win32.CF_UNICODETEXT, "just some text".encode("utf-16-le") + b"\x00\x00")
+
     assert pasteboard.read_files() == ([], "", True)

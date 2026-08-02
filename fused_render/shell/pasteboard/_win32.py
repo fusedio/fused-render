@@ -88,7 +88,12 @@ class _Clipboard:
             time.sleep(0.02 * (i + 1))
         raise OSError("could not open the Windows clipboard")
 
-    def __exit__(self, *exc):
+    def __exit__(self, *_exc):
+        # Always closed, and the caller's exception is always re-raised
+        # (returning False, never True): a failed clipboard op must reach
+        # pasteboard.read_files/write_files, which is the ONE place that
+        # decides a platform failure means `supported: False`. Swallowing it
+        # here would report success on a clipboard we never touched.
         ctypes.windll.user32.CloseClipboard()
         return False
 
@@ -159,11 +164,3 @@ def write_files(paths: list[str]) -> None:
         user32.EmptyClipboard()
         _set(CF_HDROP, bytes(build_dropfiles(paths)))
         _set(CF_UNICODETEXT, text_payload(paths).encode("utf-16-le") + b"\x00\x00")
-
-
-def _set_text_only(text: str) -> None:
-    """Test helper: put plain text (and nothing else) on the clipboard, so the
-    "text on the clipboard yields no files" case can be exercised for real."""
-    with _Clipboard():
-        ctypes.windll.user32.EmptyClipboard()
-        _set(CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00")
