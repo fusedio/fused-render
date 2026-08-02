@@ -6,6 +6,7 @@ runs on any platform — including the real behaviours we most need pinned
 URI encoding). Nothing here launches a process or touches a selection.
 """
 import subprocess
+import sys
 
 import pytest
 
@@ -204,3 +205,68 @@ def test_uri_round_trip(path):
 def test_path_to_uri_keeps_separators_unencoded():
     # Encoding "/" would produce a single-segment URI no file manager accepts.
     assert _linux.path_to_uri("/home/u/a b") == "file:///home/u/a%20b"
+
+
+def test_uri_to_path_accepts_a_localhost_authority():
+    # file://localhost/... is as legal as file:///... and some toolkits emit
+    # it; a fixed 7-char slice would yield the relative "localhost/home/x",
+    # which the contract then drops silently.
+    assert _linux.uri_to_path("file://localhost/home/x") == "/home/x"
+
+
+def test_uri_to_path_refuses_a_remote_authority():
+    # A real host is a path we have no local answer for — refuse rather than
+    # invent one.
+    assert _linux.uri_to_path("file://server/share/x") is None
+
+
+# ------------------------------------------------- the daemonizing-tool trap
+
+# Everything above fakes subprocess, which models the helper as a function
+# call — so no test above can see anything about PROCESS LIFECYCLE. That gap
+# hid a real bug: `xclip -i` and `wl-copy` fork a resident daemon to own the
+# selection (this module's whole premise), the daemon inherits any captured
+# stdout/stderr pipes and holds them open indefinitely, and subprocess.run
+# waits for EOF on those pipes — so every copy stalled for the full timeout
+# and then reported itself failed. This test uses a REAL forking process, so
+# it fails against a write path that captures output. It needs no clipboard
+# and runs on any POSIX platform.
+
+_FORKING_TOOL = """\
+import os, sys, time
+sys.stdin.buffer.read()
+if os.fork() == 0:
+    # The "daemon": outlives the parent still holding stdout/stderr, exactly
+    # as a real clipboard owner does.
+    time.sleep(30)
+    os._exit(0)
+sys.exit(0)
+"""
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fork"), reason="needs fork()")
+def test_write_does_not_wait_on_a_daemonizing_tool(tmp_path, monkeypatch):
+    import os
+    import time
+
+    # Real executables on a PATH we own, so `which` and the exec are both the
+    # genuine article — the point of this test is that nothing is faked
+    # between write_files and a forking process.
+    for name in ("wl-copy", "wl-paste"):
+        tool = tmp_path / name
+        tool.write_text(f"#!/bin/sh\nexec {sys.executable} -c '{_FORKING_TOOL}'\n")
+        tool.chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "")
+
+    started = time.monotonic()
+    _linux.write_files(["/home/u/a.txt"])  # must not raise TimeoutExpired
+    elapsed = time.monotonic() - started
+
+    # The real bug took the full _TIMEOUT_S and then raised; the parent here
+    # exits as soon as it isn't blocked on a pipe nobody will close.
+    assert elapsed < _linux._TIMEOUT_S, (
+        f"the write waited {elapsed:.2f}s on a forking tool — stdout/stderr "
+        "are being captured, so subprocess.run is blocking on pipes the "
+        "clipboard daemon holds open")

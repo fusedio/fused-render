@@ -134,6 +134,10 @@ def _set(fmt: int, payload: bytes) -> None:
     """
     kernel32 = ctypes.windll.kernel32
     user32 = ctypes.windll.user32
+    # dwBytes is SIZE_T (64-bit on a 64-bit build); without argtypes ctypes
+    # marshals the Python int as a C int, which is the wrong width even
+    # though no real clipboard payload gets near the 2 GB where it would bite.
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
     kernel32.GlobalAlloc.restype = ctypes.c_void_p
     kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
     kernel32.GlobalLock.restype = ctypes.c_void_p
@@ -163,4 +167,11 @@ def write_files(paths: list[str]) -> None:
         # owner — required before any SetClipboardData call.
         user32.EmptyClipboard()
         _set(CF_HDROP, bytes(build_dropfiles(paths)))
+        # CF_HDROP first, deliberately: if this second _set raises, the
+        # clipboard keeps the file references and loses only the text
+        # convenience flavor — Explorer still pastes the files, and a
+        # terminal paste gets nothing instead of the paths. That partial
+        # state is better than the alternatives (rolling back would discard
+        # a working file copy; setting text first would leave a text-only
+        # clipboard that pastes a path string into Explorer as a filename).
         _set(CF_UNICODETEXT, text_payload(paths).encode("utf-16-le") + b"\x00\x00")

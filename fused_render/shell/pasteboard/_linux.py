@@ -60,10 +60,26 @@ def path_to_uri(path: str) -> str:
 
 def uri_to_path(uri: str) -> str | None:
     """file:// URI -> absolute path, or None for anything else (http URLs get
-    dropped on the floor rather than pasted as a nonsense path)."""
+    dropped on the floor rather than pasted as a nonsense path).
+
+    The authority between `file://` and the path is normally empty, but
+    `file://localhost/home/x` is equally legal and some toolkits emit it.
+    Slicing a fixed 7 characters would turn that into the relative path
+    `localhost/home/x` — the contract's absolute-path filter would drop it,
+    correctly but silently, so the user would just see a file quietly missing
+    from their paste. A non-empty, non-localhost authority is a remote host
+    we have no local path for, and is refused rather than guessed at.
+    """
     if not uri.startswith("file://"):
         return None
-    return unquote(uri[len("file://"):])
+    rest = uri[len("file://"):]
+    if not rest.startswith("/"):
+        # Everything up to the first "/" is the authority.
+        authority, sep, tail = rest.partition("/")
+        if not sep or authority.lower() != "localhost":
+            return None
+        rest = "/" + tail
+    return unquote(rest)
 
 
 # ------------------------------------------------------------ tool selection
@@ -143,10 +159,28 @@ def write_files(paths: list[str]) -> None:
         target = GNOME_TARGET
         payload = "copy\n" + "\n".join(uris)
 
+    # stdout/stderr MUST NOT be pipes here, and this is not a tidy-up to
+    # "fix" later. Per this module's opening premise, a live process has to
+    # own the selection, so both `xclip -i` and `wl-copy` fork a RESIDENT
+    # daemon and exit. That daemon inherits our pipes and holds them open for
+    # as long as it owns the clipboard — which is indefinitely — so
+    # subprocess.run, which waits for EOF on both, blocks for the entire
+    # timeout and then raises TimeoutExpired. The clipboard is genuinely set
+    # by then, but the contract sees the exception, reports the write as
+    # unsupported, and never records the token, so the app believes its own
+    # copy failed and re-adopts its own paths on the next focus. Pointing
+    # them at DEVNULL leaves nothing to hold: the forking parent exits at
+    # once and returncode is still ours to check.
+    #
+    # The read path deliberately keeps capture_output=True — `wl-paste` and
+    # `xclip -o` print and exit without daemonizing, and we need their stdout.
     proc = subprocess.run(
         write_argv + [target],
-        input=payload.encode("utf-8"), capture_output=True, timeout=_TIMEOUT_S)
+        input=payload.encode("utf-8"),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=_TIMEOUT_S)
     if proc.returncode != 0:
-        raise OSError(
-            f"{write_argv[0]} failed ({proc.returncode}): "
-            f"{proc.stderr.decode('utf-8', 'replace').strip()}")
+        # No stderr text to quote — capturing it is what caused the hang. The
+        # exit status is the whole diagnosis available here, and the contract
+        # turns this into `supported: False` either way.
+        raise OSError(f"{write_argv[0]} exited with status {proc.returncode}")
