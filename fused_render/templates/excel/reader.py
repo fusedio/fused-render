@@ -252,7 +252,17 @@ def _clean_stale(keep_dir):
 
 
 def _ensure_cache(file):
-    """Build (or reuse) the parquet cache + metadata for a workbook."""
+    """Build (or reuse) the parquet cache + metadata for a workbook.
+
+    Each call runs in its own fresh subprocess (excel/reader.py isn't on the
+    in-process allowlist — see executor.py), so a plain threading.Lock can't
+    stop two concurrent cold-open requests for the same file from both
+    building the cache at once. Build into a private per-process tmp dir and
+    claim the real cache dir with one atomic os.rename: only one builder
+    wins, and a loser discards its (redundant but harmless) work and reads
+    the winner's meta.json instead of two writers racing on the same
+    parquet/meta paths.
+    """
     file = os.path.abspath(file)
     d = _cache_dir(file)
     meta_path = os.path.join(d, "meta.json")
@@ -260,40 +270,56 @@ def _ensure_cache(file):
         with open(meta_path) as f:
             return json.load(f)
     _clean_stale(d)
-    os.makedirs(d, exist_ok=True)
-    ext = os.path.splitext(file)[1].lower()
-    sheets = []
-    if ext in (".xlsx", ".xlsm"):
-        for i, (name, nr, nc) in enumerate(_xlsx_dims(file)):
-            entry = {"name": name, "kind": "xlsx", "big": _is_big(nr, nc),
-                     "nrows": nr, "ncols": nc, "header": None}
-            if entry["big"]:
-                pq = os.path.join(d, f"s{i}.parquet")
-                nr2, nc2 = _xlsx_sheet_to_parquet(file, name, pq)
-                entry.update(nrows=nr2, ncols=nc2, parquet=os.path.basename(pq))
-            sheets.append(entry)
-    elif ext == ".csv":
-        con = _duck()
-        pq = os.path.join(d, "s0.parquet")
-        nr, nc, _ = _copy_to_parquet(
-            con, f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)", pq
-        )
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "csv",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": None,
-                       "parquet": "s0.parquet"})
-    elif ext == ".parquet":
-        con = _duck()
-        pq = os.path.join(d, "s0.parquet")
-        nr, nc, cols = _copy_to_parquet(con, f"SELECT * FROM read_parquet({_q(file)})", pq)
-        sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "parquet",
-                       "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": cols,
-                       "parquet": "s0.parquet"})
-    else:
-        raise ValueError(f"unsupported file type {ext!r}")
-    meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
-    with open(meta_path, "w") as f:
-        json.dump(meta, f)
-    return meta
+    import shutil
+    import uuid
+
+    tmp_d = f"{d}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    os.makedirs(tmp_d, exist_ok=True)
+    try:
+        ext = os.path.splitext(file)[1].lower()
+        sheets = []
+        if ext in (".xlsx", ".xlsm"):
+            for i, (name, nr, nc) in enumerate(_xlsx_dims(file)):
+                entry = {"name": name, "kind": "xlsx", "big": _is_big(nr, nc),
+                         "nrows": nr, "ncols": nc, "header": None}
+                if entry["big"]:
+                    pq = os.path.join(tmp_d, f"s{i}.parquet")
+                    nr2, nc2 = _xlsx_sheet_to_parquet(file, name, pq)
+                    entry.update(nrows=nr2, ncols=nc2, parquet=os.path.basename(pq))
+                sheets.append(entry)
+        elif ext == ".csv":
+            con = _duck()
+            pq = os.path.join(tmp_d, "s0.parquet")
+            nr, nc, _ = _copy_to_parquet(
+                con, f"SELECT * FROM read_csv({_q(file)}, header=false, all_varchar=true, null_padding=true)", pq
+            )
+            sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "csv",
+                           "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": None,
+                           "parquet": "s0.parquet"})
+        elif ext == ".parquet":
+            con = _duck()
+            pq = os.path.join(tmp_d, "s0.parquet")
+            nr, nc, cols = _copy_to_parquet(con, f"SELECT * FROM read_parquet({_q(file)})", pq)
+            sheets.append({"name": os.path.splitext(os.path.basename(file))[0], "kind": "parquet",
+                           "big": _is_big(nr, nc), "nrows": nr, "ncols": nc, "header": cols,
+                           "parquet": "s0.parquet"})
+        else:
+            raise ValueError(f"unsupported file type {ext!r}")
+        meta = {"file": file, "mtime": os.path.getmtime(file), "sheets": sheets}
+        with open(os.path.join(tmp_d, "meta.json"), "w") as f:
+            json.dump(meta, f)
+        try:
+            os.rename(tmp_d, d)
+        except OSError:
+            # Lost the race: another process's build already claimed `d`.
+            # Discard ours and read theirs rather than raising or clobbering.
+            shutil.rmtree(tmp_d, ignore_errors=True)
+            with open(meta_path) as f:
+                return json.load(f)
+        return meta
+    except BaseException:
+        shutil.rmtree(tmp_d, ignore_errors=True)
+        raise
 
 
 def _rekey_cache(file):
