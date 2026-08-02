@@ -429,7 +429,7 @@ const PY = "./reader.py";
 // (D114) would abort an in-flight write. Route every call through this.
 const pyRun = (params) => fused.runPython(PY, params, { key: null });
 const $ = (id) => document.getElementById(id);
-const RENDER_CAP = 1000, MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
+const MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
 
 // ================= state =================
 let book = null;          // { sheets: [...] }  — small: {rows, styles}; big: {loaded, edits, ...}
@@ -440,7 +440,6 @@ let readOnly = false;      // reader verdict (SPEC §13.5): blocks in-place save
 let sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
 let editing = null;
 let undoStack = [], redoStack = [];
-let renderLimit = RENDER_CAP;
 let tds = new Map();
 let values = [];          // computed matrix (small sheets)
 let valuesStale = true;
@@ -1272,7 +1271,6 @@ function applyFilterMenu() {
     sh.filterVal[c] = excl.length ? { mode: "exclude", vals: excl } : null;
   }
   closeFilterMenu();
-  renderLimit = RENDER_CAP;
   if (sh.big) fetchRows(true); else renderGrid();
 }
 document.addEventListener("mousedown", (e) => {
@@ -1281,6 +1279,25 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && fmState) { closeFilterMenu(); e.stopPropagation(); } }, true);
 
 // ================= rendering =================
+// The text a cell shows, without needing the cell to exist in the DOM.
+function cellDisplayText(r, c) {
+  const sh = S();
+  if (sh.big) return raw(r, c);
+  const cv = (values[r] && values[r][c]) ? values[r][c] : EMPTY_CELL;
+  return display(cv, sh.styles[r] && sh.styles[r][c]);
+}
+// Width for double-click auto-fit, measured over the DATA — the tbody is
+// virtualized, so scanning rendered cells would size the column to whatever
+// happens to be scrolled into view. Big sheets can only consider the rows
+// streamed in so far; the rest aren't in the browser to measure.
+function autofitWidth(c) {
+  const sh = S();
+  if (!sh.big) ensureValues();
+  const rows = sh.big ? sh.loaded.keys() : visibleRowIdx();
+  let maxLen = 4;
+  for (const r of rows) maxLen = Math.max(maxLen, cellDisplayText(r, c).length);
+  return Math.max(48, Math.min(420, Math.round(maxLen * 7.2 + 16)));
+}
 function cellClassAndStyle(td, r, c) {
   const sh = S();
   let text, cls = "cell", css = "";
@@ -1394,10 +1411,7 @@ function renderGrid() {
   tds = new Map();
   const cols = nCols();
 
-  const vis = sh.big
-    ? [...Array(sh.loaded.length).keys()]
-    : visibleRowIdx().slice(0, renderLimit === Infinity ? undefined : renderLimit);
-  const totalVis = sh.big ? sh.loaded.length : visibleRowIdx().length;
+  const vis = sh.big ? [...Array(sh.loaded.length).keys()] : visibleRowIdx();
 
   const table = document.createElement("table");
   const colgroup = document.createElement("colgroup");
@@ -1447,11 +1461,7 @@ function renderGrid() {
     attachColResizeGrip(grip, c, colgroup, table);
     grip.addEventListener("dblclick", (e) => {
       e.preventDefault(); e.stopPropagation();
-      let maxLen = 4;
-      for (const [key, td] of tds) {
-        if (key.endsWith("," + c)) maxLen = Math.max(maxLen, td.textContent.length);
-      }
-      const w = Math.max(48, Math.min(420, Math.round(maxLen * 7.2 + 16)));
+      const w = autofitWidth(c);
       colgroup.querySelector(`col[data-col="${c}"]`).style.width = w + "px";
       syncTableWidth();
       sh.colw[c] = w;
@@ -1488,12 +1498,6 @@ function renderGrid() {
     const bar = document.createElement("div"); bar.id = "moreBar";
     wrap.appendChild(bar);
     updateMoreBar();
-  } else if (totalVis > vis.length) {
-    const b = document.createElement("button");
-    b.className = "action"; b.style.margin = "10px";
-    b.textContent = `Show all ${fmtInt(totalVis)} rows (rendering ${fmtInt(vis.length)})`;
-    b.onclick = () => { renderLimit = Infinity; renderGrid(); };
-    wrap.appendChild(b);
   }
   updateChip();
   paintSel();
@@ -1746,7 +1750,7 @@ function renderTabs() {
 function switchSheet(i) {
   commitEdit();
   closeFilterMenu();   // an open menu would apply its filter to the new sheet
-  cur = i; renderLimit = RENDER_CAP; invalidateValues();
+  cur = i; invalidateValues();
   sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
   fused.params.set("sheet", book.sheets[i].name);
   renderTabs(); renderGrid();
@@ -1936,8 +1940,12 @@ function performFill(base, tgt) {
   paint();
 }
 let fillDrag = null;   // { base, tgt|null }
-let colResizing = null; // { c, colEl, table, grip, startX, startW, wrapRect, raf, pendingX }
+let colResizing = null; // { c, colEl, table, grip, startX, startW, wrapRect, raf, pendingX, pointerId }
 let resizeGuide = null;
+const MIN_COL_W = 40;
+function resizeWidthFor(x) {
+  return Math.max(MIN_COL_W, Math.round(colResizing.startW + x - colResizing.startX));
+}
 function showResizeGuide(x) {
   if (!resizeGuide) {
     resizeGuide = document.createElement("div");
@@ -1947,24 +1955,32 @@ function showResizeGuide(x) {
       `z-index:50; pointer-events:none;`;
     document.body.appendChild(resizeGuide);
   }
-  resizeGuide.style.left = x + "px";
+  // Track the edge the column will actually land on, not the raw cursor: past
+  // the minimum width the cursor keeps moving but the edge doesn't, and a
+  // guide that kept following would promise a width release won't deliver.
+  resizeGuide.style.left =
+    (colResizing.startX - colResizing.startW + resizeWidthFor(x)) + "px";
 }
 function hideResizeGuide() {
   if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
 }
+function clearColResize() {
+  if (colResizing.raf) cancelAnimationFrame(colResizing.raf);
+  colResizing.grip.classList.remove("on");
+  hideResizeGuide();
+  colResizing = null;
+}
 function finishColResize(x) {
-  const { c, colEl, table, startX, startW, grip } = colResizing;
-  const w = Math.max(40, Math.round(startW + x - startX));
+  const { c, colEl, table } = colResizing;
+  const w = resizeWidthFor(x);
+  clearColResize();
   colEl.style.width = w + "px";
   table._syncWidth();
-  hideResizeGuide();
-  grip.classList.remove("on");
   S().colw = S().colw || {};
   S().colw[c] = w;
   // Resizing stays available read-only (viewing convenience), but must not
   // flip the dirty flag — widths only persist via a save that can't happen.
   if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
-  colResizing = null;
 }
 // Column widths aren't applied live while dragging: table-layout:fixed with
 // sticky headers means every width write reflows the whole table (cheap now
@@ -1975,36 +1991,42 @@ function finishColResize(x) {
 // flush a write would). The real width, and the one expensive reflow, happen
 // exactly once, when the pointer is released.
 //
-// Pointer Events (not Mouse Events) so touch/pen drags work too, but
-// listened for on `document` rather than relying on grip.setPointerCapture():
-// capture only redirects events for a pointer the browser considers
-// "active" (real hardware input) — there is no reliable way to verify its
-// failure mode without a real device, and a silent capture failure would
-// mean losing every event once the cursor leaves the 7px-wide grip strip,
-// breaking the drag outright. Document-level listeners keep receiving
-// events regardless of what's under the cursor, exactly like the mouse-
-// event version this replaces, so there's no such failure mode to worry
-// about.
+// Pointer Events (not Mouse Events) so touch/pen drags work too. Capture is
+// requested best-effort — it keeps events flowing to the grip even over other
+// elements or outside this iframe — but the document-level listeners below are
+// what actually drive the drag, since setPointerCapture throws for a pointer
+// the browser isn't actively tracking and must never be the only path.
+//
+// This template runs in an iframe, so a release outside the frame can drop the
+// pointerup entirely. The drag therefore commits from the last position it
+// tracked (`pendingX`), never from a terminating event's coordinates, and any
+// of pointerup / pointercancel / lostpointercapture / window blur / a
+// pointermove with no button held will end it. Otherwise a stranded drag stays
+// armed and an unrelated later release resizes from meaningless coordinates.
 function attachColResizeGrip(grip, c, colgroup, table) {
-  function currentColEl() { return colgroup.querySelector(`col[data-col="${c}"]`); }
   grip.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault(); e.stopPropagation();
-    const colEl = currentColEl();
+    if (colResizing) clearColResize();   // a stranded drag: drop it, don't commit
+    const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
     colResizing = {
-      c, colEl, table, grip,
+      c, colEl, table, grip, pointerId: e.pointerId,
       startX: e.clientX, pendingX: e.clientX,
       startW: parseFloat(colEl.style.width) || 90,
       wrapRect: $("gridWrap").getBoundingClientRect(),
       raf: null,
     };
     grip.classList.add("on");
+    try { grip.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
     showResizeGuide(e.clientX);
   });
+  grip.addEventListener("lostpointercapture", endColResize);
   grip.addEventListener("click", (e) => e.stopPropagation());
 }
 document.addEventListener("pointermove", (e) => {
-  if (!colResizing) return;
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  // Button already up: the release happened somewhere we never saw it.
+  if (!(e.buttons & 1)) { endColResize(); return; }
   colResizing.pendingX = e.clientX;
   if (colResizing.raf) return;
   colResizing.raf = requestAnimationFrame(() => {
@@ -2013,13 +2035,16 @@ document.addEventListener("pointermove", (e) => {
     showResizeGuide(colResizing.pendingX);
   });
 });
-function endColResize(e) {
-  if (!colResizing) return;
-  if (colResizing.raf) { cancelAnimationFrame(colResizing.raf); colResizing.raf = null; }
-  finishColResize(e.clientX);
+function endColResize() {
+  if (colResizing) finishColResize(colResizing.pendingX);
 }
-document.addEventListener("pointerup", endColResize);
+document.addEventListener("pointerup", (e) => {
+  if (!colResizing) return;
+  if (e.pointerId === colResizing.pointerId) colResizing.pendingX = e.clientX;
+  endColResize();
+});
 document.addEventListener("pointercancel", endColResize);
+window.addEventListener("blur", endColResize);
 function fillPreview(r, c) {
   const b = fillDrag.base;
   const rowOut = r > b.r2 ? r - b.r2 : r < b.r1 ? r - b.r1 : 0;
@@ -2150,7 +2175,7 @@ async function load() {
     normalizeLoaded(res);
     mtime = res.mtime;
     setReadOnly(res.editable === false, res.readonly_message || "", res.readonly_tooltip || "");
-    undoStack = []; redoStack = []; renderLimit = RENDER_CAP; invalidateValues();
+    undoStack = []; redoStack = []; invalidateValues();
     const want = fused.params.get("sheet");
     cur = Math.max(0, book.sheets.findIndex((s2) => s2.name === want));
     sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
@@ -2624,7 +2649,6 @@ async function act(name) {
       const sh = S();
       sh.filterOn = !sh.filterOn;
       closeFilterMenu();
-      renderLimit = RENDER_CAP;
       if (!sh.filterOn) {   // turning filters off clears every column filter
         const had = activeFilters(sh).length;
         sh.filterQ = []; sh.filterVal = [];
@@ -2946,7 +2970,6 @@ $("nameBox").addEventListener("keydown", (e) => {
       setSel(ref.r, Math.min(ref.c, nCols() - 1));
     } else {
       ensureRect(S(), ref.r + 1, ref.c + 1);
-      if (ref.r >= renderLimit) renderLimit = Infinity;
       invalidateValues(); renderGrid(); setSel(ref.r, ref.c);
     }
   }

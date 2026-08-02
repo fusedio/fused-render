@@ -232,6 +232,11 @@ def _is_big(nrows, ncols):
 
 # ---------- parquet cache ----------
 
+# In-flight cache builds live under this prefix, deliberately NOT starting with
+# a cache key, so _clean_stale's "{hash}-" match can never sweep a live build.
+_TMP_PREFIX = ".build-"
+
+
 def _cache_dir(file):
     import hashlib
 
@@ -245,6 +250,10 @@ def _clean_stale(keep_dir):
     prefix = os.path.basename(keep_dir).split("-")[0]
     for n in os.listdir(CACHE_ROOT):
         p = os.path.join(CACHE_ROOT, n)
+        # Skip in-flight builds (_TMP_PREFIX): another process may be writing
+        # one right now, and wiping it would break its atomic-rename claim.
+        if n.startswith(_TMP_PREFIX):
+            continue
         if n.startswith(prefix + "-") and p != keep_dir:
             import shutil
 
@@ -273,7 +282,8 @@ def _ensure_cache(file):
     import shutil
     import uuid
 
-    tmp_d = f"{d}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    tmp_d = os.path.join(
+        CACHE_ROOT, f"{_TMP_PREFIX}{os.getpid()}-{uuid.uuid4().hex[:8]}")
     os.makedirs(tmp_d, exist_ok=True)
     try:
         ext = os.path.splitext(file)[1].lower()
@@ -311,11 +321,19 @@ def _ensure_cache(file):
         try:
             os.rename(tmp_d, d)
         except OSError:
-            # Lost the race: another process's build already claimed `d`.
-            # Discard ours and read theirs rather than raising or clobbering.
-            shutil.rmtree(tmp_d, ignore_errors=True)
-            with open(meta_path) as f:
-                return json.load(f)
+            # `d` already exists. Two very different reasons, and only the
+            # first means someone else finished the same work:
+            if os.path.exists(meta_path):
+                # A concurrent builder won the race. Drop ours, use theirs.
+                shutil.rmtree(tmp_d, ignore_errors=True)
+                with open(meta_path) as f:
+                    return json.load(f)
+            # `d` is there but has no meta.json: a half-built leftover from an
+            # interrupted earlier run. Clear it and claim it with our complete
+            # build — otherwise every future open keeps failing on the same
+            # debris until the cache is cleared by hand.
+            shutil.rmtree(d, ignore_errors=True)
+            os.rename(tmp_d, d)
         return meta
     except BaseException:
         shutil.rmtree(tmp_d, ignore_errors=True)
