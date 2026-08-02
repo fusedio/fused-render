@@ -959,6 +959,29 @@ export function copyEntry(src: string, dst: string, overwrite = false): Promise<
   return postJson<StatResult>("/api/fs/copy", { src, dst, overwrite });
 }
 
+// -- OS clipboard bridge (server/routers/clipboard.py) -----------------
+// The webview can't read or write the native file flavors Finder/Explorer/
+// Nautilus use, so the local backend does it for us and we trade in absolute
+// paths. `token` is a content fingerprint of the ordered path list — the
+// caller keeps the last one it SAW so an untouched clipboard never clobbers a
+// pending in-app cut. `supported: false` means this machine has no bridge
+// (no pyobjc, no xclip, a sandbox); it is a normal 200, not an error.
+export interface OsClipboard {
+  paths: string[];
+  token: string;
+  supported: boolean;
+}
+
+export function readOsClipboard(): Promise<OsClipboard> {
+  return getJson<OsClipboard>("/api/clipboard/files");
+}
+
+export function writeOsClipboard(
+  paths: string[]
+): Promise<{ token: string; supported: boolean }> {
+  return postJson<{ token: string; supported: boolean }>("/api/clipboard/files", { paths });
+}
+
 // -- Mounts (shell/mounts.py) ------------------------------------------
 // Remote storage mounted as local paths via rclone rcd. Credentials live in
 // rclone's config; mounts survive server restarts and are adopted on start.
