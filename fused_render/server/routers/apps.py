@@ -166,13 +166,15 @@ def _app_name_error(name) -> str | None:
 
 
 def _agent_path() -> str:
-    """The claude template backend (agent.py) — the staged core copy
-    (server.templates.TEMPLATES_DIR), the same file the claude template page
-    itself executes, so the runs dir, sidecar shape, and permission_server
-    path stay in step with what the page will poll."""
+    """The claude_split template backend (agent.py) — the staged core copy
+    (server.templates.TEMPLATES_DIR), the same file the split app view
+    executes, so the runs dir, sidecar shape (.claude-split.json inside the
+    app folder), and permission_server path stay in step with what the page
+    will poll. Apps open folder-first in claude_split, so the scaffolding
+    session must be recorded at the folder level too."""
     from fused_render.server import templates as _server_templates
 
-    return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")
+    return os.path.join(_server_templates.TEMPLATES_DIR, "claude_split", "agent.py")
 
 
 def _claude_agent():
@@ -249,7 +251,7 @@ print(json.dumps(mod._start(req["file"], req["message"], "", "", "",
 _APP_SESSION_PERMISSION_MODE = "auto"
 
 
-def _spawn_session_helper(entry_html: str, prompt: str) -> dict:
+def _spawn_session_helper(target: str, prompt: str) -> dict:
     """Run agent._start in the fork-safe helper; return its result dict.
 
     close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
@@ -259,7 +261,7 @@ def _spawn_session_helper(entry_html: str, prompt: str) -> dict:
     proc = subprocess.run(
         [sys.executable, "-c", _SESSION_HELPER],
         input=json.dumps(
-            {"agent": _agent_path(), "file": entry_html, "message": prompt,
+            {"agent": _agent_path(), "file": target, "message": prompt,
              "permission_mode": _APP_SESSION_PERMISSION_MODE}),
         capture_output=True, text=True, timeout=60, close_fds=False,
     )
@@ -269,18 +271,20 @@ def _spawn_session_helper(entry_html: str, prompt: str) -> dict:
     return json.loads(proc.stdout)
 
 
-def _start_app_session(entry_html: str, prompt: str) -> tuple[str | None, str | None]:
-    """Start a detached Claude Code session on the new app's entry file.
+def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | None]:
+    """Start a detached Claude Code session on the new app's FOLDER.
 
-    The seam the tests stub. Reuses agent._start (via the fork-safe helper
-    above) — cwd = the app folder, stream-json log, sidecar keyed to
-    entry_html — with the prompt over stdin (message_via_stdin) so user text
-    never enters argv. Returns (run_id, error), exactly one of them set: a
-    missing claude CLI or spawn failure must not fail the creation that
-    already succeeded, but the reason rides back so the UI isn't silent about
-    it, and the run_id lets the caller attach to the live run."""
+    The seam the tests stub. Reuses the claude_split agent's _start (via the
+    fork-safe helper above) — cwd = the app folder, stream-json log, sidecar
+    at <app_dir>/.claude-split.json, the same place the split view the app
+    opens in lists and resumes from — with the prompt over stdin
+    (message_via_stdin) so user text never enters argv. Returns
+    (run_id, error), exactly one of them set: a missing claude CLI or spawn
+    failure must not fail the creation that already succeeded, but the reason
+    rides back so the UI isn't silent about it, and the run_id lets the
+    caller attach to the live run."""
     try:
-        res = _spawn_session_helper(entry_html, prompt)
+        res = _spawn_session_helper(app_dir, prompt)
     except Exception as exc:
         return None, f"failed to start Claude session: {exc}"
     if res.get("error") or not res.get("run_id"):
@@ -348,7 +352,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     entry_html = os.path.join(dest, "index.html")
     run_id, session_error = None, None
     if prompt.strip():
-        run_id, session_error = _start_app_session(entry_html, prompt)
+        run_id, session_error = _start_app_session(dest, prompt)
 
     return {
         "path": os.path.abspath(dest),

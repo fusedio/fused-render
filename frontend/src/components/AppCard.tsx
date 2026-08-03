@@ -25,9 +25,10 @@ export function hueFor(name: string): string {
 
 export function AppCard({ app }: { app: AppInfo }) {
   const open = () => {
-    // An app with an entry opens straight into its "/" route view; a manifest
-    // without one falls back to the folder listing so the card is never dead.
-    if (app.entry_html) navigate(app.entry_html, { isDir: false });
+    // An app with an entry opens its FOLDER in the claude_split view — the
+    // app rendered beside a Claude chat; a manifest without one falls back to
+    // the plain folder listing so the card is never dead.
+    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
     else navigate(app.path, { isDir: true });
   };
   const title = app.title || app.name;

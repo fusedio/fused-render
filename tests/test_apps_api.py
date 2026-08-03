@@ -213,8 +213,8 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(entry_html, prompt):
-        seen["entry"] = entry_html
+    def fake_start(app_dir, prompt):
+        seen["target"] = app_dir
         seen["prompt"] = prompt
         return "run-42", None
 
@@ -225,7 +225,9 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_started"] is True
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    assert seen["entry"] == str(workspace / "local" / "demo" / "index.html")
+    # The scaffolding session starts on the app FOLDER (claude_split agent),
+    # so its sidecar lands where the split view lists sessions from.
+    assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
 
 
@@ -477,7 +479,11 @@ def _repo_text(*parts):
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
     home = _repo_text("frontend", "src", "views", "Home.tsx")
-    assert '_mode: "claude"' in home, "post-create nav must select the claude mode"
+    # Folder-first: the scaffolding session runs via the claude_split agent on
+    # the app FOLDER, so the re-attach must land in the split view (same runs
+    # dir, same .claude-split.json sidecar) — not the file-scoped claude mode.
+    assert '_mode: "claude_split"' in home, "post-create nav must select the claude_split mode"
+    assert "claudeChatUrl(res.path" in home, "…on the app folder, not entry_html"
     assert "run: runId" in home, "…and attach to the run the POST just started"
     # the run_id is what gates it: no session (no prompt) -> the default view
     assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home

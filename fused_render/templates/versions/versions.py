@@ -42,6 +42,12 @@ import subprocess
 import sys
 import tarfile
 
+# The fused engine execs this script without setting __file__; it puts the
+# script's own directory first on sys.path, so rebuild __file__ from it. Under
+# the built-in executor __file__ is already set, so this is a no-op.
+if "__file__" not in globals():
+    __file__ = os.path.join(sys.path[0], "versions.py")
+
 _SHARED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
