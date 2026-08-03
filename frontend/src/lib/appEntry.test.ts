@@ -2,32 +2,25 @@
 // ones that decide which of three thumbnail routes a card takes and what
 // clicking it opens — a wrong answer is either a blank card or a navigation to
 // a folder full of UUIDs, and neither is visible to a typecheck.
-import { expect, mock, test } from "bun:test";
+import { expect, test } from "bun:test";
 
 import type { AppInfo } from "./api";
 
-// Where openApp actually sends you — the rule this module exists to hold in one
-// place, and one no typecheck can check. router is mocked before the dynamic
-// import below so the calls are observable without a DOM.
-const navigated: { path: string; opts?: { isDir?: boolean; mode?: string } }[] = [];
-mock.module("./router", () => ({
-  navigate: (path: string, opts?: { isDir?: boolean; mode?: string }) =>
-    navigated.push({ path, opts }),
-}));
-
 // appEntry pulls `navigate` from router.ts, which reads `location` at MODULE
 // scope (IS_EMBED) — and bun's test runtime has no DOM. A static import is
-// hoisted above any shim, so the stub goes in first and the module comes in
-// dynamically after it. (toast.test.ts shims `window` the same way but can
-// import statically: it only touches it at call time.)
+// hoisted above any shim, so `location` is stubbed first and the module comes
+// in dynamically after it. (toast.test.ts shims `window` the same way but can
+// import statically: it only touches it at call time.) The stub is on
+// globalThis, which every file shares — hence `??=`, and hence a shape real
+// enough for router to read rather than an empty object.
 (globalThis as { location?: unknown }).location ??= { pathname: "/" };
-const { entryOf, extLabel, isImageEntry, openApp, rawUrl } = await import("./appEntry");
+const { entryOf, extLabel, isImageEntry, openTargetFor, rawUrl } = await import("./appEntry");
 
-function openedBy(over: Partial<AppInfo>) {
-  navigated.length = 0;
-  openApp(app(over));
-  return navigated[0];
-}
+// Where a click lands — the rule this module exists to hold in one place, and
+// one no typecheck can check. Asserted through openTargetFor rather than by
+// mocking `navigate`: bun's mock.module is process-wide, so stubbing router
+// here leaked into whichever suite happened to run next.
+const openedBy = (over: Partial<AppInfo>) => openTargetFor(app(over));
 
 function app(over: Partial<AppInfo>): AppInfo {
   return {
@@ -80,10 +73,10 @@ test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", (
       entry_html: "/cs/u1/v2_report.html",
       source: "claude-science",
     }),
-  ).toEqual({ path: "/cs/u1/v2_report.html", opts: undefined });
+  ).toEqual({ path: "/cs/u1/v2_report.html" });
 
   expect(openedBy({ path: "/cs/u2", entry: "/cs/u2/v1_fig.png", source: "claude-science" }))
-    .toEqual({ path: "/cs/u2/v1_fig.png", opts: undefined });
+    .toEqual({ path: "/cs/u2/v1_fig.png" });
 });
 
 test("an app with no entry at all opens its folder", () => {

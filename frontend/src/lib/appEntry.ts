@@ -75,14 +75,28 @@ function opensAsProject(app: AppInfo): boolean {
   return Boolean(app.entry_html) && app.source !== "claude-science";
 }
 
-export function openApp(app: AppInfo): void {
+export interface OpenTarget {
+  path: string;
+  opts?: { isDir?: boolean; mode?: string };
+}
+
+// Where a card goes when clicked, as a value. Split out from openApp so the
+// rule can be tested without touching `navigate`: this module already imports
+// router, and mocking a module that half the shell imports is process-wide in
+// bun — it leaked into another file's suite and broke it. A pure function needs
+// no mock at all.
+export function openTargetFor(app: AppInfo): OpenTarget {
   if (opensAsProject(app)) {
-    navigate(app.path, { isDir: true, mode: "claude_split" });
-    return;
+    return { path: app.path, opts: { isDir: true, mode: "claude_split" } };
   }
   const entry = entryOf(app);
   // The artifact itself. Its folder would be a listing of one opaque file — for
   // a Claude Science artifact, a directory named after a UUID.
-  if (entry) navigate(entry);
-  else navigate(app.path, { isDir: true });
+  if (entry) return { path: entry };
+  return { path: app.path, opts: { isDir: true } };
+}
+
+export function openApp(app: AppInfo): void {
+  const { path, opts } = openTargetFor(app);
+  navigate(path, opts);
 }
