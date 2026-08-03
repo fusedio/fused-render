@@ -571,7 +571,7 @@ function py(params) {
   // Invalidate at the moment the request is made, not when its result lands:
   // switching documents takes a round trip, and until state.doc catches up an
   // in-flight scan would still look current.
-  if (params.action && !INSPECT_SAFE.has(params.action)) inspectGen++;
+  if (params.action && !INSPECT_SAFE.has(params.action)) insVoid();
   // key:null — every pdf.py action (save/undo/export/read) shares this helper;
   // default per-file cancellation would abort in-flight saves/edits (D114).
   return fused.runPython(PY, clean, { key: null });
@@ -587,6 +587,7 @@ function setStatus(txt, cls = "") {
   const s = $("status");
   s.className = cls; s.querySelector(".txt").textContent = txt || "idle";
 }
+const idleStatus = () => setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
 const fmtSize = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
 
 // ---------- modal helpers ----------
@@ -1476,12 +1477,8 @@ const acts = {
   mdConvert: async () => {
     needDoc();
     const spec = $("mdPages")?.value.trim() || "all";
-    setStatus("converting…", "busy");
-    const res = await scoped(() => py({ action: "to_markdown", doc: state.doc, pages: spec }));
-    if (res === DROPPED) return;
-    state.md = { spec, ...res };
-    setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
-    renderInspect();
+    await insWork("converting…", () => py({ action: "to_markdown", doc: state.doc, pages: spec }),
+      (res) => { state.md = { spec, ...res }; });
   },
   mdCopy: async () => {
     await navigator.clipboard.writeText(state.md.markdown);
@@ -1813,6 +1810,26 @@ async function scoped(run) {
   }
 }
 
+// Every request the drawer makes goes through here, so its busy state has one
+// owner: whatever becomes of the request — an answer, a failure, or a discard —
+// the last one out repaints from whatever is true by then. No outcome can leave
+// "Scanning…" on screen, which per-call-site success paths kept doing.
+let insBusy = 0;
+async function insWork(label, run, commit) {
+  insBusy++;
+  setStatus(label, "busy");
+  try {
+    const value = await scoped(run);
+    if (value !== DROPPED) commit(value);
+    return value !== DROPPED;
+  } finally {
+    if (--insBusy === 0) {
+      if ($("status").querySelector(".txt").textContent === label) idleStatus();
+      if (document.body.classList.contains("inspect-on")) renderInspect();
+    }
+  }
+}
+
 async function runInspect(tab) {
   needDoc();
   insOpen(true);
@@ -1820,18 +1837,9 @@ async function runInspect(tab) {
   if (!state.inspect) {
     $("insBody").innerHTML = `<div class="ins-note">Scanning ${esc(state.info.name)} —
       ${plural(state.info.page_count, "page", "pages")}…</div>`;
-    setStatus("inspecting…", "busy");
-    let report;
-    try {
-      report = await scoped(() => py({ action: "inspect", doc: state.doc }));
-    } catch (err) {
-      renderInspect();   // clear "Scanning…"; act() reports the error
-      throw err;
-    }
-    if (report === DROPPED) return;
-    state.inspect = report;
-    setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
-    applyOcrBadges();
+    const done = await insWork("inspecting…", () => py({ action: "inspect", doc: state.doc }),
+      (report) => { state.inspect = report; applyOcrBadges(); });
+    if (!done) return;
   }
   const h = state.health || {};
   $("insEngine").textContent = [`pymupdf ${h.pymupdf}`, `pikepdf ${h.pikepdf}`,
@@ -1839,12 +1847,19 @@ async function runInspect(tab) {
   renderInspect();
 }
 
-// A mutation invalidates the report; the bump also discards an in-flight scan.
-function dropInspect() {
+// One place decides what a generation bump means. Every request already in
+// flight becomes void, so the drawer repaints at the bump — not when the void
+// answer eventually arrives, which for a long scan is a minute of "Scanning…"
+// for a result that is going to be thrown away. `clear` additionally drops the
+// report itself, for the mutations that make it wrong rather than merely moot.
+function insVoid(clear = false) {
   inspectGen++;
-  state.inspect = null;
-  state.md = null;
-  if (document.body.classList.contains("inspect-on")) renderInspect();
+  if (clear) { state.inspect = null; state.md = null; }
+  if ((clear || insBusy) && document.body.classList.contains("inspect-on")) renderInspect();
+}
+
+function dropInspect() {
+  insVoid(true);
 }
 
 function applyOcrBadges() {

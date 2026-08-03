@@ -54,11 +54,12 @@ ACTION_RISK = {
     "/Thread": ("info", "follows an article thread", "nav"),
     "/Trans": ("info", "plays a page transition", "nav"),
     "/ResetForm": ("info", "clears form fields", "nav"),
+    "/GoToDp": ("info", "jumps to a part of this document", "nav"),
 }
 UNKNOWN_ACTION = ("warn", "an unrecognised action type", "unknown")
 
 # What counts as an action when found outside /A, /AA or /OpenAction.
-ACTION_TYPES = frozenset(ACTION_RISK) | {"/GoToDp"}
+ACTION_TYPES = frozenset(ACTION_RISK)
 
 # Containers worth naming in a finding's location; anything else inherits its
 # parent's label, so the walk stays complete even for containers not listed.
@@ -424,7 +425,10 @@ def _security_report(hits, urls, facts):
     for h in hits:
         by_row.setdefault(h["row"], []).append(h)
 
+    covered = set()
+
     def rows(name):
+        covered.add(name)
         return by_row.get(name, [])
 
     checks = []
@@ -450,6 +454,7 @@ def _security_report(hits, urls, facts):
 
     att = facts["attachments"]
     bad_att = [a for a in att if a["executable"]]
+    rows("attachment")   # summarised from facts below, which knows more than the hit
     check("Embedded files", "fail" if bad_att else ("warn" if att else "pass"),
           ", ".join(a["name"] for a in att) if att else "No attachments")
 
@@ -496,6 +501,15 @@ def _security_report(hits, urls, facts):
           f"{revs} extra cross-reference section{'' if revs == 1 else 's'} —"
           " earlier content may still be recoverable" if revs
           else "Single revision, no hidden history")
+
+    # Whatever no row above asked for still gets summarised here, so a finding
+    # the reader can see can never sit behind a checklist that says "pass" —
+    # including kinds added to ACTION_RISK after this function was written.
+    rest = [h for h in hits if h["level"] in ("danger", "warn") and h["row"] not in covered]
+    if rest:
+        check("Other active content",
+              "fail" if any(h["level"] == "danger" for h in rest) else "warn",
+              "; ".join(sorted({h["what"] for h in rest})))
 
     risk = "risky" if any(c["state"] == "fail" for c in checks) else \
            "notable" if any(c["state"] == "warn" for c in checks) else "clean"
