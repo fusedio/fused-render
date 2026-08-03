@@ -115,8 +115,9 @@ def commit(path: str, message: str) -> bool:
             return False
         r = _git_retry_lock(app_dir, "add", "-A")
         if r.returncode != 0:
-            logger.warning("app commit skipped (%s): add failed: %s",
-                         app_dir, (r.stderr or "").strip())
+            logger.warning("app commit skipped (%s): add failed rc=%s "
+                           "stdout=%r stderr=%r", app_dir, r.returncode,
+                           (r.stdout or "").strip(), (r.stderr or "").strip())
             return False
         # Nothing staged (e.g. the change was to an ignored sidecar): no
         # commit, and no error either.
@@ -124,8 +125,9 @@ def commit(path: str, message: str) -> bool:
             return False
         r = _git_retry_lock(app_dir, "commit", "-q", "-m", message or "Update")
         if r.returncode != 0:
-            logger.warning("app commit skipped (%s): commit failed: %s",
-                         app_dir, (r.stderr or "").strip())
+            logger.warning("app commit skipped (%s): commit failed rc=%s "
+                           "stdout=%r stderr=%r", app_dir, r.returncode,
+                           (r.stdout or "").strip(), (r.stderr or "").strip())
             return False
         return True
     except Exception:
