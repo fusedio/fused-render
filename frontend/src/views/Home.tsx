@@ -20,6 +20,7 @@ import { isMod, MOD_LABEL } from "../lib/platform";
 import { useDeferredClose } from "../lib/hooks";
 import { PANEL_EXIT_MS } from "../lib/exit-animation";
 import { AppCard } from "../components/AppCard";
+import { SkeletonLines } from "../components/Skeleton";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -745,7 +746,7 @@ export default function Home({ config }: { config: Config }) {
             }
           />
           {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-          {apps.status === "loading" && <div className="home-loading">Loading…</div>}
+          {apps.status === "loading" && <SkeletonLines rows={3} label="Loading apps" />}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
               No apps yet. Describe one in the box above — it lands in{" "}

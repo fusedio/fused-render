@@ -15,6 +15,7 @@ import { navigateUrl } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { AppPreviewCard } from "../components/AppPreviewCard";
 import { NewAppPanel } from "./Home";
+import { SkeletonLines } from "../components/Skeleton";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -163,7 +164,7 @@ export default function Apps() {
         </div>
 
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-        {apps.status === "loading" && <div className="home-loading">Loading…</div>}
+        {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status === "ok" && (
           <>
             <div className="apps-count">

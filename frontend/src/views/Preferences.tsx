@@ -30,6 +30,7 @@ import type { CallsParamsMode, Prefs } from "../lib/api";
 import { navigate, navigateUrl } from "../lib/router";
 import { notifyPrefsChanged } from "../lib/prefs";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { SkeletonLines } from "../components/Skeleton";
 import { useThemePref } from "../lib/theme";
 import { AccountPanel } from "./Account";
 
@@ -451,7 +452,7 @@ export default function Preferences() {
   return (
     <div className="prefs-page">
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <div className="deploy-muted">Loading…</div>}
+      {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
       {prefs && (
         <>
           <div className="prefs-tabs">

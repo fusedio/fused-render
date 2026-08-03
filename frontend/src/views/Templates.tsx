@@ -19,6 +19,7 @@ import { NewTemplateModal } from "./templates/NewTemplateModal";
 import { RowEditorModal } from "./templates/RowEditorModal";
 import { navigateUrl } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
+import { SkeletonLines } from "../components/Skeleton";
 
 type PageTab = "bindings" | "library";
 
@@ -98,7 +99,7 @@ export default function Templates() {
         </button>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!error && (!inventory || !registry) && <div className="deploy-muted">Loading…</div>}
+      {!error && (!inventory || !registry) && <SkeletonLines rows={5} label="Loading templates" />}
       {inventory && registry && tab === "bindings" && (
         <BindingsTable
           registry={registry}

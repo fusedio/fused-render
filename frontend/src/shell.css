@@ -1451,6 +1451,16 @@ table.listing-table tr.skel-row:hover {
   background: transparent;
 }
 
+/* Shared "content is loading" block (components/Skeleton.tsx): a few ragged
+   shimmer bars, used where a bare "Loading…" line used to sit. */
+.skel-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+  padding: 6px 0;
+}
+
 .listing-pane .pane-skel {
   flex: 1 1 auto;
   margin: 14px;
