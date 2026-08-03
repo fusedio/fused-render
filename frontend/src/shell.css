@@ -5805,33 +5805,29 @@ select.field-control:has(option[value=""]:checked) {
   position: relative;
 }
 
-.home-hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
-  margin-bottom: 18px;
+/* Fused wordmark: centered above the title. The PNGs bake generous padding
+   into the canvas, so the rendered height runs larger than the visible mark.
+   Dark is the :root default theme, so the dark render shows by default and
+   the light one takes over under [data-theme="light"]. */
+.home-hero-logo {
+  display: block;
+  height: 64px;
+  margin: 0 auto 10px;
 }
 
-.home-hero-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
+.home-hero-logo-light,
+:root[data-theme="light"] .home-hero-logo-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .home-hero-logo-light {
+  display: block;
 }
 
 .home-hero-title {
   margin: 0 0 18px;
   text-align: center;
-  font-size: 30px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.08;

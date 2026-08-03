@@ -22,6 +22,8 @@ import { useDeferredClose, useLearnMountReady } from "../lib/hooks";
 import { PANEL_EXIT_MS } from "../lib/exit-animation";
 import { timeAgo } from "../components/AppPreviewCard";
 import { SkeletonLines } from "../components/Skeleton";
+import logoDark from "../assets/logo-text-black-bg-transparent.png";
+import logoLight from "../assets/logo-text-white-bg-transparent.png";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -713,10 +715,10 @@ export default function Home({ config }: { config: Config }) {
             page's primary action (opens the create modal — the actual fields
             live there); "Browse files" is the everyday doorway. */}
         <header className="home-hero">
-          <div className="home-hero-badge">
-            <span className="home-hero-dot" aria-hidden="true" />
-            fused-render
-          </div>
+          {/* Fused wordmark, centered. Two theme-matched renders of the same
+              logo; CSS shows the one matching the active theme. */}
+          <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
+          <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
           <h1 className="home-hero-title">
             Build your next <span className="home-hero-accent">local app</span>
           </h1>
