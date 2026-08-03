@@ -72,7 +72,7 @@ jobs:
             # filter — pre-existing behavior, left unchanged.)
             linux_desktop:
               - 'fused_render/supervisor/**'
-              - 'fused_render/shell/mounts.py'
+              - 'fused_render/shell/mounts/**'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
               - *linux_packaging
@@ -89,7 +89,7 @@ jobs:
               - 'fused_render/supervisor/**'
               - 'fused_render/app.py'
               - 'fused_render/menubar_pin.py'
-              - 'fused_render/shell/mounts.py'
+              - 'fused_render/shell/mounts/**'
               # The NSPasteboard backend: its round-trips need a real macOS
               # login session, so this job is the only place they can run.
               - 'fused_render/shell/pasteboard/**'
