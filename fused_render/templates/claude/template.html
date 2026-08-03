@@ -1343,6 +1343,12 @@ async function pollLoop(run_id, handoff) {
   // The return ticket for THIS run only (see composeAndSend). Undefined for a
   // plain turn and for a run re-attached at boot (resumeRun) — neither returns.
   const returnTo = (handoff && handoff.mode) || "";
+  // Any "Open preview" row on screen belongs to a FINISHED turn; with a run
+  // now streaming it is stale. sendMessage already stripped its own, but the
+  // resumeRun re-attach path reaches here with a history-restored row that
+  // its non-matching branch never trims — an error finish would then leave
+  // that button stranded mid-transcript. The finish below re-adds on success.
+  log.querySelectorAll(".viewout").forEach((el) => el.remove());
   const w = addWorking();
   let reply = null;
   let typer = null;

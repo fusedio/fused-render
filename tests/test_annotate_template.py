@@ -357,6 +357,7 @@ def test_the_return_ticket_is_stripped_from_the_shell_url_like_the_comments(
     # Left on the URL, a Back entry (or a refresh) re-attaches a review that was
     # already sent and re-arms the return — so it rides the SAME replaceState.
     fns = [_block(claude_source, "const HANDOFF_PARAMS = [", "];"),
+           _block(claude_source, "function spliceLayoutSpan(full) {", "\n}"),
            _block(claude_source, "function clearTopClaudeComments() {", "\n}")]
     seen = _node(_shell_harness(
         fns,
@@ -378,6 +379,7 @@ def test_the_return_ticket_is_stripped_from_the_shell_url_like_the_comments(
 def test_a_chat_opened_normally_never_rewrites_the_shell_url(
         claude_source, tmp_path):
     fns = [_block(claude_source, "const HANDOFF_PARAMS = [", "];"),
+           _block(claude_source, "function spliceLayoutSpan(full) {", "\n}"),
            _block(claude_source, "function clearTopClaudeComments() {", "\n}")]
     seen = _node(_shell_harness(fns, "_mode=claude&session_id=abc",
                                 "clearTopClaudeComments();"), tmp_path)
@@ -387,8 +389,9 @@ def test_a_chat_opened_normally_never_rewrites_the_shell_url(
 def test_the_return_navigation_flips_the_mode_and_keeps_the_review(
         claude_source, tmp_path):
     fn = _block(claude_source, "function returnToMode(mode) {", "\n}")
+    splice = _block(claude_source, "function spliceLayoutSpan(full) {", "\n}")
     seen = _node(_shell_harness(
-        [fn],
+        [splice, fn],
         "_mode=claude&comments=%5B%7B%22id%22%3A%22c1%22%2C%22sent%22%3A1%7D%5D"
         "&view=markdown&session_id=abc&run=r-42&" + _LAYOUT,
         'returnToMode("annotate");'), tmp_path)
