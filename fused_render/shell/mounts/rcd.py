@@ -56,6 +56,41 @@ def _rcd_child_env(auth: tuple[str, str]) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith("RCLONE_RC_")}
     env["RCLONE_RC_USER"], env["RCLONE_RC_PASS"] = auth
     env["RCLONE_RC_NO_AUTH"] = "false"
+    # The macOS nfsmount's NFS handle cache. MUST be set here in the environment
+    # rather than on argv: --nfs-cache-type/--nfs-cache-dir are registered on the
+    # `serve nfs`/`nfsmount` COMMAND flag sets, so `rcd` rejects them outright
+    # ("unknown flag") and refuses to start. They are also a registered global
+    # option block ("nfs"), and rclone derives an env var for every option, so
+    # RCLONE_NFS_* reaches the daemon — verified against rclone v1.74.4 via
+    # `rc options/get` reporting {"HandleCache":"disk", "HandleCacheDir": ...}.
+    #
+    # Why "disk" and not the "memory" default: go-nfs's in-memory CachingHandler
+    # (helpers/cachinghandler.go, v0.0.4 — the version rclone v1.74.4 pins) scans
+    # EVERY cached handle on every handle resolution, i.e. on essentially every
+    # NFS RPC:
+    #     if f, ok := c.activeHandles.Get(id); ok {
+    #         for _, k := range c.activeHandles.Keys() {   // O(N)
+    #             candidate, _ := c.activeHandles.Peek(k)
+    #             if hasPrefix(f.p, candidate.p) { ... }
+    # ToHandle mints one handle per directory entry and READDIRPLUS calls it per
+    # entry, so any recursive walk of a mount (a global search across the home
+    # dir, ripgrep, Spotlight, a flat million-key S3 prefix) drives N toward
+    # --nfs-cache-handle-limit, default 1_000_000. The LRU has no TTL and only
+    # shrinks by eviction at the limit, so the mount NEVER recovers — the
+    # long-standing "one global search kills the mount, only a force-unmount
+    # heals it" failure. Measured on a LOCAL 50k-file tree (so no S3 latency
+    # involved), per-stat cost under "memory" grew linearly with handles minted:
+    # 0.12ms at 0 -> 3.58ms at 50k (29x), and re-listing one unchanged 500-entry
+    # directory went 80ms -> 1801ms. Under "disk" both stayed FLAT (0.12ms,
+    # ~63ms) — rclone's own diskHandler.FromHandle is a sha256 of the path plus
+    # one small file read, with no scan. Extrapolated to the 1M-handle limit,
+    # "memory" reaches ~70ms per stat.
+    #
+    # Second benefit: disk handles are derived from the path, so they are stable
+    # across a daemon restart. "memory" hands out random UUIDs, so restart_rcd
+    # previously gave every still-connected NFS client stale handles.
+    env["RCLONE_NFS_CACHE_TYPE"] = "disk"
+    env["RCLONE_NFS_CACHE_DIR"] = _reset_nfs_handle_cache()
     return env
 
 
@@ -264,6 +299,28 @@ def _rcd_log_path() -> str:
 
 
 RCD_LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _nfs_handle_cache_dir() -> str:
+    return os.path.join(storage.home_dir(), "nfs-handle-cache")
+
+
+def _reset_nfs_handle_cache() -> str:
+    """Clear and return the directory backing rclone's on-disk NFS handle cache.
+
+    The disk handler never evicts (one small file per path ever handled), so a
+    long-lived home would otherwise accumulate them without bound. A fresh
+    daemon can't honour handles it didn't mint anyway — the paths behind them
+    are only meaningful to the VFS instance that is now gone — so the spawn is
+    the right moment to reset it. Best-effort: rclone recreates the dir, and a
+    stale cache is a disk-space nuisance, never a correctness problem."""
+    d = _nfs_handle_cache_dir()
+    try:
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        logger.warning("could not reset the NFS handle cache dir %s", d, exc_info=True)
+    return d
 
 
 def _rotate_rcd_log() -> str:
