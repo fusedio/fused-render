@@ -5982,10 +5982,14 @@ select.field-control:has(option[value=""]:checked) {
 
 /* Doorways: equal cards, one per entry point (3, or 4 once the learn mount
    is ready). Glyph square repaints from the inline per-card hue (file-icon
-   palette). auto-fit keeps the row full either way. */
+   palette). auto-fit keeps the row full either way. 150px (not a rounder
+   180px) is deliberate: it's the largest track width that still lets all
+   four cards fit on one row all the way down to the 761px single-column
+   breakpoint below, inside .home-inner's padding — anything bigger strands
+   the 4th card onto its own row at common tablet widths (e.g. 768px). */
 .home-doors {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 14px;
 }
 

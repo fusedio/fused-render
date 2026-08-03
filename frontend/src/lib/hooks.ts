@@ -159,10 +159,22 @@ export function useDocumentTitle(label: string | null | undefined): void {
 // = 120s) comfortably exceeds attach_mount's ~70s worst case (ensure_rcd
 // spawn + full 60s mount rc timeout, shell/mounts.py) so a slow-but-
 // successful mount isn't missed; the cap keeps a dev checkout with no
-// bundled learn.zip (never becomes ready) from polling forever.
+// bundled learn.zip (never becomes ready) from polling forever. Once any
+// mount confirms true, that result is cached at module scope (below) so a
+// later remount of the hook doesn't re-litigate it against a stale seed.
+// Module-level cache of the last CONFIRMED-true readiness, shared by every
+// mount of the hook. Home unmounts/remounts on every visit to "/" (it's a
+// route, not persistent chrome like Sidebar), so without this a return visit
+// re-seeds from the stale boot `initial` (still false) and restarts the
+// bounded poll from scratch — the Learn card would vanish for up to 2s and
+// reflow the grid on every trip back to Home, even though readiness was
+// already confirmed earlier in the session.
+let cachedReady = false;
+
 export function useLearnMountReady(initial: boolean): boolean {
-  const [ready, setReady] = useState(initial);
+  const [ready, setReady] = useState(cachedReady || initial);
   useEffect(() => {
+    if (cachedReady) return; // already confirmed — nothing left to poll for
     let cancelled = false;
     let attempts = 0;
     // setInterval fires a new getConfig() every tick without waiting for the
@@ -181,7 +193,10 @@ export function useLearnMountReady(initial: boolean): boolean {
         (fresh) => {
           if (cancelled || requestId !== latestRequestId) return;
           setReady(fresh.learn_mount_ready);
-          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
+          if (fresh.learn_mount_ready) {
+            cachedReady = true;
+            window.clearInterval(timer);
+          } else if (attempts >= MAX_ATTEMPTS) {
             window.clearInterval(timer);
           }
         },
