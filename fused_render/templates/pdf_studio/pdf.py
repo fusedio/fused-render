@@ -44,6 +44,9 @@ Actions
   excel_to_pdf(src)                        -> {name, path, dir}
   images_to_pdf(sources,name,directory)    -> {name, path, dir}  (image file paths)
   save_scan(images_b64,name,directory)     -> {name, path, dir}  (base64 captures)
+  inspect(doc,pages)                       -> {doc, verdict, pages, fonts, text, security, rust}
+  to_markdown(doc,pages)                   -> {markdown, chars, pages}
+  save_markdown(doc,pages,directory,name)  -> {name, path, size, dir}
   reveal(path)                             -> {ok}  (opens the OS file explorer)
   page_text(doc,page)                      -> {width, height, rotation, spans:[...]}
   undo(doc) / redo(doc)                    -> mutation contract shape
@@ -1281,6 +1284,756 @@ def _export(doc, kind, pages, name, directory=""):
             "dir": _fwd(out)}
 
 
+# ------------------------------------------------------------------ inspection
+# Thresholds mirror firecrawl/pdf-inspector's detector, so TextBased / Scanned /
+# ImageBased / Mixed mean the same here as there. If `pdf_inspector` happens to
+# be installed its own verdict is reported alongside as a cross-check.
+TEMPLATE_IMAGE_PX = 500_000       # a placed image this big is a background/scan
+MIN_TEXT_OPS = 3                  # per page, before a page counts as having text
+MIN_TEXT_OPS_WITH_IMAGES = 10
+MIN_UNIQUE_CHARS = 5
+TEXT_PAGE_RATIO = 0.6             # share of pages with text to call the doc text-based
+TABLE_SCAN_CAP = 40               # find_tables() is the slow part of a scan
+PAGE_SCAN_CAP = 200               # beyond this, sample evenly instead of every page
+MD_PAGE_CAP = 60                  # markdown runs find_tables() on every page it converts
+
+TYPE_LABELS = {
+    "TextBased": "Text-based",
+    "Scanned": "Scanned",
+    "ImageBased": "Image-based",
+    "Mixed": "Mixed",
+}
+
+# Keyed by the PDF /S action name. /GoTo and friends must be listed as benign:
+# treating unlisted types as suspect turns ordinary internal links into findings.
+ACTION_RISK = {
+    "/JavaScript": ("danger", "runs JavaScript"),
+    "/Launch": ("danger", "launches an external program or file"),
+    "/ImportData": ("danger", "reads form data off the local disk"),
+    "/SubmitForm": ("warn", "posts form data to a URL"),
+    "/GoToR": ("warn", "opens another document"),
+    "/GoToE": ("warn", "opens an embedded document"),
+    "/Movie": ("warn", "plays embedded video"),
+    "/Sound": ("warn", "plays embedded audio"),
+    "/Rendition": ("warn", "plays embedded rich media"),
+    "/RichMediaExecute": ("warn", "drives embedded Flash/3D content"),
+    "/URI": ("info", "opens a web link"),
+    "/GoTo": ("info", "jumps to a page in this document"),
+    "/Named": ("info", "runs a viewer command"),
+    "/Hide": ("info", "shows or hides page content"),
+    "/SetOCGState": ("info", "toggles optional-content layers"),
+    "/Thread": ("info", "follows an article thread"),
+    "/Trans": ("info", "plays a page transition"),
+}
+EXEC_EXTS = {".exe", ".dll", ".scr", ".bat", ".cmd", ".com", ".ps1", ".vbs",
+             ".js", ".jse", ".jar", ".msi", ".lnk", ".hta", ".wsf", ".reg", ".sh"}
+
+
+def _gutter(xspans, width):
+    """Centre x of the widest vertical gap no text crosses, when it is wide
+    enough to be a column gutter rather than word spacing. Used both to count
+    columns during a scan and to order blocks for markdown."""
+    merged = []
+    for a, b in sorted(xspans):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    if len(merged) < 2:
+        return None
+    gap, i = max((merged[j + 1][0] - merged[j][1], j) for j in range(len(merged) - 1))
+    if gap < width * 0.06:
+        return None
+    return merged[i][1] + gap / 2
+
+
+def _page_scan(page, tables=False):
+    """Per-page metrics. get_texttrace() gives one entry per text-showing
+    operator plus every character's (unicode, glyph), which is what makes the
+    text/scan call and the broken-encoding call possible without rendering."""
+    import fitz
+
+    text_ops = invisible = chars = notdef = undecodable = 0
+    unique = set()
+    fonts = set()
+    for span in page.get_texttrace():
+        text_ops += 1
+        if span["type"] == 3:            # render mode 3/7 — invisible OCR layer
+            invisible += 1
+        fonts.add(span["font"])
+        for ucs, gid, _origin, _bbox in span["chars"]:
+            chars += 1
+            if gid == 0:
+                notdef += 1
+            if ucs in (0, 0xFFFD):
+                undecodable += 1
+            elif ucs > 32:
+                unique.add(ucs)
+
+    tblocks = [(b[0], b[2]) for b in page.get_text("blocks") if b[6] == 0]
+    imgs = page.get_image_info()
+    area = abs(page.rect.width * page.rect.height) or 1.0
+    cover = min(1.0, sum(abs(fitz.Rect(i["bbox"]).get_area()) for i in imgs) / area)
+    pixels = [i["width"] * i["height"] for i in imgs]
+    drawings = len(page.get_drawings())
+    alnum = sum(1 for c in unique if chr(c).isalnum())
+
+    template = max(pixels, default=0) >= TEMPLATE_IMAGE_PX \
+        or sum(pixels) >= TEMPLATE_IMAGE_PX * 4
+    return {
+        "n": page.number + 1,
+        "width": round(page.rect.width, 1), "height": round(page.rect.height, 1),
+        "rotation": page.rotation,
+        "chars": chars, "text_ops": text_ops, "invisible_ops": invisible,
+        "unique_chars": len(unique), "notdef": notdef, "undecodable": undecodable,
+        "images": len(imgs), "image_cover": round(cover, 3), "drawings": drawings,
+        "links": len([l for l in page.get_links() if l.get("uri")]),
+        "fonts": sorted(fonts),
+        "has_text": (text_ops >= (MIN_TEXT_OPS_WITH_IMAGES if imgs else MIN_TEXT_OPS)
+                     and len(unique) >= MIN_UNIQUE_CHARS),
+        "vector_text": drawings >= 1000 and drawings > text_ops * 200 and alnum < 30,
+        "template_image": template,
+        "scan_like": template and len(imgs) <= 1 and text_ops < 50 and alnum < 10,
+        "columns": 2 if len(tblocks) >= 4 and _gutter(tblocks, page.rect.width) else 1,
+        "tables": len(page.find_tables().tables) if tables else 0,
+        "tables_scanned": tables,
+    }
+
+
+def _classify(scans):
+    n = len(scans)
+    with_text = sum(1 for s in scans if s["has_text"])
+    ratio = with_text / n
+    total_ops = sum(s["text_ops"] for s in scans)
+    templates = sum(1 for s in scans if s["template_image"])
+    any_images = any(s["images"] for s in scans)
+    any_vector = any(s["vector_text"] for s in scans)
+
+    if templates and with_text:
+        kind, conf = "Mixed", 0.5 + 0.3 * (1 - templates / n)
+    elif ratio >= TEXT_PAGE_RATIO:
+        kind, conf = "TextBased", ratio
+    elif not with_text and (any_images or any_vector):
+        kind, conf = ("Scanned", 0.95) if total_ops == 0 else ("ImageBased", 0.8)
+    elif with_text and (any_images or any_vector):
+        kind, conf = "Mixed", 0.7
+    elif total_ops == 0:
+        kind, conf = "Scanned", 0.9
+    else:
+        kind, conf = "TextBased", max(ratio, 0.5)
+
+    reasons = {}
+    for s in scans:
+        why = []
+        if kind in ("Scanned", "ImageBased"):
+            why.append("no text layer anywhere in the document")
+        else:
+            if s["scan_like"]:
+                why.append("full-page image with almost no text")
+            if s["vector_text"]:
+                why.append("text is drawn as vector outlines")
+            if s["images"] and not s["has_text"]:
+                why.append("images but no extractable text")
+            if not s["images"] and not s["has_text"] and s["drawings"]:
+                why.append("no extractable text on the page")
+            if s["chars"] and (s["undecodable"] / s["chars"] > 0.02
+                               or s["notdef"] / s["chars"] > 0.2):
+                why.append("font encoding does not decode to Unicode")
+        if why:
+            reasons[str(s["n"])] = why
+        s["needs_ocr"] = bool(why)
+
+    return {
+        "type": kind, "label": TYPE_LABELS[kind],
+        "confidence": round(min(1.0, conf), 2),
+        "page_count": len(scans), "pages_with_text": with_text,
+        "ocr_recommended": bool(reasons),
+        "pages_needing_ocr": [int(k) for k in reasons],
+        "reasons": reasons,
+    }
+
+
+def _font_report(d, page_idx):
+    seen = {}
+    for i in page_idx:
+        for xref, ext, ftype, basefont, refname, enc in d.get_page_fonts(i):
+            f = seen.get((xref, refname))
+            if f is None:
+                name = basefont or "(unnamed)"
+                subset = len(name) > 7 and name[6] == "+"
+                f = seen[(xref, refname)] = {
+                    "name": name[7:] if subset else name,
+                    "type": ftype, "encoding": enc or "(built-in)",
+                    "embedded": ext not in ("n/a", ""), "subset": subset,
+                    "tounicode": bool(xref) and d.xref_get_key(xref, "ToUnicode")[0] != "null",
+                    "pages": [],
+                }
+            f["pages"].append(i + 1)
+    fonts = sorted(seen.values(), key=lambda f: f["name"].lower())
+    for f in fonts:
+        f["page_count"] = len(f["pages"])
+        f["pages"] = f["pages"][:8]
+        # An Identity-H CID font with no ToUnicode map has no path back to
+        # characters — extraction produces mojibake and OCR is the only way out.
+        f["undecodable"] = f["encoding"] == "Identity-H" and not f["tounicode"]
+    return fonts
+
+
+def _is_int(obj):
+    try:
+        int(obj)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _walk_triggers(obj, where, hits):
+    """The /AA additional-actions dict, if the object really has one. Every key
+    in it fires on an event (open, page close, field format) with no click."""
+    import pikepdf
+
+    aa = obj.get("/AA")
+    if isinstance(aa, pikepdf.Dictionary):
+        for key, act in aa.items():
+            _walk_action(act, f"{where} trigger {key}", hits)
+
+
+def _note_attachment(name, where, facts, hits):
+    ext = os.path.splitext(name)[1].lower()
+    executable = ext in EXEC_EXTS
+    facts["attachments"].append({"name": name, "executable": executable})
+    if executable:
+        hits.append({"level": "danger", "kind": "/EmbeddedFile",
+                     "what": "carries an executable attachment",
+                     "detail": name, "where": where})
+
+
+def _walk_action(act, where, hits, depth=0):
+    """Collect (level, kind, description, where) for an action and its /Next."""
+    import pikepdf
+
+    if depth > 4 or not isinstance(act, pikepdf.Dictionary):
+        return
+    kind = str(act.get("/S", "")) or "(unnamed)"
+    level, what = ACTION_RISK.get(kind, ("warn", "an unrecognised action type"))
+    detail = ""
+    if kind == "/URI":
+        detail = str(act.get("/URI", ""))
+    elif kind == "/Launch":
+        win = act.get("/Win")
+        target = act.get("/F") or (win.get("/F") if isinstance(win, pikepdf.Dictionary) else None)
+        detail = str(target) if target is not None else ""
+    elif kind == "/JavaScript":
+        js = act.get("/JS")
+        code = bytes(js.read_bytes()).decode("utf-8", "replace") if isinstance(js, pikepdf.Stream) else str(js or "")
+        detail = _norm_ws(code)[:400]
+    elif kind in ("/GoToR", "/GoToE", "/SubmitForm", "/ImportData"):
+        detail = str(act.get("/F", ""))
+    hits.append({"level": level, "kind": kind, "what": what,
+                 "detail": detail, "where": where})
+    nxt = act.get("/Next")
+    if isinstance(nxt, pikepdf.Array):
+        for a in nxt:
+            _walk_action(a, where, hits, depth + 1)
+    else:
+        _walk_action(nxt, where, hits, depth + 1)
+
+
+def _security(path):
+    """Everything in the file that can act on its own, plus the encryption,
+    signature and revision facts that go with deciding whether to trust it."""
+    import pikepdf
+
+    hits = []
+    urls = {}
+    facts = {"attachments": [], "signatures": 0, "xfa": False, "acroform": False,
+             "encrypted": False, "permissions": {}, "revisions": 0,
+             "js_names": 0, "open_action": "", "layers": False, "linearized": False}
+
+    with pikepdf.open(path) as pdf:
+        root = pdf.Root
+        facts["encrypted"] = pdf.is_encrypted
+        facts["linearized"] = pdf.is_linearized
+        if pdf.is_encrypted:
+            facts["permissions"] = {k: bool(v) for k, v in pdf.allow._asdict().items()}
+
+        oa = root.get("/OpenAction")
+        if isinstance(oa, pikepdf.Dictionary):
+            facts["open_action"] = str(oa.get("/S", ""))
+            _walk_action(oa, "document open action", hits)
+        elif isinstance(oa, pikepdf.Array):
+            facts["open_action"] = "/GoTo"      # a destination array, not an action
+
+        _walk_triggers(root, "document", hits)
+
+        names = root.get("/Names")
+        js_tree = names.get("/JavaScript") if isinstance(names, pikepdf.Dictionary) else None
+        if isinstance(js_tree, pikepdf.Dictionary):
+            for label, act in pikepdf.NameTree(js_tree).items():
+                facts["js_names"] += 1
+                _walk_action(act, f"document script {label}", hits)
+
+        acro = root.get("/AcroForm")
+        if isinstance(acro, pikepdf.Dictionary):
+            facts["acroform"] = True
+            facts["xfa"] = "/XFA" in acro
+            flags = acro.get("/SigFlags")
+            facts["signatures"] = int(flags) & 1 if _is_int(flags) else 0
+
+        facts["layers"] = "/OCProperties" in root
+
+        for name in pdf.attachments:
+            _note_attachment(name, "embedded files", facts, hits)
+
+        for i, page in enumerate(pdf.pages, 1):
+            _walk_triggers(page, f"page {i}", hits)
+            annots = page.get("/Annots")
+            for annot in annots if isinstance(annots, pikepdf.Array) else ():
+                if not isinstance(annot, pikepdf.Dictionary):
+                    continue
+                sub = str(annot.get("/Subtype", ""))
+                if sub == "/Widget" and str(annot.get("/FT", "")) == "/Sig":
+                    facts["signatures"] = max(facts["signatures"], 1)
+                if sub in ("/RichMedia", "/Screen", "/Movie", "/3D", "/Sound"):
+                    hits.append({"level": "warn", "kind": sub,
+                                 "what": "embeds rich media",
+                                 "detail": "", "where": f"page {i}"})
+                # The /EmbeddedFiles tree is not the only way in: a filespec on
+                # an annotation is still openable from the viewer.
+                if sub == "/FileAttachment":
+                    fs = annot.get("/FS")
+                    if isinstance(fs, pikepdf.Dictionary):
+                        _note_attachment(str(fs.get("/UF") or fs.get("/F") or "(unnamed)"),
+                                         f"page {i} attachment", facts, hits)
+                if "/A" in annot:
+                    _walk_action(annot["/A"], f"page {i} annotation", hits)
+                _walk_triggers(annot, f"page {i} field", hits)
+
+    for h in hits:
+        if h["kind"] == "/URI" and h["detail"]:
+            urls[h["detail"]] = urls.get(h["detail"], 0) + 1
+
+    # An in-place update appends a revision ending in its own %%EOF — but so does
+    # a linearized file's first-page xref, which has to be discounted or every
+    # web-optimized PDF looks rewritten. A byte count is a floor, not a proof
+    # (%%EOF can occur inside a stream), hence "sections" and not "edits".
+    facts["revisions_checked"] = os.path.getsize(path) <= 64 * 1024 * 1024
+    if facts["revisions_checked"]:
+        with open(path, "rb") as f:
+            eofs = f.read().count(b"%%EOF")
+        facts["revisions"] = max(0, eofs - 1 - (1 if facts["linearized"] else 0))
+
+    return _security_report(hits, urls, facts)
+
+
+def _security_report(hits, urls, facts):
+    """Fold the evidence into one checklist row per thing a reader wants ruled
+    out, plus the findings behind each row."""
+    by_kind = {}
+    for h in hits:
+        by_kind.setdefault(h["kind"], []).append(h)
+
+    def rows(*kinds):
+        return [h for k in kinds for h in by_kind.get(k, [])]
+
+    checks = []
+
+    def check(name, state, note):
+        checks.append({"name": name, "state": state, "note": note})
+
+    js = rows("/JavaScript")
+    check("JavaScript", "fail" if js else "pass",
+          f"{len(js)} script action{'' if len(js) == 1 else 's'} in the document"
+          if js else "No scripts embedded")
+
+    launch = rows("/Launch", "/ImportData")
+    check("Launch / local file access", "fail" if launch else "pass",
+          "; ".join(sorted({h["detail"] or h["what"] for h in launch}))
+          if launch else "Nothing runs or reads local files")
+
+    # Name-tree scripts run at document open too, so they belong on this row.
+    auto = [h for h in hits if h["level"] in ("danger", "warn")
+            and (h["where"].endswith("open action") or " trigger " in h["where"]
+                 or h["where"].startswith("document script"))]
+    check("Automatic actions", "warn" if auto else "pass",
+          f"{len(auto)} action{' fires' if len(auto) == 1 else 's fire'} without a click"
+          if auto else ("Opens to a page destination" if facts["open_action"] == "/GoTo"
+                        else "Nothing fires on open"))
+
+    att = facts["attachments"]
+    bad_att = [a for a in att if a["executable"]]
+    check("Embedded files", "fail" if bad_att else ("warn" if att else "pass"),
+          ", ".join(a["name"] for a in att) if att else "No attachments")
+
+    submit = rows("/SubmitForm")
+    check("Forms", "warn" if (submit or facts["xfa"]) else
+          ("info" if facts["acroform"] else "pass"),
+          "XFA form" if facts["xfa"] else
+          (f"{len(submit)} submit action{'' if len(submit) == 1 else 's'}" if submit else
+           ("Fillable AcroForm fields" if facts["acroform"] else "No form fields")))
+
+    remote = rows("/GoToR", "/GoToE")
+    insecure = sorted(u for u in urls if u.lower().startswith("http://")
+                      or re.match(r"^\w+://\d{1,3}(\.\d{1,3}){3}", u.lower()))
+    check("External references", "warn" if (remote or insecure) else
+          ("info" if urls else "pass"),
+          "; ".join(filter(None, [
+              f"{len(urls)} link target{'' if len(urls) == 1 else 's'}" if urls else "",
+              f"{len(insecure)} not over HTTPS" if insecure else "",
+              f"{len(remote)} reference{'' if len(remote) == 1 else 's'} to other files" if remote else "",
+          ])) or "No outbound links")
+
+    media = rows("/RichMedia", "/Screen", "/Movie", "/Sound", "/3D", "/Rendition")
+    check("Multimedia", "warn" if media else "pass",
+          f"{len(media)} rich-media object{'' if len(media) == 1 else 's'}"
+          if media else "No audio, video or 3D content")
+
+    check("Encryption", "info" if facts["encrypted"] else "pass",
+          "Encrypted — " + ", ".join(k for k, v in facts["permissions"].items() if not v)
+          + " not permitted" if facts["encrypted"] and any(
+              not v for v in facts["permissions"].values())
+          else ("Encrypted, all operations permitted" if facts["encrypted"]
+                else "Not encrypted"))
+
+    check("Signatures", "info" if facts["signatures"] else "pass",
+          "Contains a signature field — this scan does not verify it"
+          if facts["signatures"] else "Unsigned")
+
+    revs = facts["revisions"]
+    check("Revisions",
+          "info" if not facts["revisions_checked"] else
+          "warn" if revs > 2 else "info" if revs else "pass",
+          "Not checked — the file is too large to scan for appended revisions"
+          if not facts["revisions_checked"] else
+          f"{revs} extra cross-reference section{'' if revs == 1 else 's'} —"
+          " earlier content may still be recoverable" if revs
+          else "Single revision, no hidden history")
+
+    risk = "risky" if any(c["state"] == "fail" for c in checks) else \
+           "notable" if any(c["state"] == "warn" for c in checks) else "clean"
+    findings = sorted([h for h in hits if h["level"] in ("danger", "warn")],
+                      key=lambda h: 0 if h["level"] == "danger" else 1)
+    return {
+        "risk": risk, "checks": checks,
+        "findings": findings[:60], "findings_total": len(findings),
+        "urls": [{"url": u, "count": c} for u, c in
+                 sorted(urls.items(), key=lambda kv: -kv[1])],
+        "facts": facts,
+    }
+
+
+def _rust_engine(path):
+    """firecrawl/pdf-inspector's own verdict, when it is installed."""
+    try:
+        import pdf_inspector
+    except ImportError:
+        return None
+    r = pdf_inspector.process_pdf(path)
+    return {
+        "version": getattr(pdf_inspector, "__version__", ""),
+        "type": r.pdf_type, "confidence": round(float(r.confidence), 2),
+        "page_count": r.page_count, "ms": r.processing_time_ms,
+        "title": r.title or "",
+        "pages_needing_ocr": list(r.pages_needing_ocr),
+        "pages_with_tables": list(r.pages_with_tables),
+        "pages_with_columns": list(r.pages_with_columns),
+        "complex_layout": bool(r.is_complex_layout),
+        "encoding_issues": bool(r.has_encoding_issues),
+    }
+
+
+def _inspect(doc, pages):
+    import fitz
+
+    cur = _cur_path(doc)
+    d = fitz.open(cur)
+    idx = _parse_pages(pages, d.page_count)
+    if not idx:
+        d.close()
+        raise ValueError("this document has no pages to inspect")
+    # ~70 ms/page, so past the cap sample evenly, keeping the first and last.
+    if len(idx) > PAGE_SCAN_CAP:
+        step = (len(idx) - 1) / (PAGE_SCAN_CAP - 1)
+        idx = sorted({idx[round(i * step)] for i in range(PAGE_SCAN_CAP)})
+        sampled = True
+    else:
+        sampled = False
+    scans = [_page_scan(d[i], tables=n < TABLE_SCAN_CAP) for n, i in enumerate(idx)]
+    verdict = _classify(scans)
+    verdict["sampled"] = sampled
+    m = d.metadata or {}
+    doc_facts = {
+        "path": _fwd(os.path.abspath(doc)), "name": os.path.basename(doc),
+        "size": os.path.getsize(cur), "pdf_version": m.get("format", ""),
+        "title": m.get("title", ""), "author": m.get("author", ""),
+        "subject": m.get("subject", ""), "keywords": m.get("keywords", ""),
+        "creator": m.get("creator", ""), "producer": m.get("producer", ""),
+        "created": m.get("creationDate", ""), "modified": m.get("modDate", ""),
+        "page_count": d.page_count, "objects": d.xref_length() - 1,
+        "linearized": bool(d.is_fast_webaccess), "tagged": _is_tagged(d),
+        "outline_items": len(d.get_toc()),
+        "attachments": d.embfile_count(), "form": bool(d.is_form_pdf),
+        "layers": bool(d.get_layers()),
+    }
+    d.close()
+
+    return {
+        "doc": doc_facts,
+        "verdict": verdict,
+        "pages": scans,
+        "fonts": _font_report(fitz.open(cur), idx),
+        "text": _text_quality(scans),
+        "security": _security(cur),
+        "rust": _rust_engine(cur),
+        "tables_capped": len(idx) > TABLE_SCAN_CAP,
+    }
+
+
+def _is_tagged(d):
+    return d.xref_get_key(-1, "Root/StructTreeRoot")[0] != "null"
+
+
+def _text_quality(scans):
+    chars = sum(s["chars"] for s in scans)
+    notdef = sum(s["notdef"] for s in scans)
+    bad = sum(s["undecodable"] for s in scans)
+    issues = []
+    if chars and notdef / chars > 0.02:
+        issues.append(f"{notdef} of {chars} glyphs have no outline in their font")
+    if chars and bad / chars > 0.02:
+        issues.append(f"{bad} characters do not decode to Unicode")
+    invisible = sum(s["invisible_ops"] for s in scans)
+    if invisible:
+        issues.append(f"{invisible} invisible text runs — typically an OCR layer")
+    tables = sum(s["tables"] for s in scans)
+    return {
+        "chars": chars, "notdef": notdef, "undecodable": bad,
+        "invisible_runs": invisible, "tables": tables,
+        "links": sum(s["links"] for s in scans),
+        "column_pages": [s["n"] for s in scans if s["columns"] > 1],
+        "issues": issues,
+    }
+
+
+# --------------------------------------------------------- markdown conversion
+def _reading_order(blocks, rect):
+    """Column-aware order: full-width blocks (headlines, rules) split the page
+    into zones, and within a zone the left column is emitted before the right."""
+    if len(blocks) < 4:
+        return sorted(blocks, key=lambda b: (round(b["bbox"][1], 1), b["bbox"][0]))
+    split = _gutter([(b["bbox"][0], b["bbox"][2]) for b in blocks], rect.width)
+    if split is None:
+        return sorted(blocks, key=lambda b: (round(b["bbox"][1], 1), b["bbox"][0]))
+    key = lambda b: (round(b["bbox"][1], 1), b["bbox"][0])   # noqa: E731
+    spans_gutter = lambda b: b["bbox"][0] < split < b["bbox"][2]   # noqa: E731
+    out, zone = [], []
+
+    def flush():
+        left = sorted((b for b in zone if not spans_gutter(b) and b["bbox"][2] <= split), key=key)
+        right = sorted((b for b in zone if not spans_gutter(b) and b["bbox"][0] >= split), key=key)
+        out.extend(left + right)
+        zone.clear()
+
+    for b in sorted(blocks, key=lambda b: b["bbox"][1]):
+        if spans_gutter(b):
+            flush()
+            out.append(b)
+        else:
+            zone.append(b)
+    flush()
+    return out
+
+
+def _inline(spans):
+    """Emphasis markers around runs of same-styled spans, not around each span —
+    a title split into five bold spans must not become `**F****USED**`."""
+    runs = []
+    for s in spans:
+        style = s["flags"] & (2 | 8 | 16)        # italic | monospace | bold
+        if runs and runs[-1][0] == style:
+            runs[-1][1] += s["text"]
+        else:
+            runs.append([style, s["text"]])
+    parts = []
+    for style, text in runs:
+        core = text.strip()
+        if not core:
+            parts.append(text)
+            continue
+        if style & 8:
+            core = f"`{core}`"
+        else:
+            if style & 16:
+                core = f"**{core}**"
+            if style & 2:
+                core = f"*{core}*"
+        parts.append(text[:len(text) - len(text.lstrip())] + core
+                     + text[len(text.rstrip()):])
+    return _norm_ws("".join(parts))
+
+
+BULLETS = "•◦▪▫‣⁃-–*"
+
+
+def _line_markdown(line, body_size):
+    text = _inline(line["spans"])
+    if not text:
+        return ""
+    size = max((s["size"] for s in line["spans"]), default=body_size)
+    mono = all(s["flags"] & 8 for s in line["spans"] if s["text"].strip())
+    if mono:
+        return "    " + text.strip("`")
+    m = re.match(rf"^[{re.escape(BULLETS)}]\s+(.*)", text)
+    if m:
+        return "- " + m.group(1)
+    if re.match(r"^\(?\d{1,3}[.)]\s+\S", text):
+        return re.sub(r"^\(?(\d{1,3})[.)]\s+", r"\1. ", text)
+    # Parenthesised form only: a bare "E. coli" is a sentence, and treating it
+    # as a list item deletes the initial.
+    if re.match(r"^\([a-zA-Z]\)\s+\S", text):
+        return "- " + re.sub(r"^\([a-zA-Z]\)\s+", "", text)
+    ratio = size / body_size if body_size else 1
+    if len(text.split()) <= 20:
+        # A heading carries its own weight — drop emphasis markers wrapping it.
+        head = re.sub(r"^\*{1,3}(.*?)\*{1,3}$", r"\1", text).strip()
+        if ratio >= 1.8:
+            return "# " + head
+        if ratio >= 1.45:
+            return "## " + head
+        if ratio >= 1.2:
+            return "### " + head
+        if ratio >= 1.05 and all(s["flags"] & 16 for s in line["spans"] if s["text"].strip()):
+            return "#### " + head
+    return text
+
+
+def _fold_heading(prev, cur):
+    """A title wrapped over two lines arrives as two same-level headings (in one
+    block or in two). Fold them into one, or return None if they don't pair."""
+    a = re.fullmatch(r"(#{1,4}) (.+)", prev or "")
+    b = re.fullmatch(r"(#{1,4}) (.+)", cur)
+    if a and b and a.group(1) == b.group(1):
+        return f"{a.group(1)} {a.group(2)} {b.group(2)}"
+    return None
+
+
+def _page_links(page):
+    """Link annotations paired with the words they sit under. Spans are style
+    runs, so a link over one word covers too little of its span to match on."""
+    import fitz
+
+    words = page.get_text("words")
+    out = []
+    for link in page.get_links():
+        uri = link.get("uri")
+        if not uri:
+            continue
+        rect = fitz.Rect(link["from"])
+        covered = [w[4] for w in words
+                   if abs(rect & fitz.Rect(w[:4])) > abs(fitz.Rect(w[:4])) * 0.5]
+        if covered:
+            out.append((rect, " ".join(covered), uri))
+    return out
+
+
+def _link_text(md, line, links):
+    import fitz
+
+    lbox = fitz.Rect(line["bbox"])
+    for rect, anchor, uri in links:
+        if f"]({uri})" in md or abs(rect & lbox) <= 0:
+            continue
+        if anchor in md and "[" not in anchor and "]" not in anchor:
+            md = md.replace(anchor, f"[{anchor}]({uri})", 1)
+    return md
+
+
+def _page_markdown(page):
+    import fitz
+
+    tables = page.find_tables().tables
+    trects = [fitz.Rect(t.bbox) for t in tables]
+    raw = page.get_text("dict")
+    blocks = [b for b in raw["blocks"] if b["type"] == 0 and b.get("lines")]
+    sizes = {}
+    for b in blocks:
+        for line in b["lines"]:
+            for s in line["spans"]:
+                sizes[round(s["size"], 1)] = sizes.get(round(s["size"], 1), 0) + len(s["text"])
+    body = max(sizes, key=sizes.get) if sizes else 11.0
+
+    links = _page_links(page)
+    emitted = set()
+    out = []
+    for b in _reading_order(blocks, page.rect):
+        bbox = fitz.Rect(b["bbox"])
+        hit = next((i for i, r in enumerate(trects)
+                    if abs(r & bbox) > abs(bbox) * 0.6), None)
+        if hit is not None:
+            if hit not in emitted:
+                emitted.add(hit)
+                out.append(tables[hit].to_markdown().strip())
+            continue
+        para = []
+        for line in b["lines"]:
+            md = _line_markdown(line, body)
+            if not md:
+                continue
+            md = _link_text(md, line, links)
+            folded = _fold_heading(para[-1], md) if para else None
+            if folded:
+                para[-1] = folded
+            else:
+                para.append(md)
+        if not para:
+            continue
+        chunk = "\n".join(para)
+        folded = _fold_heading(out[-1], chunk) if out else None
+        if folded:
+            out[-1] = folded
+        else:
+            out.append(chunk)
+    for i, t in enumerate(tables):
+        if i not in emitted:
+            out.append(t.to_markdown().strip())
+    return "\n\n".join(out)
+
+
+def _markdown(doc, pages):
+    import fitz
+
+    cur = _cur_path(doc)
+    d = fitz.open(cur)
+    idx = _parse_pages(pages, d.page_count)
+    # find_tables() runs per page here; a whole large document would blow the
+    # 60 s call timeout and return nothing at all.
+    if len(idx) > MD_PAGE_CAP:
+        d.close()
+        raise ValueError(
+            f"Markdown conversion is capped at {MD_PAGE_CAP} pages per run "
+            f"({len(idx)} selected) — convert a range, e.g. 1-{MD_PAGE_CAP}")
+    parts = []
+    for i in idx:
+        parts.append(f"<!-- page {i + 1} -->\n\n" + _page_markdown(d[i]))
+    d.close()
+    md = "\n\n---\n\n".join(parts).strip() + "\n"
+    # Bare URLs become links. The lookbehind keeps it off URLs that are already
+    # the text or the target of a link built above, which would nest them.
+    md = re.sub(r"(?<![(\[!])\b(https?://[^\s<>()\[\]]+)", r"[\1](\1)", md)
+    return {"markdown": md, "chars": len(md), "pages": len(idx)}
+
+
+def _save_markdown(doc, pages, directory, name):
+    md = _markdown(doc, pages)["markdown"]
+    out = _out_dir(directory, os.path.dirname(os.path.abspath(doc)))
+    stem = _safe_name(name, os.path.basename(doc))
+    dest = _unique_path(out, os.path.splitext(stem)[0] + ".md")
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(md)
+    return {"name": os.path.basename(dest), "path": _fwd(dest),
+            "size": os.path.getsize(dest), "dir": _fwd(out)}
+
+
 def _health():
     out = {"ok": True, "pymupdf": "", "pikepdf": ""}
     try:
@@ -1293,6 +2046,11 @@ def _health():
         out["pikepdf"] = pikepdf.__version__
     except Exception as e:
         out["ok"], out["pikepdf_error"] = False, str(e)
+    try:
+        import pdf_inspector
+        out["pdf_inspector"] = getattr(pdf_inspector, "__version__", "installed")
+    except ImportError:
+        out["pdf_inspector"] = ""
     out["soffice"] = bool(_find_soffice())
     out["ocr_langs"] = sorted(
         f[:-len(".traineddata")] for f in os.listdir(TESSDATA)
@@ -1464,6 +2222,12 @@ def main(
             import sys
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
         return {"ok": True}
+    if action == "inspect":
+        return _inspect(doc, pages)
+    if action == "to_markdown":
+        return _markdown(doc, pages)
+    if action == "save_markdown":
+        return _save_markdown(doc, pages, directory, name)
     if action == "page_text":
         return _page_text(_open_work(doc)[0], page)
     if action == "undo":

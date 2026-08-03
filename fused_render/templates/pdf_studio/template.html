@@ -249,6 +249,96 @@
   .tool-card small { color: var(--ink-3); line-height: 1.4; display: block; }
   #toolsClose { margin-left: auto; }
 
+  /* ---- inspector drawer ---- */
+  /* a flex sibling of the canvas, not an overlay like #toolsHome — the page
+     stays readable next to the report */
+  #inspector { flex: 0 0 436px; min-width: 0; z-index: 22;
+    background: var(--chrome); border-left: 1px solid var(--hair); display: flex; flex-direction: column; }
+  body:not(.inspect-on) #inspector { display: none; }
+  .ins-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px 9px; }
+  .ins-head h3 { margin: 0; font-size: 14px; }
+  .ins-head .eng { color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
+  .ins-tabs { flex: 0 0 auto; display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--hair); }
+  .ins-tab { border: none; background: none; padding: 7px 9px; font-weight: 600; font-size: 12px;
+    color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .ins-tab:hover { color: var(--ink); }
+  .ins-tab.on { color: var(--blue); border-bottom-color: var(--blue); }
+  .ins-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 13px; }
+  .ins-note { color: var(--ink-3); padding: 22px 6px; text-align: center; line-height: 1.6; }
+  .ins-body h6 { margin: 18px 0 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--ink-3); }
+  .ins-body h6:first-child { margin-top: 0; }
+
+  .verdict { border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 12px 13px; }
+  .verdict .top { display: flex; align-items: center; gap: 8px; }
+  .vbadge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    background: var(--blue-soft); color: var(--blue-ink); }
+  .vbadge[data-t=Scanned], .vbadge[data-t=ImageBased] { background: #fdf3e2; color: #8a6116; }
+  .vbadge[data-t=Mixed] { background: #eef0f3; color: var(--ink-2); }
+  .vbadge[data-t=TextBased] { background: #e5f6ee; color: #12704a; }
+  .verdict .conf { margin-left: auto; color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .cbar { height: 4px; border-radius: 3px; background: var(--hair-2); margin: 9px 0 8px; overflow: hidden; }
+  .cbar span { display: block; height: 100%; background: var(--blue); }
+  .verdict p { margin: 0; color: var(--ink-2); line-height: 1.5; font-size: 12.5px; }
+  .verdict .row { margin-top: 11px; }
+
+  .kv { display: grid; grid-template-columns: 122px 1fr; gap: 3px 10px; font-size: 12.5px; }
+  .kv dt { color: var(--ink-3); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 7px; }
+  .stat { border: 1px solid var(--hair); border-radius: var(--radius); padding: 7px 9px; }
+  .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .stat small { color: var(--ink-3); font-size: 11px; }
+
+  .itable { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .itable th { text-align: right; color: var(--ink-3); font-weight: 600; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .5px; padding: 0 5px 5px; border-bottom: 1px solid var(--hair); }
+  .itable th:first-child, .itable td:first-child { text-align: left; }
+  .itable td { text-align: right; padding: 5px; border-bottom: 1px solid var(--hair-2); }
+  .itable tbody tr { cursor: pointer; }
+  .itable tbody tr:hover { background: var(--blue-soft); }
+  .itable tbody tr.on td { background: var(--blue-soft); }
+  .pill { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+    background: var(--hair-2); color: var(--ink-2); }
+  .pill.text { background: #e5f6ee; color: #12704a; }
+  .pill.image { background: #fdf3e2; color: #8a6116; }
+  .pill.empty { background: var(--danger-soft); color: var(--danger); }
+  .pill.warn { background: #fdf3e2; color: #8a6116; }
+
+  .risk { border-radius: var(--radius-lg); padding: 11px 13px; }
+  .risk h4 { margin: 0 0 3px; font-size: 13.5px; }
+  .risk p { margin: 0; font-size: 12.5px; line-height: 1.5; }
+  .risk[data-r=clean] { background: #e5f6ee; color: #12704a; }
+  .risk[data-r=notable] { background: #fdf3e2; color: #8a6116; }
+  .risk[data-r=risky] { background: var(--danger-soft); color: #9b2c2c; }
+  .checks { display: flex; flex-direction: column; gap: 1px; }
+  .check { display: flex; gap: 8px; align-items: baseline; padding: 6px 4px; border-bottom: 1px solid var(--hair-2);
+    font-size: 12.5px; }
+  .check .mk { flex: 0 0 15px; font-weight: 700; text-align: center; }
+  .check[data-s=pass] .mk { color: var(--ok); }
+  .check[data-s=info] .mk { color: var(--ink-3); }
+  .check[data-s=warn] .mk { color: var(--amber); }
+  .check[data-s=fail] .mk { color: var(--danger); }
+  .check .nm { flex: 0 0 132px; font-weight: 600; }
+  .check .nt { flex: 1 1 auto; color: var(--ink-2); }
+  .finding { border: 1px solid var(--hair); border-left-width: 3px; border-radius: var(--radius);
+    padding: 8px 10px; margin-bottom: 6px; font-size: 12.5px; }
+  .finding[data-l=danger] { border-left-color: var(--danger); }
+  .finding[data-l=warn] { border-left-color: var(--amber); }
+  .finding b { font-family: var(--mono); font-size: 11.5px; }
+  .finding .where { color: var(--ink-3); font-size: 11px; }
+  .finding code { display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px;
+    background: var(--hair-2); border-radius: 4px; padding: 5px 7px; max-height: 90px; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mdout { font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap;
+    overflow-wrap: anywhere; background: var(--hair-2); border-radius: var(--radius); padding: 10px;
+    margin: 9px 0 0; }
+  .ins-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .ins-actions input { width: 88px; padding: 5px 7px; border: 1px solid var(--hair); border-radius: var(--radius);
+    font: inherit; font-size: 12px; }
+  .thumb .ocr { position: absolute; right: 6px; bottom: 6px; background: var(--amber); color: #fff;
+    font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 7px; letter-spacing: .3px; }
+
   /* ---- scanner ---- */
   .scan-wrap { position: relative; background: #111; border-radius: var(--radius); overflow: hidden; margin-top: 6px; }
   .scan-wrap video { display: block; width: 100%; max-height: 320px; object-fit: contain; }
@@ -288,6 +378,10 @@
   <span id="docPages"></span>
   <div class="spacer"></div>
   <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
+  <button class="btn" id="inspectBtn" title="Inspect this PDF (Ctrl+I)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.3-4.3"/><path d="M8.5 11h5M11 8.5v5"/></svg>
+    Inspect
+  </button>
   <button class="btn" id="toolsBtn" title="All tools">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
     Tools
@@ -339,6 +433,9 @@
     <div class="mi" data-act="protect">Protect with password…</div>
     <div class="mi" data-act="removePassword">Remove password…</div>
     <div class="mi" data-act="ocr">Make searchable (OCR)…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="inspect">Inspect document <span class="kbd">Ctrl+I</span></div>
+    <div class="mi" data-act="securityScan">Security scan</div>
   </div></div>
   <div class="menu" data-menu>Convert<div class="dropdown">
     <div class="mi" data-act="toWord">PDF to Word…</div>
@@ -373,6 +470,23 @@
     </div>
   </div>
   <div id="canvasWrap"><div id="pages"></div><div id="pagesNote" class="hidden"></div></div>
+  <div id="inspector">
+    <div class="ins-head">
+      <h3>Inspection</h3>
+      <span class="eng" id="insEngine"></span>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="insRescan" title="Scan again">↻</button>
+      <button class="btn ghost" id="insClose" title="Close">✕</button>
+    </div>
+    <div class="ins-tabs" id="insTabs">
+      <button class="ins-tab on" data-tab="overview">Overview</button>
+      <button class="ins-tab" data-tab="pages">Pages</button>
+      <button class="ins-tab" data-tab="fonts">Fonts</button>
+      <button class="ins-tab" data-tab="security">Security</button>
+      <button class="ins-tab" data-tab="markdown">Markdown</button>
+    </div>
+    <div class="ins-body" id="insBody"></div>
+  </div>
   <div id="toolsHome" class="hidden">
     <div class="th-head"><h2>Tools</h2><p>Everything runs locally — files never leave this machine.</p>
       <button class="btn" id="toolsClose">Back to document</button></div>
@@ -382,6 +496,12 @@
       <button class="tool-card" data-tool="split"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h4M5 16h4M15 8h4M15 16h4"/></svg></span><span><b>Split PDF</b><small>One file per page, or by page ranges.</small></span></button>
       <button class="tool-card" data-tool="extractPages"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg></span><span><b>Extract pages</b><small>Copy chosen pages into a new PDF.</small></span></button>
       <button class="tool-card" data-tool="compress" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v7m0 0 3-3m-3 3L9 7"/><path d="M12 21v-7m0 0 3 3m-3-3-3 3"/><path d="M4 12h16"/></svg></span><span><b>Compress PDF</b><small>Lossless repack, or aggressive image downsampling.</small></span></button>
+    </div>
+    <h5>Inspect</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="inspect"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.3-4.3"/><path d="M8.5 11h5M11 8.5v5"/></svg></span><span><b>Inspect PDF</b><small>Classify text vs scanned, page by page, and find what needs OCR.</small></span></button>
+      <button class="tool-card" data-tool="securityScan" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span><span><b>Security scan</b><small>Scripts, launch actions, attachments and hidden revisions.</small></span></button>
+      <button class="tool-card" data-tool="toMarkdown"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15V9l2.5 3L12 9v6M16 9v6M14 13l2 2 2-2"/></svg></span><span><b>PDF to Markdown</b><small>Headings, lists, tables and links as clean Markdown.</small></span></button>
     </div>
     <h5>Convert</h5>
     <div class="tool-grid">
@@ -422,6 +542,9 @@ const state = {
   writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
   spans: {},          // pageNo -> {mtime, spans}
   editing: null,      // the floating text input, if any
+  inspect: null,      // the last inspection report, dropped on every mutation
+  insTab: "overview",
+  md: null,           // last markdown conversion {spec, markdown, chars, pages}
 };
 
 // ---------- plumbing ----------
@@ -806,6 +929,7 @@ async function renderAll() {
       if (gen !== renderGen) return;
       await renderThumb(pdf, n, gen);
     }
+    applyOcrBadges();
   })().catch((err) => {
     if (err?.name === "RenderingCancelledException") return;
     if (gen === renderGen) toast(err?.message || String(err), true);
@@ -908,6 +1032,7 @@ async function applyMut(res) {
   state.dirty = !!res.dirty;
   state.undoDepth = res.undo_depth; state.redoDepth = res.redo_depth;
   updateUndoUi();
+  dropInspect();
   await renderAll();
   refreshLib().catch(() => {});
 }
@@ -986,6 +1111,7 @@ async function openDoc(path) {
   state.dirty = !!info.dirty;
   state.curPage = 1; state.spans = {};
   state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
+  dropInspect();
   setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
   $("docName").textContent = info.name;
   // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
@@ -1321,6 +1447,35 @@ const acts = {
   },
   tools: () => showTools($("toolsHome").classList.contains("hidden")),
 
+  inspect: () => runInspect(),
+  securityScan: () => runInspect("security"),
+  rescan: () => { state.inspect = null; state.md = null; return runInspect(); },
+  toMarkdown: async () => {
+    await runInspect("markdown");
+    if (!state.md) await acts.mdConvert();
+  },
+  mdConvert: async () => {
+    needDoc();
+    const spec = $("mdPages")?.value.trim() || "all";
+    setStatus("converting…", "busy");
+    const res = await py({ action: "to_markdown", doc: state.doc, pages: spec });
+    state.md = { spec, ...res };
+    setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+    renderInspect();
+  },
+  mdCopy: async () => {
+    await navigator.clipboard.writeText(state.md.markdown);
+    toast("Markdown copied");
+  },
+  mdSave: async () => {
+    const picked = await browseModal({ title: "Save Markdown", okText: "Save", pickDir: true,
+      filename: state.info.name.replace(/\.pdf$/i, "") + ".md", start: docDir(), exts: ".md" });
+    if (!picked) return;
+    const res = await py({ action: "save_markdown", doc: state.doc, pages: state.md.spec,
+      directory: picked.dir, name: picked.name });
+    await resultModal({ title: "Markdown saved", files: [res], dir: res.dir });
+  },
+
   togglePanel: () => {
     document.body.classList.toggle("panel-off");
     fused.params.set("panel", document.body.classList.contains("panel-off") ? "0" : "1");
@@ -1587,6 +1742,275 @@ function showTools(on) {
   $("toolsHome").classList.toggle("hidden", !on);
 }
 
+// ---------- inspector ----------
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (n) => (n || 0).toLocaleString();
+const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many}`;
+
+// PDF dates look like D:20210930065945-04'00'. Metadata is untrusted input, so
+// an unparseable value is escaped like any other string out of the file.
+function pdfDate(s) {
+  const m = /^D?:?(\d{4})(\d\d)(\d\d)(\d\d)?(\d\d)?/.exec(s || "");
+  if (!m) return esc(s || "—");
+  const [, y, mo, d, h, mi] = m;
+  return `${y}-${mo}-${d}` + (h ? ` ${h}:${mi || "00"}` : "");
+}
+
+const INS_TABS = ["overview", "pages", "fonts", "security", "markdown"];
+
+function insOpen(on) {
+  document.body.classList.toggle("inspect-on", on);
+  fused.params.set("inspect", on ? "1" : "0");
+}
+
+function insToggle() {
+  if (document.body.classList.contains("inspect-on")) insOpen(false);
+  else act("inspect");
+}
+
+function insSetTab(name) {
+  state.insTab = name;
+  document.querySelectorAll(".ins-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  fused.params.set("itab", name);
+}
+
+async function runInspect(tab) {
+  needDoc();
+  insOpen(true);
+  if (tab) insSetTab(tab);
+  if (!state.inspect) {
+    $("insBody").innerHTML = `<div class="ins-note">Scanning ${esc(state.info.name)} —
+      ${plural(state.info.page_count, "page", "pages")}…</div>`;
+    setStatus("inspecting…", "busy");
+    // py() does not supersede: an edit or doc switch during the scan would
+    // otherwise land a report describing pages that have since moved.
+    const forDoc = state.doc, gen = ++inspectGen;
+    const report = await py({ action: "inspect", doc: state.doc });
+    if (gen !== inspectGen || forDoc !== state.doc) return;
+    state.inspect = report;
+    setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+    applyOcrBadges();
+  }
+  const h = state.health || {};
+  $("insEngine").textContent = [`pymupdf ${h.pymupdf}`, `pikepdf ${h.pikepdf}`,
+    h.pdf_inspector ? `pdf-inspector ${h.pdf_inspector}` : ""].filter(Boolean).join(" · ");
+  renderInspect();
+}
+
+// A mutation invalidates the report; the bump also discards an in-flight scan.
+let inspectGen = 0;
+function dropInspect() {
+  inspectGen++;
+  state.inspect = null;
+  state.md = null;
+  if (document.body.classList.contains("inspect-on")) renderInspect();
+}
+
+function applyOcrBadges() {
+  const need = new Set(state.inspect?.verdict.pages_needing_ocr || []);
+  document.querySelectorAll("#thumbs .thumb[data-page]").forEach((t) => {
+    const badge = t.querySelector(".ocr");
+    if (need.has(+t.dataset.page)) {
+      if (!badge) t.insertAdjacentHTML("beforeend", `<span class="ocr">OCR</span>`);
+    } else if (badge) badge.remove();
+  });
+}
+
+function renderInspect() {
+  const body = $("insBody");
+  if (!state.doc) {
+    body.innerHTML = `<div class="ins-note">Open a PDF to inspect it.</div>`;
+    return;
+  }
+  const r = state.inspect;
+  if (!r) {
+    body.innerHTML = `<div class="ins-note">This document hasn't been scanned yet.<br>
+      <button class="btn primary" data-ins="scan" style="margin-top:11px">Scan this document</button></div>`;
+  } else {
+    body.innerHTML = ({ pages: insPages, fonts: insFonts, security: insSecurity,
+      markdown: insMarkdown }[state.insTab] || insOverview)(r);
+  }
+  body.querySelectorAll("tbody tr[data-page]").forEach((tr) => {
+    tr.onclick = () => setCurPage(+tr.dataset.page);
+  });
+  body.querySelectorAll("[data-ins]").forEach((b) => {
+    b.onclick = () => act({ scan: "inspect", ocr: "ocr", md: "mdConvert",
+      mdcopy: "mdCopy", mdsave: "mdSave" }[b.dataset.ins]);
+  });
+}
+
+function insOverview(r) {
+  const v = r.verdict, d = r.doc, t = r.text, rust = r.rust;
+  const pct = Math.round(v.confidence * 100);
+  const stat = (n, label) => `<div class="stat"><b>${num(n)}</b><small>${label}</small></div>`;
+  return `
+    <div class="verdict">
+      <div class="top">
+        <span class="vbadge" data-t="${v.type}">${esc(v.label)}</span>
+        <span class="conf">${pct}% confidence</span>
+      </div>
+      <div class="cbar"><span style="width:${pct}%"></span></div>
+      <p>${num(v.pages_with_text)} of ${plural(v.page_count, "page", "pages")}
+        ${v.pages_with_text === 1 ? "has" : "have"} extractable
+        text${v.sampled ? ` (sampled from ${num(d.page_count)})` : ""}.
+        ${v.ocr_recommended
+          ? `OCR would help on ${plural(v.pages_needing_ocr.length, "page", "pages")}:
+             ${v.pages_needing_ocr.slice(0, 12).join(", ")}${v.pages_needing_ocr.length > 12 ? "…" : ""}.`
+          : "Every page reads back as text — no OCR needed."}</p>
+      ${v.ocr_recommended ? `<div class="row">
+        <button class="btn primary" data-ins="ocr">Make searchable (OCR)</button></div>` : ""}
+      ${rust ? `<p style="margin-top:9px;color:var(--ink-3);font-size:12px">
+        pdf-inspector ${esc(rust.version)} ${rust.type === v.type ? "agrees" : `reads it as ${esc(rust.type)}`}
+        (${Math.round(rust.confidence * 100)}%, ${rust.ms} ms)${rust.encoding_issues ? " · flags encoding issues" : ""}</p>`
+      : `<p style="margin-top:9px;color:var(--ink-3);font-size:12px">Verdict from pymupdf, using
+         firecrawl/pdf-inspector's thresholds. Install <b>pdf-inspector</b> in the server environment to
+         cross-check against that library itself.</p>`}
+    </div>
+
+    <h6>Content${v.sampled ? ` — across the ${num(v.page_count)} pages scanned` : ""}</h6>
+    <div class="stats">
+      ${stat(t.chars, "characters")}
+      ${stat(t.tables, "tables" + (r.tables_capped ? "*" : ""))}
+      ${stat(t.links, "web links")}
+      ${stat(r.fonts.length, "fonts")}
+      ${stat(d.attachments, "attachments")}
+      ${stat(d.outline_items, "bookmarks")}
+    </div>
+    ${r.tables_capped ? `<p class="hint" style="margin-top:6px">* tables counted on
+      ${num(r.pages.filter((p) => p.tables_scanned).length)} of the
+      ${v.sampled ? "sampled" : "document's"} pages.</p>` : ""}
+    ${t.column_pages.length ? `<p class="hint" style="margin-top:6px">Multi-column layout on
+      ${plural(t.column_pages.length, "page", "pages")} — reading order follows the columns.</p>` : ""}
+
+    <h6>Document</h6>
+    <dl class="kv">
+      <dt>Format</dt><dd>${esc(d.pdf_version || "—")}${d.linearized ? " · linearized" : ""}${d.tagged ? " · tagged" : ""}</dd>
+      <dt>Pages</dt><dd>${num(d.page_count)}</dd>
+      <dt>Size</dt><dd>${fmtSize(d.size)} · ${num(d.objects)} objects</dd>
+      <dt>Title</dt><dd>${esc(d.title || "—")}</dd>
+      <dt>Author</dt><dd>${esc(d.author || "—")}</dd>
+      <dt>Producer</dt><dd>${esc(d.producer || "—")}</dd>
+      <dt>Creator</dt><dd>${esc(d.creator || "—")}</dd>
+      <dt>Created</dt><dd>${pdfDate(d.created)}</dd>
+      <dt>Modified</dt><dd>${pdfDate(d.modified)}</dd>
+      <dt>Features</dt><dd>${[d.form ? "form fields" : "", d.layers ? "layers" : "",
+        d.attachments ? "attachments" : ""].filter(Boolean).join(", ") || "none"}</dd>
+    </dl>
+
+    ${t.issues.length ? `<h6>Text quality</h6>
+      ${t.issues.map((i) => `<div class="check" data-s="warn"><span class="mk">!</span>
+        <span class="nt">${esc(i)}</span></div>`).join("")}` : ""}`;
+}
+
+function insPages(r) {
+  const need = new Set(r.verdict.pages_needing_ocr);
+  const tone = (p) => p.has_text ? "text" : (p.images ? "image" : "empty");
+  const kind = (p) => p.has_text ? (p.images ? "text + image" : "text") : tone(p);
+  const rows = r.pages.map((p) => `
+    <tr data-page="${p.n}"${p.n === state.curPage ? ' class="on"' : ""}>
+      <td>${p.n}</td>
+      <td><span class="pill ${tone(p)}">${kind(p)}</span></td>
+      <td>${num(p.chars)}</td>
+      <td>${p.images ? Math.round(p.image_cover * 100) + "%" : "—"}</td>
+      <td>${p.tables_scanned ? (p.tables || "—") : "·"}</td>
+      <td>${need.has(p.n) ? `<span class="pill warn">OCR</span>` : ""}</td>
+    </tr>`).join("");
+  const reasons = Object.entries(r.verdict.reasons).slice(0, 12);
+  return `
+    <h6>Per page${r.verdict.sampled ? ` — ${num(r.pages.length)} sampled of ${num(r.doc.page_count)}` : ""}</h6>
+    <table class="itable">
+      <thead><tr><th>Page</th><th>Content</th><th>Chars</th><th>Image</th><th>Tables</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint">Click a row to jump to that page.</p>
+    ${reasons.length ? `<h6>Why those pages need OCR</h6>
+      ${reasons.map(([n, why]) => `<div class="check" data-s="warn"><span class="mk">!</span>
+        <span class="nm">Page ${esc(n)}</span><span class="nt">${esc(why.join("; "))}</span></div>`).join("")}` : ""}`;
+}
+
+function insFonts(r) {
+  if (!r.fonts.length) return `<div class="ins-note">This document embeds no fonts — there is no text to draw.</div>`;
+  const rows = r.fonts.map((f) => `
+    <tr>
+      <td>${esc(f.name)}${f.subset ? ` <span class="pill">subset</span>` : ""}</td>
+      <td>${esc(f.type)}</td>
+      <td>${esc(f.encoding)}</td>
+      <td>${f.embedded ? "yes" : "no"}</td>
+      <td>${f.undecodable ? `<span class="pill warn">no map</span>` : (f.tounicode ? "yes" : "—")}</td>
+      <td>${num(f.page_count)}</td>
+    </tr>`).join("");
+  const broken = r.fonts.filter((f) => f.undecodable);
+  return `
+    <h6>Fonts</h6>
+    <table class="itable">
+      <thead><tr><th>Name</th><th>Type</th><th>Encoding</th><th>Embedded</th><th>ToUnicode</th><th>Pages</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${broken.length ? `<h6>Encoding problems</h6>
+      <div class="check" data-s="warn"><span class="mk">!</span><span class="nt">
+      ${plural(broken.length, "font", "fonts")} use Identity-H with no ToUnicode map
+      (${esc(broken.slice(0, 3).map((f) => f.name).join(", "))}${broken.length > 3 ? "…" : ""}).
+      Text drawn in them copies out as gibberish — OCR is the reliable way to read those pages.
+      </span></div>` : `<p class="hint">Every font maps back to Unicode, so extracted text is trustworthy.</p>`}`;
+}
+
+const RISK_COPY = {
+  clean: ["No active content", "Nothing in this file runs, opens other programs, or reaches out on its own."],
+  notable: ["Worth a look", "Nothing here executes, but the file carries content you may want to know about."],
+  risky: ["Contains active content", "This file can run code or open other files. Only continue if you trust where it came from."],
+};
+
+function insSecurity(r) {
+  const s = r.security;
+  const [title, note] = RISK_COPY[s.risk];
+  const mark = { pass: "✓", info: "i", warn: "!", fail: "✕" };
+  return `
+    <div class="risk" data-r="${s.risk}"><h4>${title}</h4><p>${note}</p></div>
+    <h6>Checks</h6>
+    <div class="checks">${s.checks.map((c) => `
+      <div class="check" data-s="${c.state}">
+        <span class="mk">${mark[c.state]}</span>
+        <span class="nm">${esc(c.name)}</span>
+        <span class="nt">${esc(c.note)}</span>
+      </div>`).join("")}</div>
+    ${s.findings.length ? `<h6>Findings${s.findings_total > s.findings.length
+      ? ` — first ${num(s.findings.length)} of ${num(s.findings_total)}` : ""}</h6>
+      ${s.findings.map((f) => `
+        <div class="finding" data-l="${f.level}">
+          <b>${esc(f.kind)}</b> — ${esc(f.what)}
+          <div class="where">${esc(f.where)}</div>
+          ${f.detail ? `<code>${esc(f.detail)}</code>` : ""}
+        </div>`).join("")}` : ""}
+    ${s.urls.length ? `<h6>Link targets</h6>
+      <table class="itable"><tbody>${s.urls.slice(0, 40).map((u) => `
+        <tr><td style="text-align:left;overflow-wrap:anywhere">${esc(u.url)}</td>
+        <td>${u.count}×</td></tr>`).join("")}</tbody></table>` : ""}
+    <p class="hint">This scan reads the file's structure only — nothing in the PDF is executed. It does not
+      verify digital signatures or check links against a reputation service.</p>`;
+}
+
+function insMarkdown(r) {
+  const md = state.md;
+  return `
+    <h6>Markdown</h6>
+    <div class="ins-actions">
+      <span style="color:var(--ink-3);font-size:12px">Pages</span>
+      <input id="mdPages" value="${esc(md?.spec || "all")}" placeholder="all or 1,3-5">
+      <button class="btn primary" data-ins="md">Convert</button>
+      ${md ? `<button class="btn" data-ins="mdcopy">Copy</button>
+              <button class="btn" data-ins="mdsave">Save .md</button>` : ""}
+    </div>
+    ${md
+      ? `<p class="hint" style="margin-top:8px">${num(md.chars)} characters from
+         ${plural(md.pages, "page", "pages")}. Headings come from relative font size; tables and
+         column order are detected from the page layout.</p>
+         <pre class="mdout">${esc(md.markdown)}</pre>`
+      : `<p class="hint" style="margin-top:8px">Converts the document text to Markdown — headings, lists,
+         code blocks, tables and links. ${r.verdict.ocr_recommended
+           ? "Pages without a text layer will come out empty; run OCR first." : ""}</p>`}`;
+}
+
 // ---------- icons ----------
 const icoRotL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8v5h5"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>`;
 const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v5h-5"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>`;
@@ -1633,6 +2057,15 @@ $("exportBtn").addEventListener("click", () => act("export"));
 $("importBtn").addEventListener("click", () => act("addPdf"));
 $("toolsBtn").addEventListener("click", () => act("tools"));
 $("toolsClose").addEventListener("click", () => showTools(false));
+$("inspectBtn").addEventListener("click", insToggle);
+$("insClose").addEventListener("click", () => insOpen(false));
+$("insRescan").addEventListener("click", () => act("rescan"));
+$("insTabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tab]");
+  if (!b) return;
+  insSetTab(b.dataset.tab);
+  renderInspect();
+});
 $("toolsHome").addEventListener("click", (e) => {
   const card = e.target.closest("[data-tool]");
   if (!card) return;
@@ -1678,6 +2111,7 @@ document.addEventListener("keydown", (e) => {
   else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
   else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); act(e.shiftKey ? "saveAs" : "save"); }
   else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); act("addPdf"); }
+  else if (mod && e.key.toLowerCase() === "i") { e.preventDefault(); insToggle(); }
   else if (mod && e.key === "\\") { e.preventDefault(); act("togglePanel"); }
 });
 
@@ -1712,19 +2146,23 @@ async function boot() {
     if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
     await libP;
     setMode(fused.params.get("mode") === "edit" ? "edit" : "view");
+    const tab = fused.params.get("itab");
+    if (INS_TABS.includes(tab)) insSetTab(tab);
     $("boot").remove();
   } catch (err) {
     console.error(err);
     $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
     return;
   }
+  // A bookmarked ?inspect=1 reopens the drawer on the document it was taken on.
+  const reopen = () => { if (fused.params.get("inspect") === "1") act("inspect"); };
   const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
   if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
-    try { await bootDoc(wanted); return; }
+    try { await bootDoc(wanted); return reopen(); }
     catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
   }
   if (state.docs.length) {
-    try { await openDoc(state.docs[0].path); return; }
+    try { await openDoc(state.docs[0].path); return reopen(); }
     catch (err) { console.error(err); }
   }
   showTools(true);  // nothing to show — land on the tools grid
