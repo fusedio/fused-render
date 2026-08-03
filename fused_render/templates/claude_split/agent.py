@@ -86,10 +86,11 @@ def _runs_root() -> str:
 
 RUNS = _runs_root()
 
-# Claude Code's own data dir. CLAUDE_CONFIG_DIR wins where it is set: the
-# supervisor sets it for every packaged build (supervisor/paths.py
-# child_environment), so the transcripts claude writes for OUR runs land there
-# and not under ~/.claude — reading the wrong dir loses history and resume.
+# Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
+# reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
+# it is set, which now means only where the user set it: the supervisor no
+# longer overrides it, because that dir also holds the login credentials on
+# Linux and Windows (see supervisor/paths.py child_environment).
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS = os.path.join(CLAUDE_DIR, "projects")
 

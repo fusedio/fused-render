@@ -210,8 +210,16 @@ class DesktopPaths:
             "RCLONE_CONFIG": str(rclone / "rclone.conf"),
             "RCLONE_CACHE_DIR": str(self.cache / "rclone"),
             "UV_CACHE_DIR": str(self.cache / "uv"),
-            "FUSED_RENDER_CLAUDE_DIR": str(self.state / "claude"),
-            "CLAUDE_CONFIG_DIR": str(self.state / "claude"),
+            # CLAUDE_CONFIG_DIR is deliberately NOT set here. It used to point at
+            # <state>/claude to keep our run transcripts out of ~/.claude/projects,
+            # but that dir is also where Claude Code keeps `.credentials.json` on
+            # Linux and Windows — so relocating it logged the user out of a CLI
+            # they were already logged into, with no way back: both spawn paths run
+            # headless (`claude -p`), where the "run /login" it prints can never be
+            # actioned. macOS hid the bug, its credentials living in the login
+            # Keychain rather than the config dir. The app now reuses the standard
+            # config dir, and environment_block passes an explicitly-set
+            # CLAUDE_CONFIG_DIR through untouched, so a user who sets one still wins.
             "FUSED_RENDER_DUCKDB_EXTENSION_DIR": str(tools_dir / "duckdb_extensions"),
             "FUSED_RENDER_DUCKDB_TEMP_DIR": str(self.cache / "duckdb" / "temp"),
             # rclone is bundled in the payload next to the interpreter (and uv),
