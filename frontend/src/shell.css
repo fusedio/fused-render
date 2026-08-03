@@ -168,6 +168,52 @@
   --ease-out: ease-out;
 }
 
+/* ---- Shared hover/press easing ------------------------------------------- */
+/* One rule for every interactive surface in the shell, grouped here rather than
+   as a `transition` bolted onto sixteen scattered declarations — that way the
+   set is auditable and can't drift apart. Colour properties only: each of these
+   selectors already has hover/active rules that repaint background, text or
+   border, and this is purely what makes that repaint ease instead of snap. Their
+   own rules keep owning the colours. */
+.sidebar-item,
+.bookmark-row,
+.icon-btn,
+#breadcrumb .path-crumb,
+.star-btn,
+table.listing-table tr.row,
+table.listing-table th.sortable,
+.preview-actions button,
+.tab,
+.tab-close,
+.tab-add,
+.tab-open-plain,
+.context-menu-item,
+.toast-close,
+.toast-action,
+.panel-btn,
+.listing-pane-toggle,
+.listing-load-more {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* Press feedback on the button-shaped members of the set above. Deliberately
+   one shared 1px nudge and nothing else: a filter/opacity press reads as a
+   disabled state, and a transform on a table row looks like a layout bug, so
+   rows are left out. */
+.icon-btn:active:not(:disabled),
+.star-btn:active,
+.preview-actions button:active:not(:disabled),
+.panel-btn:active,
+.tab-add:active,
+.toast-action:active:not(:disabled),
+.listing-pane-toggle:active,
+.listing-load-more:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -593,10 +639,18 @@ body:has(.sidebar-resize-handle.resizing) {
   background: rgba(var(--tint), 0.07);
   border-radius: 8px;
   padding: 3px 6px;
+  /* Hidden on hover so the action buttons can take the slot. Faded rather than
+     `display: none`d: the count and the buttons overlay the same spot, so this
+     one has to disappear — but a display flip can't ease, which made the
+     handover the sharpest pop in the sidebar. pointer-events go with the fade so
+     the invisible chip can't eat clicks meant for the buttons. */
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 
 .folder-row:hover .folder-count {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Indent rail: children sit inside a wrapper whose left border draws the
@@ -647,7 +701,17 @@ a.bookmark-name::after {
   top: 50%;
   transform: translateY(-50%);
   display: flex;
+  /* Revealed on hover. `visibility` alone stepped straight to visible, so the
+     cluster popped in; opacity carries the fade while visibility stays in the
+     transition list on purpose — it holds `visible` for the whole fade-out and
+     only flips at the end, which keeps the buttons out of the tab order and
+     click-inert while hidden (exactly what visibility bought us before). An
+     opacity-only reveal would have made every row's buttons a tab stop. */
   visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility var(--dur-fast) var(--ease-out);
   gap: 2px;
   z-index: 1;
   padding-left: 26px;
@@ -656,6 +720,7 @@ a.bookmark-name::after {
 
 .bookmark-row:hover .bookmark-actions {
   visibility: visible;
+  opacity: 1;
 }
 
 /* Bookmark hover card (params preview) */
