@@ -5980,11 +5980,12 @@ select.field-control:has(option[value=""]:checked) {
   padding: 5px 8px;
 }
 
-/* Doorways: three equal cards, one per entry point. Glyph square repaints
-   from the inline per-card hue (file-icon palette). */
+/* Doorways: equal cards, one per entry point (3, or 4 once the learn mount
+   is ready). Glyph square repaints from the inline per-card hue (file-icon
+   palette). auto-fit keeps the row full either way. */
 .home-doors {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
 }
 

@@ -3,16 +3,17 @@
 //   1. Hero card — headline + blurb + the prompt composer (describe an app,
 //      haiku names it, POST /api/apps/new scaffolds it). The structured
 //      NewAppPanel is exported from here but opens from /apps.
-//   2. Doorways — three equal cards for the app's entry points: file
-//      explorer, apps hub (the Fused workspace dir), templates manager.
+//   2. Doorways — equal cards for the app's entry points: file explorer,
+//      apps hub (the Fused workspace dir), templates manager, and — once
+//      the bundled learn mount is ready — the Learn lessons.
 //   3. Recent — the 10 most recently updated apps (GET /api/apps), sorted
 //      once per fetch so the grid never reorders under interaction; keys
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiComplete, createApp, getApps } from "../lib/api";
+import { aiComplete, createApp, getApps, statPath } from "../lib/api";
 import type { Config } from "../lib/api";
-import { navigate, navigateUrl, urlForFsPath } from "../lib/router";
+import { currentUrl, navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
@@ -661,6 +662,29 @@ function Doorway({
 export default function Home({ config }: { config: Config }) {
   const [apps, reloadApps] = useLoad(getApps);
 
+  // Same landing logic as the Sidebar's Learn entry (D123): the bundled
+  // learn.zip is mounted read-only at `${mounts_root}/learn`; prefer its
+  // index.html as the landing page, fall back to the mount folder.
+  const openLearn = async () => {
+    if (!config.mounts_root) return;
+    const root = `${config.mounts_root.replace(/\/+$/, "")}/learn`;
+    // The stat can be slow (mount-backed read); if the user navigated
+    // elsewhere while it was in flight, don't yank them back.
+    const before = currentUrl();
+    let dest = root;
+    let destIsDir = true;
+    try {
+      const st = await statPath(`${root}/index.html`);
+      if (!st.is_dir) {
+        dest = `${root}/index.html`;
+        destIsDir = false;
+      }
+    } catch {
+      // stat 404s (or the mount is briefly not attached) — open the folder.
+    }
+    if (currentUrl() === before) navigate(dest, { isDir: destIsDir });
+  };
+
   return (
     <div className="home-page">
       <div className="home-inner">
@@ -728,6 +752,21 @@ export default function Home({ config }: { config: Config }) {
               </svg>
             }
           />
+          {config.learn_mount_ready && (
+            <Doorway
+              hue="var(--icon-data)"
+              title="Learn"
+              desc="Guided lessons that teach fused-render by example, right in the app."
+              onClick={openLearn}
+              glyph={
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 7v13" />
+                  <path d="M3 6a2 2 0 0 1 2-2h4a3 3 0 0 1 3 3v13a2.5 2.5 0 0 0-2.5-2.5H3Z" />
+                  <path d="M21 6a2 2 0 0 0-2-2h-4a3 3 0 0 0-3 3v13a2.5 2.5 0 0 1 2.5-2.5H21Z" />
+                </svg>
+              }
+            />
+          )}
         </div>
 
         <section className="home-section">
