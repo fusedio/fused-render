@@ -148,19 +148,20 @@
   .error { color: var(--error); }
   .error::before { content: "✗ "; }
 
-  /* the "Open preview" hop offered under a successful reply */
+  /* the "Open preview" hop offered under a successful reply — brand orange,
+     same accent as the banner and permission cards */
   .viewout { margin: -8px 0 14px 20px; }
   .viewout button {
     font: inherit;
     font-size: 12px;
     padding: 3px 10px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--orange);
     border-radius: 5px;
     background: transparent;
-    color: var(--dim);
+    color: var(--orange);
     cursor: pointer;
   }
-  .viewout button:hover { color: var(--fg); border-color: var(--border-focus); }
+  .viewout button:hover { background: var(--orange); color: var(--on-orange); }
 
   /* ── permission cards (the approval bridge) ─────────────────── */
   /* Claude runs headless here, so a tool the session's rules don't already
