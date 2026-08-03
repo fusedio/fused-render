@@ -563,6 +563,14 @@ function TemplatePreview({
   // frame is shown immediately (it fades from --bg, not from white, so there is
   // nothing to hold back for).
   const [shown, setShown] = useState<string>(mode);
+  // Modes whose frame has fired `load` at least once and is STILL mounted. A
+  // frame the append-only list kept alive will never fire `load` again, so
+  // switching back to it (A→B→A inside the swap window) has no event to complete
+  // the swap with — without this the 4s fallback below was the only thing that
+  // ever made it visible again, i.e. the user sat on mode B for four seconds
+  // after asking for A. Entries are dropped when their frame is retired: a later
+  // mount of the same mode is a NEW document that has to load again.
+  const loadedFrames = useRef<Set<string>>(new Set());
   const framePending = isListing || isPending(entry);
   useLayoutEffect(() => {
     // Layout effect: the incoming frame must be in the DOM before the paint
@@ -570,9 +578,16 @@ function TemplatePreview({
     if (framePending) {
       setFrames([]);
       setShown(mode);
+      loadedFrames.current.clear(); // every frame unmounts with them
       return;
     }
     setFrames((f) => (f.includes(mode) ? f : [...f, mode]));
+    // Already mounted AND already loaded: complete the swap now rather than
+    // waiting for a load event that cannot come. The `.is-shown` flip still
+    // cross-fades through the CSS transition, so this is the same swap, just
+    // without the wait. Frames that are mounted but not yet loaded keep the
+    // load/timeout path below.
+    if (loadedFrames.current.has(mode)) setShown(mode);
   }, [mode, framePending]);
   // A frame whose document never fires `load` must not strand the user on the
   // previous mode's content: past FRAME_SWAP_TIMEOUT_MS the swap completes
@@ -585,7 +600,11 @@ function TemplatePreview({
   // Retire the frames the swap left behind, once the incoming one has faded in.
   useEffect(() => {
     if (frames.length <= 1 || shown !== mode) return;
-    const id = window.setTimeout(() => setFrames([mode]), FRAME_FADE_MS);
+    const id = window.setTimeout(() => {
+      setFrames([mode]);
+      // Their documents are gone with them, so they are no longer "loaded".
+      for (const m of [...loadedFrames.current]) if (m !== mode) loadedFrames.current.delete(m);
+    }, FRAME_FADE_MS);
     return () => window.clearTimeout(id);
   }, [frames, shown, mode]);
 
@@ -676,7 +695,10 @@ function TemplatePreview({
                 src={srcFor(m) as string}
                 onLoad={(e) => {
                   // Completes the swap: the incoming document has painted, so
-                  // it can take over from the frame being held.
+                  // it can take over from the frame being held. Recorded so a
+                  // switch BACK to this still-mounted frame can complete
+                  // without a second load event (see loadedFrames).
+                  loadedFrames.current.add(m);
                   if (m === mode) setShown(m);
                   onRenderFrameLoad(e, m);
                 }}
