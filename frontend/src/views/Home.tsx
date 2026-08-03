@@ -54,14 +54,17 @@ function appNameError(name: string): string | null {
   return null;
 }
 
-// URL of a file's claude-template chat, attached to a specific live run.
+// URL of an app folder's claude_split chat, attached to a specific live run.
 // `_mode` is the shell's template selector; `run` is a plain view param the
-// claude template reads through fused.params (its boot resumes that run, so
-// a session started server-side is picked up exactly like one the page
-// started itself).
-export function claudeChatUrl(fsPath: string, runId: string): string {
-  const params = new URLSearchParams({ _mode: "claude", run: runId });
-  return urlForFsPath(fsPath, "?" + params.toString());
+// claude_split template reads through fused.params (its boot resumes that
+// run, so a session started server-side is picked up exactly like one the
+// page started itself). Folder-scoped on purpose: the server starts the
+// scaffolding session via the claude_split agent on the app FOLDER, so the
+// re-attach must land in the same template — same runs dir, same
+// .claude-split.json sidecar — never the file-scoped claude template.
+export function claudeChatUrl(appDir: string, runId: string): string {
+  const params = new URLSearchParams({ _mode: "claude_split", run: runId });
+  return urlForFsPath(appDir, "?" + params.toString());
 }
 
 // -- Prompt-first creation (the hero composer) --------------------------------
@@ -250,7 +253,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id));
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       if (alive.current) {
@@ -459,7 +462,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
       // enters chat, and streams the live run (agent.py `poll`), replaying the
       // prompt as the user turn. Without a prompt there is no session, so the
       // default (rendered) view is the right landing.
-      if (res.run_id) navigateUrl(claudeChatUrl(res.entry_html, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id));
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       // 409 (collision) and 400 (bad name) both carry the server's message.

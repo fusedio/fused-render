@@ -56,9 +56,10 @@ _LOCK_RETRY_DELAY_S = 0.3
 # machine must still get its boilerplate commit.
 _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 
-# Session sidecars (<file>.json next to the entry html, agent.py) are chat
-# bookkeeping, not app content — keep them out of history.
-_GITIGNORE = "*.html.json\n"
+# Session sidecars are chat bookkeeping, not app content — keep them out of
+# history: <file>.json next to the entry html (claude template agent.py) and
+# the folder-level .claude-split.json (claude_split agent.py).
+_GITIGNORE = "*.html.json\n.claude-split.json\n"
 
 
 def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:
