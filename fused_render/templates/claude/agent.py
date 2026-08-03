@@ -223,8 +223,29 @@ def _bad_id(value: str) -> bool:
     return not value or value.startswith(".") or any(c in value for c in "/\\:")
 
 
+def _workdir(file: str) -> str:
+    """Claude's cwd (and the session-store key) for a target. A directory
+    target — the claude_split app template opens whole project folders — IS
+    the working directory; a file target keeps the historical rule: its
+    parent. Everything keyed on the cwd (the ~/.claude/projects munge, the
+    sidecar `cwd` field) goes through this one rule so files and folders
+    can't drift apart."""
+    return file if os.path.isdir(file) else os.path.dirname(file)
+
+
 def _system_prompt(file: str) -> str:
     name = os.path.basename(file)
+    if os.path.isdir(file):
+        return (
+            f"You are embedded in a local project viewer, opened on the "
+            f"folder {file}. The user is working inside {name} right now; "
+            "treat that project folder as the subject of this conversation — "
+            "answer questions about its contents and make requested changes "
+            "within it. Keep your work scoped to this folder unless the user "
+            "explicitly asks for something broader. This is guidance, not a "
+            "hard rule: follow explicit user instructions even when they go "
+            "beyond the folder."
+        )
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
@@ -316,7 +337,7 @@ def _record_session(file: str, session_id: str, message: str,
         return
     data = _load_sidecar(file)
     now = time.time()
-    cwd = os.path.dirname(file)
+    cwd = _workdir(file)
     for entry in data["claudeSessions"]:
         if entry.get("id") in (session_id, resumed_from):
             entry["id"] = session_id
@@ -352,7 +373,7 @@ def _migrate_session(file: str, session_id: str) -> None:
     means claude reports the session as not found."""
     if _bad_id(session_id):
         return
-    new_cwd = os.path.dirname(file)
+    new_cwd = _workdir(file)
     dest_dir = os.path.join(PROJECTS, _munge(new_cwd))
     dest = os.path.join(dest_dir, session_id + ".jsonl")
 
@@ -730,8 +751,10 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False) -> dict:
     file = os.path.abspath(file)
-    if not os.path.isfile(file):
-        return {"error": f"target file not found: {file}"}
+    # A directory is a valid target too: the claude_split app template opens
+    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
+    if not os.path.exists(file):
+        return {"error": f"target not found: {file}"}
     if session_id:
         _migrate_session(file, session_id)
 
@@ -801,7 +824,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                    cwd=os.path.dirname(file),
+                                    cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
                                     **_DETACH)
     finally:
@@ -1062,7 +1085,7 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
     file = os.path.abspath(file)
     _migrate_session(file, session_id)
-    path = os.path.join(PROJECTS, _munge(os.path.dirname(file)),
+    path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
     if not os.path.isfile(path):
         return {"turns": []}

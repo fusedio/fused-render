@@ -507,7 +507,7 @@
         </div>
       </div>
     </form>
-    <div id="footnote">Claude can read and edit this file. Approvals control what runs without asking.</div>
+    <div id="footnote">Claude can read and edit files in this project. Approvals control what runs without asking.</div>
 
     <!-- home view -->
     <div id="home">
@@ -515,7 +515,7 @@
         <div class="home-title"><span class="spark">✻</span><span id="home-file"></span></div>
         <div class="home-sub" id="home-path"></div>
         <form id="card" class="composer">
-          <textarea id="homebox" rows="2" placeholder="Ask Claude about this file…" autofocus spellcheck="false"
+          <textarea id="homebox" rows="2" placeholder="Ask Claude about this project…" autofocus spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
             <select id="hmodel" class="pill model-sel" title="Model"></select>
@@ -588,13 +588,15 @@ function embedUrl(absPath, query) {
 
 (async () => {
   try {
-    // First mode the file would have rendered as by default, skipping this
-    // template and the full-screen chat. `code` keeps the pane useful when
-    // nothing else survives the filter.
-    const st = await fused.stat(FILE);
-    const modes = (st.templates || []).map((t) => t.mode)
-      .filter((m) => m !== "claude_split" && m !== "claude");
-    document.getElementById("leftframe").src = embedUrl(FILE, { _mode: modes[0] || "code" });
+    // The left pane renders the APP, not the folder: the project's entry
+    // html (index.html, or its single top-level html — same rule as the
+    // shell's "Open as app" button), rendered as itself via `_render`.
+    // Deliberately NOT the `_listing` sentinel: a directory listing brings
+    // its own header chrome (mode switcher, Open as app) into the pane —
+    // including a button back into this very template.
+    const { entry } = await fused.runPython("./app.py", { dir: FILE });
+    if (!entry) throw new Error("no app entry (index.html or a single top-level .html) in " + FILE);
+    document.getElementById("leftframe").src = embedUrl(entry, { _mode: "_render" });
   } catch (err) {
     document.getElementById("left").innerHTML = "";
     const d = document.createElement("div");

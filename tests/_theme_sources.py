@@ -30,6 +30,7 @@ TIER_ONE_TEMPLATES = (
     "annotate",
     "api",
     "claude",
+    "claude_split",
     "code",
     "duckdb",
     "git",
