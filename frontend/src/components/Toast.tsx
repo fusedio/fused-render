@@ -16,23 +16,30 @@ export default function Toast({
   msg,
   tone,
   action,
+  leaving = false,
   onClose,
 }: {
   msg: string;
   tone: ToastTone;
   action?: ToastAction;
+  // Dismissed and playing its exit animation (lib/toast keeps it in the queue
+  // for that long). Its controls are inert while it leaves — a click landing on
+  // a card that is already fading out should do nothing.
+  leaving?: boolean;
   onClose: () => void;
 }) {
   return (
     <div
-      className={"toast" + (tone === "info" ? " toast-info" : "")}
+      className={"toast" + (tone === "info" ? " toast-info" : "") + (leaving ? " toast-leaving" : "")}
       role={tone === "info" ? "status" : "alert"}
+      aria-hidden={leaving || undefined}
     >
       <span className="toast-msg">{msg}</span>
       {action && (
         <button
           type="button"
           className="toast-action"
+          disabled={leaving}
           onClick={action.onClick}
         >
           {action.label}
@@ -42,6 +49,7 @@ export default function Toast({
         type="button"
         className="toast-close"
         onClick={onClose}
+        disabled={leaving}
         aria-label="Dismiss"
       >
         ✕

@@ -2497,6 +2497,30 @@ body.embed .open-as-app-chip:hover {
 /* Default is the error variant (red border); .toast-info is the neutral
    confirmation variant (e.g. "Path copied"). Capped at the column's width so
    the stack reads as one system rather than a ragged pile. */
+/* One row of the stack. The card fades/slides; the SLOT is what collapses its
+   height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
+   column's 8px gap), so dismissing a toast makes the ones below it glide up
+   instead of snapping. lib/toast keeps a dismissed toast in the queue for
+   TOAST_EXIT_MS — the same --dur-med these transitions run for. */
+.toast-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  max-width: 100%;
+  transition:
+    grid-template-rows var(--dur-med) var(--ease-out),
+    margin-bottom var(--dur-med) var(--ease-out);
+}
+
+.toast-slot > .toast {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toast-slot.leaving {
+  grid-template-rows: 0fr;
+  margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
+}
+
 .toast {
   display: flex;
   align-items: center;
@@ -2509,6 +2533,25 @@ body.embed .open-as-app-chip:hover {
   border: 1px solid var(--error);
   border-radius: 8px;
   box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast.toast-leaving {
+  /* A toast dismissed inside its own enter window would otherwise keep being
+     driven by the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
 }
 
 .toast-info {
