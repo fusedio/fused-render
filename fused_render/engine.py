@@ -667,8 +667,16 @@ def build_code(user_code: str, script_dir: str, script_path: str = "script") -> 
         entrypoint fails identically under either engine.
     """
     binding_source = _binding_source()
+    # `dont_write_bytecode` before the path insert, for the same reason
+    # `_child.py` sets it: the line below puts the user's app folder on
+    # sys.path, so every sibling module the page imports would cache a .pyc
+    # into a directory the user edits and commits. The user's own source is
+    # exec'd from a literal here and was never cached, but its imports were —
+    # so under this engine the folder acquired a `__pycache__` too, just a
+    # sparser one. Both engines must leave the same folder behind.
     preamble = (
         f"import os as _fused_os, sys as _fused_sys\n"
+        f"_fused_sys.dont_write_bytecode = True\n"
         f"_fused_sys.path.insert(0, {script_dir!r})\n"
         f"exec(compile({user_code!r}, {script_path!r}, 'exec'), globals())\n"
     )

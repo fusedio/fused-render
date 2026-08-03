@@ -294,6 +294,19 @@ def main(city: str = "oslo", limit: int = 100):
   silently — a per-poll spawn for the readers, and (while PY-6a's bootstrap was
   the only way a child could see the package) an outright failure for one that
   imports the package.
+- **PY-6c** **Executing a page writes nothing into the user's app folder** (D206).
+  Both engines set `sys.dont_write_bytecode` before putting the app dir on
+  `sys.path`, so neither the page's own `.py` nor any sibling it imports leaves a
+  `__pycache__` behind — the built-in worker cached both (`_child.py` loads
+  through a `SourceFileLoader`), the fused engine cached the siblings
+  (`engine.build_code`'s wrapper does the same path insert). The cache is worth
+  nothing under PY-6 anyway: a fresh process per call never reuses it. Three
+  consequences follow and are held elsewhere: `__pycache__/` is in `_GITIGNORE`
+  so `commit()`'s `git add -A` cannot sweep .pyc files into app history, and
+  `_ensure_excludes` untracks already-committed ones **once** per repo (index
+  only — the files stay on disk); and `app_listing.IGNORED_CHILDREN`
+  (`__pycache__`, `.git`) keeps machine-written children out of `dir_updated_at`,
+  so opening a page never outranks editing one in Recent (§29).
 - **PY-7** The worker's Python interpreter/venv is configurable; default is the environment the server was launched from. (User installs pandas etc. there.)
 - **PY-8** Working directory of execution = the Python file's directory, so relative data paths in user code behave intuitively.
 - **PY-9** Module reload: automatic — every call is a fresh process, so edits to the .py file take effect on the next call.

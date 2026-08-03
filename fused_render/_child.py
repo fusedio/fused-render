@@ -54,6 +54,19 @@ def run():
         module_dir = os.path.dirname(path)
         os.chdir(module_dir)  # relative data paths in user code resolve next to the .py
         sys.path.insert(0, module_dir)
+        # No `__pycache__` in the user's app folder. A SourceFileLoader caches
+        # bytecode next to the source, so exec_module below wrote a .pyc for the
+        # page's own .py — and sys.path[0] above means every sibling it imports
+        # wrote one too. That directory is ours, not theirs: it appeared inside
+        # a folder the user edits and commits (app_git's `git add -A` swept it
+        # into app history), and its mtime moved on every run, so merely VIEWING
+        # a page made it outrank one that was actually edited in "Recent".
+        # The cache bought nothing here anyway — PY-6 is a fresh process per
+        # call, so re-parsing a page-sized module costs microseconds against a
+        # process spawn. Set on `sys` rather than via PYTHONDONTWRITEBYTECODE in
+        # the parent: executor.py inherits os.environ untouched on purpose, and
+        # this is one line at the exact point user code is loaded.
+        sys.dont_write_bytecode = True
         spec = importlib.util.spec_from_file_location("__fused_module__", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

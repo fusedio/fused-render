@@ -41,19 +41,39 @@ def entry_title(entry_html: str) -> str | None:
     return " ".join(title.split()) or None
 
 
+#: Children that are machine bookkeeping, not the user's work — their mtimes
+#: are excluded from `dir_updated_at`. `__pycache__` was the one that showed:
+#: the executor used to write one on every run, so an app you merely OPENED
+#: reported as touched-just-now and displaced one you had actually edited from
+#: the top of Recent. Nothing writes it any more (`_child.py`,
+#: `engine.build_code`), but an app can still acquire one from a terminal or an
+#: editor, and the folders that already have one must stop lying. `.git` is
+#: here for the same reason: a commit — including the automatic one after a
+#: Claude turn — rewrites it, and the edit that triggered the commit has
+#: already moved a real file's mtime.
+IGNORED_CHILDREN = frozenset({"__pycache__", ".git"})
+
+
 def dir_updated_at(dir_path: str) -> float | None:
     """When a folder-shaped app was last touched, as an epoch float (st_mtime).
 
-    Max of the dir's own mtime and its DIRECT children's — the dir mtime alone
-    only moves on add/remove/rename, so editing index.html in place wouldn't
-    register; a deep walk is unbounded work per listing for marginal gain
-    (edits in an app land overwhelmingly in top-level files). One extra stat
-    per child, no recursion. None when nothing stats (racing delete)."""
+    Max of the dir's own mtime and its DIRECT children's, skipping
+    `IGNORED_CHILDREN` — the dir mtime alone only moves on add/remove/rename,
+    so editing index.html in place wouldn't register; a deep walk is unbounded
+    work per listing for marginal gain (edits in an app land overwhelmingly in
+    top-level files). One extra stat per child, no recursion. None when nothing
+    stats (racing delete).
+
+    The dir's OWN mtime is still counted even though creating a `__pycache__`
+    moves it: it is one add/remove-shaped event, not a per-run signal, and
+    dropping it would lose the real add/remove/rename it exists to catch."""
     latest = None
     try:
         latest = os.stat(dir_path).st_mtime
         with os.scandir(dir_path) as it:
             for child in it:
+                if child.name in IGNORED_CHILDREN:
+                    continue
                 try:
                     latest = max(latest, child.stat().st_mtime)
                 except OSError:
