@@ -213,8 +213,8 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(entry_html, prompt):
-        seen["entry"] = entry_html
+    def fake_start(app_dir, prompt):
+        seen["target"] = app_dir
         seen["prompt"] = prompt
         return "run-42", None
 
@@ -225,7 +225,9 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     assert r.json()["session_started"] is True
     assert r.json()["session_error"] is None
     assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    assert seen["entry"] == str(workspace / "local" / "demo" / "index.html")
+    # The scaffolding session starts on the app FOLDER (claude_split agent),
+    # so its sidecar lands where the split view lists sessions from.
+    assert seen["target"] == str(workspace / "local" / "demo")
     assert seen["prompt"] == "build a todo app"
 
 
