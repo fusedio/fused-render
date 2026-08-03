@@ -114,7 +114,12 @@ def _page_scan(page, tables=False):
             chars += 1
             if gid == 0:
                 notdef += 1
-            if ucs in (0, 0xFFFD):
+            # MuPDF reports "no unicode for this glyph" as 0, 0xFFFD or -1, and
+            # ucs is a C int carrying whatever a hostile font maps to — so bound
+            # both ends here. A value that is not a code point is exactly what
+            # undecodable means, and letting one reach chr() below would take the
+            # whole report down over one character.
+            if ucs in (0, 0xFFFD) or not 0 <= ucs <= 0x10FFFF:
                 undecodable += 1
             elif ucs > 32:
                 unique.add(ucs)
