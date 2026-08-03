@@ -84,18 +84,45 @@ def uri_to_path(uri: str) -> str | None:
 
 # ------------------------------------------------------------ tool selection
 
+def _is_wayland() -> bool:
+    """Is this a Wayland session (including XWayland, where wl-* still work)?
+
+    `WAYLAND_DISPLAY` is the socket the wl-clipboard tools actually connect to,
+    so it is the direct evidence and comes first; `XDG_SESSION_TYPE` is the
+    logind-provided fallback for the case where a compositor is running but the
+    server's environment never inherited the socket name.
+    """
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return True
+    return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+
+
 def _tool() -> tuple[list[str], list[str]]:
     """(read argv prefix, write argv prefix) for the best available helper.
 
-    wl-clipboard is only usable if *both* halves are present — a half install
-    that can copy but not paste is worse than falling through to xclip, which
-    does both.
+    Preference follows the SESSION, not merely what is installed. Both tool
+    families are commonly present at once (wl-clipboard is a dependency of
+    plenty of unrelated packages), and preferring wl-clipboard on that basis
+    alone broke every X11 machine that happened to have it: with no compositor
+    to talk to, `wl-copy`/`wl-paste` fail outright, and because the failure
+    happened INSIDE the chosen tool the contract reported `supported: false`
+    while a perfectly working xclip sat one branch away, never tried.
+
+    Availability still filters the preference — a Wayland session with only
+    xclip installed (XWayland) uses xclip rather than failing, and vice versa.
+    wl-clipboard additionally counts as present only if BOTH halves are: a half
+    install that can copy but not paste is worse than falling through to xclip,
+    which does both.
     """
-    if shutil.which("wl-copy") and shutil.which("wl-paste"):
-        return (["wl-paste", "--no-newline", "--type"], ["wl-copy", "--type"])
-    if shutil.which("xclip"):
-        return (["xclip", "-selection", "clipboard", "-o", "-t"],
-                ["xclip", "-selection", "clipboard", "-i", "-t"])
+    wl = bool(shutil.which("wl-copy") and shutil.which("wl-paste"))
+    xc = bool(shutil.which("xclip"))
+    order = ("wl", "xclip") if _is_wayland() else ("xclip", "wl")
+    for choice in order:
+        if choice == "wl" and wl:
+            return (["wl-paste", "--no-newline", "--type"], ["wl-copy", "--type"])
+        if choice == "xclip" and xc:
+            return (["xclip", "-selection", "clipboard", "-o", "-t"],
+                    ["xclip", "-selection", "clipboard", "-i", "-t"])
     raise NoClipboardTool(
         "no clipboard helper found — install wl-clipboard or xclip")
 
@@ -154,7 +181,13 @@ def write_files(paths: list[str]) -> None:
     uris = [path_to_uri(p) for p in paths]
     if _is_kde():
         target = URI_LIST_TARGET
-        payload = "\n".join(uris)
+        # CRLF, per RFC 2483 — text/uri-list is a line-based format whose
+        # terminator is specified, not incidental, and this module's own
+        # docstring has always described the KDE flavor that way. Joining with
+        # bare "\n" happened to work for a single URI (no separator appears)
+        # and left a multi-file paste into Dolphin to a lenient parser.
+        # Reading is unaffected: `_parse` normalizes CRLF before splitting.
+        payload = "\r\n".join(uris)
     else:
         target = GNOME_TARGET
         payload = "copy\n" + "\n".join(uris)

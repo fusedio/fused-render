@@ -167,3 +167,36 @@ test("a superseded mirror-write does not rewind the last-seen token", async () =
 
   expect(getLastSeenOsToken()).toBe("second");
 });
+
+test("a cut made while a copy's mirror-write is in flight still protects that cut", async () => {
+  // Found in review, and a regression introduced by the guard in the test
+  // above: gating the write's response on `clipboardEpoch` meant ANY later
+  // set superseded it — including a cut, which publishes nothing. The copy's
+  // token was then never recorded, so the reconcile below saw the OS copy as
+  // never-seen and adopted it straight over the cut.
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  globalThis.fetch = mock(async (_url: string, init: RequestInit = {}) => {
+    if (init.method === "POST") {
+      await held;
+      return new Response(JSON.stringify({ token: "copied", supported: true }), { status: 200 });
+    }
+    // The OS still holds what our own copy put there.
+    return new Response(
+      JSON.stringify({ paths: ["/a"], token: "copied", supported: true }),
+      { status: 200 }
+    );
+  }) as unknown as typeof fetch;
+
+  setClipboard({ paths: ["/a"], op: "copy" });      // mirror-write in flight
+  setClipboard({ paths: ["/b"], op: "cut" });        // user cuts, publishing nothing
+  release!();
+  await new Promise((r) => setTimeout(r, 0));
+
+  // The write's token describes the SYSTEM clipboard, which the cut never
+  // touched, so it is still valid and must have been recorded.
+  expect(getLastSeenOsToken()).toBe("copied");
+
+  await reconcileOsClipboard();
+  expect(getClipboard()).toEqual({ paths: ["/b"], op: "cut" });
+});

@@ -37,12 +37,21 @@ class _Run:
 @pytest.fixture
 def env(monkeypatch):
     """Install fake tool availability + subprocess, return the recorder."""
-    def _setup(tools, run=None, desktop=None):
+    def _setup(tools, run=None, desktop=None, session=None):
         runner = run or _Run()
         monkeypatch.setattr(
             _linux.shutil, "which", lambda name: f"/usr/bin/{name}" if name in tools else None)
         monkeypatch.setattr(_linux.subprocess, "run", runner)
         monkeypatch.setenv("XDG_CURRENT_DESKTOP", desktop or "")
+        # Session type is pinned on EVERY case, never inherited: tool choice
+        # now depends on it, and a developer's own Wayland/X11 session leaking
+        # in would make these pass or fail by accident of where they ran.
+        # `session=None` means X11, the case where the two tool families most
+        # often coexist.
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        if session == "wayland":
+            monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setenv("XDG_SESSION_TYPE", session or "x11")
         return runner
     return _setup
 
@@ -53,8 +62,43 @@ GNOME = "x-special/gnome-copied-files"
 
 # ---------------------------------------------------------------- tool choice
 
-def test_prefers_wl_clipboard_over_xclip(env):
-    run = env({"wl-copy", "wl-paste", "xclip"})
+def test_prefers_wl_clipboard_on_a_wayland_session(env):
+    run = env({"wl-copy", "wl-paste", "xclip"}, session="wayland")
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[0][0][0] == "wl-copy"
+
+
+def test_prefers_xclip_on_an_x11_session_even_with_wl_clipboard_installed(env):
+    # Found in review. Preference used to be "whatever is installed", and
+    # wl-clipboard is pulled in as a dependency of plenty of unrelated
+    # packages — so on X11 the backend chose tools with no compositor to talk
+    # to, failed inside them, and reported the whole bridge unsupported while
+    # a working xclip was never tried.
+    run = env({"wl-copy", "wl-paste", "xclip"}, session="x11")
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[0][0][0] == "xclip"
+
+
+def test_a_wayland_session_with_only_xclip_still_works(env):
+    # The session states a preference, not a requirement: under XWayland xclip
+    # is a real client, and refusing it because wl-clipboard is absent would
+    # turn a working machine into an unsupported one.
+    run = env({"xclip"}, session="wayland")
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[0][0][0] == "xclip"
+
+
+def test_an_x11_session_with_only_wl_clipboard_still_uses_it(env):
+    run = env({"wl-copy", "wl-paste"}, session="x11")
+    _linux.write_files(["/home/u/a.txt"])
+    assert run.calls[0][0][0] == "wl-copy"
+
+
+def test_wayland_display_alone_marks_a_wayland_session(env, monkeypatch):
+    # XDG_SESSION_TYPE can say "x11" under XWayland while WAYLAND_DISPLAY is
+    # set; the socket the tools actually connect to is the stronger evidence.
+    run = env({"wl-copy", "wl-paste", "xclip"}, session="x11")
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
     _linux.write_files(["/home/u/a.txt"])
     assert run.calls[0][0][0] == "wl-copy"
 
@@ -155,8 +199,32 @@ def test_write_uses_uri_list_on_kde(env):
     _linux.write_files(["/home/u/a.txt"])
     argv, payload = run.calls[0]
     assert URI_LIST in argv
-    # No verb line in the uri-list format, and CRLF per RFC 2483.
+    # No verb line in the uri-list format.
     assert payload == b"file:///home/u/a.txt"
+
+
+def test_the_kde_uri_list_separates_entries_with_crlf(env):
+    # Found in review: the comment above claimed CRLF while the join used
+    # "\n", and a single-URI assertion could not tell the difference — no
+    # separator appears in a one-entry list. RFC 2483 specifies CRLF, so a
+    # multi-file copy into Dolphin was relying on a lenient parser.
+    run = env({"xclip"}, desktop="KDE")
+    _linux.write_files(["/home/u/a.txt", "/home/u/b.txt"])
+    _argv, payload = run.calls[0]
+    assert payload == b"file:///home/u/a.txt\r\nfile:///home/u/b.txt"
+
+
+def test_a_crlf_uri_list_round_trips_through_the_reader(env):
+    # The two halves must agree: whatever the write publishes, our own read
+    # has to parse back. `_parse` normalizes CRLF, so this holds by design —
+    # pinned because the write's separator just changed.
+    paths = ["/home/u/a.txt", "/home/u/b.txt"]
+    run = env({"xclip"}, desktop="KDE")
+    _linux.write_files(paths)
+    _argv, payload = run.calls[0]
+    env({"xclip"}, run=_Run({("xclip", GNOME): b"", ("xclip", URI_LIST): payload}),
+        desktop="KDE")
+    assert _linux.read_files() == paths
 
 
 def test_write_uses_uri_list_for_a_plasma_session(env):

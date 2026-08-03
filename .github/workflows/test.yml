@@ -120,6 +120,22 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      # The shell's unit tests (`bun test`, frontend/src/**/*.test.ts) run on
+      # Bun's own runner, so this job needs Bun even though the build itself is
+      # npm + vite. Without this step the suite existed and CI never ran it —
+      # the clipboard race tests, which exist precisely because those races are
+      # invisible to review, had no guard against regression.
+      #
+      # After `npm install`, so it reuses that node_modules rather than
+      # resolving the tree a second time.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run shell unit tests (bun test)
+        working-directory: frontend
+        run: bun test
+
       - uses: actions/upload-artifact@v4
         with:
           name: shell-dist
