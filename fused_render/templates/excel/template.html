@@ -1528,12 +1528,14 @@ function updateViewport(force) {
   const last = Math.min(total, Math.ceil((wrap.scrollTop - HEAD_H + wrap.clientHeight) / ROW_H) + 1);
   if (!force && first >= vgrid.start && last <= vgrid.end) return;
   // Remounting recycles every row between the pads — including the one hosting
-  // an open editor. Commit it first, the same thing clicking away does, and let
-  // commitEdit's own updateViewport do the remount. Skipping the remount
-  // instead (the obvious way to protect the editor) left the spacer pads
-  // showing as blank bands until the edit ended. OVERSCAN means ordinary wheel
-  // nudges while editing never get this far.
-  if (editing && editing.input.isConnected) { commitEdit(); return; }
+  // an open editor. Commit it first, the same thing clicking away does; skipping
+  // the remount instead (the obvious way to protect the editor) left the spacer
+  // pads showing as blank bands until the edit ended. OVERSCAN means ordinary
+  // wheel nudges while editing never get this far. commitEdit runs its own
+  // updateViewport(false), enough for a plain scroll but not for a FORCED update
+  // (appendRows grew vis, so the spacers are stale and the new rows aren't
+  // scrollable yet), so re-run with the original flag against fresh state.
+  if (editing && editing.input.isConnected) { commitEdit(); updateViewport(force); return; }
   const start = Math.max(freeze, first - OVERSCAN);
   const end = Math.min(total, Math.max(start, last) + OVERSCAN);
   for (let tr = padTop.nextSibling; tr && tr !== padBot; ) {
@@ -1971,10 +1973,17 @@ function hideResizeGuide() {
   if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
 }
 function clearColResize() {
-  if (colResizing.raf) cancelAnimationFrame(colResizing.raf);
-  colResizing.grip.classList.remove("on");
-  hideResizeGuide();
+  const { grip, pointerId, raf } = colResizing;
+  if (raf) cancelAnimationFrame(raf);
+  // Null the state before releasing: the release fires lostpointercapture
+  // synchronously, and that handler must see no drag in progress rather than
+  // act on whatever comes next. Releasing at all matters because a drag
+  // dropped mid-flight (a second pointer starting its own) would otherwise
+  // leave capture armed on this grip, and its later loss would end the new one.
   colResizing = null;
+  grip.classList.remove("on");
+  hideResizeGuide();
+  try { grip.releasePointerCapture(pointerId); } catch { /* never captured */ }
 }
 function finishColResize(x) {
   const { c, colEl, table } = colResizing;
@@ -2026,7 +2035,10 @@ function attachColResizeGrip(grip, c, colgroup, table) {
     try { grip.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
     showResizeGuide(e.clientX);
   });
-  grip.addEventListener("lostpointercapture", endColResize);
+  grip.addEventListener("lostpointercapture", (e) => {
+    if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+    endColResize();
+  });
   grip.addEventListener("click", (e) => e.stopPropagation());
 }
 document.addEventListener("pointermove", (e) => {
