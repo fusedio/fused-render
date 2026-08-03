@@ -117,6 +117,38 @@ def test_child_environment_keys_are_contract_identical(monkeypatch, tmp_path):
     assert env["FUSED_RENDER_DESKTOP_INSTANCE_ID"] == "inst-id"
 
 
+def test_child_environment_leaves_the_claude_config_dir_alone(monkeypatch, tmp_path):
+    """The app must NOT relocate Claude Code's config dir. That dir holds
+    `.credentials.json` on Linux and Windows, so pointing it at app-owned state
+    logged the user out of a CLI they were already logged into — unrecoverably,
+    since both spawn paths run headless and `/login` cannot run there."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    p = paths_mod.DesktopPaths.discover_linux()
+    env = p.child_environment("i", "t", tmp_path / "tools")
+    assert "CLAUDE_CONFIG_DIR" not in env
+    # The dead companion var went with it — nothing ever read it.
+    assert "FUSED_RENDER_CLAUDE_DIR" not in env
+    # ...and the full block a child actually receives leaves it unset too, so
+    # the CLI falls back to ~/.claude and finds the login it already has.
+    assert "CLAUDE_CONFIG_DIR" not in paths_mod.environment_block(env)
+
+
+def test_child_environment_passes_a_user_set_claude_config_dir_through(monkeypatch, tmp_path):
+    """Not setting it is not the same as clearing it: someone who runs the whole
+    app against a non-default config dir still wins, because environment_block
+    layers the overrides onto the inherited environment."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "mine"))
+    p = paths_mod.DesktopPaths.discover_linux()
+    env = paths_mod.environment_block(p.child_environment("i", "t", tmp_path / "tools"))
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "mine")
+
+
 def test_child_environment_points_all_temp_vars_at_temp(monkeypatch, tmp_path):
     # TEMP/TMP cover Windows-conventioned lookups, but POSIX tempfile consults
     # TMPDIR first — without it the child's temp files land outside the

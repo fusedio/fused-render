@@ -251,9 +251,10 @@ def test_poll_and_history_refuse_a_windows_escaping_id(tmp_path, monkeypatch):
 # ------------------------------------------------------------- transcript dir
 
 def test_projects_follows_claude_config_dir(tmp_path, monkeypatch):
-    """The supervisor points CLAUDE_CONFIG_DIR at the app's own state dir in
-    every packaged build, so that — not ~/.claude — is where the transcripts
-    for our runs live."""
+    """Wherever CLAUDE_CONFIG_DIR points, that is where the transcripts for our
+    runs live. The supervisor no longer sets it (it carries the login too — see
+    test_supervisor_linux_paths), so in practice this covers the user who sets
+    one themselves; we have to follow them there or lose history and resume."""
     configured = tmp_path / "state" / "claude"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
     agent = _load_agent()
