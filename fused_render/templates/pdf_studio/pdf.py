@@ -1313,7 +1313,11 @@ def _page_indices(path, pages):
 
 def _inspect(doc, pages):
     cur = _cur_path(doc)
-    report = _inspector().report(cur, _page_indices(cur, pages))
+    # The working copy is what the report describes, but revisions and
+    # web-optimization are facts about the file the user has — the working copy
+    # carries this session's incremental saves.
+    report = _inspector().report(cur, _page_indices(cur, pages),
+                                disk=os.path.abspath(doc))
     # The report describes the bytes on disk; the identity is the doc the user
     # opened, which is the original even while a working copy is being read.
     report["doc"]["path"] = _fwd(os.path.abspath(doc))
@@ -1325,8 +1329,11 @@ def _markdown(doc, pages):
     cur = _cur_path(doc)
     return _inspector().markdown(cur, _page_indices(cur, pages))
 
-def _save_markdown(doc, pages, directory, name):
-    md = _markdown(doc, pages)["markdown"]
+
+def _save_markdown(doc, pages, directory, name, text=None):
+    # The caller sends back the markdown it is showing, so the file matches the
+    # preview and a large document is not converted twice against the timeout.
+    md = text if text is not None else _markdown(doc, pages)["markdown"]
     out = _out_dir(directory, os.path.dirname(os.path.abspath(doc)))
     stem = _safe_name(name, os.path.basename(doc))
     dest = _unique_path(out, os.path.splitext(stem)[0] + ".md")
@@ -1334,6 +1341,7 @@ def _save_markdown(doc, pages, directory, name):
         f.write(md)
     return {"name": os.path.basename(dest), "path": _fwd(dest),
             "size": os.path.getsize(dest), "dir": _fwd(out)}
+
 
 def _health():
     out = {"ok": True, "pymupdf": "", "pikepdf": ""}
@@ -1396,6 +1404,7 @@ def main(
     language: str = "",
     images_b64: str = "",
     exts: str = "",
+    text: str = "",
 ):
     if action == "health":
         return _health()
@@ -1528,7 +1537,7 @@ def main(
     if action == "to_markdown":
         return _markdown(doc, pages)
     if action == "save_markdown":
-        return _save_markdown(doc, pages, directory, name)
+        return _save_markdown(doc, pages, directory, name, text or None)
     if action == "page_text":
         return _page_text(_open_work(doc)[0], page)
     if action == "undo":

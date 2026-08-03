@@ -1477,7 +1477,8 @@ const acts = {
   mdConvert: async () => {
     needDoc();
     const spec = $("mdPages")?.value.trim() || "all";
-    await insWork("converting…", () => py({ action: "to_markdown", doc: state.doc, pages: spec }),
+    await insWork("converting to Markdown…",
+      () => py({ action: "to_markdown", doc: state.doc, pages: spec }),
       (res) => { state.md = { spec, ...res }; });
   },
   mdCopy: async () => {
@@ -1489,6 +1490,7 @@ const acts = {
       filename: state.info.name.replace(/\.pdf$/i, "") + ".md", start: docDir(), exts: ".md" });
     if (!picked) return;
     const res = await py({ action: "save_markdown", doc: state.doc, pages: state.md.spec,
+      text: state.md.markdown,
       directory: picked.dir, name: picked.name });
     await resultModal({ title: "Markdown saved", files: [res], dir: res.dir });
   },
@@ -1801,6 +1803,11 @@ function insSetTab(name) {
 // busy state: whatever becomes of the request, the last one out repaints from
 // whatever is true by then, so no outcome can leave "Scanning…" on screen.
 // Returns whether the answer was committed.
+// Labels the drawer sets, so the status pill is only restored by the drawer when
+// the drawer is what put it there. They must be distinct from every other
+// operation's label — "converting…" alone collided with Convert to Word, and a
+// discarded scan then cleared the pill while the Word conversion was still going.
+const INS_STATUS = ["inspecting…", "converting to Markdown…"];
 let insBusy = 0;
 async function insWork(label, run, commit) {
   const forDoc = state.doc, gen = inspectGen;
@@ -1816,10 +1823,13 @@ async function insWork(label, run, commit) {
     if (live()) throw err;
     return false;
   } finally {
-    if (--insBusy === 0) {
-      if ($("status").querySelector(".txt").textContent === label) idleStatus();
-      if (document.body.classList.contains("inspect-on")) renderInspect();
-    }
+    insBusy--;
+    // Repaint on every settle, not only when the last one lands: a scan that
+    // finished while a slower convert was still running had committed its report
+    // and then left the drawer showing "Scanning…" for it.
+    if (document.body.classList.contains("inspect-on")) renderInspect();
+    if (!insBusy && INS_STATUS.includes($("status").querySelector(".txt").textContent))
+      idleStatus();
   }
 }
 

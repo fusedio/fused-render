@@ -75,7 +75,38 @@ CONTAINER_LABELS = {
     "/Fields": "form field",
 }
 EXEC_EXTS = {".exe", ".dll", ".scr", ".bat", ".cmd", ".com", ".ps1", ".vbs",
-             ".js", ".jse", ".jar", ".msi", ".lnk", ".hta", ".wsf", ".reg", ".sh"}
+             ".js", ".jse", ".jar", ".msi", ".lnk", ".hta", ".wsf", ".wsh", ".vbe",
+             ".reg", ".sh", ".msc", ".pif", ".cpl", ".chm", ".url", ".appref-ms",
+             ".docm", ".xlsm", ".pptm"}
+
+# /AA events that need the reader to do something. Everything else — a page's
+# /O and /C, a field's /K /F /V /C — happens on its own, so an unlisted event is
+# assumed automatic: over-reporting a trigger is the safer way to be wrong.
+CLICK_EVENTS = frozenset({"/E", "/X", "/D", "/U", "/Fo", "/Bl"})
+
+
+def _inherited(obj, key, depth=16):
+    """A form field key, looked up the way a viewer looks it up: /FT, /Ff and
+    friends are inheritable, so a widget often carries none of its own."""
+    import pikepdf
+
+    while isinstance(obj, pikepdf.Dictionary) and depth > 0:
+        if key in obj:
+            return obj.get(key)
+        obj, depth = obj.get("/Parent"), depth - 1
+    return None
+
+
+def _filespec(val):
+    """The name out of a file specification. It is a string in the simple form
+    and a dictionary in the full one — which is what Acrobat writes whenever
+    there is a /UF — so a str() over the value put a multi-line dictionary repr
+    where the reader needed a filename."""
+    import pikepdf
+
+    if isinstance(val, pikepdf.Dictionary):
+        val = val.get("/UF") or val.get("/F")
+    return str(val) if val is not None else ""
 
 
 def _gutter(xspans, width):
@@ -195,7 +226,6 @@ def _classify(scans):
                 why.append("font encoding does not decode to Unicode")
         if why:
             reasons[str(s["n"])] = why
-        s["needs_ocr"] = bool(why)
 
     return {
         "type": kind, "label": TYPE_LABELS[kind],
@@ -211,11 +241,14 @@ def _font_report(d, page_idx):
     seen = {}
     for i in page_idx:
         for xref, ext, ftype, basefont, refname, enc in d.get_page_fonts(i):
-            f = seen.get((xref, refname))
+            # One font object listed under two resource names is one font. Only
+            # an unembedded font with no xref has to fall back to the name.
+            key = xref or refname
+            f = seen.get(key)
             if f is None:
                 name = basefont or "(unnamed)"
                 subset = len(name) > 7 and name[6] == "+"
-                f = seen[(xref, refname)] = {
+                f = seen[key] = {
                     "name": name[7:] if subset else name,
                     "type": ftype, "encoding": enc or "(built-in)",
                     "embedded": ext not in ("n/a", ""), "subset": subset,
@@ -290,25 +323,37 @@ def _actions(pdf, cap=150_000):
         if not isinstance(obj, pikepdf.Dictionary):
             continue
         og = obj.objgen
-        if og != (0, 0):
-            if og in seen:
-                continue
-            seen.add(og)
-            # Arriving at a page starts a new context, and not only for the
-            # label: a page is never part of a trigger, so nothing on it fires
-            # because of how the walk got here. A document that opens *at* page 5
-            # does not click the buttons on page 5. Without this the flag depended
-            # on which path reached the page first.
-            if og in pages:
-                label, auto = pages[og], False
+        # Arriving at a page starts a new context, and not only for the label: a
+        # page is never part of a trigger, so nothing on it fires because of how
+        # the walk got here. A document that opens *at* page 5 does not click the
+        # buttons on page 5.
+        if og in pages:
+            label, auto = pages[og], False
         # /S is a required key in an action dictionary, so /S is what makes
-        # something an action; the slot only decides how much benefit of the doubt
-        # its value gets. Forcing on the slot alone was wrong because /A is not
-        # always an action — a structure element keeps its attribute object there,
-        # a movie annotation its playback activation dictionary — and neither has
-        # an /S, which is exactly how the spec distinguishes them.
+        # something an action; where it was found only decides how much benefit of
+        # the doubt its value gets. Forcing on the slot alone was wrong because /A
+        # is not always an action — a structure element keeps its attribute object
+        # there, a movie annotation its playback activation dictionary — and
+        # neither has an /S, which is how the spec distinguishes them. Outside a
+        # slot a /Type that names something else is decisive: /S /Transparency on a
+        # /Group, /S /JavaScript on a /CollectionSort are that dictionary's own
+        # field, not an action.
         kind = str(obj.get("/S", ""))
-        if kind and (forced or kind in ACTION_TYPES):
+        action = bool(kind) and (forced or (kind in ACTION_TYPES
+                                            and str(obj.get("/Type", "/Action")) == "/Action"))
+        if og != (0, 0):
+            # Dedupe per reference, not per object. pikepdf's keys() is a set, so
+            # which path reaches a shared object first is hash-randomised per
+            # process — keying on the object alone let that decide whether an
+            # action was recognised at all, and whether it counted as automatic,
+            # so the same file scanned differently between runs. An object really
+            # reachable as both an open action and a click is two findings,
+            # because it is two triggers.
+            key = (og, auto, action)
+            if key in seen:
+                continue
+            seen.add(key)
+        if action:
             found.append({"act": obj, "where": label, "automatic": auto})
             # /Next chains more actions onto the same trigger.
             if "/Next" in obj:
@@ -324,7 +369,8 @@ def _actions(pdf, cap=150_000):
                 slot(val, label, auto)
             elif key == "/AA" and isinstance(val, pikepdf.Dictionary):
                 for event in val.keys():
-                    slot(val.get(event), f"{label} trigger {event}", True)
+                    slot(val.get(event), f"{label} trigger {event}",
+                         event not in CLICK_EVENTS)
             elif key == "/JavaScript":
                 stack.append((val, "document script", True, False))
             elif isinstance(val, (pikepdf.Dictionary, pikepdf.Array)):
@@ -339,19 +385,22 @@ def _actions(pdf, cap=150_000):
     return found, not stack
 
 
-def _note_attachment(name, where, facts, hits):
+def _note_attachment(name, where, facts, hits, alias=""):
     # The same file is commonly in both the /EmbeddedFiles tree and a
     # /FileAttachment annotation; it is one attachment, not two.
     if any(a["name"] == name for a in facts["attachments"]):
         return
-    ext = os.path.splitext(name)[1].lower()
+    # Windows drops trailing dots and spaces when it runs a file, so "x.exe "
+    # and "x.exe." both execute — strip them before reading the extension.
+    ext = os.path.splitext(name.rstrip(" ."))[1].lower()
     executable = ext in EXEC_EXTS
-    facts["attachments"].append({"name": name, "executable": executable})
+    facts["attachments"].append({"name": name, "executable": executable,
+                                 "alias": alias})
     if executable:
         hits.append({"level": "danger", "kind": "/EmbeddedFile",
                      "what": "carries an executable attachment",
-                     "detail": name, "where": where, "automatic": False,
-                     "row": "attachment"})
+                     "detail": f"{name} (filed as {alias})" if alias else name,
+                     "where": where, "automatic": False, "row": "attachment"})
 
 
 def _describe(entry, hits):
@@ -366,21 +415,31 @@ def _describe(entry, hits):
         detail = str(act.get("/URI", ""))
     elif kind == "/Launch":
         win = act.get("/Win")
-        target = act.get("/F") or (win.get("/F") if isinstance(win, pikepdf.Dictionary) else None)
-        detail = str(target) if target is not None else ""
+        detail = _filespec(act.get("/F")
+                           or (win.get("/F") if isinstance(win, pikepdf.Dictionary) else None))
     elif kind == "/JavaScript":
         js = act.get("/JS")
         code = bytes(js.read_bytes()).decode("utf-8", "replace") if isinstance(js, pikepdf.Stream) else str(js or "")
         detail = " ".join(code.split())[:400]
     elif kind in ("/GoToR", "/GoToE", "/SubmitForm", "/ImportData"):
-        detail = str(act.get("/F", ""))
+        detail = _filespec(act.get("/F"))
+    # A /URI action is only a web link if it addresses the web. javascript: runs
+    # script and file: reaches the local disk, so they belong with the things
+    # that do that, not on the "opens a web link" row that never raises a finding.
+    if kind == "/URI":
+        scheme = detail.split(":", 1)[0].strip().lower() if ":" in detail else ""
+        if scheme == "javascript":
+            level, what, row = "danger", "runs JavaScript from a link", "script"
+        elif scheme == "file":
+            level, what, row = "danger", "opens a file on the local disk", "launch"
     hits.append({"level": level, "kind": kind, "what": what, "detail": detail,
                  "where": where, "automatic": entry["automatic"], "row": row})
 
 
-def _security(path):
+def _security(path, disk=None):
     """Everything in the file that can act on its own, plus the encryption,
-    signature and revision facts that go with deciding whether to trust it."""
+    signature and revision facts that go with deciding whether to trust it.
+    `disk` is the document the user opened when `path` is a working copy of it."""
     import pikepdf
 
     hits = []
@@ -416,8 +475,14 @@ def _security(path):
 
         facts["layers"] = "/OCProperties" in root
 
-        for name in pdf.attachments:
-            _note_attachment(name, "embedded files", facts, hits)
+        # The /EmbeddedFiles key is a lookup name, not the file's name — a viewer
+        # shows and extracts the filespec's /UF. They are usually the same, and a
+        # payload.exe filed under "readme.txt" is exactly the case where they are
+        # not, so the real name is what decides whether this is executable.
+        for key, spec in pdf.attachments.items():
+            name = _filespec(spec.obj) or key
+            _note_attachment(name, "embedded files", facts, hits,
+                             alias=key if key != name else "")
 
         # Object kinds rather than actions: what a thing IS, not what it runs.
         for i, page in enumerate(pdf.pages, 1):
@@ -426,7 +491,9 @@ def _security(path):
                 if not isinstance(annot, pikepdf.Dictionary):
                     continue
                 sub = str(annot.get("/Subtype", ""))
-                if sub == "/Widget" and str(annot.get("/FT", "")) == "/Sig":
+                # /FT is inheritable: a signature widget commonly carries no /FT
+                # of its own, only its parent field does.
+                if sub == "/Widget" and str(_inherited(annot, "/FT")) == "/Sig":
                     facts["signatures"] = max(facts["signatures"], 1)
                 if sub in ("/RichMedia", "/Screen", "/Movie", "/3D", "/Sound"):
                     hits.append({"level": "warn", "kind": sub,
@@ -436,22 +503,30 @@ def _security(path):
                 # The /EmbeddedFiles tree is not the only way in: a filespec on
                 # an annotation is still openable from the viewer.
                 if sub == "/FileAttachment":
-                    fs = annot.get("/FS")
-                    if isinstance(fs, pikepdf.Dictionary):
-                        _note_attachment(str(fs.get("/UF") or fs.get("/F") or "(unnamed)"),
-                                         f"page {i} attachment", facts, hits)
+                    _note_attachment(_filespec(annot.get("/FS")) or "(unnamed)",
+                                     f"page {i} attachment", facts, hits)
 
     for h in hits:
         if h["kind"] == "/URI" and h["detail"]:
             urls[h["detail"]] = urls.get(h["detail"], 0) + 1
 
+    # Revisions and web-optimization are properties of the file the reader has,
+    # not of the working copy this scan reads: pdf_studio saves text edits
+    # incrementally, so a document the user has just typed into would otherwise
+    # report the user's own edits as somebody's hidden history.
+    if disk and disk != path:
+        with pikepdf.open(disk) as on_disk:
+            facts["linearized"] = on_disk.is_linearized
+    else:
+        disk = path
+
     # An in-place update appends a revision ending in its own %%EOF — but so does
     # a linearized file's first-page xref, which has to be discounted or every
     # web-optimized PDF looks rewritten. A byte count is a floor, not a proof
     # (%%EOF can occur inside a stream), hence "sections" and not "edits".
-    facts["revisions_checked"] = os.path.getsize(path) <= 64 * 1024 * 1024
+    facts["revisions_checked"] = os.path.getsize(disk) <= 64 * 1024 * 1024
     if facts["revisions_checked"]:
-        with open(path, "rb") as f:
+        with open(disk, "rb") as f:
             eofs = f.read().count(b"%%EOF")
         facts["revisions"] = max(0, eofs - 1 - (1 if facts["linearized"] else 0))
 
@@ -570,7 +645,7 @@ def _security_report(hits, urls, facts):
     }
 
 
-def _security_or_unreadable(path):
+def _security_or_unreadable(path, disk=None):
     """The one place the scan is allowed to give up. Walking a damaged object
     graph can raise from deep inside pikepdf (an undecodable /JS stream, a
     rotten tree), and a file like that is exactly the kind worth a verdict — so
@@ -588,7 +663,7 @@ def _security_or_unreadable(path):
     from_pikepdf = tuple(v for v in vars(pikepdf).values()
                          if isinstance(v, type) and issubclass(v, Exception))
     try:
-        return _security(path)
+        return _security(path, disk)
     except from_pikepdf + (TypeError, ValueError, KeyError, IndexError,
                            RecursionError, UnicodeDecodeError, OSError) as e:
         return {"risk": "unreadable", "error": f"{type(e).__name__}: {e}",
@@ -621,7 +696,6 @@ def _rust_engine(path):
         "complex_layout": bool(r.is_complex_layout),
         "encoding_issues": bool(r.has_encoding_issues),
     }
-
 
 
 def _is_tagged(d):
@@ -783,7 +857,8 @@ def _wrap_link(md, anchor, uri):
     lead = r"\b" if anchor[:1].isalnum() else ""
     trail = r"\b" if anchor[-1:].isalnum() else ""
     pat = re.compile(lead + re.escape(anchor) + trail)
-    repl = f"[{anchor}]({uri})"
+    # A URL containing brackets or spaces has to go in <> or it ends the link early.
+    repl = f"[{anchor}](<{uri}>)" if re.search(r"[()<>\s]", uri) else f"[{anchor}]({uri})"
     out, pos, done = [], 0, False
     for m in MD_KEEP.finditer(md):
         seg = md[pos:m.start()]
@@ -890,7 +965,7 @@ def _page_markdown(page):
 # ------------------------------------------------------------------ public API
 # pdf.py owns paths and page selection; both entry points take a resolved file
 # path and a list of 0-based page indices.
-def report(path, idx):
+def report(path, idx, disk=None):
     import fitz
 
     if not idx:
@@ -925,7 +1000,7 @@ def report(path, idx):
         "pages": scans,
         "fonts": fonts,
         "text": _text_quality(scans),
-        "security": _security_or_unreadable(path),
+        "security": _security_or_unreadable(path, disk),
         "rust": _rust_engine(path),
         "tables_capped": len(idx) > TABLE_SCAN_CAP,
     }
