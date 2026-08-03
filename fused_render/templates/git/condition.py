@@ -109,6 +109,28 @@ def main(path: str) -> bool:
         if not path:
             return False
 
+        # A *fused app* dir (a git-initialized folder exactly two levels under
+        # the workspace) is `versions` territory: that template renders the
+        # same history with the app's auto-commit semantics, so offering `git`
+        # there would be two modes for one story. This is the exact complement
+        # of versions/condition.py's app-dir rule — keep the two in step (and
+        # with app_git.app_dir_for). Same constant-time shape: one relpath,
+        # one `.git` isdir stat, never a listing.
+        try:
+            from appenv import workspace_dir
+            root = workspace_dir()
+            rel = os.path.relpath(os.path.abspath(path), root)
+            if rel != os.curdir and rel.split(os.sep, 1)[0] != os.pardir:
+                parts = rel.split(os.sep)
+                if (len(parts) >= 2
+                        and not parts[0].startswith(".")
+                        and not parts[1].startswith(".")):
+                    app_dir = os.path.join(root, parts[0], parts[1])
+                    if os.path.isdir(os.path.join(app_dir, ".git")):
+                        return False  # versions handles app history
+        except Exception:  # noqa: BLE001 — cannot tell -> fall through to git
+            pass
+
         # (2) The directory to ask git from: the path itself, or a file's parent.
         # Two stats at most, never a listing.
         if os.path.isdir(path):
