@@ -2001,7 +2001,14 @@ def test_the_page_adopts_the_timeline_that_rode_back_with_the_write(source):
     assert "renderHistory();" in adopt
     # The fallback stays, and it keeps its error channel: reportOutcome is what says
     # the panel on screen is stale.
-    assert "reloadErr = await loadHistory(enriched);" in adopt
+    #
+    # It forces enrichment rather than passing `enriched` through, because it is
+    # standing in for a payload the bridge always enriches. `enriched` is the
+    # DISCLOSURE state — false whenever the panel has not been expanded, which is the
+    # common case — and an unenriched timeline cannot see the did-not-exist boundary,
+    # so adopting one reports `at_earliest` a step early (FH-3). The pre-revert
+    # disclosure state has no business deciding how accurate the POST-revert panel is.
+    assert "reloadErr = await loadHistory(true);" in adopt
     assert "reportOutcome(outcome, false, reloadErr);" in handler
 
 
@@ -2044,6 +2051,35 @@ def test_a_timeline_that_cannot_be_computed_omits_the_field(claude_home, tmp_pat
     assert "timeline" not in out
     with open(f, encoding="utf-8") as h:
         assert h.read() == "then\n"
+
+
+def test_a_swallowed_timeline_failure_still_says_so_on_stderr(claude_home, tmp_path,
+                                                              monkeypatch, capsys):
+    """The user must not see this — the write landed — but SOMEONE has to be able to.
+
+    Absorbing the exception with no trace at all means a timeline that has started
+    failing on every single revert is indistinguishable from one that never fails:
+    the page falls back, the panel still paints, and the only symptom is a paid-for
+    round trip nobody can account for. stderr is where the engine already collects a
+    run's diagnostics, so this costs the user nothing and costs a debugger nothing to
+    find.
+    """
+    ann = _load_annotate()
+    f = _target(tmp_path, "now\n")
+    write_version(claude_home, "s", f, "then\n")
+    fh = ann._file_history()
+
+    def boom(*a, **k):
+        raise RuntimeError("store went away")
+    monkeypatch.setattr(fh, "timeline", boom)
+
+    out = ann.main(action="revert", file=f, version_id="s@v1",
+                   confirm_unique=True)
+    assert out["ok"] is True and "timeline" not in out
+    # Named exception TYPE and message — "could not refresh" alone sends the reader
+    # looking in the wrong module.
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "store went away" in err
 
 
 def test_the_carry_slot_machinery_is_untouched(source):

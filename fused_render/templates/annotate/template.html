@@ -2338,7 +2338,15 @@
         // The refresh must observe the POST-revert file, which it does because the
         // write completed before `callHistory` resolved — so the position marker
         // now points at the version just restored.
-        reloadErr = await loadHistory(enriched);
+        //
+        // `true`, not `enriched`: this stands in for a payload the bridge always
+        // enriches, and `enriched` is the DISCLOSURE state — false whenever the panel
+        // has not been expanded, which is the common case. An unenriched timeline
+        // cannot see the did-not-exist boundary and so reports `at_earliest` a step
+        // early (the same FH-3 trap the boot path documents), and the moment right
+        // after a destructive write is the worst one to paint a panel that is a step
+        // short of the truth. Whether a widget was open has no business deciding that.
+        reloadErr = await loadHistory(true);
       }
       // loadHistory may itself have failed and written an error here. Reporting
       // plain success over it is the SAME write-order bug as the failure branch

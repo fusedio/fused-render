@@ -410,10 +410,17 @@ def _revert(file: str, version_id, confirm_unique: bool) -> dict:
     # landed and is already reported, so a failure to re-enumerate the store must
     # not turn a successful revert into an error. The page falls back to its own
     # `history` call, which reports its own failure in its own words.
+    #
+    # Absorbed for the USER, not for the log. With no trace at all, a timeline that
+    # has started failing on every revert is indistinguishable from one that never
+    # fails — the page falls back, the panel still paints, and the only symptom is a
+    # round trip nobody can account for. stderr is where the engine already collects
+    # a run's diagnostics, so naming the exception costs the user nothing.
     try:
         res["timeline"] = fh.timeline(file, enrich=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        print("annotate: post-revert timeline failed, the page will re-read it "
+              "itself — %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
     return res
 
 
