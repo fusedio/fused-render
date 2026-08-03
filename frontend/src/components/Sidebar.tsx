@@ -27,7 +27,7 @@ import {
   takeLastAddedBookmarkId,
 } from "../lib/bookmarks";
 import { bookmarkSaveTarget } from "../lib/bookmark-file";
-import { exportBookmarkFile, getConfig, statPath } from "../lib/api";
+import { exportBookmarkFile, statPath } from "../lib/api";
 import IconPicker from "./IconPicker";
 import { FolderIcon, LearnIcon } from "./FileIcons";
 import type { Bookmark, BookmarkFolder, BookmarkItem } from "../lib/bookmarks";
@@ -45,6 +45,7 @@ import {
   notifyBookmarksChanged,
   useRecentsVersion,
   useArmedVersion,
+  useLearnMountReady,
 } from "../lib/hooks";
 import type { Config } from "../lib/api";
 import { splitShellSearch } from "../lib/layout-codec";
@@ -344,77 +345,9 @@ export default function Sidebar({ config }: SidebarProps) {
   const accountLoggedIn = useAccountLoggedIn();
   const deployEnabled = useDeployEnabled();
 
-  // BUGBOT: config (and its learn_mount_ready flag) is fetched exactly ONCE
-  // at page load (main.tsx), well before the server's background automount
-  // thread has finished attaching the learn mount — ensure_learn_mount now
-  // force-detaches and remounts it on every startup, so the one-shot fetch
-  // essentially always sees false and the Learn entry would never appear
-  // for the whole session. Re-poll /api/config on a short bounded interval
-  // (mirrors main.tsx's own bookmark-poll pattern) until it flips true;
-  // capped at MAX_ATTEMPTS so a dev checkout with no bundled learn.zip
-  // (never becomes ready) doesn't poll forever.
-  //
-  // BUGBOT: the bound must comfortably exceed attach_mount's own worst case
-  // — up to ~10s for ensure_rcd to spawn/confirm the rclone daemon, plus a
-  // full 60s mount/mount rc timeout (shell/mounts.py) — or a slow-but-
-  // eventually-successful mount finishes after the poll gives up and the
-  // entry never appears without a full page reload. 2s x 60 = 120s, safely
-  // past that ~70s worst case with margin.
-  //
-  // BUGBOT: gating the poll on "only start if the INITIAL fetch saw false"
-  // was itself racy — rcd survives server restarts, so the boot-time
-  // /api/config fetch can catch a still-live mount from the PRIOR run and
-  // report true, moments before ensure_learn_mount's own forced detach (see
-  // its docstring) rips that very mount out from under it. Polling would
-  // then never engage at all, and the entry would point at an empty
-  // mountpoint for the remount window — or the whole session, if the
-  // remount fails. So this always re-verifies via a live poll after mount,
-  // regardless of the seeded initial value, and follows whatever the fresh
-  // answer says (including back to not-ready, if the detach window is
-  // caught mid-poll) rather than trusting the one-shot snapshot as final.
-  const [learnMountReady, setLearnMountReady] = useState(config.learn_mount_ready);
-  useEffect(() => {
-    let cancelled = false;
-    let attempts = 0;
-    // BUGBOT: setInterval fires a new getConfig() every tick without
-    // waiting for the previous one to settle, so responses can arrive
-    // out of order (a slow earlier request resolving AFTER a faster later
-    // one). Unconditionally applying whatever resolves most recently in
-    // WALL-CLOCK order let a stale `false` from an earlier in-flight
-    // request overwrite a `true` a later request already reported —
-    // permanently, since that `true` had already cleared the interval.
-    // latestRequestId tracks which tick's request is the newest ISSUED
-    // one; only that request's response is applied, so a straggler from
-    // an earlier tick is discarded as stale rather than overwriting it.
-    let latestRequestId = 0;
-    const MAX_ATTEMPTS = 60;
-    const POLL_MS = 2000;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      const requestId = ++latestRequestId;
-      getConfig().then(
-        (fresh) => {
-          if (cancelled || requestId !== latestRequestId) return;
-          setLearnMountReady(fresh.learn_mount_ready);
-          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
-            window.clearInterval(timer);
-          }
-        },
-        () => {
-          if (cancelled || requestId !== latestRequestId) return;
-          // Transient fetch failure — just try again next tick.
-          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
-        }
-      );
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-    // Deliberately empty deps: run once on mount only. Depending on
-    // learnMountReady here would restart the whole bounded poll window
-    // from zero every time it changes.
-  }, []);
+  // Bounded /api/config re-poll for the learn mount (see useLearnMountReady
+  // for the full race notes — the boot snapshot is stale in both directions).
+  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
 
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. Width lives in React
