@@ -6095,6 +6095,53 @@ select.field-control:has(option[value=""]:checked) {
    The monogram square carries a deterministic hue from the file-icon palette
    (set inline as `color`), washed to a fill via color-mix so it repaints in
    light mode. */
+/* Recent: a plain single-column list — name, tag pill, last-used stamp. */
+.home-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.home-recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  color: var(--fg);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-recent:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.home-recent-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-recent .home-app-tag {
+  margin-left: 0;
+}
+
+.home-recent-when {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
 .home-apps {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
