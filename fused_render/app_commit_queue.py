@@ -41,6 +41,16 @@ _pending: dict[str, dict] = {}
 _loop: asyncio.AbstractEventLoop | None = None
 _wake: asyncio.Event | None = None
 _task: asyncio.Task | None = None
+_watchdog_started = False
+
+# The worker has twice been observed parked forever on an await that never
+# resumed — no exception, no running thread, marks stranded in _pending
+# (cause not yet pinned down; uvloop + 3.14 suspected). The watchdog is a
+# plain thread, immune to event-loop trouble by construction: when pending
+# work sits well past _MAX_AGE_S it logs the worker coroutine's await stack
+# (the autopsy the wedge never left behind) and commits inline so the user
+# never loses history to a stuck worker.
+_WATCHDOG_INTERVAL_S = 10.0
 
 
 def mark(path: str, verb: str) -> None:
@@ -138,12 +148,40 @@ async def _run() -> None:
             await asyncio.sleep(1)
 
 
+def _watchdog() -> None:
+    while True:
+        time.sleep(_WATCHDOG_INTERVAL_S)
+        task = _task
+        if task is None:
+            continue
+        with _lock:
+            oldest = min((e["first"] for e in _pending.values()), default=None)
+        if oldest is None:
+            continue
+        if time.monotonic() - oldest < _MAX_AGE_S + 2 * _WATCHDOG_INTERVAL_S:
+            continue
+        try:
+            frames = "; ".join(
+                f"{os.path.basename(f.f_code.co_filename)}:{f.f_lineno} "
+                f"{f.f_code.co_name}" for f in task.get_stack())
+        except Exception:
+            frames = "<unavailable>"
+        logger.error(
+            "app commit worker stuck (done=%s, stack: %s); "
+            "committing pending inline", task.done(), frames or "<empty>")
+        flush()
+
+
 def start() -> None:
     """Start the worker on the running loop (server startup event)."""
-    global _loop, _wake, _task
+    global _loop, _wake, _task, _watchdog_started
     _loop = asyncio.get_running_loop()
     _wake = asyncio.Event()
     _task = _loop.create_task(_run(), name="app-commit-queue")
+    if not _watchdog_started:
+        _watchdog_started = True
+        threading.Thread(target=_watchdog, name="app-commit-watchdog",
+                         daemon=True).start()
     _task.add_done_callback(_on_worker_done)
 
 
