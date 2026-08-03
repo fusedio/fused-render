@@ -1003,12 +1003,22 @@ def test_nothing_to_revert_to_is_simply_no_accent_row(source, tmp_path):
 
 # --- item 2: the acknowledgement checkbox is gone -------------------------
 
-def test_the_confirm_button_is_never_disabled(source):
+def test_the_confirm_button_is_never_gated_only_ever_in_flight(source):
     """Removed as friction by the owner. This is a real reduction in gating, so
-    the assertions below are about what MUST remain."""
+    the assertions below are about what MUST remain.
+
+    The button IS disabled for one window — between the click and the call
+    returning, while the sheet stays up saying "Reverting…" — and that is the
+    opposite of a gate: it is the click having been accepted. So the rule is not
+    "never disabled" but "never disabled by a widget's state": no acknowledgement
+    control, and the only writes to `disabled` sit inside the click handler."""
     assert "confirmack" not in source
-    assert "go.disabled" not in source
     assert "ack.checked" not in source
+    ask = source[source.index("async function askRevert"):]
+    assert "go.disabled" not in ask[:ask.index(
+        'getElementById("confirmgo").addEventListener')]
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert handler.count("go.disabled = no.disabled = ") == 2  # in flight, then not
 
 
 def test_the_irreversible_warning_is_what_remains_and_carries_weight(source):
@@ -1535,3 +1545,551 @@ def test_a_directory_target_is_refused_the_same_way(claude_home, tmp_path):
     assert "directory" in tl["writable_reason"]
     assert "error" in ann.main(action="revert", file=str(d), version_id="s@v1")
     assert os.path.isdir(str(d))
+
+
+# ================================================== the diff in the confirm sheet
+# The sheet used to show only aggregates — bytes now, bytes after, `+N / −M` —
+# which answer how MUCH changes and never WHAT. On the one destructive action in
+# this view the second is the question being confirmed.
+
+def test_the_bridge_passes_the_plans_diff_through_untouched(claude_home,
+                                                           tmp_path):
+    """`_plan` completes the plan with the stash predicate and nothing else, so
+    the diff reaches the sheet exactly as file_history computed it — no second
+    scan, no second framing to keep in step with `_delta`'s."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "a\nb\n")
+    write_version(claude_home, "s", f, "a\n")
+    plan = ann.main(action="revert_plan", file=f)
+    assert plan["diff"]["reason"] == ""
+    assert "-b" in plan["diff"]["lines"]
+    assert plan["diff"]["changed"] == 1
+    # ...and the bridge's own two additions are still the only ones.
+    assert plan["stash"] is True and plan["stash_note"] == ""
+
+
+def _const_line(src, name):
+    """A module-level `const NAME = ...;` line, verbatim — so a threshold the test
+    reasons about is the shipping one rather than a copy that can drift."""
+    for line in src.splitlines():
+        if line.strip().startswith("const %s =" % name):
+            return line.strip()
+    raise AssertionError(f"no `const {name}` in the template")
+
+
+#: A DOM just large enough to run the template's own sheet/stage code verbatim —
+#: nodes by id, a class list, text-only children. A copy of the logic here would
+#: keep passing after the shipping code regressed, which is the whole point.
+_DOM_STUB = (
+    "class El {\n"
+    "  constructor(id) {\n"
+    "    this.id = id; this.children = []; this.hidden = false;\n"
+    "    this.className = ''; this.disabled = false; this.style = {};\n"
+    "    this._text = '';\n"
+    "    const set = new Set();\n"
+    "    this.classList = {\n"
+    "      add: (c) => set.add(c), remove: (c) => set.delete(c),\n"
+    "      contains: (c) => set.has(c),\n"
+    "      toggle: (c, on) => (on ? set.add(c) : set.delete(c)),\n"
+    "    };\n"
+    "    this.classes = set;\n"
+    "  }\n"
+    "  set textContent(v) { this._text = v; if (v === '') this.children = []; }\n"
+    "  get textContent() { return this._text; }\n"
+    "  appendChild(c) { this.children.push(c); return c; }\n"
+    "  addEventListener(_type, fn) { this.click = fn; }\n"
+    "}\n"
+    "const nodes = {};\n"
+    "const document = {\n"
+    "  getElementById: (id) => (nodes[id] = nodes[id] || new El(id)),\n"
+    "  createElement: (tag) => new El(tag),\n"
+    "};\n"
+)
+
+
+def _diff_prelude(source):
+    """A DOM just large enough to run the shipping diff renderer verbatim."""
+    return (
+        _DOM_STUB
+        + "const rows = () => nodes.confirmdiff.children.map(\n"
+        "  (c) => [c.className, c.textContent]);\n"
+        + _const_line(source, "DIFF_OPEN_LINES") + "\n"
+        "let diffChanged = 0;\n"
+        + _js_block(source, "function renderConfirmDiff(diff)") + "\n"
+        + _js_block(source, "function setDiffDisclosure(open)") + "\n"
+    )
+
+
+def test_a_small_diff_is_shown_expanded_with_added_and_removed_apart(source,
+                                                                    tmp_path):
+    """Small is the common case (one edit, a handful of lines) and it is the case
+    where a disclosure is pure friction — the sheet asks a question the diff
+    answers, so the answer is on screen."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,2 +1,1 @@",
+                " keep", "-gone"],
+        changed: 1, truncated: false, reason: "",
+      });
+      console.log(JSON.stringify({
+        rows: rows(),
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["hidden"] is False and got["toggleHidden"] is True
+    assert got["wide"] is True
+    assert got["rows"] == [
+        ["cdfile", "--- on disk now"],
+        ["cdfile", "+++ v1 (session s)"],
+        ["cdhunk", "@@ -1,2 +1,1 @@"],
+        ["", " keep"],
+        ["cdminus", "-gone"],
+    ]
+
+
+def test_the_file_names_are_classed_by_position_not_by_prefix(source, tmp_path):
+    """A removed content line reading `--` arrives as `---`, and a prefix test
+    would paint it as a file header — a REMOVAL rendered as scaffolding, in the
+    one place the colour is what the user is reading."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v2 (session s)", "@@ -1,1 +1,1 @@",
+                "---", "+++"],
+        changed: 2, truncated: false, reason: "",
+      });
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got[3] == ["cdminus", "---"]
+    assert got[4] == ["cdplus", "+++"]
+
+
+def test_a_large_diff_waits_behind_a_disclosure_that_says_how_much(source,
+                                                                  tmp_path):
+    """Same idiom as #histtoggle — one disclosure vocabulary in this view — and the
+    label carries `changed` so the user knows what pressing it costs."""
+    got = _run("""
+      const lines = ["--- on disk now", "+++ v1 (session s)", "@@ -1,80 +1,0 @@"];
+      for (let i = 0; i < 80; i++) lines.push("-line-" + i);
+      renderConfirmDiff({ lines, changed: 80, truncated: false, reason: "" });
+      const shut = { hidden: nodes.confirmdiff.hidden,
+                     label: nodes.confirmdifftoggle.textContent,
+                     toggleHidden: nodes.confirmdifftoggle.hidden,
+                     wide: nodes.confirmbox.classes.has("wide") };
+      setDiffDisclosure(true);
+      const open = { hidden: nodes.confirmdiff.hidden,
+                     label: nodes.confirmdifftoggle.textContent };
+      console.log(JSON.stringify({ shut, open }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["shut"]["hidden"] is True
+    assert got["shut"]["label"] == "▸ Show 80 changed lines"
+    assert got["shut"]["toggleHidden"] is False
+    # Wide while still shut: sizing the box on the open state would reflow the
+    # whole sheet under the cursor on the very click that opens it.
+    assert got["shut"]["wide"] is True
+    assert got["open"]["hidden"] is False
+    assert got["open"]["label"] == "▾ Hide diff"
+
+
+def test_the_disclosure_button_flips_the_state_it_reads(source):
+    """The listener passes the CURRENT hidden flag straight into the setter, so the
+    label and the box can never drift out of step with each other."""
+    handler = _js_block(
+        source, 'document.getElementById("confirmdifftoggle").addEventListener')
+    assert "setDiffDisclosure(document.getElementById(\"confirmdiff\").hidden)" \
+        in handler
+
+
+def test_a_truncated_diff_says_so_with_the_full_count(source, tmp_path):
+    """Trailing off silently would present a prefix of the change as the whole of
+    it — the same thing the byte cap one layer down refuses to do."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,3 +1,1 @@", "-a"],
+        changed: 900, truncated: true, reason: "",
+      });
+      setDiffDisclosure(true);
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got[-1][0] == "cdnote"
+    assert "900 lines change in total" in got[-1][1]
+    assert "first 4 lines" in got[-1][1]
+
+
+def test_a_reason_is_rendered_where_the_diff_would_have_been(source, tmp_path):
+    """"No diff" is never silent: an absent `<pre>` in a sheet that normally shows
+    one reads as the diff being empty, which is a different fact from "too large to
+    diff" or "not UTF-8 text"."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: [], changed: 0, truncated: false,
+        reason: "This content is too large to diff.",
+      });
+      console.log(JSON.stringify({
+        rows: rows(),
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["rows"] == [["cdnote", "This content is too large to diff."]]
+    assert got["hidden"] is False
+    assert got["toggleHidden"] is True
+    # A sheet with nothing but a sentence must not grow for nothing.
+    assert got["wide"] is False
+
+
+def test_a_plan_with_no_diff_key_renders_nothing_at_all(source, tmp_path):
+    """`ok: False` plans carry no `diff`, and a template served from a store older
+    than this change would not either — neither may leave an empty box behind."""
+    got = _run("""
+      renderConfirmDiff(undefined);
+      console.log(JSON.stringify({
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got == {"hidden": True, "toggleHidden": True, "wide": False}
+
+
+def test_a_previous_diff_never_leaks_into_the_next_sheet(source, tmp_path):
+    """One sheet, reused for every target. A stale diff under a fresh set of counts
+    is the same class of error as the write-order bugs in the note below it."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,1 +1,1 @@", "-old"],
+        changed: 1, truncated: false, reason: "",
+      });
+      renderConfirmDiff({ lines: [], changed: 0, truncated: false,
+                          reason: "Nothing to show." });
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got == [["cdnote", "Nothing to show."]]
+
+
+def test_the_diff_content_is_only_ever_text(source):
+    """These lines are file content off the user's disk, and this template
+    routinely annotates HTML. A text node keeps a checkpointed `<script>` inert;
+    innerHTML would run it inside the page holding the revert controls."""
+    block = _js_block(source, "function renderConfirmDiff(diff)")
+    assert "innerHTML" not in block
+    assert "textContent = ln" in block
+
+
+def test_the_diff_sits_between_the_counts_and_the_hazard(source):
+    """Reading order: how much changes, what changes, what it costs. Everything
+    else about the sheet is untouched — the facts list, the irreversible warning
+    and the unwritable-target bail all still stand."""
+    box = source[source.index('<div id="confirmbox"'):source.index('id="confirmacts"')]
+    assert box.index('id="confirmfacts"') < box.index('id="confirmdiff"')
+    assert box.index('id="confirmdiff"') < box.index('id="confirmwarn"')
+    assert 'if (plan.writable === false)' in source
+    assert 'warn.classList.toggle("hard", irreversible)' in source
+
+
+# ============================================== the write, and what the user sees
+# Four things the revert did to the eye rather than to the file: the sheet vanished
+# before the work started, the outcome landed at the bottom of the sidebar, the
+# framed reload flashed a blank document under live pins, and the row list showed
+# the pre-revert position for a whole extra round trip.
+
+def _sheet_prelude(source):
+    """The close path, driven for real."""
+    return (
+        _DOM_STUB
+        + "const confirmEl = document.getElementById('confirm');\n"
+        "let busy = false;\n"
+        "let pending = { id: 's@v1' };\n"
+        "confirmEl.classList.add('open');\n"
+        + _js_block(source, "function closeConfirm()") + "\n"
+    )
+
+
+def test_no_close_path_can_fire_while_the_write_is_in_flight(source, tmp_path):
+    """`closeConfirm` nulls `pending`, which the click handler is still reading —
+    and Cancel, the backdrop and Escape ALL route through it. So the guard belongs
+    in the one function rather than at three call sites, which is also what stops
+    the in-flight state being taken off screen mid-write."""
+    got = _run("""
+      busy = true;
+      closeConfirm();
+      const during = { open: confirmEl.classes.has("open"), pending };
+      busy = false;
+      closeConfirm();
+      console.log(JSON.stringify({
+        during,
+        after: { open: confirmEl.classes.has("open"), pending },
+      }));
+    """, tmp_path, _sheet_prelude(source))
+    assert got["during"] == {"open": True, "pending": {"id": "s@v1"}}
+    assert got["after"] == {"open": False, "pending": None}
+    # ...and all three paths really do go through it, so none can grow its own copy.
+    assert 'getElementById("confirmno").addEventListener("click", closeConfirm)' \
+        in source
+    assert "if (e.target === confirmEl) closeConfirm();" in source
+    assert 'e.key === "Escape" && confirmEl.classList.contains("open")' in source
+
+
+def test_the_sheet_stays_up_with_an_in_flight_button_until_the_call_returns(source):
+    """It closed BEFORE the await, so a stash write, an os.replace and a full
+    re-enumeration of the store all happened with nothing on screen changing — the
+    click read as having done nothing."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    before = handler[:handler.index("await callHistory")]
+    after = handler[handler.index("await callHistory"):]
+    # Nothing closes the sheet before the call...
+    assert "closeConfirm()" not in before
+    # ...the controls go into an in-flight state instead...
+    assert "busy = true;" in before
+    assert "go.disabled = no.disabled = true;" in before
+    assert '"Deleting…" : "Reverting…"' in before
+    # ...and only the SUCCESS side closes it.
+    assert "closeConfirm();" in after
+    failure = after[after.index("if (out.error"):after.index("closeConfirm();")]
+    assert "closeConfirm" not in failure
+
+
+def test_the_in_flight_label_is_restored_rather_than_recomputed(source):
+    """`askRevert` picks between four wordings (delete/revert × permanent or not);
+    rebuilding that decision after the call is how the two drift apart."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert "const goLabel = go.textContent;" in handler
+    assert "go.textContent = goLabel;" in handler
+    # The button comes back live too — it is only ever disabled while in flight.
+    assert "go.disabled = no.disabled = false;" in handler
+    assert "#confirmacts button:disabled { opacity: 0.5; cursor: default; }" in source
+
+
+def test_a_failed_revert_reports_inside_the_sheet_and_still_writes_the_note(source):
+    """The reason used to land only in #histnote: 11px, muted, at the bottom of the
+    sidebar, reached only by looking away from the centered modal that had just
+    vanished. Nothing changed on disk, so the sheet is still describing the truth —
+    it stays, with the reason in it. The note is still written, because the reload
+    and carry-slot paths read it."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    failure = handler[handler.index("if (out.error"):handler.index("closeConfirm();")]
+    # renderHistory FIRST, then the message — it rewrites histNote from the
+    # timeline's own note, and the other order was a silent no-op.
+    assert failure.index("renderHistory();") < failure.index("setNote(")
+    assert "err.textContent = out.error" in failure
+    assert "err.hidden = false;" in failure
+    # A previous failure must not greet the next target — one node, many plans.
+    ask = source[source.index("async function askRevert"):]
+    assert 'getElementById("confirmerr").hidden = true' in \
+        ask[:ask.index("confirmEl.classList.add(\"open\")")]
+
+
+def _toast_prelude(source):
+    return (
+        _DOM_STUB
+        + "let scheduled = null;\n"
+        "globalThis.setTimeout = (fn, ms) => { scheduled = { fn, ms }; return 1; };\n"
+        "globalThis.clearTimeout = () => { scheduled = null; };\n"
+        + _const_line(source, "TOAST_MS") + "\n"
+        "let toastTimer = 0;\n"
+        + _js_block(source, "function showToast(text)") + "\n"
+    )
+
+
+def test_the_outcome_is_also_said_where_the_eye_is(source, tmp_path):
+    """A centered modal closes and the outcome appears at the bottom of a sidebar
+    that may not even be expanded. The toast is TRANSIENT on purpose — it reports
+    one click, and a banner still up minutes later is reporting history."""
+    got = _run("""
+      showToast("Reverted to v2.");
+      const up = { text: nodes.toast.textContent, hidden: nodes.toast.hidden,
+                   ms: scheduled.ms };
+      scheduled.fn();
+      const gone = nodes.toast.hidden;
+      // A second revert restarts the window rather than leaving two timers to
+      // race — the first would hide the second one's message.
+      showToast("File deleted.");
+      const first = scheduled;
+      showToast("Reverted to v1.");
+      console.log(JSON.stringify({
+        up, gone, restarted: first !== scheduled,
+        text: nodes.toast.textContent, hidden: nodes.toast.hidden,
+      }));
+    """, tmp_path, _toast_prelude(source))
+    assert got["up"]["text"] == "Reverted to v2."
+    assert got["up"]["hidden"] is False
+    assert got["up"]["ms"] > 0
+    assert got["gone"] is True
+    assert got["restarted"] is True
+    assert got["text"] == "Reverted to v1." and got["hidden"] is False
+
+
+def test_the_note_write_is_not_replaced_by_the_toast(source):
+    """Explicitly additive: the carry slot and the post-reload boot path both read
+    #histnote, and `reportOutcome` is the only thing that qualifies a success with
+    "the timeline could not be reloaded"."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert "carryOutcome(outcome);" in handler
+    assert "reportOutcome(outcome, false, reloadErr);" in handler
+    assert handler.index("reportOutcome(outcome") < handler.index("showToast(outcome)")
+
+
+def _stage_prelude(source):
+    return (
+        _DOM_STUB
+        + "const pinsEl = document.getElementById('pins');\n"
+        "const hl = document.getElementById('hl');\n"
+        "const ghost = document.getElementById('ghost');\n"
+        + _js_block(source, "function coverStage()") + "\n"
+        + _js_block(source, "function uncoverStage()") + "\n"
+    )
+
+
+def test_the_stage_is_covered_across_a_reload_and_uncovered_by_render(source,
+                                                                    tmp_path):
+    """The boot skeleton `remove()`d itself on the FIRST load, so the post-revert
+    reload had no placeholder — and the pins sat in stage coordinates over an empty
+    document, pointing at nothing, until the next `load` ran `render()`."""
+    got = _run("""
+      coverStage();
+      const covered = { skel: nodes.stageskel.hidden, pins: nodes.pins.hidden,
+                        hl: nodes.hl.style.display, ghost: nodes.ghost.style.display };
+      uncoverStage();
+      console.log(JSON.stringify({
+        covered,
+        clear: { skel: nodes.stageskel.hidden, pins: nodes.pins.hidden },
+      }));
+    """, tmp_path, _stage_prelude(source))
+    assert got["covered"] == {"skel": False, "pins": True,
+                             "hl": "none", "ghost": "none"}
+    assert got["clear"] == {"skel": True, "pins": False}
+
+
+def test_the_skeleton_node_is_kept_rather_than_removed(source):
+    """One cover, two occasions. Removing it meant inventing a second placeholder
+    for the reload — or, as it was, showing none."""
+    assert "stageskel.remove()" not in source
+    handler = source[source.index('frame.addEventListener("load"'):]
+    handler = handler[:handler.index("focusFromParam()")]
+    # Lifted only AFTER render(), which is what re-resolves every anchor against
+    # the new document.
+    assert handler.index("render();") < handler.index("uncoverStage();")
+    # ...and the reload path puts it up before the document goes blank.
+    go = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert go.index("coverStage();") < go.index("contentWindow.location.reload()")
+
+
+def test_repeat_loads_do_not_accumulate_observers_on_dead_documents(source):
+    """This handler runs again on every reload, and the post-revert refresh is what
+    made that a real accumulation rather than a theoretical one: an observer left
+    watching a discarded document is a leak that also drives renders for a document
+    nothing is looking at."""
+    handler = source[source.index('frame.addEventListener("load"'):]
+    handler = handler[:handler.index("focusFromParam()")]
+    assert "if (frameObserver) frameObserver.disconnect();" in handler
+    assert "frameObserver = new MutationObserver(queueRender);" in handler
+    # ...and nothing creates an unheld one any more.
+    assert "new MutationObserver(queueRender).observe" not in source
+
+
+def test_the_page_adopts_the_timeline_that_rode_back_with_the_write(source):
+    """Two serial round trips meant the row list kept showing the PRE-revert
+    position for the whole second one — exactly the window in which the user is
+    looking at it to see whether the revert worked."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    adopt = handler[handler.index("if (out.timeline)"):]
+    assert "timeline = out.timeline;" in adopt
+    # It is always enriched on the bridge side, so the panel may claim terminality.
+    assert "enriched = true;" in adopt
+    assert "renderHistory();" in adopt
+    # The fallback stays, and it keeps its error channel: reportOutcome is what says
+    # the panel on screen is stale.
+    #
+    # It forces enrichment rather than passing `enriched` through, because it is
+    # standing in for a payload the bridge always enriches. `enriched` is the
+    # DISCLOSURE state — false whenever the panel has not been expanded, which is the
+    # common case — and an unenriched timeline cannot see the did-not-exist boundary,
+    # so adopting one reports `at_earliest` a step early (FH-3). The pre-revert
+    # disclosure state has no business deciding how accurate the POST-revert panel is.
+    assert "reloadErr = await loadHistory(true);" in adopt
+    assert "reportOutcome(outcome, false, reloadErr);" in handler
+
+
+def test_the_revert_returns_the_post_write_timeline(claude_home, tmp_path):
+    ann = _load_annotate()
+    f = _target(tmp_path, "v2\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+
+    out = ann.main(action="revert", file=f, version_id="s@v1")
+    assert out["ok"] is True
+    # The position marker has MOVED — this is a timeline of the file after the
+    # write, not the one the page already had.
+    assert out["timeline"]["position"] == "s@v1"
+    assert out["timeline"]["enriched"] is True
+    assert out["timeline"]["current"]["size"] == len("v1\n")
+
+
+def test_a_timeline_that_cannot_be_computed_omits_the_field(claude_home, tmp_path,
+                                                           monkeypatch):
+    """The write already landed and is already reported, so a failure to
+    re-enumerate the store must not turn a successful revert into an error. The
+    field is simply absent and the page falls back to its own `history` call, which
+    reports its own failure in its own words."""
+    ann = _load_annotate()
+    control = _target(tmp_path, "now\n", name="control.txt")
+    write_version(claude_home, "s", control, "then\n")
+    f = _target(tmp_path, "now\n")
+    write_version(claude_home, "s", f, "then\n")
+    # The same store, the same shape of revert: the field is there when it can be
+    # computed, so its absence below is the failure and not the fixture.
+    assert "timeline" in ann.main(action="revert", file=control,
+                                 version_id="s@v1", confirm_unique=True)
+
+    fh = ann._file_history()
+    monkeypatch.setattr(fh, "timeline", lambda *a, **k: 1 / 0)
+    out = ann.main(action="revert", file=f, version_id="s@v1",
+                   confirm_unique=True)
+    assert out["ok"] is True and out["action"] == "restore"
+    assert "timeline" not in out
+    with open(f, encoding="utf-8") as h:
+        assert h.read() == "then\n"
+
+
+def test_a_swallowed_timeline_failure_still_says_so_on_stderr(claude_home, tmp_path,
+                                                              monkeypatch, capsys):
+    """The user must not see this — the write landed — but SOMEONE has to be able to.
+
+    Absorbing the exception with no trace at all means a timeline that has started
+    failing on every single revert is indistinguishable from one that never fails:
+    the page falls back, the panel still paints, and the only symptom is a paid-for
+    round trip nobody can account for. stderr is where the engine already collects a
+    run's diagnostics, so this costs the user nothing and costs a debugger nothing to
+    find.
+    """
+    ann = _load_annotate()
+    f = _target(tmp_path, "now\n")
+    write_version(claude_home, "s", f, "then\n")
+    fh = ann._file_history()
+
+    def boom(*a, **k):
+        raise RuntimeError("store went away")
+    monkeypatch.setattr(fh, "timeline", boom)
+
+    out = ann.main(action="revert", file=f, version_id="s@v1",
+                   confirm_unique=True)
+    assert out["ok"] is True and "timeline" not in out
+    # Named exception TYPE and message — "could not refresh" alone sends the reader
+    # looking in the wrong module.
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "store went away" in err
+
+
+def test_the_carry_slot_machinery_is_untouched(source):
+    """Explicitly out of scope: its own comments credit it with three past bugs, and
+    the suspicion that it now guards a teardown that no longer happens needs
+    confirming in the running app before anything here moves."""
+    for name in ("HIST_KEY", "function carryOutcome(text)",
+                 "function takeCarriedOutcome()", "function dropCarriedOutcome()"):
+        assert name in source
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    # Still exactly one writer, and the in-page display still spends the slot.
+    assert handler.count("carryOutcome(") == 1
+    assert "dropCarriedOutcome();" in handler

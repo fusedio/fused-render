@@ -166,10 +166,11 @@ def test_git_is_absent_from_data_media_and_binary_keys():
         assert "git" not in got, path
 
 
-def test_git_is_a_gated_directory_peer_after_the_listing():
-    # `_listing` stays the default of the universal `/` key (D81); `git` is the
-    # FIRST gated peer, because on a working machine its gate is the one that
-    # says yes most often and the switcher reads left to right.
+def test_gated_directory_peers_follow_the_listing():
+    # `_listing` stays the default of the universal `/` key (D81); the gated
+    # peers follow it in switcher order (left to right), with `versions` ahead
+    # of `git` — for an app folder the version timeline is what you want first,
+    # and the raw commit log sits one click further (#361).
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
     assert got == ["_listing", "claude_split", "versions", "git", "graph", "zarr_aoi"]

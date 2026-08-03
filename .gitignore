@@ -40,3 +40,6 @@ htmlcov/
 *.markdown.json
 *.py.json
 *.txt.json
+
+# cmux browser/screenshot captures — local scratch, never committed
+cmux-assets/

@@ -48,7 +48,10 @@ Actions:
     -> what the write would do, for the confirm step (version_id=None means
        "the last change")
   main(action="revert", file=..., version_id=None, enrich=False)
-    -> {"ok": True, "action": "restore"|"delete", "stashed": bool, ...}
+    -> {"ok": True, "action": "restore"|"delete", "stashed": bool,
+        "timeline": {...}, ...}   # the post-write timeline, so the panel does
+                                  # not show the pre-revert position for the
+                                  # length of a second round trip
 """
 import json
 import os
@@ -391,6 +394,33 @@ def _revert(file: str, version_id, confirm_unique: bool) -> dict:
     res = fh.apply_revert(file, plan["id"])
     res["stashed"] = stashed
     res["stash_note"] = note
+    # The POST-write timeline, in the same response. The page used to follow every
+    # revert with a second `history` call, and for that whole round trip the row
+    # list went on showing the pre-revert position — precisely the window in which
+    # the user is staring at it to find out whether the revert worked.
+    #
+    # ENRICHED unconditionally, like the plan and the write: this is what the panel
+    # displays, and an unenriched timeline cannot see the did-not-exist boundary, so
+    # adopting one would report `at_earliest` a step early. The caller's disclosure
+    # state does not enter into it — that rule (`enrich` honoured for `history` and
+    # nowhere else) is about what the button DOES, and this changes only what the
+    # panel shows.
+    #
+    # Best-effort, and the field is simply ABSENT when it fails: the write already
+    # landed and is already reported, so a failure to re-enumerate the store must
+    # not turn a successful revert into an error. The page falls back to its own
+    # `history` call, which reports its own failure in its own words.
+    #
+    # Absorbed for the USER, not for the log. With no trace at all, a timeline that
+    # has started failing on every revert is indistinguishable from one that never
+    # fails — the page falls back, the panel still paints, and the only symptom is a
+    # round trip nobody can account for. stderr is where the engine already collects
+    # a run's diagnostics, so naming the exception costs the user nothing.
+    try:
+        res["timeline"] = fh.timeline(file, enrich=True)
+    except Exception as exc:
+        print("annotate: post-revert timeline failed, the page will re-read it "
+              "itself — %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
     return res
 
 
