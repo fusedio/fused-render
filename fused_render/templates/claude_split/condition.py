@@ -40,8 +40,11 @@ def main(path: str) -> bool:
             return False
         if rel == os.curdir or rel.split(os.sep, 1)[0] == os.pardir:
             return False
-        # Exactly <tag>/<project>: two segments, no more, no fewer.
+        # Exactly <tag>/<project>: two segments, no more, no fewer — and
+        # neither hidden. The apps API skips dot-prefixed tags and projects
+        # when listing Home cards; `tag/.venv` or `.hidden/project` must not
+        # sneak the mode in through the gate.
         parts = [p for p in rel.split(os.sep) if p not in ("", ".")]
-        return len(parts) == 2
+        return len(parts) == 2 and not any(p.startswith(".") for p in parts)
     except Exception:  # noqa: BLE001 — a broken gate must hide, never raise
         return False

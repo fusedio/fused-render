@@ -251,6 +251,13 @@ def _system_prompt(file: str) -> str:
 # ------------------------------------------------------------- sidecar store
 
 def _sidecar_path(file: str) -> str:
+    # A folder target keeps its session index INSIDE the folder under a
+    # reserved dotfile name. `<folder>.json` as a sibling would collide with
+    # ordinary user files (a `todo` project beside a real `todo.json`), and
+    # the first turn would treat that data file as the session index and
+    # rewrite it. File targets keep the classic `<file>.json` sibling.
+    if os.path.isdir(file):
+        return os.path.join(file, ".claude-split.json")
     return file + ".json"
 
 
