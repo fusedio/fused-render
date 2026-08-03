@@ -1485,14 +1485,23 @@ never imports server).
 
 ### 20.2 Execution engine switch
 
-- **PF-3** The persisted `engine` pref (`builtin` default — D70 stands, the
-  pref is the opt-in D69 anticipated; or `fused`) drives `/api/run` dispatch,
-  **read per request** so a switch applies to the next run with no restart
-  (the registries' CT-5 no-restart discipline). Selecting `fused` is
+- **PF-3** The persisted `engine` pref (`fused` default since **D204**, which
+  reversed D70/D80's builtin-by-default; or `builtin`) drives `/api/run`
+  dispatch, **read per request** so a switch applies to the next run with no
+  restart (the registries' CT-5 no-restart discipline). Selecting `fused` — or
+  storing nothing at all — is
   *effective* only while the fused local backend is importable
   (`prefs.fused_engine_available`, probed per call — an install mid-session
   shows through); otherwise execution degrades to builtin and the page says
   so. The fused option is disabled with an install hint when unavailable.
+  **A two-way radio, not three**: there is no `auto` pref value — the
+  availability AND is what "auto" would have meant, and a third stored value
+  would be a second way to spell the default. A stored `builtin` **pins**
+  builtin: D204 flipped the default, not the choice, so an importable `fused`
+  never overrides a user who picked builtin. Since the default now depends on
+  what else is importable, the **test suite pins `FUSED_RENDER_ENGINE=builtin`
+  ambiently** (tests/conftest.py) so an incidental `/api/run` test does not
+  silently cover a different runner on a machine with the extra installed.
   **One resolver, no divergence:** `prefs.effective_engine()` is the single
   function both dispatch (`server.current_engine`) and the page's reported
   "running" engine (`engine_state().effective`) go through, resolving the

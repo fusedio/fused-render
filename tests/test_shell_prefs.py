@@ -29,16 +29,53 @@ def _client(tmp_path, monkeypatch):
 # -- /api/prefs -----------------------------------------------------------------
 
 
-def test_defaults_builtin_unforced(tmp_path, monkeypatch):
+def test_defaults_to_fused_when_available_unforced(tmp_path, monkeypatch):
+    """D204 flipped the unset-pref default from builtin to fused-when-available.
+    `fused_available` is stubbed rather than left to the test environment: the
+    default's whole point is that it depends on the environment, so a test that
+    let the environment answer would assert nothing on the machine that lacks the
+    package."""
     client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     body = client.get("/api/prefs").json()
-    assert body["engine"]["selected"] == "builtin"
-    assert body["engine"]["effective"] == "builtin"
+    assert body["engine"]["selected"] == "fused"
+    assert body["engine"]["effective"] == "fused"
     assert body["engine"]["forced_by"] is None
-    assert isinstance(body["engine"]["fused_available"], bool)
+    assert body["engine"]["fused_available"] is True
     # The app's own log left this payload with its Preferences section
     # (PF-5): absence asserted so it cannot quietly come back.
     assert "log" not in body
+
+
+def test_an_unset_pref_still_runs_builtin_while_fused_is_missing(tmp_path,
+                                                                monkeypatch):
+    """The half of D204 that makes it safe: `effective_engine` ANDs the selection
+    with live availability, so "fused by default" cannot mean "broken by default"
+    on a machine without the package. Pinned separately from the flip because it is
+    the property that must survive it."""
+    client, _ = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: False)
+    body = client.get("/api/prefs").json()
+    assert body["engine"]["selected"] == "fused"      # nothing stored
+    assert body["engine"]["effective"] == "builtin"   # ...but nothing to run it
+    assert body["engine"]["fused_available"] is False
+    # The page reads exactly this pair to show "Currently running: Local
+    # (built-in) — falling back while the fused package is unavailable".
+    assert client.get("/api/config").json()["engine"] == "builtin"
+
+
+def test_a_stored_builtin_still_pins_builtin(tmp_path, monkeypatch):
+    """The flip is to the DEFAULT only. A user who chose builtin chose it, and an
+    available fused package must not quietly override that — which is the exact
+    surprise D70 was about."""
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
+    body = client.put("/api/prefs", json={"engine": "builtin"}, headers=FUSED).json()
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["engine"] \
+        == "builtin"
+    assert body["engine"]["selected"] == "builtin"
+    assert body["engine"]["effective"] == "builtin"
+    assert client.get("/api/prefs").json()["engine"]["effective"] == "builtin"
 
 
 def test_put_persists_and_degrades_while_fused_unavailable(tmp_path, monkeypatch):
@@ -181,28 +218,28 @@ def test_engine_switch_applies_without_restart(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     monkeypatch.setattr("fused_render.engine.run_python", _fake_fused_run, raising=False)
 
-    # Default pref: the built-in executor really runs the file.
-    assert client.get("/api/config").json()["engine"] == "builtin"
-    run = client.post(
-        "/api/run", json={"py": str(tmp_path / "one.py"), "params": {}}, headers=FUSED
-    ).json()
-    assert run["result"] == {"engine": "builtin-real"}
-
-    # Flip the pref — the SAME app instance dispatches the next run to the
-    # fused engine (no restart), and /api/config reports it.
-    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    # Default pref, with the package importable: the fused engine (D204).
     assert client.get("/api/config").json()["engine"] == "fused"
     run = client.post(
         "/api/run", json={"py": str(tmp_path / "one.py"), "params": {}}, headers=FUSED
     ).json()
     assert run["result"] == {"engine": "fused-stub"}
 
-    # And back.
+    # Flip the pref — the SAME app instance dispatches the next run to the
+    # built-in executor (no restart), and /api/config reports it.
     client.put("/api/prefs", json={"engine": "builtin"}, headers=FUSED)
+    assert client.get("/api/config").json()["engine"] == "builtin"
     run = client.post(
         "/api/run", json={"py": str(tmp_path / "one.py"), "params": {}}, headers=FUSED
     ).json()
     assert run["result"] == {"engine": "builtin-real"}
+
+    # And back.
+    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
+    run = client.post(
+        "/api/run", json={"py": str(tmp_path / "one.py"), "params": {}}, headers=FUSED
+    ).json()
+    assert run["result"] == {"engine": "fused-stub"}
 
 
 def test_forced_env_var_beats_the_pref(tmp_path, monkeypatch):
