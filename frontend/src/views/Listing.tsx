@@ -254,6 +254,20 @@ function skeletonRows(n: number): React.ReactNode {
   ));
 }
 
+// The pending-clipboard mark on a row: a small "Cut" / "Copied" pill in the name
+// cell, alongside the row-level styling (dim for cut, accent edge + wash for
+// copy). This IS the whole pending-clipboard UI — there is no chrome-level chip
+// (see Breadcrumb.tsx) — so the pill carries the Esc affordance in its tooltip.
+// `cut` and `copied` are never both true: the clipboard holds a single op.
+function ClipMark({ cut, copied }: { cut: boolean; copied: boolean }) {
+  if (!cut && !copied) return null;
+  return (
+    <span className={"clip-mark" + (cut ? " cut" : " copied")} title="Press Esc to cancel">
+      {cut ? "Cut" : "Copied"}
+    </span>
+  );
+}
+
 // A dot-leading query segment is explicit intent to SEE hidden entries.
 // The walk itself always includes hidden entries (one dataset — the server
 // prunes the actually-heavy machine trees like .git/node_modules, so hidden
@@ -2180,6 +2194,7 @@ export default function Listing({
                   <td className="name">
                     <span className="icon">{iconForEntry(entry.rel.split("/").pop() ?? entry.rel, entry.is_dir)}</span>
                     <span className="search-path">{renderHighlight(entry.rel, positions)}</span>
+                    <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
                   </td>
                   <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
                   <td className="mtime">{formatMtime(entry.mtime)}</td>
@@ -2283,6 +2298,7 @@ export default function Listing({
           <td className="name">
             <span className="icon">{iconForEntry(entry.name, entry.is_dir)}</span>
             {entry.name}
+            <ClipMark cut={cutSet.has(childPath)} copied={copiedSet.has(childPath)} />
           </td>
           <td className="size">{entry.is_dir ? "" : formatSize(entry.size)}</td>
           <td className="mtime">{formatMtime(entry.mtime)}</td>

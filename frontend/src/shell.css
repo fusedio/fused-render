@@ -1113,25 +1113,6 @@ a.bookmark-name::after {
   background: rgba(var(--accent-rgb), 0.13);
 }
 
-/* Pending copy/cut chip ("3 copied"), leftmost in the crumb action cluster.
-   Same 12-ish muted type and hairline chrome as its .star-btn neighbours, but
-   pill-shaped and washed in the accent so it reads as STATE, not a control —
-   it isn't one (Breadcrumb.tsx: Esc is the only cancel). Both palettes come out
-   of the tokens: --accent is the deep olive-lime in light mode, so the wash
-   stays a tint of the same hue over --bg either way. */
-.crumb-clipboard {
-  flex: 0 0 auto;
-  font-size: 12px;
-  white-space: nowrap;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: rgba(var(--accent-rgb), 0.13);
-  color: var(--fg-muted);
-  cursor: default;
-  user-select: none;
-}
-
 #content {
   flex: 1 1 auto;
   min-width: 0;
@@ -1742,12 +1723,30 @@ table.listing-table tr.row.selected {
 }
 
 /* A row whose entry is on the in-app clipboard as a CUT: dimmed until it's
-   pasted (moved), like Finder's faded cut icon. Stays fully readable on hover. */
+   pasted (moved), like Finder's faded cut icon, plus a dashed left edge so the
+   pending state is a MARK and not just "this row looks faint". Dashed vs. the
+   copy's solid bar is the whole tell between the two ops at a glance. Stays
+   fully readable on hover.
+   0.6 rather than a deeper fade: the row still has to be legible, and the badge
+   + edge now carry the signal that the dimming used to carry alone. */
 table.listing-table tr.row.cut {
-  opacity: 0.45;
+  opacity: 0.6;
 }
 table.listing-table tr.row.cut:hover {
   opacity: 1;
+}
+/* Same surface as the copy bar below (the first cell's inset shadow), so it
+   survives :hover and .selected untouched; dashed is faked with two stacked
+   insets since box-shadow has no dash. */
+table.listing-table tr.row.cut > td:first-child {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--fg-muted) 0 5px,
+    transparent 5px 9px
+  );
+  background-repeat: no-repeat;
+  background-size: 3px 100%;
+  background-position: left top;
 }
 
 /* A row whose entry is on the clipboard as a COPY. Dimming would be wrong here
@@ -1781,6 +1780,54 @@ table.listing-table td.name {
   align-items: center;
   gap: 8px;
   font-size: 14px;
+  /* Positioning context for .clip-mark below. */
+  position: relative;
+}
+
+/* "Cut" / "Copied" badge in the name cell of a row on the in-app clipboard
+   (Listing.tsx ClipMark). This and the row styling above are the ONLY pending-
+   clipboard UI — no chrome-level chip — so the badge carries the Esc-to-cancel
+   tooltip, which is also why it must not get `pointer-events: none`. Small
+   caps-y type keeps it subordinate to the name it annotates. Copy leans on the
+   accent (matching its edge bar and wash); cut stays neutral because the row is
+   already faded and an accent would read as "highlighted", the opposite of
+   leaving.
+ *
+ * Pinned to the name column's right edge rather than sitting inline after the
+ * filename: the table is auto-layout, so an in-flow badge widens the name column
+ * and shoves SIZE/MODIFIED sideways the instant you press Copy — a whole-table
+ * jump on a keystroke (the no-jumpy-lists rule). Out of flow it costs zero
+ * layout. Accepted edge case: a filename long enough to define the column's
+ * width runs under the badge; the badge is on top and stays readable. */
+.clip-mark {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: default;
+  user-select: none;
+}
+/* Accent tint over an OPAQUE base, not a bare translucent wash: the badge is
+   out of flow (see above), so a long filename can run beneath it and a
+   see-through pill would show that text through the label. --bg-alt is the
+   row-hover surface, so the pill still reads as part of the row. */
+.clip-mark.copied {
+  color: var(--accent);
+  background: linear-gradient(rgba(var(--accent-rgb), 0.16), rgba(var(--accent-rgb), 0.16))
+    var(--bg-alt);
+}
+.clip-mark.cut {
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px dashed var(--border);
+  padding: 2px 5px; /* offset the 1px border so both pills sit the same height */
 }
 
 table.listing-table .icon {
