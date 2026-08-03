@@ -1966,9 +1966,13 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
                 source: "", outputs: [], execution_count: null }],
       metadata: {}, nbformat: 4, nbformat_minor: 5 }, null, 1) + "\n";
   }
+  // mirrors the shell's dirname(): a bare drive letter is cwd-relative to
+  // os.path, so a drive-root notebook yields "C:/" and a POSIX-root one "/"
   function dirOf(path) {
     const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-    return path.slice(0, i);
+    const dir = path.slice(0, i);
+    if (!dir) return "/";
+    return /^[A-Za-z]:$/.test(dir) ? dir + "/" : dir;
   }
   function newNotebook() {
     openModal({
