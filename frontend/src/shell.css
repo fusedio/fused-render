@@ -150,6 +150,24 @@
   --icon-file: #6b7178;
 }
 
+/* ---- Motion tokens ------------------------------------------------------- */
+/* Three durations, one easing — every transition/animation in this file picks
+   one of these rather than inventing a number, so the whole shell moves at the
+   same speed:
+     --dur-fast  hover / press colour changes
+     --dur-med   overlays, toasts, fades, context menus
+     --dur-slow  panels, slide-overs, sidebar collapse, FLIP row reorders
+   Deliberately its own `:root` block, NOT merged into the palettes above: the
+   theme contract (tests/test_theme.py) requires every token in the dark
+   palette to have a light counterpart, and a duration has no light value.
+   prefers-reduced-motion (bottom of this file) collapses all of them. */
+:root {
+  --dur-fast: 80ms;
+  --dur-med: 150ms;
+  --dur-slow: 200ms;
+  --ease-out: ease-out;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -1824,11 +1842,37 @@ table.listing-table td.mtime {
   position: relative;
 }
 
+/* Held-frame mode swap (views/Preview.tsx): during a switch the outgoing frame
+   and the incoming one are BOTH mounted, so they stack absolutely inside this
+   wrapper instead of sharing the flex row. The visible one is `.is-shown`
+   (z-index above the frame it replaces); the other fades to nothing and is
+   unmounted a beat later. `background: var(--bg)` is what kills the white flash
+   an unpainted iframe shows on its own. */
+.preview-frames {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+}
+
 .preview-body iframe {
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
   border: none;
+  background: var(--bg);
+}
+
+.preview-frames iframe.preview-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  z-index: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.preview-frames iframe.preview-frame.is-shown {
+  opacity: 1;
+  z-index: 1;
 }
 
 .metadata-card {
@@ -2096,6 +2140,14 @@ body.embed .open-as-app-chip:hover {
   width: 100%;
   border: none;
   background: var(--bg);
+  /* Fade in on load; views/Panel.tsx arms/clears `.is-loaded` around every
+     (imperative) src write. */
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.panel-pane iframe.is-loaded {
+  opacity: 1;
 }
 
 /* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
@@ -2601,6 +2653,21 @@ body.embed .open-as-app-chip:hover {
   height: 100%;
   border: none;
   background: var(--bg);
+}
+
+/* First paint of a lazily-mounted tab (and of an imperative src rewrite from
+   the tab bar's mode menu) fades in rather than snapping from an unpainted
+   frame; views/Tabs.tsx adds `.is-loaded` on the iframe's own load event.
+   Inactive tabs stay hidden with `display: none` (TM-5) — an iframe must be
+   layout-hidden, not merely transparent — so this opacity is only ever the
+   load fade, never the tab-visibility mechanism. */
+.tabs-body iframe.tab-frame {
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.tabs-body iframe.tab-frame.is-loaded {
+  opacity: 1;
 }
 
 /* React mount point (frontend/index.html) — transparent to the flex layout

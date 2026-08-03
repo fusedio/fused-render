@@ -311,6 +311,16 @@ function useConditions(fsPath: string, templates: TemplateEntry[]): Record<strin
 // reconciles against `share list`. A user who rebinds .html away from
 // "_render" loses the button too, consistently with losing the rendered view.
 
+// --- Held-frame mode swap (A1) ----------------------------------------------
+// How long the incoming preview frame takes to fade in over the outgoing one.
+// Must match `--dur-med` in shell.css (the CSS owns the actual transition; this
+// only decides when the outgoing frame may be unmounted).
+const FRAME_FADE_MS = 150;
+// Upper bound on holding the outgoing frame. A document that never fires `load`
+// (a /render 500, a wedged template daemon) must not strand the user on the
+// previous mode's content forever — past this the swap completes regardless.
+const FRAME_SWAP_TIMEOUT_MS = 4000;
+
 const DEPLOY_ICON = (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 19V5" />
@@ -428,12 +438,15 @@ function TemplatePreview({
       onRenderedTitle?.(null);
     };
   }, [onRenderedTitle]);
-  const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
-    if (entry.mode !== "_render") return;
+  const onRenderFrameLoad = (e: React.SyntheticEvent<HTMLIFrameElement>, frameMode: string) => {
+    if (frameMode !== "_render" || entry.mode !== frameMode) return;
     // Guards a slow "_render" iframe's load firing AFTER a switch away from
-    // it: React already detached this exact node (key={mode} swaps it out),
-    // so a late event here is stale regardless of what entry.mode's closure
-    // says — isConnected is checked at call time, not closure-capture time.
+    // it. Two independent guards, both needed: the frame may still be
+    // CONNECTED (the held-frame swap keeps the outgoing frame mounted while the
+    // incoming one fades in), so the mode comparison above is what rejects a
+    // late load from a frame that is no longer the active one; isConnected
+    // still covers a frame React has already detached, checked at call time
+    // rather than closure-capture time.
     const frame = e.currentTarget;
     if (!frame.isConnected) return;
     const doc = frame.contentDocument;
@@ -459,16 +472,24 @@ function TemplatePreview({
   // mid-flight could resolve in either order, desyncing iframe key / local
   // state / shell `_mode`. Clicks during a pending switch are dropped.
   const switching = useRef(false);
+  // The mode a click is currently switching TO, or null. The flush in
+  // doSetMode can block for up to 10s on __fusedFlushEdits, and clicks landing
+  // in the meantime are dropped — with nothing on screen that read as a dead
+  // button, so the switcher shows a spinner on this entry until the iframe swap
+  // begins (A4).
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const setMode = async (next: string) => {
     if (next === mode || switching.current) return;
     // Unresolved gate: not selectable (the switcher disables it too).
     const target = templates.find((t) => t.mode === next);
     if (target && isPending(target)) return;
     switching.current = true;
+    setSwitchingTo(next);
     try {
       await doSetMode(next);
     } finally {
       switching.current = false;
+      setSwitchingTo(null);
     }
   };
 
@@ -486,7 +507,10 @@ function TemplatePreview({
     // own banner explains). The 10s bound only catches a truly hung write so
     // the switcher can't wedge forever; timing out aborts the switch, never
     // the save.
-    const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe");
+    // `.is-shown` picks the ACTIVE frame: the held-frame swap can leave an
+    // outgoing frame mounted alongside it, and flushing that one's (already
+    // detached) editor buffer would be a no-op that silently loses edits.
+    const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe.is-shown");
     const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
     if (typeof flush === "function") {
       try {
@@ -516,11 +540,54 @@ function TemplatePreview({
   // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
   const remote = stat.remote ? "&_remote=1" : "";
-  const src = isListing
-    ? null
-    : entry.mode === "_render"
-      ? `/render?path=${encodeURIComponent(fsPath)}`
-      : `/render?path=${encodeURIComponent(entry.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}`;
+  const srcFor = (m: string): string | null => {
+    if (m === "_listing") return null;
+    if (m === "_render") return `/render?path=${encodeURIComponent(fsPath)}`;
+    const t = templates.find((x) => x.mode === m);
+    return t ? `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}` : null;
+  };
+
+  // Held-frame swap. Switching mode used to destroy the iframe and mount the
+  // next one bare (`key={mode}`), so the user watched a blank pane for as long
+  // as the new document took to load. Now the OUTGOING frame stays mounted and
+  // visible while the incoming one mounts at opacity 0 and fades in on its own
+  // load event; the outgoing one is unmounted once the fade is over.
+  //
+  // `frames` is append-only in insertion order and is NEVER reordered: React
+  // re-parents a moved child, and re-parenting an iframe reloads its document
+  // (the same discipline Tabs.tsx keeps for its keep-alive frames). A→B→A
+  // therefore keeps [A, B] rather than swapping to [B, A]. Stacking is done
+  // with z-index (shell.css), not DOM order.
+  const [frames, setFrames] = useState<string[]>(() => (isListing ? [] : [mode]));
+  // Which frame is visible. Lags `mode` for the length of a swap; the initial
+  // frame is shown immediately (it fades from --bg, not from white, so there is
+  // nothing to hold back for).
+  const [shown, setShown] = useState<string>(mode);
+  const framePending = isListing || isPending(entry);
+  useLayoutEffect(() => {
+    // Layout effect: the incoming frame must be in the DOM before the paint
+    // that starts its fade, or the transition has no `from` value to run from.
+    if (framePending) {
+      setFrames([]);
+      setShown(mode);
+      return;
+    }
+    setFrames((f) => (f.includes(mode) ? f : [...f, mode]));
+  }, [mode, framePending]);
+  // A frame whose document never fires `load` must not strand the user on the
+  // previous mode's content: past FRAME_SWAP_TIMEOUT_MS the swap completes
+  // regardless of what the incoming frame did.
+  useEffect(() => {
+    if (shown === mode || framePending) return;
+    const id = window.setTimeout(() => setShown(mode), FRAME_SWAP_TIMEOUT_MS);
+    return () => window.clearTimeout(id);
+  }, [shown, mode, framePending]);
+  // Retire the frames the swap left behind, once the incoming one has faded in.
+  useEffect(() => {
+    if (frames.length <= 1 || shown !== mode) return;
+    const id = window.setTimeout(() => setFrames([mode]), FRAME_FADE_MS);
+    return () => window.clearTimeout(id);
+  }, [frames, shown, mode]);
 
   // Embed hides the whole preview-header, hence the switcher (shell.css). A
   // directory whose mode list carries `_listing` alongside another mode (a
@@ -579,6 +646,10 @@ function TemplatePreview({
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
           active={entry.mode}
+          /* Spinner from the click until the incoming frame has actually taken
+             over — the flush wait AND the new document's load are both time the
+             user is waiting on that button. */
+          busy={switchingTo ?? (shown !== mode ? mode : null)}
           onSelect={setMode}
         />
       </Header>
@@ -594,8 +665,24 @@ function TemplatePreview({
         ) : isListing ? (
           <Listing fsPath={fsPath} onSingleApp={setSingleAppPath} />
         ) : (
-          /* key: switching mode replaces the iframe (fresh document per switch). */
-          <iframe key={mode} src={src as string} onLoad={onRenderFrameLoad} />
+          /* One frame per mounted mode (see the held-frame swap above). Each
+             key is its own mode, so a frame is created once and never
+             re-created by a switch away and back within the swap window. */
+          <div className="preview-frames">
+            {frames.map((m) => (
+              <iframe
+                key={m}
+                className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                src={srcFor(m) as string}
+                onLoad={(e) => {
+                  // Completes the swap: the incoming document has painted, so
+                  // it can take over from the frame being held.
+                  if (m === mode) setShown(m);
+                  onRenderFrameLoad(e, m);
+                }}
+              />
+            ))}
+          </div>
         )}
         {toggleListing && (
           <button type="button" className="preview-browse-chip" onClick={toggleListing}>
