@@ -46,17 +46,27 @@
     background: var(--bg);
   }
 
-  /* Right: the commit spine — deliberately low-detail (subject + when). */
+  /* Right: the commit spine — deliberately low-detail (subject + when).
+     Width comes from the shared `split` URL param (main pane %, default 70)
+     via the drag divider — same view state as the claude_split template. */
   #side {
-    width: 260px;
     min-width: 200px;
     flex: none;
-    order: 2;
+    order: 3;
     display: flex;
     flex-direction: column;
-    border-left: 1px solid var(--line);
     background: var(--surface);
   }
+  #divider {
+    flex: none;
+    order: 2;
+    width: 4px;
+    cursor: col-resize;
+    background: var(--line);
+    transition: background .15s;
+  }
+  #divider:hover, body.dragging #divider { background: var(--accent); }
+  body.dragging #frame { pointer-events: none; }
   #side-head {
     padding: 10px 12px;
     border-bottom: 1px solid var(--line);
@@ -161,6 +171,7 @@
     <div id="side-head">History</div>
     <div id="commits"></div>
   </div>
+  <div id="divider"></div>
   <div id="main">
     <div id="toolbar">
       <div id="rev-label"></div>
@@ -286,6 +297,32 @@ revertBtn.addEventListener("click", async () => {
     notice("Revert failed: " + err.message, true);
     revertBtn.disabled = false;
   }
+});
+
+// ── resizable divider; the split ratio (main pane %) is view state, so it
+// lives in the shared `split` param — same default (70) as claude_split. ──
+const sideEl = document.getElementById("side");
+const clampPct = (pct) => Math.min(80, Math.max(20, pct));
+function applySplit() {
+  sideEl.style.width = (100 - clampPct(parseFloat(fused.params.get("split") || "70"))) + "%";
+}
+applySplit();
+fused.params.onChange(applySplit);
+
+document.getElementById("divider").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  document.body.classList.add("dragging");
+  const move = (ev) => {
+    sideEl.style.width = (100 - clampPct((ev.clientX / window.innerWidth) * 100)) + "%";
+  };
+  const up = (ev) => {
+    document.body.classList.remove("dragging");
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    fused.params.set("split", clampPct((ev.clientX / window.innerWidth) * 100).toFixed(1));
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
 });
 
 if (!FILE) {

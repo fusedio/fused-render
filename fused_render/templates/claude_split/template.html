@@ -609,7 +609,7 @@ function embedUrl(absPath, query) {
 const leftEl = document.getElementById("left");
 const clampPct = (pct) => Math.min(80, Math.max(20, pct));
 function applySplit() {
-  leftEl.style.width = clampPct(parseFloat(fused.params.get("split") || "55")) + "%";
+  leftEl.style.width = clampPct(parseFloat(fused.params.get("split") || "70")) + "%";
 }
 applySplit();
 
