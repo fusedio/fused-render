@@ -57,7 +57,6 @@
   ],
   ".ipynb": [
     "notebook",
-    "reader",
     "annotate"
   ],
   ".calls.jsonl": [
