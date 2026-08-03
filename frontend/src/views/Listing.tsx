@@ -46,6 +46,7 @@ import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
 import { appearedKeys, useFlip, FLIP_KEY_ATTR } from "../lib/flip";
+import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "../lib/search-hold";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -1175,7 +1176,17 @@ export default function Listing({
   // accumulation underneath and the live "N matches · M scanned…" counter both
   // keep running at full speed: they cost nothing and they are the honest
   // progress signal.
-  const [rankedForRender, setRankedForRender] = useState<SearchHit[]>(hits);
+  //
+  // The committed ranking carries the QUERY it was computed for. That tag is
+  // load-bearing for the hold below and it has to be committed WITH the data:
+  // on the first render after `q` changes this state still holds the previous
+  // query's rows (this effect hasn't run yet), so anything that tags it at
+  // render time labels the old query's rows with the new query. See
+  // lib/search-hold.
+  const [rankedForRender, setRankedForRender] = useState<QueryTagged<SearchHit>>(() => ({
+    q,
+    items: hits,
+  }));
   const lastRankCommit = useRef(0);
   // Declared BEFORE the commit effect so it runs first in the same flush: a
   // query change (or a sort change) is a direct response to a gesture and must
@@ -1189,13 +1200,13 @@ export default function Listing({
     // and the final ranking must not be held back.
     if (validWalk.status !== "streaming") {
       lastRankCommit.current = 0;
-      setRankedForRender(hits);
+      setRankedForRender({ q, items: hits });
       return;
     }
     const wait = RERANK_COMMIT_MS - (Date.now() - lastRankCommit.current);
     const commit = () => {
       lastRankCommit.current = Date.now();
-      setRankedForRender(hits);
+      setRankedForRender({ q, items: hits });
     };
     if (wait <= 0) {
       commit(); // includes the first flush of a stream — first paint isn't delayed
@@ -1203,7 +1214,7 @@ export default function Listing({
     }
     const id = window.setTimeout(commit, wait);
     return () => window.clearTimeout(id);
-  }, [hits, validWalk.status]);
+  }, [hits, q, validWalk.status]);
 
   // --- Stale-while-revalidate for search results (B3) -----------------------
   // A dir-watch event bumps `refresh`, which makes validWalk read idle for the
@@ -1217,22 +1228,25 @@ export default function Listing({
   // remains derived from validWalk alone, and these held rows are not fed back
   // into scoring.
   //
-  // Tagged with the query they were computed for, because the ONE thing this
-  // must never do is show the previous query's matches under a new query. A
-  // query change gives a different tag and falls through to "Searching…" as
-  // before; only a same-query invalidation holds.
-  const heldHits = useRef<{ q: string; hits: SearchHit[] } | null>(null);
-  if (!searching) heldHits.current = null;
-  else if (rankedForRender.length) heldHits.current = { q, hits: rankedForRender };
-  // Only while the current-generation walk is genuinely unsettled. A COMPLETED
-  // walk with no hits is a real "no matches" answer (the file was just deleted,
-  // say) and must replace the held rows rather than preserve them forever.
+  // Both halves of the decision — what to retain, and what to render — live in
+  // lib/search-hold, pure and query-tagged: rows are only ever shown under the
+  // query they were computed for, so the ONE thing this must never do (show the
+  // previous query's matches under a new query) is structurally impossible
+  // rather than a condition someone has to remember. A query change falls
+  // through to "Searching…" exactly as before; only a same-query invalidation
+  // holds. The hold applies only while the current-generation walk is unsettled
+  // — a COMPLETED walk with no hits is a real "no matches" answer (the file was
+  // just deleted, say) and replaces the held rows.
+  const heldHits = useRef<QueryTagged<SearchHit> | null>(null);
+  heldHits.current = nextHeldHits(searching, q, rankedForRender, heldHits.current);
   const walkUnsettled = validWalk.status === "idle" || validWalk.status === "streaming";
-  const showingHeld =
-    searching && rankedForRender.length === 0 && walkUnsettled && heldHits.current?.q === q;
-  const displayHits = showingHeld
-    ? (heldHits.current as { hits: SearchHit[] }).hits
-    : rankedForRender;
+  const { hits: displayHits, showingHeld } = resolveDisplayedHits(
+    searching,
+    q,
+    rankedForRender,
+    heldHits.current,
+    walkUnsettled,
+  );
 
   const visibleHits = useMemo(() => displayHits.slice(0, visibleCount), [displayHits, visibleCount]);
 
