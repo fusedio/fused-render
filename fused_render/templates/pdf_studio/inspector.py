@@ -50,6 +50,18 @@ ACTION_RISK = {
     "/SetOCGState": ("info", "toggles optional-content layers"),
     "/Thread": ("info", "follows an article thread"),
     "/Trans": ("info", "plays a page transition"),
+    "/ResetForm": ("info", "clears form fields"),
+}
+
+# What counts as an action when found outside /A, /AA or /OpenAction.
+ACTION_TYPES = frozenset(ACTION_RISK) | {"/GoToDp"}
+
+# Containers worth naming in a finding's location; anything else inherits its
+# parent's label, so the walk stays complete even for containers not listed.
+CONTAINER_LABELS = {
+    "/Annots": "annotation",
+    "/Outlines": "outline entry",
+    "/Fields": "form field",
 }
 EXEC_EXTS = {".exe", ".dll", ".scr", ".bat", ".cmd", ".com", ".ps1", ".vbs",
              ".js", ".jse", ".jar", ".msi", ".lnk", ".hta", ".wsf", ".reg", ".sh"}
@@ -214,57 +226,73 @@ def _is_int(obj):
     return True
 
 
-def _name_tree(node, depth=0):
-    """Walk a name tree by hand. pikepdf.NameTree raises on a malformed one, and
-    a broken script tree should cost its own findings, not the whole scan."""
+def _actions(pdf, cap=150_000):
+    """Every action in the document, found by walking the object graph rather
+    than by naming the places an action is allowed to sit.
+
+    Naming them is what kept missing things — annotations, then outline entries,
+    then form fields whose scripts live on a parent instead of the widget. A
+    graph walk cannot miss a container: the worst an unknown one costs is a less
+    specific label. Yields {act, where, automatic}, where `automatic` marks the
+    sources that need no click (/OpenAction, any /AA event, document scripts).
+
+    An action is recognised two ways, because either alone is wrong: reached
+    through /A, /AA or /OpenAction it is an action whatever it says it is (that
+    catches unknown and obfuscated types), and reached from anywhere else it
+    must name a real action type in /S (that keeps /S /Transparency on a group
+    dict, or /S /P on a structure element, from becoming a finding).
+    """
     import pikepdf
 
-    if not isinstance(node, pikepdf.Dictionary) or depth > 8:
-        return
-    entries = node.get("/Names")
-    if isinstance(entries, pikepdf.Array):
-        for i in range(1, len(entries), 2):
-            yield str(entries[i - 1]), entries[i]
-    kids = node.get("/Kids")
-    if isinstance(kids, pikepdf.Array):
-        for kid in kids:
-            yield from _name_tree(kid, depth + 1)
+    pages = {}
+    for i, page in enumerate(pdf.pages, 1):
+        og = page.obj.objgen
+        if og != (0, 0):
+            pages[og] = f"page {i}"
 
-
-def _walk_outline(root, hits):
-    """Bookmarks carry /A actions too — a /JavaScript or /Launch on an outline
-    entry fires when the reader clicks it. The tree is a linked list of
-    /First-/Next siblings, and a malformed one can point back at itself."""
-    import pikepdf
-
-    outlines = root.get("/Outlines")
-    if not isinstance(outlines, pikepdf.Dictionary):
-        return
-    stack, seen = [outlines.get("/First")], set()
-    while stack:
-        node, n = stack.pop(), 0
-        while isinstance(node, pikepdf.Dictionary) and n < 4096:
-            og = node.objgen
-            if og != (0, 0):
-                if og in seen:
-                    break
-                seen.add(og)
-            if "/A" in node:
-                _walk_action(node["/A"], "outline entry", hits)
-            stack.append(node.get("/First"))
-            node = node.get("/Next")
-            n += 1
-
-
-def _walk_triggers(obj, where, hits):
-    """The /AA additional-actions dict, if the object really has one. Every key
-    in it fires on an event (open, page close, field format) with no click."""
-    import pikepdf
-
-    aa = obj.get("/AA")
-    if isinstance(aa, pikepdf.Dictionary):
-        for key, act in aa.items():
-            _walk_action(act, f"{where} trigger {key}", hits)
+    found, seen, steps = [], set(), 0
+    stack = [(pdf.Root, "document", False, False)]   # obj, label, automatic, forced
+    while stack and steps < cap:
+        obj, label, auto, forced = stack.pop()
+        steps += 1
+        if isinstance(obj, pikepdf.Array):
+            stack.extend((item, label, auto, forced) for item in obj)
+            continue
+        if not isinstance(obj, pikepdf.Dictionary):
+            continue
+        og = obj.objgen
+        if og != (0, 0):
+            if og in seen:
+                continue
+            seen.add(og)
+            label = pages.get(og, label)
+        if forced or str(obj.get("/S", "")) in ACTION_TYPES:
+            found.append({"act": obj, "where": label, "automatic": auto})
+            # /Next chains more actions onto the same trigger.
+            if "/Next" in obj:
+                stack.append((obj.get("/Next"), label, auto, True))
+            continue
+        for key in obj.keys():
+            val = obj.get(key)
+            if key == "/OpenAction":
+                # Either an action dictionary or a destination array ([page /Fit],
+                # "open at page 1"). Walking the array as an action would report
+                # its page reference as a nameless action AND mark that page
+                # visited, so the page's real annotations would never be walked.
+                if isinstance(val, pikepdf.Dictionary):
+                    stack.append((val, "document open action", True, True))
+            elif key == "/A":
+                stack.append((val, label, auto, True))
+            elif key == "/AA" and isinstance(val, pikepdf.Dictionary):
+                for event in val.keys():
+                    stack.append((val.get(event), f"{label} trigger {event}", True, True))
+            elif key == "/JavaScript":
+                stack.append((val, "document script", True, False))
+            else:
+                sub = CONTAINER_LABELS.get(key)
+                inner = label if not sub else sub if label == "document" else f"{label} {sub}"
+                stack.append((val, inner, auto, False))
+    return found
 
 
 def _note_attachment(name, where, facts, hits):
@@ -274,15 +302,14 @@ def _note_attachment(name, where, facts, hits):
     if executable:
         hits.append({"level": "danger", "kind": "/EmbeddedFile",
                      "what": "carries an executable attachment",
-                     "detail": name, "where": where})
+                     "detail": name, "where": where, "automatic": False})
 
 
-def _walk_action(act, where, hits, depth=0):
-    """Collect (level, kind, description, where) for an action and its /Next."""
+def _describe(entry, hits):
+    """Turn one discovered action into a finding."""
     import pikepdf
 
-    if depth > 4 or not isinstance(act, pikepdf.Dictionary):
-        return
+    act, where = entry["act"], entry["where"]
     kind = str(act.get("/S", "")) or "(unnamed)"
     level, what = ACTION_RISK.get(kind, ("warn", "an unrecognised action type"))
     detail = ""
@@ -298,14 +325,8 @@ def _walk_action(act, where, hits, depth=0):
         detail = " ".join(code.split())[:400]
     elif kind in ("/GoToR", "/GoToE", "/SubmitForm", "/ImportData"):
         detail = str(act.get("/F", ""))
-    hits.append({"level": level, "kind": kind, "what": what,
-                 "detail": detail, "where": where})
-    nxt = act.get("/Next")
-    if isinstance(nxt, pikepdf.Array):
-        for a in nxt:
-            _walk_action(a, where, hits, depth + 1)
-    else:
-        _walk_action(nxt, where, hits, depth + 1)
+    hits.append({"level": level, "kind": kind, "what": what, "detail": detail,
+                 "where": where, "automatic": entry["automatic"]})
 
 
 def _security(path):
@@ -317,7 +338,7 @@ def _security(path):
     urls = {}
     facts = {"attachments": [], "signatures": 0, "xfa": False, "acroform": False,
              "encrypted": False, "permissions": {}, "revisions": 0,
-             "js_names": 0, "open_action": "", "layers": False, "linearized": False}
+             "open_action": "", "layers": False, "linearized": False}
 
     with pikepdf.open(path) as pdf:
         root = pdf.Root
@@ -329,18 +350,11 @@ def _security(path):
         oa = root.get("/OpenAction")
         if isinstance(oa, pikepdf.Dictionary):
             facts["open_action"] = str(oa.get("/S", ""))
-            _walk_action(oa, "document open action", hits)
         elif isinstance(oa, pikepdf.Array):
             facts["open_action"] = "/GoTo"      # a destination array, not an action
 
-        _walk_triggers(root, "document", hits)
-        _walk_outline(root, hits)
-
-        names = root.get("/Names")
-        js_tree = names.get("/JavaScript") if isinstance(names, pikepdf.Dictionary) else None
-        for label, act in _name_tree(js_tree):
-            facts["js_names"] += 1
-            _walk_action(act, f"document script {label}", hits)
+        for entry in _actions(pdf):
+            _describe(entry, hits)
 
         acro = root.get("/AcroForm")
         if isinstance(acro, pikepdf.Dictionary):
@@ -354,8 +368,8 @@ def _security(path):
         for name in pdf.attachments:
             _note_attachment(name, "embedded files", facts, hits)
 
+        # Object kinds rather than actions: what a thing IS, not what it runs.
         for i, page in enumerate(pdf.pages, 1):
-            _walk_triggers(page, f"page {i}", hits)
             annots = page.get("/Annots")
             for annot in annots if isinstance(annots, pikepdf.Array) else ():
                 if not isinstance(annot, pikepdf.Dictionary):
@@ -365,8 +379,8 @@ def _security(path):
                     facts["signatures"] = max(facts["signatures"], 1)
                 if sub in ("/RichMedia", "/Screen", "/Movie", "/3D", "/Sound"):
                     hits.append({"level": "warn", "kind": sub,
-                                 "what": "embeds rich media",
-                                 "detail": "", "where": f"page {i}"})
+                                 "what": "embeds rich media", "detail": "",
+                                 "where": f"page {i}", "automatic": False})
                 # The /EmbeddedFiles tree is not the only way in: a filespec on
                 # an annotation is still openable from the viewer.
                 if sub == "/FileAttachment":
@@ -374,9 +388,7 @@ def _security(path):
                     if isinstance(fs, pikepdf.Dictionary):
                         _note_attachment(str(fs.get("/UF") or fs.get("/F") or "(unnamed)"),
                                          f"page {i} attachment", facts, hits)
-                if "/A" in annot:
-                    _walk_action(annot["/A"], f"page {i} annotation", hits)
-                _walk_triggers(annot, f"page {i} field", hits)
+                # Actions on this annotation are already covered by _actions().
 
     for h in hits:
         if h["kind"] == "/URI" and h["detail"]:
@@ -420,10 +432,7 @@ def _security_report(hits, urls, facts):
           "; ".join(sorted({h["detail"] or h["what"] for h in launch}))
           if launch else "Nothing runs or reads local files")
 
-    # Name-tree scripts run at document open too, so they belong on this row.
-    auto = [h for h in hits if h["level"] in ("danger", "warn")
-            and (h["where"].endswith("open action") or " trigger " in h["where"]
-                 or h["where"].startswith("document script"))]
+    auto = [h for h in hits if h["level"] in ("danger", "warn") and h["automatic"]]
     check("Automatic actions", "warn" if auto else "pass",
           f"{len(auto)} action{' fires' if len(auto) == 1 else 's fire'} without a click"
           if auto else ("Opens to a page destination" if facts["open_action"] == "/GoTo"
@@ -494,12 +503,22 @@ def _security_report(hits, urls, facts):
 def _security_or_unreadable(path):
     """The one place the scan is allowed to give up. Walking a damaged object
     graph can raise from deep inside pikepdf (an undecodable /JS stream, a
-    rotten name tree), and a file like that is exactly the kind worth a verdict
-    — so the scan degrades to "unreadable" instead of taking the whole report
-    with it. A structure this broken is itself the finding."""
+    rotten tree), and a file like that is exactly the kind worth a verdict — so
+    the scan degrades to "unreadable" instead of taking the whole report with
+    it. A structure this broken is itself the finding.
+
+    The list is deliberately what malformed *input* raises. NameError and
+    AttributeError are left out: those are bugs in this module, and swallowing
+    them here would turn a broken scanner into a plausible-looking report."""
+    import pikepdf
+
+    # pikepdf's input errors derive from Exception directly, not from one base,
+    # so DataDecodingError (a corrupt stream filter) has to be named separately.
     try:
         return _security(path)
-    except Exception as e:
+    except (pikepdf.PdfError, pikepdf.DataDecodingError, pikepdf.ForeignObjectError,
+            TypeError, ValueError, KeyError, IndexError, RecursionError,
+            UnicodeDecodeError, OSError) as e:
         return {"risk": "unreadable", "error": f"{type(e).__name__}: {e}",
                 "checks": [], "findings": [], "findings_total": 0,
                 "urls": [], "facts": {}}

@@ -552,12 +552,24 @@ const state = {
 };
 
 // ---------- plumbing ----------
+// Backend calls that cannot change which document is open or what is in it.
+// Listing the harmless reads rather than the mutations is deliberate: a mutation
+// added later invalidates an in-flight inspection by default, instead of being
+// silently missed the way per-call-site guards kept being.
+const INSPECT_SAFE = new Set(["health", "list_library", "listdir", "page_text",
+                              "inspect", "to_markdown", "save_markdown", "export"]);
+let inspectGen = 0;
+
 function py(params) {
   const clean = {};
   for (const [k, v] of Object.entries(params)) {
     if (v === null || v === undefined) continue;
     clean[k] = typeof v === "string" ? v : (typeof v === "number" || typeof v === "boolean") ? v : String(v);
   }
+  // Invalidate at the moment the request is made, not when its result lands:
+  // switching documents takes a round trip, and until state.doc catches up an
+  // in-flight scan would still look current.
+  if (params.action && !INSPECT_SAFE.has(params.action)) inspectGen++;
   // key:null — every pdf.py action (save/undo/export/read) shares this helper;
   // default per-file cancellation would abort in-flight saves/edits (D114).
   return fused.runPython(PY, clean, { key: null });
@@ -1463,11 +1475,8 @@ const acts = {
     needDoc();
     const spec = $("mdPages")?.value.trim() || "all";
     setStatus("converting…", "busy");
-    // Same guard as the scan: an edit or doc switch mid-convert must not land
-    // the old document's markdown, which Copy/Save would then export.
-    const forDoc = state.doc, gen = inspectGen;
-    const res = await py({ action: "to_markdown", doc: state.doc, pages: spec });
-    if (gen !== inspectGen || forDoc !== state.doc) return;
+    const res = await scoped(() => py({ action: "to_markdown", doc: state.doc, pages: spec }));
+    if (res === DROPPED) return;
     state.md = { spec, ...res };
     setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
     renderInspect();
@@ -1784,6 +1793,24 @@ function insSetTab(name) {
   fused.params.set("itab", name);
 }
 
+// Every drawer request describes one document at one revision, and py() does not
+// supersede. This is the single place that decides whether an answer still
+// applies — including a failure, which is just as moot once the request has been
+// discarded, and which would otherwise toast an error about a document the user
+// has already left. Resolves DROPPED when that happens.
+const DROPPED = Symbol("dropped");
+async function scoped(run) {
+  const forDoc = state.doc, gen = inspectGen;
+  const stale = () => gen !== inspectGen || forDoc !== state.doc;
+  try {
+    const value = await run();
+    return stale() ? DROPPED : value;
+  } catch (err) {
+    if (stale()) return DROPPED;
+    throw err;
+  }
+}
+
 async function runInspect(tab) {
   needDoc();
   insOpen(true);
@@ -1792,17 +1819,14 @@ async function runInspect(tab) {
     $("insBody").innerHTML = `<div class="ins-note">Scanning ${esc(state.info.name)} —
       ${plural(state.info.page_count, "page", "pages")}…</div>`;
     setStatus("inspecting…", "busy");
-    // py() does not supersede: an edit or doc switch during the scan would
-    // otherwise land a report describing pages that have since moved.
-    const forDoc = state.doc, gen = ++inspectGen;
     let report;
     try {
-      report = await py({ action: "inspect", doc: state.doc });
+      report = await scoped(() => py({ action: "inspect", doc: state.doc }));
     } catch (err) {
-      renderInspect();   // back to the retry state; act() reports the error
+      renderInspect();   // clear "Scanning…"; act() reports the error
       throw err;
     }
-    if (gen !== inspectGen || forDoc !== state.doc) return;
+    if (report === DROPPED) return;
     state.inspect = report;
     setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
     applyOcrBadges();
@@ -1814,7 +1838,6 @@ async function runInspect(tab) {
 }
 
 // A mutation invalidates the report; the bump also discards an in-flight scan.
-let inspectGen = 0;
 function dropInspect() {
   inspectGen++;
   state.inspect = null;
