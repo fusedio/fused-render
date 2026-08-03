@@ -294,7 +294,13 @@ def _actions(pdf, cap=150_000):
             if og in seen:
                 continue
             seen.add(og)
-            label = pages.get(og, label)
+            # Arriving at a page starts a new context, and not only for the
+            # label: a page is never part of a trigger, so nothing on it fires
+            # because of how the walk got here. A document that opens *at* page 5
+            # does not click the buttons on page 5. Without this the flag depended
+            # on which path reached the page first.
+            if og in pages:
+                label, auto = pages[og], False
         # /S is a required key in an action dictionary, so /S is what makes
         # something an action; the slot only decides how much benefit of the doubt
         # its value gets. Forcing on the slot alone was wrong because /A is not
