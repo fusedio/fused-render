@@ -1324,7 +1324,13 @@ def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_help
     # parameter for the same reason — a paste replaces the selection, a drop
     # must not, and only the caller knows which gesture it is.
     assert "function insertMediaFiles(view, files, pos, to)" in media_helper
-    assert "state.selection" not in media_helper
+    # The selection is read in exactly one place: the recovery path for a
+    # document that changed under the upload (see the test below). Anywhere else
+    # would mean the caller's position was quietly ignored.
+    assert media_helper.count("state.selection") == 1
+    reads_selection = media_helper.index("state.selection")
+    assert media_helper.index("if (view.state.doc !== measuredAgainst)") \
+        < reads_selection
 
 
 def test_a_media_paste_replaces_the_selection_but_a_drop_does_not(source, media_helper):
@@ -1345,6 +1351,28 @@ def test_a_media_paste_replaces_the_selection_but_a_drop_does_not(source, media_
         "insertMediaFiles(target, media, sel.from, sel.to)",   # paste
         "insertMediaFiles(target, media, pos)",   # drop
     ], calls
+
+
+def test_a_paste_never_deletes_text_typed_while_the_upload_was_in_flight(
+        media_helper):
+    # Found in review, and the sharp edge of the fix above: `to` turned the
+    # dispatch into a delete, while `pos`/`replaceTo` are measured BEFORE the
+    # awaited mkdir and upload. The editor stays live across those awaits, so a
+    # slow upload plus any typing meant the paste deleted a range that no longer
+    # meant anything.
+    #
+    # The guard is Text identity — CodeMirror documents are persistent, so an
+    # unchanged doc is the same object. This is a source assertion because the
+    # race needs a real editor, a real upload and real typing between them; the
+    # probe has none of the three.
+    assert "let measuredAgainst = view.state.doc;" in media_helper
+    guard = media_helper.index("if (view.state.doc !== measuredAgainst)")
+    assert guard < media_helper.index("view.dispatch(")
+    # Re-measured after each insert, or the second file of a multi-file paste
+    # would compare against a document its own predecessor invalidated.
+    assert "measuredAgainst = view.state.doc;" in media_helper[guard:]
+
+
 def test_dragover_prevents_default_or_the_drop_never_happens(source, paste_handler):
     """Without preventDefault on dragover the browser refuses the drop.
 

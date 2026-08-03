@@ -3784,11 +3784,13 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
     every edit whatever produced it, which is the only way the list of gestures
     above stops needing to be enumerated.
   - **Only the list the edit landed in** — and the edit has to have landed *on*
-    it. A blank line may extend a list's region (it separates the items of a
-    loose list) but may not anchor one, because a blank line is also what
-    separates a list from the prose beside it. Otherwise typing in a paragraph
-    next to a list renumbers that list, and puts those changes into an undo step
-    the user never made.
+    it. A blank line always extends a list's region (it separates the items of a
+    loose list) but anchors one only when list items sit on **both** sides of it,
+    because a blank line is also what separates a list from the prose beside it.
+    Anchoring on every blank means typing in a paragraph next to a list
+    renumbers that list, putting changes into an undo step the user never made;
+    anchoring on none means clearing an item's text — which leaves a blank line
+    inside the list — stops the items below it following.
   - **The first item's number anchors the sequence.** A list written `3.` `4.`
     `5.` stays that way, and deleting the head of `1.` `2.` `3.` leaves `2.`
     `3.` — the two cases are identical text, and anchoring is what

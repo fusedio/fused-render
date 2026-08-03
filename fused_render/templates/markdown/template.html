@@ -1810,11 +1810,25 @@
         if (n < 1 || n > doc.lines || fenced.has(n)) return false;
         return listLine(doc.line(n).text) !== "other";
       };
+      // Is there a list item on this side of line `n`, blanks skipped?
+      const itemBeyond = (n, step) => {
+        for (let i = n + step; partOfList(i); i += step) {
+          if (listLine(doc.line(i).text) !== "blank") return true;
+        }
+        return false;
+      };
       // What may ANCHOR a region is narrower than what may extend one. A blank
-      // line belongs to a list when it sits between two items, but a blank line
-      // is also what separates a list from the prose beside it — so anchoring on
-      // one would let an edit in that gap renumber the list it is not in.
-      const anchors = (n) => partOfList(n) && listLine(doc.line(n).text) !== "blank";
+      // line is two different things: the inside of a loose list, and the gap
+      // that separates a list from the prose beside it. Anchoring on every blank
+      // lets an edit in that gap renumber a list it is not in; anchoring on none
+      // misses the loose-list interior — clearing an item's text leaves a blank,
+      // and the items below it have to follow. Items on BOTH sides tells them
+      // apart: only the interior blank has one.
+      const anchors = (n) => {
+        if (!partOfList(n)) return false;
+        if (listLine(doc.line(n).text) !== "blank") return true;
+        return itemBeyond(n, -1) && itemBeyond(n, 1);
+      };
       // A trailing blank line is not part of the list, so a blank only extends
       // the region when a list line follows it.
       const extend = (n, step) => {
@@ -2029,6 +2043,15 @@
       const dir = noteDir();
       if (!dir) return;
       let replaceTo = to === undefined ? pos : to;
+      // The uploads below are awaited and the editor stays live while they run,
+      // so by the time a link is dispatched these offsets may describe a
+      // document that no longer exists — and `to` makes the dispatch a DELETE,
+      // which would eat whatever the user typed meanwhile. Every insert first
+      // checks the doc is still the one they were measured against (Text
+      // identity, the same check doSave uses). If it is not, the link goes in at
+      // the caret and replaces nothing: a paste landing in a slightly odd place
+      // is recoverable, one that deletes unrelated text is not.
+      let measuredAgainst = view.state.doc;
       // A shared assets/ next to the note, created on demand: the endpoint
       // deliberately never creates intermediate directories (same contract as
       // /api/fs/write), so the second paste onwards gets a typed "exists" back,
@@ -2044,8 +2067,13 @@
           const name = await freeMediaName(assets, files[i]);
           // Awaited BEFORE the insert, deliberately: a link inserted first
           // could end up pointing at a file that never made it to disk. The
-          // cost is that a very large video briefly stalls the editor.
+          // cost is that a large video takes a while to appear — typing during
+          // it is fine, which is exactly why the offsets need re-checking below.
           await fused.uploadFile(assets + "/" + name, files[i]);
+          if (view.state.doc !== measuredAgainst) {
+            pos = view.state.selection.main.head;
+            replaceTo = pos;
+          }
           // Ordinary markdown through an ordinary dispatch, so undo removes it
           // in one step and every other markdown tool can still read the note.
           // Video gets the same `![](…)` — markdown has no video syntax, and
@@ -2059,6 +2087,7 @@
           // Only the FIRST file of a multi-file gesture consumes the selection;
           // the rest append after it.
           replaceTo = pos;
+          measuredAgainst = view.state.doc;
         }
       } catch (err) {
         // Never swallowed: a paste that silently did nothing is

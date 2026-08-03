@@ -243,3 +243,18 @@ def test_editing_the_blank_line_between_prose_and_a_list_leaves_it_alone(tmp_pat
                   changes=[{"from": 6, "to": 6, "insert": " "}],
                   userEvent="input.type")
     assert result["doc"] == "prose\n \n1. one\n5. two\n"
+
+
+def test_clearing_an_items_text_still_renumbers_the_items_below(tmp_path):
+    # The other half of the blank-line rule, found in review. Rejecting every
+    # blank as an anchor fixed the prose-adjacent case and broke this one:
+    # selecting an item's text and deleting it leaves a blank line INSIDE a
+    # loose list, and the items below still have to follow.
+    #
+    # The two are told apart by what surrounds the blank — an interior blank has
+    # list items on both sides, the prose gap does not.
+    doc = "1. one\n2. two\n3. three\n"
+    result = edit(tmp_path, doc,
+                  changes=[{"from": 7, "to": 13, "insert": ""}],
+                  userEvent="delete.selection")
+    assert result["doc"] == "1. one\n\n2. three\n"
