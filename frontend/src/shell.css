@@ -200,6 +200,34 @@ body {
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  /* Collapsing squeezes the rows before the subtree swaps; without this the
+     squeeze pops a horizontal scrollbar for the length of the animation. */
+  overflow-x: hidden;
+  /* Collapse/expand glides instead of jumping 232px → 10px. Suppressed during a
+     resize drag (below): a transition there would make the edge chase the
+     cursor. */
+  transition:
+    flex-basis var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-out);
+}
+
+/* Set while the resize handle is captured (Sidebar.tsx `resizing`). */
+#sidebar.sidebar-no-transition {
+  transition: none;
+}
+
+/* The collapsed strip and the expanded rows are two different subtrees, swapped
+   at the animation boundary; fading whichever one is newly mounted keeps that
+   swap from reading as a pop. Only replays on a real subtree swap — React reuses
+   these children across ordinary re-renders. */
+#sidebar > * {
+  animation: sidebar-content-in var(--dur-slow) var(--ease-out);
+}
+
+@keyframes sidebar-content-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* Drag handle riding the sidebar's right border. Fixed-positioned (the
@@ -244,6 +272,8 @@ body:has(.sidebar-resize-handle.resizing) {
 #sidebar.sidebar-collapsed {
   flex: 0 0 10px;
   width: 10px;
+  /* Wins over the base rule's overflow-x: hidden — the expand bubble has to be
+     able to protrude past the strip. */
   overflow: visible;
   /* The bubble overhangs #content; lift the whole strip above it so a
      stacking context inside #content can't paint over the bubble. */

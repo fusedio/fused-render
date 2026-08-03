@@ -1082,7 +1082,7 @@ export default function Sidebar({ config }: SidebarProps) {
     // Collapsed: the whole sidebar shrinks to a slim strip that expands it
     // back. Still the same #sidebar node, so the <=700px media hide applies.
     return (
-      <nav id="sidebar" className="sidebar-collapsed">
+      <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
           type="button"
           className="sidebar-expand-strip"
@@ -1103,7 +1103,15 @@ export default function Sidebar({ config }: SidebarProps) {
   }
 
   return (
-    <nav id="sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
+    // The collapse/expand width change glides (shell.css); a pointer DRAG must
+    // not, or every pointermove would chase a 200ms transition and the handle
+    // would lag the cursor. `sidebar-no-transition` is that suppression — the
+    // mechanism the comment on `resizing` above has always described.
+    <nav
+      id="sidebar"
+      className={resizing ? "sidebar-no-transition" : undefined}
+      style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
+    >
       <div className="sidebar-brand">
         {/* Logo + name are one click target that goes Home — the front door is
             always one click away from anywhere. The collapse button stays its
