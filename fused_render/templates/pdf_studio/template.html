@@ -1792,36 +1792,29 @@ function insSetTab(name) {
   fused.params.set("itab", name);
 }
 
-// Every drawer request describes one document at one revision, and py() does not
-// supersede. This is the single place that decides whether an answer still
-// applies — including a failure, which is just as moot once the request has been
-// discarded, and which would otherwise toast an error about a document the user
-// has already left. Resolves DROPPED when that happens.
-const DROPPED = Symbol("dropped");
-async function scoped(run) {
-  const forDoc = state.doc, gen = inspectGen;
-  const stale = () => gen !== inspectGen || forDoc !== state.doc;
-  try {
-    const value = await run();
-    return stale() ? DROPPED : value;
-  } catch (err) {
-    if (stale()) return DROPPED;
-    throw err;
-  }
-}
-
-// Every request the drawer makes goes through here, so its busy state has one
-// owner: whatever becomes of the request — an answer, a failure, or a discard —
-// the last one out repaints from whatever is true by then. No outcome can leave
-// "Scanning…" on screen, which per-call-site success paths kept doing.
+// Every request the drawer makes goes through here, which owns both things a
+// per-call-site guard kept getting wrong. Whether the answer still applies: each
+// request describes one document at one revision and py() does not supersede, so
+// the generation is read when the request is made and re-checked when it lands —
+// a failure included, since it is just as moot once discarded and would
+// otherwise toast an error about a document the user has already left. And the
+// busy state: whatever becomes of the request, the last one out repaints from
+// whatever is true by then, so no outcome can leave "Scanning…" on screen.
+// Returns whether the answer was committed.
 let insBusy = 0;
 async function insWork(label, run, commit) {
+  const forDoc = state.doc, gen = inspectGen;
+  const live = () => gen === inspectGen && forDoc === state.doc;
   insBusy++;
   setStatus(label, "busy");
   try {
-    const value = await scoped(run);
-    if (value !== DROPPED) commit(value);
-    return value !== DROPPED;
+    const value = await run();
+    if (!live()) return false;
+    commit(value);
+    return true;
+  } catch (err) {
+    if (live()) throw err;
+    return false;
   } finally {
     if (--insBusy === 0) {
       if ($("status").querySelector(".txt").textContent === label) idleStatus();

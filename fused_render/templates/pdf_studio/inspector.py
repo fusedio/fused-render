@@ -61,6 +61,12 @@ UNKNOWN_ACTION = ("warn", "an unrecognised action type", "unknown")
 # What counts as an action when found outside /A, /AA or /OpenAction.
 ACTION_TYPES = frozenset(ACTION_RISK)
 
+# Subtrees the walk must not enter. Nothing in them can fire, and /StructTreeRoot
+# would invent findings: a structure element's /A is an *attribute object*, not
+# an action, so forcing it produced a nameless finding per tagged figure. They
+# are also the bulkiest part of a tagged file, which is most of the step budget.
+SKIP_KEYS = frozenset({"/StructTreeRoot", "/Resources", "/Metadata"})
+
 # Containers worth naming in a finding's location; anything else inherits its
 # parent's label, so the walk stays complete even for containers not listed.
 CONTAINER_LABELS = {
@@ -238,14 +244,17 @@ def _actions(pdf, cap=150_000):
     Naming them is what kept missing things — annotations, then outline entries,
     then form fields whose scripts live on a parent instead of the widget. A
     graph walk cannot miss a container: the worst an unknown one costs is a less
-    specific label. Yields {act, where, automatic}, where `automatic` marks the
-    sources that need no click (/OpenAction, any /AA event, document scripts).
+    specific label. Returns (actions, complete) — a `where` label per action, and
+    `automatic` for the sources that need no click (/OpenAction, any /AA event,
+    document scripts).
 
-    An action is recognised two ways, because either alone is wrong: reached
-    through /A, /AA or /OpenAction it is an action whatever it says it is (that
-    catches unknown and obfuscated types), and reached from anywhere else it
-    must name a real action type in /S (that keeps /S /Transparency on a group
-    dict, or /S /P on a structure element, from becoming a finding).
+    An action is recognised two ways, because either alone is wrong: sitting in
+    an action slot (/A, /AA, /OpenAction, /Next) it is an action whatever it says
+    it is, which catches unknown and obfuscated types; reached from anywhere else
+    it must name a real action type in /S, which keeps /S /Transparency on a
+    group dict from becoming a finding. Both rules only ever apply to a
+    dictionary that is not a page — see slot() and SKIP_KEYS for the two ways a
+    non-action ends up looking like one.
     """
     import pikepdf
 
@@ -257,6 +266,18 @@ def _actions(pdf, cap=150_000):
 
     found, seen, steps = [], set(), 0
     stack = [(pdf.Root, "document", False, False)]   # obj, label, automatic, forced
+
+    def slot(val, label, auto):
+        """An action slot — /A, an /AA event, /OpenAction, /Next — holds an action
+        dictionary, or an array of them for a /Next chain. Anything else there is
+        not an action: most often a destination, [page /Fit] meaning "open at page
+        1". Walking one as an action reports its page reference as a nameless
+        action and marks that page visited, so the page's own annotations are
+        never scanned."""
+        for item in (val if isinstance(val, pikepdf.Array) else [val]):
+            if isinstance(item, pikepdf.Dictionary) and str(item.get("/Type", "")) != "/Page":
+                stack.append((item, label, auto, True))
+
     while stack and steps < cap:
         obj, label, auto, forced = stack.pop()
         steps += 1
@@ -275,29 +296,31 @@ def _actions(pdf, cap=150_000):
             found.append({"act": obj, "where": label, "automatic": auto})
             # /Next chains more actions onto the same trigger.
             if "/Next" in obj:
-                stack.append((obj.get("/Next"), label, auto, True))
+                slot(obj.get("/Next"), label, auto)
             continue
         for key in obj.keys():
+            if key in SKIP_KEYS:
+                continue
             val = obj.get(key)
             if key == "/OpenAction":
-                # Either an action dictionary or a destination array ([page /Fit],
-                # "open at page 1"). Walking the array as an action would report
-                # its page reference as a nameless action AND mark that page
-                # visited, so the page's real annotations would never be walked.
-                if isinstance(val, pikepdf.Dictionary):
-                    stack.append((val, "document open action", True, True))
+                slot(val, "document open action", True)
             elif key == "/A":
-                stack.append((val, label, auto, True))
+                slot(val, label, auto)
             elif key == "/AA" and isinstance(val, pikepdf.Dictionary):
                 for event in val.keys():
-                    stack.append((val.get(event), f"{label} trigger {event}", True, True))
+                    slot(val.get(event), f"{label} trigger {event}", True)
             elif key == "/JavaScript":
                 stack.append((val, "document script", True, False))
-            else:
+            elif isinstance(val, (pikepdf.Dictionary, pikepdf.Array)):
+                # Names, numbers and strings are leaves — pushing them only to
+                # pop them again spends the step budget that keeps a pathological
+                # file from walking forever.
                 sub = CONTAINER_LABELS.get(key)
                 inner = label if not sub else sub if label == "document" else f"{label} {sub}"
                 stack.append((val, inner, auto, False))
-    return found
+    # A truncated walk has not ruled anything out, and the caller must say so
+    # rather than report the rows it did reach as a clean bill of health.
+    return found, not stack
 
 
 def _note_attachment(name, where, facts, hits):
@@ -348,7 +371,8 @@ def _security(path):
     urls = {}
     facts = {"attachments": [], "signatures": 0, "xfa": False, "acroform": False,
              "encrypted": False, "permissions": {}, "revisions": 0,
-             "open_action": "", "layers": False, "linearized": False}
+             "open_action": "", "layers": False, "linearized": False,
+             "actions_complete": True}
 
     with pikepdf.open(path) as pdf:
         root = pdf.Root
@@ -363,7 +387,8 @@ def _security(path):
         elif isinstance(oa, pikepdf.Array):
             facts["open_action"] = "/GoTo"      # a destination array, not an action
 
-        for entry in _actions(pdf):
+        entries, facts["actions_complete"] = _actions(pdf)
+        for entry in entries:
             _describe(entry, hits)
 
         acro = root.get("/AcroForm")
@@ -399,7 +424,6 @@ def _security(path):
                     if isinstance(fs, pikepdf.Dictionary):
                         _note_attachment(str(fs.get("/UF") or fs.get("/F") or "(unnamed)"),
                                          f"page {i} attachment", facts, hits)
-                # Actions on this annotation are already covered by _actions().
 
     for h in hits:
         if h["kind"] == "/URI" and h["detail"]:
@@ -435,6 +459,12 @@ def _security_report(hits, urls, facts):
 
     def check(name, state, note):
         checks.append({"name": name, "state": state, "note": note})
+
+    # First, because it qualifies every row under it.
+    if not facts.get("actions_complete", True):
+        check("Scan coverage", "warn",
+              "This document's object graph is larger than the scan walks —"
+              " what follows is what was reached, not the whole file")
 
     js = rows("script")
     check("JavaScript", "fail" if js else "pass",
@@ -531,18 +561,20 @@ def _security_or_unreadable(path):
     the scan degrades to "unreadable" instead of taking the whole report with
     it. A structure this broken is itself the finding.
 
-    The list is deliberately what malformed *input* raises. NameError and
+    What it catches is deliberately what malformed *input* raises. NameError and
     AttributeError are left out: those are bugs in this module, and swallowing
     them here would turn a broken scanner into a plausible-looking report."""
     import pikepdf
 
-    # pikepdf's input errors derive from Exception directly, not from one base,
-    # so DataDecodingError (a corrupt stream filter) has to be named separately.
+    # Ask pikepdf which exceptions it has rather than listing them: 11 of its 13
+    # derive from Exception directly, not from PdfError, so a hand-kept list
+    # missed DataDecodingError once and PasswordError (a locked file) again.
+    from_pikepdf = tuple(v for v in vars(pikepdf).values()
+                         if isinstance(v, type) and issubclass(v, Exception))
     try:
         return _security(path)
-    except (pikepdf.PdfError, pikepdf.DataDecodingError, pikepdf.ForeignObjectError,
-            TypeError, ValueError, KeyError, IndexError, RecursionError,
-            UnicodeDecodeError, OSError) as e:
+    except from_pikepdf + (TypeError, ValueError, KeyError, IndexError,
+                           RecursionError, UnicodeDecodeError, OSError) as e:
         return {"risk": "unreadable", "error": f"{type(e).__name__}: {e}",
                 "checks": [], "findings": [], "findings_total": 0,
                 "urls": [], "facts": {}}
