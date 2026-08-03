@@ -253,6 +253,9 @@ worth the small refactor: it is also where `client_ms` and the
   exactly the filter §2 wanted.
 - `X-Fused-Page` is a custom header, so like `X-Fused` it forces a CORS
   preflight; it changes no security posture (D3/D36 stand — this is not auth).
+- Both path headers are **percent-encoded** (`calls.begin` decodes them): a
+  header value is ISO-8859-1 only, and `fetch` throws rather than sending one
+  that is not.
 - In panel/tab mode each pane's iframe has its own `path`, so per-pane
   attribution is automatic.
 
