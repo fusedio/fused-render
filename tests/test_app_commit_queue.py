@@ -1,7 +1,7 @@
 """The debounced app committer (fused_render/app_commit_queue.py): editor
 mutations mark an app dirty, one global asyncio worker turns each burst into
-a single aggregated commit; without a running worker mark() commits inline
-(the old behaviour, and what lifespan-less test apps get).
+a single aggregated commit; without a running worker marks accumulate until
+the next flush() (what lifespan-less test apps rely on).
 
 Real git in tmp workspaces, same fixture shape as tests/test_app_git.py.
 Debounce windows are monkeypatched tight so the async tests stay fast.
@@ -47,12 +47,21 @@ def _run(coro):
     asyncio.run(coro)
 
 
-# ------------------------------------------------------------ inline fallback
+@pytest.fixture(autouse=True)
+def clean_pending():
+    yield
+    with q._lock:
+        q._pending.clear()
 
-def test_mark_commits_inline_when_worker_not_running(workspace):
+
+# --------------------------------------------------------- mark w/o worker
+
+def test_marks_accumulate_until_flush_when_worker_not_running(workspace):
     d = _make_app(workspace)
     (d / "index.html").write_text("<html>v2</html>")
     q.mark(str(d / "index.html"), "Edit")
+    assert _log(d) == ["New app from starter"]  # queued, not committed
+    q.flush()
     assert _log(d)[0] == "Edit index.html"
 
 

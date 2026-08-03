@@ -16,10 +16,10 @@ commit ("Edit index.html" per editing pause) instead of a commit per
 autosave tick.
 
 Best-effort like app_git: nothing here may ever fail the mutation that
-triggered it. When the worker is not running (tests build the app without
-lifespan; shutdown already began) mark() falls back to committing inline —
-exactly the old behaviour. Scoping is app_git's: mark() resolves the path
-through app_git.app_dir_for and is a no-op anywhere outside an app folder.
+triggered it. Without a running worker (tests build the app without
+lifespan) marks just accumulate until the next flush(). Scoping is
+app_git's: mark() resolves the path through app_git.app_dir_for and is a
+no-op anywhere outside an app folder.
 """
 import asyncio
 import logging
@@ -45,17 +45,13 @@ _task: asyncio.Task | None = None
 
 def mark(path: str, verb: str) -> None:
     """Record that a successful mutation touched `path`; the worker commits
-    the containing app after the debounce. Inline (blocking) commit when the
-    worker is not running. No-op outside app dirs. Never raises."""
+    the containing app after the debounce (or the next flush() when the
+    worker is not running). No-op outside app dirs. Never raises."""
     try:
         app_dir = app_git.app_dir_for(path)
         if app_dir is None:
             return
         label = f"{verb} {os.path.basename(path.rstrip(os.sep))}"
-        loop, wake = _loop, _wake
-        if loop is None or wake is None or _task is None or _task.done():
-            app_git.commit(path, label)
-            return
         now = time.monotonic()
         with _lock:
             entry = _pending.get(app_dir)
@@ -67,9 +63,11 @@ def mark(path: str, verb: str) -> None:
                 entry["last"] = now
             else:
                 entry["last"] = now
-        # mark() runs on threadpool threads (the fs endpoints are sync defs);
-        # this is the one loop-safe way to poke the worker from there.
-        loop.call_soon_threadsafe(wake.set)
+        loop, wake = _loop, _wake
+        if loop is not None and wake is not None:
+            # mark() runs on threadpool threads (the fs endpoints are sync
+            # defs); this is the one loop-safe way to poke the worker.
+            loop.call_soon_threadsafe(wake.set)
     except Exception:
         logger.debug("app commit mark failed (%s)", path, exc_info=True)
 

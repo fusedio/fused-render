@@ -198,7 +198,7 @@ def create_app(start_dir: str) -> FastAPI:
     # Debounced app-repo committer (app_commit_queue): the /api/fs mutation
     # hooks mark apps dirty, this one worker turns each editing burst into a
     # single commit. Startup event on purpose — tests that build the app
-    # without lifespan get the inline-commit fallback instead. Shutdown
+    # without lifespan queue marks and flush() them explicitly. Shutdown
     # flushes so a pending commit is not dropped by a dev-server reload.
     @app.on_event("startup")
     async def _startup_commit_queue():

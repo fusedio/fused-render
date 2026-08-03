@@ -14,7 +14,7 @@ import subprocess
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import app_git
+from fused_render import app_commit_queue, app_git
 from fused_render.server import create_app
 
 
@@ -32,6 +32,15 @@ def client(tmp_path, workspace):
 
 
 HDRS = {"X-Fused": "1"}
+
+
+@pytest.fixture(autouse=True)
+def clean_pending():
+    # The clients here run without lifespan, so /api/fs marks queue in
+    # app_commit_queue until flushed; keep tests from leaking into each other.
+    yield
+    with app_commit_queue._lock:
+        app_commit_queue._pending.clear()
 
 
 def _log(app_dir):
@@ -114,6 +123,7 @@ def test_fs_write_commits_into_app_repo(client, workspace):
     r = client.post("/api/fs/write", headers=HDRS, json={
         "path": str(d / "index.html"), "content": "<html>edited</html>"})
     assert r.status_code == 200
+    app_commit_queue.flush()
     assert _log(d)[0] == "Edit index.html"
 
 
@@ -124,10 +134,12 @@ def test_fs_delete_and_rename_commit(client, workspace):
     r = client.post("/api/fs/rename", headers=HDRS, json={
         "src": str(d / "notes.md"), "dst": str(d / "readme.md")})
     assert r.status_code == 200
+    app_commit_queue.flush()
     assert _log(d)[0] == "Rename readme.md"
     r = client.post("/api/fs/delete", headers=HDRS,
                     json={"path": str(d / "readme.md")})
     assert r.status_code == 200
+    app_commit_queue.flush()
     assert _log(d)[0] == "Delete readme.md"
 
 
@@ -144,6 +156,7 @@ def test_failed_write_commits_nothing(client, workspace):
     r = client.post("/api/fs/write", headers=HDRS, json={
         "path": str(d / "missing" / "x.txt"), "content": "y"})
     assert r.status_code == 404
+    app_commit_queue.flush()  # nothing may have been queued either
     assert _log(d) == ["New app from starter"]
 
 

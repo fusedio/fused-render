@@ -31,8 +31,8 @@ def _commit_mutation(result, verb: str, *paths) -> None:
     App folders (<workspace>/<tag>/<name>) are version-controlled from
     creation (app_git); editor-driven changes get the same history as Claude
     turns. The commit itself is debounced and serialized through
-    app_commit_queue's single worker (inline fallback when it isn't running),
-    so a burst of autosaves becomes one commit and two saves can never race
+    app_commit_queue's single worker, so a burst of autosaves becomes one
+    commit and two saves can never race
     each other on the repo's index.lock. A refused mutation (any JSONResponse
     error status) commits nothing, and everything downstream is best-effort
     and hard-scoped to app dirs — a git failure never fails the mutation that
