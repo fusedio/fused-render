@@ -61,10 +61,10 @@ UNKNOWN_ACTION = ("warn", "an unrecognised action type", "unknown")
 # What counts as an action when found outside /A, /AA or /OpenAction.
 ACTION_TYPES = frozenset(ACTION_RISK)
 
-# Subtrees the walk must not enter. Nothing in them can fire, and /StructTreeRoot
-# would invent findings: a structure element's /A is an *attribute object*, not
-# an action, so forcing it produced a nameless finding per tagged figure. They
-# are also the bulkiest part of a tagged file, which is most of the step budget.
+# Subtrees with nothing in them that can fire, skipped to keep the step budget
+# for the parts of the file that can. Correctness does not depend on this list —
+# what is in them is not an action because it has no /S, whether the walk looks
+# or not, which is why an outline's /SE back into the structure tree is harmless.
 SKIP_KEYS = frozenset({"/StructTreeRoot", "/Resources", "/Metadata"})
 
 # Containers worth naming in a finding's location; anything else inherits its
@@ -253,13 +253,14 @@ def _actions(pdf, cap=150_000):
     `automatic` for the sources that need no click (/OpenAction, any /AA event,
     document scripts).
 
-    An action is recognised two ways, because either alone is wrong: sitting in
-    an action slot (/A, /AA, /OpenAction, /Next) it is an action whatever it says
-    it is, which catches unknown and obfuscated types; reached from anywhere else
-    it must name a real action type in /S, which keeps /S /Transparency on a
-    group dict from becoming a finding. Both rules only ever apply to a
-    dictionary that is not a page — see slot() and SKIP_KEYS for the two ways a
-    non-action ends up looking like one.
+    An action always names its type in /S — the spec requires it — and where it
+    was found decides how much benefit of the doubt that name gets: in an action
+    slot (/A, /AA, /OpenAction, /Next) any /S counts, which catches unknown and
+    obfuscated types; anywhere else it must name a type this scan knows, which
+    keeps /S /Transparency on a group dict from becoming a finding. A dictionary
+    with no /S is not an action however it was reached, so the keys whose meaning
+    is "not an action" — a structure element's attributes, a movie annotation's
+    activation dictionary, a destination's page — need no special case.
     """
     import pikepdf
 
@@ -274,14 +275,11 @@ def _actions(pdf, cap=150_000):
 
     def slot(val, label, auto):
         """An action slot — /A, an /AA event, /OpenAction, /Next — holds an action
-        dictionary, or an array of them for a /Next chain. Anything else there is
-        not an action: most often a destination, [page /Fit] meaning "open at page
-        1". Walking one as an action reports its page reference as a nameless
-        action and marks that page visited, so the page's own annotations are
-        never scanned."""
+        dictionary, or an array of them for a /Next chain. What is in it gets the
+        benefit of the doubt about its /S, and nothing more; a destination array's
+        page has no /S, so it goes on to be walked as the page it is."""
         for item in (val if isinstance(val, pikepdf.Array) else [val]):
-            if isinstance(item, pikepdf.Dictionary) and str(item.get("/Type", "")) != "/Page":
-                stack.append((item, label, auto, True))
+            stack.append((item, label, auto, True))
 
     while stack and steps < cap:
         obj, label, auto, forced = stack.pop()
@@ -297,7 +295,14 @@ def _actions(pdf, cap=150_000):
                 continue
             seen.add(og)
             label = pages.get(og, label)
-        if forced or str(obj.get("/S", "")) in ACTION_TYPES:
+        # /S is a required key in an action dictionary, so /S is what makes
+        # something an action; the slot only decides how much benefit of the doubt
+        # its value gets. Forcing on the slot alone was wrong because /A is not
+        # always an action — a structure element keeps its attribute object there,
+        # a movie annotation its playback activation dictionary — and neither has
+        # an /S, which is exactly how the spec distinguishes them.
+        kind = str(obj.get("/S", ""))
+        if kind and (forced or kind in ACTION_TYPES):
             found.append({"act": obj, "where": label, "automatic": auto})
             # /Next chains more actions onto the same trigger.
             if "/Next" in obj:
@@ -348,7 +353,7 @@ def _describe(entry, hits):
     import pikepdf
 
     act, where = entry["act"], entry["where"]
-    kind = str(act.get("/S", "")) or "(unnamed)"
+    kind = str(act.get("/S"))
     level, what, row = ACTION_RISK.get(kind, UNKNOWN_ACTION)
     detail = ""
     if kind == "/URI":
