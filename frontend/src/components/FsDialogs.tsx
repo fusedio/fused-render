@@ -8,6 +8,8 @@
 //     non-empty directory is spelled out in the message the caller passes).
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ErrorBanner } from "./ErrorBanner";
+import { useDeferredClose } from "../lib/hooks";
+import { OVERLAY_EXIT_MS } from "../lib/exit-animation";
 
 // Validate a single path SEGMENT (a file/folder name, never a path). Returns an
 // inline error message or null when the (already-trimmed) name is usable. Beyond
@@ -26,7 +28,35 @@ export function nameError(trimmed: string): string | null {
   return null;
 }
 
-function Overlay({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
+// Both dialogs are unmounted by their CALLER (`{dialog && <PromptDialog …/>}`),
+// so neither can hold itself on screen for an exit animation — it defers the
+// callback that makes the caller unmount it (lib/exit-animation). BOTH close
+// paths go through here: an exit that plays on Cancel but not on Confirm reads
+// as a bug, so the deferrer's single callback dispatches to whichever path asked
+// first. `fired` is a ref, not the `closing` state, because two clicks in one
+// tick would both see the state as false.
+function useDialogClose(onCancel: () => void) {
+  const action = useRef(onCancel);
+  const fired = useRef(false);
+  const { closing, requestClose } = useDeferredClose(() => action.current(), OVERLAY_EXIT_MS);
+  const close = (fn: () => void) => {
+    if (fired.current) return;
+    fired.current = true;
+    action.current = fn;
+    requestClose();
+  };
+  return { closing, close };
+}
+
+function Overlay({
+  onCancel,
+  closing,
+  children,
+}: {
+  onCancel: () => void;
+  closing: boolean;
+  children: ReactNode;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -41,7 +71,7 @@ function Overlay({ onCancel, children }: { onCancel: () => void; children: React
 
   return (
     <div
-      className="modal-overlay deploy-overlay"
+      className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
@@ -77,6 +107,8 @@ export function PromptDialog({
 }) {
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const { closing, close } = useDialogClose(onCancel);
+  const cancel = () => close(onCancel);
 
   // Focus on open, preselecting the stem (name without extension) for a rename
   // and the whole value otherwise. Reads `initialValue`, never the live `value`,
@@ -95,14 +127,14 @@ export function PromptDialog({
 
   const submit = () => {
     if (error) return;
-    onConfirm(trimmed);
+    close(() => onConfirm(trimmed));
   };
 
   return (
-    <Overlay onCancel={onCancel}>
+    <Overlay onCancel={cancel} closing={closing}>
       <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
+        <button type="button" className="modal-close deploy-close" onClick={cancel} aria-label="Close">
           ✕
         </button>
       </div>
@@ -125,7 +157,7 @@ export function PromptDialog({
         />
         {error && trimmed !== "" && <ErrorBanner>{error}</ErrorBanner>}
         <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onCancel}>
+          <button type="button" className="btn btn-secondary" onClick={cancel}>
             Cancel
           </button>
           <button type="button" className="btn btn-primary" disabled={!!error} onClick={submit}>
@@ -153,6 +185,9 @@ export function ConfirmDialog({
   onCancel: () => void;
 }) {
   const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const { closing, close } = useDialogClose(onCancel);
+  const cancel = () => close(onCancel);
+  const confirm = () => close(onConfirm);
 
   // Move focus into the modal on open so the confirm button owns Enter/Space —
   // otherwise focus stays on document.body and the listing's document-level
@@ -163,10 +198,10 @@ export function ConfirmDialog({
   }, []);
 
   return (
-    <Overlay onCancel={onCancel}>
+    <Overlay onCancel={cancel} closing={closing}>
       <div className="modal-head deploy-head">
         <h2>{title}</h2>
-        <button type="button" className="modal-close deploy-close" onClick={onCancel} aria-label="Close">
+        <button type="button" className="modal-close deploy-close" onClick={cancel} aria-label="Close">
           ✕
         </button>
       </div>
@@ -181,20 +216,20 @@ export function ConfirmDialog({
             e.stopPropagation();
             if (e.target instanceof HTMLButtonElement) return;
             e.preventDefault();
-            onConfirm();
+            confirm();
           }
         }}
       >
         <p>{message}</p>
         <div className="fs-dialog-actions">
-          <button type="button" className="btn btn-secondary" onClick={onCancel}>
+          <button type="button" className="btn btn-secondary" onClick={cancel}>
             Cancel
           </button>
           <button
             ref={confirmRef}
             type="button"
             className={"btn " + (danger ? "btn-danger" : "btn-primary")}
-            onClick={onConfirm}
+            onClick={confirm}
           >
             {confirmLabel}
           </button>

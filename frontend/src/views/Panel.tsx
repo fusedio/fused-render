@@ -154,7 +154,17 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
     }
   };
 
+  // The pane's iframe fades in on load (`.panel-pane iframe` starts at opacity
+  // 0, see shell.css) so a crumb click or a mode switch — both imperative src
+  // writes — dissolves through --bg instead of flashing an unpainted frame.
+  // Toggled directly on the node, like Tabs': the src writes below are already
+  // imperative by necessity (React must never rewrite a pane's src), so the
+  // fade is armed the same way. `className` is a constant prop, so React never
+  // rewrites the attribute and cannot clobber the token.
+  const armFade = () => iframeRef.current?.classList.remove("is-loaded");
+
   const onLoad = () => {
+    iframeRef.current?.classList.add("is-loaded");
     onUrlChange();
     // null when this document is already hooked — keep the existing hook.
     if (!iframeRef.current) return;
@@ -188,7 +198,9 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
           // Clicking a crumb navigates the pane's iframe to that prefix
           // (drops the pane-local query — a fresh location). Imperative src
           // write, exactly like vanilla — no React re-render involved.
-          if (iframeRef.current) iframeRef.current.src = embedSrc(targetPath, "");
+          if (!iframeRef.current) return;
+          armFade();
+          iframeRef.current.src = embedSrc(targetPath, "");
         }}
       >
         {label}
@@ -226,7 +238,9 @@ function Pane({ node, ctx }: { node: LayoutLeaf; ctx: PaneCtx }) {
           path={loc.path}
           query={loc.query}
           onNavigate={(q) => {
-            if (iframeRef.current) iframeRef.current.src = embedSrc(loc.path, q);
+            if (!iframeRef.current) return;
+            armFade();
+            iframeRef.current.src = embedSrc(loc.path, q);
           }}
         />
         <button className="panel-btn split-right" title="Split right" onClick={() => ctx.split(node.id, "row")}>

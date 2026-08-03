@@ -150,6 +150,70 @@
   --icon-file: #6b7178;
 }
 
+/* ---- Motion tokens ------------------------------------------------------- */
+/* Three durations, one easing — every transition/animation in this file picks
+   one of these rather than inventing a number, so the whole shell moves at the
+   same speed:
+     --dur-fast  hover / press colour changes
+     --dur-med   overlays, toasts, fades, context menus
+     --dur-slow  panels, slide-overs, sidebar collapse, FLIP row reorders
+   Deliberately its own `:root` block, NOT merged into the palettes above: the
+   theme contract (tests/test_theme.py) requires every token in the dark
+   palette to have a light counterpart, and a duration has no light value.
+   prefers-reduced-motion (bottom of this file) collapses all of them. */
+:root {
+  --dur-fast: 80ms;
+  --dur-med: 150ms;
+  --dur-slow: 200ms;
+  --ease-out: ease-out;
+}
+
+/* ---- Shared hover/press easing ------------------------------------------- */
+/* One rule for every interactive surface in the shell, grouped here rather than
+   as a `transition` bolted onto sixteen scattered declarations — that way the
+   set is auditable and can't drift apart. Colour properties only: each of these
+   selectors already has hover/active rules that repaint background, text or
+   border, and this is purely what makes that repaint ease instead of snap. Their
+   own rules keep owning the colours. */
+.sidebar-item,
+.bookmark-row,
+.icon-btn,
+#breadcrumb .path-crumb,
+.star-btn,
+table.listing-table tr.row,
+table.listing-table th.sortable,
+.preview-actions button,
+.tab,
+.tab-close,
+.tab-add,
+.tab-open-plain,
+.context-menu-item,
+.toast-close,
+.toast-action,
+.panel-btn,
+.listing-pane-toggle,
+.listing-load-more {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+/* Press feedback on the button-shaped members of the set above. Deliberately
+   one shared 1px nudge and nothing else: a filter/opacity press reads as a
+   disabled state, and a transform on a table row looks like a layout bug, so
+   rows are left out. */
+.icon-btn:active:not(:disabled),
+.star-btn:active,
+.preview-actions button:active:not(:disabled),
+.panel-btn:active,
+.tab-add:active,
+.toast-action:active:not(:disabled),
+.listing-pane-toggle:active,
+.listing-load-more:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -182,6 +246,34 @@ body {
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  /* Collapsing squeezes the rows before the subtree swaps; without this the
+     squeeze pops a horizontal scrollbar for the length of the animation. */
+  overflow-x: hidden;
+  /* Collapse/expand glides instead of jumping 232px → 10px. Suppressed during a
+     resize drag (below): a transition there would make the edge chase the
+     cursor. */
+  transition:
+    flex-basis var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-out);
+}
+
+/* Set while the resize handle is captured (Sidebar.tsx `resizing`). */
+#sidebar.sidebar-no-transition {
+  transition: none;
+}
+
+/* The collapsed strip and the expanded rows are two different subtrees, swapped
+   at the animation boundary; fading whichever one is newly mounted keeps that
+   swap from reading as a pop. Only replays on a real subtree swap — React reuses
+   these children across ordinary re-renders. */
+#sidebar > * {
+  animation: sidebar-content-in var(--dur-slow) var(--ease-out);
+}
+
+@keyframes sidebar-content-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* Drag handle riding the sidebar's right border. Fixed-positioned (the
@@ -226,6 +318,8 @@ body:has(.sidebar-resize-handle.resizing) {
 #sidebar.sidebar-collapsed {
   flex: 0 0 10px;
   width: 10px;
+  /* Wins over the base rule's overflow-x: hidden — the expand bubble has to be
+     able to protrude past the strip. */
   overflow: visible;
   /* The bubble overhangs #content; lift the whole strip above it so a
      stacking context inside #content can't paint over the bubble. */
@@ -545,10 +639,18 @@ body:has(.sidebar-resize-handle.resizing) {
   background: rgba(var(--tint), 0.07);
   border-radius: 8px;
   padding: 3px 6px;
+  /* Hidden on hover so the action buttons can take the slot. Faded rather than
+     `display: none`d: the count and the buttons overlay the same spot, so this
+     one has to disappear — but a display flip can't ease, which made the
+     handover the sharpest pop in the sidebar. pointer-events go with the fade so
+     the invisible chip can't eat clicks meant for the buttons. */
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 
 .folder-row:hover .folder-count {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* Indent rail: children sit inside a wrapper whose left border draws the
@@ -599,7 +701,17 @@ a.bookmark-name::after {
   top: 50%;
   transform: translateY(-50%);
   display: flex;
+  /* Revealed on hover. `visibility` alone stepped straight to visible, so the
+     cluster popped in; opacity carries the fade while visibility stays in the
+     transition list on purpose — it holds `visible` for the whole fade-out and
+     only flips at the end, which keeps the buttons out of the tab order and
+     click-inert while hidden (exactly what visibility bought us before). An
+     opacity-only reveal would have made every row's buttons a tab stop. */
   visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility var(--dur-fast) var(--ease-out);
   gap: 2px;
   z-index: 1;
   padding-left: 26px;
@@ -608,6 +720,7 @@ a.bookmark-name::after {
 
 .bookmark-row:hover .bookmark-actions {
   visibility: visible;
+  opacity: 1;
 }
 
 /* Bookmark hover card (params preview) */
@@ -1025,6 +1138,19 @@ a.bookmark-name::after {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Route fade (App.tsx): routes hard-remount per navigation, so there is no
+     old-and-new overlap to cross-fade — a short fade-in on the content area
+     alone makes the cut read as intentional. Shorter than --dur-med on purpose:
+     it must not delay reading the page. The sidebar and breadcrumb chrome sit
+     OUTSIDE this element and never flash. Replays because App keys this node on
+     the nav epoch (an iframe's param write doesn't bump it). */
+  animation: content-in 110ms var(--ease-out);
+}
+
+@keyframes content-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* Listing view — a fixed search header above a scrolling table, so the search
@@ -1325,6 +1451,16 @@ table.listing-table tr.skel-row:hover {
   background: transparent;
 }
 
+/* Shared "content is loading" block (components/Skeleton.tsx): a few ragged
+   shimmer bars, used where a bare "Loading…" line used to sit. */
+.skel-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+  padding: 6px 0;
+}
+
 .listing-pane .pane-skel {
   flex: 1 1 auto;
   margin: 14px;
@@ -1487,9 +1623,85 @@ table.listing-table th.sorted {
   color: var(--accent);
 }
 
+/* One glyph (▲) for both directions: desc rotates it, so flipping the order
+   turns the arrow over instead of swapping one character for another (a swap
+   replaces the element, and a replaced element can only pop). Moving the arrow
+   to a different column DOES replace it — that one fades in. */
 table.listing-table .sort-arrow {
+  display: inline-block;
   margin-left: 5px;
   font-size: 9px;
+  transition: transform 100ms var(--ease-out);
+  animation: sort-arrow-in 100ms var(--ease-out);
+}
+
+table.listing-table .sort-arrow.desc {
+  transform: rotate(180deg);
+}
+
+@keyframes sort-arrow-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* A row that just appeared in the folder (dir-watch refresh, views/Listing.tsx):
+   an accent wash that fades out over ROW_NEW_MS, so a file that landed while you
+   were looking elsewhere is visible instead of silently slotting in. On the cells
+   rather than the row, because the row's own background is the hover/selection
+   channel and must keep working underneath. Removals need no cue beyond the
+   FLIP. Reduced motion collapses the animation, which drops the cue entirely —
+   correct: it is decoration, and nothing depends on seeing it. */
+table.listing-table tr.row.row-new > td {
+  animation: row-new-fade 1.5s var(--ease-out);
+}
+
+@keyframes row-new-fade {
+  from {
+    background-color: rgba(var(--accent-rgb), 0.2);
+  }
+  to {
+    background-color: rgba(var(--accent-rgb), 0);
+  }
+}
+
+/* Rows glide to their new slots after a reorder (lib/flip). Higher specificity
+   than the shared hover-transition rule so it wins for the length of the
+   animation; the class is added for exactly FLIP_MS and then removed. */
+table.listing-table tr.row.flip-animating {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+/* Current ordering of the search results, and the click that restores relevance
+   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
+.listing-sort-chip {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.listing-sort-chip:disabled {
+  cursor: default;
+}
+
+.listing-sort-chip.sorted {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.listing-sort-chip:hover:not(:disabled) {
+  color: var(--fg);
 }
 
 table.listing-table td {
@@ -1824,11 +2036,37 @@ table.listing-table td.mtime {
   position: relative;
 }
 
+/* Held-frame mode swap (views/Preview.tsx): during a switch the outgoing frame
+   and the incoming one are BOTH mounted, so they stack absolutely inside this
+   wrapper instead of sharing the flex row. The visible one is `.is-shown`
+   (z-index above the frame it replaces); the other fades to nothing and is
+   unmounted a beat later. `background: var(--bg)` is what kills the white flash
+   an unpainted iframe shows on its own. */
+.preview-frames {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+}
+
 .preview-body iframe {
   flex: 1 1 auto;
   width: 100%;
   height: 100%;
   border: none;
+  background: var(--bg);
+}
+
+.preview-frames iframe.preview-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  z-index: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.preview-frames iframe.preview-frame.is-shown {
+  opacity: 1;
+  z-index: 1;
 }
 
 .metadata-card {
@@ -2096,6 +2334,14 @@ body.embed .open-as-app-chip:hover {
   width: 100%;
   border: none;
   background: var(--bg);
+  /* Fade in on load; views/Panel.tsx arms/clears `.is-loaded` around every
+     (imperative) src write. */
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.panel-pane iframe.is-loaded {
+  opacity: 1;
 }
 
 /* Tab mode (/view/_tab, /embed/_tab): a tabbed set of /embed iframes, one
@@ -2291,6 +2537,26 @@ body.embed .open-as-app-chip:hover {
   user-select: none;
 }
 
+/* The clamp pass (components/ContextMenu.tsx) needs the menu's real size before
+   it can decide where the menu goes, so the first — pre-paint — render is
+   hidden rather than painted at the raw cursor coords and then moved. */
+.context-menu.measuring {
+  visibility: hidden;
+}
+
+/* Grows out of whichever corner sits under the cursor; ContextMenu sets
+   transform-origin inline from the clamp result. */
+.context-menu.placed {
+  animation: context-menu-in 110ms var(--ease-out);
+}
+
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
 /* Wrapper for an item + its (absolutely positioned) submenu. */
 .context-menu-row {
   position: relative;
@@ -2373,6 +2639,8 @@ body.embed .open-as-app-chip:hover {
   top: -5px;
   left: 100%;
   margin-left: 2px;
+  /* Grows out of the parent row's edge, i.e. the side it's attached to. */
+  transform-origin: left top;
 }
 
 .context-submenu.left {
@@ -2380,6 +2648,7 @@ body.embed .open-as-app-chip:hover {
   right: 100%;
   margin-left: 0;
   margin-right: 2px;
+  transform-origin: right top;
 }
 
 /* ---- File-operation dialogs (components/FsDialogs.tsx) -------------------- */
@@ -2445,6 +2714,30 @@ body.embed .open-as-app-chip:hover {
 /* Default is the error variant (red border); .toast-info is the neutral
    confirmation variant (e.g. "Path copied"). Capped at the column's width so
    the stack reads as one system rather than a ragged pile. */
+/* One row of the stack. The card fades/slides; the SLOT is what collapses its
+   height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
+   column's 8px gap), so dismissing a toast makes the ones below it glide up
+   instead of snapping. lib/toast keeps a dismissed toast in the queue for
+   TOAST_EXIT_MS — the same --dur-med these transitions run for. */
+.toast-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  max-width: 100%;
+  transition:
+    grid-template-rows var(--dur-med) var(--ease-out),
+    margin-bottom var(--dur-med) var(--ease-out);
+}
+
+.toast-slot > .toast {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toast-slot.leaving {
+  grid-template-rows: 0fr;
+  margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
+}
+
 .toast {
   display: flex;
   align-items: center;
@@ -2457,6 +2750,25 @@ body.embed .open-as-app-chip:hover {
   border: 1px solid var(--error);
   border-radius: 8px;
   box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast.toast-leaving {
+  /* A toast dismissed inside its own enter window would otherwise keep being
+     driven by the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
 }
 
 .toast-info {
@@ -2603,6 +2915,21 @@ body.embed .open-as-app-chip:hover {
   background: var(--bg);
 }
 
+/* First paint of a lazily-mounted tab (and of an imperative src rewrite from
+   the tab bar's mode menu) fades in rather than snapping from an unpainted
+   frame; views/Tabs.tsx adds `.is-loaded` on the iframe's own load event.
+   Inactive tabs stay hidden with `display: none` (TM-5) — an iframe must be
+   layout-hidden, not merely transparent — so this opacity is only ever the
+   load fade, never the tab-visibility mechanism. */
+.tabs-body iframe.tab-frame {
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.tabs-body iframe.tab-frame.is-loaded {
+  opacity: 1;
+}
+
 /* React mount point (frontend/index.html) — transparent to the flex layout
    above: #app stays the layout root exactly as in the vanilla shell. */
 #root {
@@ -2636,6 +2963,53 @@ body.embed .open-as-app-chip:hover {
   justify-content: center;
   padding: 8vh 16px 16px;
   z-index: 1000;
+}
+
+/* Enter/exit for EVERY dialog in the app: the scrim fades and the dialog scales
+   up a hair. `.closing` is painted by the chassis (components/modal/Modal.tsx
+   and the FsDialogs overlay) for the length of --dur-med before the caller
+   unmounts it — see lib/exit-animation for why the delay lives in JS. The enter
+   is an animation (the node is newly mounted, so there is no `from` value for a
+   transition); the exit is a transition off the mounted state. */
+.modal-overlay {
+  animation: modal-scrim-in var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay .modal-dialog {
+  animation: modal-dialog-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes modal-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.modal-overlay.closing {
+  /* A dialog closed inside its own enter window would otherwise stay driven by
+     the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  /* Nothing behind a dialog that is already leaving should be clickable, and
+     neither should the dialog itself. */
+  pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay.closing .modal-dialog {
+  animation: none;
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
 }
 
 .deploy-dialog {
@@ -5852,7 +6226,10 @@ select.field-control:has(option[value=""]:checked) {
   z-index: 1000;
   background: var(--scrim);
   opacity: 0;
-  transition: opacity 200ms ease-out;
+  /* Bidirectional: NewAppPanel takes `is-open` back off (and defers its own
+     unmount by PANEL_EXIT_MS, lib/exit-animation) so the same rule slides the
+     panel out again. */
+  transition: opacity var(--dur-slow) var(--ease-out);
 }
 
 .app-panel-overlay.is-open {
@@ -5871,7 +6248,7 @@ select.field-control:has(option[value=""]:checked) {
   border-left: 1px solid var(--border);
   box-shadow: 0 0 40px var(--shadow-lg);
   transform: translateX(100%);
-  transition: transform 200ms ease-out;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 .app-panel-overlay.is-open .app-panel {

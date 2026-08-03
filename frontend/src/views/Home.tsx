@@ -17,7 +17,10 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
 import { isMod, MOD_LABEL } from "../lib/platform";
+import { useDeferredClose } from "../lib/hooks";
+import { PANEL_EXIT_MS } from "../lib/exit-animation";
 import { AppCard } from "../components/AppCard";
+import { SkeletonLines } from "../components/Skeleton";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -402,6 +405,10 @@ const APP_STEPS: { title: string; desc: string }[] = [
 // exists (session error or not) so the caller's list can refresh underneath —
 // it never closes the panel, whose own success/error state still has to be read.
 export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+  // Slide OUT as well as in. The caller unmounts this panel, so closing is
+  // deferred by the slide duration and `is-open` comes off immediately — the
+  // same CSS that animated the entry runs backwards (lib/exit-animation).
+  const { closing, requestClose } = useDeferredClose(onClose, PANEL_EXIT_MS);
   const [name, setName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
@@ -466,11 +473,11 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
   // exactly like the modal chassis this panel replaced.
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onClose();
+      if (e.key === "Escape" && !busy) requestClose();
     };
     document.addEventListener("keydown", onDocKey);
     return () => document.removeEventListener("keydown", onDocKey);
-  }, [busy, onClose]);
+  }, [busy, requestClose]);
 
   // Cmd/Ctrl+Enter submits from either field (plain Enter in the textarea
   // inserts a newline as usual).
@@ -483,9 +490,9 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
 
   return createPortal(
     <div
-      className={"app-panel-overlay" + (open ? " is-open" : "")}
+      className={"app-panel-overlay" + (open && !closing ? " is-open" : "")}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !busy) onClose();
+        if (e.target === e.currentTarget && !busy) requestClose();
       }}
     >
       <div
@@ -506,7 +513,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
             aria-label="Close"
             title="Close"
             disabled={busy}
-            onClick={onClose}
+            onClick={requestClose}
           >
             ✕
           </button>
@@ -586,7 +593,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
           <span className="app-panel-hint">
             <kbd>{MOD_LABEL}</kbd> + <kbd>↵</kbd> to create
           </span>
-          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy}>
+          <button type="button" className="btn btn-secondary" onClick={requestClose} disabled={busy}>
             Cancel
           </button>
           <button type="button" className="btn btn-primary" onClick={create} disabled={!canCreate}>
@@ -739,7 +746,7 @@ export default function Home({ config }: { config: Config }) {
             }
           />
           {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-          {apps.status === "loading" && <div className="home-loading">Loading…</div>}
+          {apps.status === "loading" && <SkeletonLines rows={3} label="Loading apps" />}
           {apps.status === "ok" && apps.data.apps.length === 0 && (
             <div className="home-empty">
               No apps yet. Describe one in the box above — it lands in{" "}

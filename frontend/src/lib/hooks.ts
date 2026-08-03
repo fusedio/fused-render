@@ -12,8 +12,9 @@
 // (the injected runtime writes params through the parent's history object,
 // which fires no native event) — that wrapping is load-bearing for the
 // layout modes and the update-bookmark flow, not just for these hooks.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NAV_EVENT } from "./router";
+import { createCloseDeferrer } from "./exit-animation";
 
 function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -107,6 +108,32 @@ export function useRefreshOnReturn(cb: () => void): void {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, []);
+}
+
+// Exit animation for an overlay whose CALLER owns the unmount (every dialog is
+// `{open && <Modal …/>}`, so the overlay can't hold itself on screen — see
+// lib/exit-animation). Returns `closing` — true while the exit runs, i.e. the
+// frame budget the `.closing` CSS has to play in — and `requestClose`, which
+// every close path (Esc, backdrop, ✕) calls INSTEAD of onClose.
+//
+// The deferrer is created once and reads `onClose` through a ref, so an inline
+// arrow closure as onClose (what every call site passes) doesn't tear down and
+// rebuild a pending exit mid-animation.
+export function useDeferredClose(
+  onClose: () => void,
+  durationMs: number,
+): { closing: boolean; requestClose: () => void } {
+  const [closing, setClosing] = useState(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const deferrer = useMemo(
+    () => createCloseDeferrer(durationMs, () => closeRef.current(), setClosing),
+    [durationMs],
+  );
+  // Drop a pending close on unmount: the caller may have unmounted the overlay
+  // for its own reasons (a navigation) and the timer must not fire into it.
+  useEffect(() => () => deferrer.cancel(), [deferrer]);
+  return { closing, requestClose: deferrer.request };
 }
 
 // Tab title reflects whatever's on screen (a file/dir name, or a static

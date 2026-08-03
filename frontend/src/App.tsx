@@ -437,6 +437,17 @@ export default function App({ config }: { config: Config }) {
     return () => clearTimeout(id);
   }, [pathname]);
 
+  // Route fade (A5). Every route hard-remounts on the nav epoch, so a cross-fade
+  // between old and new content is impossible — instead #content plays a short
+  // fade-in (shell.css) so a navigation cut reads as intentional rather than as
+  // a flicker. A CSS animation only replays on a NEWLY CREATED element, and the
+  // `<div id="content">` wrappers below outlive an epoch change (only their
+  // keyed child remounts), hence `key={epoch}` on each of them. StatView's own
+  // #content needs no key: StatView is already keyed on epoch+fsPath.
+  //
+  // Deliberately keyed on the nav epoch and nothing else: an iframe writing view
+  // params bumps useUrlVersion, which re-renders chrome without remounting, so
+  // param changes never re-trigger the fade.
   let main;
   if (isPanel) {
     main = (
@@ -444,7 +455,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Panel" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <Panel key={epoch} config={config} />
         </div>
       </>
@@ -455,7 +466,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Tabs" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <Tabs key={epoch} config={config} />
         </div>
       </>
@@ -469,7 +480,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Preferences" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <Preferences key={epoch} />
         </div>
       </>
@@ -482,7 +493,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Templates" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <Templates key={epoch} />
         </div>
       </>
@@ -494,7 +505,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Mounts" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <Mounts key={epoch} />
         </div>
       </>
@@ -504,7 +515,7 @@ export default function App({ config }: { config: Config }) {
     // itself (old /view/_home sentinel redirects here above). No breadcrumb
     // bar: no path/bookmark actions make sense above a landing page.
     main = (
-      <div id="content">
+      <div id="content" key={epoch}>
         <Home key={epoch} config={config} />
       </div>
     );
@@ -512,7 +523,7 @@ export default function App({ config }: { config: Config }) {
     // Apps hub — same chrome-free treatment as Home: no breadcrumb bar, no
     // sidebar (excluded below), the page owns its own header and back link.
     main = (
-      <div id="content">
+      <div id="content" key={epoch}>
         <Apps key={epoch} />
       </div>
     );
@@ -525,7 +536,7 @@ export default function App({ config }: { config: Config }) {
         <div id="breadcrumb">
           <StaticBreadcrumb label="Bookmark" />
         </div>
-        <div id="content">
+        <div id="content" key={epoch}>
           <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
         </div>
       </>
@@ -534,7 +545,7 @@ export default function App({ config }: { config: Config }) {
     main = (
       <>
         <div id="breadcrumb" />
-        <div id="content">
+        <div id="content" key={epoch}>
           <div className="status-message error">Unrecognized URL: {pathname}</div>
         </div>
       </>

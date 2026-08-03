@@ -21,6 +21,8 @@ import {
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
+import { useDeferredClose } from "../../lib/hooks";
+import { OVERLAY_EXIT_MS } from "../../lib/exit-animation";
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -59,6 +61,15 @@ export function Modal({
   closeTitle,
 }: ModalProps) {
   const titleId = useId();
+  // Exit animation. Callers render this as `{open && <Modal …/>}`, so the modal
+  // cannot keep itself mounted — it defers the onClose that makes the caller
+  // unmount it, and paints `.closing` in the meantime (lib/exit-animation).
+  // Consequences worth knowing: the caller's state (and therefore the
+  // overlay-lock count in lib/ui-overlay, which is keyed on that state) stays
+  // held for the whole exit, and focus restore still runs on the real unmount.
+  // Only the chassis' own close paths (Esc / backdrop / ✕) animate; a caller
+  // that calls its own onClose from a footer action closes immediately.
+  const { closing, requestClose } = useDeferredClose(onClose, OVERLAY_EXIT_MS);
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<Element | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -136,8 +147,8 @@ export function Modal({
       confirmTimer.current = window.setTimeout(() => setConfirmClose(false), 2000);
       return;
     }
-    onClose();
-  }, [busy, dirty, confirmClose, onClose]);
+    requestClose();
+  }, [busy, dirty, confirmClose, requestClose]);
 
   // Esc is handled at the document level (bubble phase), not on the dialog
   // subtree — so it keeps working even if focus momentarily escapes to <body>.
@@ -185,7 +196,7 @@ export function Modal({
   // leaking into the dialog chrome (boxed ✕ on Deploy only).
   return createPortal(
     <div
-      className="modal-overlay deploy-overlay"
+      className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) attemptClose();
       }}

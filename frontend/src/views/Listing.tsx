@@ -45,6 +45,8 @@ import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
+import { appearedKeys, useFlip, FLIP_KEY_ATTR } from "../lib/flip";
+import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "../lib/search-hold";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -106,6 +108,43 @@ type SortOrder = "asc" | "desc";
 // bottom reveals the next page (see the sentinel row below); the full ranked
 // list always exists in memory for the count text.
 const PAGE_SIZE = 250;
+
+// Above this many rendered rows the FLIP reorder animation is dropped. Measuring
+// every row's offsetTop on each commit is one forced layout, but the per-row
+// transform (a compositing layer each) is not free — on a listing this long the
+// glide costs more than the snap it replaces.
+const FLIP_MAX_ROWS = 600;
+
+// Minimum gap between commits of the RENDERED search ranking while a walk
+// streams (see the throttle in the component). Longer than STREAM_FLUSH_MS on
+// purpose: that one bounds how often results are re-scored, this one bounds how
+// often the rows on screen are allowed to move.
+const RERANK_COMMIT_MS = 280;
+
+// How long a row that just appeared in the folder keeps its tint. Long enough to
+// catch the eye if you weren't looking at that part of the list, short enough
+// that it doesn't become part of the row's normal appearance.
+const ROW_NEW_MS = 1500;
+
+// Where the scroll position is pinned across a dir-watch refresh: the lead
+// (selected) row, or failing that the topmost row still in view. Returns null
+// when there is nothing to anchor to (empty or unmounted listing).
+function measureScrollAnchor(
+  scroller: HTMLElement,
+): { key: string; top: number; scrollTop: number } | null {
+  let el = scroller.querySelector<HTMLElement>("tr.row.lead");
+  if (!el) {
+    for (const row of scroller.querySelectorAll<HTMLElement>(`[${FLIP_KEY_ATTR}]`)) {
+      if (row.offsetTop + row.offsetHeight > scroller.scrollTop) {
+        el = row;
+        break;
+      }
+    }
+  }
+  const key = el?.getAttribute(FLIP_KEY_ATTR);
+  if (!el || !key) return null;
+  return { key, top: el.offsetTop, scrollTop: scroller.scrollTop };
+}
 
 // Debounce for mirroring the query into the URL. Safari rate-limits
 // history.replaceState (~100 calls / 30s, then it THROWS); per-keystroke
@@ -861,6 +900,7 @@ export default function Listing({
     const cursor = state.cursor;
     const gen = refresh; // discard the response if a refresh supersedes it
     setLoadingMore(true);
+    skipNewCue.current = true; // an appended page isn't a dir-watch change
     listDir(fsPath, cursor).then(
       (data) => {
         if (refreshRef.current !== gen) return; // stale: a refresh replaced the listing
@@ -1067,12 +1107,16 @@ export default function Listing({
     setViewState(fsPath, "?" + saved.toString());
   };
 
+  // Search headers cycle asc → desc → relevance. Relevance (the fuzzy rank) is
+  // the mode search results are actually FOR, and before this there was no way
+  // back to it short of retyping the query — the toggle only ever flipped
+  // between two column orders.
   const setSearchSortKey = (key: SortKey) => {
-    setSearchSort((prev) =>
-      prev && prev.sort === key
-        ? { sort: key, order: prev.order === "asc" ? "desc" : "asc" }
-        : { sort: key, order: "asc" }
-    );
+    setSearchSort((prev) => {
+      if (!prev || prev.sort !== key) return { sort: key, order: "asc" };
+      if (prev.order === "asc") return { sort: key, order: "desc" };
+      return null;
+    });
   };
 
   // Incremental-scoring cache for the streamed validWalk. As long as the query,
@@ -1124,13 +1168,93 @@ export default function Listing({
     });
   }, [searching, q, validWalk, searchSort]);
 
-  const visibleHits = useMemo(() => hits.slice(0, visibleCount), [hits, visibleCount]);
+  // --- Streaming re-rank throttle (B4) --------------------------------------
+  // Every stream flush re-scores the newly arrived entries and merges them into
+  // the ranked list, which reshuffles the visible rows several times a second —
+  // unreadable on its own, and worse now that the rows animate. The RENDERED
+  // ranking is therefore committed at most once per RERANK_COMMIT_MS. The
+  // accumulation underneath and the live "N matches · M scanned…" counter both
+  // keep running at full speed: they cost nothing and they are the honest
+  // progress signal.
+  //
+  // The committed ranking carries the QUERY it was computed for. That tag is
+  // load-bearing for the hold below and it has to be committed WITH the data:
+  // on the first render after `q` changes this state still holds the previous
+  // query's rows (this effect hasn't run yet), so anything that tags it at
+  // render time labels the old query's rows with the new query. See
+  // lib/search-hold.
+  const [rankedForRender, setRankedForRender] = useState<QueryTagged<SearchHit>>(() => ({
+    q,
+    items: hits,
+  }));
+  const lastRankCommit = useRef(0);
+  // Declared BEFORE the commit effect so it runs first in the same flush: a
+  // query change (or a sort change) is a direct response to a gesture and must
+  // paint immediately, never wait out a throttle window opened by the stream.
+  useEffect(() => {
+    lastRankCommit.current = 0;
+  }, [q, searchSort]);
+  useEffect(() => {
+    // Only a streaming walk churns. Anything else (settled, errored, or
+    // invalidated to idle) commits at once — there is nothing left to smooth
+    // and the final ranking must not be held back.
+    if (validWalk.status !== "streaming") {
+      lastRankCommit.current = 0;
+      setRankedForRender({ q, items: hits });
+      return;
+    }
+    const wait = RERANK_COMMIT_MS - (Date.now() - lastRankCommit.current);
+    const commit = () => {
+      lastRankCommit.current = Date.now();
+      setRankedForRender({ q, items: hits });
+    };
+    if (wait <= 0) {
+      commit(); // includes the first flush of a stream — first paint isn't delayed
+      return;
+    }
+    const id = window.setTimeout(commit, wait);
+    return () => window.clearTimeout(id);
+  }, [hits, q, validWalk.status]);
+
+  // --- Stale-while-revalidate for search results (B3) -----------------------
+  // A dir-watch event bumps `refresh`, which makes validWalk read idle for the
+  // stale generation, which collapses `hits` to [] — so the entire visible
+  // result list used to blank to "Searching…" while the tree re-walked, for as
+  // long as that takes on a big folder. Hold the last ranked answer and keep
+  // rendering it (dimmed, with the spinner) until the fresh one is ready.
+  //
+  // This changes only what is DISPLAYED. The invalidation machinery is
+  // untouched: a stale walk is still never scored against a new tree — `hits`
+  // remains derived from validWalk alone, and these held rows are not fed back
+  // into scoring.
+  //
+  // Both halves of the decision — what to retain, and what to render — live in
+  // lib/search-hold, pure and query-tagged: rows are only ever shown under the
+  // query they were computed for, so the ONE thing this must never do (show the
+  // previous query's matches under a new query) is structurally impossible
+  // rather than a condition someone has to remember. A query change falls
+  // through to "Searching…" exactly as before; only a same-query invalidation
+  // holds. The hold applies only while the current-generation walk is unsettled
+  // — a COMPLETED walk with no hits is a real "no matches" answer (the file was
+  // just deleted, say) and replaces the held rows.
+  const heldHits = useRef<QueryTagged<SearchHit> | null>(null);
+  heldHits.current = nextHeldHits(searching, q, rankedForRender, heldHits.current);
+  const walkUnsettled = validWalk.status === "idle" || validWalk.status === "streaming";
+  const { hits: displayHits, showingHeld } = resolveDisplayedHits(
+    searching,
+    q,
+    rankedForRender,
+    heldHits.current,
+    walkUnsettled,
+  );
+
+  const visibleHits = useMemo(() => displayHits.slice(0, visibleCount), [displayHits, visibleCount]);
 
   // Reveal the next page when the sentinel row (rendered only while more rows
   // exist) scrolls into view. rootMargin pre-triggers a bit before the bottom
   // so the next page is usually mounted by the time the user reaches it.
   const sentinelRef = useRef<HTMLTableRowElement | null>(null);
-  const hasMore = searching && hits.length > visibleCount;
+  const hasMore = searching && displayHits.length > visibleCount;
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -1200,10 +1324,68 @@ export default function Listing({
   // selection). Only the transient `loading` status suppresses reconcile.
   const listingLoaded = searching ? true : state.status !== "loading";
 
+  // FLIP the rows to their new slots whenever the rendered set changes: a column
+  // sort, a dir-watch refresh of the plain listing, or a streaming search
+  // re-rank (which B4 throttles, so the glide has time to read). navRows is the
+  // rendered order itself, so one signal covers all three; growing it by a page
+  // moves nothing already on screen, so paging animates nothing.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useFlip(scrollRef, navRows, navRows.length <= FLIP_MAX_ROWS);
+
+  // Dir-watch change cue (B5). A refresh that adds entries used to slot them in
+  // silently — a file that just landed in the folder was indistinguishable from
+  // one that had been there all along. Newly appeared rows carry `.row-new` for
+  // ROW_NEW_MS (a tint that fades out; removals need no cue beyond the FLIP).
+  // Names are the plain listing's row identity. The FIRST listing of a folder is
+  // never "new" — appearedKeys returns nothing for a null previous list.
+  const prevNamesRef = useRef<string[] | null>(null);
+  const [newNames, setNewNames] = useState<Set<string>>(() => new Set());
+  // Set by loadMore: an appended page is the user's own gesture, and tinting
+  // 250 rows they just asked for is noise, not a cue.
+  const skipNewCue = useRef(false);
+  useEffect(() => {
+    if (state.status !== "ok") return;
+    const names = state.entries.map((e) => e.name);
+    const fresh = skipNewCue.current ? new Set<string>() : appearedKeys(prevNamesRef.current, names);
+    skipNewCue.current = false;
+    prevNamesRef.current = names;
+    if (fresh.size === 0) return;
+    setNewNames(fresh);
+    const id = window.setTimeout(() => setNewNames(new Set()), ROW_NEW_MS);
+    return () => window.clearTimeout(id);
+  }, [state]);
+
+  // Scroll anchoring (B5). A dir-watch refresh that inserts or removes rows
+  // ABOVE the viewport shifts everything below it, so the rows the user was
+  // reading slid out from under them. Re-apply the scroll offset the anchor row
+  // had. The anchor is re-measured on EVERY commit (it has to be current), but
+  // the correction is applied only when the refresh generation changed: a sort
+  // or a page reveal is the user's own gesture and must not be undone.
+  const anchorRef = useRef<{ key: string; top: number; scrollTop: number } | null>(null);
+  const anchorGenRef = useRef(refresh);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const prev = anchorRef.current;
+    if (prev && refresh !== anchorGenRef.current) {
+      const el = scroller.querySelector<HTMLElement>(
+        `[${FLIP_KEY_ATTR}="${CSS.escape(prev.key)}"]`,
+      );
+      if (el) {
+        const shift = el.offsetTop - prev.top;
+        if (shift !== 0) scroller.scrollTop = prev.scrollTop + shift;
+      }
+    }
+    anchorGenRef.current = refresh;
+    anchorRef.current = measureScrollAnchor(scroller);
+  }, [navRows, refresh]);
+
   // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
   // row (`.lead`), not merely the first selected one: extending a Shift-range
   // downward must keep the moving end visible, and the top of the range is
   // usually the one that would otherwise win a `.selected` query.
+  // row. This is also what keeps the selection in view across a SORT: navRows is
+  // a dependency, and a sort click produces a new navRows.
   useEffect(() => {
     if (!selectedPath) return;
     (
@@ -1949,15 +2131,17 @@ export default function Listing({
           </td>
         </tr>
       );
-    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
-      if (hits.length) {
-        body = (
-          <>
+    } else if (displayHits.length) {
+      // Rows exist: either the fresh ranking, or the held one from the same
+      // query while a refresh-invalidated walk re-runs (showingHeld).
+      body = (
+        <>
             {visibleHits.map(({ entry, positions }) => {
               const childPath = base + "/" + entry.rel;
               return (
                 <tr
                   key={entry.rel}
+                  data-flip-key={childPath}
                   className={
                     "row" +
                     (selectedSet.has(childPath) ? " selected" : "") +
@@ -2009,27 +2193,26 @@ export default function Listing({
                 </td>
               </tr>
             )}
-          </>
-        );
-      } else {
-        // No matches. Say so honestly: distinguish "still looking" (stream
-        // running) and "the walk didn't even cover everything" (truncated) —
-        // the old UI showed a bare "No matches" even when the file existed
-        // in a region the capped walk never reached.
-        const message =
-          validWalk.status === "streaming"
-            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
-            : validWalk.truncated
-            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
-            : "No matches";
-        body = (
-          <tr>
-            <td colSpan={3} className="status-message">
-              {message}
-            </td>
-          </tr>
-        );
-      }
+        </>
+      );
+    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
+      // No matches. Say so honestly: distinguish "still looking" (stream
+      // running) and "the walk didn't even cover everything" (truncated) —
+      // the old UI showed a bare "No matches" even when the file existed
+      // in a region the capped walk never reached.
+      const message =
+        validWalk.status === "streaming"
+          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          : validWalk.truncated
+          ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+          : "No matches";
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            {message}
+          </td>
+        </tr>
+      );
     } else {
       body = (
         <tr>
@@ -2062,8 +2245,10 @@ export default function Listing({
       return (
         <tr
           key={entry.name}
+          data-flip-key={childPath}
           className={
             (entry.ignored ? "row ignored" : "row") +
+            (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
             (cutSet.has(childPath) ? " cut" : "") +
@@ -2192,6 +2377,26 @@ export default function Listing({
             <span className="listing-search-count">{sel.paths.length} selected</span>
           )}
         </div>
+        {/* Current result ordering, and the way back to relevance. Without it
+            "no arrow anywhere" was the only signal that results were in fuzzy
+            rank order, and a column sort had no explicit escape. */}
+        {searching && (
+          <button
+            type="button"
+            className={"listing-sort-chip" + (searchSort ? " sorted" : "")}
+            disabled={!searchSort}
+            title={
+              searchSort
+                ? "Results are column-sorted — click for relevance order"
+                : "Results are in relevance order (best match first)"
+            }
+            onClick={() => setSearchSort(null)}
+          >
+            {searchSort
+              ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
+              : "relevance"}
+          </button>
+        )}
         <button
           type="button"
           className={"listing-pane-toggle" + (pane.on ? " active" : "")}
@@ -2204,7 +2409,10 @@ export default function Listing({
       </div>
       <div className="listing-split" ref={splitRef}>
         <div
-          className={"listing-scroll" + (isStale ? " listing-stale" : "")}
+          ref={scrollRef}
+          /* Dimmed both when the deferred render lags a keystroke and while
+             held (pre-refresh) results stand in for a re-running walk. */
+          className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
           onContextMenu={openBackgroundMenu}
         >
           <table className="listing-table">
@@ -2217,11 +2425,19 @@ export default function Listing({
                     <th
                       key={key}
                       className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
+                      title={
+                        searchSort?.sort === key && searchSort.order === "desc"
+                          ? `Back to relevance order`
+                          : `Sort results by ${label.toLowerCase()}`
+                      }
                       onClick={() => setSearchSortKey(key)}
                     >
                       {label}
+                      {/* One glyph that ROTATES for desc (see .sort-arrow):
+                          swapping ▲ for ▼ replaced the element, so the change
+                          could only ever pop. */}
                       {searchSort?.sort === key && (
-                        <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
+                        <span className={"sort-arrow" + (searchSort.order === "desc" ? " desc" : "")}>▲</span>
                       )}
                     </th>
                   ) : (
@@ -2231,7 +2447,9 @@ export default function Listing({
                       onClick={() => setSort(key)}
                     >
                       {label}
-                      {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
+                      {key === sort && (
+                        <span className={"sort-arrow" + (order === "desc" ? " desc" : "")}>▲</span>
+                      )}
                     </th>
                   )
                 )}

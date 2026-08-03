@@ -265,6 +265,9 @@ interface FolderRowProps {
   folder: BookmarkFolder;
   child?: boolean;
   parentId?: string;
+  // Optimistic expand/collapse state (see isCollapsed in Sidebar): the store's
+  // own `folder.collapsed` lags a click by a store write, so the row is told.
+  collapsed: boolean;
   activeHint: boolean;
   isRenaming: boolean;
   onGlyphClick: (e: React.MouseEvent<HTMLSpanElement>) => void;
@@ -279,10 +282,10 @@ interface FolderRowProps {
 
 // activeHint: folder is collapsed but holds the current view's bookmark —
 // highlight the row so the selection isn't invisible while folded away.
-function FolderRow({ folder, child, parentId, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
+function FolderRow({ folder, child, parentId, collapsed, activeHint, isRenaming, onGlyphClick, onRowClick, onRename, onDelete, onCommitRename, onCancelRename, registerRef, dragProps }: FolderRowProps) {
   return (
     <div
-      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (folder.collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
+      className={"bookmark-row folder-row" + (child ? " child-row" : "") + (collapsed ? " collapsed" : "") + (activeHint ? " active" : "")}
       data-id={folder.id}
       data-parent={child ? parentId : undefined}
       draggable="true"
@@ -753,11 +756,35 @@ export default function Sidebar({ config }: SidebarProps) {
 
   // --- folder row handlers ----------------------------------------------------
 
-  const onFolderGlyphClick = async (e: React.MouseEvent<HTMLSpanElement>, id: string) => {
+  // Expand/collapse is a store write (bookmarks.json, through a serial mutation
+  // queue), and awaiting it before the UI moved meant the chevron and the
+  // children lagged the click by a round trip. Flip optimistically instead: the
+  // override wins over the store's value until the write lands and the store
+  // notify re-renders with the same answer. Keyed per id, so two folders toggled
+  // in quick succession don't clobber each other.
+  const [collapseOverride, setCollapseOverride] = useState<Record<string, boolean>>({});
+  const isCollapsed = (folder: BookmarkFolder): boolean =>
+    collapseOverride[folder.id] ?? !!folder.collapsed;
+  const applyToggle = async (folder: BookmarkFolder) => {
+    const next = !isCollapsed(folder);
+    setCollapseOverride((m) => ({ ...m, [folder.id]: next }));
+    try {
+      await toggleFolder(folder.id);
+      notifyBookmarksChanged();
+    } finally {
+      // Drop the override either way: on success the store now agrees, and on
+      // failure the row must fall back to the truth rather than lie forever.
+      setCollapseOverride((m) => {
+        const { [folder.id]: _dropped, ...rest } = m;
+        return rest;
+      });
+    }
+  };
+
+  const onFolderGlyphClick = (e: React.MouseEvent<HTMLSpanElement>, folder: BookmarkFolder) => {
     e.preventDefault();
     e.stopPropagation(); // don't also trigger the row's open handler
-    await toggleFolder(id);
-    notifyBookmarksChanged();
+    void applyToggle(folder);
   };
 
   // Name or row click opens the folder as tabs, except over the glyph, the
@@ -779,13 +806,12 @@ export default function Sidebar({ config }: SidebarProps) {
     if (!folder || !tabChildren.length) {
       // Nothing to open as tabs, but still expand a collapsed folder so its
       // nested contents become reachable.
-      if (folder && folder.collapsed && folder.children.length) {
-        await toggleFolder(folder.id);
-        notifyBookmarksChanged();
+      if (folder && isCollapsed(folder) && folder.children.length) {
+        void applyToggle(folder);
       }
       return;
     }
-    if (folder.collapsed) await toggleFolder(folder.id); // expand only — never re-collapse
+    if (isCollapsed(folder)) void applyToggle(folder); // expand only — never re-collapse
     // No notifyBookmarksChanged() here: navigateUrl re-renders the sidebar
     // via useUrlVersion (mirrors the vanilla route()-driven re-render).
     navigateUrl(composeFolderTabsUrl(tabChildren));
@@ -997,17 +1023,19 @@ export default function Sidebar({ config }: SidebarProps) {
     list.map((it) => {
       const child = parentId !== null;
       if (isFolder(it)) {
-        const activeHint = it.collapsed && subtreeHoldsActive(it.children);
+        const collapsed = isCollapsed(it);
+        const activeHint = collapsed && subtreeHoldsActive(it.children);
         return (
           <React.Fragment key={it.id}>
             <FolderRow
               folder={it}
               child={child}
               parentId={parentId ?? undefined}
+              collapsed={collapsed}
               activeHint={activeHint}
               isRenaming={renamingId === it.id}
               registerRef={registerRow(it.id)}
-              onGlyphClick={(e) => onFolderGlyphClick(e, it.id)}
+              onGlyphClick={(e) => onFolderGlyphClick(e, it)}
               onRowClick={(e) => onFolderRowClick(e, it)}
               onRename={(e) => {
                 e.preventDefault();
@@ -1018,7 +1046,7 @@ export default function Sidebar({ config }: SidebarProps) {
               onCancelRename={cancelRename}
               dragProps={dragProps(it.id, true, child)}
             />
-            {!it.collapsed && (
+            {!collapsed && (
               <div className="folder-children">{renderItems(it.children, it.id)}</div>
             )}
           </React.Fragment>
@@ -1054,7 +1082,7 @@ export default function Sidebar({ config }: SidebarProps) {
     // Collapsed: the whole sidebar shrinks to a slim strip that expands it
     // back. Still the same #sidebar node, so the <=700px media hide applies.
     return (
-      <nav id="sidebar" className="sidebar-collapsed">
+      <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
           type="button"
           className="sidebar-expand-strip"
@@ -1075,7 +1103,15 @@ export default function Sidebar({ config }: SidebarProps) {
   }
 
   return (
-    <nav id="sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
+    // The collapse/expand width change glides (shell.css); a pointer DRAG must
+    // not, or every pointermove would chase a 200ms transition and the handle
+    // would lag the cursor. `sidebar-no-transition` is that suppression — the
+    // mechanism the comment on `resizing` above has always described.
+    <nav
+      id="sidebar"
+      className={resizing ? "sidebar-no-transition" : undefined}
+      style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
+    >
       <div className="sidebar-brand">
         {/* Logo + name are one click target that goes Home — the front door is
             always one click away from anywhere. The collapse button stays its
