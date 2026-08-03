@@ -790,7 +790,6 @@ def _start(file: str, message: str, session_id: str, model: str,
     cmd = [_claude_bin(), *message_argv,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
-           "--append-system-prompt", _system_prompt(file),
            "--mcp-config", _write_mcp_config(run_dir),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -799,6 +798,12 @@ def _start(file: str, message: str, session_id: str, model: str,
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
            "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
+    # A FILE target gets the scoping system prompt. A DIRECTORY target (the
+    # claude_split app template) deliberately does NOT: the session should be
+    # plain Claude Code in that project — the user's own system prompt,
+    # CLAUDE.md, skills and tools — with cwd (_workdir) as the only scoping.
+    if not os.path.isdir(file):
+        cmd += ["--append-system-prompt", _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
