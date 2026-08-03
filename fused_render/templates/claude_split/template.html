@@ -578,9 +578,13 @@ document.getElementById("home-path").textContent = FILE;
 document.title = "Claude split — " + BASENAME;
 
 // ── left pane: the file's ordinary preview ─────────────────────
-// /embed/<abs path minus leading slash>, each segment URL-encoded.
+// /embed/<abs path minus leading slash>, each segment URL-encoded. Windows
+// paths arrive from app.py with backslashes and a drive letter — normalize
+// drive-letter paths only, same rule as the shell's urlForFsPath (router.ts):
+// on POSIX a backslash is a legal filename character and must round-trip.
 function embedUrl(absPath, query) {
-  const segs = absPath.replace(/^\//, "").split("/").map(encodeURIComponent);
+  const norm = /^[A-Za-z]:[\\/]/.test(absPath) ? absPath.replace(/\\/g, "/") : absPath;
+  const segs = norm.replace(/^\//, "").split("/").filter(Boolean).map(encodeURIComponent);
   const qs = new URLSearchParams(query).toString();
   return "/embed/" + segs.join("/") + (qs ? "?" + qs : "");
 }

@@ -12,11 +12,15 @@ def main(dir: str = ""):
         names = os.listdir(dir)
     except OSError:
         return {"entry": None}
+    # Same filter as the apps API's `_app_entry` (server/routers/apps.py):
+    # non-hidden direct children, `.html` only — a hidden html or a sibling
+    # `.htm` must not change which folders count as apps.
     htmls = [n for n in sorted(names)
-             if n.lower().endswith((".html", ".htm"))
+             if not n.startswith(".")
+             and n.lower().endswith(".html")
              and os.path.isfile(os.path.join(dir, n))]
     for n in htmls:
-        if n.lower() in ("index.html", "index.htm"):
+        if n.lower() == "index.html":
             return {"entry": os.path.join(dir, n)}
     if len(htmls) == 1:
         return {"entry": os.path.join(dir, htmls[0])}
