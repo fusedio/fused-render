@@ -11,7 +11,7 @@ import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
-import { useNavEpoch, useDocumentTitle } from "./lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn } from "./lib/hooks";
 import { useMountHealth } from "./lib/mountHealth";
 import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
@@ -23,6 +23,7 @@ import ShortcutsOverlay from "./components/ShortcutsOverlay";
 import { isMod } from "./lib/platform";
 import { isOverlayOpen } from "./lib/ui-overlay";
 import { getClipboard, setClipboard } from "./lib/fs-clipboard";
+import { reconcileOsClipboard } from "./lib/os-clipboard";
 import { Breadcrumb, StaticBreadcrumb } from "./components/Breadcrumb";
 import Listing from "./views/Listing";
 import Preview from "./views/Preview";
@@ -290,6 +291,19 @@ export default function App({ config }: { config: Config }) {
   // cause a flash, and it only ever writes an attribute — no re-render reaches
   // a live iframe.
   useThemeSync();
+
+  // Adopt files copied in the native file manager (SPEC §3). Returning to the
+  // app is the only moment the system clipboard can have changed from the
+  // user's point of view, and useRefreshOnReturn already coalesces the doubled
+  // focus/visibilitychange pair. It deliberately skips mount, so the app's
+  // first read is the effect below — otherwise a copy made in Finder *before*
+  // the window opened would never be seen.
+  useRefreshOnReturn(() => {
+    void reconcileOsClipboard();
+  });
+  useEffect(() => {
+    void reconcileOsClipboard();
+  }, []);
 
   // Mod+K cheat sheet. Owned by App, not Listing: it documents the whole shell
   // (breadcrumb, history, view chords), so it has to open from any route — a

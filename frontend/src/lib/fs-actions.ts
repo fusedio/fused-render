@@ -201,7 +201,9 @@ function clearClipboardIfDeleted(deleted: string): void {
   if (!clip) return;
   const kept = clip.paths.filter((p) => p !== deleted && !p.startsWith(deleted + "/"));
   if (kept.length === clip.paths.length) return;
-  setClipboard(kept.length ? { ...clip, paths: kept } : null);
+  // Not mirrored to the OS: this is repairing our own reference after a
+  // delete, not the user copying something. See setClipboard's mirrorToOs.
+  setClipboard(kept.length ? { ...clip, paths: kept } : null, false);
 }
 
 // After a successful rename/move, repoint the module clipboard if it was
@@ -226,7 +228,9 @@ export function remapClipboardPath(oldPath: string, newPath: string): void {
     }
     return p;
   });
-  if (changed) setClipboard({ ...clip, paths });
+  // Not mirrored, for the same reason as clearClipboardIfDeleted: a rename is
+  // not a copy gesture, and the OS clipboard belongs to whoever last wrote it.
+  if (changed) setClipboard({ ...clip, paths }, false);
 }
 
 // Turn a raw fs-action failure into a human sentence for the toast. The server

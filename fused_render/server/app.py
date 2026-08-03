@@ -36,6 +36,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -325,5 +326,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(env_router)
     app.include_router(ai_router)
     app.include_router(export_router)
+    # The OS clipboard bridge (routers/clipboard.py): /api/clipboard/files, the
+    # local-machine seam that lets a Copy here paste in Finder/Explorer and a
+    # copy there paste here (SPEC §3).
+    app.include_router(clipboard_router)
 
     return app
