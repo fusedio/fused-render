@@ -20,13 +20,20 @@ Commits are scoped HARD to app dirs: exactly two levels under fused_dir(),
 with a `.git` of their own. A path anywhere else — including a user's real
 repository opened in the editor — is never committed to.
 
-Subprocess discipline: `git -C <dir>` instead of cwd=, close_fds=False, no
-start_new_session — keeps Popen on the posix_spawn path (no fork), because the
-server process has libproj resident and fork() runs PROJ's atfork handler into
-a SIGSEGV (see apps.py's _SESSION_HELPER comment).
+Subprocess discipline: git runs through os.posix_spawnp directly, NEVER
+subprocess. The server process gets libproj resident (importing the fused
+engine pulls geopandas→pyproj, and prefs' availability probe does that
+in-process), and from then on fork() runs PROJ's pthread_atfork child
+handler into a SIGSEGV before exec — subprocess.Popen forks here on macOS,
+so every `git add` died rc=-11 with empty stderr the moment the shell first
+polled /api/prefs (see apps.py's _SESSION_HELPER comment for the same crash;
+verified live in the field 2026-08-03). posix_spawn does not run atfork
+handlers, so this path stays alive no matter what the process has loaded.
 """
 import logging
 import os
+import selectors
+import signal
 import subprocess
 import time
 
@@ -51,11 +58,56 @@ _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 _GITIGNORE = "*.html.json\n"
 
 
+def _spawn(argv: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """subprocess.run(capture_output=True) built on os.posix_spawnp — see the
+    module docstring for why fork() (and therefore subprocess) is off-limits
+    here. Kills the child and returns rc=-SIGKILL on timeout."""
+    r_out, w_out = os.pipe()
+    r_err, w_err = os.pipe()
+    try:
+        pid = os.posix_spawnp(
+            argv[0], argv, dict(os.environ),
+            file_actions=[
+                (os.POSIX_SPAWN_DUP2, w_out, 1),
+                (os.POSIX_SPAWN_DUP2, w_err, 2),
+            ])
+    except Exception:
+        os.close(r_out)
+        os.close(r_err)
+        raise
+    finally:
+        os.close(w_out)
+        os.close(w_err)
+    buf = {r_out: bytearray(), r_err: bytearray()}
+    sel = selectors.DefaultSelector()
+    sel.register(r_out, selectors.EVENT_READ)
+    sel.register(r_err, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    try:
+        while sel.get_map():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                os.kill(pid, signal.SIGKILL)
+                break
+            for key, _ in sel.select(left):
+                chunk = os.read(key.fd, 65536)
+                if chunk:
+                    buf[key.fd] += chunk
+                else:
+                    sel.unregister(key.fd)
+    finally:
+        sel.close()
+        os.close(r_out)
+        os.close(r_err)
+    rc = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+    return subprocess.CompletedProcess(
+        argv, rc,
+        buf[r_out].decode("utf-8", "replace"),
+        buf[r_err].decode("utf-8", "replace"))
+
+
 def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", app_dir, *_IDENTITY, *args],
-        capture_output=True, text=True, timeout=_GIT_TIMEOUT, close_fds=False,
-    )
+    return _spawn(["git", "-C", app_dir, *_IDENTITY, *args], _GIT_TIMEOUT)
 
 
 def _git_retry_lock(app_dir: str, *args: str) -> subprocess.CompletedProcess:

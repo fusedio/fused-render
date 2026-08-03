@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import shutil
 import stat as stat_mod
@@ -24,7 +23,6 @@ from fused_render.server.mount import _invalidate_stat_cache, _mount_probe, _mou
 from fused_render.server.walk import _mount_list_error_response
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
 
 
 def _commit_mutation(result, verb: str, *paths) -> None:
@@ -46,8 +44,6 @@ def _commit_mutation(result, verb: str, *paths) -> None:
         if not isinstance(p, str) or not p:
             continue
         app_dir = app_git.app_dir_for(p)
-        # TEMP diagnostic (missed-commit hunt): trace every hook decision.
-        logger.info("commit hook: verb=%s path=%r app_dir=%r", verb, p, app_dir)
         if app_dir is None or app_dir in done:
             continue
         done.add(app_dir)

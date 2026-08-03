@@ -10,6 +10,7 @@ contract under test, so nothing here may raise even on non-repos.
 import importlib.util
 import os
 import subprocess
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,6 +90,30 @@ def test_commit_records_changes_and_noops_when_clean(workspace):
     # Ignored sidecar change alone: still nothing to commit.
     (d / "index.html.json").write_text("{}")
     assert not app_git.commit(str(d / "index.html"), "Edit index.html")
+
+
+def test_commit_survives_a_fork_hostile_process(workspace):
+    # The server ends up with libproj resident (the fused-engine availability
+    # probe imports it), and PROJ's pthread_atfork child handler SIGSEGVs
+    # every fork()ed child before exec — subprocess-based git died rc=-11 in
+    # the field. app_git spawns via os.posix_spawnp, which runs no atfork
+    # handlers. Simulate the hostile process in an isolated child (an atfork
+    # abort cannot be unregistered, so it must not poison this test process).
+    d = _make_app(workspace)
+    (d / "index.html").write_text("<html>v2</html>")
+    script = (
+        "import os, sys\n"
+        "os.register_at_fork(after_in_child=os.abort)\n"
+        "from fused_render import app_git\n"
+        "ok = app_git.commit(sys.argv[1], 'Edit index.html')\n"
+        "sys.exit(0 if ok else 1)\n"
+    )
+    r = subprocess.run([sys.executable, "-c", script,
+                        str(d / "index.html")],
+                       env={**os.environ, "FUSED_RENDER_DIR": str(workspace)},
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert _log(d)[0] == "Edit index.html"
 
 
 def test_commit_never_touches_non_app_repos(workspace, tmp_path):
