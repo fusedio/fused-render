@@ -33,7 +33,9 @@ const PREVIEW_SCALE = 0.25;
 
 export function AppPreviewCard({ app }: { app: AppInfo }) {
   const open = () => {
-    if (app.entry_html) navigate(app.entry_html, { isDir: false });
+    // Folder-first: an app with an entry opens in the claude_split view (app
+    // beside a Claude chat); without one, the plain folder listing.
+    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
     else navigate(app.path, { isDir: true });
   };
   const title = app.title || app.name;
