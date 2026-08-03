@@ -1623,9 +1623,65 @@ table.listing-table th.sorted {
   color: var(--accent);
 }
 
+/* One glyph (▲) for both directions: desc rotates it, so flipping the order
+   turns the arrow over instead of swapping one character for another (a swap
+   replaces the element, and a replaced element can only pop). Moving the arrow
+   to a different column DOES replace it — that one fades in. */
 table.listing-table .sort-arrow {
+  display: inline-block;
   margin-left: 5px;
   font-size: 9px;
+  transition: transform 100ms var(--ease-out);
+  animation: sort-arrow-in 100ms var(--ease-out);
+}
+
+table.listing-table .sort-arrow.desc {
+  transform: rotate(180deg);
+}
+
+@keyframes sort-arrow-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Rows glide to their new slots after a reorder (lib/flip). Higher specificity
+   than the shared hover-transition rule so it wins for the length of the
+   animation; the class is added for exactly FLIP_MS and then removed. */
+table.listing-table tr.row.flip-animating {
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+
+/* Current ordering of the search results, and the click that restores relevance
+   (views/Listing.tsx). Disabled = already in relevance order, i.e. a readout. */
+.listing-sort-chip {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+
+.listing-sort-chip:disabled {
+  cursor: default;
+}
+
+.listing-sort-chip.sorted {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.listing-sort-chip:hover:not(:disabled) {
+  color: var(--fg);
 }
 
 table.listing-table td {

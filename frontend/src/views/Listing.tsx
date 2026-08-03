@@ -45,6 +45,7 @@ import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
+import { useFlip } from "../lib/flip";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -106,6 +107,12 @@ type SortOrder = "asc" | "desc";
 // bottom reveals the next page (see the sentinel row below); the full ranked
 // list always exists in memory for the count text.
 const PAGE_SIZE = 250;
+
+// Above this many rendered rows the FLIP reorder animation is dropped. Measuring
+// every row's offsetTop on each commit is one forced layout, but the per-row
+// transform (a compositing layer each) is not free — on a listing this long the
+// glide costs more than the snap it replaces.
+const FLIP_MAX_ROWS = 600;
 
 // Debounce for mirroring the query into the URL. Safari rate-limits
 // history.replaceState (~100 calls / 30s, then it THROWS); per-keystroke
@@ -1067,12 +1074,16 @@ export default function Listing({
     setViewState(fsPath, "?" + saved.toString());
   };
 
+  // Search headers cycle asc → desc → relevance. Relevance (the fuzzy rank) is
+  // the mode search results are actually FOR, and before this there was no way
+  // back to it short of retyping the query — the toggle only ever flipped
+  // between two column orders.
   const setSearchSortKey = (key: SortKey) => {
-    setSearchSort((prev) =>
-      prev && prev.sort === key
-        ? { sort: key, order: prev.order === "asc" ? "desc" : "asc" }
-        : { sort: key, order: "asc" }
-    );
+    setSearchSort((prev) => {
+      if (!prev || prev.sort !== key) return { sort: key, order: "asc" };
+      if (prev.order === "asc") return { sort: key, order: "desc" };
+      return null;
+    });
   };
 
   // Incremental-scoring cache for the streamed validWalk. As long as the query,
@@ -1200,10 +1211,20 @@ export default function Listing({
   // selection). Only the transient `loading` status suppresses reconcile.
   const listingLoaded = searching ? true : state.status !== "loading";
 
+  // FLIP the rows to their new slots whenever the rendered set changes: a column
+  // sort, a dir-watch refresh of the plain listing, or a streaming search
+  // re-rank (which B4 throttles, so the glide has time to read). navRows is the
+  // rendered order itself, so one signal covers all three; growing it by a page
+  // moves nothing already on screen, so paging animates nothing.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useFlip(scrollRef, navRows, navRows.length <= FLIP_MAX_ROWS);
+
   // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
   // row (`.lead`), not merely the first selected one: extending a Shift-range
   // downward must keep the moving end visible, and the top of the range is
   // usually the one that would otherwise win a `.selected` query.
+  // row. This is also what keeps the selection in view across a SORT: navRows is
+  // a dependency, and a sort click produces a new navRows.
   useEffect(() => {
     if (!selectedPath) return;
     (
@@ -1958,6 +1979,7 @@ export default function Listing({
               return (
                 <tr
                   key={entry.rel}
+                  data-flip-key={childPath}
                   className={
                     "row" +
                     (selectedSet.has(childPath) ? " selected" : "") +
@@ -2062,6 +2084,7 @@ export default function Listing({
       return (
         <tr
           key={entry.name}
+          data-flip-key={childPath}
           className={
             (entry.ignored ? "row ignored" : "row") +
             (selectedSet.has(childPath) ? " selected" : "") +
@@ -2192,6 +2215,26 @@ export default function Listing({
             <span className="listing-search-count">{sel.paths.length} selected</span>
           )}
         </div>
+        {/* Current result ordering, and the way back to relevance. Without it
+            "no arrow anywhere" was the only signal that results were in fuzzy
+            rank order, and a column sort had no explicit escape. */}
+        {searching && (
+          <button
+            type="button"
+            className={"listing-sort-chip" + (searchSort ? " sorted" : "")}
+            disabled={!searchSort}
+            title={
+              searchSort
+                ? "Results are column-sorted — click for relevance order"
+                : "Results are in relevance order (best match first)"
+            }
+            onClick={() => setSearchSort(null)}
+          >
+            {searchSort
+              ? `${SORT_KEYS[searchSort.sort].toLowerCase()} ${searchSort.order}`
+              : "relevance"}
+          </button>
+        )}
         <button
           type="button"
           className={"listing-pane-toggle" + (pane.on ? " active" : "")}
@@ -2204,6 +2247,7 @@ export default function Listing({
       </div>
       <div className="listing-split" ref={splitRef}>
         <div
+          ref={scrollRef}
           className={"listing-scroll" + (isStale ? " listing-stale" : "")}
           onContextMenu={openBackgroundMenu}
         >
@@ -2217,11 +2261,19 @@ export default function Listing({
                     <th
                       key={key}
                       className={"sortable" + (searchSort?.sort === key ? " sorted" : "")}
+                      title={
+                        searchSort?.sort === key && searchSort.order === "desc"
+                          ? `Back to relevance order`
+                          : `Sort results by ${label.toLowerCase()}`
+                      }
                       onClick={() => setSearchSortKey(key)}
                     >
                       {label}
+                      {/* One glyph that ROTATES for desc (see .sort-arrow):
+                          swapping ▲ for ▼ replaced the element, so the change
+                          could only ever pop. */}
                       {searchSort?.sort === key && (
-                        <span className="sort-arrow">{searchSort.order === "asc" ? "▲" : "▼"}</span>
+                        <span className={"sort-arrow" + (searchSort.order === "desc" ? " desc" : "")}>▲</span>
                       )}
                     </th>
                   ) : (
@@ -2231,7 +2283,9 @@ export default function Listing({
                       onClick={() => setSort(key)}
                     >
                       {label}
-                      {key === sort && <span className="sort-arrow">{order === "asc" ? "▲" : "▼"}</span>}
+                      {key === sort && (
+                        <span className={"sort-arrow" + (order === "desc" ? " desc" : "")}>▲</span>
+                      )}
                     </th>
                   )
                 )}
