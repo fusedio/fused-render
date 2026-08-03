@@ -106,3 +106,27 @@ test("an unsupported bridge does not record a token", async () => {
   await settle();
   expect(getLastSeenOsToken()).toBe("previous");
 });
+
+// ---- review findings --------------------------------------------------------
+
+test("bookkeeping after a delete or a rename does not republish to the OS", async () => {
+  // Found in review. Both repair OUR reference and keep op: "copy", so the
+  // default mirror republished them — rewriting a clipboard the user may not
+  // have put there, and on Linux stealing selection ownership from the file
+  // manager that legitimately held it.
+  // fs-actions reaches the router, which reads `location` at module scope —
+  // hence the stub and the dynamic import. These two files are the whole
+  // frontend suite and carry no DOM; adding one for a two-line assertion is a
+  // worse trade than this.
+  (globalThis as { location?: unknown }).location = new URL("http://x/");
+  const { remapClipboardPath } = await import("./fs-actions");
+
+  setClipboard({ paths: ["/a/b.csv", "/a/c.csv"], op: "copy" });
+  await settle();
+  const afterCopy = clipboardCalls().length;
+
+  remapClipboardPath("/a/b.csv", "/a/renamed.csv");
+  await settle();
+  expect(getClipboard()?.paths).toEqual(["/a/renamed.csv", "/a/c.csv"]);
+  expect(clipboardCalls().length).toBe(afterCopy);
+});

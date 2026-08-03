@@ -11,9 +11,19 @@
 // changed from the user's point of view. A copy made while the app is already
 // focused is therefore missed until the next focus change.
 import { readOsClipboard } from "./api";
-import { getLastSeenOsToken, setClipboard, setLastSeenOsToken } from "./fs-clipboard";
+import {
+  getClipboardEpoch,
+  getLastSeenOsToken,
+  setClipboard,
+  setLastSeenOsToken,
+} from "./fs-clipboard";
 
 export async function reconcileOsClipboard(): Promise<void> {
+  // Captured before the read, checked after it. The read is a round-trip to the
+  // server, and the user can copy or cut in the app while it is in flight; what
+  // comes back then describes a moment that has passed, and adopting it would
+  // silently discard the gesture they just made.
+  const epoch = getClipboardEpoch();
   let os;
   try {
     os = await readOsClipboard();
@@ -24,6 +34,10 @@ export async function reconcileOsClipboard(): Promise<void> {
   }
 
   if (!os.supported || os.paths.length === 0) return;
+  // Superseded mid-read (see above). Neither the paths nor the token are
+  // adopted: recording the token would make the NEXT reconcile treat this
+  // clipboard as already seen and skip it for good.
+  if (getClipboardEpoch() !== epoch) return;
   // The token tracks what we last SAW, not what we last wrote. An unchanged
   // clipboard means there is nothing new to adopt — crucially, that leaves a
   // pending in-app cut alone instead of overwriting it with a stale copy on

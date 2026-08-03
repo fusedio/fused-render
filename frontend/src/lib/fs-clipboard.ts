@@ -43,13 +43,34 @@ export function setLastSeenOsToken(token: string): void {
   lastSeenOsToken = token;
 }
 
+// Bumped on every set. Both places that touch the clipboard across an `await` —
+// the focus-time reconcile's read, and the mirror-write's response below —
+// capture this first and drop their result if it moved, because a result
+// computed against a clipboard the user has since replaced is not an update,
+// it's a rewind. Without it a slow read can overwrite a copy or cut made while
+// it was in flight, and a late write can restore a token the next reconcile
+// then reads as "unchanged" and skips.
+let clipboardEpoch = 0;
+
+export function getClipboardEpoch(): number {
+  return clipboardEpoch;
+}
+
 // `mirrorToOs: false` stores the clipboard WITHOUT publishing it back to the
-// system — used by the focus-time reconcile (os-clipboard.ts), which is
-// adopting paths that are already on the OS clipboard. Echoing them back
-// would be a pointless round-trip, and on Linux it would also steal selection
-// ownership from the file manager that legitimately holds it.
+// system. Two kinds of caller need it, and both are "we are not the user
+// copying something":
+//   - the focus-time reconcile (os-clipboard.ts), adopting paths that are
+//     already on the OS clipboard — echoing them back is a pointless round-trip
+//     and on Linux steals selection ownership from the file manager that
+//     legitimately holds it;
+//   - the bookkeeping in fs-actions.ts (clearClipboardIfDeleted,
+//     remapClipboardPath), which is repairing our own reference after a delete
+//     or a rename. The system clipboard belongs to whoever last copied onto it;
+//     rewriting it behind the user's back on an unrelated file operation is not
+//     ours to do.
 export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   clipboard = next;
+  clipboardEpoch++;
   for (const l of listeners) l();
 
   // Mirror a COPY onto the system clipboard so the native file manager can
@@ -64,8 +85,13 @@ export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   // guess. All four Copy call sites (Listing, Preview) route through here, so
   // this one hook covers every one of them.
   if (mirrorToOs && next && next.op === "copy" && next.paths.length > 0) {
+    const epoch = clipboardEpoch;
     writeOsClipboard(next.paths)
       .then((res) => {
+        // Superseded while the write was in flight — the token describes a
+        // clipboard two gestures ago, and adopting it would make the next
+        // reconcile skip a change it should have seen.
+        if (epoch !== clipboardEpoch) return;
         // Only a real write is worth remembering: an unsupported bridge
         // returns an empty token, and storing it would make the next
         // reconcile think the clipboard had changed.

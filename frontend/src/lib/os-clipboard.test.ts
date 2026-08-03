@@ -110,3 +110,60 @@ test("our own copy is not re-adopted on the next focus", async () => {
   await reconcileOsClipboard();
   expect(getClipboard()).toEqual({ paths: ["/a/b.csv"], op: "cut" });
 });
+
+// ---- review findings --------------------------------------------------------
+
+test("a copy made while the reconcile's read is in flight is not overwritten", async () => {
+  // Found in review. The token check happened only AFTER the await, so a read
+  // that started before the user copied still adopted its stale paths on the
+  // way back — silently discarding the gesture they had just made.
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  globalThis.fetch = mock(async (_url: string, init: RequestInit = {}) => {
+    if (init.method === "POST") {
+      return new Response(JSON.stringify({ token: "written", supported: true }), { status: 200 });
+    }
+    await held;
+    return new Response(
+      JSON.stringify({ paths: ["/from/finder"], token: "finder", supported: true }),
+      { status: 200 }
+    );
+  }) as unknown as typeof fetch;
+
+  const reconcile = reconcileOsClipboard();
+  setClipboard({ paths: ["/in/app"], op: "cut" });   // the user, mid-read
+  release!();
+  await reconcile;
+
+  expect(getClipboard()).toEqual({ paths: ["/in/app"], op: "cut" });
+  // And the stale token was NOT recorded: doing so would make the next
+  // reconcile treat that Finder copy as already seen and skip it for good.
+  expect(getLastSeenOsToken()).not.toBe("finder");
+});
+
+test("a superseded mirror-write does not rewind the last-seen token", async () => {
+  // The same race from the other side: the write is fire-and-forget, so its
+  // response can land after a second copy has already published a newer token.
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let post = 0;
+  globalThis.fetch = mock(async (_url: string, init: RequestInit = {}) => {
+    if (init.method === "POST") {
+      post += 1;
+      if (post === 1) {
+        await held;
+        return new Response(JSON.stringify({ token: "first", supported: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ token: "second", supported: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ paths: [], token: "", supported: true }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  setClipboard({ paths: ["/a"], op: "copy" });
+  setClipboard({ paths: ["/b"], op: "copy" });
+  await new Promise((r) => setTimeout(r, 0));
+  release!();
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(getLastSeenOsToken()).toBe("second");
+});
