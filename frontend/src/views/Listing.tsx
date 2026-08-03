@@ -1135,13 +1135,40 @@ export default function Listing({
     });
   }, [searching, q, validWalk, searchSort]);
 
-  const visibleHits = useMemo(() => hits.slice(0, visibleCount), [hits, visibleCount]);
+  // --- Stale-while-revalidate for search results (B3) -----------------------
+  // A dir-watch event bumps `refresh`, which makes validWalk read idle for the
+  // stale generation, which collapses `hits` to [] — so the entire visible
+  // result list used to blank to "Searching…" while the tree re-walked, for as
+  // long as that takes on a big folder. Hold the last ranked answer and keep
+  // rendering it (dimmed, with the spinner) until the fresh one is ready.
+  //
+  // This changes only what is DISPLAYED. The invalidation machinery is
+  // untouched: a stale walk is still never scored against a new tree — `hits`
+  // remains derived from validWalk alone, and these held rows are not fed back
+  // into scoring.
+  //
+  // Tagged with the query they were computed for, because the ONE thing this
+  // must never do is show the previous query's matches under a new query. A
+  // query change gives a different tag and falls through to "Searching…" as
+  // before; only a same-query invalidation holds.
+  const heldHits = useRef<{ q: string; hits: SearchHit[] } | null>(null);
+  if (!searching) heldHits.current = null;
+  else if (hits.length) heldHits.current = { q, hits };
+  // Only while the current-generation walk is genuinely unsettled. A COMPLETED
+  // walk with no hits is a real "no matches" answer (the file was just deleted,
+  // say) and must replace the held rows rather than preserve them forever.
+  const walkUnsettled = validWalk.status === "idle" || validWalk.status === "streaming";
+  const showingHeld =
+    searching && hits.length === 0 && walkUnsettled && heldHits.current?.q === q;
+  const displayHits = showingHeld ? (heldHits.current as { hits: SearchHit[] }).hits : hits;
+
+  const visibleHits = useMemo(() => displayHits.slice(0, visibleCount), [displayHits, visibleCount]);
 
   // Reveal the next page when the sentinel row (rendered only while more rows
   // exist) scrolls into view. rootMargin pre-triggers a bit before the bottom
   // so the next page is usually mounted by the time the user reaches it.
   const sentinelRef = useRef<HTMLTableRowElement | null>(null);
-  const hasMore = searching && hits.length > visibleCount;
+  const hasMore = searching && displayHits.length > visibleCount;
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -1970,10 +1997,11 @@ export default function Listing({
           </td>
         </tr>
       );
-    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
-      if (hits.length) {
-        body = (
-          <>
+    } else if (displayHits.length) {
+      // Rows exist: either the fresh ranking, or the held one from the same
+      // query while a refresh-invalidated walk re-runs (showingHeld).
+      body = (
+        <>
             {visibleHits.map(({ entry, positions }) => {
               const childPath = base + "/" + entry.rel;
               return (
@@ -2031,27 +2059,26 @@ export default function Listing({
                 </td>
               </tr>
             )}
-          </>
-        );
-      } else {
-        // No matches. Say so honestly: distinguish "still looking" (stream
-        // running) and "the walk didn't even cover everything" (truncated) —
-        // the old UI showed a bare "No matches" even when the file existed
-        // in a region the capped walk never reached.
-        const message =
-          validWalk.status === "streaming"
-            ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
-            : validWalk.truncated
-            ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
-            : "No matches";
-        body = (
-          <tr>
-            <td colSpan={3} className="status-message">
-              {message}
-            </td>
-          </tr>
-        );
-      }
+        </>
+      );
+    } else if (validWalk.status === "ok" || validWalk.status === "streaming") {
+      // No matches. Say so honestly: distinguish "still looking" (stream
+      // running) and "the walk didn't even cover everything" (truncated) —
+      // the old UI showed a bare "No matches" even when the file existed
+      // in a region the capped walk never reached.
+      const message =
+        validWalk.status === "streaming"
+          ? `No matches yet — still searching (${validWalk.count.toLocaleString()} entries scanned)`
+          : validWalk.truncated
+          ? `No matches in the first ${validWalk.total.toLocaleString()} entries — this folder tree is too large to search fully`
+          : "No matches";
+      body = (
+        <tr>
+          <td colSpan={3} className="status-message">
+            {message}
+          </td>
+        </tr>
+      );
     } else {
       body = (
         <tr>
@@ -2248,7 +2275,9 @@ export default function Listing({
       <div className="listing-split" ref={splitRef}>
         <div
           ref={scrollRef}
-          className={"listing-scroll" + (isStale ? " listing-stale" : "")}
+          /* Dimmed both when the deferred render lags a keystroke and while
+             held (pre-refresh) results stand in for a re-running walk. */
+          className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
           onContextMenu={openBackgroundMenu}
         >
           <table className="listing-table">
