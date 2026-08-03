@@ -142,6 +142,17 @@ def execute(exec_id, code):
     out = StreamWriter("stdout", exec_id, budget)
     err = StreamWriter("stderr", exec_id, budget)
     saved = sys.stdout, sys.stderr, sys.stdin
+    # write() alone cannot honour FLUSH_S: `print(x); long_work()` writes once
+    # and then nothing evaluates the deadline until the cell ends
+    stop_tick = threading.Event()
+
+    def tick():
+        while not stop_tick.wait(FLUSH_S):
+            out.flush()
+            err.flush()
+
+    ticker = threading.Thread(target=tick, daemon=True)
+    ticker.start()
     try:
         # the swap lives inside the try: an interrupt landing mid-assignment
         # is still caught here and the finally restores the saved trio
@@ -166,6 +177,8 @@ def execute(exec_id, code):
             from matplotlib._pylab_helpers import Gcf
             Gcf.destroy_all()
     finally:
+        stop_tick.set()
+        ticker.join()
         out.flush()
         err.flush()
         sys.stdout, sys.stderr, sys.stdin = saved
