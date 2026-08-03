@@ -100,6 +100,34 @@ def app_dir_for(path: str) -> str | None:
     return os.path.join(root, parts[0], parts[1])
 
 
+def _ensure_excludes(app_dir: str) -> None:
+    """Make sure every _GITIGNORE pattern is excluded in this repo, via the
+    repo-local `.git/info/exclude` — NOT the app's `.gitignore`.
+
+    A repo initialized before a pattern existed keeps its old `.gitignore`
+    (init_repo only writes it when missing), so `git add -A` in commit()
+    would sweep new bookkeeping files (e.g. `.claude-split.json`) into app
+    history. info/exclude is git's file for exactly this: repo-scoped ignore
+    rules that are not project content, so old apps get the new patterns
+    without their (possibly user-edited) `.gitignore` being touched.
+    Idempotent, append-only; best-effort like everything else here."""
+    try:
+        path = os.path.join(app_dir, ".git", "info", "exclude")
+        if not os.path.isdir(os.path.dirname(path)):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                have = {ln.strip() for ln in f}
+        except OSError:
+            have = set()
+        missing = [p for p in _GITIGNORE.splitlines() if p and p not in have]
+        if missing:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n".join(missing) + "\n")
+    except Exception:
+        logger.warning("ensure_excludes failed for %s", app_dir, exc_info=True)
+
+
 def init_repo(app_dir: str) -> bool:
     """git-init `app_dir` and land everything in it as one boilerplate commit.
     True on success; False (never an exception) when git is missing or any
@@ -130,6 +158,9 @@ def commit(path: str, message: str) -> bool:
         app_dir = app_dir_for(path)
         if app_dir is None or not os.path.isdir(os.path.join(app_dir, ".git")):
             return False
+        # Repos initialized before a _GITIGNORE pattern existed must not
+        # sweep new bookkeeping files into history via the add -A below.
+        _ensure_excludes(app_dir)
         r = _git_retry_lock(app_dir, "add", "-A")
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): add failed rc=%s "

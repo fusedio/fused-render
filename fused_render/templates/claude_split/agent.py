@@ -884,6 +884,23 @@ def _commit_turn(file: str, message: str) -> None:
             capture_output=True, text=True, timeout=30, close_fds=False)
 
     try:
+        # Repos initialized before the sidecar patterns existed keep their old
+        # .gitignore, and this sweep's add -A would commit chat bookkeeping
+        # into app history. Mirror app_git._ensure_excludes: append missing
+        # patterns to the repo-local .git/info/exclude (never the user's
+        # .gitignore). Keep the pattern list in step with app_git._GITIGNORE.
+        exclude = os.path.join(app_dir, ".git", "info", "exclude")
+        if os.path.isdir(os.path.dirname(exclude)):
+            try:
+                with open(exclude, encoding="utf-8") as fh:
+                    have = {ln.strip() for ln in fh}
+            except OSError:
+                have = set()
+            missing = [p for p in ("*.html.json", ".claude-split.json")
+                       if p not in have]
+            if missing:
+                with open(exclude, "a", encoding="utf-8") as fh:
+                    fh.write("\n".join(missing) + "\n")
         if git("add", "-A").returncode != 0:
             return
         if git("diff", "--cached", "--quiet").returncode == 0:
