@@ -386,7 +386,9 @@
   @media (hover: hover) {
     .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px var(--accent-dim); }
     .grid figure:hover { transform: translateY(-4px); border-color: rgba(229, 255, 68, 0.4); }
-    .nav-dot:hover::after { background: var(--muted); }
+    /* :not(.active) because this block sits after the .active rule and matches
+       at the same specificity — a bare :hover would grey out the current dot. */
+    .nav-dot:not(.active):hover::after { background: var(--muted); }
     .ticker:hover .ticker-inner { animation-play-state: paused; }
   }
   a:focus-visible, .btn:focus-visible, .tab:focus-visible, .nav-dot:focus-visible {
