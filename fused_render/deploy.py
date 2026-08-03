@@ -433,7 +433,12 @@ def _app_of(page: str) -> tuple[str, str, str] | None:
     them, so they are not apps)."""
     ws = fused_dir()
     abs_page = os.path.abspath(page)
-    rel = os.path.relpath(abs_page, ws)
+    try:
+        rel = os.path.relpath(abs_page, ws)
+    except ValueError:
+        # Windows: a path on a different drive than the workspace has no
+        # relative form — not inside it, same as any other outside path.
+        return None
     parts = rel.split(os.sep)
     if parts[0] == os.pardir or len(parts) < 3:
         return None
@@ -937,9 +942,16 @@ def deploy_page(
             cache_max_age=cache_max_age, allow_clone=allow_clone, named=named,
             fallback=same_env,
         )
-        # Which dev copy this deploy came from — the live copy itself on an
-        # in-place redeploy. UI-facing provenance ("deployed from local/foo").
-        record["source"] = page
+        # Which dev copy this deploy came from — UI-facing provenance
+        # ("deployed from local/foo") AND what preview_deploy's overwrite
+        # check compares against. An in-place redeploy (editing the live copy
+        # directly and redeploying IT) must not overwrite this with the live
+        # path itself — that would orphan the dev copy's identity, so the
+        # overwrite warning would misfire against the app's own dev copy on
+        # its next deploy. Keep whatever source was already recorded (falling
+        # back to this call's page only when there is none yet — e.g. an app
+        # deployed for the first time directly from within the deploy tag).
+        record["source"] = (pointer.get("source") if in_place and pointer else None) or page
         set_deployment(live_page, record)
         # The share is live and the pointer persisted — the deploy succeeded, so
         # the filesystem side commits too (drop the pre-deploy backup). Failures
@@ -1022,6 +1034,11 @@ def revoke_mount(env_name: str, token: str) -> dict:
     and the pointer flip matches any of them — a pointer must never stay
     "active" (stale dot, wrong modal state) for a link that was just taken
     down. Best-effort: an unreadable list degrades to the given token alone.
+
+    Same live-copy cleanup as `revoke_deployment` (best-effort, AFTER the
+    revoke landed): any flipped pointer whose page is inside the `deploy` tag
+    has that live copy removed, so a mount taken down from the account page
+    doesn't leave its app sitting in the deploy folder looking still-live.
     """
     aliases = {token}
     try:
@@ -1035,6 +1052,8 @@ def revoke_mount(env_name: str, token: str) -> dict:
                 aliases.add(value)
     _run_share(env_name, ["revoke", token])
 
+    flipped_pages: list[str] = []
+
     def flip(store: dict) -> None:
         for page, record in store.items():
             if (
@@ -1044,8 +1063,13 @@ def revoke_mount(env_name: str, token: str) -> dict:
                 and record.get("status") != "revoked"
             ):
                 store[page] = {**record, "status": "revoked", "updated_at": _now_iso()}
+                flipped_pages.append(page)
 
     _update_store(flip)
+    for flipped_page in flipped_pages:
+        app = _app_of(flipped_page)
+        if app is not None and app[0] == DEPLOY_TAG:
+            shutil.rmtree(_live_dir_for(app[1]), ignore_errors=True)
     return {"env": env_name, "token": token, "status": "revoked"}
 
 

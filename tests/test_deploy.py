@@ -1875,9 +1875,12 @@ def test_redeploy_in_place_from_the_live_copy_does_not_recopy(tmp_path, monkeypa
         "/api/deploy", json={"page": str(h.live_page), "env": "cloud"}, headers=FUSED
     )
     assert resp.status_code == 200, resp.text
-    # The hotfix edit survives (no copy clobbered it) and source == the live page.
+    # The hotfix edit survives (no copy clobbered it). `source` stays the
+    # ORIGINAL dev copy, not this call's live-copy path — an in-place redeploy
+    # must not sever the record's link back to the app's dev copy (see
+    # test_in_place_redeploy_keeps_the_original_source for why).
     assert "hotfix" in h.live_page.read_text(encoding="utf-8")
-    assert resp.json()["source"] == str(h.live_page)
+    assert resp.json()["source"] == str(h.page)
 
 
 def test_revoke_removes_the_live_copy(tmp_path, monkeypatch):
@@ -1902,3 +1905,63 @@ def test_failed_revoke_leaves_the_live_copy(tmp_path, monkeypatch):
     assert resp.status_code == 400
     assert h.live_dir.is_dir()  # still live -> still there
     assert h.pointer()["status"] == "active"
+
+
+# -- bugbot fixes: account revoke, in-place source, cross-drive path ----------
+
+
+def test_revoke_by_token_removes_the_live_copy(tmp_path, monkeypatch):
+    # The account page's revoke (env+token, no page) must clean up the deploy
+    # folder exactly like the Deploy modal's page-based revoke does.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.live_dir.is_dir()
+    h.set_scenario({"revoke": {"token": "abc123", "status": "revoked"}})
+    resp = h.client.post(
+        "/api/deploy/revoke", json={"env": "cloud", "token": "abc123"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert not h.live_dir.exists()
+    assert h.pointer()["status"] == "revoked"
+
+
+def test_in_place_redeploy_keeps_the_original_source(tmp_path, monkeypatch):
+    # Editing the live copy directly and redeploying FROM it must not overwrite
+    # the record's `source` with the live path itself — that would make the
+    # ORIGINAL dev copy's next preview misread itself as "someone else's app".
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+    assert h.pointer()["source"] == str(h.page)
+
+    h.live_page.write_text("<html><body>hotfix</body></html>", encoding="utf-8")
+    h.set_scenario(
+        {
+            "list": [{"token": "abc123", "status": "active"}],
+            "repoint": {"token": "abc123", "status": "active"},
+        }
+    )
+    resp = h.client.post(
+        "/api/deploy", json={"page": str(h.live_page), "env": "cloud"}, headers=FUSED
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"] == str(h.page)  # NOT the live path
+    assert h.pointer()["source"] == str(h.page)
+
+    # The original dev copy's preview must stay silent (it IS the owner).
+    resp = h.client.post("/api/deploy/preview", json={"path": str(h.page)})
+    assert resp.status_code == 200, resp.text
+    assert not any("overwrite" in w for w in resp.json()["warnings"])
+
+
+def test_app_of_returns_none_on_relpath_failure(tmp_path, monkeypatch):
+    # A path with no relative form against the workspace (e.g. a different
+    # drive on Windows raises ValueError from os.path.relpath) must read as
+    # "not inside the workspace", not crash the caller.
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    monkeypatch.setattr(
+        deploy_mod.os.path, "relpath",
+        lambda *a, **k: (_ for _ in ()).throw(ValueError("no relative path")),
+    )
+    assert deploy_mod._app_of(str(tmp_path / "Fused" / "local" / "app" / "x.html")) is None
