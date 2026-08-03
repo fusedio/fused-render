@@ -5,7 +5,9 @@
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
+  getConfig,
   getDeployStatus,
+  listDir,
   rawUrl,
   resolveConditions,
   renameEntry,
@@ -364,6 +366,108 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   );
 }
 
+// --- managed-app scoping for the Deploy button --------------------------------
+// Deploy is scoped server-side to managed apps (<fused_dir>/<tag>/<name>/ —
+// deploy.py's _require_app), so the button only shows where a deploy can
+// actually succeed. The workspace root comes from /api/config, fetched once
+// per document and cached (same value main.tsx already loaded — this avoids
+// threading the Config prop through StatView/Preview for one string).
+
+let workspaceDirPromise: Promise<string> | null = null;
+function workspaceDir(): Promise<string> {
+  if (!workspaceDirPromise)
+    workspaceDirPromise = getConfig().then((c) => c.fused_dir.replace(/\\/g, "/").replace(/\/+$/, ""));
+  return workspaceDirPromise;
+}
+
+function useWorkspaceDir(): string | null {
+  const [dir, setDir] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    workspaceDir()
+      .then((d) => {
+        if (alive) setDir(d);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return dir;
+}
+
+// Segments of fsPath below the workspace root, or null when outside it.
+// Hidden tag/app dirs don't count as apps (the Home listing skips them too).
+function segmentsInWorkspace(fsPath: string, ws: string): string[] | null {
+  if (!fsPath.startsWith(ws + "/")) return null;
+  const parts = fsPath.slice(ws.length + 1).split("/").filter(Boolean);
+  if (parts.length >= 1 && parts[0].startsWith(".")) return null;
+  if (parts.length >= 2 && parts[1].startsWith(".")) return null;
+  return parts;
+}
+
+// A file inside a managed app: <ws>/<tag>/<name>/<...at least one more>.
+function isInsideApp(fsPath: string, ws: string): boolean {
+  const parts = segmentsInWorkspace(fsPath, ws);
+  return parts !== null && parts.length >= 3;
+}
+
+// An app folder itself: exactly <ws>/<tag>/<name>.
+function isAppFolder(fsPath: string, ws: string): boolean {
+  const parts = segmentsInWorkspace(fsPath, ws);
+  return parts !== null && parts.length === 2;
+}
+
+// Deploy button on an app FOLDER's listing header: auto-detects the folder's
+// single top-level .html entry (the same rule as apps.py's _app_entry) and
+// deploys that. Zero or several .html files -> the button still shows (the
+// folder IS an app) but clicking explains and points at the file's own
+// Deploy button instead of guessing which page the user meant.
+function AppFolderDeployButton({ dir }: { dir: string }) {
+  // undefined = listing still in flight (render nothing yet — no flicker),
+  // null = no unambiguous entry, string = the entry page's path.
+  const [entry, setEntry] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    setEntry(undefined);
+    listDir(dir)
+      .then((r) => {
+        if (!alive) return;
+        const htmls = r.entries.filter(
+          (e) => !e.is_dir && !e.name.startsWith(".") && /\.html?$/i.test(e.name),
+        );
+        // A truncated listing only holds a partial page — a lone .html there
+        // proves nothing, so treat it as ambiguous rather than deploy the
+        // wrong page (same caution as Listing's onSingleApp).
+        setEntry(htmls.length === 1 && !r.truncated ? dir + "/" + htmls[0].name : null);
+      })
+      .catch(() => {
+        if (alive) setEntry(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [dir]);
+  if (entry === undefined) return null;
+  if (entry) return <DeployButton fsPath={entry} />;
+  return (
+    <button
+      type="button"
+      className="deploy-btn"
+      title="Deploy this app"
+      onClick={() =>
+        pushToast({
+          msg: "This app folder doesn't have exactly one .html page — open the page you want to deploy and use its Deploy button.",
+          tone: "error",
+        })
+      }
+    >
+      {DEPLOY_ICON}
+      Deploy
+    </button>
+  );
+}
+
 function TemplatePreview({
   fsPath,
   stat,
@@ -392,6 +496,7 @@ function TemplatePreview({
     if (!templates.some((t) => t.mode === mode)) setModeState(defaultEntry.mode);
   }, [templates, mode, defaultEntry.mode]);
   const deployEnabled = useDeployEnabled();
+  const workspace = useWorkspaceDir();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
@@ -571,11 +676,22 @@ function TemplatePreview({
             Directories never deploy (no _render binding exists for one today;
             the guard keeps that true even if a registry ever says otherwise).
             Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
-            entirely unless the user has turned Deploy on. */}
+            entirely unless the user has turned Deploy on — and on the page
+            living inside a managed app (<ws>/<tag>/<name>/…), the only scope
+            the server will deploy (deploy.py's _require_app). */}
         {!stat.is_dir &&
           deployEnabled &&
+          workspace !== null &&
+          isInsideApp(fsPath, workspace) &&
           templates.some((t) => t.mode === "_render") &&
           /\.html?$/i.test(fsPath) && <DeployButton fsPath={fsPath} />}
+        {/* The app folder itself deploys too: auto-detects its single .html
+            entry (several/none -> the button explains instead of guessing). */}
+        {stat.is_dir &&
+          isListing &&
+          deployEnabled &&
+          workspace !== null &&
+          isAppFolder(fsPath, workspace) && <AppFolderDeployButton dir={fsPath} />}
         <ModeSwitcher
           entries={templates.map((t) => ({ mode: t.mode, icon: templateModeIcon(t), pending: isPending(t) }))}
           active={entry.mode}
