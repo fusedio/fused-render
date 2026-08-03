@@ -501,6 +501,30 @@ def _stage_live_copy(src_dir: str, live_dir: str) -> str | None:
     return bak if had_prior else None
 
 
+def _deploy_folder_owner_matches(tag: str, name: str) -> bool:
+    """Is `<workspace>/deploy/<name>/` already populated by files sourced from
+    THIS dev app (`tag`, `name`)?
+
+    A multi-page app has one pointer per deployed page (share targets are
+    per-entrypoint, so the store keys on the full live-copy path, rel included)
+    — checking only the SPECIFIC page's own record would misread a sibling
+    page in the SAME app folder that hasn't been individually deployed yet as
+    a foreign app. So this checks every stored record whose live path falls
+    under the folder: any one of them sourced from (tag, name) is enough to
+    call the folder "own". No record found under the folder (or none with a
+    derivable source) reads as unowned — the caller warns.
+    """
+    prefix = _live_dir_for(name) + os.sep
+    for live_path, record in _load_store().items():
+        if not (isinstance(record, dict) and live_path.startswith(prefix)):
+            continue
+        source = record.get("source")
+        owner = _app_of(source) if isinstance(source, str) else None
+        if owner is not None and owner[0] == tag and owner[1] == name:
+            return True
+    return False
+
+
 def _rollback_live_copy(live_dir: str, bak: str | None) -> None:
     """Deploy failed after the swap: put back exactly what was there before."""
     shutil.rmtree(live_dir, ignore_errors=True)
@@ -699,14 +723,14 @@ def preview_deploy(
     auto = plan_export(html, page_dir)
     # Upfront overwrite warning (advisory, rides the existing warnings channel):
     # deploying copies this app over <workspace>/deploy/<name>/ — if that live
-    # copy exists and isn't THIS app's own (per the pointer's recorded source),
-    # say so before the click. A redeploy of the same app overwriting its own
-    # live copy is the normal case and stays silent.
+    # copy exists and isn't THIS app's own (per _deploy_folder_owner_matches,
+    # which checks the whole folder, not just this one page — a sibling page
+    # in the same app that hasn't been individually deployed yet must not read
+    # as a foreign app), say so before the click. A redeploy of the same app
+    # overwriting its own live copy is the normal case and stays silent.
     warnings = list(plan.warnings)
     if tag != DEPLOY_TAG and os.path.isdir(_live_dir_for(name)):
-        record = get_deployment(page)
-        own = isinstance(record, dict) and record.get("source") == os.path.abspath(page)
-        if not own:
+        if not _deploy_folder_owner_matches(tag, name):
             warnings.append(
                 f"deploying will overwrite the existing app {name!r} in the deploy "
                 f"folder ({_live_dir_for(name)}) and replace its live deployment"

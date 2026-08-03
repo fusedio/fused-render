@@ -434,7 +434,10 @@ function AppFolderDeployButton({ dir }: { dir: string }) {
       .then((r) => {
         if (!alive) return;
         const htmls = r.entries.filter(
-          (e) => !e.is_dir && !e.name.startsWith(".") && /\.html?$/i.test(e.name),
+          // Strict ".html" only — matching apps.py's _app_entry exactly (it does
+          // NOT accept ".htm"), so a folder with one .html and one .htm reads as
+          // the single-entry app apps.py/Home already treat it as, not ambiguous.
+          (e) => !e.is_dir && !e.name.startsWith(".") && /\.html$/i.test(e.name),
         );
         // A truncated listing only holds a partial page — a lone .html there
         // proves nothing, so treat it as ambiguous rather than deploy the

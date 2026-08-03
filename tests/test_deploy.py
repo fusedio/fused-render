@@ -1965,3 +1965,18 @@ def test_app_of_returns_none_on_relpath_failure(tmp_path, monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(ValueError("no relative path")),
     )
     assert deploy_mod._app_of(str(tmp_path / "Fused" / "local" / "app" / "x.html")) is None
+
+
+def test_preview_of_a_sibling_page_stays_silent(tmp_path, monkeypatch):
+    # A second .html page in the SAME app folder, never individually
+    # deployed itself, must not read as a foreign app just because its own
+    # (per-page) pointer doesn't exist yet — only index.html's does.
+    h = _harness(tmp_path, monkeypatch)
+    h.set_scenario(CREATE_OK)
+    h.client.post("/api/deploy", json={"page": str(h.page), "env": "cloud"}, headers=FUSED)
+
+    sibling = h.app_dir / "admin.html"
+    sibling.write_text("<html></html>", encoding="utf-8")
+    resp = h.client.post("/api/deploy/preview", json={"path": str(sibling)})
+    assert resp.status_code == 200, resp.text
+    assert not any("overwrite" in w for w in resp.json()["warnings"])
