@@ -45,6 +45,18 @@ dialog's "Link name" field lets the user pass an explicit --token instead —
 a deliberately public, guessable URL (fused's own gate: --public + a chosen
 --token is allowed, unlike --public + an auth gate).
 
+Deploys are scoped to **managed apps** (``<workspace>/<tag>/<name>/`` —
+apps.py's model): what actually gets published is a **live copy** of the app
+folder at ``<workspace>/deploy/<name>/``. Deploying copies the whole app
+there first (staged + rename-swapped, with a kept backup so any failure —
+export or CLI — rolls the folder back: copy and share succeed or fail
+together), then exports and shares FROM the copy. The tag folder the user
+develops in is never touched or moved, so bookmarks/recents keep working;
+the pointer store keys on the live-copy path (`_page_key` maps a dev-copy
+path to it), so both copies of one app resolve to the same deployment.
+Revoking removes the live copy again (dev copy stays); the pointer is kept
+so a redeploy revives the same token/URL.
+
 No import of server.py (server imports this router — keep it acyclic); the
 X-Fused guard is duplicated locally like shell/bookmarks.py does.
 """
@@ -80,8 +92,15 @@ from fused_render.fusedcli import (
     setup_cli_hint as _setup_cli_hint,
 )
 from fused_render.shell import storage
+from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
+
+#: The workspace tag that holds live copies. Deploying an app copies its folder
+#: to ``<workspace>/deploy/<name>/`` and publishes THAT copy; the tag folder the
+#: user develops in is never touched. "deploy" is an ordinary tag to the Home
+#: listing (apps.py treats no tag specially) — the convention lives here.
+DEPLOY_TAG = "deploy"
 
 # create/repoint upload the bundle (inline base64 on the fused backend) — give
 # them the same generous budget flow uses; list is a cheap read.
@@ -404,6 +423,94 @@ def _classify_mount(mounts: list[dict], token: str) -> str:
     return "revoked" if mount.get("status") == "revoked" else "active"
 
 
+# -- managed apps and the live copy in <workspace>/deploy/<name>/ --------------
+
+
+def _app_of(page: str) -> tuple[str, str, str] | None:
+    """(tag, name, rel-path-inside-app) when `page` is inside a managed app —
+    ``<workspace>/<tag>/<name>/…`` (apps.py's model) — else None. Path math
+    only, no disk I/O; hidden tag/app dirs don't count (the Home listing skips
+    them, so they are not apps)."""
+    ws = fused_dir()
+    abs_page = os.path.abspath(page)
+    rel = os.path.relpath(abs_page, ws)
+    parts = rel.split(os.sep)
+    if parts[0] == os.pardir or len(parts) < 3:
+        return None
+    tag, name = parts[0], parts[1]
+    if tag.startswith(".") or name.startswith("."):
+        return None
+    return tag, name, os.path.join(*parts[2:])
+
+
+def _require_app(page: str) -> tuple[str, str, str]:
+    """Deploy is scoped to managed apps — reject anything else up front."""
+    app = _app_of(page)
+    if app is None:
+        raise DeployError(
+            f"only apps in the Fused workspace can be deployed: {os.path.abspath(page)} "
+            f"is not inside {fused_dir()}/<tag>/<name>/"
+        )
+    return app
+
+
+def _live_dir_for(name: str) -> str:
+    return os.path.join(fused_dir(), DEPLOY_TAG, name)
+
+
+def _stage_live_copy(src_dir: str, live_dir: str) -> str | None:
+    """Copy `src_dir` into place as `live_dir`, atomically enough to roll back.
+
+    Copies to a hidden sibling first (``.tmp-<name>``), then swaps: an existing
+    live copy is set aside as ``.bak-<name>`` and the fresh copy renamed in.
+    Renames are same-volume, so the swap itself can't half-happen. Returns the
+    backup path (None on a first deploy) — the caller MUST later either
+    `_commit_live_copy` (deploy succeeded: drop the backup) or
+    `_rollback_live_copy` (deploy failed: restore exactly what was there).
+    Stale ``.tmp-``/``.bak-`` leftovers from a crash are cleared first; being
+    dotted, they never showed in the Home listing anyway.
+    """
+    parent = os.path.dirname(live_dir)
+    name = os.path.basename(live_dir)
+    tmp = os.path.join(parent, f".tmp-{name}")
+    bak = os.path.join(parent, f".bak-{name}")
+    try:
+        os.makedirs(parent, exist_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(bak, ignore_errors=True)
+        shutil.copytree(src_dir, tmp)
+    except OSError as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise DeployError(f"could not copy the app into the deploy folder: {e}") from None
+    try:
+        had_prior = os.path.isdir(live_dir)
+        if had_prior:
+            os.rename(live_dir, bak)
+        os.rename(tmp, live_dir)
+    except OSError as e:
+        # Undo whatever landed; the tmp copy is disposable.
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not os.path.isdir(live_dir) and os.path.isdir(bak):
+            os.rename(bak, live_dir)
+        raise DeployError(f"could not swap the deploy copy into place: {e}") from None
+    return bak if had_prior else None
+
+
+def _rollback_live_copy(live_dir: str, bak: str | None) -> None:
+    """Deploy failed after the swap: put back exactly what was there before."""
+    shutil.rmtree(live_dir, ignore_errors=True)
+    if bak and os.path.isdir(bak):
+        try:
+            os.rename(bak, live_dir)
+        except OSError:
+            pass
+
+
+def _commit_live_copy(bak: str | None) -> None:
+    if bak:
+        shutil.rmtree(bak, ignore_errors=True)
+
+
 # -- the per-page deployment pointer store ------------------------------------
 
 
@@ -466,8 +573,19 @@ def _page_key(page: str) -> str:
     (`os.path.dirname(os.path.abspath(page))`). Without this, two spellings of the
     same file (`/a/b/../p.html` vs `/a/p.html`) would key different pointers, so
     status, the deploy dot, and redeploy could miss an existing deployment.
+
+    A page inside a managed app keys as its LIVE-COPY path —
+    ``<workspace>/deploy/<name>/<rel>`` — regardless of which tag the given
+    path is in. What is deployed is always the live copy, so the dev copy and
+    the live copy of one app resolve to the SAME pointer: the deploy dot,
+    status, redeploy, and revoke agree whichever copy the user has open.
     """
-    return os.path.abspath(page)
+    abs_page = os.path.abspath(page)
+    app = _app_of(abs_page)
+    if app is None:
+        return abs_page
+    _tag, name, rel = app
+    return os.path.join(_live_dir_for(name), rel)
 
 
 def get_deployment(page: str) -> dict | None:
@@ -560,6 +678,7 @@ def preview_deploy(
         raise DeployError(f"no such file: {page}")
     if os.path.splitext(page)[1].lower() not in (".html", ".htm"):
         raise DeployError(f"{page} is not an .html/.htm page")
+    tag, name, _rel = _require_app(page)
     try:
         with open(page, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()
@@ -573,6 +692,20 @@ def preview_deploy(
     # "Excluded" with a restore) from a purely manual include (removing it just
     # drops it). Cheap: a second pure regex scan over the same HTML.
     auto = plan_export(html, page_dir)
+    # Upfront overwrite warning (advisory, rides the existing warnings channel):
+    # deploying copies this app over <workspace>/deploy/<name>/ — if that live
+    # copy exists and isn't THIS app's own (per the pointer's recorded source),
+    # say so before the click. A redeploy of the same app overwriting its own
+    # live copy is the normal case and stays silent.
+    warnings = list(plan.warnings)
+    if tag != DEPLOY_TAG and os.path.isdir(_live_dir_for(name)):
+        record = get_deployment(page)
+        own = isinstance(record, dict) and record.get("source") == os.path.abspath(page)
+        if not own:
+            warnings.append(
+                f"deploying will overwrite the existing app {name!r} in the deploy "
+                f"folder ({_live_dir_for(name)}) and replace its live deployment"
+            )
     return {
         "page": os.path.basename(page),
         "entrypoints": [{"path": e.path, "name": e.name} for e in plan.entrypoints],
@@ -582,7 +715,7 @@ def preview_deploy(
         "assets": [{"path": a.path, "name": a.name, "source": a.source} for a in plan.assets],
         "auto": [e.path for e in auto.entrypoints] + [a.path for a in auto.assets],
         "errors": plan.errors,
-        "warnings": plan.warnings,
+        "warnings": warnings,
     }
 
 
@@ -663,10 +796,15 @@ def deploy_page(
     """
     include = include or []
     exclude = exclude or []
-    # Canonicalize up front so the direct locked store.get below, the record's
-    # `page` field, and set_deployment all key on the same path as get_deployment
-    # / deployment_status (all via _page_key) — one file, one pointer.
     page = os.path.abspath(page)
+    # Deploy is scoped to managed apps, and what actually gets published is the
+    # LIVE COPY at <workspace>/deploy/<name>/ — the dev copy the user pointed at
+    # is copied there first (atomically, with rollback) and the export runs from
+    # the copy. A page already inside the deploy tag redeploys in place, no copy.
+    tag, name, rel = _require_app(page)
+    live_dir = _live_dir_for(name)
+    live_page = os.path.join(live_dir, rel)  # == _page_key(page)
+    in_place = tag == DEPLOY_TAG
     backend = _backend_of(env_name)
     if backend is None:
         raise DeployError(
@@ -693,11 +831,26 @@ def deploy_page(
     #     write touching only this page's key.
     with _STORE_LOCK:
         store = _load_store_for_write()
-        pointer = store.get(page) if isinstance(store.get(page), dict) else None
+        pointer = store.get(live_page) if isinstance(store.get(live_page), dict) else None
+
+    # Copy the app into the deploy folder BEFORE anything is minted. The swap is
+    # rename-based (same volume) with a kept backup, so a failure anywhere below
+    # — export, or any `fused share` call — rolls the folder back to exactly the
+    # pre-deploy state: deploy+copy succeed or fail together.
+    bak: str | None = None
+    copied = False
+    if not in_place:
+        src_dir = os.path.join(fused_dir(), tag, name)
+        if not os.path.isdir(src_dir):
+            raise DeployError(f"app folder not found: {src_dir}")
+        bak = _stage_live_copy(src_dir, live_dir)
+        copied = True
 
     bundle = tempfile.mkdtemp(prefix="fused-render-deploy-")
     try:
-        plan = export_page(page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age)
+        plan = export_page(
+            live_page, bundle, include=include, exclude=exclude, cache_max_age=cache_max_age
+        )
         entrypoints = [e.name for e in plan.entrypoints]
 
         # force_new deliberately treats any existing pointer as absent — never
@@ -779,12 +932,20 @@ def deploy_page(
                 )
 
         record = _record_from(
-            raw, page=page, env_name=env_name, backend=backend,
+            raw, page=live_page, env_name=env_name, backend=backend,
             entrypoints=entrypoints, include=include, exclude=exclude,
             cache_max_age=cache_max_age, allow_clone=allow_clone, named=named,
             fallback=same_env,
         )
-        set_deployment(page, record)
+        # Which dev copy this deploy came from — the live copy itself on an
+        # in-place redeploy. UI-facing provenance ("deployed from local/foo").
+        record["source"] = page
+        set_deployment(live_page, record)
+        # The share is live and the pointer persisted — the deploy succeeded, so
+        # the filesystem side commits too (drop the pre-deploy backup). Failures
+        # past this point (the best-effort superseded revoke) never roll back.
+        _commit_live_copy(bak)
+        copied = False
         # force_new replace: the new mount is live and the pointer now tracks it,
         # so take the superseded mount down — otherwise the page would serve at two
         # URLs while the pointer (and the modal's Revoke) tracks only the new one,
@@ -801,19 +962,33 @@ def deploy_page(
                 # revoked (account page / `fused share revoke <token>`). Not fatal.
                 pass
         return record
+    except BaseException:
+        # Deploy failed before the pointer/commit — undo the folder swap so the
+        # deploy tag holds exactly what it held before this call.
+        if copied:
+            _rollback_live_copy(live_dir, bak)
+        raise
     finally:
         shutil.rmtree(bundle, ignore_errors=True)
 
 
 def revoke_deployment(page: str) -> dict:
     """`share revoke` the page's mount; the pointer flips to revoked (kept, not
-    cleared — a later deploy revives the same token/URL)."""
+    cleared — a later deploy revives the same token/URL).
+
+    The live copy in <workspace>/deploy/<name>/ is removed too (best-effort,
+    AFTER the revoke landed — a failed revoke deletes nothing): the deploy
+    folder holds only what is actually live, and the dev copy is untouched.
+    """
     pointer = get_deployment(page)
     if pointer is None or not pointer.get("token") or not pointer.get("env"):
         raise DeployError("this page has no recorded deployment to revoke")
     _run_share(pointer["env"], ["revoke", pointer["token"]])
     record = {**pointer, "status": "revoked", "updated_at": _now_iso()}
     set_deployment(page, record)
+    app = _app_of(_page_key(page))
+    if app is not None and app[0] == DEPLOY_TAG:
+        shutil.rmtree(_live_dir_for(app[1]), ignore_errors=True)
     return record
 
 
