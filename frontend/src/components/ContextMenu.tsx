@@ -91,9 +91,19 @@ function groupHasIcon(entries: MenuEntry[]): boolean {
   return entries.some((e) => e !== "separator" && e.icon != null);
 }
 
+// How long the pointer has to rest on a row before its submenu opens (or, when
+// it leaves for a sibling, before the open one closes). Diagonal travel across a
+// menu clips the rows between source and target, and without this window each of
+// those flickered a submenu open/shut on the way past.
+const HOVER_INTENT_MS = 120;
+
 export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [pos, setPos] = useState({ left: x, top: y });
+  // null until the clamp below has run: the menu is rendered hidden for that
+  // first (pre-paint) pass, because its final position isn't known until its own
+  // size is measurable, and painting at the raw cursor coords first is what made
+  // an edge-of-screen menu appear to jump into place.
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   // Index of the top-level item whose submenu is open (null = none), plus its
   // resolved items (null while the loader is still in flight).
   const [openSub, setOpenSub] = useState<number | null>(null);
@@ -101,7 +111,8 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
   // Guards against a stale loader resolving after the user moved to another row.
   const loadToken = useRef(0);
 
-  // Clamp into the viewport after first paint, when the real size is known.
+  // Clamp into the viewport before the first paint, when the real size is known
+  // (getBoundingClientRect reads correctly through `visibility: hidden`).
   useLayoutEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -146,25 +157,28 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
     };
   }, [onClose]);
 
+  // Pending hover-intent open/close (see HOVER_INTENT_MS).
+  const hoverTimer = useRef<number | null>(null);
+  const cancelHover = () => {
+    if (hoverTimer.current === null) return;
+    window.clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  };
+
   // Invalidate any in-flight submenu load on unmount so a late resolve can't
-  // setState on a closed menu.
+  // setState on a closed menu, and drop a pending hover-intent timer with it.
   useEffect(() => {
     return () => {
       loadToken.current++;
+      cancelHover();
     };
   }, []);
 
-  const enterItem = (idx: number, item: MenuItem) => {
-    if (!item.submenu) {
-      setOpenSub(null);
-      setSubItems(null);
-      return;
-    }
-    if (openSub === idx) return;
+  const openSubmenu = (idx: number, item: MenuItem) => {
     const token = ++loadToken.current;
     setOpenSub(idx);
     setSubItems(null);
-    item.submenu().then(
+    item.submenu!().then(
       (r) => {
         if (loadToken.current === token) setSubItems(r);
       },
@@ -174,22 +188,54 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
     );
   };
 
+  const enterItem = (idx: number, item: MenuItem) => {
+    cancelHover();
+    if (!item.submenu) {
+      if (openSub === null) return;
+      // The close waits out the same window as the open: travelling diagonally
+      // from a submenu row back into the submenu clips the siblings in between,
+      // and closing on those would shut the submenu the pointer is heading for.
+      hoverTimer.current = window.setTimeout(() => {
+        hoverTimer.current = null;
+        setOpenSub(null);
+        setSubItems(null);
+      }, HOVER_INTENT_MS);
+      return;
+    }
+    if (openSub === idx) return;
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null;
+      openSubmenu(idx, item);
+    }, HOVER_INTENT_MS);
+  };
+
   const activate = (item: MenuItem) => {
     if (item.disabled || item.submenu) return; // submenus open on hover, not click
+    cancelHover();
     onClose();
     item.onClick?.();
   };
 
   // Open the submenu to the left when the menu sits in the right portion of the
   // viewport, so a right-edge right-click doesn't push it off-screen.
-  const subLeft = pos.left > window.innerWidth * 0.6;
+  const left = pos?.left ?? x;
+  const top = pos?.top ?? y;
+  const subLeft = left > window.innerWidth * 0.6;
+  // Grow from whichever corner is anchored at the cursor: a menu clamped
+  // upwards/leftwards was pushed away from the click, and scaling it from its
+  // top-left then reads as the menu sliding off the pointer.
+  const origin = `${left < x ? "right" : "left"} ${top < y ? "bottom" : "top"}`;
 
   // Reserve the icon column only when some item in the group actually has one.
   const topHasIcon = groupHasIcon(items);
   const subHasIcon = subItems !== null && groupHasIcon(subItems);
 
   return (
-    <div ref={rootRef} className="context-menu" style={{ left: pos.left, top: pos.top }}>
+    <div
+      ref={rootRef}
+      className={"context-menu" + (pos ? " placed" : " measuring")}
+      style={{ left, top, transformOrigin: origin }}
+    >
       {items.map((it, i) =>
         it === "separator" ? (
           <div key={i} className="context-menu-sep" />
@@ -203,7 +249,12 @@ export default function ContextMenu({ x, y, items, onClose }: ContextMenuProps) 
               onActivate={() => activate(it)}
             />
             {it.submenu && openSub === i && (
-              <div className={"context-menu context-submenu" + (subLeft ? " left" : "")}>
+              <div
+                className={"context-menu context-submenu placed" + (subLeft ? " left" : "")}
+                /* Moving into the submenu must cancel a close that a sibling
+                   row queued on the way here. */
+                onMouseEnter={cancelHover}
+              >
                 {subItems === null ? (
                   <div className="context-menu-item disabled">Loading…</div>
                 ) : (

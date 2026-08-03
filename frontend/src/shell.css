@@ -2451,6 +2451,26 @@ body.embed .open-as-app-chip:hover {
   user-select: none;
 }
 
+/* The clamp pass (components/ContextMenu.tsx) needs the menu's real size before
+   it can decide where the menu goes, so the first — pre-paint — render is
+   hidden rather than painted at the raw cursor coords and then moved. */
+.context-menu.measuring {
+  visibility: hidden;
+}
+
+/* Grows out of whichever corner sits under the cursor; ContextMenu sets
+   transform-origin inline from the clamp result. */
+.context-menu.placed {
+  animation: context-menu-in 110ms var(--ease-out);
+}
+
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
 /* Wrapper for an item + its (absolutely positioned) submenu. */
 .context-menu-row {
   position: relative;
@@ -2533,6 +2553,8 @@ body.embed .open-as-app-chip:hover {
   top: -5px;
   left: 100%;
   margin-left: 2px;
+  /* Grows out of the parent row's edge, i.e. the side it's attached to. */
+  transform-origin: left top;
 }
 
 .context-submenu.left {
@@ -2540,6 +2562,7 @@ body.embed .open-as-app-chip:hover {
   right: 100%;
   margin-left: 0;
   margin-right: 2px;
+  transform-origin: right top;
 }
 
 /* ---- File-operation dialogs (components/FsDialogs.tsx) -------------------- */
