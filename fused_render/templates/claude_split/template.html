@@ -485,7 +485,7 @@
       <span class="tb-title">Claude</span>
       <span class="tb-file" id="banner-sub"></span>
       <span id="session" class="mono"></span>
-      <button id="back" type="button" aria-label="New chat">New chat</button>
+      <button id="back" type="button" aria-label="Back to chats">← Chats</button>
     </div>
     <div id="logwrap"><div id="log"></div></div>
     <form id="inputbox" class="composer" style="display:contents">
@@ -708,7 +708,8 @@ showSession();
 const scrollBottom = () => { logwrap.scrollTop = logwrap.scrollHeight; };
 const nearBottom = () => logwrap.scrollHeight - logwrap.scrollTop - logwrap.clientHeight < 60;
 
-// New chat: clear the session param so a reload lands on the landing page,
+// Back to chats: the landing is both "start a new chat" and "open a past one".
+// Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
   if (sending) return;  // mid-turn reset would orphan the streaming run's UI
