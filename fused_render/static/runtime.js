@@ -430,6 +430,13 @@
   // this iframe's /render URL), X-Fused-Target the file it is previewing
   // (`_file`, set when this page is a template), X-Fused-Call a per-call id.
   //
+  // The two paths ride PERCENT-ENCODED (calls.py decodes them). Header values
+  // are ISO-8859-1 only, so a path holding anything outside that range — any
+  // filename not written in a Latin-1 script — makes fetch() throw
+  // synchronously before the request leaves ("String contains non ISO-8859-1
+  // code point"), and that took down every call the page made rather than
+  // just its attribution.
+  //
   // Only this runtime sends them, so the shell's own requests (/api/fs/list,
   // the conditions probe) carry no attribution and are excluded from the app
   // log by construction — no endpoint blocklist to keep in sync. A custom
@@ -457,9 +464,9 @@
   function callHeaders(extra, callId) {
     const headers = Object.assign({}, extra || {});
     const page = ownQuery("path");
-    if (page) headers["X-Fused-Page"] = page;
+    if (page) headers["X-Fused-Page"] = encodeURIComponent(page);
     const target = ownQuery("_file");
-    if (target) headers["X-Fused-Target"] = target;
+    if (target) headers["X-Fused-Target"] = encodeURIComponent(target);
     // A caller-supplied id lets the abort path name the call it cancelled
     // (see reportSuperseded); anything else gets a fresh one.
     headers["X-Fused-Call"] = callId || newCallId();

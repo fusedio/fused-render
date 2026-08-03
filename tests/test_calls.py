@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -358,6 +359,53 @@ def test_a_failed_run_records_the_traceback(app_client):
     assert got["outcome"] == "error"
     assert got["error"]["type"] == "ZeroDivisionError"
     assert "ZeroDivisionError" in got["error"]["traceback"]
+
+
+def test_a_non_latin1_path_rides_percent_encoded_and_lands_decoded(app_client):
+    """A file named in any script must not take the whole page down.
+
+    A header value is ISO-8859-1 only, so `fetch` REFUSES to send one holding a
+    character outside that range — it throws synchronously, before the request
+    exists. The attribution headers carry paths, so a file whose name is not
+    Latin-1 meant every call the page made died at the door, a template-wide
+    outage caused by the log rather than observed by it. Hence
+    encodeURIComponent on the way out and unquote on the way in — asserted here
+    on the value the browser actually sends.
+
+    The name mixes scripts on purpose: the rule is about the ISO-8859-1
+    boundary, not about one language.
+    """
+    client, d = app_client
+    target = d / "调查-обзор-مسح.pdf"
+    page = d / "p.html"
+    client.get(f"/api/fs/stat?path={target}", headers={
+        "X-Fused-Page": quote(str(page)), "X-Fused-Target": quote(str(target)),
+    })
+    assert drain()
+
+    got = calls.query(limit=10)["records"][0]
+    assert got["page"] == canonical_fs_path(str(page))
+    assert got["target_file"] == canonical_fs_path(str(target)), (
+        "the target must land as the path itself, not as its %E8%B0%83… spelling "
+        "— an encoded record matches no filter and names a file nobody has"
+    )
+
+
+def test_the_runtime_encodes_the_paths_it_puts_in_headers(store):
+    """The other half of the round trip, on the shipped runtime.
+
+    The decode above is happy to receive a raw path, so it passes on its own
+    even if the runtime stops encoding — which is exactly the state that broke
+    every non-Latin-1 page. This pins the producer.
+    """
+    from pathlib import Path
+
+    import fused_render
+
+    runtime = (Path(fused_render.__file__).parent / "static"
+               / "runtime.js").read_text(encoding="utf-8")
+    assert 'headers["X-Fused-Page"] = encodeURIComponent(page)' in runtime
+    assert 'headers["X-Fused-Target"] = encodeURIComponent(target)' in runtime
 
 
 def test_first_party_flags_a_template_page_not_the_users_own(store):
