@@ -267,6 +267,21 @@ def _clean_stale(keep_dir):
             shutil.rmtree(p, ignore_errors=True)
 
 
+def _load_meta(meta_path):
+    """A published cache's metadata, or None if it isn't readable.
+
+    None covers both "not there" and "there but unreadable": a concurrent
+    builder can rename a winner aside between an existence check and the open,
+    and _rekey_cache rewrites meta.json in place, so a reader can catch a
+    partial file. Callers treat None as "no winner yet" and retry.
+    """
+    try:
+        with open(meta_path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def _ensure_cache(file):
     """Build (or reuse) the parquet cache + metadata for a workbook.
 
@@ -282,9 +297,9 @@ def _ensure_cache(file):
     file = os.path.abspath(file)
     d = _cache_dir(file)
     meta_path = os.path.join(d, "meta.json")
-    if os.path.exists(meta_path):
-        with open(meta_path) as f:
-            return json.load(f)
+    cached = _load_meta(meta_path)
+    if cached is not None:
+        return cached
     _clean_stale(d)
     import shutil
     import time
@@ -339,16 +354,20 @@ def _ensure_cache(file):
         # complete cache there. On Windows the rename-aside also fails while
         # any process holds files inside `d` open, so a cache in active use
         # can't be yanked away; we just retry and end up adopting it.
+        # Adopting is committed to only once a winner's metadata is actually in
+        # hand: our own complete build is still sitting in tmp_d, so a winner
+        # that vanishes mid-read (renamed aside by yet another builder) means
+        # go round again, never fail.
         for _ in range(10):
             try:
                 os.rename(tmp_d, d)
                 return meta
             except OSError:
                 pass
-            if os.path.exists(meta_path):
+            won = _load_meta(meta_path)
+            if won is not None:
                 shutil.rmtree(tmp_d, ignore_errors=True)
-                with open(meta_path) as f:
-                    return json.load(f)
+                return won
             junk = os.path.join(CACHE_ROOT, f"{_TMP_PREFIX}junk-{os.getpid()}-{uuid.uuid4().hex[:8]}")
             try:
                 os.rename(d, junk)
@@ -356,10 +375,10 @@ def _ensure_cache(file):
                 time.sleep(0.1)
                 continue
             shutil.rmtree(junk, ignore_errors=True)
-        if os.path.exists(meta_path):
+        won = _load_meta(meta_path)
+        if won is not None:
             shutil.rmtree(tmp_d, ignore_errors=True)
-            with open(meta_path) as f:
-                return json.load(f)
+            return won
         raise RuntimeError(f"could not claim cache dir {d!r}")
     except BaseException:
         shutil.rmtree(tmp_d, ignore_errors=True)
@@ -380,14 +399,19 @@ def _rekey_cache(file):
             if n.startswith(prefix + "-"):
                 shutil.move(os.path.join(CACHE_ROOT, n), new_dir)
                 meta_path = os.path.join(new_dir, "meta.json")
-                try:
-                    with open(meta_path) as f:
-                        meta = json.load(f)
+                meta = _load_meta(meta_path)
+                if meta is not None:
                     meta["mtime"] = os.path.getmtime(file)
-                    with open(meta_path, "w") as f:
-                        json.dump(meta, f)
-                except OSError:
-                    pass
+                    # Swap the rewrite in atomically: readers resolve this file
+                    # concurrently, and rewriting in place lets one of them see
+                    # a half-written meta.json.
+                    tmp = meta_path + ".new"
+                    try:
+                        with open(tmp, "w") as f:
+                            json.dump(meta, f)
+                        os.replace(tmp, meta_path)
+                    except OSError:
+                        pass
                 return
 
 
