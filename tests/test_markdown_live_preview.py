@@ -93,7 +93,9 @@ def decorate(note_file, caret=0, scanned=False, params=None):
     `scanned` decides whether graph.py answered with a real scan. The default is
     UNSCANNED, because that is what a mount-backed root, a refused scan and a
     failed one all produce — and it is the state most of this file runs in.
-    `params` drives fused.params, so a param-held mode can be exercised.
+    `params` drives fused.params, so a param-held mode can be exercised. With no
+    params the template opens READ-ONLY (MD-1a), which is why every test about
+    the caret reveal passes `EDITING` — the reveal is an editing behaviour.
     """
     _require_node()
     opts = {"scanned": bool(scanned), "params": params or {}}
@@ -102,6 +104,9 @@ def decorate(note_file, caret=0, scanned=False, params=None):
         cwd=VENDOR, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)["decorations"]
+
+
+EDITING = {"edit": "1"}   # the non-default mode a caret reveal needs (MD-1a)
 
 
 def at(decorations, text, kind=None):
@@ -133,7 +138,7 @@ def test_markup_is_hidden_away_from_the_caret(note_file):
 
 def test_the_caret_s_line_shows_its_source_again(note_file):
     caret = NOTE.index("**bold**") + 3
-    revealed = decorate(note_file, caret=caret)
+    revealed = decorate(note_file, caret=caret, params=EDITING)
     # Same range, no longer replaced — shown dimmed instead.
     assert not at(revealed, "**", "hide")
     assert at(revealed, "**", "mark")[0]["cls"] == "lp-mark"
@@ -144,7 +149,8 @@ def test_the_caret_s_line_shows_its_source_again(note_file):
 
 
 def test_a_heading_reveals_only_its_own_line(note_file):
-    revealed = decorate(note_file, caret=NOTE.index("# Heading one") + 3)
+    revealed = decorate(note_file, caret=NOTE.index("# Heading one") + 3,
+                        params=EDITING)
     # `#` shown, and the space after it is NOT swallowed while revealed — that
     # swallow exists only so hidden-marker text does not start indented.
     assert at(revealed, "#", "mark")
@@ -162,8 +168,11 @@ def test_read_only_mode_reveals_nothing_wherever_the_caret_is(note_file):
     """
     caret = NOTE.index("**bold**") + 3
     # The control: in editing mode this exact caret reveals the markers.
-    assert at(decorate(note_file, caret=caret), "**", "mark")
-    reading = decorate(note_file, caret=caret, params={"edit": "0"})
+    assert at(decorate(note_file, caret=caret, params=EDITING), "**", "mark")
+    # No `edit` param at all — read-only is the DEFAULT a note opens in, so this
+    # pins the default and the mode in one call. `"0"` is the same state.
+    reading = decorate(note_file, caret=caret)
+    assert reading == decorate(note_file, caret=caret, params={"edit": "0"})
     assert at(reading, "**", "hide"), "read-only mode must not reveal source"
     assert not at(reading, "**", "mark")
     # And the rest of the document renders exactly as it does in editing mode:
@@ -218,7 +227,8 @@ def test_a_checkbox_stays_rendered_under_the_caret(note_file):
 
 
 def test_a_table_and_a_rule_yield_to_the_caret(note_file):
-    inside = decorate(note_file, caret=NOTE.index("| 1 | 2 |") + 2)
+    inside = decorate(note_file, caret=NOTE.index("| 1 | 2 |") + 2,
+                      params=EDITING)
     assert not at(inside, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     # A different line's rule is unaffected — reveal is per-line, not per-doc.
     assert at(inside, "---", "widget")

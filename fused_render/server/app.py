@@ -23,6 +23,7 @@ from fused_render.deploy import router as deploy_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.user_skills import sync_user_skills
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -33,6 +34,7 @@ from fused_render.server.common import (
     unhandled_exception,
     _forced_engine,
 )
+from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -175,6 +177,15 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_prewarm_ai():
         prewarm_ai()
 
+    # User-level skill sync (D185): install/refresh the canonical fused-render
+    # skills in Claude Code's skills dir so app/template sessions can invoke
+    # them by name. A startup event (not create_app body) on purpose — tests
+    # build the app without running lifespan, so they never write outside the
+    # redirected dirs.
+    @app.on_event("startup")
+    async def _startup_sync_user_skills():
+        sync_user_skills()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -248,12 +259,23 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # The Home view's apps backend (routers/apps.py): list workspace app
+    # folders + scaffold new ones from the app starter kit.
+    app.include_router(apps_router)
     # GitHub deep links (SPEC §26, D110): GET /clone confirm page +
     # POST /api/clone sparse-clone into ~/Documents/Fused. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
+    # Cloning a DEPLOYED page (app_clone.py) — GET /api/clone-app/info previews a pasted
+    # page URL, POST /api/clone-app downloads + validates + unpacks it into
+    # ~/Documents/Fused. Distinct from deeplink's git clone above: no `.git`, no identity,
+    # no update-in-place — every clone lands in a fresh folder. Like shell/*, it imports no
+    # server module, so the include stays acyclic.
+    from fused_render.app_clone import router as app_clone_router
+
+    app.include_router(app_clone_router)
     # Deploy (hosted publish through the fused CLI) — export + `fused share`
     # orchestration and the per-page deployment pointer store (deploy.py).
     app.include_router(deploy_router)

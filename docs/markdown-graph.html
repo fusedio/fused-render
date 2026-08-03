@@ -165,7 +165,7 @@
 <div class="cols">
   <div class="card">
     <h3>Note view <span class="tag">.md</span></h3>
-    <p>A Live Preview editor: always editable, markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
+    <p>A Live Preview editor that <strong>opens read-only</strong> — one click on the corner padlock unlocks it, and the choice rides in the URL. Markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
   </div>
   <div class="card">
     <h3>Local graph <span class="tag">.md</span></h3>
@@ -179,7 +179,7 @@
 
 <p>Registry changes are small:</p>
 <pre><code>".md":       ["markdown", "code", "reader", "annotate"]   <span class="k">// markdown now = read+write+links</span>
-"/":         ["_listing", "graph", "preview", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
+"/":         ["_listing", "graph", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
 
 <p>The folder mode gets a <code>condition.py</code> (SPEC CT-12) so it only offers itself where a notes <em>vault</em> is — as built, where <code>index.md</code> exists (<code>Index.md</code> probed alongside it, for a case-sensitive filesystem), since telling "this is a vault" from anything else needs the listing this rule forbids. The first cut probed a wider list of "entry-point" notes (<code>README.md</code>, <code>Home.md</code>, <code>notes.md</code>, …) and that was wrong in one direction that matters: <code>README.md</code> is in essentially every code repository, so the mode was offered on every checkout on the disk. The remaining cost is one-directional and is discoverability, not capability: a vault with no <code>index.md</code> is not <em>offered</em> the mode, while <code>_mode=graph</code> still reaches it by hand and the local graph panel in the note view is untouched. That gate must <strong>never</strong> list or walk the directory — same rule <code>zarr_aoi/condition.py</code> documents. Cheap bounded probes only (two <code>os.path.isfile</code> checks), fail closed.</p>
 
@@ -199,7 +199,7 @@
   <tr><td>Click an image, table or tag</td><td>Puts the caret inside: the source appears, which is how the content is edited.</td></tr>
   <tr><td>Click a checkbox</td><td>Toggles and writes back. It stays a control even under the caret, as in Obsidian.</td></tr>
   <tr><td>Read-only file</td><td>Same decorations over a locked buffer — this is the reading view.</td></tr>
-  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, asked for by the user (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
+  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, and now the state a note <em>opens</em> in (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
 </table>
 
 <p>Frontmatter is the one place the grammar cannot be trusted: it has no frontmatter rule, and <code>---\ntitle: x\n---</code> parses as a <code>HorizontalRule</code> followed by a <code>SetextHeading2</code>, so YAML rendered as a rule plus a large heading. The block is found by a line scan, dimmed, and every tree decoration inside it suppressed.</p>

@@ -45,6 +45,7 @@
     "tree",
     "code",
     "duckdb",
+    "git",
     "reader",
     "annotate"
   ],
@@ -65,6 +66,10 @@
     "code"
   ],
   ".docx": [
+    "docs",
+    "reader"
+  ],
+  ".odt": [
     "docs",
     "reader"
   ],
@@ -135,30 +140,37 @@
   ".md": [
     "markdown",
     "code",
+    "claude",
+    "git",
     "reader",
     "annotate"
   ],
   ".markdown": [
     "markdown",
     "code",
+    "claude",
+    "git",
     "reader",
     "annotate"
   ],
   ".tex": [
     "latex",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".ltx": [
     "latex",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".latex": [
     "latex",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
@@ -251,133 +263,159 @@
   ".py": [
     "code",
     "api",
+    "git",
     "reader",
     "annotate"
   ],
   ".js": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".ts": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".tsx": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".jsx": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".cjs": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".mjs": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".cts": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".mts": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".sh": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".zsh": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".fish": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".ps1": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".csh": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".zsh-theme": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".vim": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".yaml": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".yml": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".toml": [
     "canvas",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".ini": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".cfg": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".conf": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".tf": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".hcl": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".css": [
     "code",
+    "git",
     "reader",
     "annotate"
   ],
   ".txt": [
     "text",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
@@ -385,6 +423,7 @@
     "log_studio",
     "text",
     "code",
+    "git",
     "reader",
     "annotate"
   ],
@@ -392,6 +431,7 @@
     "_render",
     "code",
     "claude",
+    "git",
     "reader",
     "annotate",
     "history"
@@ -400,6 +440,7 @@
     "_render",
     "code",
     "claude",
+    "git",
     "reader",
     "annotate"
   ],
@@ -424,8 +465,8 @@
   ],
   "/": [
     "_listing",
+    "git",
     "graph",
-    "preview",
     "zarr_aoi"
   ],
   ".zarr/": [
@@ -576,6 +617,7 @@
   ".plist": [
     "plist",
     "code",
+    "git",
     "reader",
     "annotate"
   ]

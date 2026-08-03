@@ -105,18 +105,23 @@ export function startTour(): void {
 }
 
 // First-run auto-start: only for a fresh, non-embed user with the sidebar
-// mounted. Called after first paint so the listing/breadcrumb exist.
-export function maybeAutoStartTour(): void {
-  if (IS_EMBED) return;
+// mounted. Called after paint so the listing/breadcrumb exist. Returns true
+// when there is nothing left to do (tour started, already seen, or embed) and
+// false when the shell chrome simply isn't on screen yet — the caller retries
+// on the next route change, since a first visit can land on a chrome-free
+// route ("/" or /apps) that has no tour targets.
+export function maybeAutoStartTour(): boolean {
+  if (IS_EMBED) return true;
   let seen = false;
   try {
     seen = localStorage.getItem(SEEN_KEY) === "1";
   } catch {
     seen = false;
   }
-  if (seen) return;
-  if (!document.querySelector("#sidebar")) return;
+  if (seen) return true;
+  if (!document.querySelector("#sidebar")) return false;
   const steps = presentSteps();
-  if (steps.length === 0) return;
+  if (steps.length === 0) return false;
   runTour(steps);
+  return true;
 }

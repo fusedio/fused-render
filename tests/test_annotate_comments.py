@@ -88,6 +88,32 @@ def test_resolved_change_flows_through_as_update(tmp_path):
     assert log[0]["resolved"] is True
 
 
+def test_the_sent_flag_rides_the_verbatim_field_merge(tmp_path):
+    # The template stamps `sent: 1` on the comments a Send to Claude handoff
+    # carried and save()s BEFORE the mode switch (§17). Nothing here knows the
+    # field by name — the merge copies whatever the comment carries — so this
+    # pins that a new lifecycle flag reaches the log for free, and that the
+    # SHORT truthy value the URL budget wants survives as-is (not coerced to a
+    # bool, not dropped as falsy).
+    ann = _load_annotate()
+    f = _target(tmp_path)
+    ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
+    ann._record(str(f), [
+        {"id": "c1", "content": "hi", "createdAt": 1, "sent": 1}], [])
+
+    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    assert len(log) == 1
+    assert log[0]["sent"] == 1
+
+    # Reopen clears the flag by DELETING the key (URL-minimal, matching the
+    # template's other optional fields), and absence never deletes here — so the
+    # log keeps its last-seen `sent`. That asymmetry is why the history timeline
+    # deliberately does not surface `sent` as a label (§17): it can go stale.
+    ann._record(str(f), [{"id": "c1", "content": "hi", "createdAt": 1}], [])
+    log = json.loads(_sidecar(tmp_path).read_text())["comments"]
+    assert log[0]["sent"] == 1
+
+
 def test_dropped_comment_stays_in_sidecar(tmp_path):
     ann = _load_annotate()
     f = _target(tmp_path)

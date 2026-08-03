@@ -76,6 +76,36 @@ export function displayRecents(): RecentEntry[] {
   return slotPaths.flatMap((p) => byPath.get(p) ?? []);
 }
 
+// Drop the rows for a path the user just DELETED (or moved to the Bin), and for
+// everything inside it when that path was a folder — the same prefix + "/"
+// containment test `clearClipboardIfDeleted` uses.
+//
+// The GET already hides entries whose file is gone (RC-7), but nothing re-GETs
+// after a delete: the row would sit in the sidebar pointing at a file that no
+// longer exists until the user's next navigation happened to refresh the cache.
+// So the delete tells us, and the cache drops it right there.
+//
+// Deliberately LOCAL — no request. The server's list runs deeper than the three
+// displayed rows (RC-6's 20-entry buffer exists for exactly this), so the vacated
+// slot refills from the cache we already hold, with no round-trip and nothing to
+// wait for. A re-GET would also be the wrong tool: RC-7's existence check fails
+// OPEN on an indeterminate answer (rc down, budget exceeded), which for a row the
+// user just deleted would mean watching it come back. Nothing is written to the
+// store — the entry stays on disk, hidden, exactly as RC-7 has it, so a file
+// restored from the Bin legitimately reappears in Recents.
+export function dropRecentsFor(deleted: string): void {
+  const kept = cache.entries.filter((e) => {
+    const path = recentFsPath(e.url);
+    return path !== deleted && !path.startsWith(deleted + "/");
+  });
+  if (kept.length === cache.entries.length) return;
+  cache = { ...cache, entries: kept };
+  // Same slot arithmetic a vanished-on-refresh entry gets (RC-11): the freed slot
+  // is filled from the bottom by the next MRU entry, survivors do not reshuffle.
+  slotPaths = computeSlots(slotPaths, cache.entries);
+  notifyRecentsChanged();
+}
+
 // Serial promise chain like bookmarks.ts's enqueue: recording bursts (open +
 // the debounced param updates) and the collapse toggle never interleave their
 // GET-after-write refreshes, so the cache can't step backwards to a stale read.

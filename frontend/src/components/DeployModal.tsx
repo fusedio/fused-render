@@ -503,6 +503,12 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // fused's cache_max_age. Seeded on open from the stored record (like include/
   // exclude) and sent back on every Deploy; there is no "leave it as it was".
   const [cacheMaxAge, setCacheMaxAge] = useState<string>("0s");
+  // May viewers download this page's source bundle? Off by default and sent on every
+  // Deploy, like cacheMaxAge — there is no "leave it as it was", because the server
+  // states the posture to the CLI either way. Seeded on open from the stored record,
+  // which /api/deploy/status has already RECONCILED against the live mount, so a
+  // posture changed from a terminal shows here instead of being silently re-sent.
+  const [allowClone, setAllowClone] = useState<boolean>(false);
   // How the NEXT create's link is named — an explicit either/or, not "blank =
   // random" (which read as an unfinished field). "random" (the default, safe
   // choice) mints the opaque unguessable token; "named" uses `customToken` as
@@ -526,6 +532,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
   // panel, which is also the mount switch for whether DeploymentErrors is
   // mounted at all, so it never fetches until opened).
   const [cachingOpen, setCachingOpen] = useState(false);
+  const [cloningOpen, setCloningOpen] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
   // The Link section collapses like Caching — a one-line summary of the current
   // setting is enough until the user wants to change it.
@@ -624,6 +631,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       // expanded state from the previous page shouldn't carry over onto one
       // that hasn't been asked about yet.
       setCachingOpen(false);
+      setCloningOpen(false);
       setErrorsOpen(false);
       setLinkOpen(false);
       setChangingLink(false);
@@ -650,6 +658,9 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         setInclude(status.deployment?.include ?? []);
         setExclude(status.deployment?.exclude ?? []);
         setCacheMaxAge(status.deployment?.cache_max_age ?? "0s");
+        // `?? false` covers a record written before the feature: a page's source must
+        // never look downloadable because a field was missing.
+        setAllowClone(status.deployment?.allow_clone ?? false);
         // Selection is now known — open the gate; this (with the seeded include/
         // exclude) triggers the effect to fetch the first, correct preview.
         setSelectionReady(true);
@@ -790,6 +801,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
         include,
         exclude,
         cacheMaxAge,
+        allowClone,
         forceNew,
         namedTokenActive ? trimmedToken : undefined,
       );
@@ -805,6 +817,7 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
       setInclude(record.include ?? include);
       setExclude(record.exclude ?? exclude);
       setCacheMaxAge(record.cache_max_age ?? cacheMaxAge);
+      setAllowClone(record.allow_clone ?? allowClone);
     } catch (e) {
       // A deploy can fail AFTER the server mutated the pointer — the
       // failed-revive compensation path (deploy.py) persists status active or
@@ -1177,6 +1190,54 @@ export default function DeployModal({ fsPath, onClose, onChange }: DeployModalPr
               {clearCacheResult.deleted > 0
                 ? `Cleared ${clearCacheResult.deleted} cached result${clearCacheResult.deleted === 1 ? "" : "s"} — the next request recomputes.`
                 : "Nothing was cached — nothing to clear."}
+            </div>
+          )}
+        </div>
+        {/* Source-code section (collapsible, like Caching) — its own section rather than a
+            checkbox tucked under Caching: this is a DISCLOSURE choice, not a performance
+            one, and the summary count has to state the current posture where a publisher
+            can see it without expanding anything.
+            Headed "Source code", not "Cloning": the heading has to name what is at stake to
+            someone who has never used the viewer-side flow, and next to "Caching" and "Link"
+            it reads as the same kind of thing — a facet of the deployment. "Cloning" named
+            our mechanism instead, and a publisher skimming for "is my Python readable?" had
+            no reason to open it. */}
+        <div className="deploy-files">
+          <button
+            type="button"
+            className="deploy-files-head"
+            aria-expanded={cloningOpen}
+            onClick={() => setCloningOpen((o) => !o)}
+          >
+            <span className="deploy-files-chevron" aria-hidden="true">
+              {cloningOpen ? "▾" : "▸"}
+            </span>
+            <span className="deploy-files-title">Source code</span>
+            <span className="deploy-files-count">{allowClone ? "on" : "off"}</span>
+          </button>
+          {cloningOpen && (
+            <div className="deploy-files-body">
+              <div className="deploy-form-row">
+                <label className="deploy-cache-toggle">
+                  <input
+                    type="checkbox"
+                    checked={allowClone}
+                    disabled={busy !== null}
+                    onChange={(e) => setAllowClone(e.target.checked)}
+                  />
+                  Let viewers clone this app
+                </label>
+              </div>
+              {/* The copy states the disclosure plainly, at the point of the choice: a
+                  deployed page's .py files ship in the bundle but aren't otherwise
+                  readable over the web, so this toggle is what makes them downloadable —
+                  and "anyone with the link" is the real audience, since deployments are
+                  public links. */}
+              <div className="deploy-muted">
+                {allowClone
+                  ? "Anyone with the link can download this page's files, including its Python source, and open it in their own Fused Render."
+                  : "Viewers can use the page, but not download its files."}
+              </div>
             </div>
           )}
         </div>

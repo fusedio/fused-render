@@ -10,6 +10,10 @@ copy would land in the real ~/.fused-render.
 FUSED_RENDER_DIR is redirected for the same reason: /api/config reads it (D81)
 and the seed tests write into it, so no test may see the real ~/Documents/Fused.
 
+CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
+writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
+test may touch the real ~/.claude.
+
 Only allocate + register cleanup when the var is unset, so a caller that set it
 (CI pointing at a real dir) still wins and we don't eagerly leak a mkdtemp we
 never use. The dirs we create are removed at process exit.
@@ -23,7 +27,8 @@ import tempfile
 import pytest
 
 for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
-                       ("FUSED_RENDER_DIR", "fused-render-tests-dir-")):
+                       ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),
+                       ("CLAUDE_CONFIG_DIR", "fused-render-tests-claude-")):
     if _var not in os.environ:
         _tmp = tempfile.mkdtemp(prefix=_prefix)
         os.environ[_var] = _tmp
