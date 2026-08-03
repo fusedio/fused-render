@@ -1645,6 +1645,26 @@ table.listing-table .sort-arrow.desc {
   }
 }
 
+/* A row that just appeared in the folder (dir-watch refresh, views/Listing.tsx):
+   an accent wash that fades out over ROW_NEW_MS, so a file that landed while you
+   were looking elsewhere is visible instead of silently slotting in. On the cells
+   rather than the row, because the row's own background is the hover/selection
+   channel and must keep working underneath. Removals need no cue beyond the
+   FLIP. Reduced motion collapses the animation, which drops the cue entirely —
+   correct: it is decoration, and nothing depends on seeing it. */
+table.listing-table tr.row.row-new > td {
+  animation: row-new-fade 1.5s var(--ease-out);
+}
+
+@keyframes row-new-fade {
+  from {
+    background-color: rgba(var(--accent-rgb), 0.2);
+  }
+  to {
+    background-color: rgba(var(--accent-rgb), 0);
+  }
+}
+
 /* Rows glide to their new slots after a reorder (lib/flip). Higher specificity
    than the shared hover-transition rule so it wins for the length of the
    animation; the class is added for exactly FLIP_MS and then removed. */

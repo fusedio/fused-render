@@ -45,7 +45,7 @@ import { formatSize, formatMtime, basename } from "../lib/format";
 import { fuzzyMatch, highlightSegments } from "../lib/fuzzy";
 import { iconForEntry, isAppEntry } from "../components/FileIcons";
 import { getViewState, setViewState } from "../lib/viewstate";
-import { useFlip } from "../lib/flip";
+import { appearedKeys, useFlip, FLIP_KEY_ATTR } from "../lib/flip";
 import { getClipboard, setClipboard, useClipboard } from "../lib/fs-clipboard";
 import { pushToast } from "../lib/toast";
 import ContextMenu, { type MenuEntry, type MenuItem } from "../components/ContextMenu";
@@ -119,6 +119,31 @@ const FLIP_MAX_ROWS = 600;
 // purpose: that one bounds how often results are re-scored, this one bounds how
 // often the rows on screen are allowed to move.
 const RERANK_COMMIT_MS = 280;
+
+// How long a row that just appeared in the folder keeps its tint. Long enough to
+// catch the eye if you weren't looking at that part of the list, short enough
+// that it doesn't become part of the row's normal appearance.
+const ROW_NEW_MS = 1500;
+
+// Where the scroll position is pinned across a dir-watch refresh: the lead
+// (selected) row, or failing that the topmost row still in view. Returns null
+// when there is nothing to anchor to (empty or unmounted listing).
+function measureScrollAnchor(
+  scroller: HTMLElement,
+): { key: string; top: number; scrollTop: number } | null {
+  let el = scroller.querySelector<HTMLElement>("tr.row.lead");
+  if (!el) {
+    for (const row of scroller.querySelectorAll<HTMLElement>(`[${FLIP_KEY_ATTR}]`)) {
+      if (row.offsetTop + row.offsetHeight > scroller.scrollTop) {
+        el = row;
+        break;
+      }
+    }
+  }
+  const key = el?.getAttribute(FLIP_KEY_ATTR);
+  if (!el || !key) return null;
+  return { key, top: el.offsetTop, scrollTop: scroller.scrollTop };
+}
 
 // Debounce for mirroring the query into the URL. Safari rate-limits
 // history.replaceState (~100 calls / 30s, then it THROWS); per-keystroke
@@ -874,6 +899,7 @@ export default function Listing({
     const cursor = state.cursor;
     const gen = refresh; // discard the response if a refresh supersedes it
     setLoadingMore(true);
+    skipNewCue.current = true; // an appended page isn't a dir-watch change
     listDir(fsPath, cursor).then(
       (data) => {
         if (refreshRef.current !== gen) return; // stale: a refresh replaced the listing
@@ -1291,6 +1317,54 @@ export default function Listing({
   // moves nothing already on screen, so paging animates nothing.
   const scrollRef = useRef<HTMLDivElement>(null);
   useFlip(scrollRef, navRows, navRows.length <= FLIP_MAX_ROWS);
+
+  // Dir-watch change cue (B5). A refresh that adds entries used to slot them in
+  // silently — a file that just landed in the folder was indistinguishable from
+  // one that had been there all along. Newly appeared rows carry `.row-new` for
+  // ROW_NEW_MS (a tint that fades out; removals need no cue beyond the FLIP).
+  // Names are the plain listing's row identity. The FIRST listing of a folder is
+  // never "new" — appearedKeys returns nothing for a null previous list.
+  const prevNamesRef = useRef<string[] | null>(null);
+  const [newNames, setNewNames] = useState<Set<string>>(() => new Set());
+  // Set by loadMore: an appended page is the user's own gesture, and tinting
+  // 250 rows they just asked for is noise, not a cue.
+  const skipNewCue = useRef(false);
+  useEffect(() => {
+    if (state.status !== "ok") return;
+    const names = state.entries.map((e) => e.name);
+    const fresh = skipNewCue.current ? new Set<string>() : appearedKeys(prevNamesRef.current, names);
+    skipNewCue.current = false;
+    prevNamesRef.current = names;
+    if (fresh.size === 0) return;
+    setNewNames(fresh);
+    const id = window.setTimeout(() => setNewNames(new Set()), ROW_NEW_MS);
+    return () => window.clearTimeout(id);
+  }, [state]);
+
+  // Scroll anchoring (B5). A dir-watch refresh that inserts or removes rows
+  // ABOVE the viewport shifts everything below it, so the rows the user was
+  // reading slid out from under them. Re-apply the scroll offset the anchor row
+  // had. The anchor is re-measured on EVERY commit (it has to be current), but
+  // the correction is applied only when the refresh generation changed: a sort
+  // or a page reveal is the user's own gesture and must not be undone.
+  const anchorRef = useRef<{ key: string; top: number; scrollTop: number } | null>(null);
+  const anchorGenRef = useRef(refresh);
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const prev = anchorRef.current;
+    if (prev && refresh !== anchorGenRef.current) {
+      const el = scroller.querySelector<HTMLElement>(
+        `[${FLIP_KEY_ATTR}="${CSS.escape(prev.key)}"]`,
+      );
+      if (el) {
+        const shift = el.offsetTop - prev.top;
+        if (shift !== 0) scroller.scrollTop = prev.scrollTop + shift;
+      }
+    }
+    anchorGenRef.current = refresh;
+    anchorRef.current = measureScrollAnchor(scroller);
+  }, [navRows, refresh]);
 
   // Keep the keyboard selection scrolled into view as it moves. Follows the LEAD
   // row (`.lead`), not merely the first selected one: extending a Shift-range
@@ -2160,6 +2234,7 @@ export default function Listing({
           data-flip-key={childPath}
           className={
             (entry.ignored ? "row ignored" : "row") +
+            (newNames.has(entry.name) ? " row-new" : "") + // brief dir-watch tint
             (selectedSet.has(childPath) ? " selected" : "") +
             (childPath === selectedPath ? " lead" : "") + // scroll-into-view marker
             (cutSet.has(childPath) ? " cut" : "") +
