@@ -66,8 +66,8 @@ def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "git", "reader", "annotate", "history",
-        "versions"]
+        "_render", "code", "claude", "versions", "git", "reader", "annotate",
+        "history"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
@@ -92,14 +92,14 @@ def test_reader_present_on_text_keys_before_annotate():
     # Reader sits immediately before annotate on representative text formats,
     # and never as the default (first entry stays the real content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "claude", "git", "reader",
-                        "annotate", "versions"],
+        "/x/notes.md": ["markdown", "code", "claude", "versions", "git",
+                        "reader", "annotate"],
         # No `git` on .csv: a commit log over a data file says nothing a diff can
         # render, so the tabular keys are deliberately left alone (§33 / GT-2).
         "/x/data.csv": ["duckdb", "excel", "code", "reader", "annotate",
                         "versions"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader", "annotate"],
-        "/x/log.txt": ["text", "code", "git", "reader", "annotate", "versions"],
+        "/x/log.txt": ["text", "code", "versions", "git", "reader", "annotate"],
     }
     for path, expected in cases.items():
         got, error = modes(path)
@@ -166,13 +166,14 @@ def test_git_is_absent_from_data_media_and_binary_keys():
         assert "git" not in got, path
 
 
-def test_git_is_a_gated_directory_peer_after_the_listing():
-    # `_listing` stays the default of the universal `/` key (D81); `git` is the
-    # FIRST gated peer, because on a working machine its gate is the one that
-    # says yes most often and the switcher reads left to right.
+def test_gated_directory_peers_follow_the_listing():
+    # `_listing` stays the default of the universal `/` key (D81); the gated
+    # peers follow it in switcher order (left to right), with `versions` ahead
+    # of `git` — for an app folder the version timeline is what you want first,
+    # and the raw commit log sits one click further (#361).
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["_listing", "git", "versions", "graph", "zarr_aoi"]
+    assert got == ["_listing", "versions", "git", "graph", "zarr_aoi"]
 
 
 def test_git_ships_a_condition_gate_and_an_icon():
@@ -223,9 +224,9 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # `zarr_aoi` — for a plain folder, a dotted folder and the filesystem root
     # alike. Each gated mode is dropped unless its condition.py says otherwise;
     # see tests/test_graph_condition.py and the zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
-    assert modes("/", is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
+    assert modes("/", is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -352,8 +353,8 @@ def test_user_wildcard_key(user_dir):
     user_dir.registry({".*.json": "geo"})
     assert modes("/x/a.tiles.json") == (["geo"], None)
     assert modes("/x/a.json")[0] == [
-        "tree", "code", "duckdb", "git", "reader", "annotate",
-        "versions"]  # builtin still applies
+        "tree", "code", "duckdb", "versions", "git", "reader",
+        "annotate"]  # builtin still applies
 
 
 def test_user_directory_binding(user_dir):
@@ -658,7 +659,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "git", "versions", "graph", "zarr_aoi"]
+    assert registry["/"] == ["_listing", "versions", "git", "graph", "zarr_aoi"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -683,7 +684,7 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"git": False, "versions": False, "graph": False, "zarr_aoi": True} and err is None
@@ -695,7 +696,7 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"git": False, "versions": False, "graph": False, "zarr_aoi": True} and err is None
@@ -746,15 +747,15 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "git", "versions", "graph", "zarr_aoi"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "versions", "git", "graph", "zarr_aoi"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
     assert cond == {"git": False, "versions": False, "graph": False, "zarr_aoi": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
-    assert entries[1]["mode"] == "git" and entries[1].get("conditional") is True
-    assert entries[2]["mode"] == "versions" and entries[2].get("conditional") is True
+    assert entries[1]["mode"] == "versions" and entries[1].get("conditional") is True
+    assert entries[2]["mode"] == "git" and entries[2].get("conditional") is True
     assert entries[3]["mode"] == "graph" and entries[3].get("conditional") is True
     assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
 
