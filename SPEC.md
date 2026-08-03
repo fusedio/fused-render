@@ -1485,14 +1485,23 @@ never imports server).
 
 ### 20.2 Execution engine switch
 
-- **PF-3** The persisted `engine` pref (`builtin` default — D70 stands, the
-  pref is the opt-in D69 anticipated; or `fused`) drives `/api/run` dispatch,
-  **read per request** so a switch applies to the next run with no restart
-  (the registries' CT-5 no-restart discipline). Selecting `fused` is
+- **PF-3** The persisted `engine` pref (`fused` default since **D204**, which
+  reversed D70/D80's builtin-by-default; or `builtin`) drives `/api/run`
+  dispatch, **read per request** so a switch applies to the next run with no
+  restart (the registries' CT-5 no-restart discipline). Selecting `fused` — or
+  storing nothing at all — is
   *effective* only while the fused local backend is importable
   (`prefs.fused_engine_available`, probed per call — an install mid-session
   shows through); otherwise execution degrades to builtin and the page says
   so. The fused option is disabled with an install hint when unavailable.
+  **A two-way radio, not three**: there is no `auto` pref value — the
+  availability AND is what "auto" would have meant, and a third stored value
+  would be a second way to spell the default. A stored `builtin` **pins**
+  builtin: D204 flipped the default, not the choice, so an importable `fused`
+  never overrides a user who picked builtin. Since the default now depends on
+  what else is importable, the **test suite pins `FUSED_RENDER_ENGINE=builtin`
+  ambiently** (tests/conftest.py) so an incidental `/api/run` test does not
+  silently cover a different runner on a machine with the extra installed.
   **One resolver, no divergence:** `prefs.effective_engine()` is the single
   function both dispatch (`server.current_engine`) and the page's reported
   "running" engine (`engine_state().effective`) go through, resolving the
@@ -4332,6 +4341,26 @@ wanting "what has this file been through" wants §33.
   content that is not UTF-8, the delta degrades to net counts (or none) and
   **says it is inexact** rather than implying a diff nobody computed: difflib is
   quadratic in the worst case and a timeline renders every version.
+
+  **The sheet shows the diff itself, not only the aggregates** (`diff`:
+  `{lines, changed, truncated, reason}`). Bytes-now / bytes-after / `+N / −M`
+  answer how MUCH changes and never WHAT, and on the one destructive action in
+  this view the second is the question being confirmed. It rides on the **plan**
+  rather than on a fourth action, deliberately: the plan already enriches, already
+  runs on an explicit click, and its `id` is already the freshness token the write
+  demands back — a separate `action="diff"` would diff a second scan and reopen
+  exactly the confirm-one-diff-get-another gap above. Same direction as the delta
+  (disk-now is the `from` side), headers naming the **checkpoint and its session**
+  rather than the store's hashed path (which the user cannot open or act on), and
+  the same `DIFF_BYTE_CAP` guard — over the cap, or with either side not UTF-8,
+  there is no diff and `reason` says which. A delete diffs as every current line
+  removed, and an absent target as every target line added; both fall out of
+  `_current` modelling absence as `[]` lines. Capped at `DIFF_LINE_CAP` (400)
+  lines with `truncated` set and `changed` counting the **full** diff, so the view
+  states what it is not showing instead of presenting a prefix as the whole
+  change. `reason` is also how a genuinely EMPTY diff arrives (an explicitly
+  clicked version holding exactly what is on disk): an empty box reads as a broken
+  diff, so no-diff is never silent. `ok: false` plans carry no `diff` key at all.
 - **FH-10** **Second line of defence: the pre-restore content is stashed in the
   target's own `<file>.json` sidecar**, under `revertStash`, through the same
   read-merge-write `annotate.py` already uses — so `claudeSessions`,
@@ -4501,3 +4530,49 @@ wanting "what has this file been through" wants §33.
   click asks the always-enriched plan. That case is why `offer` is a field of its
   own rather than being inferred from `revert` — there is no target to name there,
   and the click is still the right thing to allow.
+- **FH-18** **The write is visible while it runs, and its outcome lands where the
+  click was.** Four separate ways the revert reported itself to the eye rather
+  than to the file, all of them silent failures of feedback rather than of logic:
+
+  **The sheet stays up for the round trip.** It used to close *before* the await,
+  so a stash write, an `os.replace` and a full re-enumeration of the store all
+  happened with nothing on screen changing, and the click read as having done
+  nothing. The confirm button goes into a disabled "Reverting…"/"Deleting…" state
+  instead and its label is *restored* afterwards rather than recomputed (the sheet
+  chose between four wordings; rebuilding that decision is how the two drift). The
+  in-flight flag also makes `closeConfirm` **refuse**, so Cancel, Escape and the
+  backdrop — all three of which route through that one function — cannot pull the
+  sheet, and `pending` with it, out from under the call still reading it. This is
+  the one window in which the button is disabled, and it is the opposite of the
+  gate FH-9 removed: it means the click was accepted.
+
+  **A failure reports inside the sheet; a success reports on the stage.** The
+  outcome used to be only an 11px muted line at the bottom of the sidebar
+  (`#histnote`), reached by looking away from a centered modal that had just
+  vanished — and with History collapsed it was the *entire* signal. A failed revert
+  changed nothing on disk, so the sheet is still describing the truth: it stays,
+  with the reason in it. A successful one closes the sheet and adds a transient
+  toast at the top of the stage. `#histnote` is still written on every path — it is
+  the durable copy, the carry slot (FH-15) reads it, and `reportOutcome` is the
+  only thing that qualifies a success with "the timeline could not be reloaded".
+
+  **The framed reload is covered.** The boot skeleton `remove()`d itself on the
+  first load, so the post-revert `location.reload()` had no placeholder and the
+  pins/highlight overlays sat in stage coordinates over an empty document — pointing
+  at nothing — until the next `load` ran `render()`. The node is now kept and
+  toggled (one cover, two occasions), the overlays go down with it, and the cover is
+  lifted only *after* `render()`, which is the first moment an anchor has been
+  re-resolved against the new document. That handler re-runs on every reload, so it
+  also **disconnects the previous MutationObserver**: one left watching a discarded
+  document is a leak that additionally drives renders for a document nobody is
+  looking at.
+
+  **The fresh timeline rides back with the write.** `revert` returns the post-write
+  `timeline` (computed in the bridge, from the module it already holds, always
+  ENRICHED — this is what the panel displays, and an unenriched one cannot see the
+  creation boundary), so the row list no longer shows the *pre*-revert position for
+  the length of a second round trip: exactly the window in which the user is looking
+  at it to find out whether the revert worked. Best-effort and **absent** when the
+  computation fails, because the write already landed and is already reported; the
+  page falls back to its own `history` call, whose error channel is what tells the
+  user the panel on screen is stale.

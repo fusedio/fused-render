@@ -14,6 +14,16 @@ CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
 writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
 test may touch the real ~/.claude.
 
+FUSED_RENDER_ENGINE is pinned to `builtin` for the same class of reason. D204
+flipped the engine PREF's default to fused-when-available, so from then on the
+executor an incidental `/api/run` test exercises depends on whether the optional
+`fused` package happens to be importable in the environment — which is exactly
+the install-order dependence D204 accepts for users and must not inherit into the
+suite, where it would mean the call-log, template and mount tests silently cover
+a different runner on a machine with the extra installed. The tests that are
+ABOUT the engine or the pref clear or set this variable themselves (see
+test_server_engine.py and test_shell_prefs.py::_client).
+
 Only allocate + register cleanup when the var is unset, so a caller that set it
 (CI pointing at a real dir) still wins and we don't eagerly leak a mkdtemp we
 never use. The dirs we create are removed at process exit.
@@ -33,6 +43,11 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         _tmp = tempfile.mkdtemp(prefix=_prefix)
         os.environ[_var] = _tmp
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
+
+# A stable default executor for every test that reaches /api/run without caring
+# which engine answers — see the module docstring. Not a tmpdir, so it gets its
+# own line rather than a fourth entry above.
+os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 
 
 # The PEP 723 header the warm fixture (and the tests that ask for it) declare.

@@ -30,15 +30,19 @@ def _forced_engine() -> str | None:
     opts in to it iff importable; `fused` demands it (a missing package is a
     startup error, not a silent fallback). **Unset returns None** — the
     engine then follows the persisted preference (shell/prefs.py, default
-    builtin — D70 stands), re-read per request so the Preferences page's
-    switch applies without a restart. Logged either way — engine choice
-    changes the code contract, so it must never be silent.
+    **fused-when-importable** since D204, which reversed D70's builtin
+    default here), re-read per request so the Preferences page's switch
+    applies without a restart. Logged either way — engine choice changes the
+    code contract, so it must never be silent, and a log line describing the
+    wrong default is worse than none: it is the only place most people ever
+    read this contract.
     """
     raw = os.environ.get("FUSED_RENDER_ENGINE")
     if raw is None:
         logger.info(
             "execution engine: following the preference (~/.fused-render/prefs.json, "
-            "default builtin); FUSED_RENDER_ENGINE overrides it for this process"
+            "default fused when its package is importable, else builtin); "
+            "FUSED_RENDER_ENGINE overrides it for this process"
         )
         return None
     requested = raw.strip().lower()

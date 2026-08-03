@@ -16,14 +16,22 @@ Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
 offered — opt-in, default off; see ``reader_enabled``), and the **execution
 engine** for /api/run:
 
-  * ``"builtin"`` (default) — the built-in executor: fresh subprocess per
-    call, the environment that launched the server (D70's builtin-by-default
-    stands; the pref is the opt-in D69 anticipated).
-  * ``"fused"`` — the fused local compute backend (engine.py): PEP 723 inline
-    requirements resolved into cached venvs, ``@fused.udf``/``result``
-    entrypoints. Selecting it is effective only while the ``fused`` package
-    is importable (``fused_engine_available``); otherwise execution falls
-    back to builtin and the page says so.
+  * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
+    PEP 723 inline requirements resolved into cached venvs,
+    ``@fused.udf``/``result`` entrypoints. Effective only while the ``fused``
+    package is importable (``fused_engine_available``); otherwise execution
+    falls back to builtin and the page says so, which is what keeps a default
+    that depends on the environment from being a default that breaks in one.
+  * ``"builtin"`` — the built-in executor: fresh subprocess per call, the
+    environment that launched the server. Storing it PINS it: D204 flipped the
+    default, not the choice, and an importable ``fused`` must not override a
+    user who picked builtin — that is precisely D70's surprise.
+
+D204 knowingly re-accepts the install-order-dependent default D70 and D80 both
+rejected: the same install can run pages under two contracts depending on what
+else shares the environment. The owner's call (2026-08-03) is that the fused
+engine's UX has improved enough, and both engines run locally, that the contract
+difference is now a much smaller surprise than it was in July.
 
 The preference is read per request (server.py's /api/run dispatch), so a
 switch applies to the next run with no restart — the same no-restart
@@ -68,9 +76,16 @@ def read_prefs() -> dict:
 
 
 def selected_engine() -> str:
-    """The persisted engine preference; unset/unknown values read as builtin."""
+    """The persisted engine preference; unset/unknown values read as **fused**.
+
+    D204 flipped this from builtin. It is only the SELECTION —
+    ``effective_engine()`` ANDs it with live availability, so "fused by default"
+    can never mean "broken by default" on a machine without the package; and a
+    stored ``"builtin"`` still pins builtin, because that is a choice the user
+    made and not a default to override.
+    """
     value = read_prefs().get("engine")
-    return value if value in VALID_ENGINES else "builtin"
+    return value if value in VALID_ENGINES else "fused"
 
 
 def deploy_enabled() -> bool:

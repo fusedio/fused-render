@@ -149,6 +149,23 @@
     animation: skel-shimmer 1.2s ease-in-out infinite;
   }
   .skelbar + .skelbar { margin-top: 8px; }
+  /* The outcome of a revert, at the top of the STAGE — which is where the eye is
+     when a centered modal closes under it. #histnote is an 11px muted line at the
+     bottom of the sidebar, and with History collapsed it was the ONLY signal that
+     the one destructive action in this view had happened at all. This is in
+     ADDITION to that note, never instead of it: the carry slot and the reload path
+     both read it. */
+  #toast {
+    position: absolute; z-index: 20;
+    top: 12px; left: 50%; transform: translateX(-50%);
+    max-width: 80%;
+    padding: 8px 14px; border-radius: 999px;
+    font-size: 12px;
+    color: var(--fg); background: var(--surface);
+    border: 1px solid var(--accent);
+    box-shadow: 0 6px 20px var(--shadow-pop);
+    pointer-events: none;    /* it sits over the framed view — never in its way */
+  }
   #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
   .pin {
     position: absolute; pointer-events: auto;
@@ -349,6 +366,41 @@
   }
   #confirmbox dt { color: var(--fg-muted); }
   #confirmbox dd { margin: 0; font-variant-numeric: tabular-nums; }
+  /* The diff. The `<dl>` above answers how MUCH changes; this answers WHAT, which
+     on the one destructive action in this view is the question actually being
+     confirmed. Capped height rather than a growing sheet: a modal that outgrows
+     the viewport puts its own buttons off screen. */
+  #confirmdiff {
+    margin: 10px 0 0; padding: 8px 10px;
+    max-height: 40vh; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; line-height: 1.5;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  /* The SAME accent/error pair the history rows use for their +/− counts
+     (`.hplus`/`.hminus`): one meaning, one colour, and inventing a second green
+     and a second red for added/removed would be two names for each. */
+  #confirmdiff .cdplus { color: var(--accent); }
+  #confirmdiff .cdminus { color: var(--error); }
+  /* Hunk headers, the two file names, and the "no diff"/"view cut" sentences are
+     all scaffolding around the change, so they recede to the muted tone rather
+     than competing with the lines that matter. */
+  #confirmdiff .cdhunk, #confirmdiff .cdfile, #confirmdiff .cdnote {
+    color: var(--fg-muted);
+  }
+  /* Same affordance as #histtoggle, deliberately — one disclosure idiom in this
+     view, so a triangle plus muted 11px text means the same thing in both. */
+  #confirmdifftoggle {
+    font: inherit; font-size: 11px; cursor: pointer;
+    margin-top: 10px; padding: 0;
+    color: var(--fg-muted); background: none; border: none;
+  }
+  #confirmdifftoggle:hover { color: var(--fg); }
+  /* Wider ONLY when there are diff lines to show, so a sheet with nothing but the
+     counts does not grow for nothing. Applied while the diff is still behind its
+     disclosure too: sizing the box on the open/closed state would reflow the whole
+     sheet under the cursor on the very click that opens it. */
+  #confirmbox.wide { width: 640px; }
   /* The sole thing standing between a click and unrecoverable loss (the
      tick-to-confirm that used to back it up was removed as friction), so in the
      irreversible case it carries real weight rather than being a footnote. */
@@ -360,6 +412,16 @@
     border-width: 2px; font-weight: 600;
     background: var(--error-wash);
   }
+  /* A revert that FAILED reports inside the sheet, because the user is still
+     looking at the thing they clicked. It used to close first and leave the reason
+     in the sidebar note, which is both 11px and somewhere else. Shares
+     #confirmwarn's shape — same box, same error tone — since both say "this did
+     not / will not go well", and never the `hard` escalation, which is reserved
+     for content that is about to be destroyed. */
+  #confirmerr {
+    margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
+    border: 1px solid var(--error); border-radius: 8px; color: var(--error);
+  }
   #confirmacts { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
   #confirmacts button {
     font: inherit; cursor: pointer; border-radius: 8px; padding: 6px 12px;
@@ -369,6 +431,10 @@
     font-weight: 600; color: var(--on-accent);
     background: var(--accent); border-color: var(--accent);
   }
+  /* Only ever the in-flight state: the confirm button is otherwise enabled
+     unconditionally (the tick-to-confirm was removed as friction), so a dimmed
+     button in this sheet means exactly "the write is running". */
+  #confirmacts button:disabled { opacity: 0.5; cursor: default; }
   #status { padding: 24px; color: var(--fg-muted); }
   #status.error { color: var(--error); }
 </style>
@@ -385,6 +451,7 @@
     <div id="stage">
       <iframe id="page"></iframe>
       <div id="stageskel"></div>
+      <div id="toast" hidden></div>
       <div id="hl"></div>
       <div id="ghost"></div>
       <div id="pins"></div>
@@ -416,7 +483,10 @@
       <h2 id="confirmtitle">Revert this file?</h2>
       <div id="confirmsub"></div>
       <dl id="confirmfacts"></dl>
+      <button id="confirmdifftoggle" hidden></button>
+      <pre id="confirmdiff" hidden></pre>
       <p id="confirmwarn" hidden></p>
+      <p id="confirmerr" hidden></p>
       <div id="confirmacts">
         <button id="confirmno">Cancel</button>
         <button id="confirmgo">Revert</button>
@@ -1296,13 +1366,41 @@
       }
     });
 
+    // The stage cover, used on BOOT and on every reload. It was a one-shot boot
+    // skeleton that `remove()`d itself on the first load — so the post-revert
+    // reload had no skeleton to show, and the pins/highlight overlays sat in stage
+    // coordinates over an empty document until the next `load` fired. The node is
+    // therefore kept and toggled: one cover, two occasions, no second placeholder.
+    //
+    // The overlays go with it because they are the misleading half. A pin drawn at
+    // a coordinate from the OLD document is not a stale pin, it is a pin pointing
+    // at nothing, and `render()` is the only thing that can re-resolve it.
+    function coverStage() {
+      const stageskel = document.getElementById("stageskel");
+      if (stageskel) stageskel.hidden = false;
+      pinsEl.hidden = true;
+      // `display`, not `hidden`, for these two: the hover handlers drive them
+      // through `style.display` and an inline style would win over the attribute.
+      hl.style.display = "none";
+      ghost.style.display = "none";
+    }
+    function uncoverStage() {
+      const stageskel = document.getElementById("stageskel");
+      if (stageskel) stageskel.hidden = true;
+      pinsEl.hidden = false;
+    }
+    // The framed document's mutation observer, held so a reload can DISCONNECT the
+    // previous one. This handler re-runs on every load, and an observer left
+    // watching a discarded document is both a leak and a source of renders driven
+    // by a document nothing is looking at.
+    let frameObserver = null;
+
     // Wire the framed document once it loads: hover highlight + click-to-comment.
     frame.addEventListener("load", () => {
-      // Real content has landed — drop the boot skeleton (render(), below,
-      // repopulates #list with real cards or the empty state either way).
-      const stageskel = document.getElementById("stageskel");
-      if (stageskel) stageskel.remove();
       const doc = frame.contentDocument;
+      // No document to wire (torn-down or cross-origin frame): the cover stays up
+      // rather than being lifted off nothing, because there is no `render()` coming
+      // to put the pins back where they belong.
       if (!doc) return;
       // Highlight-API tint styles for selection anchors, injected into the
       // framed page (the API paints there, so the styles must live there).
@@ -1476,9 +1574,16 @@
       };
       doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
       // Async views (tables, editors) build their DOM after load — re-resolve
-      // anchors when the framed document mutates.
-      new MutationObserver(queueRender).observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+      // anchors when the framed document mutates. The previous one is disconnected
+      // first: this handler runs again on every reload (the post-revert refresh
+      // being the one that made it a real accumulation, not a theoretical one).
+      if (frameObserver) frameObserver.disconnect();
+      frameObserver = new MutationObserver(queueRender);
+      frameObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
       render();
+      // Only now: `render()` is what re-resolves every anchor against THIS
+      // document, so it is the first moment the pin layer means anything.
+      uncoverStage();
       focusFromParam(); // consume a `comment` deep link once the frame is wired
     });
     // Send to Claude: hand the NEW comments to the claude chat mode. Copies the
@@ -1733,6 +1838,22 @@
       histNote.className = isError ? "error" : "";
       histNote.textContent = text;
     }
+    //: How long the stage toast stays up. Long enough to read a sentence, short
+    //: enough that it is gone before it stops being news.
+    const TOAST_MS = 4000;
+    let toastTimer = 0;
+    // A brief confirmation at the top of the stage, where the eye is when the
+    // centered sheet closes under it. TRANSIENT on purpose: it reports the outcome
+    // of one click, and a banner still sitting over the framed view minutes later
+    // would be reporting history — #histnote is the durable copy, and it is still
+    // written on every path.
+    function showToast(text) {
+      const el = document.getElementById("toast");
+      el.textContent = text;
+      el.hidden = false;
+      clearTimeout(toastTimer);  // a second revert restarts the window, not two
+      toastTimer = setTimeout(() => { el.hidden = true; }, TOAST_MS);
+    }
     // One composer for both the in-page path and the post-reload path. `reloadErr`
     // is the M1 lesson generalized: a refresh that failed has already written its
     // own error here, and reporting plain success over it hides that the list
@@ -1904,8 +2025,15 @@
 
     let pending = null; // the plan awaiting confirmation
     function closeConfirm() {
+      // A revert IN FLIGHT owns this sheet, and every close path goes through here
+      // — the Cancel button, the backdrop click and Escape. `busy` is set for
+      // exactly the window between the click and the call returning, and closing
+      // inside it would null `pending` from under the handler that is still reading
+      // it, while taking the only "something is happening" signal off screen.
+      if (busy) return;
       confirmEl.classList.remove("open");
       pending = null;
+      document.getElementById("confirmerr").hidden = true;
     }
     document.getElementById("confirmno").addEventListener("click", closeConfirm);
     confirmEl.addEventListener("click", (e) => {
@@ -1913,6 +2041,84 @@
     });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && confirmEl.classList.contains("open")) closeConfirm();
+    });
+
+    // Diffs at or under this many changed lines open EXPANDED. 40 is about the
+    // tallest thing that still reads as a glance inside a modal; past it the sheet
+    // becomes a scrolling review surface, and what is being confirmed is a click,
+    // not a review — so the big ones wait behind a disclosure that says how much
+    // there is.
+    const DIFF_OPEN_LINES = 40;
+    let diffChanged = 0; // for the toggle's label, which outlives one render
+
+    // The confirm sheet's diff, built as NODES with classes — the same rule
+    // `deltaNodes` follows and for a sharper reason here: these lines are file
+    // content off the user's disk, and this template routinely annotates HTML.
+    // Text nodes keep a checkpointed `<script>` inert; `innerHTML` would run it
+    // inside this page, which holds the revert controls.
+    function renderConfirmDiff(diff) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      const box = document.getElementById("confirmbox");
+      pre.textContent = "";
+      toggle.hidden = true;
+      // `reason` is file_history's one channel for every "no diff here" — over the
+      // byte cap, binary either side, a version that vanished between the scan and
+      // the read, a version holding exactly what is on disk. It renders WHERE the
+      // diff would have been, because a sheet that silently omits the diff it
+      // normally shows reads as the diff being empty.
+      // A MISSING `diff` is the other case this branch covers, and it is not the
+      // same thing: a refused plan (`ok: false`) carries no diff key at all, so
+      // there is nothing to say and the box stays out of the sheet entirely.
+      if (!diff || diff.reason) {
+        if (diff && diff.reason) {
+          const why = document.createElement("div");
+          why.className = "cdnote";
+          why.textContent = diff.reason;
+          pre.appendChild(why);
+        }
+        pre.hidden = !pre.children.length;
+        box.classList.remove("wide");
+        return;
+      }
+      diff.lines.forEach((ln, i) => {
+        const row = document.createElement("div");
+        // The two file names are lines 0 and 1 BY POSITION, never by prefix: a
+        // removed content line reading `--` arrives as `---` and would otherwise
+        // be painted as a header instead of as the removal it is.
+        row.className = i < 2 ? "cdfile"
+          : ln.startsWith("@@") ? "cdhunk"
+          : ln.startsWith("+") ? "cdplus"
+          : ln.startsWith("-") ? "cdminus" : "";
+        row.textContent = ln;
+        pre.appendChild(row);
+      });
+      if (diff.truncated) {
+        // The cut is stated with the FULL count beside it. Trailing off with no
+        // note would present a prefix of the change as the whole of it — the same
+        // thing the byte cap refuses to do one layer down.
+        const cut = document.createElement("div");
+        cut.className = "cdnote";
+        cut.textContent = "… only the first " + diff.lines.length +
+          " lines are shown — " + diff.changed + " lines change in total.";
+        pre.appendChild(cut);
+      }
+      diffChanged = diff.changed;
+      box.classList.add("wide");
+      setDiffDisclosure(diff.changed <= DIFF_OPEN_LINES);
+      toggle.hidden = diff.changed <= DIFF_OPEN_LINES;
+    }
+
+    function setDiffDisclosure(open) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      pre.hidden = !open;
+      toggle.textContent = open
+        ? "▾ Hide diff"
+        : "▸ Show " + diffChanged + " changed lines";
+    }
+    document.getElementById("confirmdifftoggle").addEventListener("click", () => {
+      setDiffDisclosure(document.getElementById("confirmdiff").hidden);
     });
 
     // `versionId === null` means "the last change", resolved by the POSITIONAL
@@ -1949,6 +2155,9 @@
         return;
       }
       pending = plan;
+      // A previous failure's message must not greet the next target: this sheet is
+      // one node reused for every plan.
+      document.getElementById("confirmerr").hidden = true;
       const del = plan.action === "delete";
       document.getElementById("confirmtitle").textContent =
         del ? "Delete this file?" : "Revert this file?";
@@ -1985,6 +2194,9 @@
         dd.textContent = v;
         facts.append(dt, dd);
       }
+      // Between the counts and the hazard, because that is the reading order the
+      // sheet asks for: how much changes, what changes, what it costs.
+      renderConfirmDiff(plan.diff);
       // The sharp hazard, stated plainly — and the SHEET NOW KNOWS whether a
       // copy will actually be kept, rather than hedging. `plan.stash` is the
       // same predicate the write itself runs, so the two cannot disagree. The
@@ -2021,9 +2233,25 @@
     document.getElementById("confirmgo").addEventListener("click", async () => {
       if (!pending || busy) return;
       const plan = pending;
-      closeConfirm();
+      // The sheet STAYS OPEN for the round trip. It used to close first, so a
+      // multi-hundred-ms Python call — a stash write, an os.replace, a full
+      // re-enumeration of the store — ran with nothing on screen changing, and the
+      // click read as having done nothing at all. `busy` does double duty: it dims
+      // the controls here, and `closeConfirm` refuses while it is set, so Cancel,
+      // Escape and the backdrop cannot pull the sheet (and `pending` with it) out
+      // from under the call this handler is still awaiting.
       busy = true;
       revertBtn.disabled = true;
+      const go = document.getElementById("confirmgo");
+      const no = document.getElementById("confirmno");
+      const err = document.getElementById("confirmerr");
+      // The label is restored rather than recomputed: `askRevert` chose between
+      // four wordings (delete/revert × permanent or not), and rebuilding that
+      // decision here is how the two drift apart.
+      const goLabel = go.textContent;
+      go.disabled = no.disabled = true;
+      go.textContent = plan.action === "delete" ? "Deleting…" : "Reverting…";
+      err.hidden = true;
       // The plan's own id is echoed back — this action never picks a target —
       // and `confirm_unique` is the token the bridge demands before it will
       // destroy content that is in no checkpoint. Both are enforced in
@@ -2034,6 +2262,8 @@
         confirm_unique: !!plan.unique_current,
       });
       busy = false;
+      go.disabled = no.disabled = false;
+      go.textContent = goLabel;
       if (out.error || out.ok === false) {
         // renderHistory() REWRITES histNote from the timeline's own note, so it
         // has to run BEFORE the message lands — the other order set the text and
@@ -2042,8 +2272,20 @@
         // happen and nothing be said).
         renderHistory();
         setNote(out.error || "Revert failed.", true);
+        // ...and the sheet stays OPEN with the reason in it. The note alone was
+        // 11px, muted, at the bottom of the sidebar, and reached only by looking
+        // away from the centered modal that had just vanished — so the reason a
+        // destructive click was refused landed nowhere near the click. Nothing
+        // changed on disk, so there is nothing to reload and no state to settle:
+        // the same sheet, the same target, one more fact.
+        err.textContent = out.error || "Revert failed.";
+        err.hidden = false;
         return;
       }
+      // Success: the target no longer exists in the form the sheet described, so
+      // the sheet has nothing left to say. Closed HERE rather than before the
+      // call — that ordering is the whole of the first fix above.
+      closeConfirm();
       // Reload the framed view: it read the file at load, and a code editor is
       // holding a buffer that is now stale — leaving it would let its next save
       // write the pre-revert content straight back over the restore. Only the
@@ -2052,6 +2294,13 @@
       // own fs-event watch, since the target just changed on disk; that resets
       // the panel to its collapsed boot state, which is why the outcome is also
       // legible from the framed view itself rather than only from the note.)
+      //
+      // Covered across the reload. The framed document goes blank the instant this
+      // fires and stays blank until its `load` handler runs `render()`, and the boot
+      // skeleton had `remove()`d itself on the FIRST load — so the second time there
+      // was no placeholder and the pins sat in stage coordinates over an empty page,
+      // pointing at nothing.
+      coverStage();
       try {
         frame.contentWindow.location.reload();
       } catch (e) {
@@ -2069,15 +2318,45 @@
       // Written first, the outcome survives that; written after, it is lost
       // exactly when the reload is fastest.
       carryOutcome(outcome);
-      // The refresh must observe the POST-revert file, which it does because the
-      // write completed before `callHistory` resolved — so the position marker
-      // now points at the version just restored.
-      const reloadErr = await loadHistory(enriched);
+      // The fresh timeline rides back on the SAME response (computed after the
+      // write, in annotate.py, from the module the bridge already holds), so the row
+      // list stops showing the PRE-revert position for the length of a second round
+      // trip — which is exactly the window in which the user is looking at it to see
+      // whether the revert worked. It is always enriched there, hence the flag.
+      //
+      // `loadHistory` stays as the fallback for a field that is absent (an older
+      // bridge) or a timeline computation that failed, and it keeps its own error
+      // reporting: `reportOutcome(..., reloadErr)` is what says the panel on screen
+      // is stale, and that sentence must not go missing just because the usual path
+      // no longer needs a second call.
+      let reloadErr = "";
+      if (out.timeline) {
+        timeline = out.timeline;
+        enriched = true;
+        renderHistory();
+      } else {
+        // The refresh must observe the POST-revert file, which it does because the
+        // write completed before `callHistory` resolved — so the position marker
+        // now points at the version just restored.
+        //
+        // `true`, not `enriched`: this stands in for a payload the bridge always
+        // enriches, and `enriched` is the DISCLOSURE state — false whenever the panel
+        // has not been expanded, which is the common case. An unenriched timeline
+        // cannot see the did-not-exist boundary and so reports `at_earliest` a step
+        // early (the same FH-3 trap the boot path documents), and the moment right
+        // after a destructive write is the worst one to paint a panel that is a step
+        // short of the truth. Whether a widget was open has no business deciding that.
+        reloadErr = await loadHistory(true);
+      }
       // loadHistory may itself have failed and written an error here. Reporting
       // plain success over it is the SAME write-order bug as the failure branch
       // above — fixed as a class, not as one instance: the outcome is real and
       // must be said, but it cannot erase the fact that the panel is now stale.
       reportOutcome(outcome, false, reloadErr);
+      // ...and said once more where the eye actually is. #histnote is the durable
+      // copy (and carries the stale-panel qualification above); this is the one the
+      // user does not have to look away from the modal they just dismissed to find.
+      showToast(outcome);
       // Displayed here, so the carry slot is spent — and nothing writes to it
       // after this point. That ordering is the whole lifetime rule: the reload
       // never arriving (an unwatched mount-backed file, the user navigating away,
