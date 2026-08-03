@@ -1068,14 +1068,8 @@ def sweep(now: float | None = None) -> int:
 # ------------------------------------------- middleware / handler integration
 
 def _header_path(value: str | None) -> str | None:
-    """The path a runtime attribution header names, percent-decoded.
-
-    Undoes runtime.js's encodeURIComponent, which exists because a header value
-    is ISO-8859-1 only: fetch() throws rather than sending a path outside that
-    range, so a filename in any other script took down every call the page made
-    instead of just this record. A path sent raw is left alone — decoding is the
-    identity for the plain ASCII a hand-written request (curl, the tests) carries.
-    """
+    """Undo runtime.js's encodeURIComponent. A path sent raw is left alone:
+    decoding is the identity for the ASCII a curl or a test carries."""
     if not value:
         return None
     return unquote(value)
