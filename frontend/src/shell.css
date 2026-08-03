@@ -2748,6 +2748,53 @@ body.embed .open-as-app-chip:hover {
   z-index: 1000;
 }
 
+/* Enter/exit for EVERY dialog in the app: the scrim fades and the dialog scales
+   up a hair. `.closing` is painted by the chassis (components/modal/Modal.tsx
+   and the FsDialogs overlay) for the length of --dur-med before the caller
+   unmounts it — see lib/exit-animation for why the delay lives in JS. The enter
+   is an animation (the node is newly mounted, so there is no `from` value for a
+   transition); the exit is a transition off the mounted state. */
+.modal-overlay {
+  animation: modal-scrim-in var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay .modal-dialog {
+  animation: modal-dialog-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes modal-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.modal-overlay.closing {
+  /* A dialog closed inside its own enter window would otherwise stay driven by
+     the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  /* Nothing behind a dialog that is already leaving should be clickable, and
+     neither should the dialog itself. */
+  pointer-events: none;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.modal-overlay.closing .modal-dialog {
+  animation: none;
+  opacity: 0;
+  transform: scale(0.98);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
+}
+
 .deploy-dialog {
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -5962,7 +6009,10 @@ select.field-control:has(option[value=""]:checked) {
   z-index: 1000;
   background: var(--scrim);
   opacity: 0;
-  transition: opacity 200ms ease-out;
+  /* Bidirectional: NewAppPanel takes `is-open` back off (and defers its own
+     unmount by PANEL_EXIT_MS, lib/exit-animation) so the same rule slides the
+     panel out again. */
+  transition: opacity var(--dur-slow) var(--ease-out);
 }
 
 .app-panel-overlay.is-open {
@@ -5981,7 +6031,7 @@ select.field-control:has(option[value=""]:checked) {
   border-left: 1px solid var(--border);
   box-shadow: 0 0 40px var(--shadow-lg);
   transform: translateX(100%);
-  transition: transform 200ms ease-out;
+  transition: transform var(--dur-slow) var(--ease-out);
 }
 
 .app-panel-overlay.is-open .app-panel {
