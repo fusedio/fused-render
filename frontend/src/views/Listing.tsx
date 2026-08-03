@@ -114,6 +114,12 @@ const PAGE_SIZE = 250;
 // glide costs more than the snap it replaces.
 const FLIP_MAX_ROWS = 600;
 
+// Minimum gap between commits of the RENDERED search ranking while a walk
+// streams (see the throttle in the component). Longer than STREAM_FLUSH_MS on
+// purpose: that one bounds how often results are re-scored, this one bounds how
+// often the rows on screen are allowed to move.
+const RERANK_COMMIT_MS = 280;
+
 // Debounce for mirroring the query into the URL. Safari rate-limits
 // history.replaceState (~100 calls / 30s, then it THROWS); per-keystroke
 // sync trips that on fast typing. State stays immediate — only the URL lags.
@@ -1135,6 +1141,44 @@ export default function Listing({
     });
   }, [searching, q, validWalk, searchSort]);
 
+  // --- Streaming re-rank throttle (B4) --------------------------------------
+  // Every stream flush re-scores the newly arrived entries and merges them into
+  // the ranked list, which reshuffles the visible rows several times a second —
+  // unreadable on its own, and worse now that the rows animate. The RENDERED
+  // ranking is therefore committed at most once per RERANK_COMMIT_MS. The
+  // accumulation underneath and the live "N matches · M scanned…" counter both
+  // keep running at full speed: they cost nothing and they are the honest
+  // progress signal.
+  const [rankedForRender, setRankedForRender] = useState<SearchHit[]>(hits);
+  const lastRankCommit = useRef(0);
+  // Declared BEFORE the commit effect so it runs first in the same flush: a
+  // query change (or a sort change) is a direct response to a gesture and must
+  // paint immediately, never wait out a throttle window opened by the stream.
+  useEffect(() => {
+    lastRankCommit.current = 0;
+  }, [q, searchSort]);
+  useEffect(() => {
+    // Only a streaming walk churns. Anything else (settled, errored, or
+    // invalidated to idle) commits at once — there is nothing left to smooth
+    // and the final ranking must not be held back.
+    if (validWalk.status !== "streaming") {
+      lastRankCommit.current = 0;
+      setRankedForRender(hits);
+      return;
+    }
+    const wait = RERANK_COMMIT_MS - (Date.now() - lastRankCommit.current);
+    const commit = () => {
+      lastRankCommit.current = Date.now();
+      setRankedForRender(hits);
+    };
+    if (wait <= 0) {
+      commit(); // includes the first flush of a stream — first paint isn't delayed
+      return;
+    }
+    const id = window.setTimeout(commit, wait);
+    return () => window.clearTimeout(id);
+  }, [hits, validWalk.status]);
+
   // --- Stale-while-revalidate for search results (B3) -----------------------
   // A dir-watch event bumps `refresh`, which makes validWalk read idle for the
   // stale generation, which collapses `hits` to [] — so the entire visible
@@ -1153,14 +1197,16 @@ export default function Listing({
   // before; only a same-query invalidation holds.
   const heldHits = useRef<{ q: string; hits: SearchHit[] } | null>(null);
   if (!searching) heldHits.current = null;
-  else if (hits.length) heldHits.current = { q, hits };
+  else if (rankedForRender.length) heldHits.current = { q, hits: rankedForRender };
   // Only while the current-generation walk is genuinely unsettled. A COMPLETED
   // walk with no hits is a real "no matches" answer (the file was just deleted,
   // say) and must replace the held rows rather than preserve them forever.
   const walkUnsettled = validWalk.status === "idle" || validWalk.status === "streaming";
   const showingHeld =
-    searching && hits.length === 0 && walkUnsettled && heldHits.current?.q === q;
-  const displayHits = showingHeld ? (heldHits.current as { hits: SearchHit[] }).hits : hits;
+    searching && rankedForRender.length === 0 && walkUnsettled && heldHits.current?.q === q;
+  const displayHits = showingHeld
+    ? (heldHits.current as { hits: SearchHit[] }).hits
+    : rankedForRender;
 
   const visibleHits = useMemo(() => displayHits.slice(0, visibleCount), [displayHits, visibleCount]);
 
