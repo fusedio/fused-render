@@ -1521,13 +1521,19 @@ function makePadRow(cols) {
 }
 function updateViewport(force) {
   if (!vgrid) return;
-  if (editing && editing.input.isConnected) return;   // never recycle the row hosting the editor
   const wrap = $("gridWrap");
   const { vis, cols, freeze, tbody, padTop, padBot } = vgrid;
   const total = vis.length;
   const first = Math.max(freeze, Math.floor((wrap.scrollTop - HEAD_H) / ROW_H));
   const last = Math.min(total, Math.ceil((wrap.scrollTop - HEAD_H + wrap.clientHeight) / ROW_H) + 1);
   if (!force && first >= vgrid.start && last <= vgrid.end) return;
+  // Remounting recycles every row between the pads — including the one hosting
+  // an open editor. Commit it first, the same thing clicking away does, and let
+  // commitEdit's own updateViewport do the remount. Skipping the remount
+  // instead (the obvious way to protect the editor) left the spacer pads
+  // showing as blank bands until the edit ended. OVERSCAN means ordinary wheel
+  // nudges while editing never get this far.
+  if (editing && editing.input.isConnected) { commitEdit(); return; }
   const start = Math.max(freeze, first - OVERSCAN);
   const end = Math.min(total, Math.max(start, last) + OVERSCAN);
   for (let tr = padTop.nextSibling; tr && tr !== padBot; ) {
@@ -2038,12 +2044,19 @@ document.addEventListener("pointermove", (e) => {
 function endColResize() {
   if (colResizing) finishColResize(colResizing.pendingX);
 }
+// Only the pointer that started the drag may end it: with touch/pen in play a
+// second finger going up or being cancelled would otherwise commit the width
+// early and drop the guide mid-drag. A window blur has no pointer of its own,
+// so it ends whatever is active.
 document.addEventListener("pointerup", (e) => {
-  if (!colResizing) return;
-  if (e.pointerId === colResizing.pointerId) colResizing.pendingX = e.clientX;
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  colResizing.pendingX = e.clientX;
   endColResize();
 });
-document.addEventListener("pointercancel", endColResize);
+document.addEventListener("pointercancel", (e) => {
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  endColResize();
+});
 window.addEventListener("blur", endColResize);
 function fillPreview(r, c) {
   const b = fillDrag.base;
