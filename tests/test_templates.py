@@ -66,8 +66,8 @@ def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "git", "reader", "annotate", "history",
-        "versions"]
+        "_render", "code", "claude", "claude_split", "git", "reader",
+        "annotate", "history", "versions"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
@@ -77,7 +77,7 @@ def test_builtin_parquet_default_is_duckdb():
     # `history` (HV-2) is bound here too — not `.html`-only.
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
-    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "annotate", "history", "geometry_editor", "versions"]
+    assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude", "claude_split", "annotate", "history", "geometry_editor", "versions"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -92,8 +92,8 @@ def test_reader_present_on_text_keys_before_annotate():
     # Reader sits immediately before annotate on representative text formats,
     # and never as the default (first entry stays the real content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "claude", "git", "reader",
-                        "annotate", "versions"],
+        "/x/notes.md": ["markdown", "code", "claude", "claude_split", "git",
+                        "reader", "annotate", "versions"],
         # No `git` on .csv: a commit log over a data file says nothing a diff can
         # render, so the tabular keys are deliberately left alone (§33 / GT-2).
         "/x/data.csv": ["duckdb", "excel", "code", "reader", "annotate",
