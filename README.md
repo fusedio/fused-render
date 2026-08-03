@@ -155,6 +155,9 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
 - [Claude Science artifacts](docs/usage.md#claude-science-artifacts) — the
   figures, tables and reports Claude Science has saved, listed as apps on Home
   and in the Apps hub (read-only, nothing to configure).
+- [Other Fused folders](docs/usage.md#other-fused-folders) — a second workspace
+  outside `~/Documents/Fused`, found from the folders Claude Code has been
+  opened in (git checkouts are skipped).
 - [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
   programmatic `POST /api/export` bundle format behind the Deploy button.
 

@@ -14,7 +14,7 @@
 //
 // Apps with no entry at all get the monogram too (their initial, there being
 // no extension to name), so a card is never blank.
-import type { AppInfo } from "../lib/api";
+import { appSourceLabel, type AppInfo } from "../lib/api";
 import { entryOf, extLabel, isImageEntry, openApp, rawUrl } from "../lib/appEntry";
 import { hueFor } from "./AppCard";
 
@@ -43,6 +43,7 @@ const PREVIEW_SCALE = 0.25;
 export function AppPreviewCard({ app }: { app: AppInfo }) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
+  const sourceLabel = appSourceLabel(app.source);
   const entry = entryOf(app);
   const ext = extLabel(entry);
   return (
@@ -88,13 +89,12 @@ export function AppPreviewCard({ app }: { app: AppInfo }) {
       <span className="app-pcard-body">
         <span className="app-pcard-title">{title}</span>
         <span className="app-pcard-meta">
-          {/* Provenance, because the tag is the project's name and says
-              nothing about where the app came from — and these ones are
-              read-only: nothing scaffolds, commits or deploys into the
-              Claude Science store. */}
-          {app.source === "claude-science" && (
-            <span className="app-source">Claude Science</span>
-          )}
+          {/* Provenance, because the tag says nothing about where an app came
+              from: for a Claude Science artifact it is the project's name, and
+              for a discovered folder it is just a tag that another workspace
+              also happens to use. Absent for a workspace app — the default
+              needs no label. */}
+          {sourceLabel && <span className="app-source">{sourceLabel}</span>}
           <span className="app-pcard-tag">{app.tag}</span>
           {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}

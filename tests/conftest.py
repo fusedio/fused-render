@@ -22,6 +22,11 @@ their assertions about the listing would depend on whose laptop ran them.
 Pointing it at an empty tmp dir makes the listing hermetic; the tests that are
 ABOUT the store set it themselves (see test_claude_science.py).
 
+FUSED_RENDER_CLAUDE_CONFIG is the third source's version of the same hazard
+(D207): GET /api/apps reads the absolute paths in Claude Code's ~/.claude.json
+and lists the apps in any Fused-shaped folder among them, so an un-redirected
+run would list whatever the developer happens to have on disk.
+
 FUSED_RENDER_ENGINE is pinned to `builtin` for the same class of reason. D204
 flipped the engine PREF's default to fused-when-available, so from then on the
 executor an incidental `/api/run` test exercises depends on whether the optional
@@ -53,6 +58,18 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         _tmp = tempfile.mkdtemp(prefix=_prefix)
         os.environ[_var] = _tmp
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
+
+# FUSED_RENDER_CLAUDE_CONFIG names a FILE rather than a directory, so it is set
+# apart from the loop above — at a path inside a throwaway dir that deliberately
+# does NOT exist, which reads to claude_projects as "Claude Code is not
+# installed". Without this the apps tests would walk the real ~/.claude.json on
+# a developer machine and list whatever Fused-shaped folders that person
+# happens to have (D207). The tests that are ABOUT the source write their own
+# config file and point this at it.
+if "FUSED_RENDER_CLAUDE_CONFIG" not in os.environ:
+    _tmp = tempfile.mkdtemp(prefix="fused-render-tests-claude-config-")
+    os.environ["FUSED_RENDER_CLAUDE_CONFIG"] = os.path.join(_tmp, "absent.json")
+    atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
 # A stable default executor for every test that reaches /api/run without caring
 # which engine answers — see the module docstring. Not a tmpdir, so it gets its

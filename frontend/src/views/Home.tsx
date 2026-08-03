@@ -11,7 +11,7 @@
 //      are stable paths.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { aiComplete, createApp, getApps, statPath } from "../lib/api";
+import { aiComplete, appSourceLabel, createApp, getApps, statPath } from "../lib/api";
 import type { AppInfo, Config } from "../lib/api";
 import { currentUrl, navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
@@ -680,7 +680,9 @@ function RecentRow({ app }: { app: AppInfo }) {
       title={entryOf(app) ?? app.path}
     >
       <span className="home-recent-name">{title}</span>
-      {app.source === "claude-science" && <span className="app-source">Claude Science</span>}
+      {appSourceLabel(app.source) && (
+        <span className="app-source">{appSourceLabel(app.source)}</span>
+      )}
       <span className="home-app-tag">{app.tag}</span>
       <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
     </button>
@@ -755,7 +757,7 @@ export default function Home({ config }: { config: Config }) {
           <Doorway
             hue="var(--icon-code)"
             title="Apps"
-            desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page.`}
+            desc={`Every folder inside a tag folder in ${basename(config.fused_dir)} is a project with its own entry page — plus any found elsewhere on this machine.`}
             titleAttr={config.fused_dir}
             onClick={() => navigateUrl("/apps")}
             glyph={

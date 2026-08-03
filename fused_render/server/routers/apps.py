@@ -10,14 +10,24 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
-The workspace is not the only source (D185, D205): ``GET /api/apps`` also
-reports the artifacts in the local Claude Science store as apps
-(``claude_science.py``), tagged by the project that produced them. They are
-read-only — nothing here scaffolds, commits or deploys into that store — and
-they carry ``source: "claude-science"`` so the shell can tell them apart from a
-workspace app. Because most of them are figures and tables rather than pages,
-every app now also reports ``entry``: the file the card opens and previews,
-which for a workspace app is simply its ``entry_html``.
+The workspace is not the only source (D185, D205, D207). ``GET /api/apps``
+merges three, each tagging its apps with a ``source`` so the shell can tell them
+apart:
+
+* ``workspace`` — the two-level walk above, over ``fused_dir()``.
+* ``claude-science`` — the artifacts in the local Claude Science store
+  (``claude_science.py``), tagged by the project that produced them. Because
+  most are figures and tables rather than pages, every app also reports
+  ``entry``: the file the card opens and previews, which for a folder-shaped app
+  is simply its ``entry_html``.
+* ``claude-code`` — apps in *other* Fused-shaped folders, found by reading the
+  absolute paths in Claude Code's ``~/.claude.json`` project list
+  (``claude_projects.py``). Same two-level rule, applied to a root the user has
+  worked in; roots inside a git repository are skipped, which is what keeps
+  ordinary source checkouts out of Home.
+
+The discovered sources are read-only — nothing here scaffolds, commits or
+deploys into them.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
@@ -44,7 +54,7 @@ import time
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, claude_science
+from fused_render import app_listing, claude_projects, claude_science
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
@@ -61,89 +71,35 @@ _APP_STARTER_DIR = os.path.join(
 
 # ------------------------------------------------------------------- listing
 
-# Both listing sources agree on the entry contract, so its two shared pieces
-# live in app_listing rather than being written twice (see that module).
-_entry_title = app_listing.entry_title
-_updated_at = app_listing.dir_updated_at
+# Every source agrees on the entry contract, and two of them use the same
+# two-level folder shape, so the walk and its helpers live in app_listing
+# rather than being written twice (see that module).
 
 
-def _app_entry(dir_path: str) -> str | None:
-    """The app's entry file: the single non-hidden direct-child .html, or None
-    when the folder has zero or several (ambiguous — the UI opens the folder).
-    Raises OSError when the dir can't be listed — the caller skips those."""
-    children = os.listdir(dir_path)
-    htmls = [
-        c for c in sorted(children)
-        if not c.startswith(".")
-        and c.lower().endswith(".html")
-        and os.path.isfile(os.path.join(dir_path, c))
-    ]
-    if len(htmls) != 1:
-        return None
-    return os.path.abspath(os.path.join(dir_path, htmls[0]))
+def _from(label: str, fn) -> list[dict]:
+    """One optional source's apps — [] on any failure, never a 500.
 
-
-def _claude_science_apps() -> list[dict]:
-    """The Claude Science store's artifacts, as apps — [] on any failure.
-
-    The module itself skips what it cannot read, so reaching this handler means
+    Each module already skips what it cannot read, so reaching this guard means
     something unforeseen went wrong in a store this app does not own. Home is
-    the landing screen: it degrades to the workspace's own apps rather than
-    500ing, and the reason lands in the log instead of on the user."""
+    the landing screen: it degrades to the sources that did work, and the reason
+    lands in the log instead of on the user."""
     try:
-        return claude_science.list_apps()
+        return fn()
     except Exception:
-        logger.warning("listing Claude Science artifacts failed", exc_info=True)
+        logger.warning("listing %s apps failed", label, exc_info=True)
         return []
 
 
 @router.get("/api/apps")
 def api_apps():
     root = fused_dir()
-    apps = _claude_science_apps()
-    try:
-        tag_names = os.listdir(root)
-    except OSError:
-        # No workspace yet (first run before seeding) — an empty Home, not a
-        # 500. Not necessarily an empty *listing*, though: Claude Science may
-        # still have artifacts to show, so this returns what the other source
-        # found rather than discarding it.
-        tag_names = []
-    for tag in tag_names:
-        if tag.startswith("."):
-            continue
-        tag_path = os.path.join(root, tag)
-        try:
-            if not os.path.isdir(tag_path):
-                continue
-            names = os.listdir(tag_path)
-        except OSError:
-            continue  # unreadable/racing tag dir: skip, never fail the listing
-        for name in names:
-            if name.startswith("."):
-                continue
-            path = os.path.join(tag_path, name)
-            try:
-                if not os.path.isdir(path):
-                    continue
-                entry_html = _app_entry(path)
-            except OSError:
-                continue  # unreadable/racing entry: skip, never fail the listing
-            apps.append({
-                "name": name,
-                "tag": tag,
-                "path": os.path.abspath(path),
-                # `entry` is the file a card opens and previews. For a workspace
-                # app that is exactly its entry HTML — the second key exists for
-                # the sources whose entry may be a figure or a table
-                # (claude_science.py), and both are reported by every source so
-                # the shell needs no per-source branch.
-                "entry": entry_html,
-                "entry_html": entry_html,
-                "title": _entry_title(entry_html) if entry_html else None,
-                "updated_at": _updated_at(path),
-                "source": "workspace",
-            })
+    # The workspace's own apps, then the two discovered sources. A workspace
+    # that does not exist yet (first run, before seeding) contributes nothing
+    # rather than short-circuiting: the other sources may still have something,
+    # and discarding it would make Home emptier than the machine is.
+    apps = app_listing.two_level_apps(root, "workspace")
+    apps += _from("Claude Science", claude_science.list_apps)
+    apps += _from("Claude Code project", lambda: claude_projects.list_apps(root))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 

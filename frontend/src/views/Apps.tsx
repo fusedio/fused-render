@@ -89,7 +89,7 @@ export default function Apps() {
           </button>
           <h1 className="apps-title">Apps</h1>
           <p className="apps-sub">
-            Every app detected in your workspace — search by name or narrow by tag.
+            Every app detected on this machine — search by name or narrow by tag.
           </p>
         </header>
 

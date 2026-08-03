@@ -140,6 +140,30 @@ app, copy it into your workspace first.
 `FUSED_RENDER_CLAUDE_SCIENCE_DIR` overrides the store location (default
 `~/.claude-science`) for a Claude Science installed somewhere else.
 
+## Other Fused folders
+
+Your workspace (`~/Documents/Fused`) is not the only place an app can live. If
+you keep a second folder of the same shape — on an external drive, in a shared
+directory, or one you made before you knew where the default was — fused-render
+finds it and lists its apps alongside the rest, with a **Claude Code** badge.
+
+It finds them by reading the folder paths Claude Code already records in
+`~/.claude.json`, so the only thing that makes a folder discoverable is having
+opened Claude Code in it once. Nothing is copied and nothing is written: a
+discovered app is an ordinary Fused app in a folder you own, and it opens the
+same way as any other.
+
+The rule for what counts as an app inside one is the same everywhere:
+`<folder>/<tag>/<name>/` with a single `.html` inside. **Folders inside a git
+repository are skipped** — a source checkout is not a workspace, and scanning
+one turns build output and example directories into app cards. The consequence
+worth knowing: if you `git init` your whole Fused folder, it stops being
+discovered this way. Your main workspace is unaffected — that one is always
+listed.
+
+Set `FUSED_RENDER_CLAUDE_CONFIG` to point at a different config file, or at a
+path that does not exist to turn the whole thing off.
+
 ## Export for hosted serving
 
 The **Deploy** button (see [Deploy to a hosted URL](../README.md#deploy-to-a-hosted-url)

@@ -1405,12 +1405,29 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 // comes from that file's <title>, null falls back to the folder name in the
 // UI.
 //
-// The listing has a second source (D205): the local Claude Science store's
-// artifacts, tagged by the project that produced them and marked
-// `source: "claude-science"`. Those are read-only and mostly aren't pages, so
-// `entry` — the file a card opens and previews — is the field to reach for;
-// `entry_html` is the narrower "this entry is a renderable page" claim that
-// the /render iframe and the claude_split open path still key off.
+// The listing merges three sources. **claude-science** (D205) is the local
+// Claude Science store's artifacts, tagged by the project that produced them:
+// read-only and mostly not pages, so `entry` — the file a card opens and
+// previews — is the field to reach for, while `entry_html` is the narrower
+// "this entry is a renderable page" claim the /render iframe and the
+// claude_split open path key off. **claude-code** (D207) is an app in another
+// Fused-shaped folder, found from Claude Code's project list; it is an
+// ordinary Fused app in a folder the user owns, so it behaves exactly like a
+// workspace one and differs only in its badge.
+export type AppSource = "workspace" | "claude-science" | "claude-code";
+
+//: The badge a card shows for a non-workspace source. Keyed off the union so a
+//: new source is a type error here rather than an unlabelled card.
+export const APP_SOURCE_LABELS: Record<Exclude<AppSource, "workspace">, string> = {
+  "claude-science": "Claude Science",
+  "claude-code": "Claude Code",
+};
+
+export function appSourceLabel(source: AppSource | undefined): string | null {
+  if (!source || source === "workspace") return null;
+  return APP_SOURCE_LABELS[source] ?? null;
+}
+
 export interface AppInfo {
   name: string;
   tag: string;
@@ -1427,7 +1444,7 @@ export interface AppInfo {
   updated_at?: number | null;
   // Which listing source produced this app. Absent on older backends, which
   // only ever listed the workspace.
-  source?: "workspace" | "claude-science";
+  source?: AppSource;
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
