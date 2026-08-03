@@ -200,3 +200,42 @@ test("a cut made while a copy's mirror-write is in flight still protects that cu
   await reconcileOsClipboard();
   expect(getClipboard()).toEqual({ paths: ["/b"], op: "cut" });
 });
+
+test("a late mirror-write does not rewind a token the reconcile recorded after it", async () => {
+  // Found in review. Both writers of `lastSeenOsToken` compute across an
+  // await, so they can finish out of order: a copy's mirror-write ISSUED
+  // before a reconcile's read can be DELIVERED after it. Guarding each writer
+  // privately let the older one win, rewinding the fresher foreign token —
+  // and the next focus then re-adopted that foreign clipboard over whatever
+  // the user had done since.
+  let release: (() => void) | undefined;
+  const held = new Promise<void>((r) => (release = r));
+  globalThis.fetch = mock(async (_url: string, init: RequestInit = {}) => {
+    if (init.method === "POST") {
+      await held;                       // our write's response is slow
+      return new Response(JSON.stringify({ token: "ours", supported: true }), { status: 200 });
+    }
+    // Meanwhile the OS clipboard holds a Finder copy made after our write.
+    return new Response(
+      JSON.stringify({ paths: ["/from/finder"], token: "finder", supported: true }),
+      { status: 200 }
+    );
+  }) as unknown as typeof fetch;
+
+  setClipboard({ paths: ["/ours"], op: "copy" });   // mirror-write in flight
+  await reconcileOsClipboard();                      // reads + records "finder"
+  expect(getLastSeenOsToken()).toBe("finder");
+
+  release!();                                        // our older write lands now
+  await new Promise((r) => setTimeout(r, 0));
+
+  // It started BEFORE the reconcile, so it may not overwrite what the
+  // reconcile saw. Otherwise the Finder copy reads as unseen next time.
+  expect(getLastSeenOsToken()).toBe("finder");
+
+  // Concretely: the user cuts, and the already-seen Finder copy must not
+  // clobber it on the next return to the app.
+  setClipboard({ paths: ["/cut/me"], op: "cut" });
+  await reconcileOsClipboard();
+  expect(getClipboard()).toEqual({ paths: ["/cut/me"], op: "cut" });
+});

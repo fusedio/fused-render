@@ -39,8 +39,38 @@ export function getLastSeenOsToken(): string {
   return lastSeenOsToken;
 }
 
-export function setLastSeenOsToken(token: string): void {
+// `lastSeenOsToken` has TWO writers — the mirror-write's response and the
+// focus-time reconcile — and both compute their answer across an `await`, so
+// they can finish out of order. Neither one alone can tell whether what it is
+// holding is still current; that needs a shared clock, which is what these are.
+//
+// An observation takes a ticket when it STARTS (it is the moment of asking
+// that a result describes, not the moment of answering) and may only commit if
+// no LATER-started observation already has. Without this, each writer got its
+// own private guard and the two could still rewind each other: a copy's
+// mirror-write issued before a reconcile's read, but delivered after it, would
+// overwrite the fresher foreign token the reconcile had just recorded — the
+// next focus would then see that foreign clipboard as never-seen and adopt it
+// over whatever the user had done since, including a pending cut.
+let osObsSeq = 0;
+let osObsCommitted = 0;
+
+export function beginOsObservation(): number {
+  return ++osObsSeq;
+}
+
+export function commitOsToken(seq: number, token: string): void {
+  if (seq < osObsCommitted) return;
+  osObsCommitted = seq;
   lastSeenOsToken = token;
+}
+
+// Unconditional set, for callers that are not racing anything (tests, and any
+// future caller with a token already known to be current). Takes a fresh ticket
+// so it outranks every observation in flight rather than being silently undone
+// by one.
+export function setLastSeenOsToken(token: string): void {
+  commitOsToken(beginOsObservation(), token);
 }
 
 // Bumped on every set, and read by the one place that adopts PATHS across an
@@ -53,12 +83,6 @@ export function setLastSeenOsToken(token: string): void {
 // a token rather than adopting paths; see the comment there for why gating that
 // one re-opens the very clobber this guards against.
 let clipboardEpoch = 0;
-
-// Counts mirror-writes ISSUED. Only the most recent one may record a token —
-// the narrow version of the guard above, for the narrow thing that can actually
-// stale a token: another copy publishing different paths to the system
-// clipboard.
-let osWriteSeq = 0;
 
 export function getClipboardEpoch(): number {
   return clipboardEpoch;
@@ -93,32 +117,22 @@ export function setClipboard(next: Clipboard | null, mirrorToOs = true): void {
   // guess. All four Copy call sites (Listing, Preview) route through here, so
   // this one hook covers every one of them.
   if (mirrorToOs && next && next.op === "copy" && next.paths.length > 0) {
-    const seq = ++osWriteSeq;
+    // Ticketed against the reconcile as well as against other writes — see
+    // `beginOsObservation`. Deliberately NOT gated on `clipboardEpoch`: gating
+    // on the epoch (as this briefly did) inverted the mechanism, because a cut,
+    // an Escape clear and a bookkeeping repair all bump the epoch while
+    // publishing NOTHING, so an in-flight copy write dropped its token and the
+    // next reconcile adopted the OS copy straight over the newer cut. The token
+    // describes the SYSTEM clipboard, not the app's, so it survives every
+    // in-app gesture that never touches the system one; only a newer
+    // OBSERVATION of the system clipboard can supersede it.
+    const seq = beginOsObservation();
     writeOsClipboard(next.paths)
       .then((res) => {
-        // Superseded by a LATER MIRROR-WRITE, which is the only thing that can
-        // make this token stale: another copy has since published different
-        // paths, so recording this one would rewind what we last saw.
-        //
-        // Deliberately the write sequence and NOT `clipboardEpoch`. Gating on
-        // the epoch (as this briefly did) inverted the mechanism, because a
-        // cut, an Escape clear and a bookkeeping repair all bump the epoch
-        // while publishing NOTHING: an in-flight copy write would drop its
-        // token, and the next reconcile — seeing the OS copy as never seen —
-        // adopted it straight over the newer cut. That is exactly the clobber
-        // `lastSeenOsToken` exists to prevent, reintroduced by its own guard.
-        //
-        // The distinction is what the token means. It describes the SYSTEM
-        // clipboard, not the app's, so it survives in-app gestures that never
-        // touch the system one; only another write to the system clipboard
-        // invalidates it. The epoch guard belongs on the reconcile's read
-        // (os-clipboard.ts), which adopts PATHS into the app — nothing here
-        // does.
-        if (seq !== osWriteSeq) return;
         // Only a real write is worth remembering: an unsupported bridge
         // returns an empty token, and storing it would make the next
         // reconcile think the clipboard had changed.
-        if (res.supported && res.token) lastSeenOsToken = res.token;
+        if (res.supported && res.token) commitOsToken(seq, res.token);
       })
       .catch(() => {});
   }

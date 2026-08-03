@@ -12,10 +12,11 @@
 // focused is therefore missed until the next focus change.
 import { readOsClipboard } from "./api";
 import {
+  beginOsObservation,
+  commitOsToken,
   getClipboardEpoch,
   getLastSeenOsToken,
   setClipboard,
-  setLastSeenOsToken,
 } from "./fs-clipboard";
 
 export async function reconcileOsClipboard(): Promise<void> {
@@ -24,6 +25,11 @@ export async function reconcileOsClipboard(): Promise<void> {
   // comes back then describes a moment that has passed, and adopting it would
   // silently discard the gesture they just made.
   const epoch = getClipboardEpoch();
+  // Taken before the read, for the same reason the epoch is: this observation
+  // describes the clipboard as of NOW, and a mirror-write issued earlier but
+  // delivered later must not overwrite what we are about to record with its
+  // older news. See `beginOsObservation`.
+  const seq = beginOsObservation();
   let os;
   try {
     os = await readOsClipboard();
@@ -46,7 +52,7 @@ export async function reconcileOsClipboard(): Promise<void> {
   // adopting the same paths is idempotent.
   if (os.token === getLastSeenOsToken()) return;
 
-  setLastSeenOsToken(os.token);
+  commitOsToken(seq, os.token);
   // Always a copy. No platform exposes a reliable cut-vs-copy flag on read,
   // and honouring one would mean deleting the user's source files on a guess.
   setClipboard({ paths: os.paths, op: "copy" }, false);
