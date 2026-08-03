@@ -4521,3 +4521,49 @@ wanting "what has this file been through" wants §33.
   click asks the always-enriched plan. That case is why `offer` is a field of its
   own rather than being inferred from `revert` — there is no target to name there,
   and the click is still the right thing to allow.
+- **FH-18** **The write is visible while it runs, and its outcome lands where the
+  click was.** Four separate ways the revert reported itself to the eye rather
+  than to the file, all of them silent failures of feedback rather than of logic:
+
+  **The sheet stays up for the round trip.** It used to close *before* the await,
+  so a stash write, an `os.replace` and a full re-enumeration of the store all
+  happened with nothing on screen changing, and the click read as having done
+  nothing. The confirm button goes into a disabled "Reverting…"/"Deleting…" state
+  instead and its label is *restored* afterwards rather than recomputed (the sheet
+  chose between four wordings; rebuilding that decision is how the two drift). The
+  in-flight flag also makes `closeConfirm` **refuse**, so Cancel, Escape and the
+  backdrop — all three of which route through that one function — cannot pull the
+  sheet, and `pending` with it, out from under the call still reading it. This is
+  the one window in which the button is disabled, and it is the opposite of the
+  gate FH-9 removed: it means the click was accepted.
+
+  **A failure reports inside the sheet; a success reports on the stage.** The
+  outcome used to be only an 11px muted line at the bottom of the sidebar
+  (`#histnote`), reached by looking away from a centered modal that had just
+  vanished — and with History collapsed it was the *entire* signal. A failed revert
+  changed nothing on disk, so the sheet is still describing the truth: it stays,
+  with the reason in it. A successful one closes the sheet and adds a transient
+  toast at the top of the stage. `#histnote` is still written on every path — it is
+  the durable copy, the carry slot (FH-15) reads it, and `reportOutcome` is the
+  only thing that qualifies a success with "the timeline could not be reloaded".
+
+  **The framed reload is covered.** The boot skeleton `remove()`d itself on the
+  first load, so the post-revert `location.reload()` had no placeholder and the
+  pins/highlight overlays sat in stage coordinates over an empty document — pointing
+  at nothing — until the next `load` ran `render()`. The node is now kept and
+  toggled (one cover, two occasions), the overlays go down with it, and the cover is
+  lifted only *after* `render()`, which is the first moment an anchor has been
+  re-resolved against the new document. That handler re-runs on every reload, so it
+  also **disconnects the previous MutationObserver**: one left watching a discarded
+  document is a leak that additionally drives renders for a document nobody is
+  looking at.
+
+  **The fresh timeline rides back with the write.** `revert` returns the post-write
+  `timeline` (computed in the bridge, from the module it already holds, always
+  ENRICHED — this is what the panel displays, and an unenriched one cannot see the
+  creation boundary), so the row list no longer shows the *pre*-revert position for
+  the length of a second round trip: exactly the window in which the user is looking
+  at it to find out whether the revert worked. Best-effort and **absent** when the
+  computation fails, because the write already landed and is already reported; the
+  page falls back to its own `history` call, whose error channel is what tells the
+  user the panel on screen is stale.

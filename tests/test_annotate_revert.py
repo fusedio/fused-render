@@ -1003,12 +1003,22 @@ def test_nothing_to_revert_to_is_simply_no_accent_row(source, tmp_path):
 
 # --- item 2: the acknowledgement checkbox is gone -------------------------
 
-def test_the_confirm_button_is_never_disabled(source):
+def test_the_confirm_button_is_never_gated_only_ever_in_flight(source):
     """Removed as friction by the owner. This is a real reduction in gating, so
-    the assertions below are about what MUST remain."""
+    the assertions below are about what MUST remain.
+
+    The button IS disabled for one window — between the click and the call
+    returning, while the sheet stays up saying "Reverting…" — and that is the
+    opposite of a gate: it is the click having been accepted. So the rule is not
+    "never disabled" but "never disabled by a widget's state": no acknowledgement
+    control, and the only writes to `disabled` sit inside the click handler."""
     assert "confirmack" not in source
-    assert "go.disabled" not in source
     assert "ack.checked" not in source
+    ask = source[source.index("async function askRevert"):]
+    assert "go.disabled" not in ask[:ask.index(
+        'getElementById("confirmgo").addEventListener')]
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert handler.count("go.disabled = no.disabled = ") == 2  # in flight, then not
 
 
 def test_the_irreversible_warning_is_what_remains_and_carries_weight(source):
@@ -1567,32 +1577,41 @@ def _const_line(src, name):
     raise AssertionError(f"no `const {name}` in the template")
 
 
+#: A DOM just large enough to run the template's own sheet/stage code verbatim —
+#: nodes by id, a class list, text-only children. A copy of the logic here would
+#: keep passing after the shipping code regressed, which is the whole point.
+_DOM_STUB = (
+    "class El {\n"
+    "  constructor(id) {\n"
+    "    this.id = id; this.children = []; this.hidden = false;\n"
+    "    this.className = ''; this.disabled = false; this.style = {};\n"
+    "    this._text = '';\n"
+    "    const set = new Set();\n"
+    "    this.classList = {\n"
+    "      add: (c) => set.add(c), remove: (c) => set.delete(c),\n"
+    "      contains: (c) => set.has(c),\n"
+    "      toggle: (c, on) => (on ? set.add(c) : set.delete(c)),\n"
+    "    };\n"
+    "    this.classes = set;\n"
+    "  }\n"
+    "  set textContent(v) { this._text = v; if (v === '') this.children = []; }\n"
+    "  get textContent() { return this._text; }\n"
+    "  appendChild(c) { this.children.push(c); return c; }\n"
+    "  addEventListener(_type, fn) { this.click = fn; }\n"
+    "}\n"
+    "const nodes = {};\n"
+    "const document = {\n"
+    "  getElementById: (id) => (nodes[id] = nodes[id] || new El(id)),\n"
+    "  createElement: (tag) => new El(tag),\n"
+    "};\n"
+)
+
+
 def _diff_prelude(source):
     """A DOM just large enough to run the shipping diff renderer verbatim."""
     return (
-        "class El {\n"
-        "  constructor(id) {\n"
-        "    this.id = id; this.children = []; this.hidden = false;\n"
-        "    this.className = ''; this._text = '';\n"
-        "    const set = new Set();\n"
-        "    this.classList = {\n"
-        "      add: (c) => set.add(c), remove: (c) => set.delete(c),\n"
-        "      contains: (c) => set.has(c),\n"
-        "      toggle: (c, on) => (on ? set.add(c) : set.delete(c)),\n"
-        "    };\n"
-        "    this.classes = set;\n"
-        "  }\n"
-        "  set textContent(v) { this._text = v; if (v === '') this.children = []; }\n"
-        "  get textContent() { return this._text; }\n"
-        "  appendChild(c) { this.children.push(c); return c; }\n"
-        "  addEventListener(_type, fn) { this.click = fn; }\n"
-        "}\n"
-        "const nodes = {};\n"
-        "const document = {\n"
-        "  getElementById: (id) => (nodes[id] = nodes[id] || new El(id)),\n"
-        "  createElement: (tag) => new El(tag),\n"
-        "};\n"
-        "const rows = () => nodes.confirmdiff.children.map(\n"
+        _DOM_STUB
+        + "const rows = () => nodes.confirmdiff.children.map(\n"
         "  (c) => [c.className, c.textContent]);\n"
         + _const_line(source, "DIFF_OPEN_LINES") + "\n"
         "let diffChanged = 0;\n"
@@ -1768,3 +1787,273 @@ def test_the_diff_sits_between_the_counts_and_the_hazard(source):
     assert box.index('id="confirmdiff"') < box.index('id="confirmwarn"')
     assert 'if (plan.writable === false)' in source
     assert 'warn.classList.toggle("hard", irreversible)' in source
+
+
+# ============================================== the write, and what the user sees
+# Four things the revert did to the eye rather than to the file: the sheet vanished
+# before the work started, the outcome landed at the bottom of the sidebar, the
+# framed reload flashed a blank document under live pins, and the row list showed
+# the pre-revert position for a whole extra round trip.
+
+def _sheet_prelude(source):
+    """The close path, driven for real."""
+    return (
+        _DOM_STUB
+        + "const confirmEl = document.getElementById('confirm');\n"
+        "let busy = false;\n"
+        "let pending = { id: 's@v1' };\n"
+        "confirmEl.classList.add('open');\n"
+        + _js_block(source, "function closeConfirm()") + "\n"
+    )
+
+
+def test_no_close_path_can_fire_while_the_write_is_in_flight(source, tmp_path):
+    """`closeConfirm` nulls `pending`, which the click handler is still reading —
+    and Cancel, the backdrop and Escape ALL route through it. So the guard belongs
+    in the one function rather than at three call sites, which is also what stops
+    the in-flight state being taken off screen mid-write."""
+    got = _run("""
+      busy = true;
+      closeConfirm();
+      const during = { open: confirmEl.classes.has("open"), pending };
+      busy = false;
+      closeConfirm();
+      console.log(JSON.stringify({
+        during,
+        after: { open: confirmEl.classes.has("open"), pending },
+      }));
+    """, tmp_path, _sheet_prelude(source))
+    assert got["during"] == {"open": True, "pending": {"id": "s@v1"}}
+    assert got["after"] == {"open": False, "pending": None}
+    # ...and all three paths really do go through it, so none can grow its own copy.
+    assert 'getElementById("confirmno").addEventListener("click", closeConfirm)' \
+        in source
+    assert "if (e.target === confirmEl) closeConfirm();" in source
+    assert 'e.key === "Escape" && confirmEl.classList.contains("open")' in source
+
+
+def test_the_sheet_stays_up_with_an_in_flight_button_until_the_call_returns(source):
+    """It closed BEFORE the await, so a stash write, an os.replace and a full
+    re-enumeration of the store all happened with nothing on screen changing — the
+    click read as having done nothing."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    before = handler[:handler.index("await callHistory")]
+    after = handler[handler.index("await callHistory"):]
+    # Nothing closes the sheet before the call...
+    assert "closeConfirm()" not in before
+    # ...the controls go into an in-flight state instead...
+    assert "busy = true;" in before
+    assert "go.disabled = no.disabled = true;" in before
+    assert '"Deleting…" : "Reverting…"' in before
+    # ...and only the SUCCESS side closes it.
+    assert "closeConfirm();" in after
+    failure = after[after.index("if (out.error"):after.index("closeConfirm();")]
+    assert "closeConfirm" not in failure
+
+
+def test_the_in_flight_label_is_restored_rather_than_recomputed(source):
+    """`askRevert` picks between four wordings (delete/revert × permanent or not);
+    rebuilding that decision after the call is how the two drift apart."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert "const goLabel = go.textContent;" in handler
+    assert "go.textContent = goLabel;" in handler
+    # The button comes back live too — it is only ever disabled while in flight.
+    assert "go.disabled = no.disabled = false;" in handler
+    assert "#confirmacts button:disabled { opacity: 0.5; cursor: default; }" in source
+
+
+def test_a_failed_revert_reports_inside_the_sheet_and_still_writes_the_note(source):
+    """The reason used to land only in #histnote: 11px, muted, at the bottom of the
+    sidebar, reached only by looking away from the centered modal that had just
+    vanished. Nothing changed on disk, so the sheet is still describing the truth —
+    it stays, with the reason in it. The note is still written, because the reload
+    and carry-slot paths read it."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    failure = handler[handler.index("if (out.error"):handler.index("closeConfirm();")]
+    # renderHistory FIRST, then the message — it rewrites histNote from the
+    # timeline's own note, and the other order was a silent no-op.
+    assert failure.index("renderHistory();") < failure.index("setNote(")
+    assert "err.textContent = out.error" in failure
+    assert "err.hidden = false;" in failure
+    # A previous failure must not greet the next target — one node, many plans.
+    ask = source[source.index("async function askRevert"):]
+    assert 'getElementById("confirmerr").hidden = true' in \
+        ask[:ask.index("confirmEl.classList.add(\"open\")")]
+
+
+def _toast_prelude(source):
+    return (
+        _DOM_STUB
+        + "let scheduled = null;\n"
+        "globalThis.setTimeout = (fn, ms) => { scheduled = { fn, ms }; return 1; };\n"
+        "globalThis.clearTimeout = () => { scheduled = null; };\n"
+        + _const_line(source, "TOAST_MS") + "\n"
+        "let toastTimer = 0;\n"
+        + _js_block(source, "function showToast(text)") + "\n"
+    )
+
+
+def test_the_outcome_is_also_said_where_the_eye_is(source, tmp_path):
+    """A centered modal closes and the outcome appears at the bottom of a sidebar
+    that may not even be expanded. The toast is TRANSIENT on purpose — it reports
+    one click, and a banner still up minutes later is reporting history."""
+    got = _run("""
+      showToast("Reverted to v2.");
+      const up = { text: nodes.toast.textContent, hidden: nodes.toast.hidden,
+                   ms: scheduled.ms };
+      scheduled.fn();
+      const gone = nodes.toast.hidden;
+      // A second revert restarts the window rather than leaving two timers to
+      // race — the first would hide the second one's message.
+      showToast("File deleted.");
+      const first = scheduled;
+      showToast("Reverted to v1.");
+      console.log(JSON.stringify({
+        up, gone, restarted: first !== scheduled,
+        text: nodes.toast.textContent, hidden: nodes.toast.hidden,
+      }));
+    """, tmp_path, _toast_prelude(source))
+    assert got["up"]["text"] == "Reverted to v2."
+    assert got["up"]["hidden"] is False
+    assert got["up"]["ms"] > 0
+    assert got["gone"] is True
+    assert got["restarted"] is True
+    assert got["text"] == "Reverted to v1." and got["hidden"] is False
+
+
+def test_the_note_write_is_not_replaced_by_the_toast(source):
+    """Explicitly additive: the carry slot and the post-reload boot path both read
+    #histnote, and `reportOutcome` is the only thing that qualifies a success with
+    "the timeline could not be reloaded"."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert "carryOutcome(outcome);" in handler
+    assert "reportOutcome(outcome, false, reloadErr);" in handler
+    assert handler.index("reportOutcome(outcome") < handler.index("showToast(outcome)")
+
+
+def _stage_prelude(source):
+    return (
+        _DOM_STUB
+        + "const pinsEl = document.getElementById('pins');\n"
+        "const hl = document.getElementById('hl');\n"
+        "const ghost = document.getElementById('ghost');\n"
+        + _js_block(source, "function coverStage()") + "\n"
+        + _js_block(source, "function uncoverStage()") + "\n"
+    )
+
+
+def test_the_stage_is_covered_across_a_reload_and_uncovered_by_render(source,
+                                                                    tmp_path):
+    """The boot skeleton `remove()`d itself on the FIRST load, so the post-revert
+    reload had no placeholder — and the pins sat in stage coordinates over an empty
+    document, pointing at nothing, until the next `load` ran `render()`."""
+    got = _run("""
+      coverStage();
+      const covered = { skel: nodes.stageskel.hidden, pins: nodes.pins.hidden,
+                        hl: nodes.hl.style.display, ghost: nodes.ghost.style.display };
+      uncoverStage();
+      console.log(JSON.stringify({
+        covered,
+        clear: { skel: nodes.stageskel.hidden, pins: nodes.pins.hidden },
+      }));
+    """, tmp_path, _stage_prelude(source))
+    assert got["covered"] == {"skel": False, "pins": True,
+                             "hl": "none", "ghost": "none"}
+    assert got["clear"] == {"skel": True, "pins": False}
+
+
+def test_the_skeleton_node_is_kept_rather_than_removed(source):
+    """One cover, two occasions. Removing it meant inventing a second placeholder
+    for the reload — or, as it was, showing none."""
+    assert "stageskel.remove()" not in source
+    handler = source[source.index('frame.addEventListener("load"'):]
+    handler = handler[:handler.index("focusFromParam()")]
+    # Lifted only AFTER render(), which is what re-resolves every anchor against
+    # the new document.
+    assert handler.index("render();") < handler.index("uncoverStage();")
+    # ...and the reload path puts it up before the document goes blank.
+    go = source[source.index('getElementById("confirmgo").addEventListener'):]
+    assert go.index("coverStage();") < go.index("contentWindow.location.reload()")
+
+
+def test_repeat_loads_do_not_accumulate_observers_on_dead_documents(source):
+    """This handler runs again on every reload, and the post-revert refresh is what
+    made that a real accumulation rather than a theoretical one: an observer left
+    watching a discarded document is a leak that also drives renders for a document
+    nothing is looking at."""
+    handler = source[source.index('frame.addEventListener("load"'):]
+    handler = handler[:handler.index("focusFromParam()")]
+    assert "if (frameObserver) frameObserver.disconnect();" in handler
+    assert "frameObserver = new MutationObserver(queueRender);" in handler
+    # ...and nothing creates an unheld one any more.
+    assert "new MutationObserver(queueRender).observe" not in source
+
+
+def test_the_page_adopts_the_timeline_that_rode_back_with_the_write(source):
+    """Two serial round trips meant the row list kept showing the PRE-revert
+    position for the whole second one — exactly the window in which the user is
+    looking at it to see whether the revert worked."""
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    adopt = handler[handler.index("if (out.timeline)"):]
+    assert "timeline = out.timeline;" in adopt
+    # It is always enriched on the bridge side, so the panel may claim terminality.
+    assert "enriched = true;" in adopt
+    assert "renderHistory();" in adopt
+    # The fallback stays, and it keeps its error channel: reportOutcome is what says
+    # the panel on screen is stale.
+    assert "reloadErr = await loadHistory(enriched);" in adopt
+    assert "reportOutcome(outcome, false, reloadErr);" in handler
+
+
+def test_the_revert_returns_the_post_write_timeline(claude_home, tmp_path):
+    ann = _load_annotate()
+    f = _target(tmp_path, "v2\n")
+    write_version(claude_home, "s", f, "v1\n", mtime=1000)
+    write_version(claude_home, "s", f, "v2\n", mtime=2000)
+
+    out = ann.main(action="revert", file=f, version_id="s@v1")
+    assert out["ok"] is True
+    # The position marker has MOVED — this is a timeline of the file after the
+    # write, not the one the page already had.
+    assert out["timeline"]["position"] == "s@v1"
+    assert out["timeline"]["enriched"] is True
+    assert out["timeline"]["current"]["size"] == len("v1\n")
+
+
+def test_a_timeline_that_cannot_be_computed_omits_the_field(claude_home, tmp_path,
+                                                           monkeypatch):
+    """The write already landed and is already reported, so a failure to
+    re-enumerate the store must not turn a successful revert into an error. The
+    field is simply absent and the page falls back to its own `history` call, which
+    reports its own failure in its own words."""
+    ann = _load_annotate()
+    control = _target(tmp_path, "now\n", name="control.txt")
+    write_version(claude_home, "s", control, "then\n")
+    f = _target(tmp_path, "now\n")
+    write_version(claude_home, "s", f, "then\n")
+    # The same store, the same shape of revert: the field is there when it can be
+    # computed, so its absence below is the failure and not the fixture.
+    assert "timeline" in ann.main(action="revert", file=control,
+                                 version_id="s@v1", confirm_unique=True)
+
+    fh = ann._file_history()
+    monkeypatch.setattr(fh, "timeline", lambda *a, **k: 1 / 0)
+    out = ann.main(action="revert", file=f, version_id="s@v1",
+                   confirm_unique=True)
+    assert out["ok"] is True and out["action"] == "restore"
+    assert "timeline" not in out
+    with open(f, encoding="utf-8") as h:
+        assert h.read() == "then\n"
+
+
+def test_the_carry_slot_machinery_is_untouched(source):
+    """Explicitly out of scope: its own comments credit it with three past bugs, and
+    the suspicion that it now guards a teardown that no longer happens needs
+    confirming in the running app before anything here moves."""
+    for name in ("HIST_KEY", "function carryOutcome(text)",
+                 "function takeCarriedOutcome()", "function dropCarriedOutcome()"):
+        assert name in source
+    handler = source[source.index('getElementById("confirmgo").addEventListener'):]
+    # Still exactly one writer, and the in-page display still spends the slot.
+    assert handler.count("carryOutcome(") == 1
+    assert "dropCarriedOutcome();" in handler
