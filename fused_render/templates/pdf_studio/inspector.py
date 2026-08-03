@@ -680,6 +680,11 @@ def _rust_engine(path):
         import pdf_inspector
     except ImportError:
         return {"installed": False, "hint": "pip install pdf-inspector"}
+    except Exception as e:
+        # A broken native wheel can raise more than ImportError on import; that
+        # is the package's problem to report, not a reason to lose the whole
+        # inspection the bundled engines already produced.
+        return {"installed": True, "error": f"{type(e).__name__}: {e}"}
     try:
         r = pdf_inspector.process_pdf(path)
     except Exception as e:
@@ -858,7 +863,11 @@ def _wrap_link(md, anchor, uri):
     trail = r"\b" if anchor[-1:].isalnum() else ""
     pat = re.compile(lead + re.escape(anchor) + trail)
     # A URL containing brackets or spaces has to go in <> or it ends the link early.
-    repl = f"[{anchor}](<{uri}>)" if re.search(r"[()<>\s]", uri) else f"[{anchor}]({uri})"
+    link = f"[{anchor}](<{uri}>)" if re.search(r"[()<>\s]", uri) else f"[{anchor}]({uri})"
+    # A callable replacement, not a string: a backslash in the anchor or URL is a
+    # literal here, where re.sub's string form would read it as \1 or \t and
+    # either raise or rewrite the link.
+    repl = lambda m: link
     out, pos, done = [], 0, False
     for m in MD_KEEP.finditer(md):
         seg = md[pos:m.start()]

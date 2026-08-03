@@ -1355,11 +1355,18 @@ def _health():
         out["pikepdf"] = pikepdf.__version__
     except Exception as e:
         out["ok"], out["pikepdf_error"] = False, str(e)
+    # pdf_inspector is optional, so a broken install must not fail the whole
+    # health check the way a missing required engine does — a prebuilt native
+    # wheel can raise more than ImportError (OSError loading the .pyd, a package
+    # __init__ that throws). Absent or broken, the app runs without it.
     try:
         import pdf_inspector
         out["pdf_inspector"] = getattr(pdf_inspector, "__version__", "installed")
     except ImportError:
         out["pdf_inspector"] = ""
+    except Exception as e:
+        out["pdf_inspector"] = ""
+        out["pdf_inspector_error"] = str(e)
     out["soffice"] = bool(_find_soffice())
     out["ocr_langs"] = sorted(
         f[:-len(".traineddata")] for f in os.listdir(TESSDATA)
