@@ -30,28 +30,32 @@ TYPE_LABELS = {
     "Mixed": "Mixed",
 }
 
-# Keyed by the PDF /S action name. /GoTo and friends must be listed as benign:
-# treating unlisted types as suspect turns ordinary internal links into findings.
+# Keyed by the PDF /S action name -> (level, what it does, checklist row). /GoTo
+# and friends must be listed as benign: treating unlisted types as suspect turns
+# ordinary internal links into findings. The row lives here rather than being
+# re-listed against each check, so adding an action type cannot leave it visible
+# in the findings but missing from the row that summarises it.
 ACTION_RISK = {
-    "/JavaScript": ("danger", "runs JavaScript"),
-    "/Launch": ("danger", "launches an external program or file"),
-    "/ImportData": ("danger", "reads form data off the local disk"),
-    "/SubmitForm": ("warn", "posts form data to a URL"),
-    "/GoToR": ("warn", "opens another document"),
-    "/GoToE": ("warn", "opens an embedded document"),
-    "/Movie": ("warn", "plays embedded video"),
-    "/Sound": ("warn", "plays embedded audio"),
-    "/Rendition": ("warn", "plays embedded rich media"),
-    "/RichMediaExecute": ("warn", "drives embedded Flash/3D content"),
-    "/URI": ("info", "opens a web link"),
-    "/GoTo": ("info", "jumps to a page in this document"),
-    "/Named": ("info", "runs a viewer command"),
-    "/Hide": ("info", "shows or hides page content"),
-    "/SetOCGState": ("info", "toggles optional-content layers"),
-    "/Thread": ("info", "follows an article thread"),
-    "/Trans": ("info", "plays a page transition"),
-    "/ResetForm": ("info", "clears form fields"),
+    "/JavaScript": ("danger", "runs JavaScript", "script"),
+    "/Launch": ("danger", "launches an external program or file", "launch"),
+    "/ImportData": ("danger", "reads form data off the local disk", "launch"),
+    "/SubmitForm": ("warn", "posts form data to a URL", "submit"),
+    "/GoToR": ("warn", "opens another document", "remote"),
+    "/GoToE": ("warn", "opens an embedded document", "remote"),
+    "/Movie": ("warn", "plays embedded video", "media"),
+    "/Sound": ("warn", "plays embedded audio", "media"),
+    "/Rendition": ("warn", "plays embedded rich media", "media"),
+    "/RichMediaExecute": ("warn", "drives embedded Flash/3D content", "media"),
+    "/URI": ("info", "opens a web link", "link"),
+    "/GoTo": ("info", "jumps to a page in this document", "nav"),
+    "/Named": ("info", "runs a viewer command", "nav"),
+    "/Hide": ("info", "shows or hides page content", "nav"),
+    "/SetOCGState": ("info", "toggles optional-content layers", "nav"),
+    "/Thread": ("info", "follows an article thread", "nav"),
+    "/Trans": ("info", "plays a page transition", "nav"),
+    "/ResetForm": ("info", "clears form fields", "nav"),
 }
+UNKNOWN_ACTION = ("warn", "an unrecognised action type", "unknown")
 
 # What counts as an action when found outside /A, /AA or /OpenAction.
 ACTION_TYPES = frozenset(ACTION_RISK) | {"/GoToDp"}
@@ -296,13 +300,18 @@ def _actions(pdf, cap=150_000):
 
 
 def _note_attachment(name, where, facts, hits):
+    # The same file is commonly in both the /EmbeddedFiles tree and a
+    # /FileAttachment annotation; it is one attachment, not two.
+    if any(a["name"] == name for a in facts["attachments"]):
+        return
     ext = os.path.splitext(name)[1].lower()
     executable = ext in EXEC_EXTS
     facts["attachments"].append({"name": name, "executable": executable})
     if executable:
         hits.append({"level": "danger", "kind": "/EmbeddedFile",
                      "what": "carries an executable attachment",
-                     "detail": name, "where": where, "automatic": False})
+                     "detail": name, "where": where, "automatic": False,
+                     "row": "attachment"})
 
 
 def _describe(entry, hits):
@@ -311,7 +320,7 @@ def _describe(entry, hits):
 
     act, where = entry["act"], entry["where"]
     kind = str(act.get("/S", "")) or "(unnamed)"
-    level, what = ACTION_RISK.get(kind, ("warn", "an unrecognised action type"))
+    level, what, row = ACTION_RISK.get(kind, UNKNOWN_ACTION)
     detail = ""
     if kind == "/URI":
         detail = str(act.get("/URI", ""))
@@ -326,7 +335,7 @@ def _describe(entry, hits):
     elif kind in ("/GoToR", "/GoToE", "/SubmitForm", "/ImportData"):
         detail = str(act.get("/F", ""))
     hits.append({"level": level, "kind": kind, "what": what, "detail": detail,
-                 "where": where, "automatic": entry["automatic"]})
+                 "where": where, "automatic": entry["automatic"], "row": row})
 
 
 def _security(path):
@@ -380,7 +389,8 @@ def _security(path):
                 if sub in ("/RichMedia", "/Screen", "/Movie", "/3D", "/Sound"):
                     hits.append({"level": "warn", "kind": sub,
                                  "what": "embeds rich media", "detail": "",
-                                 "where": f"page {i}", "automatic": False})
+                                 "where": f"page {i}", "automatic": False,
+                                 "row": "media"})
                 # The /EmbeddedFiles tree is not the only way in: a filespec on
                 # an annotation is still openable from the viewer.
                 if sub == "/FileAttachment":
@@ -410,24 +420,24 @@ def _security(path):
 def _security_report(hits, urls, facts):
     """Fold the evidence into one checklist row per thing a reader wants ruled
     out, plus the findings behind each row."""
-    by_kind = {}
+    by_row = {}
     for h in hits:
-        by_kind.setdefault(h["kind"], []).append(h)
+        by_row.setdefault(h["row"], []).append(h)
 
-    def rows(*kinds):
-        return [h for k in kinds for h in by_kind.get(k, [])]
+    def rows(name):
+        return by_row.get(name, [])
 
     checks = []
 
     def check(name, state, note):
         checks.append({"name": name, "state": state, "note": note})
 
-    js = rows("/JavaScript")
+    js = rows("script")
     check("JavaScript", "fail" if js else "pass",
           f"{len(js)} script action{'' if len(js) == 1 else 's'} in the document"
           if js else "No scripts embedded")
 
-    launch = rows("/Launch", "/ImportData")
+    launch = rows("launch")
     check("Launch / local file access", "fail" if launch else "pass",
           "; ".join(sorted({h["detail"] or h["what"] for h in launch}))
           if launch else "Nothing runs or reads local files")
@@ -443,14 +453,14 @@ def _security_report(hits, urls, facts):
     check("Embedded files", "fail" if bad_att else ("warn" if att else "pass"),
           ", ".join(a["name"] for a in att) if att else "No attachments")
 
-    submit = rows("/SubmitForm")
+    submit = rows("submit")
     check("Forms", "warn" if (submit or facts["xfa"]) else
           ("info" if facts["acroform"] else "pass"),
           "XFA form" if facts["xfa"] else
           (f"{len(submit)} submit action{'' if len(submit) == 1 else 's'}" if submit else
            ("Fillable AcroForm fields" if facts["acroform"] else "No form fields")))
 
-    remote = rows("/GoToR", "/GoToE")
+    remote = rows("remote")
     insecure = sorted(u for u in urls if u.lower().startswith("http://")
                       or re.match(r"^\w+://\d{1,3}(\.\d{1,3}){3}", u.lower()))
     check("External references", "warn" if (remote or insecure) else
@@ -461,7 +471,7 @@ def _security_report(hits, urls, facts):
               f"{len(remote)} reference{'' if len(remote) == 1 else 's'} to other files" if remote else "",
           ])) or "No outbound links")
 
-    media = rows("/RichMedia", "/Screen", "/Movie", "/Sound", "/3D", "/Rendition")
+    media = rows("media")
     check("Multimedia", "warn" if media else "pass",
           f"{len(media)} rich-media object{'' if len(media) == 1 else 's'}"
           if media else "No audio, video or 3D content")
@@ -754,7 +764,10 @@ def _link_text(md, line, links):
 
     lbox = fitz.Rect(line["bbox"])
     for rect, anchor, uri in links:
-        if f"]({uri})" in md or abs(rect & lbox) <= 0:
+        # No "already linked this URI" check: two annotations on one line can
+        # point at the same target, and _wrap_link only ever touches text that
+        # is not already inside a link, so calling it per annotation is right.
+        if abs(rect & lbox) <= 0:
             continue
         if "[" not in anchor and "]" not in anchor:
             md = _wrap_link(md, anchor, uri)

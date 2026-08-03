@@ -227,7 +227,9 @@
 
   /* ---- tools home (ihatepdf-style card grid over the viewer) ---- */
   #main { position: relative; }
-  #toolsHome { position: absolute; inset: 0; overflow-y: auto; background: var(--canvas); z-index: 20;
+  /* Tools is a full-#main overlay, so it must sit above the inspector drawer
+     (a flex child at z-index 22) or the drawer paints over the card grid. */
+  #toolsHome { position: absolute; inset: 0; overflow-y: auto; background: var(--canvas); z-index: 24;
     padding: 26px 34px 40px; }
   #toolsHome .th-head { display: flex; align-items: baseline; gap: 12px; max-width: 1060px; margin: 0 auto 4px; }
   #toolsHome h2 { margin: 0; font-size: 19px; }
