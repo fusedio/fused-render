@@ -235,17 +235,6 @@ def _workdir(file: str) -> str:
 
 def _system_prompt(file: str) -> str:
     name = os.path.basename(file)
-    if os.path.isdir(file):
-        return (
-            f"You are embedded in a local project viewer, opened on the "
-            f"folder {file}. The user is working inside {name} right now; "
-            "treat that project folder as the subject of this conversation — "
-            "answer questions about its contents and make requested changes "
-            "within it. Keep your work scoped to this folder unless the user "
-            "explicitly asks for something broader. This is guidance, not a "
-            "hard rule: follow explicit user instructions even when they go "
-            "beyond the folder."
-        )
     return (
         f"You are embedded in a local file viewer, opened on {file}. "
         f"The user is looking at {name} right now; treat that file as the "
