@@ -966,17 +966,11 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     setDot(c, "");
   }
   function clearOutputs(c) {
-    const previous = c.model.outputs;
     c.model.outputs = [];
     c.outEl.innerHTML = "";
     c.outEl.classList.remove("has");
     c.conEl.innerHTML = "";
     c.conEl.classList.remove("has");
-    return previous;
-  }
-  function restoreOutputs(c, outputs) {
-    c.model.outputs = outputs;
-    for (const out of outputs) renderOutput(c, out);
   }
   function appendOutput(c, out) {
     const outs = c.model.outputs;
@@ -1595,10 +1589,11 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       renderMdCell(c); // pure view change — edits already marked dirty on input
       return;
     }
-    let previousOutputs;
     try {
       syncEditor(c);
-      previousOutputs = clearOutputs(c);
+      // outputs clear on the cell's `started` event, not at submit — a run the
+      // kernel never starts (death, reconnect) keeps its previous results
+      c.clearOnRun = true;
       c.running = true;
       c.runStart = null;
       c.timeEl.textContent = "";
@@ -1608,8 +1603,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
       markDirty();
       startPolling();
     } catch (err) {
-      if (previousOutputs) restoreOutputs(c, previousOutputs);
+      c.clearOnRun = false;
       c.running = false;
+      c.runStart = null;
       setDot(c, "err");
       toast("Run failed: " + (err.message || err));
     }
@@ -1870,16 +1866,19 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     }
     if (!modalCtx || gen !== modalCtx.gen) return; // superseded / closed
     modalCtx.dir = d.path;
+    const unc = d.path.startsWith("//"); // "//server/share/…" — the "//" is the root
     const segs = d.path.split("/").filter(Boolean);
     const winRoot = /^[A-Za-z]:$/.test(segs[0] || ""); // "C:" drive paths take no leading "/"
+    const rooted = winRoot || unc; // neither gets a standalone "/" crumb
     const dirAt = (i) => {
       const q = segs.slice(0, i + 1).join("/");
+      if (unc) return "//" + q;
       return winRoot ? (i ? q : q + "/") : "/" + q;
     };
     modalLocEl.innerHTML =
-      (winRoot ? "" : `<span data-dir="/">/</span>`) +
+      (rooted ? "" : `<span data-dir="/">/</span>`) +
       segs.map((s, i) =>
-        `${i || !winRoot ? " › " : ""}<span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
+        `${i || !rooted ? " › " : ""}<span data-dir="${escapeHtml(dirAt(i))}">${escapeHtml(s)}</span>`).join("");
     const rows = [];
     if (d.path !== d.parent) rows.push(`<div data-dir="${escapeHtml(d.parent)}">⬆ ..</div>`);
     for (const n of d.dirs) {
