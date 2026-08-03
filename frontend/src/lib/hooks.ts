@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NAV_EVENT } from "./router";
 import { createCloseDeferrer } from "./exit-animation";
+import { getConfig } from "./api";
 
 function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -145,4 +146,60 @@ export function useDocumentTitle(label: string | null | undefined): void {
     if (label === undefined) return;
     document.title = label ? `${label} – Fused Render` : "Fused Render";
   }, [label]);
+}
+
+// Whether the builtin learn mount is attached and browsable. Seeded from the
+// boot-time config snapshot, then re-verified by a bounded /api/config poll —
+// the one-shot fetch (main.tsx) lands well before the server's background
+// automount thread finishes attaching the mount, so the snapshot essentially
+// always says false; and the inverse race exists too (rcd survives server
+// restarts, so boot can catch the PRIOR run's still-live mount reporting true
+// moments before ensure_learn_mount's forced detach rips it out), so the poll
+// always runs and follows whatever the fresh answer says. The bound (2s x 60
+// = 120s) comfortably exceeds attach_mount's ~70s worst case (ensure_rcd
+// spawn + full 60s mount rc timeout, shell/mounts.py) so a slow-but-
+// successful mount isn't missed; the cap keeps a dev checkout with no
+// bundled learn.zip (never becomes ready) from polling forever.
+export function useLearnMountReady(initial: boolean): boolean {
+  const [ready, setReady] = useState(initial);
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+    // setInterval fires a new getConfig() every tick without waiting for the
+    // previous one to settle, so responses can arrive out of order. Only the
+    // newest ISSUED request's response is applied — a straggler from an
+    // earlier tick is discarded as stale rather than overwriting a `true` a
+    // later request already reported (which would stick permanently, since
+    // that `true` had already cleared the interval).
+    let latestRequestId = 0;
+    const MAX_ATTEMPTS = 60;
+    const POLL_MS = 2000;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      const requestId = ++latestRequestId;
+      getConfig().then(
+        (fresh) => {
+          if (cancelled || requestId !== latestRequestId) return;
+          setReady(fresh.learn_mount_ready);
+          if (fresh.learn_mount_ready || attempts >= MAX_ATTEMPTS) {
+            window.clearInterval(timer);
+          }
+        },
+        () => {
+          if (cancelled || requestId !== latestRequestId) return;
+          // Transient fetch failure — just try again next tick.
+          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
+        }
+      );
+    }, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // Deliberately empty deps: run once on mount only. Depending on `ready`
+    // here would restart the whole bounded poll window from zero every time
+    // it changes, and `initial` is only a seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return ready;
 }

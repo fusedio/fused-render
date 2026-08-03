@@ -18,7 +18,7 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
 import { basename } from "../lib/format";
 import { isMod, MOD_LABEL } from "../lib/platform";
-import { useDeferredClose } from "../lib/hooks";
+import { useDeferredClose, useLearnMountReady } from "../lib/hooks";
 import { PANEL_EXIT_MS } from "../lib/exit-animation";
 import { AppCard } from "../components/AppCard";
 import { SkeletonLines } from "../components/Skeleton";
@@ -661,6 +661,10 @@ function Doorway({
 
 export default function Home({ config }: { config: Config }) {
   const [apps, reloadApps] = useLoad(getApps);
+  // The boot-time config snapshot's learn_mount_ready is stale in both
+  // directions (see useLearnMountReady) — without the bounded re-poll the
+  // Learn doorway would essentially never appear.
+  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
 
   // Same landing logic as the Sidebar's Learn entry (D123): the bundled
   // learn.zip is mounted read-only at `${mounts_root}/learn`; prefer its
@@ -752,7 +756,7 @@ export default function Home({ config }: { config: Config }) {
               </svg>
             }
           />
-          {config.learn_mount_ready && (
+          {learnMountReady && (
             <Doorway
               hue="var(--icon-data)"
               title="Learn"
