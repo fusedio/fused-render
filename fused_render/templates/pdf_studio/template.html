@@ -280,6 +280,9 @@
   .cbar { height: 4px; border-radius: 3px; background: var(--hair-2); margin: 9px 0 8px; overflow: hidden; }
   .cbar span { display: block; height: 100%; background: var(--blue); }
   .verdict p { margin: 0; color: var(--ink-2); line-height: 1.5; font-size: 12.5px; }
+  .verdict p.cross { margin-top: 9px; color: var(--ink-3); font-size: 12px; }
+  .verdict code { font-family: var(--mono); font-size: 11.5px; background: var(--hair-2);
+    border-radius: 3px; padding: 1px 5px; }
   .verdict .row { margin-top: 11px; }
 
   .kv { display: grid; grid-template-columns: 122px 1fr; gap: 3px 10px; font-size: 12.5px; }
@@ -311,6 +314,7 @@
   .risk[data-r=clean] { background: #e5f6ee; color: #12704a; }
   .risk[data-r=notable] { background: #fdf3e2; color: #8a6116; }
   .risk[data-r=risky] { background: var(--danger-soft); color: #9b2c2c; }
+  .risk[data-r=unreadable] { background: #eef0f3; color: var(--ink-2); }
   .checks { display: flex; flex-direction: column; gap: 1px; }
   .check { display: flex; gap: 8px; align-items: baseline; padding: 6px 4px; border-bottom: 1px solid var(--hair-2);
     font-size: 12.5px; }
@@ -1131,6 +1135,7 @@ async function openDoc(path) {
 
 function clearOpenDoc() {
   cancelEdit();
+  dropInspect();
   renderGen++;
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
   $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
@@ -1786,7 +1791,13 @@ async function runInspect(tab) {
     // py() does not supersede: an edit or doc switch during the scan would
     // otherwise land a report describing pages that have since moved.
     const forDoc = state.doc, gen = ++inspectGen;
-    const report = await py({ action: "inspect", doc: state.doc });
+    let report;
+    try {
+      report = await py({ action: "inspect", doc: state.doc });
+    } catch (err) {
+      renderInspect();   // back to the retry state; act() reports the error
+      throw err;
+    }
     if (gen !== inspectGen || forDoc !== state.doc) return;
     state.inspect = report;
     setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
@@ -1840,6 +1851,24 @@ function renderInspect() {
   });
 }
 
+// pdf-inspector is a cross-check, not a dependency — the verdict above stands
+// on its own, so a missing or broken one is a note, never an error state.
+function crossCheck(v, rust) {
+  if (!rust.installed) {
+    return `Verdict from pymupdf, using firecrawl/pdf-inspector's thresholds.
+      Optional: <code>${esc(rust.hint || "pip install pdf-inspector")}</code>
+      to cross-check against that library itself.`;
+  }
+  if (rust.error) {
+    return `pdf-inspector is installed but could not read this file
+      (${esc(rust.error)}). The verdict above is unaffected.`;
+  }
+  return `pdf-inspector ${esc(rust.version)}
+    ${rust.type === v.type ? "agrees" : `reads it as ${esc(rust.type)}`}
+    (${Math.round(rust.confidence * 100)}%, ${rust.ms} ms)${
+      rust.encoding_issues ? " · flags encoding issues" : ""}`;
+}
+
 function insOverview(r) {
   const v = r.verdict, d = r.doc, t = r.text, rust = r.rust;
   const pct = Math.round(v.confidence * 100);
@@ -1860,12 +1889,7 @@ function insOverview(r) {
           : "Every page reads back as text — no OCR needed."}</p>
       ${v.ocr_recommended ? `<div class="row">
         <button class="btn primary" data-ins="ocr">Make searchable (OCR)</button></div>` : ""}
-      ${rust ? `<p style="margin-top:9px;color:var(--ink-3);font-size:12px">
-        pdf-inspector ${esc(rust.version)} ${rust.type === v.type ? "agrees" : `reads it as ${esc(rust.type)}`}
-        (${Math.round(rust.confidence * 100)}%, ${rust.ms} ms)${rust.encoding_issues ? " · flags encoding issues" : ""}</p>`
-      : `<p style="margin-top:9px;color:var(--ink-3);font-size:12px">Verdict from pymupdf, using
-         firecrawl/pdf-inspector's thresholds. Install <b>pdf-inspector</b> in the server environment to
-         cross-check against that library itself.</p>`}
+      <p class="cross">${crossCheck(v, rust)}</p>
     </div>
 
     <h6>Content${v.sampled ? ` — across the ${num(v.page_count)} pages scanned` : ""}</h6>
@@ -1959,12 +1983,19 @@ const RISK_COPY = {
   clean: ["No active content", "Nothing in this file runs, opens other programs, or reaches out on its own."],
   notable: ["Worth a look", "Nothing here executes, but the file carries content you may want to know about."],
   risky: ["Contains active content", "This file can run code or open other files. Only continue if you trust where it came from."],
+  unreadable: ["Could not be scanned", "This file's internal structure is damaged enough that it could not be read — which is itself a reason to be careful with it."],
 };
 
 function insSecurity(r) {
   const s = r.security;
   const [title, note] = RISK_COPY[s.risk];
   const mark = { pass: "✓", info: "i", warn: "!", fail: "✕" };
+  if (s.risk === "unreadable") {
+    return `<div class="risk" data-r="unreadable"><h4>${title}</h4><p>${note}</p></div>
+      <h6>What the scanner hit</h6><div class="finding" data-l="warn"><code>${esc(s.error)}</code></div>
+      <p class="hint">The rest of this report (pages, fonts, text) still applies — only the
+        structural scan stopped.</p>`;
+  }
   return `
     <div class="risk" data-r="${s.risk}"><h4>${title}</h4><p>${note}</p></div>
     <h6>Checks</h6>
