@@ -1341,7 +1341,9 @@ Z / Shift+Z — undo / redo · S — save">⌨</span>
     item("Move up", () => moveCell(c, -1));
     item("Move down", () => moveCell(c, +1));
     item(model.cell_type === "code" ? "Convert to markdown" : "Convert to code", () => convertCell(c));
-    item("Clear output", () => clearOutputAction(c));
+    // a markdown model carries no `outputs` — clearing would add an empty one
+    // (invalid nbformat) and leave undo holding an undefined to restore
+    if (model.cell_type === "code") item("Clear output", () => clearOutputAction(c));
     item("Delete cell", () => deleteCell(c));
     menuBtn.addEventListener("click", (e) => {
       e.stopPropagation();

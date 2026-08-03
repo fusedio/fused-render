@@ -401,6 +401,20 @@ def _cell_ids(frame):
             for i in range(frame.locator(".cell").count())]
 
 
+def _menu_item(frame, cell_id, label):
+    return frame.locator(f'.cell[data-id="{cell_id}"] .menu-pop button',
+                         has_text=label).count()
+
+
+def test_clear_output_only_offered_on_code_cells(page_and_nb):
+    page, frame, nb_path = page_and_nb
+    assert _menu_item(frame, "c1", "Clear output") == 1
+    # a markdown model has no `outputs`: clearing would persist an empty one
+    # (invalid nbformat) and leave undo restoring an undefined
+    assert _menu_item(frame, "m1", "Clear output") == 0
+    assert _menu_item(frame, "m1", "Delete cell") == 1
+
+
 def test_manual_save_only(page_and_nb):
     page, frame, nb_path = page_and_nb
     before = open(nb_path, encoding="utf-8").read()
