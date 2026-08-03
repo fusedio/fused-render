@@ -63,7 +63,37 @@ def _serve_params(vfs_opt: dict) -> dict:
 SERVE_VFS_OPT = _serve_params(VFS_OPT)
 
 
-NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "retrans=2", "nobrowse"]}
+# The kernel NFS client options for the macOS loopback mount. rclone passes each
+# entry through as a separate `-o` to mount_nfs (cmd/nfsmount/nfsmount.go), on top
+# of the port/mountport/tcp it sets itself — so everything else here is either a
+# macOS default or something we put in this list.
+#
+# timeo is in TENTHS OF A SECOND, so 600 = 60s, not 600s (man 8 mount_nfs). Note
+# it is only partly honoured without "dumbtimer": otherwise the dynamic RTO
+# estimator overrides it.
+#
+# "intr" lets a call that is stuck on an unresponsive server fail with EINTR when
+# a termination signal is posted. Without it (the macOS default is nointr) a
+# process that trips a slow mount is UNKILLABLE — the beachballed ripgrep or
+# editor search that can only be cleared by force-unmounting. It costs nothing:
+# unlike "soft" it never fails a slow-but-healthy read on its own, it only gives
+# the user a working ^C. (vfs.generic.nfs.client.uninterruptible_pagein is 0 on
+# macOS, so even paged-in reads are interruptible.)
+#
+# "nolocks" because the server has no lock service to talk to: rclone serves NFSv3
+# via go-nfs, which registers no NLM program, yet macOS mounts with remote locks
+# enabled by default. The mismatch is latent until something takes a real lock —
+# and DuckDB/SQLite opening a file on a mount does exactly that. nolocks makes
+# those fail fast instead of hanging on an absent lockd.
+#
+# "retrans" is deliberately NOT set: the man page defines it as the retransmit
+# count "for soft mounts", and this mount is hard (the macOS default), so it was
+# inert. We do not want "soft" here — it would convert a stall into a mid-read
+# EIO that DuckDB/rasterio surface as file corruption, and on a read-only mount it
+# silently implies deadtimeout=60, which force-unmounts the mount out from under
+# the app. The real cause of the stalls it appeared to mitigate was the NFS handle
+# cache, fixed in rcd.py's _rcd_child_env.
+NFS_MOUNT_OPT = {"ExtraOptions": ["timeo=600", "intr", "nolocks", "nobrowse"]}
 
 
 def _vfs_opt_for(m: dict) -> dict:
