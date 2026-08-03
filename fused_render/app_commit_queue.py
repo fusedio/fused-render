@@ -109,23 +109,33 @@ def _take_due() -> tuple[list[tuple[str, list[str]]], float | None]:
 
 async def _run() -> None:
     while True:
-        await _wake.wait()
-        while True:
-            due, delay = _take_due()
-            for app_dir, labels in due:
-                # commit() is best-effort and never raises; to_thread keeps
-                # the subprocess wait off the event loop.
-                await asyncio.to_thread(app_git.commit, app_dir,
-                                        _message(labels))
-            if delay is None:
-                break
-            await asyncio.sleep(delay)
-        _wake.clear()
-        # A mark() between the empty _take_due and the clear would be lost
-        # with its wake-up eaten — re-arm if anything slipped in.
-        with _lock:
-            if _pending:
-                _wake.set()
+        # A dead worker silently strands every future mark() in _pending, so
+        # the loop body may only exit via cancellation: anything else logs
+        # the traceback (an unretrieved task exception surfaces at GC time
+        # or never) and keeps going.
+        try:
+            await _wake.wait()
+            while True:
+                due, delay = _take_due()
+                for app_dir, labels in due:
+                    # commit() is best-effort and never raises; to_thread
+                    # keeps the subprocess wait off the event loop.
+                    await asyncio.to_thread(app_git.commit, app_dir,
+                                            _message(labels))
+                if delay is None:
+                    break
+                await asyncio.sleep(delay)
+            _wake.clear()
+            # A mark() between the empty _take_due and the clear would be
+            # lost with its wake-up eaten — re-arm if anything slipped in.
+            with _lock:
+                if _pending:
+                    _wake.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("app commit worker cycle failed; continuing")
+            await asyncio.sleep(1)
 
 
 def start() -> None:
@@ -134,6 +144,18 @@ def start() -> None:
     _loop = asyncio.get_running_loop()
     _wake = asyncio.Event()
     _task = _loop.create_task(_run(), name="app-commit-queue")
+    _task.add_done_callback(_on_worker_done)
+
+
+def _on_worker_done(task: asyncio.Task) -> None:
+    # The loop body swallows everything but cancellation, so this firing
+    # outside shutdown means something impossible happened — say so loudly
+    # instead of letting the exception sit unretrieved forever.
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("app commit worker died", exc_info=exc)
 
 
 async def stop() -> None:
