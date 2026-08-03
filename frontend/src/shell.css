@@ -5982,8 +5982,8 @@ select.field-control:has(option[value=""]:checked) {
    the 4th card onto its own row at common tablet widths (e.g. 768px). */
 .home-doors {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
 }
 
 @media (max-width: 760px) {
@@ -5997,8 +5997,8 @@ select.field-control:has(option[value=""]:checked) {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 18px 18px 16px;
+  gap: 7px;
+  padding: 24px 22px 22px;
   min-width: 0;
   font: inherit;
   text-align: left;
@@ -6026,13 +6026,13 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .home-door-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 650;
 }
 
 .home-door-desc {
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 13.5px;
+  line-height: 1.5;
   color: var(--fg-muted);
 }
 
