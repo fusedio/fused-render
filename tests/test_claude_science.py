@@ -253,6 +253,50 @@ def test_artifact_name_parsing(filename, expected):
     assert claude_science.artifact_name(filename) == expected
 
 
+# ------------------------------------------------------- the bundled sample
+
+def test_the_sample_project_is_skipped_by_default(store):
+    """83 of the 97 artifacts on the store this was built against live in the
+    demo project. Listing it would bury the user's own work in their own Home."""
+    _artifact(store, "proj_example", "u1", ["vaaaaaaaa_seeded_demo.png"])
+    _artifact(store, "proj_f0c0cfbcfb8f", "u2", ["vbbbbbbbb_mine.png"])
+
+    assert [a["name"] for a in claude_science.list_apps()] == ["mine.png"]
+
+
+def test_the_sample_project_lists_when_asked_for(store, monkeypatch):
+    monkeypatch.setenv(claude_science.EXAMPLES_ENV, "1")
+    _artifact(store, "proj_example", "u1", ["vaaaaaaaa_seeded_demo.png"])
+    _artifact(store, "proj_f0c0cfbcfb8f", "u2", ["vbbbbbbbb_mine.png"])
+
+    names = {a["name"] for a in claude_science.list_apps()}
+    assert names == {"seeded_demo.png", "mine.png"}
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "OFF", " 0 "])
+def test_the_off_words_keep_the_sample_hidden(store, monkeypatch, value):
+    """Same off-words as FUSED_RENDER_CALLS — the two switches must not disagree
+    about what "0" means."""
+    monkeypatch.setenv(claude_science.EXAMPLES_ENV, value)
+    _artifact(store, "proj_example", "u1", ["vaaaaaaaa_seeded_demo.png"])
+    assert claude_science.list_apps() == []
+
+
+def test_only_the_exact_sample_id_is_skipped(store):
+    """A user's own project must never be caught by the sample's name."""
+    _artifact(store, "proj_examples", "u1", ["vaaaaaaaa_mine.png"])
+    _artifact(store, "proj_example_2", "u2", ["vbbbbbbbb_also_mine.png"])
+    _artifact(store, "proj_example", "u3", ["vcccccccc_demo.png"])
+
+    names = {a["name"] for a in claude_science.list_apps()}
+    assert names == {"mine.png", "also_mine.png"}
+
+
+def test_a_store_that_is_only_the_sample_lists_empty(store):
+    _artifact(store, "proj_example", "u1", ["vaaaaaaaa_demo.png"])
+    assert claude_science.list_apps() == []
+
+
 # --------------------------------------------------------------------- absence
 
 def test_no_store_lists_empty(tmp_path, monkeypatch):

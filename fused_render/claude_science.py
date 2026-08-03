@@ -28,6 +28,11 @@ rest of the listing means. The project becomes the app's **tag**, so the /apps
 hub's tag chips (derived from the apps themselves, no registry) turn into
 per-project filters for free.
 
+Claude Science's own **bundled sample project is skipped** (see
+``EXAMPLE_PROJECT_IDS``) — it is demo content the user did not make, and on a
+real store it outnumbers their own artifacts several times over.
+``FUSED_RENDER_CLAUDE_SCIENCE_EXAMPLES=1`` lists it anyway.
+
 The entry is the newest version file, whatever its type. Most Claude Science
 artifacts are figures and tables rather than pages, so the listing reports
 ``entry`` (any previewable file, dispatched by the shell's template registry:
@@ -67,6 +72,21 @@ DIR_ENV = "FUSED_RENDER_CLAUDE_SCIENCE_DIR"
 
 DEFAULT_DIR = "~/.claude-science"
 
+#: Set truthy to list the bundled sample project too (see `_examples_included`).
+EXAMPLES_ENV = "FUSED_RENDER_CLAUDE_SCIENCE_EXAMPLES"
+
+#: Claude Science ships a demo project, and it is not small: on the store this
+#: was built against it holds 83 of the 97 artifacts — content the user did not
+#: make, outnumbering their own work six to one and, sorted by recency, well
+#: placed to fill Home's ten Recent slots on its own. So it is skipped by
+#: default. Matched by exact project id, because that is what distinguishes it:
+#: every real project is `proj_` + a generated hex id, and the sample is the one
+#: with a word instead (`proj_example`) — Claude Science's own special-casing,
+#: not a heuristic of ours. A tuple rather than a lone constant so a future
+#: sample can be added without reshaping the check; exact match rather than a
+#: prefix so a user's own `proj_examples` is never caught by it.
+EXAMPLE_PROJECT_IDS = ("proj_example",)
+
 #: The `source` every app from this module carries, so the shell can tell a
 #: read-only artifact apart from a workspace app it may scaffold and commit to.
 SOURCE = "claude-science"
@@ -102,6 +122,20 @@ def claude_science_dir() -> str:
     return os.path.abspath(
         os.path.expanduser(os.environ.get(DIR_ENV) or DEFAULT_DIR)
     )
+
+
+def _examples_included() -> bool:
+    """Whether the bundled sample project is listed (default: no).
+
+    ``FUSED_RENDER_CLAUDE_SCIENCE_EXAMPLES`` brings it back — any set value
+    except the off-words, matching how ``FUSED_RENDER_CALLS`` reads (calls.py
+    ``enabled_override``), so the two switches can't mean different things by
+    the same string. Read per call, not cached: this decides what a listing
+    contains, and a listing is cheap to re-request."""
+    raw = os.environ.get(EXAMPLES_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 def _child_dirs(path: str) -> list[str]:
@@ -269,6 +303,7 @@ def list_apps() -> list[dict]:
     orgs_dir = os.path.join(root, "orgs")
     apps: list[dict] = []
     truncated = 0
+    include_examples = _examples_included()
     for org in _child_dirs(orgs_dir):
         org_dir = os.path.join(orgs_dir, org)
         artifacts_dir = os.path.join(org_dir, "artifacts")
@@ -279,6 +314,10 @@ def list_apps() -> list[dict]:
         # with nothing in it.
         names = _project_names(org_dir)
         for project in projects:
+            if project in EXAMPLE_PROJECT_IDS and not include_examples:
+                logger.debug("claude-science: skipping the sample project %r "
+                             "(set %s=1 to list it)", project, EXAMPLES_ENV)
+                continue
             project_dir = os.path.join(artifacts_dir, project)
             tag = names.get(project) or project
             for artifact in _child_dirs(project_dir):

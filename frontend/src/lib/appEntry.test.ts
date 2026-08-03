@@ -2,9 +2,18 @@
 // ones that decide which of three thumbnail routes a card takes and what
 // clicking it opens — a wrong answer is either a blank card or a navigation to
 // a folder full of UUIDs, and neither is visible to a typecheck.
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 
 import type { AppInfo } from "./api";
+
+// Where openApp actually sends you — the rule this module exists to hold in one
+// place, and one no typecheck can check. router is mocked before the dynamic
+// import below so the calls are observable without a DOM.
+const navigated: { path: string; opts?: { isDir?: boolean; mode?: string } }[] = [];
+mock.module("./router", () => ({
+  navigate: (path: string, opts?: { isDir?: boolean; mode?: string }) =>
+    navigated.push({ path, opts }),
+}));
 
 // appEntry pulls `navigate` from router.ts, which reads `location` at MODULE
 // scope (IS_EMBED) — and bun's test runtime has no DOM. A static import is
@@ -12,7 +21,13 @@ import type { AppInfo } from "./api";
 // dynamically after it. (toast.test.ts shims `window` the same way but can
 // import statically: it only touches it at call time.)
 (globalThis as { location?: unknown }).location ??= { pathname: "/" };
-const { entryOf, extLabel, isImageEntry, rawUrl } = await import("./appEntry");
+const { entryOf, extLabel, isImageEntry, openApp, rawUrl } = await import("./appEntry");
+
+function openedBy(over: Partial<AppInfo>) {
+  navigated.length = 0;
+  openApp(app(over));
+  return navigated[0];
+}
 
 function app(over: Partial<AppInfo>): AppInfo {
   return {
@@ -43,6 +58,36 @@ test("isImageEntry recognises the types an <img> can paint", () => {
   for (const path of ["/a/f.csv", "/a/f.html", "/a/f.parquet", "/a/png", null]) {
     expect(isImageEntry(path)).toBe(false);
   }
+});
+
+test("a workspace page app opens its folder beside a Claude chat", () => {
+  expect(openedBy({ path: "/w/a", entry_html: "/w/a/index.html", entry: "/w/a/index.html", source: "workspace" }))
+    .toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
+  // An older backend sends no `source` at all; it can only mean workspace.
+  expect(openedBy({ path: "/w/a", entry_html: "/w/a/index.html" }))
+    .toEqual({ path: "/w/a", opts: { isDir: true, mode: "claude_split" } });
+});
+
+test("a Claude Science artifact opens the FILE, never the folder-with-a-chat", () => {
+  // The HTML case is the one that regressed: claude_split rediscovers the entry
+  // from the folder and wants exactly one top-level .html, but an artifact
+  // folder holds one per version — so the second save left the pane empty. It
+  // would also have run a Claude session inside ~/.claude-science.
+  expect(
+    openedBy({
+      path: "/cs/u1",
+      entry: "/cs/u1/v2_report.html",
+      entry_html: "/cs/u1/v2_report.html",
+      source: "claude-science",
+    }),
+  ).toEqual({ path: "/cs/u1/v2_report.html", opts: undefined });
+
+  expect(openedBy({ path: "/cs/u2", entry: "/cs/u2/v1_fig.png", source: "claude-science" }))
+    .toEqual({ path: "/cs/u2/v1_fig.png", opts: undefined });
+});
+
+test("an app with no entry at all opens its folder", () => {
+  expect(openedBy({ path: "/w/empty" })).toEqual({ path: "/w/empty", opts: { isDir: true } });
 });
 
 test("extLabel names what a thumbnail-less card holds", () => {

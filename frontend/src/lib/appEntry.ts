@@ -2,15 +2,22 @@
 // card components (AppCard on Home, AppPreviewCard in the /apps hub) so they
 // can never disagree about what clicking a card does.
 //
-// Two sources feed the listing (D205) and they differ in one way that matters
-// here: a workspace app's entry is a page, while a Claude Science artifact's
-// entry is usually a figure or a table. So:
+// Two sources feed the listing (D205) and they differ in ways that matter here:
 //
-//   * a page entry opens its FOLDER in the claude_split view (the app beside a
-//     Claude chat) — unchanged, that's what a workspace app is for;
-//   * a non-page entry opens the FILE, letting the shell's template registry
-//     dispatch it (.png -> image, .csv -> duckdb, …);
-//   * no entry at all falls back to the plain folder listing.
+//   * a WORKSPACE app with a page entry opens its FOLDER in the claude_split
+//     view (the app beside a Claude chat) — unchanged, that's what one is for;
+//   * a CLAUDE SCIENCE artifact opens the FILE, whatever its type, letting the
+//     shell's template registry dispatch it (.png -> image, .csv -> duckdb,
+//     .html -> the rendered page). Never the folder-with-a-chat, for two
+//     independent reasons. It would break: claude_split rediscovers the entry
+//     from the folder and wants exactly one top-level .html (templates/
+//     claude_split/app.py), while an artifact folder holds one file per
+//     VERSION — so the second save of a report leaves the left pane with no
+//     entry at all, even though the listing already resolved entry_html to the
+//     newest one. And it would be wrong even if it worked: that chat would run
+//     cwd'd inside ~/.claude-science, a store this app only ever reads.
+//   * anything else with an entry opens the file; no entry at all falls back to
+//     the plain folder listing.
 import type { AppInfo } from "./api";
 import { navigate } from "./router";
 
@@ -60,15 +67,22 @@ export function rawUrl(path: string): string {
   return `/api/fs/raw?path=${encodeURIComponent(path)}`;
 }
 
+// Whether opening this app means opening its folder beside a Claude chat.
+// A page entry is necessary but not sufficient: the folder has to be one the
+// user owns and claude_split can resolve, which a read-only, version-stacked
+// artifact directory is not (see the header).
+function opensAsProject(app: AppInfo): boolean {
+  return Boolean(app.entry_html) && app.source !== "claude-science";
+}
+
 export function openApp(app: AppInfo): void {
-  if (app.entry_html) {
+  if (opensAsProject(app)) {
     navigate(app.path, { isDir: true, mode: "claude_split" });
     return;
   }
   const entry = entryOf(app);
-  // A figure or a table: open the artifact itself. Its folder would be a
-  // listing of one opaque file — for a Claude Science artifact, a directory
-  // named after a UUID.
+  // The artifact itself. Its folder would be a listing of one opaque file — for
+  // a Claude Science artifact, a directory named after a UUID.
   if (entry) navigate(entry);
   else navigate(app.path, { isDir: true });
 }

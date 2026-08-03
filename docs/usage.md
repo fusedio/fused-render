@@ -121,10 +121,16 @@ saves a figure and its underlying table gives them the same base name, and they
 are two different artifacts. Only the newest version of an artifact is listed;
 the older ones stay where they are, in the same folder.
 
+Claude Science's own **sample project is not listed** — it ships with the app
+and its artifacts would outnumber yours. Set
+`FUSED_RENDER_CLAUDE_SCIENCE_EXAMPLES=1` to include it.
+
 Opening a card opens the artifact in the matching preview template: a figure in
 the image viewer, a table in the DuckDB table view, an HTML report as a
-rendered page beside a Claude chat. Figure cards show the figure itself as
-their thumbnail.
+rendered page. Figure cards show the figure itself as their thumbnail. Unlike a
+workspace app — which opens its folder beside a Claude chat — an artifact opens
+the file: the folder is a versioned store belonging to another application, not
+a project to edit in place.
 
 This is **read-only**. fused-render never writes to, scaffolds into, commits to
 or deploys from the Claude Science store — it reads the files another
