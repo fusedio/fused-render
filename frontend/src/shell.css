@@ -1043,6 +1043,19 @@ a.bookmark-name::after {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Route fade (App.tsx): routes hard-remount per navigation, so there is no
+     old-and-new overlap to cross-fade — a short fade-in on the content area
+     alone makes the cut read as intentional. Shorter than --dur-med on purpose:
+     it must not delay reading the page. The sidebar and breadcrumb chrome sit
+     OUTSIDE this element and never flash. Replays because App keys this node on
+     the nav epoch (an iframe's param write doesn't bump it). */
+  animation: content-in 110ms var(--ease-out);
+}
+
+@keyframes content-in {
+  from {
+    opacity: 0;
+  }
 }
 
 /* Listing view — a fixed search header above a scrolling table, so the search
