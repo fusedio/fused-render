@@ -7,7 +7,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, urlForFsPath, navHintIsDir } from "./lib/router";
+import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "./lib/router";
 import { useSessionRestore, useSessionTracking } from "./lib/session";
 import { useRecentsTracking } from "./lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "./lib/api";
@@ -17,6 +17,7 @@ import { basename } from "./lib/format";
 import { maybeAutoStartTour } from "./lib/tour";
 import { useThemeSync } from "./lib/theme";
 import Sidebar from "./components/Sidebar";
+import CloneAppHost from "./components/CloneAppHost";
 import NotificationHost from "./components/NotificationHost";
 import ShortcutsOverlay from "./components/ShortcutsOverlay";
 import { isMod } from "./lib/platform";
@@ -30,6 +31,8 @@ import Tabs from "./views/Tabs";
 import Preferences from "./views/Preferences";
 import Templates from "./views/Templates";
 import Mounts from "./views/Mounts";
+import Home from "./views/Home";
+import Apps from "./views/Apps";
 import BookmarkOpen from "./views/BookmarkOpen";
 
 type StatState =
@@ -346,20 +349,12 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // First-run onboarding tour: fire once after first paint so the listing and
-  // breadcrumb are mounted (maybeAutoStartTour no-ops in embed / if already
-  // seen). Empty deps — App mounts once for the page's lifetime.
-  useEffect(() => {
-    if (IS_EMBED) return;
-    const id = setTimeout(() => maybeAutoStartTour(), 600);
-    return () => clearTimeout(id);
-  }, []);
-
-  // Root redirect, exactly like the vanilla route(): replaceState so "/"
-  // never enters history. Render-time write is safe — it changes pathname,
-  // so the re-render (via fused:urlchange) derives the real route.
-  if (location.pathname === "/") {
-    history.replaceState(null, "", urlForFsPath(config.start_dir));
+  // Home lives at "/" itself now (not a /view/_home sentinel) — old bookmarks
+  // and links to the sentinel redirect the same render-time way as _account
+  // below. Render-time write is safe — it changes pathname, so the re-render
+  // (via fused:urlchange) derives the real route.
+  if (location.pathname === "/view/_home") {
+    history.replaceState(null, "", "/");
   }
   // The old standalone Fused-account page folded into Preferences as a tab
   // (D125) — redirect its sentinel the same render-time way so existing
@@ -376,9 +371,13 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/view/_templates";
   // PROTOTYPE: mounts sentinel (see views/Mounts.tsx).
   const isMounts = pathname === "/view/_mounts";
+  const isHome = pathname === "/";
+  // Apps hub — chrome-free like Home (no sidebar/breadcrumb), all detected
+  // apps with search + tag filters.
+  const isApps = pathname === "/apps";
   const isBookmark = pathname === "/view/_bookmark";
   const fsPath =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isBookmark
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isHome || isApps || isBookmark
       ? null
       : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
@@ -397,12 +396,32 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isBookmark || bookmarkFile
+              : isHome
+                ? "Home"
+                : isApps
+                ? "Apps"
+                : isBookmark || bookmarkFile
                 ? "Bookmark"
                 : fsPath
                   ? undefined
                   : null
   );
+
+  // First-run onboarding tour: fire after paint so the listing and breadcrumb
+  // are mounted (maybeAutoStartTour no-ops in embed / if already seen). Keyed
+  // on `pathname`, not mount-once: App never remounts, and a first visit now
+  // lands on the chrome-free "/" where there is no #sidebar to point at, so the
+  // attempt has to repeat until a route with the shell chrome comes up. The ref
+  // stops the retries once the tour has run — otherwise a browser that refuses
+  // the "seen" write would restart it on every navigation.
+  const tourPending = useRef(true);
+  useEffect(() => {
+    if (IS_EMBED || !tourPending.current) return;
+    const id = setTimeout(() => {
+      tourPending.current = !maybeAutoStartTour();
+    }, 600);
+    return () => clearTimeout(id);
+  }, [pathname]);
 
   let main;
   if (isPanel) {
@@ -466,6 +485,23 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (isHome) {
+    // Home (apps / templates / files) — the launch landing, lives at "/"
+    // itself (old /view/_home sentinel redirects here above). No breadcrumb
+    // bar: no path/bookmark actions make sense above a landing page.
+    main = (
+      <div id="content">
+        <Home key={epoch} config={config} />
+      </div>
+    );
+  } else if (isApps) {
+    // Apps hub — same chrome-free treatment as Home: no breadcrumb bar, no
+    // sidebar (excluded below), the page owns its own header and back link.
+    main = (
+      <div id="content">
+        <Apps key={epoch} />
+      </div>
+    );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
     // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
@@ -498,9 +534,13 @@ export default function App({ config }: { config: Config }) {
 
   return (
     <div id="app">
-      {!IS_EMBED && <Sidebar config={config} />}
+      {!IS_EMBED && !isHome && !isApps && <Sidebar config={config} />}
       <div id="main">{main}</div>
       <NotificationHost />
+      {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
+          from the Apps page; the modal is mounted HERE so both reach one flow — Home and
+          Apps render without the sidebar, so it cannot live there (SPEC §35 CL-1). */}
+      {!IS_EMBED && <CloneAppHost />}
       {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
     </div>
   );

@@ -102,7 +102,8 @@
   }
   /* ---- grid ---- */
   #gridWrap { flex: 1; overflow: auto; margin: 0 8px; border: 1px solid var(--border);
-    border-radius: 8px 8px 0 0; background: var(--panel2); outline: none; position: relative; }
+    border-radius: 8px 8px 0 0; background: var(--panel2); outline: none; position: relative;
+    overflow-anchor: none; }
   table { border-collapse: separate; border-spacing: 0; font-size: 12px;
     font-variant-numeric: tabular-nums; user-select: none; table-layout: fixed; }
   td, th { border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid); padding: 0; }
@@ -122,6 +123,7 @@
     cursor: col-resize; z-index: 7;
   }
   .colResize:hover, .colResize.on { background: var(--anchor); opacity: .55; }
+  #colResizeGuide { border-left: 2px dashed var(--anchor); }
   .funnel {
     position: absolute; top: 50%; right: 5px; transform: translateY(-50%);
     width: 18px; height: 16px; display: flex; align-items: center; justify-content: center;
@@ -427,7 +429,7 @@ const PY = "./reader.py";
 // (D114) would abort an in-flight write. Route every call through this.
 const pyRun = (params) => fused.runPython(PY, params, { key: null });
 const $ = (id) => document.getElementById(id);
-const RENDER_CAP = 1000, MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
+const MIN_ROWS = 100, MIN_COLS = 26, MAX_UNDO = 60, LOAD_BATCH = 2000;
 
 // ================= state =================
 let book = null;          // { sheets: [...] }  — small: {rows, styles}; big: {loaded, edits, ...}
@@ -438,7 +440,6 @@ let readOnly = false;      // reader verdict (SPEC §13.5): blocks in-place save
 let sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
 let editing = null;
 let undoStack = [], redoStack = [];
-let renderLimit = RENDER_CAP;
 let tds = new Map();
 let values = [];          // computed matrix (small sheets)
 let valuesStale = true;
@@ -1270,7 +1271,6 @@ function applyFilterMenu() {
     sh.filterVal[c] = excl.length ? { mode: "exclude", vals: excl } : null;
   }
   closeFilterMenu();
-  renderLimit = RENDER_CAP;
   if (sh.big) fetchRows(true); else renderGrid();
 }
 document.addEventListener("mousedown", (e) => {
@@ -1279,6 +1279,25 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && fmState) { closeFilterMenu(); e.stopPropagation(); } }, true);
 
 // ================= rendering =================
+// The text a cell shows, without needing the cell to exist in the DOM.
+function cellDisplayText(r, c) {
+  const sh = S();
+  if (sh.big) return raw(r, c);
+  const cv = (values[r] && values[r][c]) ? values[r][c] : EMPTY_CELL;
+  return display(cv, sh.styles[r] && sh.styles[r][c]);
+}
+// Width for double-click auto-fit, measured over the DATA — the tbody is
+// virtualized, so scanning rendered cells would size the column to whatever
+// happens to be scrolled into view. Big sheets can only consider the rows
+// streamed in so far; the rest aren't in the browser to measure.
+function autofitWidth(c) {
+  const sh = S();
+  if (!sh.big) ensureValues();
+  const rows = sh.big ? sh.loaded.keys() : visibleRowIdx();
+  let maxLen = 4;
+  for (const r of rows) maxLen = Math.max(maxLen, cellDisplayText(r, c).length);
+  return Math.max(48, Math.min(420, Math.round(maxLen * 7.2 + 16)));
+}
 function cellClassAndStyle(td, r, c) {
   const sh = S();
   let text, cls = "cell", css = "";
@@ -1313,8 +1332,8 @@ function cellClassAndStyle(td, r, c) {
   }
 }
 
-function frozenTop(dIdx) {   // sticky offset: letters row (23px) + rows above
-  return 23 + dIdx * 25;
+function frozenTop(dIdx) {   // sticky offset: letters row + rows above
+  return HEAD_H + dIdx * ROW_H;
 }
 function makeRowTr(r, cols, dIdx) {
   const sh = S();
@@ -1392,10 +1411,7 @@ function renderGrid() {
   tds = new Map();
   const cols = nCols();
 
-  const vis = sh.big
-    ? [...Array(sh.loaded.length).keys()]
-    : visibleRowIdx().slice(0, renderLimit === Infinity ? undefined : renderLimit);
-  const totalVis = sh.big ? sh.loaded.length : visibleRowIdx().length;
+  const vis = sh.big ? [...Array(sh.loaded.length).keys()] : visibleRowIdx();
 
   const table = document.createElement("table");
   const colgroup = document.createElement("colgroup");
@@ -1442,21 +1458,10 @@ function renderGrid() {
     const grip = document.createElement("div");
     grip.className = "colResize";
     grip.title = "Drag to resize · double-click to auto-fit";
-    grip.addEventListener("mousedown", (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
-      colResizing = { c, colEl, table, startX: e.clientX,
-                      startW: parseFloat(colEl.style.width) || 90, grip };
-      grip.classList.add("on");
-    });
-    grip.addEventListener("click", (e) => e.stopPropagation());
+    attachColResizeGrip(grip, c, colgroup, table);
     grip.addEventListener("dblclick", (e) => {
       e.preventDefault(); e.stopPropagation();
-      let maxLen = 4;
-      for (const [key, td] of tds) {
-        if (key.endsWith("," + c)) maxLen = Math.max(maxLen, td.textContent.length);
-      }
-      const w = Math.max(48, Math.min(420, Math.round(maxLen * 7.2 + 16)));
+      const w = autofitWidth(c);
       colgroup.querySelector(`col[data-col="${c}"]`).style.width = w + "px";
       syncTableWidth();
       sh.colw[c] = w;
@@ -1478,33 +1483,108 @@ function renderGrid() {
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  vis.forEach((r, dIdx) => tbody.appendChild(makeRowTr(r, cols, dIdx)));
+  const freeze = Math.min(sh.freeze || 0, vis.length);
+  for (let d = 0; d < freeze; d++) tbody.appendChild(makeRowTr(vis[d], cols, d));
+  const padTop = makePadRow(cols), padBot = makePadRow(cols);
+  tbody.append(padTop, padBot);
   table.appendChild(tbody);
   wrap.innerHTML = "";
   wrap.appendChild(table);
   wrap._tbody = tbody;
+  vgrid = { vis, cols, freeze, tbody, padTop, padBot, pos: null, start: freeze, end: freeze, raf: null };
+  updateViewport(true);
 
   if (sh.big) {
     const bar = document.createElement("div"); bar.id = "moreBar";
     wrap.appendChild(bar);
     updateMoreBar();
-  } else if (totalVis > vis.length) {
-    const b = document.createElement("button");
-    b.className = "action"; b.style.margin = "10px";
-    b.textContent = `Show all ${fmtInt(totalVis)} rows (rendering ${fmtInt(vis.length)})`;
-    b.onclick = () => { renderLimit = Infinity; renderGrid(); };
-    wrap.appendChild(b);
   }
   updateChip();
   paintSel();
 }
 
+// ---- row virtualization ----------------------------------------------------
+// The tbody only ever holds the rows near the viewport (plus frozen rows),
+// between two spacer rows sized to stand in for everything unmounted. Every
+// layout/paint the grid triggers — scrolling, a column resize, a repaint —
+// stays proportional to the viewport instead of to the loaded row count.
+const ROW_H = 24, HEAD_H = 23, OVERSCAN = 40;   // td.cell is 24px tall incl. border (border-box)
+let vgrid = null;
+function makePadRow(cols) {
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = Math.min(cols + 1, 1000);
+  td.style.cssText = "padding:0;border:0;height:0";
+  tr.appendChild(td);
+  tr._pad = td;
+  return tr;
+}
+function updateViewport(force) {
+  if (!vgrid) return;
+  const wrap = $("gridWrap");
+  const { vis, cols, freeze, tbody, padTop, padBot } = vgrid;
+  const total = vis.length;
+  const first = Math.max(freeze, Math.floor((wrap.scrollTop - HEAD_H) / ROW_H));
+  const last = Math.min(total, Math.ceil((wrap.scrollTop - HEAD_H + wrap.clientHeight) / ROW_H) + 1);
+  if (!force && first >= vgrid.start && last <= vgrid.end) return;
+  // Remounting recycles every row between the pads — including the one hosting
+  // an open editor. Commit it first, the same thing clicking away does; skipping
+  // the remount instead (the obvious way to protect the editor) left the spacer
+  // pads showing as blank bands until the edit ended. OVERSCAN means ordinary
+  // wheel nudges while editing never get this far. commitEdit runs its own
+  // updateViewport(false), enough for a plain scroll but not for a FORCED update
+  // (appendRows grew vis, so the spacers are stale and the new rows aren't
+  // scrollable yet), so re-run with the original flag against fresh state.
+  if (editing && editing.input.isConnected) { commitEdit(); updateViewport(force); return; }
+  const start = Math.max(freeze, first - OVERSCAN);
+  const end = Math.min(total, Math.max(start, last) + OVERSCAN);
+  for (let tr = padTop.nextSibling; tr && tr !== padBot; ) {
+    const next = tr.nextSibling;
+    if (tr._vr !== undefined) for (let c = 0; c < cols; c++) tds.delete(tr._vr + "," + c);
+    tr.remove();
+    tr = next;
+  }
+  padTop._pad.style.height = (start - freeze) * ROW_H + "px";
+  padBot._pad.style.height = (total - end) * ROW_H + "px";
+  const frag = document.createDocumentFragment();
+  for (let d = start; d < end; d++) {
+    const tr = makeRowTr(vis[d], cols, d);
+    tr._vr = vis[d];
+    frag.appendChild(tr);
+  }
+  tbody.insertBefore(frag, padBot);
+  vgrid.start = start; vgrid.end = end;
+  paintSelCells();
+}
+function displayIdx(r) {   // sheet row index -> position among rendered rows
+  if (!vgrid) return -1;
+  if (!vgrid.pos) { vgrid.pos = new Map(); vgrid.vis.forEach((rr, i) => vgrid.pos.set(rr, i)); }
+  const d = vgrid.pos.get(r);
+  return d === undefined ? -1 : d;
+}
+function scrollCellIntoView(r, c) {
+  let td = tdAt(r, c);
+  if (!td && vgrid) {
+    const d = displayIdx(r);
+    if (d >= vgrid.freeze) {
+      const wrap = $("gridWrap");
+      const band = HEAD_H + vgrid.freeze * ROW_H;   // sticky header + frozen rows
+      const y = HEAD_H + d * ROW_H;
+      if (y < wrap.scrollTop + band) wrap.scrollTop = y - band;
+      else if (y + ROW_H > wrap.scrollTop + wrap.clientHeight) wrap.scrollTop = y + ROW_H - wrap.clientHeight;
+      updateViewport(false);
+      td = tdAt(r, c);
+    }
+  }
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
 function appendRows(from) {
   const sh = S();
-  const wrap = $("gridWrap");
-  if (!wrap._tbody) { renderGrid(); return; }
-  const cols = nCols();
-  for (let r = from; r < sh.loaded.length; r++) wrap._tbody.appendChild(makeRowTr(r, cols, r));
+  if (!$("gridWrap")._tbody || !vgrid) { renderGrid(); return; }
+  for (let r = from; r < sh.loaded.length; r++) vgrid.vis.push(r);
+  vgrid.pos = null;
+  updateViewport(true);
   updateMoreBar();
   updateChip();
 }
@@ -1553,7 +1633,7 @@ function paint() {
   paintSel();
 }
 
-function paintSel() {
+function paintSelCells() {   // the DOM half of paintSel — rerun after a remount
   if (!book) return;
   const { r1, c1, r2, c2, ar, ac } = normSel();
   document.querySelectorAll("td.sel, td.anchor").forEach((td) => td.classList.remove("sel", "anchor"));
@@ -1574,6 +1654,12 @@ function paintSel() {
   document.querySelectorAll(`th[data-col]`).forEach((th) => {
     const c = +th.dataset.col; if (c >= c1 && c <= c2) th.classList.add("hl");
   });
+}
+
+function paintSel() {
+  if (!book) return;
+  paintSelCells();
+  const { r1, c1, r2, c2, ar, ac } = normSel();
   $("nameBox").value = r1 === r2 && c1 === c2 ? refName(ar, ac) : `${refName(r1, c1)}:${refName(r2, c2)}`;
   if (!editing) $("fxInput").value = raw(ar, ac);
   const sh = S();
@@ -1625,8 +1711,7 @@ function setSel(r1, c1, r2 = r1, c2 = c1, ar = r1, ac = c1) {
   commitEdit();
   sel = { ar, ac, r1, c1, r2, c2 };
   paintSel();
-  const td = tds.get(ar + "," + ac);
-  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+  scrollCellIntoView(ar, ac);
 }
 
 function renderTabs() {
@@ -1673,7 +1758,7 @@ function renderTabs() {
 function switchSheet(i) {
   commitEdit();
   closeFilterMenu();   // an open menu would apply its filter to the new sheet
-  cur = i; renderLimit = RENDER_CAP; invalidateValues();
+  cur = i; invalidateValues();
   sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
   fused.params.set("sheet", book.sheets[i].name);
   renderTabs(); renderGrid();
@@ -1714,6 +1799,11 @@ function fetchRows(reset) {
 }
 
 $("gridWrap").addEventListener("scroll", () => {
+  if (vgrid && !vgrid.raf) {
+    vgrid.raf = requestAnimationFrame(() => {
+      if (vgrid) { vgrid.raf = null; updateViewport(false); }
+    });
+  }
   if (!book || !isBig()) return;
   const w = $("gridWrap");
   if (w.scrollTop + w.clientHeight > w.scrollHeight - 500) {
@@ -1768,6 +1858,7 @@ function commitEdit() {
     setCell(r, c, input.value);
     markDirty();
   }
+  updateViewport(false);   // catch up on any scrolling deferred while editing
   paint();
   $("gridWrap").focus();
 }
@@ -1775,6 +1866,7 @@ function cancelEdit() {
   if (!editing) return;
   acClose();
   editing = null;
+  updateViewport(false);
   paint();
   $("gridWrap").focus();
 }
@@ -1783,8 +1875,7 @@ function move(dr, dc, extend = false) {
   const C = Math.max(0, Math.min(nCols() - 1, (extend ? sel.c2 : sel.ac) + dc));
   if (extend) { sel.r2 = R; sel.c2 = C; paintSel(); }
   else setSel(R, C);
-  const td = tdAt(R, C);
-  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+  scrollCellIntoView(R, C);
 }
 
 // ================= drag-fill (fill handle) =================
@@ -1857,7 +1948,128 @@ function performFill(base, tgt) {
   paint();
 }
 let fillDrag = null;   // { base, tgt|null }
-let colResizing = null; // { c, colEl, startX, startW, grip }
+let colResizing = null; // { c, colEl, table, grip, startX, startW, wrapRect, raf, pendingX, pointerId }
+let resizeGuide = null;
+const MIN_COL_W = 40;
+function resizeWidthFor(x) {
+  return Math.max(MIN_COL_W, Math.round(colResizing.startW + x - colResizing.startX));
+}
+function showResizeGuide(x) {
+  if (!resizeGuide) {
+    resizeGuide = document.createElement("div");
+    resizeGuide.id = "colResizeGuide";
+    resizeGuide.style.cssText =
+      `position:fixed; top:${colResizing.wrapRect.top}px; height:${colResizing.wrapRect.height}px; ` +
+      `z-index:50; pointer-events:none;`;
+    document.body.appendChild(resizeGuide);
+  }
+  // Track the edge the column will actually land on, not the raw cursor: past
+  // the minimum width the cursor keeps moving but the edge doesn't, and a
+  // guide that kept following would promise a width release won't deliver.
+  resizeGuide.style.left =
+    (colResizing.startX - colResizing.startW + resizeWidthFor(x)) + "px";
+}
+function hideResizeGuide() {
+  if (resizeGuide) { resizeGuide.remove(); resizeGuide = null; }
+}
+function clearColResize() {
+  const { grip, pointerId, raf } = colResizing;
+  if (raf) cancelAnimationFrame(raf);
+  // Null the state before releasing: the release fires lostpointercapture
+  // synchronously, and that handler must see no drag in progress rather than
+  // act on whatever comes next. Releasing at all matters because a drag
+  // dropped mid-flight (a second pointer starting its own) would otherwise
+  // leave capture armed on this grip, and its later loss would end the new one.
+  colResizing = null;
+  grip.classList.remove("on");
+  hideResizeGuide();
+  try { grip.releasePointerCapture(pointerId); } catch { /* never captured */ }
+}
+function finishColResize(x) {
+  const { c, colEl, table } = colResizing;
+  const w = resizeWidthFor(x);
+  clearColResize();
+  colEl.style.width = w + "px";
+  table._syncWidth();
+  S().colw = S().colw || {};
+  S().colw[c] = w;
+  // Resizing stays available read-only (viewing convenience), but must not
+  // flip the dirty flag — widths only persist via a save that can't happen.
+  if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
+}
+// Column widths aren't applied live while dragging: table-layout:fixed with
+// sticky headers means every width write reflows the whole table (cheap now
+// that the tbody is virtualized, but still pointless work per frame). During
+// the drag we only move a position:fixed guide line (outside the table,
+// so no reflow); its geometry is captured once at drag start and never
+// re-read mid-drag (a getBoundingClientRect() read forces the same layout
+// flush a write would). The real width, and the one expensive reflow, happen
+// exactly once, when the pointer is released.
+//
+// Pointer Events (not Mouse Events) so touch/pen drags work too. Capture is
+// requested best-effort — it keeps events flowing to the grip even over other
+// elements or outside this iframe — but the document-level listeners below are
+// what actually drive the drag, since setPointerCapture throws for a pointer
+// the browser isn't actively tracking and must never be the only path.
+//
+// This template runs in an iframe, so a release outside the frame can drop the
+// pointerup entirely. The drag therefore commits from the last position it
+// tracked (`pendingX`), never from a terminating event's coordinates, and any
+// of pointerup / pointercancel / lostpointercapture / window blur / a
+// pointermove with no button held will end it. Otherwise a stranded drag stays
+// armed and an unrelated later release resizes from meaningless coordinates.
+function attachColResizeGrip(grip, c, colgroup, table) {
+  grip.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    if (colResizing) clearColResize();   // a stranded drag: drop it, don't commit
+    const colEl = colgroup.querySelector(`col[data-col="${c}"]`);
+    colResizing = {
+      c, colEl, table, grip, pointerId: e.pointerId,
+      startX: e.clientX, pendingX: e.clientX,
+      startW: parseFloat(colEl.style.width) || 90,
+      wrapRect: $("gridWrap").getBoundingClientRect(),
+      raf: null,
+    };
+    grip.classList.add("on");
+    try { grip.setPointerCapture(e.pointerId); } catch { /* not a live pointer */ }
+    showResizeGuide(e.clientX);
+  });
+  grip.addEventListener("lostpointercapture", (e) => {
+    if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+    endColResize();
+  });
+  grip.addEventListener("click", (e) => e.stopPropagation());
+}
+document.addEventListener("pointermove", (e) => {
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  // Button already up: the release happened somewhere we never saw it.
+  if (!(e.buttons & 1)) { endColResize(); return; }
+  colResizing.pendingX = e.clientX;
+  if (colResizing.raf) return;
+  colResizing.raf = requestAnimationFrame(() => {
+    if (!colResizing) return;
+    colResizing.raf = null;
+    showResizeGuide(colResizing.pendingX);
+  });
+});
+function endColResize() {
+  if (colResizing) finishColResize(colResizing.pendingX);
+}
+// Only the pointer that started the drag may end it: with touch/pen in play a
+// second finger going up or being cancelled would otherwise commit the width
+// early and drop the guide mid-drag. A window blur has no pointer of its own,
+// so it ends whatever is active.
+document.addEventListener("pointerup", (e) => {
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  colResizing.pendingX = e.clientX;
+  endColResize();
+});
+document.addEventListener("pointercancel", (e) => {
+  if (!colResizing || e.pointerId !== colResizing.pointerId) return;
+  endColResize();
+});
+window.addEventListener("blur", endColResize);
 function fillPreview(r, c) {
   const b = fillDrag.base;
   const rowOut = r > b.r2 ? r - b.r2 : r < b.r1 ? r - b.r1 : 0;
@@ -1988,7 +2200,7 @@ async function load() {
     normalizeLoaded(res);
     mtime = res.mtime;
     setReadOnly(res.editable === false, res.readonly_message || "", res.readonly_tooltip || "");
-    undoStack = []; redoStack = []; renderLimit = RENDER_CAP; invalidateValues();
+    undoStack = []; redoStack = []; invalidateValues();
     const want = fused.params.get("sheet");
     cur = Math.max(0, book.sheets.findIndex((s2) => s2.name === want));
     sel = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
@@ -2462,7 +2674,6 @@ async function act(name) {
       const sh = S();
       sh.filterOn = !sh.filterOn;
       closeFilterMenu();
-      renderLimit = RENDER_CAP;
       if (!sh.filterOn) {   // turning filters off clears every column filter
         const had = activeFilters(sh).length;
         sh.filterQ = []; sh.filterVal = [];
@@ -2572,23 +2783,7 @@ $("gridWrap").addEventListener("mousemove", (e) => {
   if (!dragging) return;
   if (td) { sel.r2 = +td.dataset.r; sel.c2 = +td.dataset.c; paintSel(); }
 });
-document.addEventListener("mousemove", (e) => {
-  if (!colResizing) return;
-  const w = Math.max(40, Math.round(colResizing.startW + e.clientX - colResizing.startX));
-  colResizing.colEl.style.width = w + "px";
-  colResizing.table._syncWidth();
-});
 document.addEventListener("mouseup", () => {
-  if (colResizing) {
-    const { c, colEl, grip } = colResizing;
-    grip.classList.remove("on");
-    S().colw = S().colw || {};
-    S().colw[c] = parseFloat(colEl.style.width) || 90;
-    // Resizing stays available read-only (viewing convenience), but must not
-    // flip the dirty flag — widths only persist via a save that can't happen.
-    if (!isBig() && !readOnly) markDirty();   // widths persist into the xlsx on save
-    colResizing = null;
-  }
   dragging = false;
   if (fillDrag) {
     const { base, tgt } = fillDrag;
@@ -2800,7 +2995,6 @@ $("nameBox").addEventListener("keydown", (e) => {
       setSel(ref.r, Math.min(ref.c, nCols() - 1));
     } else {
       ensureRect(S(), ref.r + 1, ref.c + 1);
-      if (ref.r >= renderLimit) renderLimit = Infinity;
       invalidateValues(); renderGrid(); setSel(ref.r, ref.c);
     }
   }

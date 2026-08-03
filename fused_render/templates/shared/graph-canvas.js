@@ -197,7 +197,11 @@
        * so sizing the block to the canvas is what lands that zoom near 1 —
        * which is what keeps node labels above their visibility threshold. */
       var width = rect.width || 400;
-      var usable = Math.max(2 * SLOT_MIN, width - Math.min(GUTTER, width * 0.28));
+      // The gutter is only reserved when band names will actually be drawn —
+      // one band means no legend (see the draw pass), so a single-folder
+      // neighbourhood gets the full width to lay out in.
+      var gutterPx = keys.length > 1 ? Math.min(GUTTER, width * 0.28) : 0;
+      var usable = Math.max(2 * SLOT_MIN, width - gutterPx);
 
       function slotOf(node) {
         return Math.max(SLOT_MIN, (node._w || 0) + SLOT_PAD);
@@ -318,7 +322,7 @@
     // and capped as a fraction of the width so a narrow sidebar is not mostly
     // gutter.
     function gutterFor(rect) {
-      if (!bands.order.length) return 0;
+      if (bands.order.length < 2) return 0;
       return Math.min(GUTTER, rect.width * 0.28);
     }
 
@@ -399,12 +403,13 @@
        * whole strip is one folder" everywhere the strip is, where the lone
        * hairlines read as stray edges once real edges curve past them.
        *
-       * Fills only when there is more than one band; the NAME is drawn even
-       * for a single one. "Every note here is in widgets/specs/" is the answer
-       * to the question this layout exists to answer, and withholding it
-       * exactly when the neighbourhood happens to be one folder deep is
-       * withholding it in the common case. */
-      var named = bands.order.length > 0;
+       * Fills AND names only when there is more than one band. With a single
+       * band the vertical axis distinguishes nothing, so the legend is one
+       * folder name repeated down the left edge — it labels the whole panel, not
+       * a band within it, and the breadcrumb already says where you are. Drop
+       * it and the gutter it reserved (gutterFor), and the graph gets the width
+       * back. */
+      var named = bands.order.length > 1;
       if (bands.order.length > 1) {
         ctx.save();
         ctx.fillStyle = fg || "#888";

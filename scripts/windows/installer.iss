@@ -10,7 +10,6 @@
 #ifndef OutputBaseName
   #define OutputBaseName "FusedRenderPy-setup"
 #endif
-
 ; FusedRenderPy: experiment/python-supervisor's own product identity — a
 ; distinct exe name, install dir, ProgID prefix, and AppId GUID from the
 ; shipping "FusedRender" product (Rust supervisor, feat/windows-desktop-
@@ -78,14 +77,14 @@ Type: files; Name: "{group}\FusedRender (Python Supervisor).lnk"
 Type: files; Name: "{group}\Uninstall FusedRender (Python Supervisor).lnk"
 
 [Icons]
-Name: "{group}\FusedRender"; Filename: "{app}\payload\{#ExeName}"; IconFilename: "{#InstalledIcon}"; AppUserModelID: "{#AppUserModelId}"
+Name: "{group}\FusedRender"; Filename: "{app}\payload\{#ExeName}"; WorkingDir: "{localappdata}"; IconFilename: "{#InstalledIcon}"; AppUserModelID: "{#AppUserModelId}"
 Name: "{group}\Uninstall FusedRender"; Filename: "{uninstallexe}"
 
 [Registry]
 #include BundleDir + "\registry.iss"
 
 [Run]
-Filename: "{app}\payload\{#ExeName}"; Description: "Launch FusedRender"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\payload\{#ExeName}"; WorkingDir: "{localappdata}"; Description: "Launch FusedRender"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
@@ -95,6 +94,10 @@ Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\temp"
 Type: filesandordirs; Name: "{localappdata}\FusedRender\Desktop\logs"
 
 [Code]
+var
+  PayloadPrepared: Boolean;
+  PayloadActivated: Boolean;
+
 function NextVersionPart(var Version: String): Integer;
 var
   Separator: Integer;
@@ -142,7 +145,18 @@ function InitializeSetup(): Boolean;
 var
   InstalledVersion: String;
 begin
-  Result := True;
+  { Older updaters launch Setup without lpDirectory, so Setup inherits the
+    running app's payload\ working directory and locks the very directory the
+    upgrade must rename. Release that inherited directory before doing anything
+    else. Newer updaters also pass a safe lpDirectory, but the installer must
+    remain self-sufficient for upgrades from already-shipped versions. }
+  Result := SetCurrentDir(ExpandConstant('{tmp}'));
+  if not Result then
+  begin
+    MsgBox('Setup could not switch to its temporary working directory.',
+      mbError, MB_OK);
+    Exit;
+  end;
   if RegQueryStringValue(HKCU, '{#UninstallKey}', 'DisplayVersion', InstalledVersion) and
     (CompareVersions('{#AppVersion}', InstalledVersion) < 0) then
   begin
@@ -219,6 +233,37 @@ begin
   end;
 end;
 
+function PreparePayloadForInstall(): String;
+var
+  CurrentPayload: String;
+  PreviousPayload: String;
+begin
+  Result := '';
+  CurrentPayload := ExpandConstant('{app}\payload');
+  PreviousPayload := ExpandConstant('{app}\previous');
+  if not DirExists(CurrentPayload) then
+    Exit;
+
+  { Move the installed tree before Inno begins applying files or metadata. A
+    lock is therefore a PrepareToInstall failure (exit code 7), not an
+    AfterInstall expression error that Inno reports but then continues past. }
+  if DirExists(PreviousPayload) then
+  begin
+    DelTree(PreviousPayload, True, True, True);
+    if DirExists(PreviousPayload) then
+    begin
+      Result := 'The previous FusedRender payload could not be removed.';
+      Exit;
+    end;
+  end;
+  if not RenameWithRetry(CurrentPayload, PreviousPayload) then
+  begin
+    Result := 'The installed FusedRender payload could not be moved. Exit it from the tray and retry setup.';
+    Exit;
+  end;
+  PayloadPrepared := True;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
@@ -231,8 +276,22 @@ begin
     if not ShutdownSupervisor() then
       Result := 'FusedRender could not be stopped. Exit it from the tray and retry setup.'
     else
+    begin
       KillPayloadStragglers();
+      Result := PreparePayloadForInstall();
+    end;
   end;
+end;
+
+procedure RestorePreviousPayload();
+var
+  CurrentPayload: String;
+  PreviousPayload: String;
+begin
+  CurrentPayload := ExpandConstant('{app}\payload');
+  PreviousPayload := ExpandConstant('{app}\previous');
+  if not DirExists(CurrentPayload) and DirExists(PreviousPayload) then
+    RenameWithRetry(PreviousPayload, CurrentPayload);
 end;
 
 procedure ActivatePayload();
@@ -252,18 +311,22 @@ begin
     not FileExists(NewPayload + '\python\Lib\site-packages\fused_render\__init__.py') or
     not FileExists(NewPayload + '\python\Lib\site-packages\win32\win32job.pyd') or
     not FileExists(NewPayload + '\python\Lib\site-packages\fused_render\static\shell-dist\index.html') then
+  begin
+    RestorePreviousPayload();
     RaiseException('The new FusedRender payload is incomplete.');
-  DelTree(PreviousPayload, True, True, True);
+  end;
+  { Fresh installs have no prepared payload. Keep the old fallback for repair
+    installs whose tree appeared between PrepareToInstall and extraction. }
   if DirExists(CurrentPayload) and not RenameWithRetry(CurrentPayload, PreviousPayload) then
     RaiseException('The installed FusedRender payload could not be moved.');
   if not RenameWithRetry(NewPayload, CurrentPayload) then
   begin
     { Roll back with the same retry: the compensation rename races the identical
       transient locks, so a plain RenameFile here could leave no payload dir. }
-    if DirExists(PreviousPayload) then
-      RenameWithRetry(PreviousPayload, CurrentPayload);
+    RestorePreviousPayload();
     RaiseException('The new FusedRender payload could not be activated.');
   end;
+  PayloadActivated := True;
 end;
 
 function InitializeUninstall(): Boolean;
@@ -313,9 +376,21 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    DelTree(ExpandConstant('{app}\previous'), True, True, True);
-    InstallWinFsp();
+    if PayloadActivated then
+    begin
+      DelTree(ExpandConstant('{app}\previous'), True, True, True);
+      InstallWinFsp();
+    end;
   end;
+end;
+
+procedure DeinitializeSetup();
+begin
+  { Cancel, extraction failure, or a failed activation must not strand the old
+    install under previous\. RecoverPayload on the next setup run is the second
+    safety net for hard process termination or power loss. }
+  if PayloadPrepared and not PayloadActivated then
+    RestorePreviousPayload();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

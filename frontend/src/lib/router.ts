@@ -58,7 +58,21 @@ export function urlForFsPath(fsPath: string, search?: string): string {
 }
 
 export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
-  // Navigating between files/dirs drops old view params (fresh query string).
+  // Navigating between files/dirs drops old view params (fresh query string) —
+  // EXCEPT `preview` (the listing's preview-pane visibility), which is sticky
+  // across DIRECTORY navigation: the pane is workspace layout the user
+  // toggled, so moving between folders must not silently close (or open) it.
+  // Deliberately NOT carried onto file targets: `preview` is an unreserved
+  // name, and the runtime's ancestor-climb (runtime.js D72 globals) makes
+  // every shell-URL param readable from a template iframe — a file view
+  // always hosts one, so carrying it there would shadow a user template's own
+  // `preview` param. Going back (history) or re-entering a folder restores the
+  // pane from that entry's URL / the folder's viewstate instead.
+  const preview = new URLSearchParams(location.search).get("preview");
+  const search =
+    opts?.isDir === true && preview !== null
+      ? "?preview=" + encodeURIComponent(preview)
+      : "";
   // `opts.isDir` is a nav hint (the clicked listing row / breadcrumb already
   // knows whether the target is a directory): it rides in history.state so the
   // destination view can paint the right scaffold — a directory's listing plus
@@ -67,7 +81,7 @@ export function navigate(fsPath: string, opts?: { isDir?: boolean }): void {
   // simply absent (null) for callers that don't know, which falls back to a
   // plain header scaffold. See navHintIsDir below.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
-  history.pushState(state, "", urlForFsPath(fsPath));
+  history.pushState(state, "", urlForFsPath(fsPath, search));
   notifyNavigate();
 }
 

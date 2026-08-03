@@ -422,6 +422,7 @@ export default function Sidebar({ config }: SidebarProps) {
   // True only while the handle is captured — used to suppress the collapse
   // transition and text selection mid-drag.
   const [resizing, setResizing] = useState(false);
+  // The "open a deployed app" clone dialog (footer entry, below).
   const dragRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
 
   // Double-press-to-collapse is detected manually here: preventDefault on
@@ -1076,18 +1077,31 @@ export default function Sidebar({ config }: SidebarProps) {
   return (
     <nav id="sidebar" style={{ flexBasis: sidebarWidth, width: sidebarWidth }}>
       <div className="sidebar-brand">
-        {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
-            follows .logo's color so it stays on the accent token. */}
-        <span className="logo">
-          <svg width="20" height="20" viewBox="0 0 233 233" fill="none" aria-hidden="true">
-            <path
-              d="M43.916 84.6995L80.0899 105.742M43.916 84.6995L80.0899 64.13M43.916 84.6995V126.548M80.0899 105.742L114.383 125.69C115.548 126.368 116.264 127.613 116.264 128.96V162.056C116.264 164.973 113.101 166.793 110.579 165.326L43.916 126.548M80.0899 105.742V182.862C80.0899 185.779 76.9269 187.598 74.405 186.131L45.7968 169.49C44.6324 168.813 43.916 167.567 43.916 166.22V126.548M80.0899 105.742L152.674 64.13M80.0899 64.13L114.4 44.6204C115.556 43.9629 116.973 43.961 118.131 44.6152L152.674 64.13M80.0899 64.13L150.785 104.659C151.955 105.329 153.392 105.327 154.559 104.652L183.353 88.0121C185.887 86.5475 185.869 82.883 183.321 81.4432L152.674 64.13"
-              stroke="currentColor"
-              strokeWidth="12"
-            />
-          </svg>
-        </span>{" "}
-        <span className="brand-title">fused-render</span>
+        {/* Logo + name are one click target that goes Home — the front door is
+            always one click away from anywhere. The collapse button stays its
+            own control outside the link. */}
+        <a
+          href="/"
+          className="brand-home-link"
+          title="Home"
+          onClick={(e) => {
+            e.preventDefault();
+            navigateUrl("/");
+          }}
+        >
+          {/* Fused cube mark (brand asset logo-black-bg-transparent.svg), stroke
+              follows .logo's color so it stays on the accent token. */}
+          <span className="logo">
+            <svg width="20" height="20" viewBox="0 0 233 233" fill="none" aria-hidden="true">
+              <path
+                d="M43.916 84.6995L80.0899 105.742M43.916 84.6995L80.0899 64.13M43.916 84.6995V126.548M80.0899 105.742L114.383 125.69C115.548 126.368 116.264 127.613 116.264 128.96V162.056C116.264 164.973 113.101 166.793 110.579 165.326L43.916 126.548M80.0899 105.742V182.862C80.0899 185.779 76.9269 187.598 74.405 186.131L45.7968 169.49C44.6324 168.813 43.916 167.567 43.916 166.22V126.548M80.0899 105.742L152.674 64.13M80.0899 64.13L114.4 44.6204C115.556 43.9629 116.973 43.961 118.131 44.6152L152.674 64.13M80.0899 64.13L150.785 104.659C151.955 105.329 153.392 105.327 154.559 104.652L183.353 88.0121C185.887 86.5475 185.869 82.883 183.321 81.4432L152.674 64.13"
+                stroke="currentColor"
+                strokeWidth="12"
+              />
+            </svg>
+          </span>{" "}
+          <span className="brand-title">fused-render</span>
+        </a>
         <span className="brand-version">v{config.version}</span>
         <button
           type="button"
@@ -1102,6 +1116,23 @@ export default function Sidebar({ config }: SidebarProps) {
         </button>
       </div>
       <div className="sidebar-section">
+        <a
+          href="/"
+          id="home-link"
+          className={"sidebar-item" + (location.pathname === "/" ? " active" : "")}
+          onClick={(e) => {
+            e.preventDefault();
+            navigateUrl("/");
+          }}
+        >
+          <span className="icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 10.5 12 3l9 7.5" />
+              <path d="M5 9.5V21h14V9.5" />
+            </svg>
+          </span>{" "}
+          Home
+        </a>
         <a href="#" id="fused-link" className="sidebar-item" onClick={onFusedClick}>
           <span className="icon"><FolderIcon /></span> Fused
         </a>
@@ -1215,7 +1246,8 @@ export default function Sidebar({ config }: SidebarProps) {
       {/* Preferences entry (SPEC §20) — pinned to the sidebar's bottom edge
           (margin-top: auto), deliberately unobtrusive: a muted gear row that
           navigates to the /view/_prefs sentinel. Three equal columns —
-          Templates, Mounts, Preferences. */}
+          Templates, Mounts, Preferences. (Home lives at the sidebar's top,
+          not here — the footer was cramped at four.) */}
       <div className="sidebar-footer">
         <button
           type="button"
@@ -1236,6 +1268,9 @@ export default function Sidebar({ config }: SidebarProps) {
           </span>
           <span className="prefs-label">Templates</span>
         </button>
+        {/* Open a deployed app (023 §8.3): paste a deployed page's URL and clone it into
+            the Fused folder. A modal rather than a view — it is a one-shot action with a
+            confirm step, not a place you navigate to and come back to. */}
         {/* PROTOTYPE: mounts entry — remote mounts, /view/_mounts. */}
         <button
           type="button"

@@ -726,7 +726,8 @@ _DETACH = (
 
 
 def _start(file: str, message: str, session_id: str, model: str,
-           effort: str, permission_mode: str = "") -> dict:
+           effort: str, permission_mode: str = "",
+           message_via_stdin: bool = False) -> dict:
     file = os.path.abspath(file)
     if not os.path.isfile(file):
         return {"error": f"target file not found: {file}"}
@@ -745,7 +746,24 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
-    cmd = [_claude_bin(), "-p", message,
+    # `message_via_stdin` keeps the user's text out of argv entirely: the
+    # message is written to a file in the run dir as one stream-json user
+    # line, and the detached process reads it as its stdin (EOF after the one
+    # message, so -p still exits after the turn). The apps API uses this — it
+    # runs inside the server process, where argv is visible to every local
+    # user via `ps`, unlike the template path where the message came from the
+    # page's own runPython call.
+    if message_via_stdin:
+        with _private_open(os.path.join(run_dir, "stdin.jsonl")) as f:
+            json.dump({"type": "user", "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": message}]}}, f)
+            f.write("\n")
+        message_argv = ["-p", "--input-format", "stream-json"]
+    else:
+        message_argv = ["-p", message]
+
+    cmd = [_claude_bin(), *message_argv,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
            "--append-system-prompt", _system_prompt(file),
@@ -776,12 +794,18 @@ def _start(file: str, message: str, session_id: str, model: str,
         json.dump({"file": file, "message": message,
                    "resumed_from": session_id, "mode": mode}, f)
 
-    with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
-         _private_open(os.path.join(run_dir, "err.log")) as err:
-        proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                cwd=os.path.dirname(file),
-                                stdin=subprocess.DEVNULL,
-                                **_DETACH)
+    stdin_path = os.path.join(run_dir, "stdin.jsonl")
+    stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    try:
+        with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
+             _private_open(os.path.join(run_dir, "err.log")) as err:
+            proc = subprocess.Popen(cmd, stdout=out, stderr=err,
+                                    cwd=os.path.dirname(file),
+                                    stdin=stdin_fh or subprocess.DEVNULL,
+                                    **_DETACH)
+    finally:
+        if stdin_fh is not None:
+            stdin_fh.close()
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}

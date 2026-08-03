@@ -1152,16 +1152,19 @@ def test_new_template_scaffolds_and_binds(ctx):
     assert body["name"] == "myview"
     assert body["path"] == os.path.join(os.path.abspath(_server_templates.USER_TEMPLATES_DIR), "myview")
     assert body["bindings"] == [".myext", ".foo.bar"]
-    # Starter kit was copied in — the required file plus the optional reader,
-    # authoring guide, and the two canonical skills (resolved from the repo
-    # skills/ dir here, since tests run from an editable/source checkout).
+    # Starter kit was copied in — the required file plus the optional reader
+    # and authoring guide. No .claude/ of its own (D185): the canonical skills
+    # go to Claude Code's user-level skills dir instead (CLAUDE_CONFIG_DIR is
+    # conftest-redirected for the whole run).
     folder = ctx.udir / "myview"
     assert (folder / "template.html").is_file()
     assert (folder / "reader.py").is_file()
     assert (folder / "CLAUDE.md").is_file()
-    skills = folder / ".claude" / "skills"
-    assert (skills / "fused-render-authoring" / "SKILL.md").is_file()
-    assert (skills / "fused-render-custom-templates" / "SKILL.md").is_file()
+    assert not (folder / ".claude").exists()
+    from fused_render.user_skills import SKILLS, claude_skills_dir
+
+    for skill in SKILLS:
+        assert os.path.isfile(os.path.join(claude_skills_dir(), skill, "SKILL.md"))
     # Both extensions are brand new keys (no core or user binding yet), so the
     # new template is the whole list — appending onto nothing.
     reg = ctx.read_registry()

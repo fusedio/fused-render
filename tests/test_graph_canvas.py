@@ -266,11 +266,11 @@ def test_notes_are_banded_by_folder_shallowest_first():
     assert (a - top) == (c - a)
 
 
-def test_a_single_folder_graph_is_one_centred_row_that_still_says_the_folder():
-    # One folder is one row, centred where the free layout put it. Its NAME is
-    # still drawn: "these are all in <folder>" is the answer this layout exists
-    # to give, and a one-folder neighbourhood is the common case, not an excuse
-    # to withhold it.
+def test_a_single_folder_graph_is_one_centred_row_with_no_band_name():
+    # One folder is one row, centred where the free layout put it, and NO band
+    # name: with a single band the y axis distinguishes nothing, so the legend
+    # would be one folder name labelling the whole panel rather than a band
+    # within it — the breadcrumb already says that. Only node labels are drawn.
     got = _run("""
       g.setData({ focus: null, edges: [], nodes: [
         { id: "docs/a.md", kind: "note", label: "a", dir: "docs", path: "/v/docs/a.md", degree: 0 },
@@ -279,7 +279,27 @@ def test_a_single_folder_graph_is_one_centred_row_that_still_says_the_folder():
     """)
     shot = got["probe"][0]
     assert [y for _x, y in shot["arcs"]] == [200, 200]   # canvas is 400x400
-    assert [t for t, _x, _y in shot["texts"]] == ["a", "b", "docs/"]
+    assert [t for t, _x, _y in shot["texts"]] == ["a", "b"]
+
+
+def test_a_single_band_lays_out_across_the_reclaimed_name_gutter():
+    """The left gutter exists only to hold band names, so a nameless single-band
+    graph must stop reserving it — the lane width is what that space buys.
+
+    Two 168px labels (slots 186 each, 372 total) fit one lane of the full 400px
+    canvas but not the 308px left after the gutter, so with the gutter still
+    reserved these two same-folder notes wrapped onto two lanes for a legend
+    that is no longer drawn.
+    """
+    got = _run("""
+      globalThis.LABEL_W = (t) => t.length * 12;   // 14 chars -> 168px
+      g.setData({ focus: null, edges: [], nodes: [
+        { id: "docs/a.md", kind: "note", label: "aaaaaaaaaaaaaa", dir: "docs", path: "/v/a.md", degree: 0 },
+        { id: "docs/b.md", kind: "note", label: "bbbbbbbbbbbbbb", dir: "docs", path: "/v/b.md", degree: 0 }] });
+      probe.push(snapshot().arcs);
+    """)
+    ys = [y for _x, y in got["probe"][0]]
+    assert ys[0] == ys[1]   # one lane, not two
 
 
 def test_each_band_is_labelled_with_its_folder():

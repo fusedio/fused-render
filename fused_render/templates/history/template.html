@@ -519,6 +519,12 @@
           content: { type: "string" },
           createdAt: { type: "number" },
           resolved: { type: "boolean" },
+          // Set to 1 by annotate's Send to Claude handoff (§17). Declared so a
+          // hand-edited log gets the same type check as `resolved`; NOT surfaced
+          // as a timeline label, because Reopen clears it by removing the key
+          // and absence never deletes here — the stored flag can outlive the
+          // truth, and a label that lies is worse than no label.
+          sent: { type: "number" },
           view: { type: "string" },
           anchorPath: { type: "string" },
           recorded_at: { type: "number" },
