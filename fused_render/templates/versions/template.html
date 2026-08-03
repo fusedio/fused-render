@@ -46,14 +46,15 @@
     background: var(--bg);
   }
 
-  /* Left: the commit spine — deliberately low-detail (subject + when). */
+  /* Right: the commit spine — deliberately low-detail (subject + when). */
   #side {
     width: 260px;
     min-width: 200px;
     flex: none;
+    order: 2;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--line);
+    border-left: 1px solid var(--line);
     background: var(--surface);
   }
   #side-head {
@@ -99,8 +100,8 @@
     color: var(--on-accent);
   }
 
-  /* Right: toolbar + the app rendered at the selected revision. */
-  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  /* Left: toolbar + the app rendered at the selected revision. */
+  #main { flex: 1; order: 1; display: flex; flex-direction: column; min-width: 0; }
   #toolbar {
     flex: none;
     display: flex;
