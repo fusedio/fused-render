@@ -685,7 +685,11 @@
     targetPath = file;
     sidecarPath = await fused.sidecarPath(file);
   }
-  const targetName = targetPath.split("/").pop() || targetPath;
+  // targetPath can come back Windows-shaped (backslashes) from
+  // targetPathFromSidecarPath's reverse mapping, so split on either
+  // separator — a plain "/" split left the whole path as the "name" on
+  // Windows instead of just the file's basename (Bugbot).
+  const targetName = targetPath.split(/[\\/]/).pop() || targetPath;
   const dotAt = targetName.lastIndexOf(".");
   const nameStem = dotAt > 0 ? targetName.slice(0, dotAt) : targetName;
   const nameExt = dotAt > 0 ? targetName.slice(dotAt) : "";
