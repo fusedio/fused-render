@@ -1170,9 +1170,9 @@ def enrich_run(call: dict | None, *, resolved: str, params: dict, engine: str,
     call["truncated"] = bool(call.get("truncated")) or truncated
 
 
-def enrich_write(call: dict | None, *, path: str, content: str | None,
+def enrich_write(call: dict | None, *, path: str, content: str | bytes | None,
                  status: int, unauthorized: bool = False) -> None:
-    """Add /api/fs/write's detail: what was written and how big.
+    """Add /api/fs/write's and /api/fs/upload's detail: what was written, how big.
 
     The path and the byte count only — never the content. "What did my app just
     overwrite" is a real question; keeping a copy of every save is not an
@@ -1191,7 +1191,15 @@ def enrich_write(call: dict | None, *, path: str, content: str | None,
         return
     call["entrypoint"] = path
     call["entrypoint_name"] = os.path.basename(path) if path else None
-    call["bytes_written"] = len(content.encode("utf-8", "replace")) if isinstance(content, str) else None
+    # A text write measures its UTF-8 encoding; /api/fs/upload hands over the
+    # raw blob, whose own length IS the byte count with no encoding step in
+    # between. Either way it is a COUNT — the payload itself is never stored.
+    if isinstance(content, str):
+        call["bytes_written"] = len(content.encode("utf-8", "replace"))
+    elif isinstance(content, (bytes, bytearray)):
+        call["bytes_written"] = len(content)
+    else:
+        call["bytes_written"] = None
     if status == 409:
         call["outcome"] = "conflict"
     elif status == 403 and not unauthorized:

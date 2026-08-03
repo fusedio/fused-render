@@ -1248,3 +1248,302 @@ def test_an_arriving_heading_scrolls_without_moving_the_caret(source):
     jump = jump[:jump.index("\n    }")]
     assert "CM.EditorView.scrollIntoView(" in jump
     assert "selection" not in body + jump
+
+
+# --------------------------------------------- pasted and dropped media (MD-23)
+
+
+@pytest.fixture(scope="module")
+def media_helper(source):
+    """`insertMediaFiles`, the one path both paste and drop go through."""
+    body = source[source.index("async function insertMediaFiles("):]
+    return body[:body.index("\n    }\n")]
+
+
+@pytest.fixture(scope="module")
+def paste_handler(source):
+    body = source[source.index("const pasteHandler = CM.EditorView.domEventHandlers("):]
+    return body[:body.index("\n    });")]
+
+
+def test_paste_takes_the_bytes_off_the_clipboard(paste_handler):
+    # Browser "Copy image" puts image BYTES on the clipboard, not a file
+    # reference, so this is the ordinary paste event's `files` list — there is
+    # nothing to read off a path and no file picker involved.
+    assert "event.clipboardData" in paste_handler
+    assert ".files" in paste_handler
+    assert "insertMediaFiles(" in paste_handler
+
+
+def test_pasting_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    # Same posture as whenWritable (MD-1a/MD-15): bail and return false so the
+    # paste falls through to the browser default untouched, rather than
+    # half-running and failing at the write.
+    assert "state.readOnly" in paste_handler
+
+
+def test_media_lands_in_an_assets_folder_beside_the_note(media_helper):
+    # A shared assets/ next to the note, created on demand. The 409 "exists"
+    # from the second paste onwards is the expected case, not an error.
+    assert '"/assets"' in media_helper
+    assert "fused.mkdir(" in media_helper
+    assert 'err.type !== "exists"' in media_helper
+
+
+def test_the_file_name_is_a_timestamp_so_pastes_never_collide(source, media_helper):
+    # Timestamps mean no directory scan and no prompt before a paste lands.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert '"pasted-" + stamp' in name
+    # The stamp is only the STARTING point — see the collision test below for
+    # what makes it actually unique.
+    assert "freeMediaName(" in media_helper
+
+
+def test_the_upload_is_awaited_before_the_link_is_inserted(media_helper):
+    # Order is the contract: inserting first would leave a link pointing at a
+    # file that failed to write.
+    upload_at = media_helper.index("await fused.uploadFile(")
+    assert "dispatch(" not in media_helper[:upload_at]
+    assert "dispatch(" in media_helper[upload_at:]
+
+
+def test_a_failed_upload_surfaces_instead_of_vanishing(media_helper):
+    # Reported through mediaNotice — the template's existing error surface,
+    # the same one a failed save uses — never a silently swallowed catch.
+    assert "mediaNotice(" in media_helper
+
+
+def test_media_is_inserted_as_ordinary_markdown_at_the_given_position(media_helper):
+    # `![](…)` and a normal dispatch, so undo removes it in one step and every
+    # other markdown tool can still read the note.
+    assert "![](" in media_helper
+    assert "dispatch(" in media_helper
+    # The position is a PARAMETER, not the selection: drop passes the drop
+    # point. Reading the selection in here would silently ignore it. `to` is a
+    # parameter for the same reason — a paste replaces the selection, a drop
+    # must not, and only the caller knows which gesture it is.
+    assert "function insertMediaFiles(view, files, pos, to)" in media_helper
+    # The selection is read in exactly one place: the recovery path for a
+    # document that changed under the upload (see the test below). Anywhere else
+    # would mean the caller's position was quietly ignored.
+    assert media_helper.count("state.selection") == 1
+    reads_selection = media_helper.index("state.selection")
+    assert media_helper.index("if (view.state.doc !== measuredAgainst)") \
+        < reads_selection
+
+
+def test_a_media_paste_replaces_the_selection_but_a_drop_does_not(source, media_helper):
+    # Found in review. The dispatch set only `from`, so a media paste over a
+    # selection left the selected text sitting beside the new image link —
+    # unlike every other paste, including the URL-over-a-selection branch in the
+    # same handler.
+    assert "changes: { from: pos, to: replaceTo, insert }" in media_helper
+    # The paste hands over the selection's whole range…
+    paste = source[source.index("if (media.length)"):]
+    assert "insertMediaFiles(target, media, sel.from, sel.to)" in paste[:400]
+    # …and the drop hands over one point, so `to` defaults to it and nothing is
+    # replaced. Both call sites are checked, since the whole bug was one of them
+    # passing the wrong thing.
+    calls = re.findall(r"insertMediaFiles\([^)]*\)", source)
+    assert calls == [
+        "insertMediaFiles(view, files, pos, to)",   # the definition
+        "insertMediaFiles(target, media, sel.from, sel.to)",   # paste
+        "insertMediaFiles(target, media, pos)",   # drop
+    ], calls
+
+
+def test_a_paste_never_deletes_text_typed_while_the_upload_was_in_flight(
+        media_helper):
+    # Found in review, and the sharp edge of the fix above: `to` turned the
+    # dispatch into a delete, while `pos`/`replaceTo` are measured BEFORE the
+    # awaited mkdir and upload. The editor stays live across those awaits, so a
+    # slow upload plus any typing meant the paste deleted a range that no longer
+    # meant anything.
+    #
+    # The guard is Text identity — CodeMirror documents are persistent, so an
+    # unchanged doc is the same object. This is a source assertion because the
+    # race needs a real editor, a real upload and real typing between them; the
+    # probe has none of the three.
+    assert "let measuredAgainst = view.state.doc;" in media_helper
+    guard = media_helper.index("if (view.state.doc !== measuredAgainst)")
+    assert guard < media_helper.index("view.dispatch(")
+    # Re-measured after each insert, or the second file of a multi-file paste
+    # would compare against a document its own predecessor invalidated.
+    assert "measuredAgainst = view.state.doc;" in media_helper[guard:]
+
+
+def test_dragover_prevents_default_or_the_drop_never_happens(source, paste_handler):
+    """Without preventDefault on dragover the browser refuses the drop.
+
+    It then navigates the webview to the dropped file instead, which looks
+    exactly like the editor vanishing. Gated to a drag CARRYING FILES so
+    CodeMirror's own text drag-and-drop is untouched.
+    """
+    dragover = paste_handler[paste_handler.index("dragover("):]
+    dragover = dragover[:dragover.index("\n      }")]
+    assert "preventDefault()" in dragover
+    assert "dragHasFiles(event)" in dragover
+    # `Files` in the type list is the only thing askable this early —
+    # dataTransfer.files is empty during a dragover — and drop asks the SAME
+    # question, so the two cannot disagree about which drags are ours.
+    helper = source[source.index("function dragHasFiles("):]
+    helper = helper[:helper.index("\n    }")]
+    assert '"Files"' in helper and "dataTransfer" in helper
+
+
+def test_drop_reads_the_files_and_reuses_the_paste_pipeline(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "event.dataTransfer" in drop
+    assert "insertMediaFiles(" in drop
+    # No second copy of the ensure-dir/upload/insert work.
+    assert "fused.uploadFile(" not in drop
+
+
+def test_a_drop_lands_at_the_pointer_not_at_the_caret(paste_handler):
+    # Dropping into the middle of a note should insert where the pointer is;
+    # posAtCoords returns null for a drop outside any line, which falls back
+    # to the caret.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "posAtCoords(" in drop
+    assert "clientX" in drop and "clientY" in drop
+    assert "state.selection.main.head" in drop
+
+
+def test_dropping_media_is_a_no_op_on_a_read_only_note(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    assert "state.readOnly" in drop
+
+
+def test_every_file_drop_prevents_default_whatever_it_carried(paste_handler):
+    """A PDF dropped on a note must not navigate the webview away.
+
+    `dragover` commits to owning EVERY drag carrying files — per-file MIME is
+    not readable that early, so it cannot be choosier. CodeMirror only calls
+    preventDefault for a handler returning true, so a `return false` in `drop`
+    hands the event back to the browser, whose default action for a file drop
+    is to navigate to the file: the editor vanishes, taking any edits since the
+    last autosave with it. So `drop` prevents FIRST and asks questions after.
+    """
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    prevent = drop.index("event.preventDefault()")
+    # Nothing is allowed to return before the preventDefault except the
+    # not-a-file-drag fall-through.
+    before = drop[:prevent]
+    assert "dragHasFiles(event)" in before
+    assert "mediaFiles(" not in before, "the media filter must come AFTER"
+    assert "readOnly" not in before, "the read-only bail must come AFTER"
+
+
+def test_a_text_drag_still_falls_through_to_codemirror(paste_handler):
+    # Dragging selected text within the note is CM's own behaviour and must be
+    # untouched — the question is whether the drag carried FILES, never whether
+    # media matched.
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    head = drop[:drop.index("event.preventDefault()")]
+    assert "if (!dragHasFiles(event)) return false;" in head
+
+
+def test_a_non_media_file_drop_says_so_instead_of_doing_nothing(paste_handler):
+    drop = paste_handler[paste_handler.index("\n      drop("):]
+    tail = drop[drop.index("event.preventDefault()"):]
+    assert tail.count("mediaNotice(") >= 2, (
+        "both refusals — read-only, and nothing droppable in the drag — report")
+    assert "Only images and video" in tail
+
+
+def test_the_notice_is_the_same_surface_a_failed_save_uses(source):
+    notice = source[source.index("function mediaNotice("):]
+    notice = notice[:notice.index("\n    }")]
+    assert "saveStateEl.textContent" in notice
+    assert 'saveStateEl.classList.add("error")' in notice
+
+
+def test_two_pastes_in_the_same_second_do_not_overwrite_each_other(source, media_helper):
+    """The timestamp alone is not unique.
+
+    Two pastes within one second produce the same name, and the upload does an
+    unconditional os.replace — so the first file would be silently destroyed.
+    The name is probed for existence and bumped until it is free, which covers
+    the several-files-in-one-gesture case as well (each upload is awaited, so
+    file 1 is already on disk when file 2 is named).
+    """
+    assert "await freeMediaName(" in media_helper
+    free = source[source.index("async function freeMediaName("):]
+    free = free[:free.index("\n    }")]
+    assert "mediaExists(" in free
+    # Bounded: a stat that always answers "yes" must not spin forever.
+    assert "n < 100" in free
+    exists = source[source.index("async function mediaExists("):]
+    exists = exists[:exists.index("\n    }")]
+    assert "fused.stat(" in exists
+
+
+def test_every_video_mime_maps_to_an_extension_the_widget_plays(source):
+    """The trap: `video/x-m4v` fell through to the MIME subtype and produced
+    `pasted-….x-m4v`, which VIDEO_EXT does not match — so the clip rendered as
+    a broken <img>. The two tables have to agree, for every entry."""
+    table = source[source.index("const MEDIA_EXT = {"):]
+    table = table[:table.index("};")]
+    video_ext = re.search(r"const VIDEO_EXT = /\\\.\(([a-z0-9|]+)\)\$/i", source)
+    assert video_ext, "VIDEO_EXT should still be an extension alternation"
+    playable = set(video_ext.group(1).split("|"))
+    mapped = re.findall(r'"video/[^"]+": "([a-z0-9]+)"', table)
+    assert mapped
+    assert set(mapped) <= playable, set(mapped) - playable
+    assert '"video/x-m4v"' in table
+
+
+def test_an_unmapped_x_prefixed_mime_does_not_become_the_extension(source):
+    # `image/x-foo` must not produce `name.x-foo`; the fallback strips the
+    # `x-` vendor prefix so an unmapped type still lands with a usable name.
+    name = source[source.index("function mediaName("):]
+    name = name[:name.index("\n    }")]
+    assert 'replace(/^x-/, "")' in name
+
+
+# ---- ordered-list renumbering (MD-25) --------------------------------------
+# The behaviour itself is tested by running it, in tests/test_markdown_renumber.py.
+# What only the source can say is that the filter is actually installed in the
+# editor the page builds — the probe there constructs its own extension list, so
+# it would happily pass on a filter that no real editor ever sees.
+
+
+def test_the_renumber_filter_is_installed_in_the_editor(source):
+    extensions = source[source.index("function editorExtensions()"):]
+    extensions = extensions[:extensions.index("\n    }")]
+    assert "renumberFilter," in extensions
+
+
+def test_renumbering_excludes_undo_so_it_cannot_fight_the_history(source):
+    # Undoing back to a deliberately odd numbering must not be corrected right
+    # back. The filter opts IN to the user events it handles rather than
+    # excluding undo by name, so this pins the allow-list.
+    body = source[source.index("const renumberFilter ="):]
+    body = body[:body.index("\n    });")]
+    assert re.findall(r'isUserEvent\("(\w+)"\)', body) == ["input", "delete", "move"]
+    # Appended to the same transaction, not dispatched after it, so one undo
+    # takes back the edit and its renumbering together.
+    assert "sequential: true" in body
+
+
+def test_no_line_decoration_ever_carries_a_vertical_margin(source):
+    """Margin on a `.cm-line` desynchronises CodeMirror's height map.
+
+    CM measures each line from its bounding rect. Padding is inside that rect;
+    margin is outside it, and adjacent margins collapse besides. A margin
+    therefore makes CM believe a line is shorter than the space it occupies, and
+    every coordinate-based operation reading that map — `posAtCoords`, so mouse
+    clicks and arrow up/down both — lands on the wrong line, drifting further
+    with each spaced block above it.
+
+    This shipped once, in the first draft of MD-26, and the editor became
+    unusable below the first heading. It is invisible in a screenshot and no
+    probe can see it (the probe has no layout), so the guard is here.
+    """
+    css = source[source.index("/* ---- vertical rhythm (MD-26)"):]
+    css = css[:css.index("/* Faint (--text-faint)")]
+    offenders = re.findall(r"^\s*[^/*\n]*\bmargin[-a-z]*\s*:.*$", css, re.M)
+    assert offenders == [], offenders
+    # And the rules are really there — an empty block would pass the above.
+    assert "padding-top" in css

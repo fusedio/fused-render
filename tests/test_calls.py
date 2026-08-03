@@ -394,6 +394,37 @@ def test_a_write_records_size_and_conflict_outcome_but_never_content(app_client)
     assert content not in json.dumps(got), "file content must never be stored"
 
 
+def test_an_upload_records_size_and_path_but_never_the_bytes(app_client):
+    """/api/fs/upload is a write like any other and belongs in the log.
+
+    Without this a pasted screenshot or video is the one mutation that leaves
+    no trace, which defeats the "what did my page put on disk" question the
+    route table exists to answer. Same rule as /api/fs/write: the path and the
+    byte count, never the payload.
+    """
+    client, d = app_client
+    payload = b"\x89PNG\r\n\x1a\nNEVER-LOG-THESE-BYTES"
+    target = d / "pasted.png"
+    client.post("/api/fs/upload", data={"path": str(target)},
+                files={"file": ("blob", payload, "image/png")},
+                headers=app_headers(d / "p.html"))
+    assert drain()
+    got = calls.query(limit=10)["records"][0]
+    assert got["route"] == "/api/fs/upload"
+    assert got["entrypoint"] == str(target)
+    assert got["entrypoint_name"] == "pasted.png"
+    # The byte count is the blob's own length: there is no encoding step for a
+    # binary body, unlike the UTF-8 round trip a text write measures.
+    assert got["bytes_written"] == len(payload)
+    assert "NEVER-LOG-THESE-BYTES" not in json.dumps(got)
+
+
+def test_enrich_write_measures_a_binary_body_without_encoding_it(store):
+    call = {"truncated": False}
+    calls.enrich_write(call, path="/n/assets/a.png", content=b"\xff\xfe\x00", status=200)
+    assert call["bytes_written"] == 3
+
+
 def test_a_rejected_write_is_not_blamed_on_a_readonly_file(app_client):
     """Two different refusals answer 403 on this route — a read-only target, and
     the X-Fused guard turning the caller away — and mapping the status alone

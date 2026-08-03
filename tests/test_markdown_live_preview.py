@@ -58,12 +58,21 @@ Some **bold** and *ital* and ~~strike~~ and `inline` text.
 
 ![alt](./img.png) and [lbl](../CONTRIBUTING.md#Install) and [ext](https://x.com)
 
+![](assets/pasted-20260802-143022.mp4)
+
 A [[Wiki Link|label]], a ![[embed.png]] and a [[Ghost]] here.
 
 Back up to [[#Heading one]] in this same note.
 
+Bare https://example.com/a here.
+
+Angle <https://example.com/b> here.
+
+An inline `https://example.com/d` stays code.
+
 ```python
 x = "[[not a link]]"
+y = "https://example.com/e"
 ```
 """
 
@@ -199,6 +208,7 @@ def test_links_images_tables_rules_and_tasks_all_render(note_file):
     assert at(plain, "[lbl](../CONTRIBUTING.md#Install)", "widget")
     assert at(plain, "[ext](https://x.com)", "widget")
     assert at(plain, "![alt](./img.png)", "widget")
+    assert at(plain, "![](assets/pasted-20260802-143022.mp4)", "widget")
     assert at(plain, "---", "widget"), "the horizontal rule"
     assert at(plain, "| a | b |\n|---|--:|\n| 1 | 2 |", "widget")
     assert at(plain, "[ ]", "widget") and at(plain, "[x]", "widget")
@@ -312,6 +322,76 @@ def test_the_two_states_are_told_apart_by_the_widget_key(note_file):
     assert unknown["cls"] != scanned["cls"]
 
 
+# ------------------------------------------- bare and angle autolinks (MD-24)
+#
+# The grammar has parsed these all along — a bare `https://…` is a `URL` node
+# and `<https://…>` an `Autolink` — and the builder simply ignored both node
+# names, so a URL someone typed or pasted rendered as unclickable grey prose
+# next to an explicit `[lbl](url)` that rendered as a link. The fix is
+# display-only (D200): no document text changes, so it also repairs the URLs in
+# notes people already wrote.
+
+
+def test_a_bare_url_renders_as_a_link_without_rewriting_it(note_file):
+    plain = decorate(note_file, caret=0)
+    link = at(plain, "https://example.com/a", "mark")
+    assert link, "a bare URL should be decorated"
+    assert link[0]["cls"] == "lp-link", link
+    # A MARK, not a widget: the text under it is untouched, so the document
+    # still says exactly what the user typed and the caret can still sit in it.
+    assert link[0]["tag"] == "a"
+    assert link[0]["attrs"]["href"] == "https://example.com/a"
+    assert link[0]["attrs"]["target"] == "_blank"
+
+
+def test_an_angle_autolink_hides_its_brackets_and_gives_them_back(note_file):
+    plain = decorate(note_file, caret=0)
+    # Unlike a bare URL, `<…>` HAS markup worth hiding, so the reveal rule
+    # applies to it exactly as it does to `**` or `# `.
+    assert at(plain, "<", "hide"), "the opening angle bracket should be hidden"
+    assert at(plain, ">", "hide")
+    assert at(plain, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+
+    caret = NOTE.index("<https://example.com/b>") + 4
+    revealed = decorate(note_file, caret=caret, params=EDITING)
+    assert not at(revealed, "<", "hide")
+    assert at(revealed, "<", "mark")[0]["cls"] == "lp-mark"
+    # Still a link while revealed: showing the source must not un-style it.
+    assert at(revealed, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+
+
+def test_a_schemeless_autolink_gets_an_href_that_leaves_this_page(tmp_path):
+    """GFM autolinks three shapes, and two of them are not URLs yet.
+
+    `www.x.com` and `me@x.com` are `URL` nodes just like `https://…` is, so
+    using the matched text as the href verbatim would produce a relative link
+    that resolves against /render?path=… — the same trap MD-4a records.
+    """
+    path = tmp_path / "u.md"
+    # The caret sits on line 1, away from the content: see the note in
+    # test_a_hashtag_is_left_as_prose.
+    path.write_text("top\n\nSee www.example.com or me@example.com.\n",
+                    encoding="utf-8")
+    plain = decorate(str(path), caret=0)
+    assert at(plain, "www.example.com", "mark")[0]["attrs"]["href"] \
+        == "https://www.example.com"
+    assert at(plain, "me@example.com", "mark")[0]["attrs"]["href"] \
+        == "mailto:me@example.com"
+
+
+def test_an_explicit_link_is_still_one_widget_and_not_also_a_url_mark(note_file):
+    """The URL inside `[lbl](url)` is markup the Link widget already replaced.
+
+    Decorating it a second time as a bare URL would be both wrong (it is not
+    shown) and a collision risk, so the URL pass has to leave a Link's own
+    children alone.
+    """
+    plain = decorate(note_file, caret=0)
+    assert at(plain, "[ext](https://x.com)", "widget")
+    assert not at(plain, "https://x.com")
+    assert not at(plain, "../CONTRIBUTING.md#Install")
+
+
 # --------------------------------------------------- what must NOT render
 
 
@@ -320,6 +400,8 @@ def test_a_fenced_block_is_never_a_link_or_a_tag(note_file):
     # MD-3's code-masking rule, holding on this side too: graph.py would not
     # call these edges, so the page must not draw them.
     assert not at(plain, "[[not a link]]")
+    # And a URL in that fence is a string literal, not a link (MD-24).
+    assert not at(plain, "https://example.com/e")
     # The fence itself is styled as code, and keeps its own markers visible.
     assert [d for d in plain if d["cls"] == "lp-fence-line"]
     assert not at(plain, "```", "hide")
@@ -336,6 +418,20 @@ def test_frontmatter_is_dimmed_and_never_a_rule_or_a_heading(note_file):
     assert len(fm) == 4, fm  # ---, title, tags, ---
 
 
+def test_a_url_in_inline_code_is_code_not_a_link(note_file):
+    """Same line as MD-3's code masking, on the inline side.
+
+    Read the module docstring before touching the guard that makes this pass:
+    an over-broad "is this code?" list once silently stopped every wikilink
+    from rendering, and that regression is invisible in a diff.
+    """
+    plain = decorate(note_file, caret=0)
+    assert not at(plain, "https://example.com/d")
+    # The span is still rendered as code, so this is the absence of a link
+    # rather than the absence of any decoration at all.
+    assert at(plain, "`https://example.com/d`", "mark")[0]["cls"] == "lp-code"
+
+
 def test_a_hashtag_is_left_as_prose(tmp_path):
     """The tag concept is gone (D165): a `#word` mid-line is text, not a chip.
 
@@ -350,3 +446,119 @@ def test_a_hashtag_is_left_as_prose(tmp_path):
     plain = decorate(str(path), caret=0)
     assert at(plain, "[docs](https://x.com/a#section)", "widget")
     assert not at(plain, "#real")
+
+
+def test_a_pasted_video_renders_as_a_player_not_a_broken_image(note_file):
+    """Markdown has no video syntax, so a dropped clip is written as `![](…)`
+    (MD-23) — the same markup Obsidian writes. The widget therefore has to
+    choose its element off the extension, or every pasted video would render as
+    an <img> with a source no browser can decode: a broken-image icon.
+    """
+    plain = decorate(note_file, caret=0)
+    video = dom(plain, "![](assets/pasted-20260802-143022.mp4)")
+    assert video["tag"] == "video"
+    # Resolved against the note's folder, exactly as the image branch does.
+    assert "assets/pasted-20260802-143022.mp4" in video["src"]
+    # Its own class beside lp-img, so the stylesheet can size a player.
+    assert video["cls"] == "lp-video"
+
+
+def test_an_image_is_still_an_image(note_file):
+    plain = decorate(note_file, caret=0)
+    assert dom(plain, "![alt](./img.png)")["tag"] == "img"
+
+
+# ---- vertical rhythm (MD-26) -----------------------------------------------
+# Spacing is carried by line decorations because an inline mark cannot hold a
+# vertical margin. The property that matters is not which margin — CSS decides
+# that — but that the decoration is there at all, and that it does NOT depend on
+# where the caret is: this editor un-renders the caret's line, and spacing that
+# came and went with the caret would shift the document under the cursor.
+
+
+def line_classes(decorations):
+    return [d["cls"] for d in decorations if d["kind"] == "line"]
+
+
+def has_line_class(decorations, name):
+    """True if any line carries `name`, whether or not it also carries an edge.
+
+    A block's first and last line get `name-top`/`name-bot` alongside it, so the
+    class string is not always the bare name.
+    """
+    return any(name in c.split() for c in line_classes(decorations))
+
+
+def test_a_heading_line_carries_its_own_spacing_class(note_file):
+    plain = decorate(note_file, caret=0)
+    assert has_line_class(plain, "lp-h1-line")
+
+
+def test_heading_spacing_does_not_move_when_the_caret_lands_on_it(note_file):
+    # The regression this guards is visible, not logical: if the class went away
+    # with the caret on the line, arrowing down through a note would make
+    # everything below the caret jump by the heading's margin.
+    heading = NOTE.index("# Heading one") + 3
+    revealed = decorate(note_file, caret=heading, params=EDITING)
+    assert has_line_class(revealed, "lp-h1-line")
+    # The markers ARE revealed on that line, so this is genuinely the revealed
+    # state and not a caret that missed.
+    assert at(revealed, "#", "mark")
+
+
+def test_a_fenced_block_is_padded_only_at_its_two_edges(note_file):
+    classes = line_classes(decorate(note_file, caret=0))
+    assert classes.count("lp-fence-line lp-fence-line-top") == 1
+    assert classes.count("lp-fence-line lp-fence-line-bot") == 1
+    # …and the rows between carry the tint without the padding, or the block
+    # would render as a stack of separated panels.
+    assert "lp-fence-line" in classes
+
+
+def test_a_blockquote_is_spaced_as_one_block(note_file):
+    classes = line_classes(decorate(note_file, caret=0))
+    # One line long here, so the same line is both edges.
+    assert any("lp-quote-line-top" in c and "lp-quote-line-bot" in c
+               for c in classes)
+
+
+def test_a_list_is_spaced_as_a_block_and_not_row_by_row(note_file):
+    # The rows in between must NOT be tagged: a margin per row would space the
+    # items apart from each other, which is the opposite of how a list reads.
+    classes = line_classes(decorate(note_file, caret=0))
+    assert classes.count("lp-list-line lp-list-line-top") == 1
+    assert classes.count("lp-list-line lp-list-line-bot") == 1
+
+
+def test_a_nested_list_does_not_add_a_second_gap(tmp_path):
+    path = tmp_path / "nested.md"
+    path.write_text("- one\n  - deep\n  - deeper\n- two\n", encoding="utf-8")
+    classes = line_classes(decorate(str(path), caret=0))
+    # Only the outer list is tagged. The inner list lies inside the outer one's
+    # range, so tagging it too would put a margin in the middle of the block.
+    assert classes.count("lp-list-line lp-list-line-top") == 1
+    assert classes.count("lp-list-line lp-list-line-bot") == 1
+    assert not any(c == "lp-list-line lp-list-line-top lp-list-line-bot"
+                   for c in classes)
+
+
+def test_an_at_sign_in_a_www_autolink_is_not_an_email_address(tmp_path):
+    # Found in review. Any schemeless autolink containing `@` was treated as an
+    # address, but a GFM `www.` autolink may carry an `@` in its path — and a
+    # `mailto:` href hands it to a mail client instead of a browser.
+    path = tmp_path / "at.md"
+    path.write_text("See www.example.com/u@h/x here.\n", encoding="utf-8")
+    marks = [d for d in decorate(str(path), caret=0) if d["cls"] == "lp-link"]
+    assert marks, "the www autolink was not decorated at all"
+    assert marks[0]["attrs"]["href"] == "https://www.example.com/u@h/x"
+
+
+def test_a_setext_heading_does_not_split_from_its_underline(tmp_path):
+    # Found in review. The spacing class went on every line of the heading node,
+    # and a Setext heading is two lines — so the `===` underline got the same
+    # large top margin as the title and drifted away from it. The margin now
+    # rides on the block's edges, so only the first line carries a top one.
+    path = tmp_path / "setext.md"
+    path.write_text("Title\n=====\n\nbody\n", encoding="utf-8")
+    classes = line_classes(decorate(str(path), caret=0))
+    assert classes == ["lp-h1-line lp-h1-line-top", "lp-h1-line lp-h1-line-bot"]

@@ -116,7 +116,7 @@ Left sidebar in the shell, always visible:
 - **SB-8** **Save to disk**: a per-bookmark button writes a portable `<name>.bookmark` JSON file (format v1: `{version, name, icon?, kind: single|panel|tab, path?, search}`, D98) next to the file(s) the bookmark points at — a single bookmark into its target's own directory (`path` relative to it), a panel/tab bookmark into the deepest common ancestor directory of all `_layout` leaves, each leaf path rewritten relative to that dir (grammar, nesting, per-leaf queries and global params untouched). The button's hover title shows the exact destination path before the click; it is disabled (greyed, explanatory title) when no save target exists — a leaf without an absolute fs path, or no common root. Frontend computes `{dir, filename, content}` (`lib/bookmark-file.ts`); `POST /api/bookmarks/export` validates and writes, overwrite allowed (a re-save refreshes the snapshot).
 - **SB-9** **Double-click open** (macOS): the packaged app registers `.bookmark` as an Owner document type (D99); Finder-opening one routes to the `/view/_bookmark?file=<abs path>` sentinel, which reads the file (`GET /api/bookmark-file`), resolves its relative paths against the file's own directory (`lib/bookmark-file.ts` `bookmarkOpenUrl`, the inverse of SB-8's relativize) and `location.replace()`s to the described view — single, panel or tab. Browsing to a `.bookmark` file in the explorer opens it the same way (never a preview). Malformed / unsupported-version files render a readable error, no redirect.
 
-### OS clipboard interop (D198)
+### OS clipboard interop (D203)
 
 ⌘/Ctrl+C in the explorer and in the native file manager mean the same thing. The bridge is the **local Python backend** — the server always binds `127.0.0.1` (D2/D3), so it is necessarily on the user's own machine — reached over `GET`/`POST /api/clipboard/files` (`server/routers/clipboard.py`) and implemented behind a platform-agnostic contract in `fused_render/shell/pasteboard/`: `read_files() -> (paths, token, supported)`, `write_files(paths) -> (token, supported)`. Only the three leaf backends know what OS they are on.
 
@@ -3534,9 +3534,8 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   embedded note renders as a link, which avoids a second parse and a
   recursion); inline markup **inside a table cell**, which a decoration cannot
   reach because it cannot span into a widget's DOM (clicking the table shows the
-  source, which is where a cell is edited); and paste-or-drop of an image —
-  `fused.writeFile` takes UTF-8 text only, so a binary attachment write needs a
-  runtime change first.
+  source, which is where a cell is edited). Paste-or-drop of an image *was*
+  listed here as blocked on a binary write; it is now built (MD-23).
 - **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
   Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
   document, which a full-height editor has no room for. Backlinks scroll in the
@@ -3689,6 +3688,164 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   links needs a hook on the explorer's rename plus a multi-file write, and
   vault-wide search / a quick-switcher are shell surfaces. Both belong to the
   shell, later, elsewhere.
+- **MD-23** **Pasting or dropping an image or a video writes it beside the note
+  and links it in** (D199). Two entry points, one pipeline. "Copy image" in a
+  browser puts the image *bytes* on the clipboard rather than a file reference,
+  so ⌘V is the ordinary `paste` event's `clipboardData.files`; a drag from
+  Finder is the same `FileList` on `dataTransfer.files`. Both filter to
+  `image/*` and `video/*` — a plain-text paste and a drag carrying no media
+  fall through untouched, so CodeMirror's own text drag-and-drop still moves
+  text — and both then run the *same* helper: ensure `assets/` next to the note
+  (`fused.mkdir`, whose `exists` 409 from the second paste onwards is the
+  expected case), upload each blob, insert `![](assets/<name>)`. The insert is
+  an ordinary dispatch, so **undo removes it in one step**.
+  - **Names are timestamps**, `pasted-YYYYMMDD-HHMMSS.<ext>` in local time.
+    A timestamp is not by itself unique — two pastes inside one second, and
+    every file of a multi-file gesture, produce the same name, and the upload
+    replaces unconditionally — so the name is **probed with `fused.stat` and
+    bumped** (`-2`, `-3`, bounded) until it is free. Losing the first file to a
+    silent overwrite is not an acceptable cost for a tidy name. The extension
+    comes from the blob's MIME type, since a pasted screenshot has no filename
+    at all; an unmapped vendor type has its `x-` prefix stripped, and every
+    `video/*` mapping is pinned to produce an extension the video widget
+    recognises (`video/x-m4v` once produced `.x-m4v`, which rendered as a
+    broken image).
+  - **A drop lands at the POINTER**, `posAtCoords` at the drop coordinates,
+    falling back to the caret where that answers null (a drop past the last
+    line). A paste lands at the caret. That difference is the only one, which
+    is why the shared helper takes the position as a parameter rather than
+    reading the selection.
+  - `dragover` **must** `preventDefault` for a drag carrying files, or the
+    browser never fires `drop` and instead navigates the webview to the dropped
+    file — indistinguishable from the editor vanishing. Gated on
+    `dataTransfer.types` containing `Files`, which is the only thing askable
+    that early (`dataTransfer.files` is empty during a dragover).
+  - **`drop` therefore prevents the default for EVERY file drag**, before it
+    filters for media and before it checks read-only. CodeMirror only calls
+    `preventDefault` for a handler that returns **true**, so returning false
+    for a dropped PDF would hand the event back to the browser — which
+    navigates the webview to the file, losing every edit since the last
+    autosave (`pagehide`'s save is best-effort and may not land). `dragover`
+    committed to owning file drags; `drop` honours that for all of them, and a
+    drop it cannot use **says so** ("Only images and video can be added to a
+    note") rather than doing nothing. Only a genuine *text* drag falls through
+    to CodeMirror — the test is whether the drag carried files, never whether
+    media matched.
+  - **A read-only note never gains media.** A *paste* falls through untouched,
+    the same posture `whenWritable` takes for every writing key (MD-1a/MD-15).
+    A *drop* still prevents the default — the editor must not navigate away —
+    and reports that the note is read-only.
+  - **The upload is awaited before the link is inserted**, so a link can never
+    point at a file that failed to write; a failure surfaces through the same
+    status element a failed save uses, never silently. The cost is that a very
+    large video briefly stalls the editor — accepted for a first cut.
+  - **Video renders as a player.** Markdown has no video syntax, so a clip is
+    written as `![](…)` too (what Obsidian writes, and it degrades to a
+    recognisable broken image elsewhere) and the live-preview widget picks
+    `<video controls muted preload="metadata">` over `<img>` off the
+    extension. Removing the link does **not** delete the file: unreferenced-media
+    collection is its own feature, and Obsidian behaves the same way.
+  - The binary write itself is **`POST /api/fs/upload`** (multipart) behind
+    `fused.uploadFile(path, blob)` — `/api/fs/write` takes a string only. It
+    reuses `_fs_write`'s guard sequence exactly (X-Fused, the mount-backed /
+    `mount_read_only` branch before any kernel probe, `_writable`, the `readonly`
+    403 of RO-2) and, like it, never creates intermediate directories. It is
+    logged like `/api/fs/write` — path and byte count, never the payload — so
+    pasted media is not the one mutation that leaves no trace (CL-*).
+- **MD-24** **A bare URL is a link in Live Preview, and the document is not
+  rewritten to make it one** (D200). The vendored GFM grammar already parses
+  `https://example.com` as a `URL` node and `<https://example.com>` as an
+  `Autolink`; the decoration builder simply named neither, so a typed or pasted
+  URL rendered as unclickable grey prose beside an explicit `[lbl](url)` that
+  rendered as a link.
+  - **A bare URL gets a MARK, not a replacement widget.** The mark carries
+    `tagName: "a"` plus `href`/`target`/`rel`, so the range *becomes* an anchor
+    with the existing `lp-link` styling — bare and explicit links look and
+    behave alike. A widget would replace the URL's characters with an element
+    rendering the identical characters (its display text already equals its
+    target), buying nothing while taking away the caret's ability to sit inside
+    the URL and edit it.
+  - **An angle autolink hides its brackets** under the ordinary reveal rule:
+    `<` and `>` are markup, so they are replaced away and come back dimmed as
+    `lp-mark` on the caret's line, exactly as `**` and `# ` do. A bare URL
+    hides nothing and therefore has nothing to reveal — it stays marked
+    wherever the caret is, rather than flickering when a line is entered.
+  - **Nothing is written.** No paste or edit converts a URL into `[url](url)`,
+    so the note on disk still says what its author typed — which is also what
+    makes this repair every URL in notes written before the rule existed. The
+    ⌘K and paste-over-a-selection behaviours (`[selected](url)`) are unchanged.
+  - **A URL inside a fence or a code span stays plain text**, the same line MD-3
+    draws for what counts as an edge. The grammar does not emit a `URL` node
+    inside code at all, so the guard is the narrow `CODE_NODES` set the wikilink
+    pass already uses rather than a new "is this code?" rule — an over-broad one
+    of those once silently stopped every wikilink from rendering.
+  - **A `[lbl](target)` link's own `URL` child is left alone**, since it belongs
+    to a node the link branch already replaced whole (or deliberately left as
+    source, as for a titled or reference link).
+  - GFM autolinks three shapes, and two are not URLs yet: `www.x.com` gets an
+    `https://` scheme and `me@x.com` a `mailto:` one, or the href would resolve
+    against `/render?path=…` (MD-4a's trap).
+
+- **MD-25** **Editing an ordered list renumbers it — every way of editing it,
+  not just Enter** (D201). `markdownKeymap`'s `insertNewlineContinueMarkup`
+  already renumbered on Enter, and nothing else did: Backspace
+  (`deleteMarkupBackward`), selecting a row and deleting it, ⌘X, ⌘⇧K, and a
+  paste in the middle all left the numbers below the edit stale. The grammar
+  package's `renumberList` is internal and unexported, so this is our own pass.
+  - **It hangs off a transaction filter, not more key bindings.** One place sees
+    every edit whatever produced it, which is the only way the list of gestures
+    above stops needing to be enumerated.
+  - **Only the list the edit landed in** — and the edit has to have landed *on*
+    it. A blank line always extends a list's region (it separates the items of a
+    loose list) but anchors one only when list items sit on **both** sides of it,
+    because a blank line is also what separates a list from the prose beside it.
+    Anchoring on every blank means typing in a paragraph next to a list
+    renumbers that list, putting changes into an undo step the user never made;
+    anchoring on none means clearing an item's text — which leaves a blank line
+    inside the list — stops the items below it following.
+  - **The first item's number anchors the sequence.** A list written `3.` `4.`
+    `5.` stays that way, and deleting the head of `1.` `2.` `3.` leaves `2.`
+    `3.` — the two cases are identical text, and anchoring is what
+    `markdownKeymap`'s own Enter renumbering does, so Enter and Backspace agree.
+  - **Undo and redo are excluded**, along with every programmatic dispatch (a
+    reload, a read-only rebuild): the filter opts in to `input`, `delete` and
+    `move` user events. Undoing back to a deliberately odd numbering must not be
+    corrected straight back.
+  - **The renumbering rides in the same transaction** as the edit that caused
+    it, so one undo takes back both and the selection maps through the digit
+    rewrites for free.
+  - **Digits inside a fenced block are left alone** — the one place
+    digits-then-dot at the start of a line is not a list item.
+
+- **MD-26** **Vertical spacing is a line decoration, and it does not change when
+  the caret arrives** (D202). Headings had a size and a weight but no space
+  around them, because `.lp-h1`…`.lp-h6` are *inline marks* and an inline mark
+  cannot carry a vertical margin. Blocks — fences, quotes, lists — ran flush
+  against the prose above and below them.
+  - **Spacing lives on `Decoration.line`**, the same mechanism `lp-fence-line`
+    already used, applied to headings (`lp-h1-line`…), fences, blockquotes and
+    lists.
+  - **Every spacing decoration is unconditional.** This editor un-renders the
+    line the caret is on, so a margin that appeared or vanished with the caret
+    would shift everything below it on every arrow-down. The heading *size* mark
+    is already caret-independent for the same reason, and the spacing matches it.
+  - **A block is padded at its two edges, not per line**, via `-top`/`-bot`
+    classes on the first and last line of the range — which headings need too,
+    since a Setext heading spans its text *and* its `===` underline and a top
+    margin on both would split the two apart — otherwise a fence renders
+    as a stack of separated tinted rows, and a list's rows get spaced apart from
+    each other rather than the list being spaced from its surroundings. A nested
+    list is skipped, since it lies inside its parent's range.
+  - **Padding, never margin.** CodeMirror keeps its own height map and measures
+    each line from its bounding rect — padding is inside it, margin is outside
+    it and collapses besides. A margin makes CM believe a line is shorter than
+    the space it occupies, so `posAtCoords` (mouse clicks *and* arrow up/down)
+    lands on the wrong line, drifting further with each spaced block above it.
+    The first draft of this used margins and made the editor unusable below the
+    first heading; a source guard now refuses one.
+  - **The bottom side stays small.** Markdown's own blank separator line is
+    already a full line-height of space; these rules add what markdown cannot
+    express — the space *above* a heading, and the gap around a block.
 
 ## 33. Git View — Repository History Scoped to the Open Path (D193)
 
