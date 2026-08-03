@@ -73,13 +73,15 @@ def mark(path: str, verb: str) -> None:
                 entry["last"] = now
             else:
                 entry["last"] = now
+        # TEMP diagnostic (missed-commit hunt).
+        logger.info("mark queued: %s (%s)", app_dir, label)
         loop, wake = _loop, _wake
         if loop is not None and wake is not None:
             # mark() runs on threadpool threads (the fs endpoints are sync
             # defs); this is the one loop-safe way to poke the worker.
             loop.call_soon_threadsafe(wake.set)
     except Exception:
-        logger.debug("app commit mark failed (%s)", path, exc_info=True)
+        logger.warning("app commit mark failed (%s)", path, exc_info=True)
 
 
 def _message(labels: list[str]) -> str:
@@ -130,8 +132,10 @@ async def _run() -> None:
                 for app_dir, labels in due:
                     # commit() is best-effort and never raises; to_thread
                     # keeps the subprocess wait off the event loop.
-                    await asyncio.to_thread(app_git.commit, app_dir,
-                                            _message(labels))
+                    ok = await asyncio.to_thread(app_git.commit, app_dir,
+                                                 _message(labels))
+                    # TEMP diagnostic (missed-commit hunt).
+                    logger.info("worker commit %s: committed=%s", app_dir, ok)
                 if delay is None:
                     break
                 await asyncio.sleep(delay)
