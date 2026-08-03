@@ -90,6 +90,9 @@ jobs:
               - 'fused_render/app.py'
               - 'fused_render/menubar_pin.py'
               - 'fused_render/shell/mounts.py'
+              # The NSPasteboard backend: its round-trips need a real macOS
+              # login session, so this job is the only place they can run.
+              - 'fused_render/shell/pasteboard/**'
               - 'pyproject.toml'
               - '.github/workflows/test.yml'
               - *macos_packaging
@@ -485,7 +488,14 @@ jobs:
   # covers is the darwin-only code the Linux matrix never runs — the nfsmount
   # options in shell/mounts.py (test_shell_mounts.py's @skipif(platform != darwin)
   # tests) — plus the macOS app entry (view-url mapping, in-process desktop
-  # instance/token) on real macOS. test_shell_mounts.py starts the HTTP server
+  # instance/token) and the NSPasteboard clipboard bridge on real macOS.
+  # test_pasteboard_darwin.py is here for the same reason as the mounts tests
+  # and no other: its round-trips drive the real login-session pasteboard, so
+  # the Linux matrix skips every one of them. Without this job running it, the
+  # backend had no coverage anywhere on any platform — which is how a missing
+  # pyobjc went unnoticed while the bridge reported `supported: false` on every
+  # dev machine (the tests skipped for the very import that was absent).
+  # test_shell_mounts.py starts the HTTP server
   # (create_app) through its client fixture, which refuses without the React
   # shell, so this job depends on `frontend` and downloads shell-dist.
   macos-desktop:
@@ -520,6 +530,7 @@ jobs:
           tests/test_shell_mounts.py
           tests/test_app_desktop_instance.py
           tests/test_app_view_url.py
+          tests/test_pasteboard_darwin.py
 
       - name: Build the DMG (smoke)
         # build_dmg.sh falls back to ad-hoc signing when no Developer ID identity

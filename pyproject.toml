@@ -47,6 +47,24 @@ dependencies = [
     # main path, not a corner. Core rather than an extra: the parser runs on
     # every /api/run under either engine.
     "tomli>=2.0; python_version < '3.11'",
+    # AppKit, for the macOS half of the OS clipboard bridge
+    # (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).
+    # Core rather than an extra, and marked rather than optional, because the
+    # bridge is a property of the *shell* — every macOS install runs the file
+    # explorer, so every macOS install should be able to paste what Finder
+    # copied. As an extra it was invisible in the one place it had to work: a
+    # source install reported `supported: false` forever, and
+    # tests/test_pasteboard_darwin.py skipped for the same missing import, so
+    # nothing went red.
+    #
+    # The packaged .app also picks this up transitively from `[app]`'s
+    # pyobjc-framework-WebKit and force-lists AppKit in setup_py2app.py — both
+    # for the WKWebView popover, not for us. This entry is what makes the
+    # bridge's own dependency explicit instead of borrowed from the view pin.
+    # The marker keeps `pip install fused-render` cross-platform: on Linux and
+    # Windows it resolves to nothing and those backends use their own tools
+    # (xclip/wl-clipboard, ctypes) with no new requirement.
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
