@@ -5837,32 +5837,29 @@ select.field-control:has(option[value=""]:checked) {
   position: relative;
 }
 
-.home-hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
-  margin-bottom: 18px;
+/* Fused wordmark: centered above the title. The PNGs bake generous padding
+   into the canvas, so the rendered height runs larger than the visible mark.
+   Dark is the :root default theme, so the dark render shows by default and
+   the light one takes over under [data-theme="light"]. */
+.home-hero-logo {
+  display: block;
+  height: 64px;
+  margin: 0 auto 10px;
 }
 
-.home-hero-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
+.home-hero-logo-light,
+:root[data-theme="light"] .home-hero-logo-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .home-hero-logo-light {
+  display: block;
 }
 
 .home-hero-title {
-  margin: 0 0 14px;
-  font-size: 38px;
+  margin: 0 0 18px;
+  text-align: center;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.08;
@@ -5870,14 +5867,6 @@ select.field-control:has(option[value=""]:checked) {
 
 .home-hero-accent {
   color: var(--accent);
-}
-
-.home-hero-sub {
-  margin: 0 0 22px;
-  max-width: 520px;
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--fg-muted);
 }
 
 /* The hero's prompt composer — the claude.ai/v0 "what do you want to build?"
@@ -6021,8 +6010,8 @@ select.field-control:has(option[value=""]:checked) {
    the 4th card onto its own row at common tablet widths (e.g. 768px). */
 .home-doors {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
 }
 
 @media (max-width: 760px) {
@@ -6036,8 +6025,8 @@ select.field-control:has(option[value=""]:checked) {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 18px 18px 16px;
+  gap: 7px;
+  padding: 24px 22px 22px;
   min-width: 0;
   font: inherit;
   text-align: left;
@@ -6065,13 +6054,13 @@ select.field-control:has(option[value=""]:checked) {
 }
 
 .home-door-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 650;
 }
 
 .home-door-desc {
-  font-size: 12.5px;
-  line-height: 1.45;
+  font-size: 13.5px;
+  line-height: 1.5;
   color: var(--fg-muted);
 }
 
@@ -6134,6 +6123,53 @@ select.field-control:has(option[value=""]:checked) {
    The monogram square carries a deterministic hue from the file-icon palette
    (set inline as `color`), washed to a fill via color-mix so it repaints in
    light mode. */
+/* Recent: a plain single-column list — name, tag pill, last-used stamp. */
+.home-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.home-recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  color: var(--fg);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-recent:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.home-recent-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-recent .home-app-tag {
+  margin-left: 0;
+}
+
+.home-recent-when {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
 .home-apps {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

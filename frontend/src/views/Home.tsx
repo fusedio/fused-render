@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { aiComplete, createApp, getApps, statPath } from "../lib/api";
-import type { Config } from "../lib/api";
+import type { AppInfo, Config } from "../lib/api";
 import { currentUrl, navigate, navigateUrl, urlForFsPath } from "../lib/router";
 import { ErrorBanner } from "../components/ErrorBanner";
 import { TextInput, TextArea } from "../components/field/fields";
@@ -20,8 +20,10 @@ import { basename } from "../lib/format";
 import { isMod, MOD_LABEL } from "../lib/platform";
 import { useDeferredClose, useLearnMountReady } from "../lib/hooks";
 import { PANEL_EXIT_MS } from "../lib/exit-animation";
-import { AppCard } from "../components/AppCard";
+import { timeAgo } from "../components/AppPreviewCard";
 import { SkeletonLines } from "../components/Skeleton";
+import logoDark from "../assets/logo-text-black-bg-transparent.png";
+import logoLight from "../assets/logo-text-white-bg-transparent.png";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
@@ -659,6 +661,23 @@ function Doorway({
   );
 }
 
+// One row in the Recent list: name, tag, last-used — no icon. Same open
+// behavior as the /apps cards: entry HTML if present, else the folder.
+function RecentRow({ app }: { app: AppInfo }) {
+  const open = () => {
+    if (app.entry_html) navigate(app.entry_html, { isDir: false });
+    else navigate(app.path, { isDir: true });
+  };
+  const title = app.title || app.name;
+  return (
+    <button type="button" className="home-recent" onClick={open} title={app.path}>
+      <span className="home-recent-name">{title}</span>
+      <span className="home-app-tag">{app.tag}</span>
+      <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
+    </button>
+  );
+}
+
 export default function Home({ config }: { config: Config }) {
   const [apps, reloadApps] = useLoad(getApps);
   // The boot-time config snapshot's learn_mount_ready is stale in both
@@ -696,19 +715,13 @@ export default function Home({ config }: { config: Config }) {
             page's primary action (opens the create modal — the actual fields
             live there); "Browse files" is the everyday doorway. */}
         <header className="home-hero">
-          <div className="home-hero-badge">
-            <span className="home-hero-dot" aria-hidden="true" />
-            fused-render
-          </div>
+          {/* Fused wordmark, centered. Two theme-matched renders of the same
+              logo; CSS shows the one matching the active theme. */}
+          <img className="home-hero-logo home-hero-logo-dark" src={logoDark} alt="Fused" />
+          <img className="home-hero-logo home-hero-logo-light" src={logoLight} alt="Fused" />
           <h1 className="home-hero-title">
-            Build your next
-            <br />
-            <span className="home-hero-accent">local app</span>
+            Build your next <span className="home-hero-accent">local app</span>
           </h1>
-          <p className="home-hero-sub">
-            Describe an app and Claude builds it in your workspace — or explore your files
-            with interactive templates. Everything lives as plain folders you own.
-          </p>
           {/* The hero's only verb, prompt-first: describe the app right here
               and a named, scaffolded folder + claude session comes back. The
               structured (name-it-yourself) NewAppPanel lives on /apps now,
@@ -777,7 +790,7 @@ export default function Home({ config }: { config: Config }) {
           <SectionRule
             label="recent"
             action={
-              apps.status === "ok" && apps.data.apps.length > 10 ? (
+              apps.status === "ok" && apps.data.apps.length > 5 ? (
                 <button
                   type="button"
                   className="home-rule-action"
@@ -797,8 +810,8 @@ export default function Home({ config }: { config: Config }) {
             </div>
           )}
           {apps.status === "ok" && apps.data.apps.length > 0 && (
-            <div className="home-apps">
-              {/* The 10 most recently updated apps. Sort is computed once per
+            <div className="home-recents">
+              {/* The 5 most recently updated apps. Sort is computed once per
                   fetch: recency (updated_at epoch seconds, missing → last;
                   name breaks ties) — stable under interaction since nothing
                   re-sorts after load. */}
@@ -808,9 +821,9 @@ export default function Home({ config }: { config: Config }) {
                   (a, b) =>
                     (b.updated_at ?? 0) - (a.updated_at ?? 0) || a.name.localeCompare(b.name),
                 )
-                .slice(0, 10)
+                .slice(0, 5)
                 .map((app) => (
-                  <AppCard key={app.path} app={app} />
+                  <RecentRow key={app.path} app={app} />
                 ))}
             </div>
           )}
