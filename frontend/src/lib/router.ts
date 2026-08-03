@@ -110,10 +110,14 @@ export function replaceSearch(url: string): void {
   history.replaceState(history.state, "", url);
 }
 
-export function navigateUrl(url: string): void {
+export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
-  // when opening a bookmark, whose url carries saved view params.
-  history.pushState(null, "", url);
+  // when opening a bookmark, whose url carries saved view params. Callers
+  // that know the target's kind (e.g. Home's post-create hop into the app
+  // folder's chat) pass the same isDir nav hint navigate() takes, so the
+  // destination paints the right scaffold instead of the file one.
+  const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
+  history.pushState(state, "", url);
   notifyNavigate();
 }
 

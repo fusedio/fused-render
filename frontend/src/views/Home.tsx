@@ -253,7 +253,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id), { isDir: true });
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       if (alive.current) {
@@ -462,7 +462,7 @@ export function NewAppPanel({ onClose, onCreated }: { onClose: () => void; onCre
       // enters chat, and streams the live run (agent.py `poll`), replaying the
       // prompt as the user turn. Without a prompt there is no session, so the
       // default (rendered) view is the right landing.
-      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id));
+      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id), { isDir: true });
       else navigate(res.entry_html, { isDir: false });
     } catch (e) {
       // 409 (collision) and 400 (bad name) both carry the server's message.
