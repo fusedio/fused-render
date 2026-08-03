@@ -88,6 +88,26 @@ def _message(labels: list[str]) -> str:
             + (f" +{extra} more" if extra > 0 else ""))
 
 
+def _requeue(due: list[tuple[str, list[str]]]) -> None:
+    """Put entries `_take_due` already popped back into `_pending` when they
+    could not be committed — merging into whatever a mark() added meanwhile,
+    same as mark() itself. Used when the worker is cancelled mid-batch so
+    shutdown's flush() still sees them instead of losing them silently."""
+    if not due:
+        return
+    now = time.monotonic()
+    with _lock:
+        for app_dir, labels in due:
+            entry = _pending.get(app_dir)
+            if entry is None:
+                _pending[app_dir] = {"first": now, "last": now,
+                                     "labels": list(labels)}
+            else:
+                for label in labels:
+                    if label not in entry["labels"]:
+                        entry["labels"].append(label)
+
+
 def _take_due() -> tuple[list[tuple[str, list[str]]], float | None]:
     """Pop every app whose debounce has expired; also the delay until the
     next one expires (None when nothing is pending)."""
@@ -117,11 +137,23 @@ async def _run() -> None:
             await _wake.wait()
             while True:
                 due, delay = _take_due()
-                for app_dir, labels in due:
-                    # commit() is best-effort and never raises; to_thread
-                    # keeps the subprocess wait off the event loop.
-                    await asyncio.to_thread(app_git.commit, app_dir,
-                                            _message(labels))
+                # due's entries are already gone from _pending, so a
+                # cancellation partway through this batch (stop(), mid
+                # shutdown) must put whatever wasn't committed yet back —
+                # otherwise flush() right after never sees them again and
+                # those changes go uncommitted across the reload.
+                remaining = list(due)
+                try:
+                    while remaining:
+                        app_dir, labels = remaining[0]
+                        # commit() is best-effort and never raises; to_thread
+                        # keeps the subprocess wait off the event loop.
+                        await asyncio.to_thread(app_git.commit, app_dir,
+                                                _message(labels))
+                        remaining.pop(0)
+                except asyncio.CancelledError:
+                    _requeue(remaining)
+                    raise
                 if delay is None:
                     break
                 await asyncio.sleep(delay)

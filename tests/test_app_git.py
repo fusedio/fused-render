@@ -152,6 +152,17 @@ def test_fs_write_commits_into_app_repo(client, workspace):
     assert _log(d)[0] == "Edit index.html"
 
 
+def test_fs_upload_commits_into_app_repo(client, workspace):
+    d = _make_app(workspace)
+    r = client.post(
+        "/api/fs/upload", headers=HDRS,
+        files={"file": ("shot.png", b"\x89PNG\r\n", "image/png")},
+        data={"path": str(d / "shot.png")})
+    assert r.status_code == 200
+    app_commit_queue.flush()
+    assert _log(d)[0] == "Upload shot.png"
+
+
 def test_fs_delete_and_rename_commit(client, workspace):
     d = _make_app(workspace)
     (d / "notes.md").write_text("hi")

@@ -14,9 +14,12 @@ WHOLE app — the repo is the app, not the file. Three actions:
 * `revert`   — restore the working tree AND index to the selected commit and
                record that as a NEW commit on top ("Reverted to <sha> — …").
                History is never rewritten: revert of a revert works, and
-               nothing ever moves refs backwards. `git read-tree -u --reset`
-               is the mechanism — unlike `checkout <sha> -- .` it also
-               *deletes* files that were added after the selected commit.
+               nothing ever moves refs backwards. The commit object is built
+               with `commit-tree` BEFORE anything touches disk: `read-tree
+               -u --reset` (the destructive step — unlike `checkout <sha> --
+               .` it also *deletes* files added after the selected commit)
+               only runs once that commit exists, so a failure never leaves
+               the working tree changed with nothing recorded to show for it.
 
 Scoped hard to app dirs: every action re-derives the app dir from the target
 path with the same rule as `app_git.app_dir_for` (mirrored here — templates
@@ -141,9 +144,17 @@ def _snapshot(app: str, sha: str):
             return {"error": "git archive failed: " + err.strip()[:200]}
         os.makedirs(snap, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
-            # `data` filter (3.12+): refuses absolute names and `..` traversal
-            # in the archive — defence in depth; our own git wrote the tar.
-            tf.extractall(snap, filter="data")
+            # `data` filter: refuses absolute names and `..` traversal in the
+            # archive — defence in depth; our own git wrote the tar. The
+            # kwarg itself is 3.12+ (PEP 706), backported to some but not all
+            # patch releases of 3.10/3.11 that requires-python still allows;
+            # hasattr(tarfile, "data_filter") is the documented feature probe,
+            # so an interpreter without the backport just skips the filter
+            # instead of raising TypeError and breaking the preview outright.
+            if hasattr(tarfile, "data_filter"):
+                tf.extractall(snap, filter="data")
+            else:
+                tf.extractall(snap)
         with open(marker, "w", encoding="utf-8") as f:
             f.write(full + "\n")
 
@@ -157,25 +168,46 @@ def _revert(app: str, sha: str):
     full = _resolve_sha(app, sha)
     if full is None:
         return {"error": "unknown revision"}
-    if _head(app) == full:
+    head = _head(app)
+    if head == full:
         return {"noop": True, "reason": "already at this revision"}
 
-    # Working tree + index become exactly the selected commit's tree; files
-    # added since are deleted, ignored/untracked files are left alone.
-    r = _git(app, "read-tree", "-u", "--reset", full)
-    if r.returncode != 0:
-        return {"error": "git read-tree failed: " + (r.stderr or "").strip()[:200]}
-
-    # Same tree as HEAD (e.g. reverting to a commit whose content later
-    # commits already restored): nothing to record.
-    if _git(app, "diff", "--cached", "--quiet", "HEAD").returncode == 0:
+    # Tree comparison BEFORE anything touches disk: read-tree's reset is
+    # destructive to the working tree, and revert-of-a-revert can leave two
+    # different commits with an identical tree — running it first would
+    # silently discard uncommitted edits to reach a tree that was already
+    # there, then report a no-op with no sign anything happened.
+    target_tree = _git(app, "rev-parse", "--verify", "--quiet",
+                       full + "^{tree}").stdout.strip()
+    head_tree = _git(app, "rev-parse", "--verify", "--quiet",
+                     head + "^{tree}").stdout.strip() if head else ""
+    if target_tree and target_tree == head_tree:
         return {"noop": True, "reason": "tree already matches this revision"}
 
     subj = _git(app, "log", "-1", "--format=%s", full).stdout.strip()
     msg = f"Reverted to {full[:7]}" + (f" — {subj}" if subj else "")
-    r = _git(app, "commit", "-q", "-m", msg)
+
+    # Build the commit object first — commit-tree writes no working-tree or
+    # index state — so a failure here (e.g. a misconfigured commit signing
+    # key) leaves disk untouched instead of reporting an error after the
+    # revert already landed. Only once the commit exists does HEAD move and
+    # the (destructive) working-tree reset run.
+    parents = ["-p", head] if head else []
+    r = _git(app, "commit-tree", target_tree, *parents, "-m", msg,
+             "--no-gpg-sign")
     if r.returncode != 0:
         return {"error": "git commit failed: " + (r.stderr or "").strip()[:200]}
+    new_sha = r.stdout.strip()
+
+    r = _git(app, "update-ref", "HEAD", new_sha)
+    if r.returncode != 0:
+        return {"error": "git update-ref failed: " + (r.stderr or "").strip()[:200]}
+
+    # Working tree + index become exactly the selected commit's tree; files
+    # added since are deleted, ignored/untracked files are left alone.
+    r = _git(app, "read-tree", "-u", "--reset", new_sha)
+    if r.returncode != 0:
+        return {"error": "git read-tree failed: " + (r.stderr or "").strip()[:200]}
     return {"reverted": True, "message": msg}
 
 

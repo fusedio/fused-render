@@ -275,7 +275,10 @@ revertBtn.addEventListener("click", async () => {
   try {
     const res = await fused.runPython("./versions.py",
       { action: "revert", file: FILE, sha: selected }, { key: "revert" });
-    if (res.error) return notice(res.error, true);
+    if (res.error) {
+      revertBtn.disabled = false;
+      return notice(res.error, true);
+    }
     // Reload the list; the new "Reverted to …" commit is now the latest.
     await loadLog();
   } catch (err) {

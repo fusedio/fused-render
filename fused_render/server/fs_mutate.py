@@ -729,6 +729,7 @@ async def api_fs_upload(request: Request, file: UploadFile = File(...),
         # Both refusals are 403; only a read-only target is `readonly`.
         unauthorized=_require_fused(x_fused) is not None,
     )
+    _commit_mutation(result, "Upload", path)
     return result
 
 @router.post("/api/fs/mkdir")

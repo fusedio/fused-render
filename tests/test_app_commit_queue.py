@@ -8,6 +8,7 @@ Debounce windows are monkeypatched tight so the async tests stay fast.
 """
 import asyncio
 import subprocess
+import time
 
 import pytest
 
@@ -123,6 +124,62 @@ def test_two_apps_commit_independently(workspace, fast_debounce):
         await q.stop()
 
     _run(go())
+    assert _log(a)[0] == "Edit index.html"
+    assert _log(b)[0] == "Edit index.html"
+
+
+def test_requeue_merges_with_pending_and_new_marks(workspace):
+    # _requeue is what a cancelled-mid-batch worker uses to put entries
+    # `_take_due` already popped back — it must merge with anything a mark()
+    # added in the meantime, exactly like mark() itself does.
+    d = _make_app(workspace)
+    app_dir = str(d)
+    q._requeue([(app_dir, ["Edit a.html"])])
+    with q._lock:
+        assert q._pending[app_dir]["labels"] == ["Edit a.html"]
+    q.mark(str(d / "b.html"), "Edit")
+    q._requeue([(app_dir, ["Edit a.html"])])  # same label again: no duplicate
+    with q._lock:
+        labels = q._pending[app_dir]["labels"]
+    assert labels.count("Edit a.html") == 1
+    assert "Edit b.html" in labels
+    assert q._requeue([]) is None  # empty batch: a no-op, not a KeyError
+
+
+def test_shutdown_requeues_uncommitted_apps_mid_batch(workspace, fast_debounce,
+                                                       monkeypatch):
+    # Two apps due in the same worker batch; make the FIRST app's commit()
+    # slow so stop()'s cancellation lands while the SECOND is still sitting
+    # in `remaining` (already popped from _pending by _take_due). Without
+    # requeueing on CancelledError, that second app's change would vanish —
+    # not committed, and no longer pending for stop()'s own flush() either.
+    a = _make_app(workspace, name="one")
+    b = _make_app(workspace, name="two")
+
+    real_commit = app_git.commit
+    order = []
+
+    def slow_commit(app_dir, message):
+        order.append(app_dir)
+        if app_dir == str(a):
+            time.sleep(0.4)
+        return real_commit(app_dir, message)
+
+    monkeypatch.setattr(app_git, "commit", slow_commit)
+
+    async def go():
+        q.start()
+        (a / "index.html").write_text("<html>a</html>")
+        q.mark(str(a / "index.html"), "Edit")
+        (b / "index.html").write_text("<html>b</html>")
+        q.mark(str(b / "index.html"), "Edit")
+        # Let the debounce (0.05s) fire and the worker start committing `a`.
+        await asyncio.sleep(0.15)
+        assert order == [str(a)]  # confirms we're mid-batch, not done yet
+        await q.stop()
+
+    _run(go())
+    # Both apps got their commit — `b` via the requeue -> stop()'s flush().
     assert _log(a)[0] == "Edit index.html"
     assert _log(b)[0] == "Edit index.html"
 

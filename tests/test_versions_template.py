@@ -150,3 +150,30 @@ def test_revert_adds_a_commit_and_restores_the_tree(workspace):
     # Reverting to HEAD is a no-op, not an empty commit.
     assert v.main(action="revert", file=str(d), sha=_shas(d)[0])["noop"] is True
     assert len(_shas(d)) == 3
+
+
+def test_same_tree_revert_preserves_uncommitted_edits(workspace):
+    # A commit whose tree matches HEAD but whose sha differs (revert-of-a-
+    # revert lands on a DIFFERENT commit with the SAME content as an earlier
+    # one) must be reported a no-op WITHOUT ever running the destructive
+    # working-tree reset — otherwise dirty, uncommitted edits would be
+    # silently discarded to reach a tree that was already there.
+    v = _load("versions")
+    d = _make_app(workspace)
+    original = _shas(d)[0]  # v1
+    (d / "index.html").write_text("<html>v2</html>")
+    app_git.commit(str(d), "Edit index.html")
+    # Revert to v1: lands on a NEW commit (c3) whose tree equals `original`'s.
+    res = v.main(action="revert", file=str(d), sha=original)
+    assert res.get("reverted") is True
+    reverted_sha = _shas(d)[0]
+    assert reverted_sha != original
+    assert (d / "index.html").read_text() == "<html>v1</html>"
+    # Dirty the working copy without committing.
+    (d / "index.html").write_text("<html>UNCOMMITTED</html>")
+    # Ask to revert to `original` again: different sha than HEAD (reverted_sha)
+    # but an IDENTICAL tree — must noop without touching the dirty file.
+    res = v.main(action="revert", file=str(d), sha=original)
+    assert res.get("noop") is True
+    assert (d / "index.html").read_text() == "<html>UNCOMMITTED</html>"
+    assert _shas(d)[0] == reverted_sha  # no new commit, HEAD unmoved
