@@ -21,6 +21,7 @@ import { isMod, MOD_LABEL } from "../lib/platform";
 import { useDeferredClose, useLearnMountReady } from "../lib/hooks";
 import { PANEL_EXIT_MS } from "../lib/exit-animation";
 import { timeAgo } from "../components/AppPreviewCard";
+import { entryOf, openApp } from "../lib/appEntry";
 import { SkeletonLines } from "../components/Skeleton";
 import logoDark from "../assets/logo-text-black-bg-transparent.png";
 import logoLight from "../assets/logo-text-white-bg-transparent.png";
@@ -664,18 +665,22 @@ function Doorway({
   );
 }
 
-// One row in the Recent list: name, tag, last-used — no icon. Same open
-// behavior as the /apps cards: the app FOLDER in the claude_split view when
-// an entry exists, else the plain folder.
+// One row in the Recent list: name, provenance, tag, last-used — no icon.
+// Opening goes through the SAME helper the /apps cards use (openApp): a page
+// entry opens the app folder in the claude_split view, a figure or table entry
+// opens the file itself. Sharing it is what keeps this row from sending a
+// Claude Science artifact to its own directory — a folder named after a UUID.
 function RecentRow({ app }: { app: AppInfo }) {
-  const open = () => {
-    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
-    else navigate(app.path, { isDir: true });
-  };
   const title = app.title || app.name;
   return (
-    <button type="button" className="home-recent" onClick={open} title={app.path}>
+    <button
+      type="button"
+      className="home-recent"
+      onClick={() => openApp(app)}
+      title={entryOf(app) ?? app.path}
+    >
       <span className="home-recent-name">{title}</span>
+      {app.source === "claude-science" && <span className="app-source">Claude Science</span>}
       <span className="home-app-tag">{app.tag}</span>
       <span className="home-recent-when">{timeAgo(app.updated_at) ?? "—"}</span>
     </button>

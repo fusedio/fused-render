@@ -104,6 +104,36 @@ specific binary per process. If the CLI isn't installed, calls reject with an
 `fused.ai` is local-only: exported/hosted pages can't use it (see
 [EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
 
+## Claude Science artifacts
+
+If [Claude Science](https://claude.com/product/claude-science) is installed, the
+artifacts it has saved show up as apps — on Home and in the **Apps** hub —
+alongside the ones in your Fused workspace. Nothing to connect or configure:
+the store is read on each listing, and an empty or absent one simply
+contributes nothing.
+
+Each **artifact** is one card. Its name is the filename your analysis saved
+(`building_h3_compare.png`, from `v6f4b965a_building_h3_compare.png`), its tag
+is the project that produced it — so the hub's tag chips become per-project
+filters — and it carries a **Claude Science** badge to distinguish it from a
+workspace app. The extension is part of the name on purpose: an analysis that
+saves a figure and its underlying table gives them the same base name, and they
+are two different artifacts. Only the newest version of an artifact is listed;
+the older ones stay where they are, in the same folder.
+
+Opening a card opens the artifact in the matching preview template: a figure in
+the image viewer, a table in the DuckDB table view, an HTML report as a
+rendered page beside a Claude chat. Figure cards show the figure itself as
+their thumbnail.
+
+This is **read-only**. fused-render never writes to, scaffolds into, commits to
+or deploys from the Claude Science store — it reads the files another
+application owns and shows them to you. To iterate on an artifact as your own
+app, copy it into your workspace first.
+
+`FUSED_RENDER_CLAUDE_SCIENCE_DIR` overrides the store location (default
+`~/.claude-science`) for a Claude Science installed somewhere else.
+
 ## Export for hosted serving
 
 The **Deploy** button (see [Deploy to a hosted URL](../README.md#deploy-to-a-hosted-url)

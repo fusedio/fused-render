@@ -4,7 +4,7 @@
 // a tile never changes colour across visits, and the hues are the same family
 // the listing already paints file icons with.
 import type { AppInfo } from "../lib/api";
-import { navigate } from "../lib/router";
+import { entryOf, openApp } from "../lib/appEntry";
 
 const APP_HUES = [
   "var(--icon-folder)",
@@ -24,16 +24,14 @@ export function hueFor(name: string): string {
 }
 
 export function AppCard({ app }: { app: AppInfo }) {
-  const open = () => {
-    // An app with an entry opens its FOLDER in the claude_split view — the
-    // app rendered beside a Claude chat; a manifest without one falls back to
-    // the plain folder listing so the card is never dead.
-    if (app.entry_html) navigate(app.path, { isDir: true, mode: "claude_split" });
-    else navigate(app.path, { isDir: true });
-  };
   const title = app.title || app.name;
   return (
-    <button type="button" className="home-app" onClick={open} title={app.path}>
+    <button
+      type="button"
+      className="home-app"
+      onClick={() => openApp(app)}
+      title={entryOf(app) ?? app.path}
+    >
       <span className="home-app-monogram" aria-hidden="true" style={{ color: hueFor(app.name) }}>
         {title.charAt(0).toUpperCase()}
       </span>

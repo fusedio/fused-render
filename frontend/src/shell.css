@@ -6787,6 +6787,18 @@ select.field-control:has(option[value=""]:checked) {
   pointer-events: none;
 }
 
+/* A figure artifact's thumbnail: the image itself, contained so a tall plot
+   isn't cropped to its middle. No shield needed — an <img> takes no pointer
+   events the card button would miss. */
+.app-pcard-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg-panel);
+}
+
 .app-pcard-shield {
   position: absolute;
   inset: 0;
@@ -6802,6 +6814,14 @@ select.field-control:has(option[value=""]:checked) {
   font-size: 44px;
   font-weight: 700;
   background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+/* An extension label ("CSV", "PARQUET") in the monogram's place: up to eight
+   characters where the monogram plans for one, so it needs its own size. Sized
+   to keep the longest of them inside the narrowest grid column. */
+.app-pcard-monogram.is-ext {
+  font-size: 22px;
+  letter-spacing: 2px;
 }
 
 .app-pcard-body {
@@ -6836,6 +6856,20 @@ select.field-control:has(option[value=""]:checked) {
   font-size: 10.5px;
   border: 1px solid var(--border);
   border-radius: 999px;
+}
+
+/* Where an app came from, when that isn't the workspace (D205) — shared by the
+   hub's cards and Home's recent rows. Filled rather than outlined so it reads
+   as provenance at a glance and never as a second tag chip: the tag beside it
+   is a filter, this is not. */
+.app-source {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-size: 10.5px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--icon-media) 18%, transparent);
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .app-pcard-name {

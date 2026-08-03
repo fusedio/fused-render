@@ -1404,15 +1404,30 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 // path), null when the folder has no single resolvable .html entry; `title`
 // comes from that file's <title>, null falls back to the folder name in the
 // UI.
+//
+// The listing has a second source (D205): the local Claude Science store's
+// artifacts, tagged by the project that produced them and marked
+// `source: "claude-science"`. Those are read-only and mostly aren't pages, so
+// `entry` — the file a card opens and previews — is the field to reach for;
+// `entry_html` is the narrower "this entry is a renderable page" claim that
+// the /render iframe and the claude_split open path still key off.
 export interface AppInfo {
   name: string;
   tag: string;
   path: string;
   entry_html: string | null;
+  // The file the card opens and previews: the entry HTML for a workspace app,
+  // the newest version file (figure, table, page…) for a Claude Science
+  // artifact. Optional for older backends — fall back to `entry_html` via
+  // entryOf() rather than reading it directly.
+  entry?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
   updated_at?: number | null;
+  // Which listing source produced this app. Absent on older backends, which
+  // only ever listed the workspace.
+  source?: "workspace" | "claude-science";
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {

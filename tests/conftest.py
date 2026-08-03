@@ -14,6 +14,14 @@ CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
 writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
 test may touch the real ~/.claude.
 
+FUSED_RENDER_CLAUDE_SCIENCE_DIR is redirected for the read-only mirror of that
+reason (D205): GET /api/apps lists the local Claude Science store's artifacts
+alongside the workspace's apps, so on a developer machine that has Claude
+Science installed the apps tests would see that person's real artifacts and
+their assertions about the listing would depend on whose laptop ran them.
+Pointing it at an empty tmp dir makes the listing hermetic; the tests that are
+ABOUT the store set it themselves (see test_claude_science.py).
+
 FUSED_RENDER_ENGINE is pinned to `builtin` for the same class of reason. D204
 flipped the engine PREF's default to fused-when-available, so from then on the
 executor an incidental `/api/run` test exercises depends on whether the optional
@@ -38,7 +46,9 @@ import pytest
 
 for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
                        ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),
-                       ("CLAUDE_CONFIG_DIR", "fused-render-tests-claude-")):
+                       ("CLAUDE_CONFIG_DIR", "fused-render-tests-claude-"),
+                       ("FUSED_RENDER_CLAUDE_SCIENCE_DIR",
+                        "fused-render-tests-science-")):
     if _var not in os.environ:
         _tmp = tempfile.mkdtemp(prefix=_prefix)
         os.environ[_var] = _tmp

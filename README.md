@@ -152,6 +152,9 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
   folders.
 - [Preferences](docs/usage.md#preferences) — the in-app settings panel
   (execution engine, deploy toggle, logs, template registry).
+- [Claude Science artifacts](docs/usage.md#claude-science-artifacts) — the
+  figures, tables and reports Claude Science has saved, listed as apps on Home
+  and in the Apps hub (read-only, nothing to configure).
 - [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
   programmatic `POST /api/export` bundle format behind the Deploy button.
 

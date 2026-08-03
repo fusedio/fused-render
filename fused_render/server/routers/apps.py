@@ -10,6 +10,15 @@ direct-child ``.html`` file when there is exactly one — zero or several means
 the folder still lists, but opens as a directory instead of a view
 (``entry_html: null``).
 
+The workspace is not the only source (D185, D205): ``GET /api/apps`` also
+reports the artifacts in the local Claude Science store as apps
+(``claude_science.py``), tagged by the project that produced them. They are
+read-only — nothing here scaffolds, commits or deploys into that store — and
+they carry ``source: "claude-science"`` so the shell can tell them apart from a
+workspace app. Because most of them are figures and tables rather than pages,
+every app now also reports ``entry``: the file the card opens and previews,
+which for a workspace app is simply its ``entry_html``.
+
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
 plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
@@ -24,10 +33,9 @@ are synced to Claude Code's user-level skills dir instead (user_skills.py) —
 once per machine, refreshed at server startup and again here at create time —
 and the starter ``CLAUDE.md`` references them by name.
 """
-import html
 import json
+import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -36,8 +44,11 @@ import time
 
 from fastapi import APIRouter, Body, Header
 
+from fused_render import app_listing, claude_science
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
+
+logger = logging.getLogger("fused_render")
 
 router = APIRouter()
 
@@ -50,44 +61,10 @@ _APP_STARTER_DIR = os.path.join(
 
 # ------------------------------------------------------------------- listing
 
-_TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-
-
-def _entry_title(entry_html: str) -> str | None:
-    """The <title> of an entry file, from its first 4 KiB — cheap enough to run
-    per app on every listing. None when absent, empty, or unreadable."""
-    try:
-        with open(entry_html, "rb") as fh:
-            head = fh.read(4096)
-    except OSError:
-        return None
-    match = _TITLE_RE.search(head)
-    if not match:
-        return None
-    title = html.unescape(match.group(1).decode("utf-8", "replace"))
-    return " ".join(title.split()) or None
-
-
-def _updated_at(dir_path: str) -> float | None:
-    """When the app was last touched, as an epoch float (st_mtime).
-
-    Max of the dir's own mtime and its DIRECT children's — the dir mtime alone
-    only moves on add/remove/rename, so editing index.html in place wouldn't
-    register; a deep walk is unbounded work per listing for marginal gain
-    (edits in an app land overwhelmingly in top-level files). One extra stat
-    per child, no recursion. None when nothing stats (racing delete)."""
-    latest = None
-    try:
-        latest = os.stat(dir_path).st_mtime
-        with os.scandir(dir_path) as it:
-            for child in it:
-                try:
-                    latest = max(latest, child.stat().st_mtime)
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return latest
+# Both listing sources agree on the entry contract, so its two shared pieces
+# live in app_listing rather than being written twice (see that module).
+_entry_title = app_listing.entry_title
+_updated_at = app_listing.dir_updated_at
 
 
 def _app_entry(dir_path: str) -> str | None:
@@ -106,15 +83,32 @@ def _app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
+def _claude_science_apps() -> list[dict]:
+    """The Claude Science store's artifacts, as apps — [] on any failure.
+
+    The module itself skips what it cannot read, so reaching this handler means
+    something unforeseen went wrong in a store this app does not own. Home is
+    the landing screen: it degrades to the workspace's own apps rather than
+    500ing, and the reason lands in the log instead of on the user."""
+    try:
+        return claude_science.list_apps()
+    except Exception:
+        logger.warning("listing Claude Science artifacts failed", exc_info=True)
+        return []
+
+
 @router.get("/api/apps")
 def api_apps():
     root = fused_dir()
-    apps = []
+    apps = _claude_science_apps()
     try:
         tag_names = os.listdir(root)
     except OSError:
-        # No workspace yet (first run before seeding) — an empty Home, not a 500.
-        return {"apps": []}
+        # No workspace yet (first run before seeding) — an empty Home, not a
+        # 500. Not necessarily an empty *listing*, though: Claude Science may
+        # still have artifacts to show, so this returns what the other source
+        # found rather than discarding it.
+        tag_names = []
     for tag in tag_names:
         if tag.startswith("."):
             continue
@@ -139,9 +133,16 @@ def api_apps():
                 "name": name,
                 "tag": tag,
                 "path": os.path.abspath(path),
+                # `entry` is the file a card opens and previews. For a workspace
+                # app that is exactly its entry HTML — the second key exists for
+                # the sources whose entry may be a figure or a table
+                # (claude_science.py), and both are reported by every source so
+                # the shell needs no per-source branch.
+                "entry": entry_html,
                 "entry_html": entry_html,
                 "title": _entry_title(entry_html) if entry_html else None,
                 "updated_at": _updated_at(path),
+                "source": "workspace",
             })
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
