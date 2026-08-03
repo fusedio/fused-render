@@ -1463,7 +1463,11 @@ const acts = {
     needDoc();
     const spec = $("mdPages")?.value.trim() || "all";
     setStatus("converting…", "busy");
+    // Same guard as the scan: an edit or doc switch mid-convert must not land
+    // the old document's markdown, which Copy/Save would then export.
+    const forDoc = state.doc, gen = inspectGen;
     const res = await py({ action: "to_markdown", doc: state.doc, pages: spec });
+    if (gen !== inspectGen || forDoc !== state.doc) return;
     state.md = { spec, ...res };
     setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
     renderInspect();
@@ -1973,7 +1977,7 @@ function insFonts(r) {
     </table>
     ${broken.length ? `<h6>Encoding problems</h6>
       <div class="check" data-s="warn"><span class="mk">!</span><span class="nt">
-      ${plural(broken.length, "font", "fonts")} use Identity-H with no ToUnicode map
+      ${plural(broken.length, "font", "fonts")} use an Identity CID encoding with no ToUnicode map
       (${esc(broken.slice(0, 3).map((f) => f.name).join(", "))}${broken.length > 3 ? "…" : ""}).
       Text drawn in them copies out as gibberish — OCR is the reliable way to read those pages.
       </span></div>` : `<p class="hint">Every font maps back to Unicode, so extracted text is trustworthy.</p>`}`;

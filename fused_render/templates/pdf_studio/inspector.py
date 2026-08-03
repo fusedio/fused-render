@@ -199,9 +199,10 @@ def _font_report(d, page_idx):
     for f in fonts:
         f["page_count"] = len(f["pages"])
         f["pages"] = f["pages"][:8]
-        # An Identity-H CID font with no ToUnicode map has no path back to
-        # characters — extraction produces mojibake and OCR is the only way out.
-        f["undecodable"] = f["encoding"] == "Identity-H" and not f["tounicode"]
+        # An Identity CID font (H or V — vertical writing has the same problem)
+        # with no ToUnicode map has no path back to characters: extraction gives
+        # mojibake and OCR is the only way to read the page.
+        f["undecodable"] = f["encoding"].startswith("Identity-") and not f["tounicode"]
     return fonts
 
 
@@ -228,6 +229,31 @@ def _name_tree(node, depth=0):
     if isinstance(kids, pikepdf.Array):
         for kid in kids:
             yield from _name_tree(kid, depth + 1)
+
+
+def _walk_outline(root, hits):
+    """Bookmarks carry /A actions too — a /JavaScript or /Launch on an outline
+    entry fires when the reader clicks it. The tree is a linked list of
+    /First-/Next siblings, and a malformed one can point back at itself."""
+    import pikepdf
+
+    outlines = root.get("/Outlines")
+    if not isinstance(outlines, pikepdf.Dictionary):
+        return
+    stack, seen = [outlines.get("/First")], set()
+    while stack:
+        node, n = stack.pop(), 0
+        while isinstance(node, pikepdf.Dictionary) and n < 4096:
+            og = node.objgen
+            if og != (0, 0):
+                if og in seen:
+                    break
+                seen.add(og)
+            if "/A" in node:
+                _walk_action(node["/A"], "outline entry", hits)
+            stack.append(node.get("/First"))
+            node = node.get("/Next")
+            n += 1
 
 
 def _walk_triggers(obj, where, hits):
@@ -308,6 +334,7 @@ def _security(path):
             facts["open_action"] = "/GoTo"      # a destination array, not an action
 
         _walk_triggers(root, "document", hits)
+        _walk_outline(root, hits)
 
         names = root.get("/Names")
         js_tree = names.get("/JavaScript") if isinstance(names, pikepdf.Dictionary) else None
