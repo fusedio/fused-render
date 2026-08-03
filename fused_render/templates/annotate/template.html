@@ -349,6 +349,41 @@
   }
   #confirmbox dt { color: var(--fg-muted); }
   #confirmbox dd { margin: 0; font-variant-numeric: tabular-nums; }
+  /* The diff. The `<dl>` above answers how MUCH changes; this answers WHAT, which
+     on the one destructive action in this view is the question actually being
+     confirmed. Capped height rather than a growing sheet: a modal that outgrows
+     the viewport puts its own buttons off screen. */
+  #confirmdiff {
+    margin: 10px 0 0; padding: 8px 10px;
+    max-height: 40vh; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; line-height: 1.5;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  /* The SAME accent/error pair the history rows use for their +/− counts
+     (`.hplus`/`.hminus`): one meaning, one colour, and inventing a second green
+     and a second red for added/removed would be two names for each. */
+  #confirmdiff .cdplus { color: var(--accent); }
+  #confirmdiff .cdminus { color: var(--error); }
+  /* Hunk headers, the two file names, and the "no diff"/"view cut" sentences are
+     all scaffolding around the change, so they recede to the muted tone rather
+     than competing with the lines that matter. */
+  #confirmdiff .cdhunk, #confirmdiff .cdfile, #confirmdiff .cdnote {
+    color: var(--fg-muted);
+  }
+  /* Same affordance as #histtoggle, deliberately — one disclosure idiom in this
+     view, so a triangle plus muted 11px text means the same thing in both. */
+  #confirmdifftoggle {
+    font: inherit; font-size: 11px; cursor: pointer;
+    margin-top: 10px; padding: 0;
+    color: var(--fg-muted); background: none; border: none;
+  }
+  #confirmdifftoggle:hover { color: var(--fg); }
+  /* Wider ONLY when there are diff lines to show, so a sheet with nothing but the
+     counts does not grow for nothing. Applied while the diff is still behind its
+     disclosure too: sizing the box on the open/closed state would reflow the whole
+     sheet under the cursor on the very click that opens it. */
+  #confirmbox.wide { width: 640px; }
   /* The sole thing standing between a click and unrecoverable loss (the
      tick-to-confirm that used to back it up was removed as friction), so in the
      irreversible case it carries real weight rather than being a footnote. */
@@ -416,6 +451,8 @@
       <h2 id="confirmtitle">Revert this file?</h2>
       <div id="confirmsub"></div>
       <dl id="confirmfacts"></dl>
+      <button id="confirmdifftoggle" hidden></button>
+      <pre id="confirmdiff" hidden></pre>
       <p id="confirmwarn" hidden></p>
       <div id="confirmacts">
         <button id="confirmno">Cancel</button>
@@ -1915,6 +1952,84 @@
       if (e.key === "Escape" && confirmEl.classList.contains("open")) closeConfirm();
     });
 
+    // Diffs at or under this many changed lines open EXPANDED. 40 is about the
+    // tallest thing that still reads as a glance inside a modal; past it the sheet
+    // becomes a scrolling review surface, and what is being confirmed is a click,
+    // not a review — so the big ones wait behind a disclosure that says how much
+    // there is.
+    const DIFF_OPEN_LINES = 40;
+    let diffChanged = 0; // for the toggle's label, which outlives one render
+
+    // The confirm sheet's diff, built as NODES with classes — the same rule
+    // `deltaNodes` follows and for a sharper reason here: these lines are file
+    // content off the user's disk, and this template routinely annotates HTML.
+    // Text nodes keep a checkpointed `<script>` inert; `innerHTML` would run it
+    // inside this page, which holds the revert controls.
+    function renderConfirmDiff(diff) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      const box = document.getElementById("confirmbox");
+      pre.textContent = "";
+      toggle.hidden = true;
+      // `reason` is file_history's one channel for every "no diff here" — over the
+      // byte cap, binary either side, a version that vanished between the scan and
+      // the read, a version holding exactly what is on disk. It renders WHERE the
+      // diff would have been, because a sheet that silently omits the diff it
+      // normally shows reads as the diff being empty.
+      // A MISSING `diff` is the other case this branch covers, and it is not the
+      // same thing: a refused plan (`ok: false`) carries no diff key at all, so
+      // there is nothing to say and the box stays out of the sheet entirely.
+      if (!diff || diff.reason) {
+        if (diff && diff.reason) {
+          const why = document.createElement("div");
+          why.className = "cdnote";
+          why.textContent = diff.reason;
+          pre.appendChild(why);
+        }
+        pre.hidden = !pre.children.length;
+        box.classList.remove("wide");
+        return;
+      }
+      diff.lines.forEach((ln, i) => {
+        const row = document.createElement("div");
+        // The two file names are lines 0 and 1 BY POSITION, never by prefix: a
+        // removed content line reading `--` arrives as `---` and would otherwise
+        // be painted as a header instead of as the removal it is.
+        row.className = i < 2 ? "cdfile"
+          : ln.startsWith("@@") ? "cdhunk"
+          : ln.startsWith("+") ? "cdplus"
+          : ln.startsWith("-") ? "cdminus" : "";
+        row.textContent = ln;
+        pre.appendChild(row);
+      });
+      if (diff.truncated) {
+        // The cut is stated with the FULL count beside it. Trailing off with no
+        // note would present a prefix of the change as the whole of it — the same
+        // thing the byte cap refuses to do one layer down.
+        const cut = document.createElement("div");
+        cut.className = "cdnote";
+        cut.textContent = "… only the first " + diff.lines.length +
+          " lines are shown — " + diff.changed + " lines change in total.";
+        pre.appendChild(cut);
+      }
+      diffChanged = diff.changed;
+      box.classList.add("wide");
+      setDiffDisclosure(diff.changed <= DIFF_OPEN_LINES);
+      toggle.hidden = diff.changed <= DIFF_OPEN_LINES;
+    }
+
+    function setDiffDisclosure(open) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      pre.hidden = !open;
+      toggle.textContent = open
+        ? "▾ Hide diff"
+        : "▸ Show " + diffChanged + " changed lines";
+    }
+    document.getElementById("confirmdifftoggle").addEventListener("click", () => {
+      setDiffDisclosure(document.getElementById("confirmdiff").hidden);
+    });
+
     // `versionId === null` means "the last change", resolved by the POSITIONAL
     // rule (SPEC §34/FH-3): where disk sits in the chain, then one step back.
     // No `enrich` is passed — deliberately. It used to be `enrich: enriched`,
@@ -1985,6 +2100,9 @@
         dd.textContent = v;
         facts.append(dt, dd);
       }
+      // Between the counts and the hazard, because that is the reading order the
+      // sheet asks for: how much changes, what changes, what it costs.
+      renderConfirmDiff(plan.diff);
       // The sharp hazard, stated plainly — and the SHEET NOW KNOWS whether a
       // copy will actually be kept, rather than hedging. `plan.stash` is the
       // same predicate the write itself runs, so the two cannot disagree. The

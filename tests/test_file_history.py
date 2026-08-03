@@ -1221,3 +1221,183 @@ def test_at_earliest_is_still_claimed_once_enriched(claude_home, tmp_path):
     tl = fh.timeline(f, enrich=True)
     assert tl["at_earliest"] is True and tl["enriched"] is True
     assert "earliest" in tl["note"]
+
+
+# ============================================================= the plan's diff
+# Aggregates ("+2 / −1", "1.2 kB after") answer how MUCH changes, never WHAT, and
+# on a destructive confirm those are different questions. The diff rides on the
+# plan rather than on a fourth action for the reason `revert_plan`'s own docstring
+# gives: a plan built against one disk state and applied against another is how a
+# user confirms one diff and gets a different one, and the plan's `id` is already
+# the freshness token the write demands back.
+
+def _diff_body(plan):
+    """The diff's content lines — no `---`/`+++` names, no `@@` hunk headers."""
+    return [ln for ln in plan["diff"]["lines"][2:] if not ln.startswith("@@")]
+
+
+def test_the_plan_carries_the_diff_the_confirm_sheet_renders(claude_home,
+                                                            tmp_path):
+    fh = _load()
+    f = _target(tmp_path, "a\nb\nc\n")
+    write_version(claude_home, "s", f, "a\nB\nc\n")
+    diff = fh.revert_plan(f)["diff"]
+    assert diff["reason"] == "" and diff["truncated"] is False
+    # One line replaced: the restore takes `b` away and puts `B` back.
+    assert "-b" in diff["lines"] and "+B" in diff["lines"]
+    assert diff["changed"] == 2
+    # No trailing newlines — the view builds one node per line.
+    assert all(not ln.endswith("\n") for ln in diff["lines"])
+
+
+def test_the_diff_is_framed_as_what_the_restore_does(claude_home, tmp_path):
+    """The same framing (and the same reason for it) as `_delta`: disk is the
+    "from" side and the version the "to" side. The reverse reads identically on a
+    symmetric edit and lies on every asymmetric one."""
+    fh = _load()
+    f = _target(tmp_path, "keep\ngone\n")
+    write_version(claude_home, "s", f, "keep\n")
+    body = _diff_body(fh.revert_plan(f))
+    # Restoring v1 REMOVES `gone`; the reverse framing would call it an addition.
+    assert "-gone" in body and "+gone" not in body
+
+
+def test_the_diff_headers_name_the_checkpoint_not_the_stores_path(claude_home,
+                                                                 tmp_path):
+    """The version's path inside Claude Code's history store is a hashed filename
+    the user cannot open or act on, so it has no business in a header. The session
+    is there because it is the only thing that tells two rows both called v2 apart
+    (semantic 4)."""
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s0mesess", f, "old\n")
+    lines = fh.revert_plan(f)["diff"]["lines"]
+    assert lines[0] == "--- on disk now"
+    assert lines[1].startswith("+++ v1 (session s0mesess")
+    assert path_hash(f) not in "\n".join(lines)
+    assert str(claude_home) not in "\n".join(lines)
+
+
+def test_a_delete_diffs_as_every_current_line_removed(claude_home, tmp_path):
+    """Honest and useful: the sheet says "DELETES it", and this is what that
+    costs, line by line."""
+    fh = _load()
+    f = _target(tmp_path, "one\ntwo\n")
+    write_version(claude_home, "s", f, "one\ntwo\n", mtime=1785479788)
+    write_transcript(claude_home, "s", str(tmp_path), [
+        delta_record(os.path.basename(f), None, 1, "2026-07-31T06:00:00.000Z",
+                     real_parent_dir=str(tmp_path)),
+    ])
+    plan = fh.revert_plan(f)
+    assert plan["action"] == "delete"
+    assert _diff_body(plan) == ["-one", "-two"]
+    assert plan["diff"]["changed"] == 2
+    assert "did not exist" in plan["diff"]["lines"][1]
+
+
+def test_an_absent_target_diffs_as_every_line_added(claude_home, tmp_path):
+    """The mirror of the delete, and it falls out of `_current` modelling absence
+    as `[]` lines — "Claude deleted my file" gets a diff, not a blank panel."""
+    fh = _load()
+    f = str(tmp_path / "gone.txt")
+    write_version(claude_home, "s", f, "back\nagain\n")
+    plan = fh.revert_plan(f)
+    assert plan["current"]["exists"] is False
+    assert _diff_body(plan) == ["+back", "+again"]
+    assert plan["diff"]["changed"] == 2
+
+
+def test_content_over_the_byte_cap_is_not_diffed_at_all(claude_home, tmp_path,
+                                                        monkeypatch):
+    """The same guard `_delta` degrades over, and for the same reason (difflib is
+    quadratic). A PARTIAL diff presented as complete would be the worse answer:
+    the sheet's whole job is to show what the click does."""
+    fh = _load()
+    monkeypatch.setattr(fh, "DIFF_BYTE_CAP", 8)
+    f = _target(tmp_path, "aaaa\nbbbb\ncccc\n")
+    write_version(claude_home, "s", f, "aaaa\n")
+    diff = fh.revert_plan(f)["diff"]
+    assert diff["lines"] == [] and diff["changed"] == 0
+    assert "too large" in diff["reason"]
+
+
+def test_binary_content_on_either_side_says_so_instead_of_diffing(claude_home,
+                                                                 tmp_path):
+    """Binary checkpoints are ordinary and perfectly restorable byte-for-byte —
+    they just have no lines, exactly as `_lines` reports for the delta."""
+    fh = _load()
+    f = tmp_path / "img.bin"
+    f.write_bytes(b"\xff\xd8\xff\x00")
+    write_version(claude_home, "s", str(f), "text\n")
+    diff = fh.revert_plan(str(f))["diff"]
+    assert diff["lines"] == [] and diff["changed"] == 0
+    assert "not UTF-8 text" in diff["reason"]
+
+
+def test_an_unreadable_version_reports_the_path_and_the_errno(claude_home,
+                                                             tmp_path,
+                                                             monkeypatch):
+    """Through `_why`, like every other caller of `_read`: a permissions problem
+    is a fact about the machine and `chmod` is actionable, where "no diff" is not.
+    A version unreadable at SCAN time is skipped and the plan refuses outright, so
+    the only way here is the race — readable when enumerated, gone by the time the
+    diff re-reads it — and the plan must still stand, because `apply_revert` reads
+    the version for itself and would say so then."""
+    fh = _load()
+    f = _target(tmp_path, "disk\n")
+    write_version(claude_home, "s", f, "old\n")
+    real_open = open
+    reads = []
+
+    def flaky(path, *a, **kw):
+        if "@v1" in str(path):
+            reads.append(str(path))
+            if len(reads) > 1:   # the scan's read succeeds; the diff's does not
+                raise PermissionError(13, "Permission denied")
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", flaky)
+    plan = fh.revert_plan(f)
+    assert plan["ok"] is True and plan["skipped"] == []
+    assert plan["diff"]["lines"] == []
+    assert "Permission denied" in plan["diff"]["reason"]
+    assert "errno 13" in plan["diff"]["reason"]
+    assert reads[0] in plan["diff"]["reason"]
+
+
+def test_a_long_diff_is_cut_but_still_counts_the_whole_change(claude_home,
+                                                             tmp_path,
+                                                             monkeypatch):
+    """`changed` is the FULL diff's count, so the trailing "view was cut" line can
+    say how much the sheet is not showing. A truncated count would make the
+    disclosure label understate the change it is hiding."""
+    fh = _load()
+    monkeypatch.setattr(fh, "DIFF_LINE_CAP", 10)
+    f = _target(tmp_path, "".join("new-%d\n" % i for i in range(30)))
+    write_version(claude_home, "s", f, "".join("old-%d\n" % i for i in range(30)))
+    diff = fh.revert_plan(f)["diff"]
+    assert diff["truncated"] is True
+    assert len(diff["lines"]) == 10
+    assert diff["changed"] == 60      # 30 removed + 30 added, uncut
+
+
+def test_identical_content_says_there_is_nothing_to_show(claude_home, tmp_path):
+    """An explicitly clicked version may hold exactly what is on disk (the
+    automatic walk skips those). An empty `<pre>` would read as a broken diff, so
+    the "why" channel carries it like every other no-diff case."""
+    fh = _load()
+    f = _target(tmp_path, "same\n")
+    write_version(claude_home, "s", f, "same\n")
+    diff = fh.revert_plan(f, "s@v1")["diff"]
+    assert diff["lines"] == [] and diff["changed"] == 0
+    assert diff["reason"]
+
+
+def test_a_refused_plan_carries_no_diff_at_all(claude_home, tmp_path):
+    """`ok: False` is "there is nothing to revert to", so there is nothing to
+    diff either — and a `diff` key on a refusal is a thing the view would have to
+    remember not to render."""
+    fh = _load()
+    plan = fh.revert_plan(_target(tmp_path))
+    assert plan["ok"] is False
+    assert "diff" not in plan

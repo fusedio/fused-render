@@ -4332,6 +4332,26 @@ wanting "what has this file been through" wants §33.
   content that is not UTF-8, the delta degrades to net counts (or none) and
   **says it is inexact** rather than implying a diff nobody computed: difflib is
   quadratic in the worst case and a timeline renders every version.
+
+  **The sheet shows the diff itself, not only the aggregates** (`diff`:
+  `{lines, changed, truncated, reason}`). Bytes-now / bytes-after / `+N / −M`
+  answer how MUCH changes and never WHAT, and on the one destructive action in
+  this view the second is the question being confirmed. It rides on the **plan**
+  rather than on a fourth action, deliberately: the plan already enriches, already
+  runs on an explicit click, and its `id` is already the freshness token the write
+  demands back — a separate `action="diff"` would diff a second scan and reopen
+  exactly the confirm-one-diff-get-another gap above. Same direction as the delta
+  (disk-now is the `from` side), headers naming the **checkpoint and its session**
+  rather than the store's hashed path (which the user cannot open or act on), and
+  the same `DIFF_BYTE_CAP` guard — over the cap, or with either side not UTF-8,
+  there is no diff and `reason` says which. A delete diffs as every current line
+  removed, and an absent target as every target line added; both fall out of
+  `_current` modelling absence as `[]` lines. Capped at `DIFF_LINE_CAP` (400)
+  lines with `truncated` set and `changed` counting the **full** diff, so the view
+  states what it is not showing instead of presenting a prefix as the whole
+  change. `reason` is also how a genuinely EMPTY diff arrives (an explicitly
+  clicked version holding exactly what is on disk): an empty box reads as a broken
+  diff, so no-diff is never silent. `ok: false` plans carry no `diff` key at all.
 - **FH-10** **Second line of defence: the pre-restore content is stashed in the
   target's own `<file>.json` sidecar**, under `revertStash`, through the same
   read-merge-write `annotate.py` already uses — so `claudeSessions`,

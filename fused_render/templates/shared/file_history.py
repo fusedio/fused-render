@@ -82,6 +82,12 @@ if _HERE not in sys.path:
 #: `exact: False`. difflib is quadratic in the worst case and a timeline renders
 #: every version, so an unbounded diff is a way for one big file to hang a view.
 DIFF_BYTE_CAP = 2 * 1024 * 1024
+#: Diff lines the confirm sheet is handed. A confirm step is a "is this what I
+#: meant?" glance at a scrolling box, not a review surface — past a few screens
+#: nobody reads further, and the payload rides on every plan click. The cut is
+#: reported (`truncated`) with the FULL change count beside it, so the sheet says
+#: what it is not showing rather than quietly showing less.
+DIFF_LINE_CAP = 400
 #: Above this a transcript is not read at all. Enrichment is already opt-in for
 #: the timeline; this is the second guard, so a pathological transcript cannot
 #: cost a render even when something asks for enrichment.
@@ -281,6 +287,79 @@ def _delta(cur_lines, ver_lines, cur_bytes, ver_bytes):
         if op in ("delete", "replace"):
             removed += i2 - i1
     return added, removed, True
+
+
+def _diff_label(entry):
+    """The `+++` side's name: the CHECKPOINT, never its path.
+
+    The version lives in Claude Code's store under `<sha256(path)[:16]>@vN`, which
+    is not a file the user can open, review or act on, so putting it in a header
+    would spend the sheet's most-read line on noise. The session's short id is
+    there because it is the only thing that tells two rows both called v2 apart
+    (semantic 4), and the did-not-exist boundary says so in words — the `+++` side
+    of that diff is not a version of the file, it is the absence of one.
+    """
+    name = "v%d" % entry["version"] if entry["version"] >= 1 else "the checkpoint"
+    absent = "" if entry["existed"] else " — the file did not exist"
+    return "%s (session %s)%s" % (name, entry["session"][:8], absent)
+
+
+def _diff(cur_lines, cur_bytes, entry):
+    """`{lines, changed, truncated, reason}` — the unified diff the confirm sheet
+    shows, or WHY there is none.
+
+    Framed as what the restore DOES, so disk-now is the `from` side and the
+    version the `to` side: the same choice `_delta` documents, for the same
+    reason, and the numbers beside the diff in the sheet come from `_delta` — the
+    two disagreeing about direction would be worse than either being wrong.
+
+    `reason` is the one channel for every "no diff here", including the diff that
+    is genuinely EMPTY (an explicitly clicked version holding exactly what is on
+    disk; the automatic walk skips those, a user naming one is free to pick it).
+    An empty `<pre>` reads as a broken diff, and the sheet's contract is that
+    no-diff is never silent — so a sentence, not a blank.
+
+    `changed` counts the full diff even when `lines` is cut, because the
+    disclosure label is built from it: a count that shrank with the view would
+    understate exactly the change the view is hiding.
+    """
+    empty = {"lines": [], "changed": 0, "truncated": False}
+    if entry["existed"]:
+        ver_bytes, exc = _read(entry["path"])
+        if ver_bytes is None:
+            # Readable when the scan enumerated it, not now. `_why` because the
+            # errno is the actionable half — `apply_revert` re-reads the version
+            # for itself, so the plan stays valid and only the preview is lost.
+            return dict(empty, reason="This version could not be read, so there "
+                                      "is no diff to show — " + _why(exc, entry["path"]))
+        ver_lines = _lines(ver_bytes)
+    else:
+        # A delete is a diff where every current line goes, and `_current` already
+        # models an absent file as `[]` lines — so the mirror case (restoring a
+        # file Claude deleted) needs no branch of its own.
+        ver_bytes, ver_lines = b"", []
+    if cur_lines is None or ver_lines is None:
+        return dict(empty, reason="One side of this change is not UTF-8 text, so "
+                                  "it has no diff — the restore is still exact, "
+                                  "byte for byte.")
+    if max(len(cur_bytes or b""), len(ver_bytes or b"")) > DIFF_BYTE_CAP:
+        # The same cap `_delta` degrades over, and refused the same way rather
+        # than diffing a prefix: a partial diff presented as the whole change is
+        # the one answer a confirm step must not give.
+        return dict(empty, reason="This content is too large to diff (over %d "
+                                  "bytes), so only the counts above are shown."
+                                  % DIFF_BYTE_CAP)
+    lines = list(difflib.unified_diff(cur_lines, ver_lines,
+                                      fromfile="on disk now",
+                                      tofile=_diff_label(entry), lineterm=""))
+    if not lines:
+        return dict(empty, reason="This version holds exactly what is on disk — "
+                                  "restoring it would change nothing.")
+    # Counted off the body, so the `---`/`+++` headers cannot be mistaken for
+    # removed and added lines, and BEFORE the cut (see the docstring).
+    changed = sum(1 for ln in lines[2:] if ln.startswith(("+", "-")))
+    return {"lines": lines[:DIFF_LINE_CAP], "changed": changed,
+            "truncated": len(lines) > DIFF_LINE_CAP, "reason": ""}
 
 
 def _current(file):
@@ -811,12 +890,20 @@ def revert_plan(file, entry_id=None) -> dict:
     without an explicit confirmation showing the loss — and `annotate.py`
     additionally refuses the write unless that confirmation is echoed back.
 
+    `diff` carries the change itself (see `_diff`), because the aggregates beside
+    it answer how MUCH changes and never WHAT — different questions, and on the
+    one destructive action in this view the second is the one being confirmed. It
+    rides on the plan rather than on an action of its own precisely because of the
+    freshness rule above: a diff computed by a separate call is a diff of a second
+    scan, and the whole point of echoing this plan's `id` back is that the thing
+    confirmed and the thing applied are one state of the disk.
+
     Every "nothing to revert to" answer is returned as data (`ok: False` +
     `error`, with `at_earliest` distinguishing the terminal state from an empty
     store), never raised: they are ordinary states of a file, not failures.
     """
     file = os.path.abspath(file)
-    cur, cur_bytes, _cl = _current(file)
+    cur, cur_bytes, cur_lines = _current(file)
     versions, skipped, store_error = _scan(file, enrich=True)
     position, auto_target, at_earliest, unconfirmed, blocking = _selection(
         versions, cur_bytes, skipped)
@@ -862,6 +949,13 @@ def revert_plan(file, entry_id=None) -> dict:
         "added": entry["added"],
         "removed": entry["removed"],
         "exact": entry["exact"],
+        # The diff itself, not a fourth action — see `_diff`, and the freshness
+        # argument in this docstring: an `action="diff"` computed against a second
+        # scan is exactly how a user confirms one diff and gets another, and the
+        # plan already enriches, already runs on an explicit click, and already
+        # carries the `id` the write demands back. Only on `ok: True`, so there is
+        # no such key on a refusal for the view to remember not to render.
+        "diff": _diff(cur_lines, cur_bytes, entry),
         "mtime": entry["mtime"],
         "current": cur,
         "position": versions[position]["id"] if position >= 0 else None,

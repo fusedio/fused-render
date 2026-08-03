@@ -1535,3 +1535,236 @@ def test_a_directory_target_is_refused_the_same_way(claude_home, tmp_path):
     assert "directory" in tl["writable_reason"]
     assert "error" in ann.main(action="revert", file=str(d), version_id="s@v1")
     assert os.path.isdir(str(d))
+
+
+# ================================================== the diff in the confirm sheet
+# The sheet used to show only aggregates — bytes now, bytes after, `+N / −M` —
+# which answer how MUCH changes and never WHAT. On the one destructive action in
+# this view the second is the question being confirmed.
+
+def test_the_bridge_passes_the_plans_diff_through_untouched(claude_home,
+                                                           tmp_path):
+    """`_plan` completes the plan with the stash predicate and nothing else, so
+    the diff reaches the sheet exactly as file_history computed it — no second
+    scan, no second framing to keep in step with `_delta`'s."""
+    ann = _load_annotate()
+    f = _target(tmp_path, "a\nb\n")
+    write_version(claude_home, "s", f, "a\n")
+    plan = ann.main(action="revert_plan", file=f)
+    assert plan["diff"]["reason"] == ""
+    assert "-b" in plan["diff"]["lines"]
+    assert plan["diff"]["changed"] == 1
+    # ...and the bridge's own two additions are still the only ones.
+    assert plan["stash"] is True and plan["stash_note"] == ""
+
+
+def _const_line(src, name):
+    """A module-level `const NAME = ...;` line, verbatim — so a threshold the test
+    reasons about is the shipping one rather than a copy that can drift."""
+    for line in src.splitlines():
+        if line.strip().startswith("const %s =" % name):
+            return line.strip()
+    raise AssertionError(f"no `const {name}` in the template")
+
+
+def _diff_prelude(source):
+    """A DOM just large enough to run the shipping diff renderer verbatim."""
+    return (
+        "class El {\n"
+        "  constructor(id) {\n"
+        "    this.id = id; this.children = []; this.hidden = false;\n"
+        "    this.className = ''; this._text = '';\n"
+        "    const set = new Set();\n"
+        "    this.classList = {\n"
+        "      add: (c) => set.add(c), remove: (c) => set.delete(c),\n"
+        "      contains: (c) => set.has(c),\n"
+        "      toggle: (c, on) => (on ? set.add(c) : set.delete(c)),\n"
+        "    };\n"
+        "    this.classes = set;\n"
+        "  }\n"
+        "  set textContent(v) { this._text = v; if (v === '') this.children = []; }\n"
+        "  get textContent() { return this._text; }\n"
+        "  appendChild(c) { this.children.push(c); return c; }\n"
+        "  addEventListener(_type, fn) { this.click = fn; }\n"
+        "}\n"
+        "const nodes = {};\n"
+        "const document = {\n"
+        "  getElementById: (id) => (nodes[id] = nodes[id] || new El(id)),\n"
+        "  createElement: (tag) => new El(tag),\n"
+        "};\n"
+        "const rows = () => nodes.confirmdiff.children.map(\n"
+        "  (c) => [c.className, c.textContent]);\n"
+        + _const_line(source, "DIFF_OPEN_LINES") + "\n"
+        "let diffChanged = 0;\n"
+        + _js_block(source, "function renderConfirmDiff(diff)") + "\n"
+        + _js_block(source, "function setDiffDisclosure(open)") + "\n"
+    )
+
+
+def test_a_small_diff_is_shown_expanded_with_added_and_removed_apart(source,
+                                                                    tmp_path):
+    """Small is the common case (one edit, a handful of lines) and it is the case
+    where a disclosure is pure friction — the sheet asks a question the diff
+    answers, so the answer is on screen."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,2 +1,1 @@",
+                " keep", "-gone"],
+        changed: 1, truncated: false, reason: "",
+      });
+      console.log(JSON.stringify({
+        rows: rows(),
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["hidden"] is False and got["toggleHidden"] is True
+    assert got["wide"] is True
+    assert got["rows"] == [
+        ["cdfile", "--- on disk now"],
+        ["cdfile", "+++ v1 (session s)"],
+        ["cdhunk", "@@ -1,2 +1,1 @@"],
+        ["", " keep"],
+        ["cdminus", "-gone"],
+    ]
+
+
+def test_the_file_names_are_classed_by_position_not_by_prefix(source, tmp_path):
+    """A removed content line reading `--` arrives as `---`, and a prefix test
+    would paint it as a file header — a REMOVAL rendered as scaffolding, in the
+    one place the colour is what the user is reading."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v2 (session s)", "@@ -1,1 +1,1 @@",
+                "---", "+++"],
+        changed: 2, truncated: false, reason: "",
+      });
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got[3] == ["cdminus", "---"]
+    assert got[4] == ["cdplus", "+++"]
+
+
+def test_a_large_diff_waits_behind_a_disclosure_that_says_how_much(source,
+                                                                  tmp_path):
+    """Same idiom as #histtoggle — one disclosure vocabulary in this view — and the
+    label carries `changed` so the user knows what pressing it costs."""
+    got = _run("""
+      const lines = ["--- on disk now", "+++ v1 (session s)", "@@ -1,80 +1,0 @@"];
+      for (let i = 0; i < 80; i++) lines.push("-line-" + i);
+      renderConfirmDiff({ lines, changed: 80, truncated: false, reason: "" });
+      const shut = { hidden: nodes.confirmdiff.hidden,
+                     label: nodes.confirmdifftoggle.textContent,
+                     toggleHidden: nodes.confirmdifftoggle.hidden,
+                     wide: nodes.confirmbox.classes.has("wide") };
+      setDiffDisclosure(true);
+      const open = { hidden: nodes.confirmdiff.hidden,
+                     label: nodes.confirmdifftoggle.textContent };
+      console.log(JSON.stringify({ shut, open }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["shut"]["hidden"] is True
+    assert got["shut"]["label"] == "▸ Show 80 changed lines"
+    assert got["shut"]["toggleHidden"] is False
+    # Wide while still shut: sizing the box on the open state would reflow the
+    # whole sheet under the cursor on the very click that opens it.
+    assert got["shut"]["wide"] is True
+    assert got["open"]["hidden"] is False
+    assert got["open"]["label"] == "▾ Hide diff"
+
+
+def test_the_disclosure_button_flips_the_state_it_reads(source):
+    """The listener passes the CURRENT hidden flag straight into the setter, so the
+    label and the box can never drift out of step with each other."""
+    handler = _js_block(
+        source, 'document.getElementById("confirmdifftoggle").addEventListener')
+    assert "setDiffDisclosure(document.getElementById(\"confirmdiff\").hidden)" \
+        in handler
+
+
+def test_a_truncated_diff_says_so_with_the_full_count(source, tmp_path):
+    """Trailing off silently would present a prefix of the change as the whole of
+    it — the same thing the byte cap one layer down refuses to do."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,3 +1,1 @@", "-a"],
+        changed: 900, truncated: true, reason: "",
+      });
+      setDiffDisclosure(true);
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got[-1][0] == "cdnote"
+    assert "900 lines change in total" in got[-1][1]
+    assert "first 4 lines" in got[-1][1]
+
+
+def test_a_reason_is_rendered_where_the_diff_would_have_been(source, tmp_path):
+    """"No diff" is never silent: an absent `<pre>` in a sheet that normally shows
+    one reads as the diff being empty, which is a different fact from "too large to
+    diff" or "not UTF-8 text"."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: [], changed: 0, truncated: false,
+        reason: "This content is too large to diff.",
+      });
+      console.log(JSON.stringify({
+        rows: rows(),
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got["rows"] == [["cdnote", "This content is too large to diff."]]
+    assert got["hidden"] is False
+    assert got["toggleHidden"] is True
+    # A sheet with nothing but a sentence must not grow for nothing.
+    assert got["wide"] is False
+
+
+def test_a_plan_with_no_diff_key_renders_nothing_at_all(source, tmp_path):
+    """`ok: False` plans carry no `diff`, and a template served from a store older
+    than this change would not either — neither may leave an empty box behind."""
+    got = _run("""
+      renderConfirmDiff(undefined);
+      console.log(JSON.stringify({
+        hidden: nodes.confirmdiff.hidden,
+        toggleHidden: nodes.confirmdifftoggle.hidden,
+        wide: nodes.confirmbox.classes.has("wide"),
+      }));
+    """, tmp_path, _diff_prelude(source))
+    assert got == {"hidden": True, "toggleHidden": True, "wide": False}
+
+
+def test_a_previous_diff_never_leaks_into_the_next_sheet(source, tmp_path):
+    """One sheet, reused for every target. A stale diff under a fresh set of counts
+    is the same class of error as the write-order bugs in the note below it."""
+    got = _run("""
+      renderConfirmDiff({
+        lines: ["--- on disk now", "+++ v1 (session s)", "@@ -1,1 +1,1 @@", "-old"],
+        changed: 1, truncated: false, reason: "",
+      });
+      renderConfirmDiff({ lines: [], changed: 0, truncated: false,
+                          reason: "Nothing to show." });
+      console.log(JSON.stringify(rows()));
+    """, tmp_path, _diff_prelude(source))
+    assert got == [["cdnote", "Nothing to show."]]
+
+
+def test_the_diff_content_is_only_ever_text(source):
+    """These lines are file content off the user's disk, and this template
+    routinely annotates HTML. A text node keeps a checkpointed `<script>` inert;
+    innerHTML would run it inside the page holding the revert controls."""
+    block = _js_block(source, "function renderConfirmDiff(diff)")
+    assert "innerHTML" not in block
+    assert "textContent = ln" in block
+
+
+def test_the_diff_sits_between_the_counts_and_the_hazard(source):
+    """Reading order: how much changes, what changes, what it costs. Everything
+    else about the sheet is untouched — the facts list, the irreversible warning
+    and the unwritable-target bail all still stand."""
+    box = source[source.index('<div id="confirmbox"'):source.index('id="confirmacts"')]
+    assert box.index('id="confirmfacts"') < box.index('id="confirmdiff"')
+    assert box.index('id="confirmdiff"') < box.index('id="confirmwarn"')
+    assert 'if (plan.writable === false)' in source
+    assert 'warn.classList.toggle("hard", irreversible)' in source
