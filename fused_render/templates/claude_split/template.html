@@ -552,10 +552,9 @@
 // preview iframe is its own document and keeps live-reloading on its own.
 fused.autoReload(false);
 
-// All chat backend calls go to the claude template's own agent — one backend,
-// two front doors. runPython resolves relative to THIS html file's real
-// (staged) location, so the sibling folder is always the same staged copy.
-const AGENT = "../claude/agent.py";
+// The agent is this template's own copy (forked from the claude template —
+// templates are self-contained, no cross-template imports).
+const AGENT = "./agent.py";
 
 const log = document.getElementById("log");
 const logwrap = document.getElementById("logwrap");

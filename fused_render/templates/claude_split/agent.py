@@ -1,5 +1,7 @@
-"""runPython target for claude/template.html: chat with the Claude Code CLI
-about the target file (POC).
+"""runPython target for claude_split/template.html: chat with the Claude Code
+CLI about the target — a project FOLDER (the app template) or a file. Forked
+from claude/agent.py; templates are self-contained, so this copy is claude_split's
+own (duplication over cross-template dependencies, by design).
 
 The browser never owns the work: `start` detaches a claude subprocess whose
 stream-json stdout goes to a log file in tmp; `poll` re-reads that file and
@@ -223,6 +225,16 @@ def _bad_id(value: str) -> bool:
     return not value or value.startswith(".") or any(c in value for c in "/\\:")
 
 
+def _workdir(file: str) -> str:
+    """Claude's cwd (and the session-store key) for a target. A directory
+    target — the claude_split app template opens whole project folders — IS
+    the working directory; a file target keeps the historical rule: its
+    parent. Everything keyed on the cwd (the ~/.claude/projects munge, the
+    sidecar `cwd` field) goes through this one rule so files and folders
+    can't drift apart."""
+    return file if os.path.isdir(file) else os.path.dirname(file)
+
+
 def _system_prompt(file: str) -> str:
     name = os.path.basename(file)
     return (
@@ -316,7 +328,7 @@ def _record_session(file: str, session_id: str, message: str,
         return
     data = _load_sidecar(file)
     now = time.time()
-    cwd = os.path.dirname(file)
+    cwd = _workdir(file)
     for entry in data["claudeSessions"]:
         if entry.get("id") in (session_id, resumed_from):
             entry["id"] = session_id
@@ -352,7 +364,7 @@ def _migrate_session(file: str, session_id: str) -> None:
     means claude reports the session as not found."""
     if _bad_id(session_id):
         return
-    new_cwd = os.path.dirname(file)
+    new_cwd = _workdir(file)
     dest_dir = os.path.join(PROJECTS, _munge(new_cwd))
     dest = os.path.join(dest_dir, session_id + ".jsonl")
 
@@ -730,8 +742,10 @@ def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False) -> dict:
     file = os.path.abspath(file)
-    if not os.path.isfile(file):
-        return {"error": f"target file not found: {file}"}
+    # A directory is a valid target too: the claude_split app template opens
+    # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
+    if not os.path.exists(file):
+        return {"error": f"target not found: {file}"}
     if session_id:
         _migrate_session(file, session_id)
 
@@ -767,7 +781,6 @@ def _start(file: str, message: str, session_id: str, model: str,
     cmd = [_claude_bin(), *message_argv,
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
-           "--append-system-prompt", _system_prompt(file),
            "--mcp-config", _write_mcp_config(run_dir),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
@@ -776,6 +789,12 @@ def _start(file: str, message: str, session_id: str, model: str,
            # This chat renders neither a question picker nor a plan dialog, so
            # keep them off: the change is about tool approvals and nothing else.
            "--disallowed-tools", "AskUserQuestion,ExitPlanMode"]
+    # A FILE target gets the scoping system prompt. A DIRECTORY target (the
+    # claude_split app template) deliberately does NOT: the session should be
+    # plain Claude Code in that project — the user's own system prompt,
+    # CLAUDE.md, skills and tools — with cwd (_workdir) as the only scoping.
+    if not os.path.isdir(file):
+        cmd += ["--append-system-prompt", _system_prompt(file)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -801,7 +820,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
-                                    cwd=os.path.dirname(file),
+                                    cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
                                     **_DETACH)
     finally:
@@ -1062,7 +1081,7 @@ def _history(file: str, session_id: str) -> dict:
         return {"turns": []}
     file = os.path.abspath(file)
     _migrate_session(file, session_id)
-    path = os.path.join(PROJECTS, _munge(os.path.dirname(file)),
+    path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
     if not os.path.isfile(path):
         return {"turns": []}
