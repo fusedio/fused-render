@@ -189,19 +189,21 @@ def _claude_agent():
 
 
 def _record_session_when_ready(agent, run_id: str) -> None:
-    """Poll the detached run until its session id lands in the sidecar.
+    """Poll the detached run until it finishes.
 
     agent._poll is what writes the sidecar (first poll that sees the session
-    id records it, one-shot via the run's `recorded` marker) — but nobody is
-    polling until the user opens the new app's claude chat, which may be
-    never. This background loop does the minimum: poll until recorded or the
-    run ends, so the session is listed when the user does look."""
-    for _ in range(300):  # ~10 min at 2 s — a session id arrives in seconds
+    id records it, one-shot via the run's `recorded` marker) AND what commits
+    the finished turn into the app's repo (one-shot via `committed`) — but
+    nobody is polling until the user opens the new app's claude chat, which
+    may be never. This background loop polls all the way to `done` so both
+    happen regardless: the session is listed when the user does look, and the
+    scaffolding turn's work is committed."""
+    for _ in range(1800):  # ~1 h at 2 s — a scaffolding turn can run long
         try:
             data = agent._poll(run_id)
         except Exception:
             return  # bookkeeping only; never let it matter
-        if data.get("session_id") or data.get("done"):
+        if data.get("done"):
             return
         time.sleep(2)
 
@@ -334,6 +336,14 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     from fused_render.user_skills import sync_user_skills
 
     sync_user_skills()
+
+    # Version control from birth: every new app is a git repo whose first
+    # commit is the untouched starter, BEFORE any session runs — so the
+    # scaffolding turn's work diffs against the boilerplate, not nothing.
+    # Best-effort (no git on the machine still gets a working app).
+    from fused_render import app_git
+
+    app_git.init_repo(dest)
 
     entry_html = os.path.join(dest, "index.html")
     run_id, session_error = None, None

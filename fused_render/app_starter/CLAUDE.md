@@ -16,6 +16,17 @@ the full contract for `.html` views and `.py` data files: the `fused` bridge,
 params-as-state wiring, file IO, theming, and debugging blank views /
 traceback overlays.
 
+## Version control
+
+This folder is a local git repository (initialised at creation with the
+starter as its first commit). **Commit as you work, in small chunks** — after
+every coherent change, even tiny ones (a copy tweak, a single style fix, one
+function). Never batch a whole task into one commit, and never leave the tree
+dirty at the end of a turn: finish every turn with `git add -A` and a commit.
+Use short imperative subjects ("Add dark theme toggle", "Fix param sync").
+Don't push, don't add remotes, don't rewrite history — this repo is purely
+local undo history for the app.
+
 fused-render installs that skill (and its siblings, `fused-render-usage` and
 `fused-render-custom-templates`) into Claude Code's user-level skills
 directory and keeps them up to date, so it is available here by name. If the
